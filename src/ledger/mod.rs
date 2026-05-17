@@ -1,12 +1,17 @@
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
 use crate::error::LedgerError;
-use crate::events::{Event, EventId};
+use crate::events::{Event, EventId, EventType};
 use crate::Result;
+
+const LEDGER_DB_NAME: &str = "ledger.sqlite";
 
 pub trait EventLedger {
     fn append(&self, event: Event) -> Result<EventId>;
@@ -20,6 +25,186 @@ pub trait EventLedger {
     ) -> Result<()>;
 
     fn latest_offset(&self) -> Result<EventId>;
+}
+
+#[derive(Debug)]
+pub struct SqliteEventLedger {
+    path: PathBuf,
+    connection: Connection,
+}
+
+impl SqliteEventLedger {
+    pub fn open(hivemind_dir: impl AsRef<Path>) -> Result<Self> {
+        fs::create_dir_all(hivemind_dir.as_ref()).map_err(storage_error)?;
+        let path = hivemind_dir.as_ref().join(LEDGER_DB_NAME);
+        let connection = Connection::open(&path).map_err(storage_error)?;
+
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA synchronous=NORMAL;
+                 CREATE TABLE IF NOT EXISTS events (
+                     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     event_uuid TEXT NOT NULL UNIQUE,
+                     type TEXT NOT NULL,
+                     actor_id TEXT NOT NULL,
+                     correlation_id TEXT,
+                     causation_event_id INTEGER,
+                     payload TEXT NOT NULL,
+                     ts TEXT NOT NULL
+                 );",
+            )
+            .map_err(storage_error)?;
+
+        Ok(Self { path, connection })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl EventLedger for SqliteEventLedger {
+    fn append(&self, event: Event) -> Result<EventId> {
+        let payload = serde_json::to_string(&event.payload).map_err(storage_error)?;
+        let ts = event.ts.unwrap_or_else(Utc::now).to_rfc3339();
+
+        let inserted = self
+            .connection
+            .execute(
+                "INSERT OR IGNORE INTO events (
+                    event_uuid,
+                    type,
+                    actor_id,
+                    correlation_id,
+                    causation_event_id,
+                    payload,
+                    ts
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    event.event_uuid.to_string(),
+                    event_type_as_str(event.event_type),
+                    event.actor_id,
+                    event.correlation_id,
+                    event.causation_event_id.map(|id| id as i64),
+                    payload,
+                    ts,
+                ],
+            )
+            .map_err(storage_error)?;
+
+        if inserted == 1 {
+            return Ok(u64::try_from(self.connection.last_insert_rowid())
+                .map_err(|error| storage_error(format!("invalid sqlite rowid: {error}")))?);
+        }
+
+        let existing: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT event_id FROM events WHERE event_uuid = ?1",
+                params![event.event_uuid.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_error)?;
+
+        let existing = existing.ok_or_else(|| {
+            LedgerError::Storage(
+                "event dedup failed: duplicate event_uuid not found after INSERT OR IGNORE"
+                    .to_owned(),
+            )
+        })?;
+
+        Ok(u64::try_from(existing)
+            .map_err(|error| storage_error(format!("invalid event_id: {error}")))?)
+    }
+
+    fn read(&self, offset: EventId, limit: usize) -> Result<Vec<Event>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let offset = i64::try_from(offset)
+            .map_err(|error| storage_error(format!("offset out of range: {error}")))?;
+        let limit = i64::try_from(limit)
+            .map_err(|error| storage_error(format!("limit out of range: {error}")))?;
+
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT
+                    event_id,
+                    event_uuid,
+                    type,
+                    actor_id,
+                    correlation_id,
+                    causation_event_id,
+                    payload,
+                    ts
+                 FROM events
+                 WHERE event_id > ?1
+                 ORDER BY event_id ASC
+                 LIMIT ?2",
+            )
+            .map_err(storage_error)?;
+
+        let mut rows = statement
+            .query(params![offset, limit])
+            .map_err(storage_error)?;
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().map_err(storage_error)? {
+            events.push(row_to_event(row)?);
+        }
+
+        Ok(events)
+    }
+
+    fn replay_from(
+        &self,
+        offset: EventId,
+        callback: &mut dyn FnMut(&Event) -> Result<()>,
+    ) -> Result<()> {
+        let offset = i64::try_from(offset)
+            .map_err(|error| storage_error(format!("offset out of range: {error}")))?;
+
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT
+                    event_id,
+                    event_uuid,
+                    type,
+                    actor_id,
+                    correlation_id,
+                    causation_event_id,
+                    payload,
+                    ts
+                 FROM events
+                 WHERE event_id > ?1
+                 ORDER BY event_id ASC",
+            )
+            .map_err(storage_error)?;
+
+        let mut rows = statement.query(params![offset]).map_err(storage_error)?;
+        while let Some(row) = rows.next().map_err(storage_error)? {
+            let event = row_to_event(row)?;
+            callback(&event)?;
+        }
+
+        Ok(())
+    }
+
+    fn latest_offset(&self) -> Result<EventId> {
+        let offset: i64 = self
+            .connection
+            .query_row("SELECT COALESCE(MAX(event_id), 0) FROM events", [], |row| {
+                row.get(0)
+            })
+            .map_err(storage_error)?;
+
+        Ok(u64::try_from(offset)
+            .map_err(|error| storage_error(format!("invalid latest_offset: {error}")))?)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -111,13 +296,83 @@ impl EventLedger for InMemoryEventLedger {
     }
 }
 
+fn row_to_event(row: &Row<'_>) -> Result<Event> {
+    let event_id_raw: i64 = row.get("event_id").map_err(storage_error)?;
+    let event_uuid_raw: String = row.get("event_uuid").map_err(storage_error)?;
+    let event_type_raw: String = row.get("type").map_err(storage_error)?;
+    let actor_id: String = row.get("actor_id").map_err(storage_error)?;
+    let correlation_id: Option<String> = row.get("correlation_id").map_err(storage_error)?;
+    let causation_event_id_raw: Option<i64> =
+        row.get("causation_event_id").map_err(storage_error)?;
+    let payload_raw: String = row.get("payload").map_err(storage_error)?;
+    let ts_raw: String = row.get("ts").map_err(storage_error)?;
+
+    let event_id = u64::try_from(event_id_raw)
+        .map_err(|error| storage_error(format!("invalid event_id in row: {error}")))?;
+    let event_uuid = Uuid::parse_str(&event_uuid_raw)
+        .map_err(|error| storage_error(format!("invalid event_uuid in row: {error}")))?;
+    let event_type = parse_event_type(&event_type_raw)?;
+    let causation_event_id = causation_event_id_raw
+        .map(|id| {
+            u64::try_from(id).map_err(|error| {
+                storage_error(format!("invalid causation_event_id in row: {error}"))
+            })
+        })
+        .transpose()?;
+    let payload = serde_json::from_str(&payload_raw).map_err(storage_error)?;
+    let ts = DateTime::parse_from_rfc3339(&ts_raw)
+        .map_err(|error| storage_error(format!("invalid timestamp in row: {error}")))?
+        .with_timezone(&Utc);
+
+    Ok(Event {
+        event_id: Some(event_id),
+        event_uuid,
+        correlation_id,
+        causation_event_id,
+        event_type,
+        actor_id,
+        payload,
+        ts: Some(ts),
+    })
+}
+
+fn event_type_as_str(event_type: EventType) -> &'static str {
+    match event_type {
+        EventType::DecisionProposed => "decision.proposed",
+        EventType::DecisionAccepted => "decision.accepted",
+        EventType::DecisionRejected => "decision.rejected",
+        EventType::DecisionSuperseded => "decision.superseded",
+        EventType::EvidenceRecorded => "evidence.recorded",
+        EventType::HypothesisRecorded => "hypothesis.recorded",
+        EventType::RelationAdded => "relation.added",
+    }
+}
+
+fn parse_event_type(value: &str) -> Result<EventType> {
+    match value {
+        "decision.proposed" => Ok(EventType::DecisionProposed),
+        "decision.accepted" => Ok(EventType::DecisionAccepted),
+        "decision.rejected" => Ok(EventType::DecisionRejected),
+        "decision.superseded" => Ok(EventType::DecisionSuperseded),
+        "evidence.recorded" => Ok(EventType::EvidenceRecorded),
+        "hypothesis.recorded" => Ok(EventType::HypothesisRecorded),
+        "relation.added" => Ok(EventType::RelationAdded),
+        other => Err(storage_error(format!("unknown event type in row: {other}")).into()),
+    }
+}
+
+fn storage_error(error: impl std::fmt::Display) -> LedgerError {
+    LedgerError::Storage(error.to_string())
+}
+
 #[cfg(test)]
 pub(crate) mod contract_tests {
     use chrono::Utc;
     use serde_json::json;
     use uuid::Uuid;
 
-    use crate::events::{Event, EventId, EventType};
+    use crate::events::Event;
+    use crate::events::{EventId, EventType};
     use crate::ledger::EventLedger;
     use crate::Result;
 
@@ -181,7 +436,7 @@ pub(crate) mod contract_tests {
         Ok(())
     }
 
-    fn make_event(evidence_id: &str, event_uuid: Uuid) -> Event {
+    pub fn make_event(evidence_id: &str, event_uuid: Uuid) -> Event {
         Event {
             event_id: None,
             event_uuid,
@@ -218,12 +473,19 @@ pub(crate) mod contract_tests {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    use rusqlite::OptionalExtension;
+    use uuid::Uuid;
+
     use crate::ledger::contract_tests::{
         assert_dedup_by_event_uuid, assert_monotonic_append, assert_read_offset_and_limit,
-        assert_replay_from_zero_in_order,
+        assert_replay_from_zero_in_order, make_event,
     };
 
-    use super::InMemoryEventLedger;
+    use super::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
     use crate::Result;
 
     #[test]
@@ -248,5 +510,84 @@ mod tests {
     fn in_memory_read_applies_offset_and_limit() -> Result<()> {
         let ledger = InMemoryEventLedger::new();
         assert_read_offset_and_limit(&ledger)
+    }
+
+    #[test]
+    fn sqlite_append_assigns_monotonic_ids() -> Result<()> {
+        with_sqlite_ledger("append-monotonic", |ledger| assert_monotonic_append(ledger))
+    }
+
+    #[test]
+    fn sqlite_append_is_idempotent_for_duplicate_event_uuid() -> Result<()> {
+        with_sqlite_ledger("append-dedup", |ledger| assert_dedup_by_event_uuid(ledger))
+    }
+
+    #[test]
+    fn sqlite_replay_from_zero_is_ordered() -> Result<()> {
+        with_sqlite_ledger("replay-ordered", |ledger| {
+            assert_replay_from_zero_in_order(ledger)
+        })
+    }
+
+    #[test]
+    fn sqlite_read_applies_offset_and_limit() -> Result<()> {
+        with_sqlite_ledger("read-offset-limit", |ledger| {
+            assert_read_offset_and_limit(ledger)
+        })
+    }
+
+    #[test]
+    fn sqlite_uses_wal_and_creates_file() -> Result<()> {
+        with_sqlite_ledger("wal-and-file", |ledger| {
+            assert!(ledger.path().exists());
+
+            let journal_mode: Option<String> = ledger
+                .connection
+                .query_row("PRAGMA journal_mode;", [], |row| row.get(0))
+                .optional()
+                .map_err(super::storage_error)?;
+
+            assert_eq!(journal_mode.as_deref(), Some("wal"));
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[ignore = "performance benchmark; run in isolated environment"]
+    fn sqlite_10k_append_plus_read_stays_fast() -> Result<()> {
+        with_sqlite_ledger("ten-k-fast", |ledger| {
+            let start = Instant::now();
+
+            for index in 0..10_000 {
+                let uuid = Uuid::new_v4();
+                let event = make_event(&format!("evidence-{index}"), uuid);
+                ledger.append(event)?;
+            }
+
+            let events = ledger.read(0, 10_000)?;
+            assert_eq!(events.len(), 10_000);
+            assert!(start.elapsed().as_secs_f64() < 1.0);
+
+            Ok(())
+        })
+    }
+
+    fn with_sqlite_ledger<T>(
+        prefix: &str,
+        f: impl FnOnce(&SqliteEventLedger) -> Result<T>,
+    ) -> Result<T> {
+        let dir = temp_hivemind_dir(prefix);
+        let ledger = SqliteEventLedger::open(&dir)?;
+        let result = f(&ledger);
+        let _ = fs::remove_dir_all(&dir);
+        result
+    }
+
+    fn temp_hivemind_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("hivemind-{prefix}-{nanos}-{}", std::process::id()))
     }
 }
