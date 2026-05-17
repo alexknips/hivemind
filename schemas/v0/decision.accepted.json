@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivemind.local/schemas/v0/decision.accepted.json",
+  "title": "decision.accepted event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_uuid", "type", "actor_id", "payload"],
+  "properties": {
+    "event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "event_uuid": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": ["string", "null"], "minLength": 1 },
+    "causation_event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "type": { "const": "decision.accepted" },
+    "actor_id": { "type": "string", "minLength": 1 },
+    "ts": { "type": ["string", "null"], "format": "date-time" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision_id"],
+      "properties": {
+        "decision_id": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

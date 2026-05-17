@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivemind.local/schemas/v0/relation.added.json",
+  "title": "relation.added event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_uuid", "type", "actor_id", "payload"],
+  "properties": {
+    "event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "event_uuid": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": ["string", "null"], "minLength": 1 },
+    "causation_event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "type": { "const": "relation.added" },
+    "actor_id": { "type": "string", "minLength": 1 },
+    "ts": { "type": ["string", "null"], "format": "date-time" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relation", "from_id", "to_id"],
+      "properties": {
+        "relation": {
+          "enum": ["BASED_ON", "HAS_OPTION", "CHOSE", "ASSUMES", "SUPPORTS", "REFUTES"]
+        },
+        "from_id": { "type": "string", "minLength": 1 },
+        "to_id": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

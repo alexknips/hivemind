@@ -1,0 +1,12 @@
+{
+  "event_id": 2,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe02",
+  "correlation_id": "session-1",
+  "causation_event_id": 1,
+  "type": "decision.accepted",
+  "actor_id": "human-a",
+  "payload": {
+    "decision_id": "dec-1"
+  },
+  "ts": "2026-05-17T20:41:43Z"
+}

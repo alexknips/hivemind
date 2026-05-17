@@ -1,0 +1,13 @@
+{
+  "event_id": 4,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe04",
+  "correlation_id": "session-1",
+  "causation_event_id": 1,
+  "type": "decision.superseded",
+  "actor_id": "agent-a",
+  "payload": {
+    "old_decision_id": "dec-1",
+    "new_decision_id": "dec-2"
+  },
+  "ts": "2026-05-17T20:43:43Z"
+}

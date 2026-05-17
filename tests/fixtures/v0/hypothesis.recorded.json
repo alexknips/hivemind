@@ -1,0 +1,13 @@
+{
+  "event_id": 6,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe06",
+  "correlation_id": "session-1",
+  "causation_event_id": null,
+  "type": "hypothesis.recorded",
+  "actor_id": "agent-a",
+  "payload": {
+    "hypothesis_id": "hyp-embedded-is-enough",
+    "statement": "An embedded database is enough for slice-1 write throughput."
+  },
+  "ts": "2026-05-17T20:45:43Z"
+}

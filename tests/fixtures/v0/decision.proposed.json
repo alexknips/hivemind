@@ -1,0 +1,19 @@
+{
+  "event_id": 1,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe01",
+  "correlation_id": "session-1",
+  "causation_event_id": null,
+  "type": "decision.proposed",
+  "actor_id": "agent-a",
+  "payload": {
+    "decision_id": "dec-1",
+    "title": "Use SQLite as the slice-1 ledger",
+    "rationale": "Slice 1 needs an embedded, auditable event store with no server dependency.",
+    "topic_keys": ["storage"],
+    "option_ids": ["opt-sqlite", "opt-postgres"],
+    "chosen_option_id": "opt-sqlite",
+    "hypothesis_ids": ["hyp-embedded-is-enough"],
+    "evidence_ids": ["ev-sqlite-wal"]
+  },
+  "ts": "2026-05-17T20:40:43Z"
+}

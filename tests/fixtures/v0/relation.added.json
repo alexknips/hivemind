@@ -1,0 +1,14 @@
+{
+  "event_id": 7,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe07",
+  "correlation_id": "session-1",
+  "causation_event_id": 5,
+  "type": "relation.added",
+  "actor_id": "agent-a",
+  "payload": {
+    "relation": "SUPPORTS",
+    "from_id": "ev-sqlite-wal",
+    "to_id": "hyp-embedded-is-enough"
+  },
+  "ts": "2026-05-17T20:46:43Z"
+}

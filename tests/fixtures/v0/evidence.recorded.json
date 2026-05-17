@@ -1,0 +1,14 @@
+{
+  "event_id": 5,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe05",
+  "correlation_id": "session-1",
+  "causation_event_id": null,
+  "type": "evidence.recorded",
+  "actor_id": "agent-a",
+  "payload": {
+    "evidence_id": "ev-sqlite-wal",
+    "content": "SQLite WAL supports local append-heavy workloads for the prototype.",
+    "source": "PLAN.md"
+  },
+  "ts": "2026-05-17T20:44:43Z"
+}

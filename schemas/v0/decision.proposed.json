@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivemind.local/schemas/v0/decision.proposed.json",
+  "title": "decision.proposed event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_uuid", "type", "actor_id", "payload"],
+  "properties": {
+    "event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "event_uuid": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": ["string", "null"], "minLength": 1 },
+    "causation_event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "type": { "const": "decision.proposed" },
+    "actor_id": { "type": "string", "minLength": 1 },
+    "ts": { "type": ["string", "null"], "format": "date-time" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision_id", "title", "rationale", "topic_keys", "option_ids", "chosen_option_id", "hypothesis_ids", "evidence_ids"],
+      "properties": {
+        "decision_id": { "$ref": "#/$defs/id" },
+        "title": { "type": "string", "minLength": 1 },
+        "rationale": { "type": "string", "minLength": 1 },
+        "topic_keys": { "$ref": "#/$defs/id_array" },
+        "option_ids": { "$ref": "#/$defs/id_array" },
+        "chosen_option_id": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "hypothesis_ids": { "$ref": "#/$defs/id_array" },
+        "evidence_ids": { "$ref": "#/$defs/id_array" }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1 },
+    "id_array": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/id" },
+      "uniqueItems": true
+    }
+  }
+}
