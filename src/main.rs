@@ -13,7 +13,7 @@ fn main() {
             println!("{output}");
         }
         Err(error) => {
-            eprintln!("error: {error}");
+            eprintln!("{}", cli::format_error(cli_args.json, &error));
             std::process::exit(cli::exit_code_for_error(&error).code());
         }
     }

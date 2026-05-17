@@ -1,12 +1,21 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 use crate::commands::Commands;
 use crate::error::{CliError, CommandError};
-use crate::events::RelationKind;
+use crate::events::RelationKind as EventRelationKind;
 use crate::ledger::SqliteEventLedger;
+use crate::projector::{
+    project_from_ledger, GraphParams, GraphProperties, GraphRow, GraphValue, GraphView, NodeKind,
+    RelationKind as GraphRelationKind,
+};
+use crate::queries::{
+    derive_decision_status, derive_hypothesis_status, DecisionStatus, HypothesisStatus,
+};
 use crate::{HivemindError, Result};
 
 #[derive(Debug, Clone, Parser)]
@@ -154,6 +163,7 @@ pub struct EmitRelationAddedArgs {
 pub enum EmitRelationKind {
     Supports,
     Refutes,
+    #[value(alias = "based_on")]
     BasedOn,
 }
 
@@ -222,14 +232,7 @@ pub fn run(cli: &Cli) -> Result<String> {
                 ),
             )
         }
-        Command::Dump(dump) => format_output(
-            cli.json,
-            &OutputEnvelope::new(
-                "dump",
-                "stub",
-                format!("stub dump format={}", dump_format_name(dump.format)),
-            ),
-        ),
+        Command::Dump(dump) => run_dump(cli, dump),
     }
 }
 
@@ -308,13 +311,13 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
                 EmitRelationKind::Supports => commands.relate_evidence_to_hypothesis(
                     &args.from_id,
                     &args.to_id,
-                    RelationKind::Supports,
+                    EventRelationKind::Supports,
                     &cli.actor,
                 )?,
                 EmitRelationKind::Refutes => commands.relate_evidence_to_hypothesis(
                     &args.from_id,
                     &args.to_id,
-                    RelationKind::Refutes,
+                    EventRelationKind::Refutes,
                     &cli.actor,
                 )?,
             };
@@ -329,6 +332,16 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
     };
 
     format_output(cli.json, &output)
+}
+
+fn run_dump(cli: &Cli, dump: &DumpArgs) -> Result<String> {
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let graph = DumpGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    match dump.format {
+        DumpFormat::Dot => Ok(render_dot(&graph)?),
+    }
 }
 
 fn format_output(as_json: bool, envelope: &OutputEnvelope) -> Result<String> {
@@ -348,6 +361,20 @@ pub fn exit_code_for_error(error: &HivemindError) -> CliExit {
         HivemindError::Command(CommandError::Invariant(_)) => CliExit::Invariant,
         HivemindError::Ledger(_) | HivemindError::Projector(_) => CliExit::Storage,
         HivemindError::Query(_) => CliExit::Generic,
+    }
+}
+
+pub fn format_error(as_json: bool, error: &HivemindError) -> String {
+    if as_json {
+        serde_json::json!({
+            "error": {
+                "message": error.to_string(),
+                "exit_code": exit_code_for_error(error).code()
+            }
+        })
+        .to_string()
+    } else {
+        format!("error: {error}")
     }
 }
 
@@ -371,10 +398,209 @@ fn default_actor() -> String {
         .unwrap_or_else(|| "unknown-actor".to_owned())
 }
 
-const fn dump_format_name(format: DumpFormat) -> &'static str {
-    match format {
-        DumpFormat::Dot => "dot",
+fn render_dot(graph: &DumpGraph) -> Result<String> {
+    let mut dot = String::from("digraph hivemind {\n  rankdir=LR;\n");
+    let nodes = graph.nodes_snapshot()?;
+    let edges = graph.edges_snapshot()?;
+
+    for ((kind, id), properties) in &nodes {
+        let label = match kind {
+            NodeKind::Decision => {
+                let title =
+                    graph_property_string(properties, "title").unwrap_or_else(|| id.clone());
+                let status = decision_status_name(derive_decision_status(graph, id)?);
+                format!("{title}\\nstatus: {status}")
+            }
+            NodeKind::Hypothesis => {
+                let statement =
+                    graph_property_string(properties, "statement").unwrap_or_else(|| id.clone());
+                let status = hypothesis_status_name(derive_hypothesis_status(graph, id)?);
+                format!("{statement}\\nstatus: {status}")
+            }
+            _ => {
+                let summary = graph_property_string(properties, "content")
+                    .or_else(|| graph_property_string(properties, "label"))
+                    .unwrap_or_else(|| id.clone());
+                summary
+            }
+        };
+
+        dot.push_str(&format!(
+            "  \"{}\" [label=\"{}\", shape=box, style=filled, fillcolor=\"{}\"];\n",
+            node_key(*kind, id),
+            escape_dot(&label),
+            node_color(*kind)
+        ));
     }
+
+    for edge in &edges {
+        dot.push_str(&format!(
+            "  \"{}\" -> \"{}\" [label=\"{}\"];\n",
+            node_key(edge.from_kind, &edge.from_id),
+            node_key(edge.to_kind, &edge.to_id),
+            edge.relation.table_name()
+        ));
+    }
+
+    dot.push_str("}\n");
+    Ok(dot)
+}
+
+fn graph_property_string(properties: &GraphProperties, key: &str) -> Option<String> {
+    match properties.get(key) {
+        Some(GraphValue::String(value)) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn node_key(kind: NodeKind, id: &str) -> String {
+    format!("{}:{}", kind.table_name(), id)
+}
+
+fn node_color(kind: NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Decision => "#d6eaf8",
+        NodeKind::Actor => "#d5f5e3",
+        NodeKind::Evidence => "#fcf3cf",
+        NodeKind::Option => "#f9e79f",
+        NodeKind::Hypothesis => "#f5cba7",
+    }
+}
+
+fn decision_status_name(status: DecisionStatus) -> &'static str {
+    match status {
+        DecisionStatus::Proposed => "proposed",
+        DecisionStatus::Accepted => "accepted",
+        DecisionStatus::Rejected => "rejected",
+        DecisionStatus::Contested => "contested",
+        DecisionStatus::Superseded => "superseded",
+    }
+}
+
+fn hypothesis_status_name(status: HypothesisStatus) -> &'static str {
+    match status {
+        HypothesisStatus::Open => "open",
+        HypothesisStatus::Supported => "supported",
+        HypothesisStatus::Refuted => "refuted",
+    }
+}
+
+fn escape_dot(input: &str) -> String {
+    input.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct DumpEdge {
+    relation: GraphRelationKind,
+    from_kind: NodeKind,
+    from_id: String,
+    to_kind: NodeKind,
+    to_id: String,
+}
+
+#[derive(Debug, Default)]
+struct DumpGraph {
+    nodes: Mutex<BTreeMap<(NodeKind, String), GraphProperties>>,
+    edges: Mutex<BTreeSet<DumpEdge>>,
+}
+
+impl GraphView for DumpGraph {
+    fn upsert_node(&self, kind: NodeKind, id: &str, properties: &GraphProperties) -> Result<()> {
+        let key = (kind, id.to_owned());
+        let mut nodes = self.nodes_lock()?;
+        let mut existing = nodes
+            .get(&(kind, id.to_owned()))
+            .cloned()
+            .unwrap_or_default();
+        existing.extend(properties.clone());
+        nodes.insert(key, existing);
+        Ok(())
+    }
+
+    fn upsert_edge(
+        &self,
+        kind: GraphRelationKind,
+        from_id: &str,
+        to_id: &str,
+        _properties: &GraphProperties,
+    ) -> Result<()> {
+        let (from_kind, to_kind) = kind.endpoints();
+        let mut edges = self.edges_lock()?;
+        edges.insert(DumpEdge {
+            relation: kind,
+            from_kind,
+            from_id: from_id.to_owned(),
+            to_kind,
+            to_id: to_id.to_owned(),
+        });
+        Ok(())
+    }
+
+    fn query(&self, cypher: &str, params: &GraphParams) -> Result<Vec<GraphRow>> {
+        let relation = query_relation(cypher)?;
+        let id = match params.get("id") {
+            Some(GraphValue::String(id)) => id,
+            _ => return Err(CliError::InvalidInput("missing id query param".to_owned()).into()),
+        };
+        let incoming = cypher.contains("<-[rel:");
+        let edges = self.edges_snapshot()?;
+        let count = edges
+            .iter()
+            .filter(|edge| {
+                if edge.relation != relation {
+                    return false;
+                }
+                if incoming {
+                    edge.to_id == *id
+                } else {
+                    edge.from_id == *id
+                }
+            })
+            .count();
+        let count = i64::try_from(count)
+            .map_err(|error| CliError::InvalidInput(format!("count overflow: {error}")))?;
+        Ok(vec![GraphRow::from([(
+            "count".to_owned(),
+            GraphValue::Int(count),
+        )])])
+    }
+
+    fn wipe(&self) -> Result<()> {
+        self.nodes_lock()?.clear();
+        self.edges_lock()?.clear();
+        Ok(())
+    }
+}
+
+impl DumpGraph {
+    fn nodes_lock(&self) -> Result<MutexGuard<'_, BTreeMap<(NodeKind, String), GraphProperties>>> {
+        self.nodes
+            .lock()
+            .map_err(|error| CliError::InvalidInput(format!("node lock poisoned: {error}")).into())
+    }
+
+    fn edges_lock(&self) -> Result<MutexGuard<'_, BTreeSet<DumpEdge>>> {
+        self.edges
+            .lock()
+            .map_err(|error| CliError::InvalidInput(format!("edge lock poisoned: {error}")).into())
+    }
+
+    fn nodes_snapshot(&self) -> Result<BTreeMap<(NodeKind, String), GraphProperties>> {
+        Ok(self.nodes_lock()?.clone())
+    }
+
+    fn edges_snapshot(&self) -> Result<BTreeSet<DumpEdge>> {
+        Ok(self.edges_lock()?.clone())
+    }
+}
+
+fn query_relation(cypher: &str) -> Result<GraphRelationKind> {
+    for relation in GraphRelationKind::ALL {
+        if cypher.contains(&format!("`{}`", relation.table_name())) {
+            return Ok(relation);
+        }
+    }
+    Err(CliError::InvalidInput(format!("unknown relation in query: {cypher}")).into())
 }
 
 #[derive(Debug, Serialize)]
@@ -458,5 +684,90 @@ mod tests {
             .code(),
             1
         );
+    }
+
+    #[test]
+    fn emit_records_evidence_as_json() {
+        let hivemind_dir = unique_test_dir("emit-records-evidence");
+        let cli = Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "agent-1",
+            "--json",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "emit",
+            "evidence.recorded",
+            "--content",
+            "API latency evidence",
+        ]);
+
+        let output = run(&cli).expect("emit evidence succeeds");
+        let output: serde_json::Value = serde_json::from_str(&output).expect("valid json output");
+
+        assert_eq!(
+            output.get("subcommand").and_then(|value| value.as_str()),
+            Some("emit")
+        );
+        assert_eq!(
+            output.get("kind").and_then(|value| value.as_str()),
+            Some("evidence_id")
+        );
+        assert!(output
+            .get("value")
+            .and_then(|value| value.as_str())
+            .expect("evidence id")
+            .starts_with("evidence-"));
+    }
+
+    #[test]
+    fn emit_proposes_decision_with_cli_option_labels() {
+        let hivemind_dir = unique_test_dir("emit-proposes-decision");
+        let cli = Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "agent-1",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "emit",
+            "decision.proposed",
+            "--title",
+            "Pick queue",
+            "--rationale",
+            "Need durable ingestion",
+            "--topic-keys",
+            "infra,queue",
+            "--options",
+            "sync,async",
+            "--chose",
+            "async",
+        ]);
+
+        let output = run(&cli).expect("emit decision succeeds");
+
+        assert!(output.starts_with("decision-"));
+    }
+
+    #[test]
+    fn format_error_outputs_structured_json() {
+        let error = HivemindError::Command(CommandError::Validation("bad input".to_owned()));
+        let output = format_error(true, &error);
+        let output: serde_json::Value = serde_json::from_str(&output).expect("valid json error");
+
+        assert_eq!(
+            output
+                .pointer("/error/exit_code")
+                .and_then(|value| value.as_i64()),
+            Some(2)
+        );
+        assert!(output
+            .pointer("/error/message")
+            .and_then(|value| value.as_str())
+            .expect("message")
+            .contains("bad input"));
+    }
+
+    fn unique_test_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("hivemind-{name}-{}", uuid::Uuid::new_v4()))
     }
 }
