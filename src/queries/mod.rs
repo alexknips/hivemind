@@ -1,6 +1,10 @@
+use std::time::Instant;
+
 use crate::error::QueryError;
 use crate::projector::{GraphParams, GraphRow, GraphValue, GraphView, NodeKind, RelationKind};
 use crate::Result;
+
+const MAX_QUERY_RESULTS: usize = 1000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DecisionStatus {
@@ -16,6 +20,172 @@ pub enum HypothesisStatus {
     Open,
     Supported,
     Refuted,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueryResponse<T> {
+    pub result_count: usize,
+    pub truncated: bool,
+    pub latency_ms: u128,
+    pub data: T,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HypothesisContext {
+    pub id: String,
+    pub status: HypothesisStatus,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecisionView {
+    pub id: String,
+    pub title: String,
+    pub rationale: String,
+    pub topic_keys: Vec<String>,
+    pub status: DecisionStatus,
+    pub chosen_option_id: Option<String>,
+    pub option_ids: Vec<String>,
+    pub evidence_ids: Vec<String>,
+    pub hypotheses: Vec<HypothesisContext>,
+}
+
+pub fn get_decision(
+    graph: &impl GraphView,
+    decision_id: &str,
+) -> Result<QueryResponse<Option<DecisionView>>> {
+    let started = Instant::now();
+    let rows = graph.query(
+        "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys LIMIT 1;",
+        &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
+    )?;
+
+    let data = if let Some(row) = rows.first() {
+        let id = required_string(row, "id")?;
+        let title = optional_string(row, "title").unwrap_or_default();
+        let rationale = optional_string(row, "rationale").unwrap_or_default();
+        let topic_keys = optional_string_list(row, "topic_keys");
+        let status = derive_decision_status(graph, &id)?;
+        let option_ids = neighbor_ids(
+            graph,
+            &id,
+            RelationKind::HasOption,
+            NodeKind::Option,
+            "option_id",
+        )?;
+        let chosen_option_id = neighbor_ids(
+            graph,
+            &id,
+            RelationKind::Chose,
+            NodeKind::Option,
+            "option_id",
+        )?
+        .into_iter()
+        .next();
+        let evidence_ids = neighbor_ids(
+            graph,
+            &id,
+            RelationKind::BasedOn,
+            NodeKind::Evidence,
+            "evidence_id",
+        )?;
+        let hypothesis_ids = neighbor_ids(
+            graph,
+            &id,
+            RelationKind::Assumes,
+            NodeKind::Hypothesis,
+            "hypothesis_id",
+        )?;
+        let mut hypotheses = Vec::with_capacity(hypothesis_ids.len());
+        for hypothesis_id in hypothesis_ids {
+            hypotheses.push(HypothesisContext {
+                status: derive_hypothesis_status(graph, &hypothesis_id)?,
+                id: hypothesis_id,
+            });
+        }
+
+        Some(DecisionView {
+            id,
+            title,
+            rationale,
+            topic_keys,
+            status,
+            chosen_option_id,
+            option_ids,
+            evidence_ids,
+            hypotheses,
+        })
+    } else {
+        None
+    };
+
+    Ok(QueryResponse {
+        result_count: usize::from(data.is_some()),
+        truncated: false,
+        latency_ms: started.elapsed().as_millis(),
+        data,
+    })
+}
+
+pub fn get_relevant_decisions(
+    graph: &impl GraphView,
+    topic: &str,
+    status_filter: Option<DecisionStatus>,
+) -> Result<QueryResponse<Vec<DecisionView>>> {
+    let started = Instant::now();
+    let topic = topic.trim();
+    if topic.is_empty() {
+        return Err(query_error("topic must not be empty").into());
+    }
+
+    let normalized_topic = topic.to_owned();
+    let count_rows = graph.query(
+        "MATCH (d:`Decision`) WHERE $topic IN d.topic_keys RETURN count(d) AS count;",
+        &GraphParams::from([(
+            "topic".to_owned(),
+            GraphValue::String(normalized_topic.clone()),
+        )]),
+    )?;
+    let total_count = read_count(count_rows, "Decision")? as usize;
+    let truncated = total_count > MAX_QUERY_RESULTS;
+
+    let decision_rows = graph.query(
+        "MATCH (d:`Decision`) WHERE $topic IN d.topic_keys RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys ORDER BY d.id LIMIT $limit;",
+        &GraphParams::from([
+            ("topic".to_owned(), GraphValue::String(normalized_topic)),
+            (
+                "limit".to_owned(),
+                GraphValue::Int(i64::try_from(MAX_QUERY_RESULTS).unwrap_or(1000)),
+            ),
+        ]),
+    )?;
+
+    let mut decisions = Vec::new();
+    for row in decision_rows {
+        let id = required_string(&row, "id")?;
+        let status = derive_decision_status(graph, &id)?;
+        if status_filter.is_some_and(|expected| expected != status) {
+            continue;
+        }
+
+        decisions.push(DecisionView {
+            id,
+            title: optional_string(&row, "title").unwrap_or_default(),
+            rationale: optional_string(&row, "rationale").unwrap_or_default(),
+            topic_keys: optional_string_list(&row, "topic_keys"),
+            status,
+            chosen_option_id: None,
+            option_ids: Vec::new(),
+            evidence_ids: Vec::new(),
+            hypotheses: Vec::new(),
+        });
+    }
+
+    Ok(QueryResponse {
+        result_count: decisions.len(),
+        truncated,
+        latency_ms: started.elapsed().as_millis(),
+        data: decisions,
+    })
 }
 
 pub fn derive_decision_status(graph: &impl GraphView, decision_id: &str) -> Result<DecisionStatus> {
@@ -112,6 +282,50 @@ fn relation_count(
     read_count(rows, relation_table)
 }
 
+fn neighbor_ids(
+    graph: &impl GraphView,
+    decision_id: &str,
+    relation: RelationKind,
+    to_kind: NodeKind,
+    alias: &str,
+) -> Result<Vec<String>> {
+    let relation_table = relation.table_name();
+    let to_table = to_kind.table_name();
+    let cypher = format!(
+        "MATCH (d:`Decision` {{id: $id}})-[:`{relation_table}`]->(n:`{to_table}`) RETURN n.id AS {alias} ORDER BY n.id;"
+    );
+    let rows = graph.query(
+        &cypher,
+        &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
+    )?;
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(required_string(&row, alias)?);
+    }
+    Ok(ids)
+}
+
+fn required_string(row: &GraphRow, key: &str) -> Result<String> {
+    match row.get(key) {
+        Some(GraphValue::String(value)) => Ok(value.clone()),
+        _ => Err(query_error(format!("row missing string field: {key}")).into()),
+    }
+}
+
+fn optional_string(row: &GraphRow, key: &str) -> Option<String> {
+    match row.get(key) {
+        Some(GraphValue::String(value)) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn optional_string_list(row: &GraphRow, key: &str) -> Vec<String> {
+    match row.get(key) {
+        Some(GraphValue::StringList(values)) => values.clone(),
+        _ => Vec::new(),
+    }
+}
+
 fn read_count(rows: Vec<GraphRow>, relation_table: &str) -> Result<u64> {
     let value = rows
         .first()
@@ -139,6 +353,7 @@ fn query_error(error: impl std::fmt::Display) -> QueryError {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::collections::BTreeMap;
     use std::collections::BTreeSet;
 
     use crate::projector::GraphProperties;
@@ -297,5 +512,253 @@ mod tests {
             }
         }
         Err(query_error(format!("unknown relation in query: {cypher}")).into())
+    }
+
+    #[derive(Debug, Default)]
+    struct FixtureGraph {
+        decisions: BTreeMap<String, (String, String, Vec<String>)>,
+        hypotheses: BTreeMap<String, String>,
+        edges: BTreeSet<(RelationKind, String, String)>,
+    }
+
+    impl FixtureGraph {
+        fn sample() -> Self {
+            let mut graph = Self::default();
+            graph.decisions.insert(
+                "d1".to_owned(),
+                (
+                    "Pick queue".to_owned(),
+                    "Need reliability".to_owned(),
+                    vec!["infra".to_owned(), "latency".to_owned()],
+                ),
+            );
+            graph.decisions.insert(
+                "d2".to_owned(),
+                (
+                    "Keep sync path".to_owned(),
+                    "Prefer simplicity".to_owned(),
+                    vec!["infra".to_owned()],
+                ),
+            );
+            graph
+                .hypotheses
+                .insert("h1".to_owned(), "Queue improves p95".to_owned());
+
+            graph.edges.insert((
+                RelationKind::ProposedBy,
+                "d1".to_owned(),
+                "actor:1".to_owned(),
+            ));
+            graph.edges.insert((
+                RelationKind::AcceptedBy,
+                "d1".to_owned(),
+                "actor:2".to_owned(),
+            ));
+            graph
+                .edges
+                .insert((RelationKind::HasOption, "d1".to_owned(), "o1".to_owned()));
+            graph
+                .edges
+                .insert((RelationKind::HasOption, "d1".to_owned(), "o2".to_owned()));
+            graph
+                .edges
+                .insert((RelationKind::Chose, "d1".to_owned(), "o2".to_owned()));
+            graph
+                .edges
+                .insert((RelationKind::BasedOn, "d1".to_owned(), "e1".to_owned()));
+            graph
+                .edges
+                .insert((RelationKind::Assumes, "d1".to_owned(), "h1".to_owned()));
+            graph
+                .edges
+                .insert((RelationKind::Supports, "e1".to_owned(), "h1".to_owned()));
+
+            graph.edges.insert((
+                RelationKind::ProposedBy,
+                "d2".to_owned(),
+                "actor:3".to_owned(),
+            ));
+            graph.edges.insert((
+                RelationKind::RejectedBy,
+                "d2".to_owned(),
+                "actor:4".to_owned(),
+            ));
+            graph
+        }
+    }
+
+    impl GraphView for FixtureGraph {
+        fn upsert_node(
+            &self,
+            _kind: NodeKind,
+            _id: &str,
+            _properties: &GraphProperties,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn upsert_edge(
+            &self,
+            _kind: RelationKind,
+            _from_id: &str,
+            _to_id: &str,
+            _properties: &GraphProperties,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn query(&self, cypher: &str, params: &GraphParams) -> Result<Vec<GraphRow>> {
+            if cypher.contains("RETURN count(rel) AS count;") {
+                let relation = relation_from_query(cypher)?;
+                let incoming = cypher.contains("<-[rel:");
+                let id = match params.get("id") {
+                    Some(GraphValue::String(id)) => id,
+                    _ => return Err(query_error("missing id param").into()),
+                };
+                let count = self
+                    .edges
+                    .iter()
+                    .filter(|(kind, from, to)| {
+                        *kind == relation && if incoming { to == id } else { from == id }
+                    })
+                    .count();
+                return Ok(vec![GraphRow::from([(
+                    "count".to_owned(),
+                    GraphValue::Int(i64::try_from(count).unwrap_or(0)),
+                )])]);
+            }
+
+            if cypher.contains("RETURN count(d) AS count;") {
+                let topic = match params.get("topic") {
+                    Some(GraphValue::String(topic)) => topic,
+                    _ => return Err(query_error("missing topic param").into()),
+                };
+                let count = self
+                    .decisions
+                    .values()
+                    .filter(|(_, _, topics)| topics.iter().any(|value| value == topic))
+                    .count();
+                return Ok(vec![GraphRow::from([(
+                    "count".to_owned(),
+                    GraphValue::Int(i64::try_from(count).unwrap_or(0)),
+                )])]);
+            }
+
+            if cypher.contains("MATCH (d:`Decision` {id: $id}) RETURN d.id AS id") {
+                let id = match params.get("id") {
+                    Some(GraphValue::String(id)) => id,
+                    _ => return Err(query_error("missing id param").into()),
+                };
+                if let Some((title, rationale, topics)) = self.decisions.get(id) {
+                    return Ok(vec![GraphRow::from([
+                        ("id".to_owned(), GraphValue::String(id.clone())),
+                        ("title".to_owned(), GraphValue::String(title.clone())),
+                        (
+                            "rationale".to_owned(),
+                            GraphValue::String(rationale.clone()),
+                        ),
+                        (
+                            "topic_keys".to_owned(),
+                            GraphValue::StringList(topics.clone()),
+                        ),
+                    ])]);
+                }
+                return Ok(Vec::new());
+            }
+
+            if cypher.contains("WHERE $topic IN d.topic_keys") {
+                let topic = match params.get("topic") {
+                    Some(GraphValue::String(topic)) => topic,
+                    _ => return Err(query_error("missing topic param").into()),
+                };
+                let mut rows = self
+                    .decisions
+                    .iter()
+                    .filter(|(_, (_, _, topics))| topics.iter().any(|value| value == topic))
+                    .map(|(id, (title, rationale, topics))| {
+                        GraphRow::from([
+                            ("id".to_owned(), GraphValue::String(id.clone())),
+                            ("title".to_owned(), GraphValue::String(title.clone())),
+                            (
+                                "rationale".to_owned(),
+                                GraphValue::String(rationale.clone()),
+                            ),
+                            (
+                                "topic_keys".to_owned(),
+                                GraphValue::StringList(topics.clone()),
+                            ),
+                        ])
+                    })
+                    .collect::<Vec<_>>();
+                rows.sort_by(|left, right| {
+                    let l = left.get("id");
+                    let r = right.get("id");
+                    format!("{l:?}").cmp(&format!("{r:?}"))
+                });
+                return Ok(rows);
+            }
+
+            for (relation, alias) in [
+                (RelationKind::HasOption, "option_id"),
+                (RelationKind::Chose, "option_id"),
+                (RelationKind::BasedOn, "evidence_id"),
+                (RelationKind::Assumes, "hypothesis_id"),
+            ] {
+                if cypher.contains(&format!("[:`{}`]", relation.table_name())) {
+                    let decision_id = match params.get("id") {
+                        Some(GraphValue::String(id)) => id,
+                        _ => return Err(query_error("missing id param").into()),
+                    };
+                    let mut ids = self
+                        .edges
+                        .iter()
+                        .filter(|(kind, from, _)| *kind == relation && from == decision_id)
+                        .map(|(_, _, to)| to.clone())
+                        .collect::<Vec<_>>();
+                    ids.sort();
+                    return Ok(ids
+                        .into_iter()
+                        .map(|value| {
+                            GraphRow::from([(alias.to_owned(), GraphValue::String(value))])
+                        })
+                        .collect());
+                }
+            }
+
+            Err(query_error(format!("unsupported query in fixture: {cypher}")).into())
+        }
+
+        fn wipe(&self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn get_decision_returns_neighbors_and_derived_status() -> Result<()> {
+        let graph = FixtureGraph::sample();
+        let response = get_decision(&graph, "d1")?;
+        assert_eq!(response.result_count, 1);
+        assert!(!response.truncated);
+        let decision = response.data.expect("decision exists");
+        assert_eq!(decision.id, "d1");
+        assert_eq!(decision.status, DecisionStatus::Accepted);
+        assert_eq!(decision.chosen_option_id.as_deref(), Some("o2"));
+        assert_eq!(decision.option_ids, vec!["o1".to_owned(), "o2".to_owned()]);
+        assert_eq!(decision.evidence_ids, vec!["e1".to_owned()]);
+        assert_eq!(decision.hypotheses.len(), 1);
+        assert_eq!(decision.hypotheses[0].id, "h1");
+        assert_eq!(decision.hypotheses[0].status, HypothesisStatus::Supported);
+        Ok(())
+    }
+
+    #[test]
+    fn get_relevant_decisions_filters_by_status() -> Result<()> {
+        let graph = FixtureGraph::sample();
+        let response = get_relevant_decisions(&graph, "infra", Some(DecisionStatus::Rejected))?;
+        assert_eq!(response.result_count, 1);
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].id, "d2");
+        assert_eq!(response.data[0].status, DecisionStatus::Rejected);
+        Ok(())
     }
 }
