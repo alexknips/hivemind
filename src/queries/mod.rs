@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use crate::error::QueryError;
@@ -47,6 +48,12 @@ pub struct DecisionView {
     pub option_ids: Vec<String>,
     pub evidence_ids: Vec<String>,
     pub hypotheses: Vec<HypothesisContext>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SupersessionChain {
+    pub decision_ids: Vec<String>,
+    pub input_index: usize,
 }
 
 pub fn get_decision(
@@ -188,6 +195,63 @@ pub fn get_relevant_decisions(
     })
 }
 
+pub fn get_supersession_chain(
+    graph: &impl GraphView,
+    decision_id: &str,
+) -> Result<QueryResponse<SupersessionChain>> {
+    let started = Instant::now();
+    if decision_id.trim().is_empty() {
+        return Err(query_error("decision_id must not be empty").into());
+    }
+
+    let mut visited = BTreeSet::new();
+    visited.insert(decision_id.to_owned());
+
+    let mut older = Vec::new();
+    let mut cursor = decision_id.to_owned();
+    loop {
+        let older_neighbors = supersession_neighbors(graph, &cursor, WalkDirection::Older)?;
+        let Some(next) = choose_single_neighbor(&cursor, older_neighbors)? else {
+            break;
+        };
+        if !visited.insert(next.clone()) {
+            return Err(query_error(format!("cycle detected on edge {cursor} -> {next}")).into());
+        }
+        older.push(next.clone());
+        cursor = next;
+    }
+
+    let mut newer = Vec::new();
+    let mut cursor = decision_id.to_owned();
+    loop {
+        let newer_neighbors = supersession_neighbors(graph, &cursor, WalkDirection::Newer)?;
+        let Some(next) = choose_single_neighbor(&cursor, newer_neighbors)? else {
+            break;
+        };
+        if !visited.insert(next.clone()) {
+            return Err(query_error(format!("cycle detected on edge {next} -> {cursor}")).into());
+        }
+        newer.push(next.clone());
+        cursor = next;
+    }
+
+    older.reverse();
+    let input_index = older.len();
+    let mut decision_ids = older;
+    decision_ids.push(decision_id.to_owned());
+    decision_ids.extend(newer);
+
+    Ok(QueryResponse {
+        result_count: decision_ids.len(),
+        truncated: false,
+        latency_ms: started.elapsed().as_millis(),
+        data: SupersessionChain {
+            decision_ids,
+            input_index,
+        },
+    })
+}
+
 pub fn derive_decision_status(graph: &impl GraphView, decision_id: &str) -> Result<DecisionStatus> {
     let superseded_count = relation_count(
         graph,
@@ -303,6 +367,48 @@ fn neighbor_ids(
         ids.push(required_string(&row, alias)?);
     }
     Ok(ids)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WalkDirection {
+    Older,
+    Newer,
+}
+
+fn supersession_neighbors(
+    graph: &impl GraphView,
+    decision_id: &str,
+    direction: WalkDirection,
+) -> Result<Vec<String>> {
+    let cypher = match direction {
+        WalkDirection::Older => {
+            "MATCH (d:`Decision` {id: $id})-[:`SUPERSEDES`]->(other:`Decision`) RETURN other.id AS id ORDER BY other.id;"
+        }
+        WalkDirection::Newer => {
+            "MATCH (other:`Decision`)-[:`SUPERSEDES`]->(d:`Decision` {id: $id}) RETURN other.id AS id ORDER BY other.id;"
+        }
+    };
+    let rows = graph.query(
+        cypher,
+        &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
+    )?;
+
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(required_string(&row, "id")?);
+    }
+    Ok(ids)
+}
+
+fn choose_single_neighbor(current: &str, neighbors: Vec<String>) -> Result<Option<String>> {
+    if neighbors.len() <= 1 {
+        return Ok(neighbors.into_iter().next());
+    }
+    Err(query_error(format!(
+        "supersession chain branched at {current}: {} candidates",
+        neighbors.len()
+    ))
+    .into())
 }
 
 fn required_string(row: &GraphRow, key: &str) -> Result<String> {
@@ -725,6 +831,44 @@ mod tests {
                 }
             }
 
+            if cypher.contains("[:`SUPERSEDES`]->(other:`Decision`)") {
+                let decision_id = match params.get("id") {
+                    Some(GraphValue::String(id)) => id,
+                    _ => return Err(query_error("missing id param").into()),
+                };
+                let mut ids = self
+                    .edges
+                    .iter()
+                    .filter(|(kind, from, _)| {
+                        *kind == RelationKind::Supersedes && from == decision_id
+                    })
+                    .map(|(_, _, to)| to.clone())
+                    .collect::<Vec<_>>();
+                ids.sort();
+                return Ok(ids
+                    .into_iter()
+                    .map(|id| GraphRow::from([("id".to_owned(), GraphValue::String(id))]))
+                    .collect());
+            }
+
+            if cypher.contains("(other:`Decision`)-[:`SUPERSEDES`]->(d:`Decision`") {
+                let decision_id = match params.get("id") {
+                    Some(GraphValue::String(id)) => id,
+                    _ => return Err(query_error("missing id param").into()),
+                };
+                let mut ids = self
+                    .edges
+                    .iter()
+                    .filter(|(kind, _, to)| *kind == RelationKind::Supersedes && to == decision_id)
+                    .map(|(_, from, _)| from.clone())
+                    .collect::<Vec<_>>();
+                ids.sort();
+                return Ok(ids
+                    .into_iter()
+                    .map(|id| GraphRow::from([("id".to_owned(), GraphValue::String(id))]))
+                    .collect());
+            }
+
             Err(query_error(format!("unsupported query in fixture: {cypher}")).into())
         }
 
@@ -760,5 +904,46 @@ mod tests {
         assert_eq!(response.data[0].id, "d2");
         assert_eq!(response.data[0].status, DecisionStatus::Rejected);
         Ok(())
+    }
+
+    #[test]
+    fn get_supersession_chain_walks_both_directions() -> Result<()> {
+        let mut graph = FixtureGraph::sample();
+        graph
+            .edges
+            .insert((RelationKind::Supersedes, "d2".to_owned(), "d1".to_owned()));
+        graph
+            .edges
+            .insert((RelationKind::Supersedes, "d3".to_owned(), "d2".to_owned()));
+        graph.decisions.insert(
+            "d3".to_owned(),
+            (
+                "Newest".to_owned(),
+                "latest".to_owned(),
+                vec!["infra".to_owned()],
+            ),
+        );
+
+        let chain = get_supersession_chain(&graph, "d2")?;
+        assert_eq!(
+            chain.data.decision_ids,
+            vec!["d1".to_owned(), "d2".to_owned(), "d3".to_owned()]
+        );
+        assert_eq!(chain.data.input_index, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn get_supersession_chain_detects_cycle() {
+        let mut graph = FixtureGraph::sample();
+        graph
+            .edges
+            .insert((RelationKind::Supersedes, "d2".to_owned(), "d1".to_owned()));
+        graph
+            .edges
+            .insert((RelationKind::Supersedes, "d1".to_owned(), "d2".to_owned()));
+
+        let error = get_supersession_chain(&graph, "d1").expect_err("cycle should fail");
+        assert!(format!("{error}").contains("cycle detected"));
     }
 }
