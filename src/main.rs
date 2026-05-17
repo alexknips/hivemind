@@ -21,8 +21,8 @@ fn main() {
 
 fn init_tracing(verbose: u8) {
     let level = match verbose {
-        0 => "hivemind=info",
-        1 => "hivemind=debug",
+        0 => "hivemind=warn",
+        1 => "hivemind=info",
         _ => "hivemind=trace",
     };
 
@@ -32,5 +32,6 @@ fn init_tracing(verbose: u8) {
         .with_env_filter(env_filter)
         .with_target(true)
         .compact()
+        .with_writer(std::io::stderr)
         .init();
 }
