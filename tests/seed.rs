@@ -8,6 +8,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 type TestResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+const SEED_BASE_UNIX_SECONDS: i64 = 1_767_225_600;
 
 #[test]
 fn seed_event_stream_is_deterministic() -> TestResult<()> {
@@ -118,7 +119,10 @@ fn seed_events() -> Vec<Event> {
 
     let topics = ["architecture", "operations", "security", "product"];
     for index in 1..=30 {
-        let topic = topics[(index - 1) % topics.len()];
+        let topic = match topics.get((index - 1) % topics.len()) {
+            Some(topic) => *topic,
+            None => "architecture",
+        };
         let hypotheses = match index {
             5 | 6 => vec!["hypothesis-001"],
             7..=10 => vec!["hypothesis-002"],
@@ -284,10 +288,9 @@ impl SeedBuilder {
 }
 
 fn seed_timestamp(sequence: usize) -> DateTime<Utc> {
-    let base = DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
-        .expect("valid seed timestamp")
-        .with_timezone(&Utc);
-    base + Duration::seconds(sequence as i64)
+    let sequence_seconds = i64::try_from(sequence).unwrap_or(i64::MAX - SEED_BASE_UNIX_SECONDS);
+    DateTime::from_timestamp(SEED_BASE_UNIX_SECONDS, 0).unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
+        + Duration::seconds(sequence_seconds)
 }
 
 fn canonical_ledger_export(seed_dir: &Path) -> TestResult<Vec<u8>> {
