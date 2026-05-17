@@ -1,12 +1,16 @@
+use std::collections::HashSet;
+use std::sync::{Mutex, MutexGuard};
+
 use chrono::Utc;
 use serde_json::json;
 use uuid::Uuid;
 
 use crate::error::CommandError;
-use crate::events::{Event, EventType};
+use crate::events::{Event, EventId, EventType, RelationKind};
 use crate::ledger::EventLedger;
 use crate::Result;
 
+pub type DecisionId = String;
 pub type EvidenceId = String;
 pub type HypothesisId = String;
 pub type OptionId = String;
@@ -15,11 +19,20 @@ pub const MAX_TOPIC_KEY_LEN: usize = 64;
 
 pub struct Commands<'a, L: EventLedger> {
     ledger: &'a L,
+    state: Mutex<CommandState>,
+}
+
+#[derive(Default)]
+struct CommandState {
+    option_ids: HashSet<OptionId>,
 }
 
 impl<'a, L: EventLedger> Commands<'a, L> {
     pub fn new(ledger: &'a L) -> Self {
-        Self { ledger }
+        Self {
+            ledger,
+            state: Mutex::new(CommandState::default()),
+        }
     }
 
     pub fn record_evidence(&self, actor_id: &str, content: &str) -> Result<EvidenceId> {
@@ -79,7 +92,352 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("label", label)?;
         require_non_empty("description", description)?;
 
-        Ok(generate_entity_id("option"))
+        let option_id = generate_entity_id("option");
+        let mut state = self.lock_state()?;
+        state.option_ids.insert(option_id.clone());
+        Ok(option_id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_decision(
+        &self,
+        actor_id: &str,
+        title: &str,
+        rationale: &str,
+        topic_keys: &[String],
+        option_ids: &[String],
+        chosen_option_id: Option<&str>,
+        hypothesis_ids: &[String],
+        evidence_ids: &[String],
+    ) -> Result<DecisionId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("title", title)?;
+        require_non_empty("rationale", rationale)?;
+
+        if option_ids.is_empty() {
+            return Err(CommandError::Validation("option_ids must not be empty".to_owned()).into());
+        }
+
+        let normalized_topic_keys: Vec<String> = topic_keys
+            .iter()
+            .map(|topic| normalize_topic_key(topic))
+            .filter(|topic| !topic.is_empty())
+            .collect();
+
+        if normalized_topic_keys.is_empty() {
+            return Err(CommandError::Validation(
+                "topic_keys must contain at least one non-empty normalized key".to_owned(),
+            )
+            .into());
+        }
+
+        {
+            let state = self.lock_state()?;
+            for option_id in option_ids {
+                if !state.option_ids.contains(option_id) {
+                    return Err(CommandError::Invariant(format!(
+                        "option does not exist: {option_id}"
+                    ))
+                    .into());
+                }
+            }
+        }
+
+        if let Some(chosen_option_id) = chosen_option_id {
+            if !option_ids
+                .iter()
+                .any(|option_id| option_id == chosen_option_id)
+            {
+                return Err(CommandError::Validation(
+                    "chosen_option_id must be one of option_ids".to_owned(),
+                )
+                .into());
+            }
+        }
+
+        for hypothesis_id in hypothesis_ids {
+            if !self.hypothesis_exists(hypothesis_id)? {
+                return Err(CommandError::Invariant(format!(
+                    "hypothesis does not exist: {hypothesis_id}"
+                ))
+                .into());
+            }
+        }
+
+        for evidence_id in evidence_ids {
+            if !self.evidence_exists(evidence_id)? {
+                return Err(CommandError::Invariant(format!(
+                    "evidence does not exist: {evidence_id}"
+                ))
+                .into());
+            }
+        }
+
+        let decision_id = generate_entity_id("decision");
+
+        let root_event = Event {
+            event_id: None,
+            event_uuid: Uuid::new_v4(),
+            correlation_id: None,
+            causation_event_id: None,
+            event_type: EventType::DecisionProposed,
+            actor_id: actor_id.to_owned(),
+            payload: json!({
+                "decision_id": decision_id,
+                "title": title,
+                "rationale": rationale,
+                "topic_keys": normalized_topic_keys,
+                "option_ids": option_ids,
+                "chosen_option_id": chosen_option_id,
+                "hypothesis_ids": hypothesis_ids,
+                "evidence_ids": evidence_ids,
+            }),
+            ts: Some(Utc::now()),
+        };
+
+        let root_event_id = self.ledger.append(root_event)?;
+
+        for option_id in option_ids {
+            self.append_relation_event(
+                actor_id,
+                root_event_id,
+                RelationKind::HasOption,
+                &decision_id,
+                option_id,
+            )?;
+        }
+
+        if let Some(chosen_option_id) = chosen_option_id {
+            self.append_relation_event(
+                actor_id,
+                root_event_id,
+                RelationKind::Chose,
+                &decision_id,
+                chosen_option_id,
+            )?;
+        }
+
+        for hypothesis_id in hypothesis_ids {
+            self.append_relation_event(
+                actor_id,
+                root_event_id,
+                RelationKind::Assumes,
+                &decision_id,
+                hypothesis_id,
+            )?;
+        }
+
+        for evidence_id in evidence_ids {
+            self.append_relation_event(
+                actor_id,
+                root_event_id,
+                RelationKind::BasedOn,
+                &decision_id,
+                evidence_id,
+            )?;
+        }
+
+        Ok(decision_id)
+    }
+
+    pub fn accept_decision(&self, decision_id: &str, actor_id: &str) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("decision_id", decision_id)?;
+
+        if !self.decision_exists(decision_id)? {
+            return Err(
+                CommandError::Invariant(format!("decision does not exist: {decision_id}")).into(),
+            );
+        }
+
+        if self.actor_has_decision_event(decision_id, actor_id, EventType::DecisionRejected)? {
+            return Err(CommandError::Invariant(format!(
+                "actor {actor_id} cannot accept and reject decision {decision_id}"
+            ))
+            .into());
+        }
+
+        let event = Event {
+            event_id: None,
+            event_uuid: Uuid::new_v4(),
+            correlation_id: None,
+            causation_event_id: None,
+            event_type: EventType::DecisionAccepted,
+            actor_id: actor_id.to_owned(),
+            payload: json!({ "decision_id": decision_id }),
+            ts: Some(Utc::now()),
+        };
+
+        self.ledger.append(event)
+    }
+
+    pub fn reject_decision(&self, decision_id: &str, actor_id: &str) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("decision_id", decision_id)?;
+
+        if !self.decision_exists(decision_id)? {
+            return Err(
+                CommandError::Invariant(format!("decision does not exist: {decision_id}")).into(),
+            );
+        }
+
+        if self.actor_has_decision_event(decision_id, actor_id, EventType::DecisionAccepted)? {
+            return Err(CommandError::Invariant(format!(
+                "actor {actor_id} cannot accept and reject decision {decision_id}"
+            ))
+            .into());
+        }
+
+        let event = Event {
+            event_id: None,
+            event_uuid: Uuid::new_v4(),
+            correlation_id: None,
+            causation_event_id: None,
+            event_type: EventType::DecisionRejected,
+            actor_id: actor_id.to_owned(),
+            payload: json!({ "decision_id": decision_id }),
+            ts: Some(Utc::now()),
+        };
+
+        self.ledger.append(event)
+    }
+
+    pub fn supersede_decision(
+        &self,
+        old_decision_id: &str,
+        new_decision_id: &str,
+        actor_id: &str,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("old_decision_id", old_decision_id)?;
+        require_non_empty("new_decision_id", new_decision_id)?;
+
+        if old_decision_id == new_decision_id {
+            return Err(CommandError::Validation(
+                "old_decision_id and new_decision_id must be different".to_owned(),
+            )
+            .into());
+        }
+
+        if !self.decision_exists(old_decision_id)? {
+            return Err(CommandError::Invariant(format!(
+                "decision does not exist: {old_decision_id}"
+            ))
+            .into());
+        }
+
+        if !self.decision_exists(new_decision_id)? {
+            return Err(CommandError::Invariant(format!(
+                "decision does not exist: {new_decision_id}"
+            ))
+            .into());
+        }
+
+        let event = Event {
+            event_id: None,
+            event_uuid: Uuid::new_v4(),
+            correlation_id: None,
+            causation_event_id: None,
+            event_type: EventType::DecisionSuperseded,
+            actor_id: actor_id.to_owned(),
+            payload: json!({
+                "old_decision_id": old_decision_id,
+                "new_decision_id": new_decision_id,
+            }),
+            ts: Some(Utc::now()),
+        };
+
+        self.ledger.append(event)
+    }
+
+    fn append_relation_event(
+        &self,
+        actor_id: &str,
+        root_event_id: EventId,
+        relation: RelationKind,
+        from_id: &str,
+        to_id: &str,
+    ) -> Result<EventId> {
+        let event = Event {
+            event_id: None,
+            event_uuid: Uuid::new_v4(),
+            correlation_id: None,
+            causation_event_id: Some(root_event_id),
+            event_type: EventType::RelationAdded,
+            actor_id: actor_id.to_owned(),
+            payload: json!({
+                "relation": relation,
+                "from_id": from_id,
+                "to_id": to_id,
+            }),
+            ts: Some(Utc::now()),
+        };
+
+        self.ledger.append(event)
+    }
+
+    fn lock_state(&self) -> Result<MutexGuard<'_, CommandState>> {
+        self.state.lock().map_err(|error| {
+            CommandError::Invariant(format!("commands state lock poisoned: {error}")).into()
+        })
+    }
+
+    fn evidence_exists(&self, evidence_id: &str) -> Result<bool> {
+        self.scan_events(|event| {
+            event.event_type == EventType::EvidenceRecorded
+                && payload_value_as_str(event, "evidence_id") == Some(evidence_id)
+        })
+    }
+
+    fn hypothesis_exists(&self, hypothesis_id: &str) -> Result<bool> {
+        self.scan_events(|event| {
+            event.event_type == EventType::HypothesisRecorded
+                && payload_value_as_str(event, "hypothesis_id") == Some(hypothesis_id)
+        })
+    }
+
+    fn decision_exists(&self, decision_id: &str) -> Result<bool> {
+        self.scan_events(|event| {
+            event.event_type == EventType::DecisionProposed
+                && payload_value_as_str(event, "decision_id") == Some(decision_id)
+        })
+    }
+
+    fn actor_has_decision_event(
+        &self,
+        decision_id: &str,
+        actor_id: &str,
+        decision_event_type: EventType,
+    ) -> Result<bool> {
+        self.scan_events(|event| {
+            event.event_type == decision_event_type
+                && event.actor_id == actor_id
+                && payload_value_as_str(event, "decision_id") == Some(decision_id)
+        })
+    }
+
+    fn scan_events(&self, predicate: impl Fn(&Event) -> bool) -> Result<bool> {
+        let mut offset = 0;
+        const PAGE_SIZE: usize = 1024;
+
+        loop {
+            let events = self.ledger.read(offset, PAGE_SIZE)?;
+            if events.is_empty() {
+                return Ok(false);
+            }
+
+            for event in &events {
+                if predicate(event) {
+                    return Ok(true);
+                }
+            }
+
+            if let Some(last_event_id) = events.last().and_then(|event| event.event_id) {
+                offset = last_event_id;
+            } else {
+                return Ok(false);
+            }
+        }
     }
 }
 
@@ -117,6 +475,10 @@ pub fn normalize_topic_key(input: &str) -> String {
     normalized
 }
 
+fn payload_value_as_str<'a>(event: &'a Event, key: &str) -> Option<&'a str> {
+    event.payload.get(key).and_then(|value| value.as_str())
+}
+
 fn require_non_empty(field: &'static str, value: &str) -> Result<()> {
     if value.trim().is_empty() {
         Err(CommandError::Validation(format!("{field} must not be empty")).into())
@@ -132,8 +494,9 @@ fn generate_entity_id(prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
+    use serde_json::json;
 
-    use crate::events::EventType;
+    use crate::events::{EventType, RelationKind};
     use crate::ledger::{EventLedger, InMemoryEventLedger};
 
     use super::{normalize_topic_key, Commands, MAX_TOPIC_KEY_LEN};
@@ -209,6 +572,199 @@ mod tests {
         assert!(commands.record_evidence("", "content").is_err());
         assert!(commands.record_hypothesis("   ", "statement").is_err());
         assert!(commands.record_option("", "label", "description").is_err());
+    }
+
+    #[test]
+    fn propose_decision_fans_out_relation_events_with_causation_linkage() {
+        let ledger = InMemoryEventLedger::new();
+        let commands = Commands::new(&ledger);
+
+        let option_a = commands
+            .record_option("actor:alice", "A", "Option A")
+            .expect("option a");
+        let option_b = commands
+            .record_option("actor:alice", "B", "Option B")
+            .expect("option b");
+        let evidence_id = commands
+            .record_evidence("actor:alice", "Log sample")
+            .expect("evidence");
+        let hypothesis_id = commands
+            .record_hypothesis("actor:alice", "This will improve p95")
+            .expect("hypothesis");
+
+        let decision_id = commands
+            .propose_decision(
+                "actor:alice",
+                "Pick queue strategy",
+                "Need robust ingestion",
+                &["Infra / Queue".to_owned()],
+                &[option_a.clone(), option_b.clone()],
+                Some(option_b.as_str()),
+                &[hypothesis_id.clone()],
+                &[evidence_id.clone()],
+            )
+            .expect("propose decision");
+
+        let events = ledger.read(0, 20).expect("read events");
+        let proposal = events
+            .iter()
+            .find(|event| event.event_type == EventType::DecisionProposed)
+            .expect("proposal event present");
+        let proposal_id = proposal.event_id.expect("proposal event id");
+
+        let relation_events: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == EventType::RelationAdded)
+            .collect();
+        assert_eq!(relation_events.len(), 5);
+
+        for relation_event in &relation_events {
+            assert_eq!(relation_event.causation_event_id, Some(proposal_id));
+            assert_eq!(
+                relation_event
+                    .payload
+                    .get("from_id")
+                    .and_then(|value| value.as_str()),
+                Some(decision_id.as_str())
+            );
+        }
+
+        let has_option_count = relation_events
+            .iter()
+            .filter(|event| event.payload.get("relation") == Some(&json!(RelationKind::HasOption)))
+            .count();
+        assert_eq!(has_option_count, 2);
+
+        let chose_count = relation_events
+            .iter()
+            .filter(|event| event.payload.get("relation") == Some(&json!(RelationKind::Chose)))
+            .count();
+        assert_eq!(chose_count, 1);
+    }
+
+    #[test]
+    fn accept_and_reject_invariant_for_same_actor_is_enforced() {
+        let ledger = InMemoryEventLedger::new();
+        let commands = Commands::new(&ledger);
+
+        let option_id = commands
+            .record_option("actor:alice", "A", "Option A")
+            .expect("option");
+        let decision_id = commands
+            .propose_decision(
+                "actor:alice",
+                "Pick one",
+                "Need progress",
+                &["Core".to_owned()],
+                &[option_id],
+                None,
+                &[],
+                &[],
+            )
+            .expect("propose");
+
+        commands
+            .accept_decision(&decision_id, "actor:alice")
+            .expect("accept succeeds");
+        assert!(commands
+            .reject_decision(&decision_id, "actor:alice")
+            .is_err());
+    }
+
+    #[test]
+    fn supersede_requires_both_decisions_to_exist() {
+        let ledger = InMemoryEventLedger::new();
+        let commands = Commands::new(&ledger);
+
+        let option_a = commands
+            .record_option("actor:alice", "A", "Option A")
+            .expect("option a");
+        let option_b = commands
+            .record_option("actor:alice", "B", "Option B")
+            .expect("option b");
+
+        let decision_a = commands
+            .propose_decision(
+                "actor:alice",
+                "Decision A",
+                "rationale",
+                &["Core".to_owned()],
+                &[option_a],
+                None,
+                &[],
+                &[],
+            )
+            .expect("decision a");
+
+        let decision_b = commands
+            .propose_decision(
+                "actor:alice",
+                "Decision B",
+                "rationale",
+                &["Core".to_owned()],
+                &[option_b],
+                None,
+                &[],
+                &[],
+            )
+            .expect("decision b");
+
+        commands
+            .supersede_decision(&decision_a, &decision_b, "actor:alice")
+            .expect("supersede succeeds");
+
+        assert!(commands
+            .supersede_decision("decision-missing", &decision_b, "actor:alice")
+            .is_err());
+    }
+
+    #[test]
+    fn propose_decision_normalizes_topic_keys() {
+        let ledger = InMemoryEventLedger::new();
+        let commands = Commands::new(&ledger);
+
+        let option_id = commands
+            .record_option("actor:alice", "A", "Option A")
+            .expect("option");
+        let decision_id = commands
+            .propose_decision(
+                "actor:alice",
+                "Normalize topics",
+                "Keep consistent filters",
+                &[
+                    "  Crème brûlée API!!  ".to_owned(),
+                    "Ops___SRE   Alerts".to_owned(),
+                ],
+                &[option_id],
+                None,
+                &[],
+                &[],
+            )
+            .expect("propose");
+
+        let events = ledger.read(0, 10).expect("read events");
+        let proposal = events
+            .iter()
+            .find(|event| {
+                event.event_type == EventType::DecisionProposed
+                    && event
+                        .payload
+                        .get("decision_id")
+                        .and_then(|value| value.as_str())
+                        == Some(decision_id.as_str())
+            })
+            .expect("proposal event");
+
+        let topics = proposal
+            .payload
+            .get("topic_keys")
+            .and_then(|value| value.as_array())
+            .expect("topic keys array")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(topics, vec!["creme-brulee-api", "ops-sre-alerts"]);
     }
 
     #[test]
