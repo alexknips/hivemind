@@ -14,7 +14,8 @@ use crate::projector::{
     RelationKind as GraphRelationKind,
 };
 use crate::queries::{
-    derive_decision_status, derive_hypothesis_status, DecisionStatus, HypothesisStatus,
+    derive_decision_status, derive_hypothesis_status, get_decision, get_relevant_decisions,
+    get_supersession_chain, DecisionStatus, HypothesisStatus,
 };
 use crate::{HivemindError, Result};
 
@@ -169,11 +170,54 @@ pub enum EmitRelationKind {
 
 #[derive(Debug, Clone, Args)]
 pub struct QueryArgs {
-    #[arg(value_name = "OP")]
-    pub operation: String,
+    #[command(subcommand)]
+    pub command: QueryCommand,
+}
 
-    #[arg(value_name = "ARGS")]
-    pub args: Vec<String>,
+#[derive(Debug, Clone, Subcommand)]
+pub enum QueryCommand {
+    #[command(name = "get_decision")]
+    GetDecision(QueryDecisionArgs),
+    #[command(name = "get_relevant_decisions")]
+    GetRelevantDecisions(QueryRelevantDecisionsArgs),
+    #[command(name = "get_supersession_chain")]
+    GetSupersessionChain(QueryDecisionArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryDecisionArgs {
+    #[arg(long = "id")]
+    pub decision_id: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryRelevantDecisionsArgs {
+    #[arg(long = "topic")]
+    pub topic: String,
+
+    #[arg(long = "status")]
+    pub status: Option<QueryDecisionStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum QueryDecisionStatus {
+    Proposed,
+    Accepted,
+    Rejected,
+    Contested,
+    Superseded,
+}
+
+impl QueryDecisionStatus {
+    const fn as_decision_status(self) -> DecisionStatus {
+        match self {
+            QueryDecisionStatus::Proposed => DecisionStatus::Proposed,
+            QueryDecisionStatus::Accepted => DecisionStatus::Accepted,
+            QueryDecisionStatus::Rejected => DecisionStatus::Rejected,
+            QueryDecisionStatus::Contested => DecisionStatus::Contested,
+            QueryDecisionStatus::Superseded => DecisionStatus::Superseded,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Args)]
@@ -212,26 +256,7 @@ pub fn run(cli: &Cli) -> Result<String> {
 
     match &cli.command {
         Command::Emit(command) => run_emit(cli, command),
-        Command::Query(query) => {
-            if query.operation.trim().is_empty() {
-                return Err(
-                    CliError::InvalidInput("query operation must not be empty".to_owned()).into(),
-                );
-            }
-
-            format_output(
-                cli.json,
-                &OutputEnvelope::new(
-                    "query",
-                    "stub",
-                    format!(
-                        "stub query '{}', {} arg(s)",
-                        query.operation,
-                        query.args.len()
-                    ),
-                ),
-            )
-        }
+        Command::Query(query) => run_query(cli, query),
         Command::Dump(dump) => run_dump(cli, dump),
     }
 }
@@ -332,6 +357,33 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
     };
 
     format_output(cli.json, &output)
+}
+
+fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let graph = DumpGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let json = match &query.command {
+        QueryCommand::GetDecision(args) => {
+            serde_json::to_string(&get_decision(&graph, &args.decision_id)?).map_err(|error| {
+                CliError::InvalidInput(format!("json serialization failed: {error}"))
+            })?
+        }
+        QueryCommand::GetRelevantDecisions(args) => serde_json::to_string(&get_relevant_decisions(
+            &graph,
+            &args.topic,
+            args.status.map(QueryDecisionStatus::as_decision_status),
+        )?)
+        .map_err(|error| CliError::InvalidInput(format!("json serialization failed: {error}")))?,
+        QueryCommand::GetSupersessionChain(args) => {
+            serde_json::to_string(&get_supersession_chain(&graph, &args.decision_id)?).map_err(
+                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
+            )?
+        }
+    };
+
+    Ok(json)
 }
 
 fn run_dump(cli: &Cli, dump: &DumpArgs) -> Result<String> {
@@ -537,32 +589,168 @@ impl GraphView for DumpGraph {
     }
 
     fn query(&self, cypher: &str, params: &GraphParams) -> Result<Vec<GraphRow>> {
-        let relation = query_relation(cypher)?;
-        let id = match params.get("id") {
-            Some(GraphValue::String(id)) => id,
-            _ => return Err(CliError::InvalidInput("missing id query param".to_owned()).into()),
-        };
-        let incoming = cypher.contains("<-[rel:");
-        let edges = self.edges_snapshot()?;
-        let count = edges
-            .iter()
-            .filter(|edge| {
-                if edge.relation != relation {
-                    return false;
-                }
-                if incoming {
-                    edge.to_id == *id
-                } else {
-                    edge.from_id == *id
-                }
-            })
-            .count();
-        let count = i64::try_from(count)
-            .map_err(|error| CliError::InvalidInput(format!("count overflow: {error}")))?;
-        Ok(vec![GraphRow::from([(
-            "count".to_owned(),
-            GraphValue::Int(count),
-        )])])
+        if cypher.contains("RETURN count(rel) AS count;") {
+            let relation = query_relation(cypher)?;
+            let id = required_param_string(params, "id")?;
+            let incoming = cypher.contains("<-[rel:");
+            let edges = self.edges_snapshot()?;
+            let count = edges
+                .iter()
+                .filter(|edge| {
+                    if edge.relation != relation {
+                        return false;
+                    }
+                    if incoming {
+                        edge.to_id == id
+                    } else {
+                        edge.from_id == id
+                    }
+                })
+                .count();
+            let count = i64::try_from(count)
+                .map_err(|error| CliError::InvalidInput(format!("count overflow: {error}")))?;
+            return Ok(vec![GraphRow::from([(
+                "count".to_owned(),
+                GraphValue::Int(count),
+            )])]);
+        }
+
+        if cypher.contains("RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys LIMIT 1;") {
+            let decision_id = required_param_string(params, "id")?;
+            let nodes = self.nodes_snapshot()?;
+            if let Some(properties) = nodes.get(&(NodeKind::Decision, decision_id.to_owned())) {
+                return Ok(vec![GraphRow::from([
+                    ("id".to_owned(), GraphValue::String(decision_id.to_owned())),
+                    (
+                        "title".to_owned(),
+                        graph_property_or_default(properties, "title"),
+                    ),
+                    (
+                        "rationale".to_owned(),
+                        graph_property_or_default(properties, "rationale"),
+                    ),
+                    (
+                        "topic_keys".to_owned(),
+                        graph_property_or_default(properties, "topic_keys"),
+                    ),
+                ])]);
+            }
+            return Ok(Vec::new());
+        }
+
+        if cypher.contains("RETURN count(d) AS count;") {
+            let topic = required_param_string(params, "topic")?;
+            let nodes = self.nodes_snapshot()?;
+            let count = nodes
+                .iter()
+                .filter(|((kind, _), properties)| {
+                    *kind == NodeKind::Decision
+                        && topic_keys(properties)
+                            .iter()
+                            .any(|candidate| candidate == topic)
+                })
+                .count();
+            let count = i64::try_from(count)
+                .map_err(|error| CliError::InvalidInput(format!("count overflow: {error}")))?;
+            return Ok(vec![GraphRow::from([(
+                "count".to_owned(),
+                GraphValue::Int(count),
+            )])]);
+        }
+
+        if cypher.contains("WHERE $topic IN d.topic_keys RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys ORDER BY d.id LIMIT $limit;") {
+            let topic = required_param_string(params, "topic")?;
+            let limit = required_param_int(params, "limit")?;
+            let nodes = self.nodes_snapshot()?;
+            let mut decisions = nodes
+                .iter()
+                .filter_map(|((kind, id), properties)| {
+                    if *kind != NodeKind::Decision
+                        || !topic_keys(properties).iter().any(|candidate| candidate == topic)
+                    {
+                        return None;
+                    }
+                    Some(GraphRow::from([
+                        ("id".to_owned(), GraphValue::String(id.clone())),
+                        (
+                            "title".to_owned(),
+                            graph_property_or_default(properties, "title"),
+                        ),
+                        (
+                            "rationale".to_owned(),
+                            graph_property_or_default(properties, "rationale"),
+                        ),
+                        (
+                            "topic_keys".to_owned(),
+                            graph_property_or_default(properties, "topic_keys"),
+                        ),
+                    ]))
+                })
+                .collect::<Vec<_>>();
+            decisions.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+            decisions.truncate(usize::try_from(limit.max(0)).unwrap_or(0));
+            return Ok(decisions);
+        }
+
+        if cypher.contains("RETURN n.id AS") {
+            let relation = query_relation(cypher)?;
+            let decision_id = required_param_string(params, "id")?;
+            let alias = if cypher.contains("AS option_id") {
+                "option_id"
+            } else if cypher.contains("AS evidence_id") {
+                "evidence_id"
+            } else if cypher.contains("AS hypothesis_id") {
+                "hypothesis_id"
+            } else {
+                return Err(CliError::InvalidInput(format!(
+                    "unknown neighbor alias in query: {cypher}"
+                ))
+                .into());
+            };
+            let mut ids = self
+                .edges_snapshot()?
+                .into_iter()
+                .filter(|edge| edge.relation == relation && edge.from_id == decision_id)
+                .map(|edge| edge.to_id)
+                .collect::<Vec<_>>();
+            ids.sort();
+            return Ok(ids
+                .into_iter()
+                .map(|id| GraphRow::from([(alias.to_owned(), GraphValue::String(id))]))
+                .collect());
+        }
+
+        if cypher.contains("MATCH (d:`Decision` {id: $id})-[:`SUPERSEDES`]->(other:`Decision`)") {
+            let id = required_param_string(params, "id")?;
+            let mut older = self
+                .edges_snapshot()?
+                .into_iter()
+                .filter(|edge| edge.relation == GraphRelationKind::Supersedes && edge.from_id == id)
+                .map(|edge| edge.to_id)
+                .collect::<Vec<_>>();
+            older.sort();
+            return Ok(older
+                .into_iter()
+                .map(|value| GraphRow::from([("id".to_owned(), GraphValue::String(value))]))
+                .collect());
+        }
+
+        if cypher.contains("MATCH (other:`Decision`)-[:`SUPERSEDES`]->(d:`Decision` {id: $id})") {
+            let id = required_param_string(params, "id")?;
+            let mut newer = self
+                .edges_snapshot()?
+                .into_iter()
+                .filter(|edge| edge.relation == GraphRelationKind::Supersedes && edge.to_id == id)
+                .map(|edge| edge.from_id)
+                .collect::<Vec<_>>();
+            newer.sort();
+            return Ok(newer
+                .into_iter()
+                .map(|value| GraphRow::from([("id".to_owned(), GraphValue::String(value))]))
+                .collect());
+        }
+
+        Err(CliError::InvalidInput(format!("unsupported query: {cypher}")).into())
     }
 
     fn wipe(&self) -> Result<()> {
@@ -601,6 +789,31 @@ fn query_relation(cypher: &str) -> Result<GraphRelationKind> {
         }
     }
     Err(CliError::InvalidInput(format!("unknown relation in query: {cypher}")).into())
+}
+
+fn required_param_string<'a>(params: &'a GraphParams, key: &str) -> Result<&'a str> {
+    match params.get(key) {
+        Some(GraphValue::String(value)) => Ok(value),
+        _ => Err(CliError::InvalidInput(format!("missing string param: {key}")).into()),
+    }
+}
+
+fn required_param_int(params: &GraphParams, key: &str) -> Result<i64> {
+    match params.get(key) {
+        Some(GraphValue::Int(value)) => Ok(*value),
+        _ => Err(CliError::InvalidInput(format!("missing int param: {key}")).into()),
+    }
+}
+
+fn graph_property_or_default(properties: &GraphProperties, key: &str) -> GraphValue {
+    properties.get(key).cloned().unwrap_or(GraphValue::Null)
+}
+
+fn topic_keys(properties: &GraphProperties) -> Vec<String> {
+    match properties.get("topic_keys") {
+        Some(GraphValue::StringList(values)) => values.clone(),
+        _ => Vec::new(),
+    }
 }
 
 #[derive(Debug, Serialize)]

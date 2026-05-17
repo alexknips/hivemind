@@ -1,13 +1,16 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
+use serde::Serialize;
+
 use crate::error::QueryError;
 use crate::projector::{GraphParams, GraphRow, GraphValue, GraphView, NodeKind, RelationKind};
 use crate::Result;
 
 const MAX_QUERY_RESULTS: usize = 1000;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DecisionStatus {
     Proposed,
     Accepted,
@@ -16,14 +19,15 @@ pub enum DecisionStatus {
     Superseded,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum HypothesisStatus {
     Open,
     Supported,
     Refuted,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct QueryResponse<T> {
     pub result_count: usize,
     pub truncated: bool,
@@ -31,13 +35,13 @@ pub struct QueryResponse<T> {
     pub data: T,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct HypothesisContext {
     pub id: String,
     pub status: HypothesisStatus,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct DecisionView {
     pub id: String,
     pub title: String,
@@ -50,7 +54,7 @@ pub struct DecisionView {
     pub hypotheses: Vec<HypothesisContext>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SupersessionChain {
     pub decision_ids: Vec<String>,
     pub input_index: usize,
