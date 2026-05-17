@@ -350,6 +350,72 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         self.ledger.append(event)
     }
 
+    pub fn attach_evidence(
+        &self,
+        decision_id: &str,
+        evidence_id: &str,
+        actor_id: &str,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("decision_id", decision_id)?;
+        require_non_empty("evidence_id", evidence_id)?;
+
+        if !self.decision_exists(decision_id)? {
+            return Err(
+                CommandError::Invariant(format!("decision does not exist: {decision_id}")).into(),
+            );
+        }
+        if !self.evidence_exists(evidence_id)? {
+            return Err(
+                CommandError::Invariant(format!("evidence does not exist: {evidence_id}")).into(),
+            );
+        }
+
+        self.append_relation_event(actor_id, 0, RelationKind::BasedOn, decision_id, evidence_id)
+    }
+
+    pub fn relate_evidence_to_hypothesis(
+        &self,
+        evidence_id: &str,
+        hypothesis_id: &str,
+        relation_kind: RelationKind,
+        actor_id: &str,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("evidence_id", evidence_id)?;
+        require_non_empty("hypothesis_id", hypothesis_id)?;
+
+        if !matches!(
+            relation_kind,
+            RelationKind::Supports | RelationKind::Refutes
+        ) {
+            return Err(CommandError::Validation(
+                "relation kind must be supports or refutes".to_owned(),
+            )
+            .into());
+        }
+
+        if !self.evidence_exists(evidence_id)? {
+            return Err(
+                CommandError::Invariant(format!("evidence does not exist: {evidence_id}")).into(),
+            );
+        }
+        if !self.hypothesis_exists(hypothesis_id)? {
+            return Err(CommandError::Invariant(format!(
+                "hypothesis does not exist: {hypothesis_id}"
+            ))
+            .into());
+        }
+
+        if let Some(existing_event_id) =
+            self.find_relation_event_id(relation_kind, evidence_id, hypothesis_id)?
+        {
+            return Ok(existing_event_id);
+        }
+
+        self.append_relation_event(actor_id, 0, relation_kind, evidence_id, hypothesis_id)
+    }
+
     fn append_relation_event(
         &self,
         actor_id: &str,
@@ -362,7 +428,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             event_id: None,
             event_uuid: Uuid::new_v4(),
             correlation_id: None,
-            causation_event_id: Some(root_event_id),
+            causation_event_id: if root_event_id == 0 {
+                None
+            } else {
+                Some(root_event_id)
+            },
             event_type: EventType::RelationAdded,
             actor_id: actor_id.to_owned(),
             payload: json!({
@@ -414,6 +484,43 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 && event.actor_id == actor_id
                 && payload_value_as_str(event, "decision_id") == Some(decision_id)
         })
+    }
+
+    fn find_relation_event_id(
+        &self,
+        relation_kind: RelationKind,
+        from_id: &str,
+        to_id: &str,
+    ) -> Result<Option<EventId>> {
+        let mut offset = 0;
+        const PAGE_SIZE: usize = 1024;
+        let relation_name = relation_kind_name(relation_kind);
+
+        loop {
+            let events = self.ledger.read(offset, PAGE_SIZE)?;
+            if events.is_empty() {
+                return Ok(None);
+            }
+
+            for event in &events {
+                if event.event_type != EventType::RelationAdded {
+                    continue;
+                }
+
+                let same_relation = payload_value_as_str(event, "relation") == Some(relation_name);
+                let same_from = payload_value_as_str(event, "from_id") == Some(from_id);
+                let same_to = payload_value_as_str(event, "to_id") == Some(to_id);
+                if same_relation && same_from && same_to {
+                    return Ok(event.event_id);
+                }
+            }
+
+            if let Some(last_event_id) = events.last().and_then(|event| event.event_id) {
+                offset = last_event_id;
+            } else {
+                return Ok(None);
+            }
+        }
     }
 
     fn scan_events(&self, predicate: impl Fn(&Event) -> bool) -> Result<bool> {
@@ -477,6 +584,17 @@ pub fn normalize_topic_key(input: &str) -> String {
 
 fn payload_value_as_str<'a>(event: &'a Event, key: &str) -> Option<&'a str> {
     event.payload.get(key).and_then(|value| value.as_str())
+}
+
+const fn relation_kind_name(relation_kind: RelationKind) -> &'static str {
+    match relation_kind {
+        RelationKind::BasedOn => "BASED_ON",
+        RelationKind::HasOption => "HAS_OPTION",
+        RelationKind::Chose => "CHOSE",
+        RelationKind::Assumes => "ASSUMES",
+        RelationKind::Supports => "SUPPORTS",
+        RelationKind::Refutes => "REFUTES",
+    }
 }
 
 fn require_non_empty(field: &'static str, value: &str) -> Result<()> {
@@ -716,6 +834,89 @@ mod tests {
         assert!(commands
             .supersede_decision("decision-missing", &decision_b, "actor:alice")
             .is_err());
+    }
+
+    #[test]
+    fn attach_evidence_requires_existing_endpoints() {
+        let ledger = InMemoryEventLedger::new();
+        let commands = Commands::new(&ledger);
+
+        let option_id = commands
+            .record_option("actor:alice", "A", "Option A")
+            .expect("option");
+        let decision_id = commands
+            .propose_decision(
+                "actor:alice",
+                "Decision A",
+                "rationale",
+                &["Core".to_owned()],
+                &[option_id],
+                None,
+                &[],
+                &[],
+            )
+            .expect("decision");
+        let evidence_id = commands
+            .record_evidence("actor:alice", "evidence")
+            .expect("evidence");
+
+        assert!(commands
+            .attach_evidence(&decision_id, &evidence_id, "actor:alice")
+            .is_ok());
+        assert!(commands
+            .attach_evidence("missing-decision", &evidence_id, "actor:alice")
+            .is_err());
+    }
+
+    #[test]
+    fn relate_evidence_to_hypothesis_requires_supports_or_refutes_and_is_idempotent() {
+        let ledger = InMemoryEventLedger::new();
+        let commands = Commands::new(&ledger);
+
+        let evidence_id = commands
+            .record_evidence("actor:alice", "evidence")
+            .expect("evidence");
+        let hypothesis_id = commands
+            .record_hypothesis("actor:alice", "hypothesis")
+            .expect("hypothesis");
+
+        let first = commands
+            .relate_evidence_to_hypothesis(
+                &evidence_id,
+                &hypothesis_id,
+                RelationKind::Supports,
+                "actor:alice",
+            )
+            .expect("first relation");
+        let second = commands
+            .relate_evidence_to_hypothesis(
+                &evidence_id,
+                &hypothesis_id,
+                RelationKind::Supports,
+                "actor:alice",
+            )
+            .expect("duplicate relation");
+        assert_eq!(first, second);
+
+        assert!(commands
+            .relate_evidence_to_hypothesis(
+                &evidence_id,
+                &hypothesis_id,
+                RelationKind::BasedOn,
+                "actor:alice"
+            )
+            .is_err());
+
+        let relation_events = ledger
+            .read(0, 50)
+            .expect("read events")
+            .into_iter()
+            .filter(|event| {
+                event.event_type == EventType::RelationAdded
+                    && event.payload.get("relation") == Some(&json!(RelationKind::Supports))
+            })
+            .count();
+        assert_eq!(relation_events, 1);
     }
 
     #[test]
