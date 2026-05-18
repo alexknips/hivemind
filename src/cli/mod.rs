@@ -8,9 +8,9 @@ use serde::Serialize;
 use crate::commands::Commands;
 use crate::error::{CliError, CommandError};
 use crate::events::RelationKind as EventRelationKind;
-use crate::ledger::SqliteEventLedger;
+use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::projector::{
-    project_from_ledger, GraphParams, GraphProperties, GraphRow, GraphValue, GraphView, NodeKind,
+    rebuild_graph, GraphParams, GraphProperties, GraphRow, GraphValue, GraphView, NodeKind,
     RelationKind as GraphRelationKind,
 };
 use crate::queries::{
@@ -37,11 +37,20 @@ pub struct Cli {
     #[arg(long, global = true, default_value = "./hivemind/")]
     pub hivemind_dir: PathBuf,
 
+    #[arg(long, global = true, value_enum)]
+    pub graph_backend: Option<GraphBackend>,
+
     #[arg(short = 'v', long = "verbose", global = true, action = ArgAction::Count)]
     pub verbose: u8,
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum GraphBackend {
+    Memory,
+    Kuzu,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -361,23 +370,32 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
 
 fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {
     let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
-    let graph = DumpGraph::default();
-    project_from_ledger(&ledger, &graph, 0)?;
 
+    match selected_graph_backend(cli)? {
+        GraphBackend::Memory => {
+            let graph = DumpGraph::default();
+            rebuild_graph(&ledger, &graph)?;
+            run_query_with_graph(&graph, query)
+        }
+        GraphBackend::Kuzu => run_query_with_kuzu(&ledger, &cli.hivemind_dir, query),
+    }
+}
+
+fn run_query_with_graph(graph: &impl GraphView, query: &QueryArgs) -> Result<String> {
     let json = match &query.command {
         QueryCommand::GetDecision(args) => {
-            serde_json::to_string(&get_decision(&graph, &args.decision_id)?).map_err(|error| {
+            serde_json::to_string(&get_decision(graph, &args.decision_id)?).map_err(|error| {
                 CliError::InvalidInput(format!("json serialization failed: {error}"))
             })?
         }
         QueryCommand::GetRelevantDecisions(args) => serde_json::to_string(&get_relevant_decisions(
-            &graph,
+            graph,
             &args.topic,
             args.status.map(QueryDecisionStatus::as_decision_status),
         )?)
         .map_err(|error| CliError::InvalidInput(format!("json serialization failed: {error}")))?,
         QueryCommand::GetSupersessionChain(args) => {
-            serde_json::to_string(&get_supersession_chain(&graph, &args.decision_id)?).map_err(
+            serde_json::to_string(&get_supersession_chain(graph, &args.decision_id)?).map_err(
                 |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
             )?
         }
@@ -388,12 +406,67 @@ fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {
 
 fn run_dump(cli: &Cli, dump: &DumpArgs) -> Result<String> {
     let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
-    let graph = DumpGraph::default();
-    project_from_ledger(&ledger, &graph, 0)?;
 
-    match dump.format {
-        DumpFormat::Dot => Ok(render_dot(&graph)?),
+    match selected_graph_backend(cli)? {
+        GraphBackend::Memory => {
+            let graph = DumpGraph::default();
+            rebuild_graph(&ledger, &graph)?;
+            run_dump_with_graph(&graph, dump)
+        }
+        GraphBackend::Kuzu => run_dump_with_kuzu(&ledger, &cli.hivemind_dir, dump),
     }
+}
+
+fn run_dump_with_graph(graph: &impl GraphView, dump: &DumpArgs) -> Result<String> {
+    match dump.format {
+        DumpFormat::Dot => render_dot(graph),
+    }
+}
+
+#[cfg(feature = "graph-kuzu")]
+fn run_query_with_kuzu(
+    ledger: &impl EventLedger,
+    hivemind_dir: &std::path::Path,
+    query: &QueryArgs,
+) -> Result<String> {
+    let graph = crate::projector::kuzu::KuzuGraph::open(hivemind_dir)?;
+    rebuild_graph(ledger, &graph)?;
+    run_query_with_graph(&graph, query)
+}
+
+#[cfg(not(feature = "graph-kuzu"))]
+fn run_query_with_kuzu(
+    _ledger: &impl EventLedger,
+    _hivemind_dir: &std::path::Path,
+    _query: &QueryArgs,
+) -> Result<String> {
+    Err(CliError::InvalidInput(
+        "graph backend 'kuzu' requires building with --features graph-kuzu".to_owned(),
+    )
+    .into())
+}
+
+#[cfg(feature = "graph-kuzu")]
+fn run_dump_with_kuzu(
+    ledger: &impl EventLedger,
+    hivemind_dir: &std::path::Path,
+    dump: &DumpArgs,
+) -> Result<String> {
+    let graph = crate::projector::kuzu::KuzuGraph::open(hivemind_dir)?;
+    rebuild_graph(ledger, &graph)?;
+    run_dump_with_graph(&graph, dump)
+}
+
+#[cfg(not(feature = "graph-kuzu"))]
+fn run_dump_with_kuzu(
+    _ledger: &impl EventLedger,
+    _hivemind_dir: &std::path::Path,
+    _dump: &DumpArgs,
+) -> Result<String> {
+    Err(CliError::InvalidInput(
+        "graph backend 'kuzu' requires building with --features graph-kuzu".to_owned(),
+    )
+    .into())
 }
 
 fn format_output(as_json: bool, envelope: &OutputEnvelope) -> Result<String> {
@@ -438,6 +511,32 @@ fn validate_global_flags(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+fn selected_graph_backend(cli: &Cli) -> Result<GraphBackend> {
+    if let Some(backend) = cli.graph_backend {
+        return Ok(backend);
+    }
+
+    match std::env::var("HIVEMIND_GRAPH_BACKEND") {
+        Ok(value) => parse_graph_backend(&value),
+        Err(std::env::VarError::NotPresent) => Ok(GraphBackend::Memory),
+        Err(error) => Err(CliError::InvalidInput(format!(
+            "HIVEMIND_GRAPH_BACKEND is not valid unicode: {error}"
+        ))
+        .into()),
+    }
+}
+
+fn parse_graph_backend(value: &str) -> Result<GraphBackend> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "memory" | "in-memory" | "in_memory" => Ok(GraphBackend::Memory),
+        "kuzu" | "graph-kuzu" | "graph_kuzu" => Ok(GraphBackend::Kuzu),
+        other => Err(CliError::InvalidInput(format!(
+            "unknown graph backend '{other}'; expected 'memory' or 'kuzu'"
+        ))
+        .into()),
+    }
+}
+
 fn default_actor() -> String {
     std::env::var("HIVEMIND_ACTOR")
         .ok()
@@ -450,10 +549,10 @@ fn default_actor() -> String {
         .unwrap_or_else(|| "unknown-actor".to_owned())
 }
 
-fn render_dot(graph: &DumpGraph) -> Result<String> {
+fn render_dot(graph: &impl GraphView) -> Result<String> {
     let mut dot = String::from("digraph hivemind {\n  rankdir=LR;\n");
-    let nodes = graph.nodes_snapshot()?;
-    let edges = graph.edges_snapshot()?;
+    let nodes = graph_nodes(graph)?;
+    let edges = graph_edges(graph)?;
 
     for ((kind, id), properties) in &nodes {
         let label = match kind {
@@ -493,6 +592,87 @@ fn render_dot(graph: &DumpGraph) -> Result<String> {
 
     dot.push_str("}\n");
     Ok(dot)
+}
+
+fn graph_nodes(graph: &impl GraphView) -> Result<BTreeMap<(NodeKind, String), GraphProperties>> {
+    let mut nodes = BTreeMap::new();
+    for kind in NodeKind::ALL {
+        let rows = graph.query(&node_dump_query(kind), &GraphParams::new())?;
+        for row in rows {
+            let id = required_row_string(&row, "id")?;
+            nodes.insert((kind, id), node_properties_from_row(kind, &row));
+        }
+    }
+    Ok(nodes)
+}
+
+fn graph_edges(graph: &impl GraphView) -> Result<BTreeSet<DumpEdge>> {
+    let mut edges = BTreeSet::new();
+    for relation in GraphRelationKind::ALL {
+        let (from_kind, to_kind) = relation.endpoints();
+        let rows = graph.query(
+            &format!(
+                "MATCH (from:`{}`)-[rel:`{}`]->(to:`{}`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;",
+                from_kind.table_name(),
+                relation.table_name(),
+                to_kind.table_name()
+            ),
+            &GraphParams::new(),
+        )?;
+        for row in rows {
+            edges.insert(DumpEdge {
+                relation,
+                from_kind,
+                from_id: required_row_string(&row, "from_id")?,
+                to_kind,
+                to_id: required_row_string(&row, "to_id")?,
+            });
+        }
+    }
+    Ok(edges)
+}
+
+fn node_dump_query(kind: NodeKind) -> String {
+    let projection = match kind {
+        NodeKind::Decision => {
+            "node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys"
+        }
+        NodeKind::Actor => "node.id AS id",
+        NodeKind::Evidence => "node.id AS id, node.content AS content",
+        NodeKind::Option => {
+            "node.id AS id, node.label AS label, node.description AS description"
+        }
+        NodeKind::Hypothesis => "node.id AS id, node.statement AS statement",
+    };
+    format!(
+        "MATCH (node:`{}`) RETURN {projection} ORDER BY node.id;",
+        kind.table_name()
+    )
+}
+
+fn node_properties_from_row(kind: NodeKind, row: &GraphRow) -> GraphProperties {
+    let mut properties = GraphProperties::new();
+    match kind {
+        NodeKind::Decision => {
+            insert_if_present(&mut properties, row, "title");
+            insert_if_present(&mut properties, row, "rationale");
+            insert_if_present(&mut properties, row, "topic_keys");
+        }
+        NodeKind::Actor => {}
+        NodeKind::Evidence => insert_if_present(&mut properties, row, "content"),
+        NodeKind::Option => {
+            insert_if_present(&mut properties, row, "label");
+            insert_if_present(&mut properties, row, "description");
+        }
+        NodeKind::Hypothesis => insert_if_present(&mut properties, row, "statement"),
+    }
+    properties
+}
+
+fn insert_if_present(properties: &mut GraphProperties, row: &GraphRow, key: &str) {
+    if let Some(value) = row.get(key) {
+        properties.insert(key.to_owned(), value.clone());
+    }
 }
 
 fn graph_property_string(properties: &GraphProperties, key: &str) -> Option<String> {
@@ -536,6 +716,13 @@ fn hypothesis_status_name(status: HypothesisStatus) -> &'static str {
 
 fn escape_dot(input: &str) -> String {
     input.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn required_row_string(row: &GraphRow, key: &str) -> Result<String> {
+    match row.get(key) {
+        Some(GraphValue::String(value)) => Ok(value.clone()),
+        _ => Err(CliError::InvalidInput(format!("row missing string field: {key}")).into()),
+    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -612,6 +799,58 @@ impl GraphView for DumpGraph {
             )])]);
         }
 
+        if cypher.contains("RETURN node.id AS id") {
+            let kind = query_node_kind(cypher)?;
+            let nodes = self.nodes_snapshot()?;
+            let mut rows = nodes
+                .iter()
+                .filter_map(|((node_kind, id), properties)| {
+                    if *node_kind != kind {
+                        return None;
+                    }
+                    let mut row =
+                        GraphRow::from([("id".to_owned(), GraphValue::String(id.clone()))]);
+                    row.extend(properties.clone());
+                    Some(row)
+                })
+                .collect::<Vec<_>>();
+            rows.sort_by(|left, right| {
+                required_row_string(left, "id")
+                    .unwrap_or_default()
+                    .cmp(&required_row_string(right, "id").unwrap_or_default())
+            });
+            return Ok(rows);
+        }
+
+        if cypher.contains("RETURN from.id AS from_id, to.id AS to_id") {
+            let relation = query_relation(cypher)?;
+            let mut rows = self
+                .edges_snapshot()?
+                .into_iter()
+                .filter(|edge| edge.relation == relation)
+                .map(|edge| {
+                    GraphRow::from([
+                        ("from_id".to_owned(), GraphValue::String(edge.from_id)),
+                        ("to_id".to_owned(), GraphValue::String(edge.to_id)),
+                    ])
+                })
+                .collect::<Vec<_>>();
+            rows.sort_by(|left, right| {
+                let left_key = format!(
+                    "{}:{}",
+                    required_row_string(left, "from_id").unwrap_or_default(),
+                    required_row_string(left, "to_id").unwrap_or_default()
+                );
+                let right_key = format!(
+                    "{}:{}",
+                    required_row_string(right, "from_id").unwrap_or_default(),
+                    required_row_string(right, "to_id").unwrap_or_default()
+                );
+                left_key.cmp(&right_key)
+            });
+            return Ok(rows);
+        }
+
         if cypher.contains("RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys LIMIT 1;") {
             let decision_id = required_param_string(params, "id")?;
             let nodes = self.nodes_snapshot()?;
@@ -655,9 +894,8 @@ impl GraphView for DumpGraph {
             )])]);
         }
 
-        if cypher.contains("WHERE $topic IN d.topic_keys RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys ORDER BY d.id LIMIT $limit;") {
+        if cypher.contains("WHERE $topic IN d.topic_keys RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys ORDER BY d.id LIMIT 1000;") {
             let topic = required_param_string(params, "topic")?;
-            let limit = required_param_int(params, "limit")?;
             let nodes = self.nodes_snapshot()?;
             let mut decisions = nodes
                 .iter()
@@ -685,7 +923,7 @@ impl GraphView for DumpGraph {
                 })
                 .collect::<Vec<_>>();
             decisions.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
-            decisions.truncate(usize::try_from(limit.max(0)).unwrap_or(0));
+            decisions.truncate(1000);
             return Ok(decisions);
         }
 
@@ -788,17 +1026,19 @@ fn query_relation(cypher: &str) -> Result<GraphRelationKind> {
     Err(CliError::InvalidInput(format!("unknown relation in query: {cypher}")).into())
 }
 
+fn query_node_kind(cypher: &str) -> Result<NodeKind> {
+    for kind in NodeKind::ALL {
+        if cypher.contains(&format!("`{}`", kind.table_name())) {
+            return Ok(kind);
+        }
+    }
+    Err(CliError::InvalidInput(format!("unknown node kind in query: {cypher}")).into())
+}
+
 fn required_param_string<'a>(params: &'a GraphParams, key: &str) -> Result<&'a str> {
     match params.get(key) {
         Some(GraphValue::String(value)) => Ok(value),
         _ => Err(CliError::InvalidInput(format!("missing string param: {key}")).into()),
-    }
-}
-
-fn required_param_int(params: &GraphParams, key: &str) -> Result<i64> {
-    match params.get(key) {
-        Some(GraphValue::Int(value)) => Ok(*value),
-        _ => Err(CliError::InvalidInput(format!("missing int param: {key}")).into()),
     }
 }
 
@@ -843,6 +1083,8 @@ mod tests {
             "--json",
             "--hivemind-dir",
             "./state",
+            "--graph-backend",
+            "memory",
             "-vv",
             "emit",
             "evidence.recorded",
@@ -854,12 +1096,24 @@ mod tests {
         assert!(cli.json);
         assert_eq!(cli.verbose, 2);
         assert_eq!(cli.hivemind_dir, PathBuf::from("./state"));
+        assert_eq!(cli.graph_backend, Some(GraphBackend::Memory));
         assert!(matches!(
             cli.command,
             Command::Emit(EmitArgs {
                 command: EmitCommand::EvidenceRecorded(_)
             })
         ));
+    }
+
+    #[test]
+    fn parses_graph_backend_from_env_aliases() {
+        assert_eq!(parse_graph_backend("memory").unwrap(), GraphBackend::Memory);
+        assert_eq!(
+            parse_graph_backend("in-memory").unwrap(),
+            GraphBackend::Memory
+        );
+        assert_eq!(parse_graph_backend("kuzu").unwrap(), GraphBackend::Kuzu);
+        assert!(parse_graph_backend("postgres").is_err());
     }
 
     #[test]
@@ -956,6 +1210,95 @@ mod tests {
         let output = run(&cli).expect("emit decision succeeds");
 
         assert!(output.starts_with("decision-"));
+    }
+
+    #[cfg(not(feature = "graph-kuzu"))]
+    #[test]
+    fn kuzu_backend_requires_feature() {
+        let hivemind_dir = unique_test_dir("kuzu-feature-required");
+        let cli = Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "--graph-backend",
+            "kuzu",
+            "query",
+            "get_decision",
+            "--id",
+            "decision-missing",
+        ]);
+
+        let error = run(&cli).expect_err("kuzu backend needs feature");
+
+        assert!(error
+            .to_string()
+            .contains("requires building with --features graph-kuzu"));
+    }
+
+    #[cfg(feature = "graph-kuzu")]
+    #[test]
+    fn kuzu_backend_queries_and_dumps_persistent_projection() {
+        let hivemind_dir = unique_test_dir("kuzu-query");
+        let decision_id = run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "agent-1",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "emit",
+            "decision.proposed",
+            "--title",
+            "Persist query graph",
+            "--rationale",
+            "Kuzu mode should project SQLite events before reads",
+            "--topic-keys",
+            "architecture,storage",
+            "--options",
+            "memory,kuzu",
+            "--chose",
+            "kuzu",
+        ]))
+        .expect("emit decision succeeds");
+
+        let query_args = [
+            "hivemind",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "--graph-backend",
+            "kuzu",
+            "query",
+            "get_relevant_decisions",
+            "--topic",
+            "architecture",
+        ];
+        let first_query = run(&Cli::parse_from(query_args)).expect("kuzu query succeeds");
+        let second_query = run(&Cli::parse_from(query_args)).expect("repeated kuzu query succeeds");
+        let mut first_json: serde_json::Value =
+            serde_json::from_str(&first_query).expect("first query json");
+        let mut second_json: serde_json::Value =
+            serde_json::from_str(&second_query).expect("second query json");
+        first_json["latency_ms"] = serde_json::json!(0);
+        second_json["latency_ms"] = serde_json::json!(0);
+
+        assert_eq!(first_json, second_json);
+        assert_eq!(first_json["result_count"], serde_json::json!(1));
+        assert_eq!(first_json["data"][0]["id"], serde_json::json!(decision_id));
+        assert!(hivemind_dir.join("graph.kuzu").exists());
+
+        let dot = run(&Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "--graph-backend",
+            "kuzu",
+            "dump",
+            "--format",
+            "dot",
+        ]))
+        .expect("kuzu dump succeeds");
+        assert!(dot.contains("Persist query graph"));
+
+        let _ = std::fs::remove_dir_all(&hivemind_dir);
     }
 
     #[test]

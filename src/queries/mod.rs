@@ -160,14 +160,8 @@ pub fn get_relevant_decisions(
     let truncated = total_count > MAX_QUERY_RESULTS;
 
     let decision_rows = graph.query(
-        "MATCH (d:`Decision`) WHERE $topic IN d.topic_keys RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys ORDER BY d.id LIMIT $limit;",
-        &GraphParams::from([
-            ("topic".to_owned(), GraphValue::String(normalized_topic)),
-            (
-                "limit".to_owned(),
-                GraphValue::Int(i64::try_from(MAX_QUERY_RESULTS).unwrap_or(1000)),
-            ),
-        ]),
+        "MATCH (d:`Decision`) WHERE $topic IN d.topic_keys RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys ORDER BY d.id LIMIT 1000;",
+        &GraphParams::from([("topic".to_owned(), GraphValue::String(normalized_topic))]),
     )?;
 
     let mut decisions = Vec::new();
