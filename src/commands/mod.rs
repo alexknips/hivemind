@@ -720,8 +720,8 @@ mod tests {
                 &["Infra / Queue".to_owned()],
                 &[option_a.clone(), option_b.clone()],
                 Some(option_b.as_str()),
-                &[hypothesis_id.clone()],
-                &[evidence_id.clone()],
+                std::slice::from_ref(&hypothesis_id),
+                std::slice::from_ref(&evidence_id),
             )
             .expect("propose decision");
 

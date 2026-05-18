@@ -568,12 +568,12 @@ mod tests {
 
     #[test]
     fn sqlite_append_assigns_monotonic_ids() -> Result<()> {
-        with_sqlite_ledger("append-monotonic", |ledger| assert_monotonic_append(ledger))
+        with_sqlite_ledger("append-monotonic", assert_monotonic_append)
     }
 
     #[test]
     fn sqlite_append_is_idempotent_for_duplicate_event_uuid() -> Result<()> {
-        with_sqlite_ledger("append-dedup", |ledger| assert_dedup_by_event_uuid(ledger))
+        with_sqlite_ledger("append-dedup", assert_dedup_by_event_uuid)
     }
 
     #[test]

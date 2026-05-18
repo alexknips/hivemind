@@ -469,12 +469,9 @@ fn render_dot(graph: &DumpGraph) -> Result<String> {
                 let status = hypothesis_status_name(derive_hypothesis_status(graph, id)?);
                 format!("{statement}\\nstatus: {status}")
             }
-            _ => {
-                let summary = graph_property_string(properties, "content")
-                    .or_else(|| graph_property_string(properties, "label"))
-                    .unwrap_or_else(|| id.clone());
-                summary
-            }
+            _ => graph_property_string(properties, "content")
+                .or_else(|| graph_property_string(properties, "label"))
+                .unwrap_or_else(|| id.clone()),
         };
 
         dot.push_str(&format!(
