@@ -1,7 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use chrono::{DateTime, Duration, Utc};
+use clap::Parser;
+use hivemind::cli::{run, Cli};
 use hivemind::events::{Event, EventType, RelationKind};
 use hivemind::ledger::{EventLedger, SqliteEventLedger};
 use serde_json::json;
@@ -81,6 +84,31 @@ fn populate_seed_hivemind_dir() -> TestResult<()> {
 
     reset_seed_dir(&seed_dir)?;
     seed_to_dir(&seed_dir)
+}
+
+#[test]
+fn replay_smoke_warns_only_on_query_drift() -> TestResult<()> {
+    let started = Instant::now();
+    let seed_dir = unique_temp_dir("replay-smoke");
+    seed_to_dir(&seed_dir)?;
+
+    let before_replay = capture_replay_query_outputs(&seed_dir)?;
+    let after_replay = capture_replay_query_outputs(&seed_dir)?;
+
+    let query_diff = replay_query_diff(&before_replay, &after_replay);
+    if !query_diff.is_empty() {
+        eprintln!("warning: replay smoke query output drift detected\n{query_diff}");
+    }
+
+    let elapsed = started.elapsed();
+    if elapsed.as_secs_f64() > 5.0 {
+        eprintln!(
+            "warning: replay smoke exceeded 5s target: {:.3}s",
+            elapsed.as_secs_f64()
+        );
+    }
+
+    Ok(())
 }
 
 fn seed_to_dir(seed_dir: &Path) -> TestResult<()> {
@@ -276,7 +304,7 @@ impl SeedBuilder {
         let sequence = self.events.len() + 1;
         self.events.push(Event {
             event_id: None,
-            event_uuid: Uuid::from_u128(sequence as u128),
+            event_uuid: Uuid::from_u128(u128::try_from(sequence).unwrap_or(u128::MAX)),
             correlation_id: Some("seed-dataset-v1".to_owned()),
             causation_event_id,
             event_type,
@@ -297,6 +325,91 @@ fn canonical_ledger_export(seed_dir: &Path) -> TestResult<Vec<u8>> {
     let ledger = SqliteEventLedger::open(seed_dir)?;
     let events = ledger.read(0, 10_000)?;
     Ok(serde_json::to_vec_pretty(&events)?)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ReplayQueryOutput {
+    name: &'static str,
+    json: String,
+}
+
+fn capture_replay_query_outputs(seed_dir: &Path) -> TestResult<Vec<ReplayQueryOutput>> {
+    let seed_dir = seed_dir.display().to_string();
+    let query_specs: [(&str, &[&str]); 3] = [
+        (
+            "get_decision",
+            &["query", "get_decision", "--id", "decision-005"],
+        ),
+        (
+            "get_relevant_decisions",
+            &["query", "get_relevant_decisions", "--topic", "architecture"],
+        ),
+        (
+            "get_supersession_chain",
+            &["query", "get_supersession_chain", "--id", "decision-002"],
+        ),
+    ];
+
+    let mut outputs = Vec::with_capacity(query_specs.len());
+    for (name, args) in query_specs {
+        let mut argv = vec!["hivemind", "--hivemind-dir", seed_dir.as_str()];
+        argv.extend(args.iter().copied());
+        let cli = Cli::parse_from(argv);
+        outputs.push(ReplayQueryOutput {
+            name,
+            json: canonical_query_json(&run(&cli)?)?,
+        });
+    }
+
+    Ok(outputs)
+}
+
+fn canonical_query_json(raw_json: &str) -> TestResult<String> {
+    let mut value: serde_json::Value = serde_json::from_str(raw_json)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("latency_ms".to_owned(), json!(0));
+    }
+    Ok(serde_json::to_string_pretty(&value)?)
+}
+
+fn replay_query_diff(
+    before_replay: &[ReplayQueryOutput],
+    after_replay: &[ReplayQueryOutput],
+) -> String {
+    let mut diff = String::new();
+    for (before, after) in before_replay.iter().zip(after_replay) {
+        if before != after {
+            diff.push_str("query: ");
+            diff.push_str(before.name);
+            diff.push('\n');
+            diff.push_str(&unified_diff(&before.json, &after.json));
+        }
+    }
+
+    if before_replay.len() != after_replay.len() {
+        diff.push_str(&format!(
+            "query count changed: before={}, after={}\n",
+            before_replay.len(),
+            after_replay.len()
+        ));
+    }
+
+    diff
+}
+
+fn unified_diff(before: &str, after: &str) -> String {
+    let mut diff = String::from("--- before replay\n+++ after replay\n@@\n");
+    for line in before.lines() {
+        diff.push('-');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+    for line in after.lines() {
+        diff.push('+');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+    diff
 }
 
 fn reset_seed_dir(seed_dir: &Path) -> TestResult<()> {
