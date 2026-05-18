@@ -57,20 +57,6 @@ must be an explicit Slack action or a deterministic API/CLI/MCP tool call.
 - Tenant isolation belongs at the hosted service boundary: Slack team/workspace,
   actor token, and organization id must map to a single HiveMind tenant.
 
-## Follow-Up Beads
-
-- Implement hosted command/query API backed by the existing commands and query
-  modules.
-- Prototype Slack app manifest plus `/hivemind` command and `Capture decision`
-  message shortcut.
-- Add Slack interaction handler with signature verification, 3-second ack,
-  async enqueue, and idempotent retries.
-- Build agent CLI direct capture against the hosted API with env-based actor
-  token config.
-- Build MCP stdio server as a thin adapter over the same API and document
-  client config for Codex/Claude/Gemini-style tools.
-- Add optional Slack marked-thread draft listener after explicit capture works.
-
 ## References
 
 - Slack slash commands and message shortcuts are app interactivity entry points:

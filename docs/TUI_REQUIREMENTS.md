@@ -1,6 +1,7 @@
 # Decision Search And Graph TUI Requirements
 
-Status: investigation output for `hivemind-decision-search-graph-tui-requirements-dci1`.
+This document captures stable product requirements for searching and inspecting
+HiveMind decisions in a terminal UI.
 
 ## Context
 
@@ -18,27 +19,23 @@ HiveMind because decisions do not flow through work columns. HiveMind's primary
 shape is a provenance graph: decisions, actors, options, evidence, hypotheses,
 and supersession edges.
 
-## Product Milestones
+## Local Workflows
 
-The search/TUI work should serve two local-first milestones:
+The search/TUI surface must support two local-first workflows:
 
-1. Milestone 1: run HiveMind locally, capture decisions that agents make, and
-   let the user explore those captured decisions. The first explorer slice
-   should optimize for agent-authored decisions, actor/source provenance, and
-   fast local graph navigation.
-2. Milestone 2: still local-only, import external textual documents, add their
-   decisions to the graph with document provenance, and support the weekly
-   workflow: "what decisions were added to the graph since last week?"
+1. Explore decisions captured from agents, with actor/source provenance and fast
+   local graph navigation.
+2. Explore decisions imported from external textual documents, including the
+   recurring question: "what decisions were added to the graph since last week?"
 
 This is not a board, kanban, task tracker, or project-management UI. Any view
 that looks like columns of work states is out of scope unless a concrete
 decision-provenance workflow later proves it necessary. The replacement model is
 search results plus an ego-centric provenance graph.
 
-## First Useful Slice
+## Explorer Shape
 
-For Milestone 1, build a read-only TUI after the query layer has real search
-support:
+The TUI is read-only and centered on search plus provenance navigation:
 
 1. Start on a search screen with a result list and compact filter bar.
 2. Open a selected decision into a detail pane showing title, status, actor
@@ -51,10 +48,7 @@ support:
 5. Offer DOT export handoff for full graph rendering instead of trying to draw
    the whole organization graph in the terminal.
 
-This slice is explicitly read-only. No proposing, accepting, rejecting, or
-superseding decisions from the TUI until search/navigation proves useful.
-
-For Milestone 2, extend the same explorer instead of adding a new UI shape:
+The document-import workflow uses the same explorer shape:
 
 1. Add source/document filters for imported textual decisions.
 2. Add a temporal decision-diff entry point for "decisions added since <time>",
@@ -72,7 +66,8 @@ Minimum search input:
 - Topic filter, including multiple topic keys.
 - Status filter: proposed, accepted, rejected, contested, superseded.
 - Actor filter for proposed/accepted/rejected edges.
-- Source filter, at least `source=agent` for M1 and `source=document` for M2.
+- Source filter, at least `source=agent` for agent-capture workflows and
+  `source=document` for document-import workflows.
 - Evidence, option, and hypothesis text matching once those properties are
   queryable.
 - Date range once event timestamps are exposed in query DTOs.
@@ -141,24 +136,26 @@ at a time: results -> detail -> graph context.
 
 ## Stack Recommendation
 
-Stay CLI/query-first until `search_decisions` and `get_decision_neighborhood`
-exist. Then add a Rust TUI using `ratatui` plus `crossterm`; this keeps the
-binary in the current Rust crate and avoids a second implementation language.
+The TUI should call explicit query APIs such as `search_decisions` and
+`get_decision_neighborhood`; it should not reach around the query layer into
+storage internals. A Rust TUI using `ratatui` plus `crossterm` keeps the binary
+in the current Rust crate and avoids a second implementation language.
 Add dependencies only with a TUI feature flag if build cost becomes noticeable.
 
 Tests should cover query DTOs first, then pure view-model reducers for keyboard
 state. Terminal snapshot tests are useful after the first layout stabilizes;
 they should not block the query work.
 
-## Query Gaps Before TUI
+## Query Capabilities
 
 - `search_decisions(request)` with text query, filters, limit/cursor, snippets,
   matched fields, deterministic ordering, and `truncated`.
 - `get_decision_neighborhood(id, depth, relation_filter?)` returning typed nodes
   and edges suitable for an ego graph.
 - `get_decisions_added_since(since, until?, filters?)` or equivalent temporal
-  diff query for the Milestone 2 weekly workflow. It must define whether it uses
-  event offsets, event timestamps, node creation timestamps, or a combination.
+  diff query for the local document-import workflow. It must define whether it
+  uses event offsets, event timestamps, node creation timestamps, or a
+  combination.
 - Richer `get_decision` detail: actor edges, option/evidence/hypothesis labels
   and content, timestamps, and event origins where available.
 - Pagination on topic/status queries.
@@ -173,21 +170,6 @@ they should not block the query work.
 - LLM summarization, semantic ranking, or deduplication inside the read/query
   layer.
 - Write actions from the first TUI slice.
-- Hosted/SaaS ingestion or collaboration UX for M1/M2.
+- Hosted/SaaS ingestion or collaboration UX for these local workflows.
 - Direct database access from the TUI; it should call the same CLI/query API or
   hosted service API as other clients.
-
-## Follow-Up Beads
-
-- `hivemind-decision-search-query-capability-4cyy`: implement decision search.
-- `hivemind-kilj`: add a decision neighborhood query for ego-graph navigation.
-- `hivemind-a2q5`: add a read-only `hivemind tui` prototype behind a feature
-  flag after search and neighborhood queries exist.
-- `hivemind-25h9`: add seed/golden fixtures for actor filters, evidence text
-  matches, branchy supersession, empty pages, and truncated search results.
-- `hivemind-m2-text-import-weekly-diff-semantics-1ak0`: define local text
-  import and weekly decision diff semantics.
-- `hivemind-local-text-document-decision-importer-iumh`: add the local text
-  document importer for M2.
-- `hivemind-local-import-weekly-diff-demo-qovk`: prove the M2 import plus weekly
-  diff workflow end to end.

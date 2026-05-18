@@ -100,6 +100,17 @@ Whether you're a human engineer or an AI agent contributing to HiveMind, you com
 
 This is the standard. Anything less and we are not building organizational memory — we are building yet another note-taking app.
 
+---
+
+## 9. Documentation boundary
+
+Work tracking belongs in Beads, not ordinary repo files.
+
+- Use Beads for task breakdowns, dependencies, milestones, follow-ups, routing, status, and implementation queues.
+- Keep ordinary docs and source comments focused on stable product behavior, architecture, commands, contributor rules, and validation guidance.
+- `PLAN.md` is the sole planning exception. Do not add planning sections to other docs as a substitute for beads.
+- When a planning detail must be preserved, update or create the relevant bead or bead note instead of adding it to docs.
+
 <!-- bv-agent-instructions-v2 -->
 
 ---

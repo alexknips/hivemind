@@ -1,6 +1,7 @@
 # Remote Database Architecture
 
-Status: accepted short-run recommendation, 2026-05-18.
+This document records the accepted short-run recommendation for shared HiveMind
+persistence.
 
 ## Recommendation
 
@@ -118,23 +119,6 @@ The service must model identity and permissions from the start:
 - Audit views read the ledger, not chat logs or git history.
 - Shared decision history is visible immediately after commit; no pull/push
   mental model is exposed to users.
-
-## Follow-Up Beads
-
-1. `feature/P0`: Add Postgres migrations for `events`, `actors`, typed graph
-   projection tables, edges, and projection checkpoint metadata.
-2. `feature/P0`: Implement `PostgresEventLedger` with idempotent append,
-   ordered reads, replay, and transaction tests.
-3. `feature/P0`: Implement transactional Postgres projector and query parity
-   tests against the current Kuzu path.
-4. `feature/P0`: Add HiveMind HTTP service that wraps commands and queries,
-   including actor authentication and org scoping.
-5. `feature/P1`: Add CLI remote mode and keep local SQLite/Kuzu mode as the
-   five-minute onboarding path.
-6. `task/P1`: Add query pagination, `truncated`, and concurrent supersession
-   fixtures before exposing multi-user remote queries.
-7. `task/P1`: Spike Neo4j and FalkorDB `GraphView` projections only after the
-   Postgres-backed service passes parity and concurrency tests.
 
 ## Checked Inputs
 
