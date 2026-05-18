@@ -1,0 +1,119 @@
+{
+  "data": [
+    {
+      "chosen_option_id": null,
+      "evidence_ids": [],
+      "hypotheses": [],
+      "id": "decision-001",
+      "option_ids": [],
+      "rationale": "Deterministic rationale for seed decision 001",
+      "status": "superseded",
+      "title": "Seed decision 001",
+      "topic_keys": [
+        "architecture",
+        "slice-one"
+      ]
+    },
+    {
+      "chosen_option_id": null,
+      "evidence_ids": [],
+      "hypotheses": [],
+      "id": "decision-005",
+      "option_ids": [],
+      "rationale": "Deterministic rationale for seed decision 005",
+      "status": "proposed",
+      "title": "Seed decision 005",
+      "topic_keys": [
+        "architecture",
+        "slice-one"
+      ]
+    },
+    {
+      "chosen_option_id": null,
+      "evidence_ids": [],
+      "hypotheses": [],
+      "id": "decision-009",
+      "option_ids": [],
+      "rationale": "Deterministic rationale for seed decision 009",
+      "status": "proposed",
+      "title": "Seed decision 009",
+      "topic_keys": [
+        "architecture",
+        "slice-one"
+      ]
+    },
+    {
+      "chosen_option_id": null,
+      "evidence_ids": [],
+      "hypotheses": [],
+      "id": "decision-013",
+      "option_ids": [],
+      "rationale": "Deterministic rationale for seed decision 013",
+      "status": "proposed",
+      "title": "Seed decision 013",
+      "topic_keys": [
+        "architecture",
+        "slice-one"
+      ]
+    },
+    {
+      "chosen_option_id": null,
+      "evidence_ids": [],
+      "hypotheses": [],
+      "id": "decision-017",
+      "option_ids": [],
+      "rationale": "Deterministic rationale for seed decision 017",
+      "status": "proposed",
+      "title": "Seed decision 017",
+      "topic_keys": [
+        "architecture",
+        "slice-one"
+      ]
+    },
+    {
+      "chosen_option_id": null,
+      "evidence_ids": [],
+      "hypotheses": [],
+      "id": "decision-021",
+      "option_ids": [],
+      "rationale": "Deterministic rationale for seed decision 021",
+      "status": "proposed",
+      "title": "Seed decision 021",
+      "topic_keys": [
+        "architecture",
+        "slice-one"
+      ]
+    },
+    {
+      "chosen_option_id": null,
+      "evidence_ids": [],
+      "hypotheses": [],
+      "id": "decision-025",
+      "option_ids": [],
+      "rationale": "Deterministic rationale for seed decision 025",
+      "status": "proposed",
+      "title": "Seed decision 025",
+      "topic_keys": [
+        "architecture",
+        "slice-one"
+      ]
+    },
+    {
+      "chosen_option_id": null,
+      "evidence_ids": [],
+      "hypotheses": [],
+      "id": "decision-029",
+      "option_ids": [],
+      "rationale": "Deterministic rationale for seed decision 029",
+      "status": "proposed",
+      "title": "Seed decision 029",
+      "topic_keys": [
+        "architecture",
+        "slice-one"
+      ]
+    }
+  ],
+  "latency_ms": 0,
+  "result_count": 8,
+  "truncated": false
+}

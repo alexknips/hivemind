@@ -1,0 +1,29 @@
+{
+  "data": {
+    "chosen_option_id": "option-005-b",
+    "evidence_ids": [
+      "evidence-001"
+    ],
+    "hypotheses": [
+      {
+        "id": "hypothesis-001",
+        "status": "refuted"
+      }
+    ],
+    "id": "decision-005",
+    "option_ids": [
+      "option-005-a",
+      "option-005-b"
+    ],
+    "rationale": "Deterministic rationale for seed decision 005",
+    "status": "proposed",
+    "title": "Seed decision 005",
+    "topic_keys": [
+      "architecture",
+      "slice-one"
+    ]
+  },
+  "latency_ms": 0,
+  "result_count": 1,
+  "truncated": false
+}

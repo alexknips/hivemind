@@ -1,0 +1,13 @@
+{
+  "data": {
+    "decision_ids": [
+      "decision-001",
+      "decision-002",
+      "decision-003"
+    ],
+    "input_index": 1
+  },
+  "latency_ms": 0,
+  "result_count": 3,
+  "truncated": false
+}

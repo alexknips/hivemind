@@ -26,3 +26,16 @@ diff if they diverge after normalizing volatile `latency_ms`. It is
 intentionally non-gating for output drift: it exits non-zero only when setup,
 ledger IO, projection, or query execution fails. Slice 1 has no persistent
 graph file, so the smoke test does not delete project data.
+
+Golden query snapshots run with:
+
+```bash
+cargo test --test golden
+```
+
+Regenerate `snapshots/golden/*.json` after intentional query output changes
+with:
+
+```bash
+cargo test --test golden -- --bless
+```
