@@ -18,9 +18,27 @@ HiveMind because decisions do not flow through work columns. HiveMind's primary
 shape is a provenance graph: decisions, actors, options, evidence, hypotheses,
 and supersession edges.
 
+## Product Milestones
+
+The search/TUI work should serve two local-first milestones:
+
+1. Milestone 1: run HiveMind locally, capture decisions that agents make, and
+   let the user explore those captured decisions. The first explorer slice
+   should optimize for agent-authored decisions, actor/source provenance, and
+   fast local graph navigation.
+2. Milestone 2: still local-only, import external textual documents, add their
+   decisions to the graph with document provenance, and support the weekly
+   workflow: "what decisions were added to the graph since last week?"
+
+This is not a board, kanban, task tracker, or project-management UI. Any view
+that looks like columns of work states is out of scope unless a concrete
+decision-provenance workflow later proves it necessary. The replacement model is
+search results plus an ego-centric provenance graph.
+
 ## First Useful Slice
 
-Build a read-only TUI after the query layer has real search support:
+For Milestone 1, build a read-only TUI after the query layer has real search
+support:
 
 1. Start on a search screen with a result list and compact filter bar.
 2. Open a selected decision into a detail pane showing title, status, actor
@@ -36,6 +54,16 @@ Build a read-only TUI after the query layer has real search support:
 This slice is explicitly read-only. No proposing, accepting, rejecting, or
 superseding decisions from the TUI until search/navigation proves useful.
 
+For Milestone 2, extend the same explorer instead of adding a new UI shape:
+
+1. Add source/document filters for imported textual decisions.
+2. Add a temporal decision-diff entry point for "decisions added since <time>",
+   including a deterministic interpretation of "last week" in CLI/query code.
+3. Let each diff result open the same decision detail and graph-context panes,
+   with provenance back to the imported document source.
+4. Distinguish newly added decision nodes from status changes or new evidence on
+   an existing decision.
+
 ## Search And Filters
 
 Minimum search input:
@@ -44,9 +72,11 @@ Minimum search input:
 - Topic filter, including multiple topic keys.
 - Status filter: proposed, accepted, rejected, contested, superseded.
 - Actor filter for proposed/accepted/rejected edges.
+- Source filter, at least `source=agent` for M1 and `source=document` for M2.
 - Evidence, option, and hypothesis text matching once those properties are
   queryable.
 - Date range once event timestamps are exposed in query DTOs.
+- Added-since filter for temporal decision diff workflows.
 - Limit and cursor/pagination; never silently truncate.
 
 Minimum result row:
@@ -101,6 +131,8 @@ at a time: results -> detail -> graph context.
 - Empty ledger: show commands to seed or emit the first decision.
 - No search results: keep filters visible and show which constraints removed all
   results.
+- No added decisions in diff view: show the resolved time window and make clear
+  that the graph changed zero decision nodes in that interval.
 - Query limit hit: show `truncated: true` and the next-page action.
 - Missing graph projection or replay failure: show the query error and keep the
   user in the TUI shell.
@@ -124,18 +156,24 @@ they should not block the query work.
   matched fields, deterministic ordering, and `truncated`.
 - `get_decision_neighborhood(id, depth, relation_filter?)` returning typed nodes
   and edges suitable for an ego graph.
+- `get_decisions_added_since(since, until?, filters?)` or equivalent temporal
+  diff query for the Milestone 2 weekly workflow. It must define whether it uses
+  event offsets, event timestamps, node creation timestamps, or a combination.
 - Richer `get_decision` detail: actor edges, option/evidence/hypothesis labels
   and content, timestamps, and event origins where available.
 - Pagination on topic/status queries.
-- DTO fields for stale assumptions and branched supersession chains.
+- DTO fields for stale assumptions, branched supersession chains, source
+  provenance, and imported document references where applicable.
 
 ## Out Of Scope
 
-- Board/kanban columns as the primary interface.
+- Board/kanban columns as the primary interface, including status columns that
+  make decisions look like tickets.
 - Whole-graph terminal canvas for large organizations.
 - LLM summarization, semantic ranking, or deduplication inside the read/query
   layer.
 - Write actions from the first TUI slice.
+- Hosted/SaaS ingestion or collaboration UX for M1/M2.
 - Direct database access from the TUI; it should call the same CLI/query API or
   hosted service API as other clients.
 
@@ -147,3 +185,9 @@ they should not block the query work.
   flag after search and neighborhood queries exist.
 - `hivemind-25h9`: add seed/golden fixtures for actor filters, evidence text
   matches, branchy supersession, empty pages, and truncated search results.
+- `hivemind-m2-text-import-weekly-diff-semantics-1ak0`: define local text
+  import and weekly decision diff semantics.
+- `hivemind-local-text-document-decision-importer-iumh`: add the local text
+  document importer for M2.
+- `hivemind-local-import-weekly-diff-demo-qovk`: prove the M2 import plus weekly
+  diff workflow end to end.
