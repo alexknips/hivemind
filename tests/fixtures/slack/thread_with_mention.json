@@ -1,0 +1,17 @@
+{
+  "team_id": "T123",
+  "channel_id": "C456",
+  "thread_ts": "1715970800.000100",
+  "messages": [
+    {
+      "user_id": "U111",
+      "ts": "1715970800.000100",
+      "text": "@hivemind\nDecision: Use local fake Slack ingest first\nRationale: It verifies mention-gated capture without Slack credentials\nTopics: integrations, slack\nOptions: Build local fixture ingest, Wait for hosted Slack app\nChosen: Build local fixture ingest"
+    },
+    {
+      "user_id": "U222",
+      "ts": "1715970860.000200",
+      "text": "Thread context is safe to attach as evidence for the prototype."
+    }
+  ]
+}

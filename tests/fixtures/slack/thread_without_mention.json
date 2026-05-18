@@ -1,0 +1,12 @@
+{
+  "team_id": "T123",
+  "channel_id": "C456",
+  "thread_ts": "1715970900.000300",
+  "messages": [
+    {
+      "user_id": "U111",
+      "ts": "1715970900.000300",
+      "text": "Decision: Do not ingest this thread\nRationale: It lacks the explicit HiveMind mention\nOptions: Ignore it, Capture it"
+    }
+  ]
+}
