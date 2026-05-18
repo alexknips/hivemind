@@ -127,26 +127,25 @@ pub trait GraphView {
 pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
     let payload = events::validate(event).map_err(projector_error)?;
     let event_origin = event_origin(event)?;
+    let origin_properties = origin_properties(event, event_origin);
 
-    upsert_actor(graph, &event.actor_id, event_origin)?;
+    upsert_actor(graph, &event.actor_id, &origin_properties)?;
 
     match payload {
         EventPayload::DecisionProposed(payload) => {
-            let decision_properties = GraphProperties::from([
-                (
-                    "title".to_owned(),
-                    GraphValue::String(payload.title.clone()),
-                ),
-                (
-                    "rationale".to_owned(),
-                    GraphValue::String(payload.rationale.clone()),
-                ),
-                (
-                    "topic_keys".to_owned(),
-                    GraphValue::StringList(payload.topic_keys.clone()),
-                ),
-                ("event_origin".to_owned(), GraphValue::Int(event_origin)),
-            ]);
+            let mut decision_properties = origin_properties.clone();
+            decision_properties.insert(
+                "title".to_owned(),
+                GraphValue::String(payload.title.clone()),
+            );
+            decision_properties.insert(
+                "rationale".to_owned(),
+                GraphValue::String(payload.rationale.clone()),
+            );
+            decision_properties.insert(
+                "topic_keys".to_owned(),
+                GraphValue::StringList(payload.topic_keys.clone()),
+            );
             graph.upsert_node(
                 NodeKind::Decision,
                 &payload.decision_id,
@@ -156,34 +155,26 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
                 RelationKind::ProposedBy,
                 &payload.decision_id,
                 &event.actor_id,
-                &origin_properties(event_origin),
+                &origin_properties,
             )?;
 
             for option_id in &payload.option_ids {
-                graph.upsert_node(
-                    NodeKind::Option,
-                    option_id,
-                    &origin_properties(event_origin),
-                )?;
+                graph.upsert_node(NodeKind::Option, option_id, &origin_properties)?;
                 graph.upsert_edge(
                     RelationKind::HasOption,
                     &payload.decision_id,
                     option_id,
-                    &origin_properties(event_origin),
+                    &origin_properties,
                 )?;
             }
 
             if let Some(chosen_option_id) = &payload.chosen_option_id {
-                graph.upsert_node(
-                    NodeKind::Option,
-                    chosen_option_id,
-                    &origin_properties(event_origin),
-                )?;
+                graph.upsert_node(NodeKind::Option, chosen_option_id, &origin_properties)?;
                 graph.upsert_edge(
                     RelationKind::Chose,
                     &payload.decision_id,
                     chosen_option_id,
-                    &origin_properties(event_origin),
+                    &origin_properties,
                 )?;
             }
 
@@ -192,7 +183,7 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
                     RelationKind::Assumes,
                     &payload.decision_id,
                     hypothesis_id,
-                    &origin_properties(event_origin),
+                    &origin_properties,
                 )?;
             }
 
@@ -201,7 +192,7 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
                     RelationKind::BasedOn,
                     &payload.decision_id,
                     evidence_id,
-                    &origin_properties(event_origin),
+                    &origin_properties,
                 )?;
             }
         }
@@ -209,28 +200,26 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
             RelationKind::AcceptedBy,
             &payload.decision_id,
             &event.actor_id,
-            &origin_properties(event_origin),
+            &origin_properties,
         )?,
         EventPayload::DecisionRejected(payload) => graph.upsert_edge(
             RelationKind::RejectedBy,
             &payload.decision_id,
             &event.actor_id,
-            &origin_properties(event_origin),
+            &origin_properties,
         )?,
         EventPayload::DecisionSuperseded(payload) => graph.upsert_edge(
             RelationKind::Supersedes,
             &payload.new_decision_id,
             &payload.old_decision_id,
-            &origin_properties(event_origin),
+            &origin_properties,
         )?,
         EventPayload::EvidenceRecorded(payload) => {
-            let evidence_properties = GraphProperties::from([
-                (
-                    "content".to_owned(),
-                    GraphValue::String(payload.content.clone()),
-                ),
-                ("event_origin".to_owned(), GraphValue::Int(event_origin)),
-            ]);
+            let mut evidence_properties = origin_properties.clone();
+            evidence_properties.insert(
+                "content".to_owned(),
+                GraphValue::String(payload.content.clone()),
+            );
             graph.upsert_node(
                 NodeKind::Evidence,
                 &payload.evidence_id,
@@ -238,13 +227,11 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
             )?;
         }
         EventPayload::HypothesisRecorded(payload) => {
-            let hypothesis_properties = GraphProperties::from([
-                (
-                    "statement".to_owned(),
-                    GraphValue::String(payload.statement.clone()),
-                ),
-                ("event_origin".to_owned(), GraphValue::Int(event_origin)),
-            ]);
+            let mut hypothesis_properties = origin_properties.clone();
+            hypothesis_properties.insert(
+                "statement".to_owned(),
+                GraphValue::String(payload.statement.clone()),
+            );
             graph.upsert_node(
                 NodeKind::Hypothesis,
                 &payload.hypothesis_id,
@@ -255,7 +242,7 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
             relation_kind(payload.relation),
             &payload.from_id,
             &payload.to_id,
-            &origin_properties(event_origin),
+            &origin_properties,
         )?,
     }
 
@@ -275,12 +262,32 @@ pub fn rebuild_graph(ledger: &impl EventLedger, graph: &impl GraphView) -> Resul
     project_from_ledger(ledger, graph, 0)
 }
 
-fn upsert_actor(graph: &impl GraphView, actor_id: &str, event_origin: i64) -> Result<()> {
-    graph.upsert_node(NodeKind::Actor, actor_id, &origin_properties(event_origin))
+fn upsert_actor(
+    graph: &impl GraphView,
+    actor_id: &str,
+    properties: &GraphProperties,
+) -> Result<()> {
+    graph.upsert_node(NodeKind::Actor, actor_id, properties)
 }
 
-fn origin_properties(event_origin: i64) -> GraphProperties {
-    GraphProperties::from([("event_origin".to_owned(), GraphValue::Int(event_origin))])
+fn origin_properties(event: &Event, event_origin: i64) -> GraphProperties {
+    let mut properties = GraphProperties::from([
+        ("event_origin".to_owned(), GraphValue::Int(event_origin)),
+        (
+            "source".to_owned(),
+            GraphValue::String(event.source.as_str().to_owned()),
+        ),
+    ]);
+    properties.insert(
+        "source_ref".to_owned(),
+        event
+            .source_ref
+            .as_ref()
+            .map_or(GraphValue::Null, |source_ref| {
+                GraphValue::String(source_ref.clone())
+            }),
+    );
+    properties
 }
 
 fn event_origin(event: &Event) -> Result<i64> {
@@ -315,7 +322,7 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    use crate::events::{Event, EventType};
+    use crate::events::{Event, EventSource, EventType};
     use crate::ledger::InMemoryEventLedger;
 
     use super::*;
@@ -427,10 +434,25 @@ mod tests {
             ]))
         );
         assert!(nodes.contains_key(&(NodeKind::Option, "option:1".to_owned())));
-        assert!(nodes.contains_key(&(NodeKind::Actor, "actor:alice".to_owned())));
+        assert_eq!(
+            nodes
+                .get(&(NodeKind::Actor, "actor:alice".to_owned()))
+                .and_then(|properties| properties.get("source")),
+            Some(&GraphValue::String("agent".to_owned()))
+        );
         drop(nodes);
 
         let edges = graph.edges();
+        assert_eq!(
+            edges
+                .get(&(
+                    RelationKind::ProposedBy,
+                    "decision:1".to_owned(),
+                    "actor:alice".to_owned()
+                ))
+                .and_then(|properties| properties.get("source_ref")),
+            Some(&GraphValue::String("projection-test".to_owned()))
+        );
         for expected in [
             (RelationKind::ProposedBy, "decision:1", "actor:alice"),
             (RelationKind::HasOption, "decision:1", "option:1"),
@@ -600,6 +622,8 @@ mod tests {
             causation_event_id: None,
             event_type,
             actor_id: actor_id.to_owned(),
+            source: EventSource::Agent,
+            source_ref: Some("projection-test".to_owned()),
             payload,
             ts: Some(Utc::now()),
         }

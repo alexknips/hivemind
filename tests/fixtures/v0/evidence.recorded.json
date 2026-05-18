@@ -5,6 +5,8 @@
   "causation_event_id": null,
   "type": "evidence.recorded",
   "actor_id": "agent-a",
+  "source": "agent",
+  "source_ref": "agent:codex:session-1",
   "payload": {
     "evidence_id": "ev-sqlite-wal",
     "content": "SQLite WAL supports local append-heavy workloads for the prototype.",

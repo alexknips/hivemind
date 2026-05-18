@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Utc};
-use hivemind::events::{Event, EventType, RelationKind};
+use hivemind::events::{Event, EventSource, EventType, RelationKind};
 use hivemind::ledger::{EventLedger, SqliteEventLedger};
 use serde_json::json;
 use uuid::Uuid;
@@ -239,6 +239,8 @@ impl SeedBuilder {
             causation_event_id,
             event_type,
             actor_id: actor_id.to_owned(),
+            source: EventSource::Api,
+            source_ref: Some("seed-dataset-v1".to_owned()),
             payload,
             ts: Some(seed_timestamp(sequence)),
         });

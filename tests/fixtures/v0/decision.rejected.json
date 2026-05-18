@@ -5,6 +5,8 @@
   "causation_event_id": 1,
   "type": "decision.rejected",
   "actor_id": "human-b",
+  "source": "cli",
+  "source_ref": null,
   "payload": {
     "decision_id": "dec-1"
   },

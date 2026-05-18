@@ -5,6 +5,8 @@
   "causation_event_id": 1,
   "type": "decision.accepted",
   "actor_id": "human-a",
+  "source": "slack",
+  "source_ref": "slack://workspace/C0123456789/1715978503.000100",
   "payload": {
     "decision_id": "dec-1"
   },

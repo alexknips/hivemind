@@ -5,6 +5,8 @@
   "causation_event_id": null,
   "type": "hypothesis.recorded",
   "actor_id": "agent-a",
+  "source": "agent",
+  "source_ref": "agent:codex:session-1",
   "payload": {
     "hypothesis_id": "hyp-embedded-is-enough",
     "statement": "An embedded database is enough for slice-1 write throughput."

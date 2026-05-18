@@ -5,6 +5,8 @@
   "causation_event_id": 1,
   "type": "decision.superseded",
   "actor_id": "agent-a",
+  "source": "agent",
+  "source_ref": "agent:codex:session-1",
   "payload": {
     "old_decision_id": "dec-1",
     "new_decision_id": "dec-2"

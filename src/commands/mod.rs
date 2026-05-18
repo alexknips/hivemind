@@ -6,7 +6,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::error::CommandError;
-use crate::events::{Event, EventId, EventType, RelationKind};
+use crate::events::{Event, EventId, EventProvenance, EventType, RelationKind};
 use crate::ledger::EventLedger;
 use crate::Result;
 
@@ -19,6 +19,7 @@ pub const MAX_TOPIC_KEY_LEN: usize = 64;
 
 pub struct Commands<'a, L: EventLedger> {
     ledger: &'a L,
+    provenance: EventProvenance,
     state: Mutex<CommandState>,
 }
 
@@ -29,8 +30,13 @@ struct CommandState {
 
 impl<'a, L: EventLedger> Commands<'a, L> {
     pub fn new(ledger: &'a L) -> Self {
+        Self::new_with_provenance(ledger, EventProvenance::cli())
+    }
+
+    pub fn new_with_provenance(ledger: &'a L, provenance: EventProvenance) -> Self {
         Self {
             ledger,
+            provenance,
             state: Mutex::new(CommandState::default()),
         }
     }
@@ -40,20 +46,16 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("content", content)?;
 
         let evidence_id = generate_entity_id("evidence");
-        let event = Event {
-            event_id: None,
-            event_uuid: Uuid::new_v4(),
-            correlation_id: None,
-            causation_event_id: None,
-            event_type: EventType::EvidenceRecorded,
-            actor_id: actor_id.to_owned(),
-            payload: json!({
+        let event = self.event(
+            EventType::EvidenceRecorded,
+            actor_id,
+            json!({
                 "evidence_id": evidence_id,
                 "content": content,
                 "source": null
             }),
-            ts: Some(Utc::now()),
-        };
+            None,
+        );
 
         self.ledger.append(event)?;
         Ok(evidence_id)
@@ -64,19 +66,15 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("statement", statement)?;
 
         let hypothesis_id = generate_entity_id("hypothesis");
-        let event = Event {
-            event_id: None,
-            event_uuid: Uuid::new_v4(),
-            correlation_id: None,
-            causation_event_id: None,
-            event_type: EventType::HypothesisRecorded,
-            actor_id: actor_id.to_owned(),
-            payload: json!({
+        let event = self.event(
+            EventType::HypothesisRecorded,
+            actor_id,
+            json!({
                 "hypothesis_id": hypothesis_id,
                 "statement": statement
             }),
-            ts: Some(Utc::now()),
-        };
+            None,
+        );
 
         self.ledger.append(event)?;
         Ok(hypothesis_id)
@@ -175,14 +173,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
         let decision_id = generate_entity_id("decision");
 
-        let root_event = Event {
-            event_id: None,
-            event_uuid: Uuid::new_v4(),
-            correlation_id: None,
-            causation_event_id: None,
-            event_type: EventType::DecisionProposed,
-            actor_id: actor_id.to_owned(),
-            payload: json!({
+        let root_event = self.event(
+            EventType::DecisionProposed,
+            actor_id,
+            json!({
                 "decision_id": decision_id,
                 "title": title,
                 "rationale": rationale,
@@ -192,8 +186,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 "hypothesis_ids": hypothesis_ids,
                 "evidence_ids": evidence_ids,
             }),
-            ts: Some(Utc::now()),
-        };
+            None,
+        );
 
         let root_event_id = self.ledger.append(root_event)?;
 
@@ -257,16 +251,12 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
-        let event = Event {
-            event_id: None,
-            event_uuid: Uuid::new_v4(),
-            correlation_id: None,
-            causation_event_id: None,
-            event_type: EventType::DecisionAccepted,
-            actor_id: actor_id.to_owned(),
-            payload: json!({ "decision_id": decision_id }),
-            ts: Some(Utc::now()),
-        };
+        let event = self.event(
+            EventType::DecisionAccepted,
+            actor_id,
+            json!({ "decision_id": decision_id }),
+            None,
+        );
 
         self.ledger.append(event)
     }
@@ -288,16 +278,12 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
-        let event = Event {
-            event_id: None,
-            event_uuid: Uuid::new_v4(),
-            correlation_id: None,
-            causation_event_id: None,
-            event_type: EventType::DecisionRejected,
-            actor_id: actor_id.to_owned(),
-            payload: json!({ "decision_id": decision_id }),
-            ts: Some(Utc::now()),
-        };
+        let event = self.event(
+            EventType::DecisionRejected,
+            actor_id,
+            json!({ "decision_id": decision_id }),
+            None,
+        );
 
         self.ledger.append(event)
     }
@@ -333,19 +319,15 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
-        let event = Event {
-            event_id: None,
-            event_uuid: Uuid::new_v4(),
-            correlation_id: None,
-            causation_event_id: None,
-            event_type: EventType::DecisionSuperseded,
-            actor_id: actor_id.to_owned(),
-            payload: json!({
+        let event = self.event(
+            EventType::DecisionSuperseded,
+            actor_id,
+            json!({
                 "old_decision_id": old_decision_id,
                 "new_decision_id": new_decision_id,
             }),
-            ts: Some(Utc::now()),
-        };
+            None,
+        );
 
         self.ledger.append(event)
     }
@@ -424,26 +406,43 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         from_id: &str,
         to_id: &str,
     ) -> Result<EventId> {
-        let event = Event {
-            event_id: None,
-            event_uuid: Uuid::new_v4(),
-            correlation_id: None,
-            causation_event_id: if root_event_id == 0 {
-                None
-            } else {
-                Some(root_event_id)
-            },
-            event_type: EventType::RelationAdded,
-            actor_id: actor_id.to_owned(),
-            payload: json!({
+        let event = self.event(
+            EventType::RelationAdded,
+            actor_id,
+            json!({
                 "relation": relation,
                 "from_id": from_id,
                 "to_id": to_id,
             }),
-            ts: Some(Utc::now()),
-        };
+            if root_event_id == 0 {
+                None
+            } else {
+                Some(root_event_id)
+            },
+        );
 
         self.ledger.append(event)
+    }
+
+    fn event(
+        &self,
+        event_type: EventType,
+        actor_id: &str,
+        payload: serde_json::Value,
+        causation_event_id: Option<EventId>,
+    ) -> Event {
+        Event {
+            event_id: None,
+            event_uuid: Uuid::new_v4(),
+            correlation_id: None,
+            causation_event_id,
+            event_type,
+            actor_id: actor_id.to_owned(),
+            source: self.provenance.source,
+            source_ref: self.provenance.source_ref.clone(),
+            payload,
+            ts: Some(Utc::now()),
+        }
     }
 
     fn lock_state(&self) -> Result<MutexGuard<'_, CommandState>> {
@@ -611,11 +610,14 @@ fn generate_entity_id(prefix: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use proptest::prelude::*;
     use serde_json::json;
+    use uuid::Uuid;
 
-    use crate::events::{EventType, RelationKind};
-    use crate::ledger::{EventLedger, InMemoryEventLedger};
+    use crate::events::{EventProvenance, EventSource, EventType, RelationKind};
+    use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
     use super::{normalize_topic_key, Commands, MAX_TOPIC_KEY_LEN};
 
@@ -758,6 +760,58 @@ mod tests {
             .filter(|event| event.payload.get("relation") == Some(&json!(RelationKind::Chose)))
             .count();
         assert_eq!(chose_count, 1);
+    }
+
+    #[test]
+    fn direct_agent_decision_persists_agent_provenance() {
+        let dir =
+            std::env::temp_dir().join(format!("hivemind-agent-provenance-{}", Uuid::new_v4()));
+        let actor_id = "agent:codex:furiosa";
+        let decision_id = {
+            let ledger = SqliteEventLedger::open(&dir).expect("ledger opens");
+            let commands = Commands::new_with_provenance(
+                &ledger,
+                EventProvenance::agent("agent:codex:furiosa/session-1"),
+            );
+            let option_id = commands
+                .record_option(actor_id, "Keep substrate small", "Add source fields only")
+                .expect("option recorded");
+            commands
+                .propose_decision(
+                    actor_id,
+                    "Record direct agent provenance",
+                    "Agent-written decisions must be distinguishable from CLI writes",
+                    &["Integrations".to_owned()],
+                    &[option_id],
+                    None,
+                    &[],
+                    &[],
+                )
+                .expect("agent decision proposed")
+        };
+
+        let ledger = SqliteEventLedger::open(&dir).expect("ledger reopens");
+        let events = ledger.read(0, 20).expect("events read");
+        let proposal = events
+            .iter()
+            .find(|event| {
+                event.event_type == EventType::DecisionProposed
+                    && event
+                        .payload
+                        .get("decision_id")
+                        .and_then(|value| value.as_str())
+                        == Some(decision_id.as_str())
+            })
+            .expect("proposal persisted");
+
+        assert_eq!(proposal.actor_id, actor_id);
+        assert_eq!(proposal.source, EventSource::Agent);
+        assert_eq!(
+            proposal.source_ref.as_deref(),
+            Some("agent:codex:furiosa/session-1")
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -5,6 +5,8 @@
   "causation_event_id": 5,
   "type": "relation.added",
   "actor_id": "agent-a",
+  "source": "agent",
+  "source_ref": "agent:codex:session-1",
   "payload": {
     "relation": "SUPPORTS",
     "from_id": "ev-sqlite-wal",

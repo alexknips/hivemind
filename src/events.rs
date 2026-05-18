@@ -23,6 +23,55 @@ pub enum EventType {
     RelationAdded,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventSource {
+    #[default]
+    Cli,
+    Agent,
+    Slack,
+    Api,
+}
+
+impl EventSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Agent => "agent",
+            Self::Slack => "slack",
+            Self::Api => "api",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventProvenance {
+    pub source: EventSource,
+    pub source_ref: Option<String>,
+}
+
+impl EventProvenance {
+    pub fn new(source: EventSource, source_ref: Option<String>) -> Self {
+        Self { source, source_ref }
+    }
+
+    pub fn cli() -> Self {
+        Self::new(EventSource::Cli, None)
+    }
+
+    pub fn agent(source_ref: impl Into<String>) -> Self {
+        Self::new(EventSource::Agent, Some(source_ref.into()))
+    }
+
+    pub fn slack(source_ref: impl Into<String>) -> Self {
+        Self::new(EventSource::Slack, Some(source_ref.into()))
+    }
+
+    pub fn api(source_ref: Option<String>) -> Self {
+        Self::new(EventSource::Api, source_ref)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     pub event_id: Option<EventId>,
@@ -32,6 +81,10 @@ pub struct Event {
     #[serde(rename = "type")]
     pub event_type: EventType,
     pub actor_id: String,
+    #[serde(default)]
+    pub source: EventSource,
+    #[serde(default)]
+    pub source_ref: Option<String>,
     pub payload: Value,
     pub ts: Option<DateTime<Utc>>,
 }
@@ -213,6 +266,7 @@ fn validate_common(event: &Event) -> std::result::Result<(), EventValidationErro
     }
 
     require_non_empty("actor_id", &event.actor_id)?;
+    require_optional_non_empty("source_ref", event.source_ref.as_deref())?;
     require_optional_non_empty("correlation_id", event.correlation_id.as_deref())
 }
 
@@ -358,6 +412,8 @@ mod tests {
             causation_event_id: None,
             event_type: EventType::DecisionAccepted,
             actor_id: "agent-a".to_owned(),
+            source: EventSource::Agent,
+            source_ref: Some("agent:codex:test-session".to_owned()),
             payload: json!({ "evidence_id": "ev-1", "content": "Wrong payload" }),
             ts: None,
         };

@@ -5,6 +5,8 @@
   "causation_event_id": null,
   "type": "decision.proposed",
   "actor_id": "agent-a",
+  "source": "agent",
+  "source_ref": "agent:codex:session-1",
   "payload": {
     "decision_id": "dec-1",
     "title": "Use SQLite as the slice-1 ledger",

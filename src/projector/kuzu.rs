@@ -16,66 +16,66 @@ const GRAPH_DB_NAME: &str = "graph.kuzu";
 const NODE_DDL: &[(NodeKind, &str)] = &[
     (
         NodeKind::Decision,
-        "CREATE NODE TABLE IF NOT EXISTS `Decision` (id STRING, title STRING, rationale STRING, topic_keys STRING[], event_origin INT64, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Decision` (id STRING, title STRING, rationale STRING, topic_keys STRING[], event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Actor,
-        "CREATE NODE TABLE IF NOT EXISTS `Actor` (id STRING, event_origin INT64, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Actor` (id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Evidence,
-        "CREATE NODE TABLE IF NOT EXISTS `Evidence` (id STRING, content STRING, event_origin INT64, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Evidence` (id STRING, content STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Option,
-        "CREATE NODE TABLE IF NOT EXISTS `Option` (id STRING, label STRING, description STRING, event_origin INT64, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Option` (id STRING, label STRING, description STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Hypothesis,
-        "CREATE NODE TABLE IF NOT EXISTS `Hypothesis` (id STRING, statement STRING, event_origin INT64, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Hypothesis` (id STRING, statement STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
 ];
 
 const RELATION_DDL: &[(RelationKind, &str)] = &[
     (
         RelationKind::ProposedBy,
-        "CREATE REL TABLE IF NOT EXISTS `PROPOSED_BY` (FROM `Decision` TO `Actor`, event_origin INT64);",
+        "CREATE REL TABLE IF NOT EXISTS `PROPOSED_BY` (FROM `Decision` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::AcceptedBy,
-        "CREATE REL TABLE IF NOT EXISTS `ACCEPTED_BY` (FROM `Decision` TO `Actor`, event_origin INT64);",
+        "CREATE REL TABLE IF NOT EXISTS `ACCEPTED_BY` (FROM `Decision` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::RejectedBy,
-        "CREATE REL TABLE IF NOT EXISTS `REJECTED_BY` (FROM `Decision` TO `Actor`, event_origin INT64);",
+        "CREATE REL TABLE IF NOT EXISTS `REJECTED_BY` (FROM `Decision` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::Supersedes,
-        "CREATE REL TABLE IF NOT EXISTS `SUPERSEDES` (FROM `Decision` TO `Decision`, event_origin INT64);",
+        "CREATE REL TABLE IF NOT EXISTS `SUPERSEDES` (FROM `Decision` TO `Decision`, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::BasedOn,
-        "CREATE REL TABLE IF NOT EXISTS `BASED_ON` (FROM `Decision` TO `Evidence`, event_origin INT64);",
+        "CREATE REL TABLE IF NOT EXISTS `BASED_ON` (FROM `Decision` TO `Evidence`, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::HasOption,
-        "CREATE REL TABLE IF NOT EXISTS `HAS_OPTION` (FROM `Decision` TO `Option`, event_origin INT64);",
+        "CREATE REL TABLE IF NOT EXISTS `HAS_OPTION` (FROM `Decision` TO `Option`, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::Chose,
-        "CREATE REL TABLE IF NOT EXISTS `CHOSE` (FROM `Decision` TO `Option`, event_origin INT64);",
+        "CREATE REL TABLE IF NOT EXISTS `CHOSE` (FROM `Decision` TO `Option`, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::Assumes,
-        "CREATE REL TABLE IF NOT EXISTS `ASSUMES` (FROM `Decision` TO `Hypothesis`, event_origin INT64);",
+        "CREATE REL TABLE IF NOT EXISTS `ASSUMES` (FROM `Decision` TO `Hypothesis`, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::Supports,
-        "CREATE REL TABLE IF NOT EXISTS `SUPPORTS` (FROM `Evidence` TO `Hypothesis`, event_origin INT64);",
+        "CREATE REL TABLE IF NOT EXISTS `SUPPORTS` (FROM `Evidence` TO `Hypothesis`, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::Refutes,
-        "CREATE REL TABLE IF NOT EXISTS `REFUTES` (FROM `Evidence` TO `Hypothesis`, event_origin INT64);",
+        "CREATE REL TABLE IF NOT EXISTS `REFUTES` (FROM `Evidence` TO `Hypothesis`, event_origin INT64, source STRING, source_ref STRING);",
     ),
 ];
 

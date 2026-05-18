@@ -8,7 +8,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use uuid::Uuid;
 
 use crate::error::LedgerError;
-use crate::events::{Event, EventId, EventType};
+use crate::events::{Event, EventId, EventSource, EventType};
 use crate::Result;
 
 const LEDGER_DB_NAME: &str = "ledger.sqlite";
@@ -48,6 +48,8 @@ impl SqliteEventLedger {
                      event_uuid TEXT NOT NULL UNIQUE,
                      type TEXT NOT NULL,
                      actor_id TEXT NOT NULL,
+                     source TEXT NOT NULL DEFAULT 'cli',
+                     source_ref TEXT,
                      correlation_id TEXT,
                      causation_event_id INTEGER,
                      payload TEXT NOT NULL,
@@ -55,6 +57,16 @@ impl SqliteEventLedger {
                  );",
             )
             .map_err(storage_error)?;
+        ensure_column(
+            &connection,
+            "source",
+            "ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'cli'",
+        )?;
+        ensure_column(
+            &connection,
+            "source_ref",
+            "ALTER TABLE events ADD COLUMN source_ref TEXT",
+        )?;
 
         Ok(Self { path, connection })
     }
@@ -76,15 +88,19 @@ impl EventLedger for SqliteEventLedger {
                     event_uuid,
                     type,
                     actor_id,
+                    source,
+                    source_ref,
                     correlation_id,
                     causation_event_id,
                     payload,
                     ts
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     event.event_uuid.to_string(),
                     event_type_as_str(event.event_type),
                     event.actor_id,
+                    event.source.as_str(),
+                    event.source_ref,
                     event.correlation_id,
                     event.causation_event_id.map(|id| id as i64),
                     payload,
@@ -137,6 +153,8 @@ impl EventLedger for SqliteEventLedger {
                     event_uuid,
                     type,
                     actor_id,
+                    source,
+                    source_ref,
                     correlation_id,
                     causation_event_id,
                     payload,
@@ -175,6 +193,8 @@ impl EventLedger for SqliteEventLedger {
                     event_uuid,
                     type,
                     actor_id,
+                    source,
+                    source_ref,
                     correlation_id,
                     causation_event_id,
                     payload,
@@ -301,6 +321,8 @@ fn row_to_event(row: &Row<'_>) -> Result<Event> {
     let event_uuid_raw: String = row.get("event_uuid").map_err(storage_error)?;
     let event_type_raw: String = row.get("type").map_err(storage_error)?;
     let actor_id: String = row.get("actor_id").map_err(storage_error)?;
+    let source_raw: String = row.get("source").map_err(storage_error)?;
+    let source_ref: Option<String> = row.get("source_ref").map_err(storage_error)?;
     let correlation_id: Option<String> = row.get("correlation_id").map_err(storage_error)?;
     let causation_event_id_raw: Option<i64> =
         row.get("causation_event_id").map_err(storage_error)?;
@@ -312,6 +334,7 @@ fn row_to_event(row: &Row<'_>) -> Result<Event> {
     let event_uuid = Uuid::parse_str(&event_uuid_raw)
         .map_err(|error| storage_error(format!("invalid event_uuid in row: {error}")))?;
     let event_type = parse_event_type(&event_type_raw)?;
+    let source = parse_event_source(&source_raw)?;
     let causation_event_id = causation_event_id_raw
         .map(|id| {
             u64::try_from(id).map_err(|error| {
@@ -331,9 +354,28 @@ fn row_to_event(row: &Row<'_>) -> Result<Event> {
         causation_event_id,
         event_type,
         actor_id,
+        source,
+        source_ref,
         payload,
         ts: Some(ts),
     })
+}
+
+fn ensure_column(connection: &Connection, column_name: &str, alter_sql: &str) -> Result<()> {
+    let mut statement = connection
+        .prepare("PRAGMA table_info(events)")
+        .map_err(storage_error)?;
+    let column_names = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(storage_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
+
+    if !column_names.iter().any(|name| name == column_name) {
+        connection.execute(alter_sql, []).map_err(storage_error)?;
+    }
+
+    Ok(())
 }
 
 fn event_type_as_str(event_type: EventType) -> &'static str {
@@ -358,6 +400,16 @@ fn parse_event_type(value: &str) -> Result<EventType> {
         "hypothesis.recorded" => Ok(EventType::HypothesisRecorded),
         "relation.added" => Ok(EventType::RelationAdded),
         other => Err(storage_error(format!("unknown event type in row: {other}")).into()),
+    }
+}
+
+fn parse_event_source(value: &str) -> Result<EventSource> {
+    match value {
+        "cli" => Ok(EventSource::Cli),
+        "agent" => Ok(EventSource::Agent),
+        "slack" => Ok(EventSource::Slack),
+        "api" => Ok(EventSource::Api),
+        other => Err(storage_error(format!("unknown event source in row: {other}")).into()),
     }
 }
 
@@ -444,6 +496,8 @@ pub(crate) mod contract_tests {
             causation_event_id: None,
             event_type: EventType::EvidenceRecorded,
             actor_id: "actor:test".to_owned(),
+            source: crate::events::EventSource::Cli,
+            source_ref: None,
             payload: json!({
                 "evidence_id": evidence_id,
                 "content": format!("content for {evidence_id}"),
