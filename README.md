@@ -126,6 +126,8 @@ cargo run -- dump --format dot > graph.dot
 
 - `docs/ARCHITECTURE.md` is the concise architecture summary for reviewers.
 - `docs/AGENT_DECISION_CAPTURE.md` documents the Claude/Codex capture path.
+- `docs/TEXT_IMPORT_AND_DIFF_SEMANTICS.md` defines local document import and
+  temporal decision diff semantics for Milestone 2.
 - `PLAN.md` explains the slice-1 architecture and what is intentionally deferred.
 - `AGENTS.md` defines the project standards and non-goals for contributors.
 - `tests/seed/README.md` documents the deterministic seed dataset, replay smoke

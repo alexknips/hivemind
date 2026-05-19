@@ -52,7 +52,8 @@ The document-import workflow uses the same explorer shape:
 
 1. Add source/document filters for imported textual decisions.
 2. Add a temporal decision-diff entry point for "decisions added since <time>",
-   including a deterministic interpretation of "last week" in CLI/query code.
+   using the relative-date and added-node semantics in
+   `docs/TEXT_IMPORT_AND_DIFF_SEMANTICS.md`.
 3. Let each diff result open the same decision detail and graph-context panes,
    with provenance back to the imported document source.
 4. Distinguish newly added decision nodes from status changes or new evidence on
@@ -153,9 +154,9 @@ they should not block the query work.
 - `get_decision_neighborhood(id, depth, relation_filter?)` returning typed nodes
   and edges suitable for an ego graph.
 - `get_decisions_added_since(since, until?, filters?)` or equivalent temporal
-  diff query for the local document-import workflow. It must define whether it
-  uses event offsets, event timestamps, node creation timestamps, or a
-  combination.
+  diff query for the local document-import workflow. Detailed import,
+  provenance, idempotency, and "since last week" semantics are defined in
+  `docs/TEXT_IMPORT_AND_DIFF_SEMANTICS.md`.
 - Richer `get_decision` detail: actor edges, option/evidence/hypothesis labels
   and content, timestamps, and event origins where available.
 - Pagination on topic/status queries.
