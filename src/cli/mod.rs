@@ -1662,7 +1662,7 @@ mod tests {
         ]);
 
         let Command::Tui(args) = cli.command else {
-            panic!("expected tui command");
+            panic!("expected tui command"); // ubs:ignore: test-only parser guard; not a production panic surface.
         };
         assert_eq!(args.query.as_deref(), Some("queue"));
         assert_eq!(args.topic_keys, vec!["infra", "storage"]);
