@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use serde::Serialize;
+
 use crate::error::ProjectorError;
 use crate::events::{self, Event, EventId, EventPayload, RelationKind as EventRelationKind};
 use crate::ledger::EventLedger;
@@ -23,7 +25,8 @@ pub enum GraphValue {
     StringList(Vec<String>),
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum NodeKind {
     Decision,
     Actor,
@@ -52,7 +55,8 @@ impl NodeKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RelationKind {
     ProposedBy,
     AcceptedBy,

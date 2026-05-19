@@ -13,8 +13,9 @@ use crate::projector::{
     GraphView, NodeKind, RelationKind as GraphRelationKind,
 };
 use crate::queries::{
-    derive_decision_status, derive_hypothesis_status, get_decision, get_relevant_decisions,
-    get_supersession_chain, DecisionStatus, HypothesisStatus,
+    derive_decision_status, derive_hypothesis_status, get_decision, get_decision_neighborhood,
+    get_relevant_decisions, get_supersession_chain, DecisionStatus, HypothesisStatus,
+    NeighborhoodRequest,
 };
 use crate::{HivemindError, Result};
 
@@ -210,6 +211,8 @@ pub enum QueryCommand {
     GetRelevantDecisions(QueryRelevantDecisionsArgs),
     #[command(name = "get_supersession_chain")]
     GetSupersessionChain(QueryDecisionArgs),
+    #[command(name = "get_decision_neighborhood")]
+    GetDecisionNeighborhood(QueryDecisionNeighborhoodArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -225,6 +228,50 @@ pub struct QueryRelevantDecisionsArgs {
 
     #[arg(long = "status")]
     pub status: Option<QueryDecisionStatus>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryDecisionNeighborhoodArgs {
+    #[arg(long = "id")]
+    pub decision_id: String,
+
+    #[arg(long = "depth", default_value_t = 1)]
+    pub depth: u8,
+
+    #[arg(long = "relations", value_delimiter = ',')]
+    pub relations: Vec<QueryRelationKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum QueryRelationKind {
+    ProposedBy,
+    AcceptedBy,
+    RejectedBy,
+    Supersedes,
+    BasedOn,
+    HasOption,
+    Chose,
+    Assumes,
+    Supports,
+    Refutes,
+}
+
+impl QueryRelationKind {
+    const fn as_graph_relation(self) -> GraphRelationKind {
+        match self {
+            QueryRelationKind::ProposedBy => GraphRelationKind::ProposedBy,
+            QueryRelationKind::AcceptedBy => GraphRelationKind::AcceptedBy,
+            QueryRelationKind::RejectedBy => GraphRelationKind::RejectedBy,
+            QueryRelationKind::Supersedes => GraphRelationKind::Supersedes,
+            QueryRelationKind::BasedOn => GraphRelationKind::BasedOn,
+            QueryRelationKind::HasOption => GraphRelationKind::HasOption,
+            QueryRelationKind::Chose => GraphRelationKind::Chose,
+            QueryRelationKind::Assumes => GraphRelationKind::Assumes,
+            QueryRelationKind::Supports => GraphRelationKind::Supports,
+            QueryRelationKind::Refutes => GraphRelationKind::Refutes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -468,6 +515,33 @@ fn run_query_with_graph(graph: &impl GraphView, query: &QueryArgs) -> Result<Str
             serde_json::to_string(&get_supersession_chain(graph, &args.decision_id)?).map_err(
                 |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
             )?
+        }
+        QueryCommand::GetDecisionNeighborhood(args) => {
+            if args.depth != 1 {
+                return Err(CliError::InvalidInput(format!(
+                    "--depth {} is not supported yet; slice-1 only supports depth=1 with hypothesis SUPPORTS/REFUTES auto-expanded",
+                    args.depth
+                ))
+                .into());
+            }
+            let request = if args.relations.is_empty() {
+                NeighborhoodRequest::all()
+            } else {
+                NeighborhoodRequest::with_relations(
+                    args.relations
+                        .iter()
+                        .copied()
+                        .map(QueryRelationKind::as_graph_relation),
+                )
+            };
+            serde_json::to_string(&get_decision_neighborhood(
+                graph,
+                &args.decision_id,
+                &request,
+            )?)
+            .map_err(|error| {
+                CliError::InvalidInput(format!("json serialization failed: {error}"))
+            })?
         }
     };
 

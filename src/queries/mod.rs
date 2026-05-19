@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use serde::Serialize;
@@ -58,6 +58,39 @@ pub struct DecisionView {
 pub struct SupersessionChain {
     pub decision_ids: Vec<String>,
     pub input_index: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct NeighborhoodRoot {
+    pub id: String,
+    pub kind: NodeKind,
+    pub present: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct NeighborNode {
+    pub id: String,
+    pub kind: NodeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_status: Option<DecisionStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hypothesis_status: Option<HypothesisStatus>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct NeighborEdge {
+    pub from: String,
+    pub to: String,
+    pub relation: RelationKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_origin: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct NeighborhoodView {
+    pub root: NeighborhoodRoot,
+    pub nodes: Vec<NeighborNode>,
+    pub edges: Vec<NeighborEdge>,
 }
 
 pub fn get_decision(
@@ -250,6 +283,310 @@ pub fn get_supersession_chain(
     })
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NeighborhoodRequest {
+    pub relations: Option<Vec<RelationKind>>,
+}
+
+impl NeighborhoodRequest {
+    pub fn all() -> Self {
+        Self { relations: None }
+    }
+
+    pub fn with_relations<I: IntoIterator<Item = RelationKind>>(relations: I) -> Self {
+        Self {
+            relations: Some(relations.into_iter().collect()),
+        }
+    }
+
+    fn allows(&self, relation: RelationKind) -> bool {
+        match &self.relations {
+            None => true,
+            Some(allowed) => allowed.contains(&relation),
+        }
+    }
+}
+
+const DECISION_HOP1_RELATIONS: [(RelationKind, NodeKind, Direction); 9] = [
+    (
+        RelationKind::ProposedBy,
+        NodeKind::Actor,
+        Direction::Outgoing,
+    ),
+    (
+        RelationKind::AcceptedBy,
+        NodeKind::Actor,
+        Direction::Outgoing,
+    ),
+    (
+        RelationKind::RejectedBy,
+        NodeKind::Actor,
+        Direction::Outgoing,
+    ),
+    (
+        RelationKind::HasOption,
+        NodeKind::Option,
+        Direction::Outgoing,
+    ),
+    (RelationKind::Chose, NodeKind::Option, Direction::Outgoing),
+    (
+        RelationKind::BasedOn,
+        NodeKind::Evidence,
+        Direction::Outgoing,
+    ),
+    (
+        RelationKind::Assumes,
+        NodeKind::Hypothesis,
+        Direction::Outgoing,
+    ),
+    (
+        RelationKind::Supersedes,
+        NodeKind::Decision,
+        Direction::Outgoing,
+    ),
+    (
+        RelationKind::Supersedes,
+        NodeKind::Decision,
+        Direction::Incoming,
+    ),
+];
+
+const HYPOTHESIS_HOP2_RELATIONS: [(RelationKind, NodeKind, Direction); 2] = [
+    (
+        RelationKind::Supports,
+        NodeKind::Evidence,
+        Direction::Incoming,
+    ),
+    (
+        RelationKind::Refutes,
+        NodeKind::Evidence,
+        Direction::Incoming,
+    ),
+];
+
+pub fn get_decision_neighborhood(
+    graph: &impl GraphView,
+    decision_id: &str,
+    request: &NeighborhoodRequest,
+) -> Result<QueryResponse<NeighborhoodView>> {
+    let started = Instant::now();
+    let decision_id = decision_id.trim();
+    if decision_id.is_empty() {
+        return Err(query_error("decision_id must not be empty").into());
+    }
+
+    let root_present = decision_node_exists(graph, decision_id)?;
+    let root = NeighborhoodRoot {
+        id: decision_id.to_owned(),
+        kind: NodeKind::Decision,
+        present: root_present,
+    };
+
+    if !root_present {
+        return Ok(QueryResponse {
+            result_count: 0,
+            truncated: false,
+            latency_ms: started.elapsed().as_millis(),
+            data: NeighborhoodView {
+                root,
+                nodes: Vec::new(),
+                edges: Vec::new(),
+            },
+        });
+    }
+
+    let mut edges: Vec<NeighborEdge> = Vec::new();
+    let mut hypothesis_ids: BTreeSet<String> = BTreeSet::new();
+
+    for (relation, other_kind, direction) in DECISION_HOP1_RELATIONS {
+        if !request.allows(relation) {
+            continue;
+        }
+        let pairs = neighbor_pairs(
+            graph,
+            NodeKind::Decision,
+            decision_id,
+            relation,
+            other_kind,
+            direction,
+        )?;
+        for (other_id, event_origin) in pairs {
+            let (from, to) = match direction {
+                Direction::Outgoing => (decision_id.to_owned(), other_id.clone()),
+                Direction::Incoming => (other_id.clone(), decision_id.to_owned()),
+            };
+            edges.push(NeighborEdge {
+                from,
+                to,
+                relation,
+                event_origin,
+            });
+            if matches!(other_kind, NodeKind::Hypothesis) {
+                hypothesis_ids.insert(other_id);
+            }
+        }
+    }
+
+    for hypothesis_id in &hypothesis_ids {
+        for (relation, other_kind, direction) in HYPOTHESIS_HOP2_RELATIONS {
+            if !request.allows(relation) {
+                continue;
+            }
+            let pairs = neighbor_pairs(
+                graph,
+                NodeKind::Hypothesis,
+                hypothesis_id,
+                relation,
+                other_kind,
+                direction,
+            )?;
+            for (other_id, event_origin) in pairs {
+                let (from, to) = match direction {
+                    Direction::Outgoing => (hypothesis_id.clone(), other_id),
+                    Direction::Incoming => (other_id, hypothesis_id.clone()),
+                };
+                edges.push(NeighborEdge {
+                    from,
+                    to,
+                    relation,
+                    event_origin,
+                });
+            }
+        }
+    }
+
+    edges.sort_by(|a, b| {
+        (a.relation, &a.from, &a.to, a.event_origin).cmp(&(
+            b.relation,
+            &b.from,
+            &b.to,
+            b.event_origin,
+        ))
+    });
+    edges.dedup();
+
+    let total_edges = edges.len();
+    let truncated = total_edges > MAX_QUERY_RESULTS;
+    if truncated {
+        edges.truncate(MAX_QUERY_RESULTS);
+    }
+
+    let mut node_kinds: BTreeMap<String, NodeKind> = BTreeMap::new();
+    node_kinds.insert(decision_id.to_owned(), NodeKind::Decision);
+
+    for (relation, other_kind, direction) in DECISION_HOP1_RELATIONS {
+        if !request.allows(relation) {
+            continue;
+        }
+        for edge in &edges {
+            if edge.relation != relation {
+                continue;
+            }
+            let other_id = match direction {
+                Direction::Outgoing => edge.to.clone(),
+                Direction::Incoming => edge.from.clone(),
+            };
+            node_kinds.entry(other_id).or_insert(other_kind);
+        }
+    }
+
+    for hypothesis_id in &hypothesis_ids {
+        for (relation, other_kind, direction) in HYPOTHESIS_HOP2_RELATIONS {
+            if !request.allows(relation) {
+                continue;
+            }
+            for edge in &edges {
+                if edge.relation != relation {
+                    continue;
+                }
+                let endpoint = match direction {
+                    Direction::Outgoing => &edge.from,
+                    Direction::Incoming => &edge.to,
+                };
+                if endpoint != hypothesis_id {
+                    continue;
+                }
+                let other_id = match direction {
+                    Direction::Outgoing => edge.to.clone(),
+                    Direction::Incoming => edge.from.clone(),
+                };
+                node_kinds.entry(other_id).or_insert(other_kind);
+            }
+        }
+    }
+
+    let mut nodes: Vec<NeighborNode> = Vec::with_capacity(node_kinds.len());
+    for (id, kind) in node_kinds {
+        let decision_status = if matches!(kind, NodeKind::Decision) {
+            Some(derive_decision_status(graph, &id)?)
+        } else {
+            None
+        };
+        let hypothesis_status = if matches!(kind, NodeKind::Hypothesis) {
+            Some(derive_hypothesis_status(graph, &id)?)
+        } else {
+            None
+        };
+        nodes.push(NeighborNode {
+            id,
+            kind,
+            decision_status,
+            hypothesis_status,
+        });
+    }
+    nodes.sort_by(|a, b| (a.kind, &a.id).cmp(&(b.kind, &b.id)));
+
+    let result_count = nodes.len() + edges.len();
+
+    Ok(QueryResponse {
+        result_count,
+        truncated,
+        latency_ms: started.elapsed().as_millis(),
+        data: NeighborhoodView { root, nodes, edges },
+    })
+}
+
+fn decision_node_exists(graph: &impl GraphView, decision_id: &str) -> Result<bool> {
+    let rows = graph.query(
+        "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id LIMIT 1;",
+        &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
+    )?;
+    Ok(!rows.is_empty())
+}
+
+fn neighbor_pairs(
+    graph: &impl GraphView,
+    root_kind: NodeKind,
+    root_id: &str,
+    relation: RelationKind,
+    other_kind: NodeKind,
+    direction: Direction,
+) -> Result<Vec<(String, Option<i64>)>> {
+    let root_table = root_kind.table_name();
+    let relation_table = relation.table_name();
+    let other_table = other_kind.table_name();
+    let cypher = match direction {
+        Direction::Outgoing => format!(
+            "MATCH (a:`{root_table}` {{id: $id}})-[r:`{relation_table}`]->(b:`{other_table}`) RETURN b.id AS id, r.event_origin AS event_origin ORDER BY b.id;"
+        ),
+        Direction::Incoming => format!(
+            "MATCH (a:`{root_table}` {{id: $id}})<-[r:`{relation_table}`]-(b:`{other_table}`) RETURN b.id AS id, r.event_origin AS event_origin ORDER BY b.id;"
+        ),
+    };
+    let rows = graph.query(
+        &cypher,
+        &GraphParams::from([("id".to_owned(), GraphValue::String(root_id.to_owned()))]),
+    )?;
+
+    let mut pairs = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = required_string(&row, "id")?;
+        let event_origin = optional_int(&row, "event_origin");
+        pairs.push((id, event_origin));
+    }
+    Ok(pairs)
+}
+
 pub fn derive_decision_status(graph: &impl GraphView, decision_id: &str) -> Result<DecisionStatus> {
     let superseded_count = relation_count(
         graph,
@@ -419,6 +756,13 @@ fn required_string(row: &GraphRow, key: &str) -> Result<String> {
 fn optional_string(row: &GraphRow, key: &str) -> Option<String> {
     match row.get(key) {
         Some(GraphValue::String(value)) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn optional_int(row: &GraphRow, key: &str) -> Option<i64> {
+    match row.get(key) {
+        Some(GraphValue::Int(value)) => Some(*value),
         _ => None,
     }
 }
@@ -829,6 +1173,41 @@ mod tests {
                 }
             }
 
+            if cypher.contains("[r:`") && cypher.contains("AS event_origin") {
+                let id = match params.get("id") {
+                    Some(GraphValue::String(id)) => id,
+                    _ => return Err(query_error("missing id param").into()),
+                };
+                let relation = relation_from_query(cypher)?;
+                let incoming = cypher.contains("<-[r:`");
+                let mut neighbors: Vec<String> = self
+                    .edges
+                    .iter()
+                    .filter(|(kind, from, to)| {
+                        *kind == relation && if incoming { to == id } else { from == id }
+                    })
+                    .map(
+                        |(_, from, to)| {
+                            if incoming {
+                                from.clone()
+                            } else {
+                                to.clone()
+                            }
+                        },
+                    )
+                    .collect();
+                neighbors.sort();
+                return Ok(neighbors
+                    .into_iter()
+                    .map(|other_id| {
+                        GraphRow::from([
+                            ("id".to_owned(), GraphValue::String(other_id)),
+                            ("event_origin".to_owned(), GraphValue::Null),
+                        ])
+                    })
+                    .collect());
+            }
+
             if cypher.contains("[:`SUPERSEDES`]->(other:`Decision`)") {
                 let decision_id = match params.get("id") {
                     Some(GraphValue::String(id)) => id,
@@ -929,6 +1308,176 @@ mod tests {
         );
         assert_eq!(chain.data.input_index, 1);
         Ok(())
+    }
+
+    #[test]
+    fn get_decision_neighborhood_returns_full_one_hop() -> Result<()> {
+        let graph = FixtureGraph::sample();
+        let response = get_decision_neighborhood(&graph, "d1", &NeighborhoodRequest::all())?;
+
+        assert!(response.data.root.present);
+        assert_eq!(response.data.root.id, "d1");
+        assert_eq!(response.data.root.kind, NodeKind::Decision);
+
+        let edge_relations: Vec<RelationKind> = response
+            .data
+            .edges
+            .iter()
+            .map(|edge| edge.relation)
+            .collect();
+        assert!(edge_relations.contains(&RelationKind::ProposedBy));
+        assert!(edge_relations.contains(&RelationKind::AcceptedBy));
+        assert!(edge_relations.contains(&RelationKind::HasOption));
+        assert!(edge_relations.contains(&RelationKind::Chose));
+        assert!(edge_relations.contains(&RelationKind::BasedOn));
+        assert!(edge_relations.contains(&RelationKind::Assumes));
+        // SUPPORTS arrives via 2-hop from the visible hypothesis h1 <- e1
+        assert!(edge_relations.contains(&RelationKind::Supports));
+
+        let node_ids: Vec<&str> = response.data.nodes.iter().map(|n| n.id.as_str()).collect();
+        for expected in ["d1", "actor:1", "actor:2", "o1", "o2", "e1", "h1"] {
+            assert!(node_ids.contains(&expected), "missing node {expected}");
+        }
+
+        let root_node = response
+            .data
+            .nodes
+            .iter()
+            .find(|n| n.id == "d1")
+            .expect("root node present");
+        assert_eq!(root_node.decision_status, Some(DecisionStatus::Accepted));
+
+        let hypothesis_node = response
+            .data
+            .nodes
+            .iter()
+            .find(|n| n.id == "h1")
+            .expect("hypothesis node present");
+        assert_eq!(
+            hypothesis_node.hypothesis_status,
+            Some(HypothesisStatus::Supported)
+        );
+
+        let mut sorted = response.data.edges.clone();
+        sorted.sort_by(|a, b| {
+            (a.relation, &a.from, &a.to, a.event_origin).cmp(&(
+                b.relation,
+                &b.from,
+                &b.to,
+                b.event_origin,
+            ))
+        });
+        assert_eq!(sorted, response.data.edges, "edges must be deterministic");
+
+        Ok(())
+    }
+
+    #[test]
+    fn get_decision_neighborhood_filters_by_relation() -> Result<()> {
+        let graph = FixtureGraph::sample();
+        let request = NeighborhoodRequest::with_relations([RelationKind::ProposedBy]);
+        let response = get_decision_neighborhood(&graph, "d1", &request)?;
+
+        for edge in &response.data.edges {
+            assert_eq!(edge.relation, RelationKind::ProposedBy);
+        }
+        let node_ids: Vec<&str> = response.data.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(node_ids.contains(&"actor:1"));
+        assert!(!node_ids.contains(&"o1"), "options filtered out");
+        assert!(!node_ids.contains(&"e1"), "evidence filtered out");
+        Ok(())
+    }
+
+    #[test]
+    fn get_decision_neighborhood_handles_missing_decision() -> Result<()> {
+        let graph = FixtureGraph::sample();
+        let response =
+            get_decision_neighborhood(&graph, "no-such-decision", &NeighborhoodRequest::all())?;
+
+        assert!(!response.data.root.present);
+        assert!(response.data.nodes.is_empty());
+        assert!(response.data.edges.is_empty());
+        assert_eq!(response.result_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn get_decision_neighborhood_reports_branched_supersession() -> Result<()> {
+        let mut graph = FixtureGraph::sample();
+        graph.decisions.insert(
+            "branch_a".to_owned(),
+            ("A".to_owned(), "rationale".to_owned(), Vec::new()),
+        );
+        graph.decisions.insert(
+            "branch_b".to_owned(),
+            ("B".to_owned(), "rationale".to_owned(), Vec::new()),
+        );
+        graph.edges.insert((
+            RelationKind::Supersedes,
+            "d1".to_owned(),
+            "branch_a".to_owned(),
+        ));
+        graph.edges.insert((
+            RelationKind::Supersedes,
+            "d1".to_owned(),
+            "branch_b".to_owned(),
+        ));
+
+        let response = get_decision_neighborhood(&graph, "d1", &NeighborhoodRequest::all())?;
+
+        let supersedes_targets: Vec<&str> = response
+            .data
+            .edges
+            .iter()
+            .filter(|edge| edge.relation == RelationKind::Supersedes && edge.from == "d1")
+            .map(|edge| edge.to.as_str())
+            .collect();
+        assert!(supersedes_targets.contains(&"branch_a"));
+        assert!(supersedes_targets.contains(&"branch_b"));
+        Ok(())
+    }
+
+    #[test]
+    fn get_decision_neighborhood_includes_refuting_evidence_via_hypothesis() -> Result<()> {
+        let mut graph = FixtureGraph::sample();
+        graph
+            .edges
+            .insert((RelationKind::Refutes, "e2".to_owned(), "h1".to_owned()));
+
+        let response = get_decision_neighborhood(&graph, "d1", &NeighborhoodRequest::all())?;
+
+        let refutes_edges: Vec<&NeighborEdge> = response
+            .data
+            .edges
+            .iter()
+            .filter(|edge| edge.relation == RelationKind::Refutes)
+            .collect();
+        assert_eq!(refutes_edges.len(), 1);
+        assert_eq!(refutes_edges[0].from, "e2");
+        assert_eq!(refutes_edges[0].to, "h1");
+
+        let node_ids: Vec<&str> = response.data.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(node_ids.contains(&"e2"), "refuting evidence reached via h1");
+
+        let hypothesis_node = response
+            .data
+            .nodes
+            .iter()
+            .find(|n| n.id == "h1")
+            .expect("hypothesis node present");
+        assert_eq!(
+            hypothesis_node.hypothesis_status,
+            Some(HypothesisStatus::Refuted)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn get_decision_neighborhood_rejects_empty_id() {
+        let graph = FixtureGraph::sample();
+        let error = get_decision_neighborhood(&graph, "   ", &NeighborhoodRequest::all())
+            .expect_err("empty id rejected");
+        assert!(format!("{error}").contains("decision_id"));
     }
 
     #[test]
