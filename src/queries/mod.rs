@@ -8,8 +8,11 @@ use crate::projector::{GraphParams, GraphRow, GraphValue, GraphView, NodeKind, R
 use crate::Result;
 
 const MAX_QUERY_RESULTS: usize = 1000;
+const DEFAULT_SEARCH_LIMIT: usize = 25;
+const MAX_SNIPPETS_PER_RESULT: usize = 5;
+const SNIPPET_MAX_CHARS: usize = 160;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DecisionStatus {
     Proposed,
@@ -91,6 +94,83 @@ pub struct NeighborhoodView {
     pub root: NeighborhoodRoot,
     pub nodes: Vec<NeighborNode>,
     pub edges: Vec<NeighborEdge>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SearchDecisionRequest {
+    pub query: Option<String>,
+    pub topic_keys: Vec<String>,
+    pub statuses: Vec<DecisionStatus>,
+    pub actor_ids: Vec<String>,
+    pub sources: Vec<String>,
+    pub limit: usize,
+    pub cursor: Option<String>,
+}
+
+impl Default for SearchDecisionRequest {
+    fn default() -> Self {
+        Self {
+            query: None,
+            topic_keys: Vec::new(),
+            statuses: Vec::new(),
+            actor_ids: Vec::new(),
+            sources: Vec::new(),
+            limit: DEFAULT_SEARCH_LIMIT,
+            cursor: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DecisionSearchResults {
+    pub query: Option<String>,
+    pub filters: SearchDecisionFilters,
+    pub limit: usize,
+    pub cursor: Option<String>,
+    pub next_cursor: Option<String>,
+    pub total_matches: usize,
+    pub items: Vec<DecisionSearchResult>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct SearchDecisionFilters {
+    pub topic_keys: Vec<String>,
+    pub statuses: Vec<DecisionStatus>,
+    pub actor_ids: Vec<String>,
+    pub sources: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DecisionSearchResult {
+    pub decision: DecisionView,
+    pub rank: u8,
+    pub matched_fields: Vec<String>,
+    pub snippets: Vec<SearchSnippet>,
+    pub graph_context: SearchGraphContext,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct SearchSnippet {
+    pub field: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SearchGraphContext {
+    pub actor_ids: Vec<String>,
+    pub supersedes_decision_ids: Vec<String>,
+    pub superseded_by_decision_ids: Vec<String>,
+    pub option_ids: Vec<String>,
+    pub evidence_ids: Vec<String>,
+    pub hypotheses: Vec<HypothesisContext>,
+    pub matched_nodes: Vec<SearchMatchedNode>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SearchMatchedNode {
+    pub id: String,
+    pub kind: NodeKind,
+    pub field: String,
 }
 
 pub fn get_decision(
@@ -223,6 +303,247 @@ pub fn get_relevant_decisions(
         truncated,
         latency_ms: started.elapsed().as_millis(),
         data: decisions,
+    })
+}
+
+pub fn search_decisions(
+    graph: &impl GraphView,
+    request: &SearchDecisionRequest,
+) -> Result<QueryResponse<DecisionSearchResults>> {
+    let started = Instant::now();
+    let query = normalized_query(request.query.as_deref());
+    let terms = query_terms(query.as_deref());
+    let topic_keys = normalized_filter_values(&request.topic_keys);
+    let statuses = normalized_statuses(&request.statuses);
+    let actor_ids = normalized_filter_values(&request.actor_ids);
+    let sources = normalized_filter_values(&request.sources);
+    let limit = normalized_limit(request.limit);
+    let cursor = normalized_query(request.cursor.as_deref());
+    let offset = parse_cursor(cursor.as_deref())?;
+
+    let decision_rows = node_rows(graph, NodeKind::Decision)?;
+    let actor_rows = node_rows(graph, NodeKind::Actor)?;
+    let evidence_rows = node_rows(graph, NodeKind::Evidence)?;
+    let option_rows = node_rows(graph, NodeKind::Option)?;
+    let hypothesis_rows = node_rows(graph, NodeKind::Hypothesis)?;
+    let edges = relation_edges_by_kind(graph)?;
+
+    let mut scored = Vec::new();
+    for (id, row) in decision_rows {
+        let title = optional_string(&row, "title").unwrap_or_default();
+        let rationale = optional_string(&row, "rationale").unwrap_or_default();
+        let decision_topic_keys = optional_string_list(&row, "topic_keys");
+        if !topic_keys.is_empty()
+            && !topic_keys.iter().all(|topic| {
+                decision_topic_keys
+                    .iter()
+                    .any(|candidate| candidate == topic)
+            })
+        {
+            continue;
+        }
+
+        let status = derive_decision_status(graph, &id)?;
+        if !statuses.is_empty() && !statuses.contains(&status) {
+            continue;
+        }
+
+        let actor_ids_for_decision = relation_targets(
+            &edges,
+            &[
+                RelationKind::ProposedBy,
+                RelationKind::AcceptedBy,
+                RelationKind::RejectedBy,
+            ],
+            &id,
+        );
+        if !actor_ids.is_empty()
+            && !actor_ids
+                .iter()
+                .any(|actor_id| actor_ids_for_decision.iter().any(|id| id == actor_id))
+        {
+            continue;
+        }
+
+        let source = optional_string(&row, "source").unwrap_or_default();
+        if !sources.is_empty()
+            && !sources
+                .iter()
+                .any(|expected| source.eq_ignore_ascii_case(expected))
+        {
+            continue;
+        }
+
+        let option_ids = relation_targets(&edges, &[RelationKind::HasOption], &id);
+        let chosen_option_id = relation_targets(&edges, &[RelationKind::Chose], &id)
+            .into_iter()
+            .next();
+        let evidence_ids = relation_targets(&edges, &[RelationKind::BasedOn], &id);
+        let hypothesis_ids = relation_targets(&edges, &[RelationKind::Assumes], &id);
+        let supersedes_decision_ids = relation_targets(&edges, &[RelationKind::Supersedes], &id);
+        let superseded_by_decision_ids = relation_sources(&edges, RelationKind::Supersedes, &id);
+
+        let mut hypotheses = Vec::with_capacity(hypothesis_ids.len());
+        for hypothesis_id in &hypothesis_ids {
+            hypotheses.push(HypothesisContext {
+                id: hypothesis_id.clone(),
+                status: derive_hypothesis_status(graph, hypothesis_id)?,
+            });
+        }
+
+        let mut fields = Vec::new();
+        fields.push(SearchField::decision("decision.id", &id, 0));
+        fields.push(SearchField::decision("decision.title", &title, 1));
+        fields.push(SearchField::decision("decision.rationale", &rationale, 2));
+        for topic_key in &decision_topic_keys {
+            fields.push(SearchField::decision("decision.topic", topic_key, 3));
+        }
+        fields.push(SearchField::decision(
+            "decision.status",
+            decision_status_label(status),
+            3,
+        ));
+        if !source.is_empty() {
+            fields.push(SearchField::decision("decision.source", &source, 3));
+        }
+        for actor_id in &actor_ids_for_decision {
+            fields.push(SearchField::node(
+                "actor.id",
+                actor_id,
+                3,
+                NodeKind::Actor,
+                actor_id,
+            ));
+            if let Some(actor) = actor_rows.get(actor_id) {
+                if let Some(source_ref) = optional_string(actor, "source_ref") {
+                    fields.push(SearchField::node(
+                        "actor.source_ref",
+                        &source_ref,
+                        3,
+                        NodeKind::Actor,
+                        actor_id,
+                    ));
+                }
+            }
+        }
+        for option_id in &option_ids {
+            add_node_search_fields(
+                &mut fields,
+                &option_rows,
+                NodeKind::Option,
+                option_id,
+                &[
+                    ("option.id", "id"),
+                    ("option.label", "label"),
+                    ("option.description", "description"),
+                ],
+            );
+        }
+        for evidence_id in &evidence_ids {
+            add_node_search_fields(
+                &mut fields,
+                &evidence_rows,
+                NodeKind::Evidence,
+                evidence_id,
+                &[("evidence.id", "id"), ("evidence.content", "content")],
+            );
+        }
+        for hypothesis_id in &hypothesis_ids {
+            add_node_search_fields(
+                &mut fields,
+                &hypothesis_rows,
+                NodeKind::Hypothesis,
+                hypothesis_id,
+                &[
+                    ("hypothesis.id", "id"),
+                    ("hypothesis.statement", "statement"),
+                ],
+            );
+        }
+        for decision_id in &supersedes_decision_ids {
+            fields.push(SearchField::node(
+                "supersedes.id",
+                decision_id,
+                3,
+                NodeKind::Decision,
+                decision_id,
+            ));
+        }
+        for decision_id in &superseded_by_decision_ids {
+            fields.push(SearchField::node(
+                "superseded_by.id",
+                decision_id,
+                3,
+                NodeKind::Decision,
+                decision_id,
+            ));
+        }
+
+        let Some(match_info) = evaluate_search_match(query.as_deref(), &terms, &fields) else {
+            continue;
+        };
+
+        scored.push(ScoredDecisionSearchResult {
+            rank: match_info.rank,
+            id: id.clone(),
+            result: DecisionSearchResult {
+                decision: DecisionView {
+                    id,
+                    title,
+                    rationale,
+                    topic_keys: decision_topic_keys,
+                    status,
+                    chosen_option_id,
+                    option_ids: option_ids.clone(),
+                    evidence_ids: evidence_ids.clone(),
+                    hypotheses: hypotheses.clone(),
+                },
+                rank: match_info.rank,
+                matched_fields: match_info.matched_fields,
+                snippets: match_info.snippets,
+                graph_context: SearchGraphContext {
+                    actor_ids: actor_ids_for_decision,
+                    supersedes_decision_ids,
+                    superseded_by_decision_ids,
+                    option_ids,
+                    evidence_ids,
+                    hypotheses,
+                    matched_nodes: match_info.matched_nodes,
+                },
+            },
+        });
+    }
+
+    scored.sort_by(|left, right| (left.rank, &left.id).cmp(&(right.rank, &right.id)));
+
+    let total_matches = scored.len();
+    let items: Vec<DecisionSearchResult> = scored
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|scored| scored.result)
+        .collect();
+    let next_offset = offset.saturating_add(items.len());
+    let next_cursor = (next_offset < total_matches).then(|| next_offset.to_string());
+
+    Ok(QueryResponse {
+        result_count: items.len(),
+        truncated: next_cursor.is_some(),
+        latency_ms: started.elapsed().as_millis(),
+        data: DecisionSearchResults {
+            query,
+            filters: SearchDecisionFilters {
+                topic_keys,
+                statuses,
+                actor_ids,
+                sources,
+            },
+            limit,
+            cursor,
+            next_cursor,
+            total_matches,
+            items,
+        },
     })
 }
 
@@ -552,6 +873,311 @@ fn decision_node_exists(graph: &impl GraphView, decision_id: &str) -> Result<boo
         &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
     )?;
     Ok(!rows.is_empty())
+}
+
+#[derive(Clone, Debug)]
+struct ScoredDecisionSearchResult {
+    rank: u8,
+    id: String,
+    result: DecisionSearchResult,
+}
+
+#[derive(Clone, Debug)]
+struct SearchField {
+    field: String,
+    value: String,
+    rank: u8,
+    node: Option<(NodeKind, String)>,
+}
+
+impl SearchField {
+    fn decision(field: &str, value: &str, rank: u8) -> Self {
+        Self {
+            field: field.to_owned(),
+            value: value.to_owned(),
+            rank,
+            node: None,
+        }
+    }
+
+    fn node(field: &str, value: &str, rank: u8, kind: NodeKind, id: &str) -> Self {
+        Self {
+            field: field.to_owned(),
+            value: value.to_owned(),
+            rank,
+            node: Some((kind, id.to_owned())),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SearchMatchInfo {
+    rank: u8,
+    matched_fields: Vec<String>,
+    snippets: Vec<SearchSnippet>,
+    matched_nodes: Vec<SearchMatchedNode>,
+}
+
+fn normalized_query(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn query_terms(query: Option<&str>) -> Vec<String> {
+    query.map_or_else(Vec::new, |query| {
+        query
+            .split_whitespace()
+            .map(|term| term.to_ascii_lowercase())
+            .collect()
+    })
+}
+
+fn normalized_filter_values(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn normalized_statuses(values: &[DecisionStatus]) -> Vec<DecisionStatus> {
+    values
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn normalized_limit(limit: usize) -> usize {
+    if limit == 0 {
+        DEFAULT_SEARCH_LIMIT
+    } else {
+        limit.min(MAX_QUERY_RESULTS)
+    }
+}
+
+fn parse_cursor(cursor: Option<&str>) -> Result<usize> {
+    match cursor {
+        None => Ok(0),
+        Some(cursor) => cursor.parse::<usize>().map_err(|error| {
+            query_error(format!("cursor must be a non-negative offset: {error}")).into()
+        }),
+    }
+}
+
+fn node_rows(graph: &impl GraphView, kind: NodeKind) -> Result<BTreeMap<String, GraphRow>> {
+    let table = kind.table_name();
+    let cypher = match kind {
+        NodeKind::Decision => format!(
+            "MATCH (node:`{table}`) RETURN node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
+        ),
+        NodeKind::Actor => format!(
+            "MATCH (node:`{table}`) RETURN node.id AS id, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
+        ),
+        NodeKind::Evidence => format!(
+            "MATCH (node:`{table}`) RETURN node.id AS id, node.content AS content, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
+        ),
+        NodeKind::Option => format!(
+            "MATCH (node:`{table}`) RETURN node.id AS id, node.label AS label, node.description AS description, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
+        ),
+        NodeKind::Hypothesis => format!(
+            "MATCH (node:`{table}`) RETURN node.id AS id, node.statement AS statement, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
+        ),
+    };
+
+    let mut rows_by_id = BTreeMap::new();
+    for mut row in graph.query(&cypher, &GraphParams::new())? {
+        let id = required_string(&row, "id")?;
+        row.insert("id".to_owned(), GraphValue::String(id.clone()));
+        rows_by_id.insert(id, row);
+    }
+    Ok(rows_by_id)
+}
+
+fn relation_edges_by_kind(
+    graph: &impl GraphView,
+) -> Result<BTreeMap<RelationKind, Vec<(String, String)>>> {
+    let mut edges = BTreeMap::new();
+    for relation in RelationKind::ALL {
+        edges.insert(relation, relation_edges(graph, relation)?);
+    }
+    Ok(edges)
+}
+
+fn relation_edges(graph: &impl GraphView, relation: RelationKind) -> Result<Vec<(String, String)>> {
+    let (from_kind, to_kind) = relation.endpoints();
+    let from_table = from_kind.table_name();
+    let to_table = to_kind.table_name();
+    let relation_table = relation.table_name();
+    let rows = graph.query(
+        &format!(
+            "MATCH (from:`{from_table}`)-[:`{relation_table}`]->(to:`{to_table}`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;"
+        ),
+        &GraphParams::new(),
+    )?;
+
+    let mut edges = Vec::with_capacity(rows.len());
+    for row in rows {
+        edges.push((
+            required_string(&row, "from_id")?,
+            required_string(&row, "to_id")?,
+        ));
+    }
+    edges.sort();
+    Ok(edges)
+}
+
+fn relation_targets(
+    edges: &BTreeMap<RelationKind, Vec<(String, String)>>,
+    relations: &[RelationKind],
+    from_id: &str,
+) -> Vec<String> {
+    let mut ids = BTreeSet::new();
+    for relation in relations {
+        if let Some(relation_edges) = edges.get(relation) {
+            ids.extend(
+                relation_edges
+                    .iter()
+                    .filter(|(from, _)| from == from_id)
+                    .map(|(_, to)| to.clone()),
+            );
+        }
+    }
+    ids.into_iter().collect()
+}
+
+fn relation_sources(
+    edges: &BTreeMap<RelationKind, Vec<(String, String)>>,
+    relation: RelationKind,
+    to_id: &str,
+) -> Vec<String> {
+    edges
+        .get(&relation)
+        .into_iter()
+        .flat_map(|relation_edges| relation_edges.iter())
+        .filter(|(_, to)| to == to_id)
+        .map(|(from, _)| from.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn add_node_search_fields(
+    fields: &mut Vec<SearchField>,
+    rows: &BTreeMap<String, GraphRow>,
+    kind: NodeKind,
+    id: &str,
+    field_specs: &[(&str, &str)],
+) {
+    for (field_name, property) in field_specs {
+        let value = if *property == "id" {
+            Some(id.to_owned())
+        } else {
+            rows.get(id).and_then(|row| optional_string(row, property))
+        };
+        if let Some(value) = value {
+            fields.push(SearchField::node(field_name, &value, 3, kind, id));
+        }
+    }
+}
+
+fn evaluate_search_match(
+    query: Option<&str>,
+    terms: &[String],
+    fields: &[SearchField],
+) -> Option<SearchMatchInfo> {
+    let Some(query) = query else {
+        return Some(SearchMatchInfo {
+            rank: 4,
+            matched_fields: Vec::new(),
+            snippets: Vec::new(),
+            matched_nodes: Vec::new(),
+        });
+    };
+
+    let mut matched_terms = BTreeSet::new();
+    let mut matched_fields = BTreeSet::new();
+    let mut snippets = Vec::new();
+    let mut matched_nodes = BTreeSet::new();
+    let mut rank = if exact_id_or_title_match(query, fields) {
+        0
+    } else {
+        u8::MAX
+    };
+
+    for field in fields {
+        let value_lower = field.value.to_ascii_lowercase();
+        let mut field_matched = false;
+        for term in terms {
+            if value_lower.contains(term) {
+                matched_terms.insert(term.clone());
+                field_matched = true;
+            }
+        }
+
+        if !field_matched {
+            continue;
+        }
+
+        rank = rank.min(field.rank);
+        matched_fields.insert(field.field.clone());
+        if snippets.len() < MAX_SNIPPETS_PER_RESULT {
+            snippets.push(SearchSnippet {
+                field: field.field.clone(),
+                value: snippet_value(&field.value),
+            });
+        }
+        if let Some((kind, id)) = &field.node {
+            matched_nodes.insert(SearchMatchedNode {
+                id: id.clone(),
+                kind: *kind,
+                field: field.field.clone(),
+            });
+        }
+    }
+
+    if matched_terms.len() != terms.len() {
+        return None;
+    }
+
+    Some(SearchMatchInfo {
+        rank,
+        matched_fields: matched_fields.into_iter().collect(),
+        snippets,
+        matched_nodes: matched_nodes.into_iter().collect(),
+    })
+}
+
+fn exact_id_or_title_match(query: &str, fields: &[SearchField]) -> bool {
+    let query = query.to_ascii_lowercase();
+    fields.iter().any(|field| {
+        matches!(field.field.as_str(), "decision.id" | "decision.title")
+            && field.value.to_ascii_lowercase() == query
+    })
+}
+
+fn snippet_value(value: &str) -> String {
+    let mut snippet = value.chars().take(SNIPPET_MAX_CHARS).collect::<String>();
+    if value.chars().count() > SNIPPET_MAX_CHARS {
+        snippet.push_str("...");
+    }
+    snippet
+}
+
+fn decision_status_label(status: DecisionStatus) -> &'static str {
+    match status {
+        DecisionStatus::Proposed => "proposed",
+        DecisionStatus::Accepted => "accepted",
+        DecisionStatus::Rejected => "rejected",
+        DecisionStatus::Contested => "contested",
+        DecisionStatus::Superseded => "superseded",
+    }
 }
 
 fn neighbor_pairs(
@@ -965,6 +1591,9 @@ mod tests {
     #[derive(Debug, Default)]
     struct FixtureGraph {
         decisions: BTreeMap<String, (String, String, Vec<String>)>,
+        actors: BTreeSet<String>,
+        evidence: BTreeMap<String, String>,
+        options: BTreeMap<String, (String, String)>,
         hypotheses: BTreeMap<String, String>,
         edges: BTreeSet<(RelationKind, String, String)>,
     }
@@ -991,6 +1620,28 @@ mod tests {
             graph
                 .hypotheses
                 .insert("h1".to_owned(), "Queue improves p95".to_owned());
+            graph
+                .evidence
+                .insert("e1".to_owned(), "Kuzu supports graph projection".to_owned());
+            graph.options.insert(
+                "o1".to_owned(),
+                (
+                    "Synchronous path".to_owned(),
+                    "Keep request processing inline".to_owned(),
+                ),
+            );
+            graph.options.insert(
+                "o2".to_owned(),
+                (
+                    "Async queue".to_owned(),
+                    "Use durable queued handoff".to_owned(),
+                ),
+            );
+            graph.actors.extend(
+                ["actor:1", "actor:2", "actor:3", "actor:4"]
+                    .into_iter()
+                    .map(str::to_owned),
+            );
 
             graph.edges.insert((
                 RelationKind::ProposedBy,
@@ -1056,6 +1707,101 @@ mod tests {
         }
 
         fn query(&self, cypher: &str, params: &GraphParams) -> Result<Vec<GraphRow>> {
+            if cypher.contains("RETURN node.id AS id") {
+                if cypher.contains("`Decision`") {
+                    return Ok(self
+                        .decisions
+                        .iter()
+                        .map(|(id, (title, rationale, topics))| {
+                            GraphRow::from([
+                                ("id".to_owned(), GraphValue::String(id.clone())),
+                                ("title".to_owned(), GraphValue::String(title.clone())),
+                                (
+                                    "rationale".to_owned(),
+                                    GraphValue::String(rationale.clone()),
+                                ),
+                                (
+                                    "topic_keys".to_owned(),
+                                    GraphValue::StringList(topics.clone()),
+                                ),
+                                ("source".to_owned(), GraphValue::String("agent".to_owned())),
+                            ])
+                        })
+                        .collect());
+                }
+                if cypher.contains("`Actor`") {
+                    return Ok(self
+                        .actors
+                        .iter()
+                        .map(|id| {
+                            GraphRow::from([
+                                ("id".to_owned(), GraphValue::String(id.clone())),
+                                ("source".to_owned(), GraphValue::String("agent".to_owned())),
+                                ("source_ref".to_owned(), GraphValue::String(id.clone())),
+                            ])
+                        })
+                        .collect());
+                }
+                if cypher.contains("`Evidence`") {
+                    return Ok(self
+                        .evidence
+                        .iter()
+                        .map(|(id, content)| {
+                            GraphRow::from([
+                                ("id".to_owned(), GraphValue::String(id.clone())),
+                                ("content".to_owned(), GraphValue::String(content.clone())),
+                            ])
+                        })
+                        .collect());
+                }
+                if cypher.contains("`Option`") {
+                    return Ok(self
+                        .options
+                        .iter()
+                        .map(|(id, (label, description))| {
+                            GraphRow::from([
+                                ("id".to_owned(), GraphValue::String(id.clone())),
+                                ("label".to_owned(), GraphValue::String(label.clone())),
+                                (
+                                    "description".to_owned(),
+                                    GraphValue::String(description.clone()),
+                                ),
+                            ])
+                        })
+                        .collect());
+                }
+                if cypher.contains("`Hypothesis`") {
+                    return Ok(self
+                        .hypotheses
+                        .iter()
+                        .map(|(id, statement)| {
+                            GraphRow::from([
+                                ("id".to_owned(), GraphValue::String(id.clone())),
+                                (
+                                    "statement".to_owned(),
+                                    GraphValue::String(statement.clone()),
+                                ),
+                            ])
+                        })
+                        .collect());
+                }
+            }
+
+            if cypher.contains("RETURN from.id AS from_id, to.id AS to_id") {
+                let relation = relation_from_query(cypher)?;
+                return Ok(self
+                    .edges
+                    .iter()
+                    .filter(|(kind, _, _)| *kind == relation)
+                    .map(|(_, from, to)| {
+                        GraphRow::from([
+                            ("from_id".to_owned(), GraphValue::String(from.clone())),
+                            ("to_id".to_owned(), GraphValue::String(to.clone())),
+                        ])
+                    })
+                    .collect());
+            }
+
             if cypher.contains("RETURN count(rel) AS count;") {
                 let relation = relation_from_query(cypher)?;
                 let incoming = cypher.contains("<-[rel:");
@@ -1280,6 +2026,115 @@ mod tests {
         assert_eq!(response.data.len(), 1);
         assert_eq!(response.data[0].id, "d2");
         assert_eq!(response.data[0].status, DecisionStatus::Rejected);
+        Ok(())
+    }
+
+    #[test]
+    fn search_decisions_matches_title_rationale_topic_status_and_actor() -> Result<()> {
+        let graph = FixtureGraph::sample();
+        let response = search_decisions(
+            &graph,
+            &SearchDecisionRequest {
+                query: Some("queue".to_owned()),
+                topic_keys: vec!["infra".to_owned()],
+                statuses: vec![DecisionStatus::Accepted],
+                actor_ids: vec!["actor:2".to_owned()],
+                sources: vec!["agent".to_owned()],
+                limit: 10,
+                cursor: None,
+            },
+        )?;
+
+        assert_eq!(response.result_count, 1);
+        let result = &response.data.items[0];
+        assert_eq!(result.decision.id, "d1");
+        assert_eq!(result.decision.status, DecisionStatus::Accepted);
+        assert_eq!(result.rank, 1);
+        assert!(result.matched_fields.contains(&"decision.title".to_owned()));
+        assert_eq!(result.graph_context.actor_ids, vec!["actor:1", "actor:2"]);
+
+        let rationale_response = search_decisions(
+            &graph,
+            &SearchDecisionRequest {
+                query: Some("simplicity".to_owned()),
+                statuses: vec![DecisionStatus::Rejected],
+                limit: 10,
+                ..SearchDecisionRequest::default()
+            },
+        )?;
+        assert_eq!(rationale_response.data.items[0].decision.id, "d2");
+        assert!(rationale_response.data.items[0]
+            .matched_fields
+            .contains(&"decision.rationale".to_owned()));
+        Ok(())
+    }
+
+    #[test]
+    fn search_decisions_matches_graph_context_text() -> Result<()> {
+        let graph = FixtureGraph::sample();
+        for (query, field, kind) in [
+            ("Kuzu", "evidence.content", NodeKind::Evidence),
+            ("p95", "hypothesis.statement", NodeKind::Hypothesis),
+            ("async", "option.label", NodeKind::Option),
+        ] {
+            let response = search_decisions(
+                &graph,
+                &SearchDecisionRequest {
+                    query: Some(query.to_owned()),
+                    limit: 10,
+                    ..SearchDecisionRequest::default()
+                },
+            )?;
+
+            assert_eq!(response.result_count, 1, "query {query}");
+            let result = &response.data.items[0];
+            assert_eq!(result.decision.id, "d1");
+            assert_eq!(result.rank, 3);
+            assert!(result.matched_fields.contains(&field.to_owned()));
+            assert!(
+                result
+                    .graph_context
+                    .matched_nodes
+                    .iter()
+                    .any(|node| node.kind == kind && node.field == field),
+                "matched node missing for {field}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn search_decisions_paginates_in_deterministic_order() -> Result<()> {
+        let graph = FixtureGraph::sample();
+        let first = search_decisions(
+            &graph,
+            &SearchDecisionRequest {
+                topic_keys: vec!["infra".to_owned()],
+                limit: 1,
+                ..SearchDecisionRequest::default()
+            },
+        )?;
+
+        assert_eq!(first.result_count, 1);
+        assert!(first.truncated);
+        assert_eq!(first.data.total_matches, 2);
+        assert_eq!(first.data.items[0].decision.id, "d1");
+        assert_eq!(first.data.next_cursor.as_deref(), Some("1"));
+
+        let second = search_decisions(
+            &graph,
+            &SearchDecisionRequest {
+                topic_keys: vec!["infra".to_owned()],
+                limit: 1,
+                cursor: first.data.next_cursor,
+                ..SearchDecisionRequest::default()
+            },
+        )?;
+
+        assert_eq!(second.result_count, 1);
+        assert!(!second.truncated);
+        assert_eq!(second.data.items[0].decision.id, "d2");
+        assert_eq!(second.data.next_cursor, None);
         Ok(())
     }
 

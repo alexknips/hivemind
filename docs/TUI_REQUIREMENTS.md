@@ -163,6 +163,9 @@ they should not block the query work.
 - DTO fields for stale assumptions, branched supersession chains, source
   provenance, and imported document references where applicable.
 
+The slice-1 `search_decisions` DTO, ranking contract, pagination behavior, and
+backend tradeoffs are specified in `docs/DECISION_SEARCH_QUERY.md`.
+
 ## Out Of Scope
 
 - Board/kanban columns as the primary interface, including status columns that

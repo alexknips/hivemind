@@ -14,8 +14,8 @@ use crate::projector::{
 };
 use crate::queries::{
     derive_decision_status, derive_hypothesis_status, get_decision, get_decision_neighborhood,
-    get_relevant_decisions, get_supersession_chain, DecisionStatus, HypothesisStatus,
-    NeighborhoodRequest,
+    get_relevant_decisions, get_supersession_chain, search_decisions, DecisionStatus,
+    HypothesisStatus, NeighborhoodRequest, SearchDecisionRequest,
 };
 use crate::{HivemindError, Result};
 
@@ -213,6 +213,8 @@ pub enum QueryCommand {
     GetSupersessionChain(QueryDecisionArgs),
     #[command(name = "get_decision_neighborhood")]
     GetDecisionNeighborhood(QueryDecisionNeighborhoodArgs),
+    #[command(name = "search_decisions")]
+    SearchDecisions(QuerySearchDecisionsArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -240,6 +242,30 @@ pub struct QueryDecisionNeighborhoodArgs {
 
     #[arg(long = "relations", value_delimiter = ',')]
     pub relations: Vec<QueryRelationKind>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QuerySearchDecisionsArgs {
+    #[arg(long = "q")]
+    pub query: Option<String>,
+
+    #[arg(long = "topic", value_delimiter = ',')]
+    pub topic_keys: Vec<String>,
+
+    #[arg(long = "status", value_delimiter = ',')]
+    pub statuses: Vec<QueryDecisionStatus>,
+
+    #[arg(long = "actor-id", value_delimiter = ',')]
+    pub actor_ids: Vec<String>,
+
+    #[arg(long = "source", value_delimiter = ',')]
+    pub sources: Vec<String>,
+
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -540,6 +566,25 @@ fn run_query_with_graph(graph: &impl GraphView, query: &QueryArgs) -> Result<Str
                 &request,
             )?)
             .map_err(|error| {
+                CliError::InvalidInput(format!("json serialization failed: {error}"))
+            })?
+        }
+        QueryCommand::SearchDecisions(args) => {
+            let request = SearchDecisionRequest {
+                query: args.query.clone(),
+                topic_keys: args.topic_keys.clone(),
+                statuses: args
+                    .statuses
+                    .iter()
+                    .copied()
+                    .map(QueryDecisionStatus::as_decision_status)
+                    .collect(),
+                actor_ids: args.actor_ids.clone(),
+                sources: args.sources.clone(),
+                limit: args.limit,
+                cursor: args.cursor.clone(),
+            };
+            serde_json::to_string(&search_decisions(graph, &request)?).map_err(|error| {
                 CliError::InvalidInput(format!("json serialization failed: {error}"))
             })?
         }
@@ -1034,6 +1079,60 @@ mod tests {
         let output = run(&cli).expect("emit decision succeeds");
 
         assert!(output.starts_with("decision-"));
+    }
+
+    #[test]
+    fn search_decisions_cli_returns_query_response() {
+        let hivemind_dir = unique_test_dir("query-search-decisions");
+        let decision_id = run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "agent-1",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "emit",
+            "decision.proposed",
+            "--title",
+            "Pick queue",
+            "--rationale",
+            "Need durable ingestion",
+            "--topic-keys",
+            "infra,queue",
+            "--options",
+            "sync,async",
+            "--chose",
+            "async",
+        ]))
+        .expect("emit decision succeeds");
+
+        let query = run(&Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "query",
+            "search_decisions",
+            "--q",
+            "queue",
+            "--topic",
+            "infra",
+            "--status",
+            "proposed",
+            "--actor-id",
+            "agent-1",
+            "--source",
+            "cli",
+            "--limit",
+            "5",
+        ]))
+        .expect("search query succeeds");
+        let query: serde_json::Value = serde_json::from_str(&query).expect("valid query json");
+
+        assert_eq!(query["result_count"], serde_json::json!(1));
+        assert_eq!(query["data"]["items"][0]["decision"]["id"], decision_id);
+        assert_eq!(query["data"]["items"][0]["rank"], serde_json::json!(1));
+        assert_eq!(query["data"]["next_cursor"], serde_json::Value::Null);
+
+        let _ = std::fs::remove_dir_all(&hivemind_dir);
     }
 
     #[test]
