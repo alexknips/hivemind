@@ -27,16 +27,8 @@ const NODE_DDL: &[(NodeKind, &str)] = &[
         "CREATE NODE TABLE IF NOT EXISTS `Actor` (id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
-        NodeKind::Blocker,
-        "CREATE NODE TABLE IF NOT EXISTS `Blocker` (id STRING, blocked_actor_id STRING, decision_id STRING, topic_keys STRING[], blocked_ref STRING, blocked_ref_type STRING, reason STRING, priority STRING, last_progress_at STRING, required_owner_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
-    ),
-    (
         NodeKind::Evidence,
         "CREATE NODE TABLE IF NOT EXISTS `Evidence` (id STRING, content STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
-    ),
-    (
-        NodeKind::Notification,
-        "CREATE NODE TABLE IF NOT EXISTS `Notification` (id STRING, blocker_id STRING, recipient_actor_id STRING, channel STRING, threshold_rule STRING, source_event_ids STRING[], dedupe_key STRING, sent_at STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Option,
@@ -45,6 +37,14 @@ const NODE_DDL: &[(NodeKind, &str)] = &[
     (
         NodeKind::Hypothesis,
         "CREATE NODE TABLE IF NOT EXISTS `Hypothesis` (id STRING, statement STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+    ),
+    (
+        NodeKind::Blocker,
+        "CREATE NODE TABLE IF NOT EXISTS `Blocker` (id STRING, blocked_actor_id STRING, decision_id STRING, topic_keys STRING[], blocked_ref STRING, blocked_ref_type STRING, reason STRING, priority STRING, last_progress_at STRING, required_owner_id STRING, reported_at STRING, reported_event_origin INT64, resolved_at STRING, resolution_event_id INT64, resolution_reason STRING, resolved_event_origin INT64, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+    ),
+    (
+        NodeKind::Notification,
+        "CREATE NODE TABLE IF NOT EXISTS `Notification` (id STRING, blocker_id STRING, recipient_actor_id STRING, channel STRING, threshold_rule STRING, source_event_ids STRING[], dedupe_key STRING, sent_at STRING, ack_at STRING, snooze_until STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
 ];
 

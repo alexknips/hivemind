@@ -25,8 +25,12 @@ pub enum EventType {
     RelationAdded,
     #[serde(rename = "blocker.reported")]
     BlockerReported,
+    #[serde(rename = "blocker.resolved")]
+    BlockerResolved,
     #[serde(rename = "notification.sent")]
     NotificationSent,
+    #[serde(rename = "notification.acknowledged")]
+    NotificationAcknowledged,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,7 +136,7 @@ pub struct DecisionSupersededPayload {
     pub new_decision_id: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum DecisionBlockerPriority {
     #[serde(rename = "P0", alias = "p0")]
     P0,
@@ -156,7 +160,20 @@ impl DecisionBlockerPriority {
             Self::P4 => "P4",
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "p0" => Some(Self::P0),
+            "p1" => Some(Self::P1),
+            "p2" => Some(Self::P2),
+            "p3" => Some(Self::P3),
+            "p4" => Some(Self::P4),
+            _ => None,
+        }
+    }
 }
+
+pub type BlockerPriority = DecisionBlockerPriority;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -197,6 +214,22 @@ pub struct NotificationSentPayload {
     pub source_event_ids: Vec<EventId>,
     pub dedupe_key: String,
     pub sent_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockerResolvedPayload {
+    pub blocker_id: String,
+    pub resolution_event_id: Option<EventId>,
+    pub resolution_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationAcknowledgedPayload {
+    pub notification_id: String,
+    pub ack_at: DateTime<Utc>,
+    pub snooze_until: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -249,7 +282,9 @@ pub enum EventPayload {
     HypothesisRecorded(HypothesisRecordedPayload),
     RelationAdded(RelationAddedPayload),
     BlockerReported(BlockerReportedPayload),
+    BlockerResolved(BlockerResolvedPayload),
     NotificationSent(NotificationSentPayload),
+    NotificationAcknowledged(NotificationAcknowledgedPayload),
 }
 
 impl EventPayload {
@@ -264,7 +299,9 @@ impl EventPayload {
             Self::HypothesisRecorded(_) => EventType::HypothesisRecorded,
             Self::RelationAdded(_) => EventType::RelationAdded,
             Self::BlockerReported(_) => EventType::BlockerReported,
+            Self::BlockerResolved(_) => EventType::BlockerResolved,
             Self::NotificationSent(_) => EventType::NotificationSent,
+            Self::NotificationAcknowledged(_) => EventType::NotificationAcknowledged,
         }
     }
 }
@@ -388,6 +425,21 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             )?;
             Ok(EventPayload::BlockerReported(payload))
         }
+        EventType::BlockerResolved => {
+            require_event_provenance(event)?;
+            let payload: BlockerResolvedPayload = parse_payload(event)?;
+            require_non_empty("payload.blocker_id", &payload.blocker_id)?;
+            require_optional_non_empty(
+                "payload.resolution_reason",
+                payload.resolution_reason.as_deref(),
+            )?;
+            if payload.resolution_event_id.is_none() && payload.resolution_reason.is_none() {
+                return Err(EventValidationError::EmptyField(
+                    "payload.resolution_event_id_or_resolution_reason",
+                ));
+            }
+            Ok(EventPayload::BlockerResolved(payload))
+        }
         EventType::NotificationSent => {
             require_event_provenance(event)?;
             let payload: NotificationSentPayload = parse_payload(event)?;
@@ -398,6 +450,12 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty_event_ids("payload.source_event_ids", &payload.source_event_ids)?;
             require_non_empty("payload.dedupe_key", &payload.dedupe_key)?;
             Ok(EventPayload::NotificationSent(payload))
+        }
+        EventType::NotificationAcknowledged => {
+            require_event_provenance(event)?;
+            let payload: NotificationAcknowledgedPayload = parse_payload(event)?;
+            require_non_empty("payload.notification_id", &payload.notification_id)?;
+            Ok(EventPayload::NotificationAcknowledged(payload))
         }
     }
 }
@@ -550,9 +608,19 @@ mod tests {
             EventType::BlockerReported,
         ),
         (
+            include_str!("../schemas/v0/blocker.resolved.json"),
+            include_str!("../tests/fixtures/v0/blocker.resolved.json"),
+            EventType::BlockerResolved,
+        ),
+        (
             include_str!("../schemas/v0/notification.sent.json"),
             include_str!("../tests/fixtures/v0/notification.sent.json"),
             EventType::NotificationSent,
+        ),
+        (
+            include_str!("../schemas/v0/notification.acknowledged.json"),
+            include_str!("../tests/fixtures/v0/notification.acknowledged.json"),
+            EventType::NotificationAcknowledged,
         ),
     ];
 

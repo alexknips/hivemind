@@ -95,7 +95,9 @@ fn event_type_as_str(event_type: EventType) -> &'static str {
         EventType::HypothesisRecorded => "hypothesis.recorded",
         EventType::RelationAdded => "relation.added",
         EventType::BlockerReported => "blocker.reported",
+        EventType::BlockerResolved => "blocker.resolved",
         EventType::NotificationSent => "notification.sent",
+        EventType::NotificationAcknowledged => "notification.acknowledged",
     }
 }
 
@@ -110,7 +112,9 @@ fn parse_event_type(value: &str) -> Result<EventType> {
         "hypothesis.recorded" => Ok(EventType::HypothesisRecorded),
         "relation.added" => Ok(EventType::RelationAdded),
         "blocker.reported" => Ok(EventType::BlockerReported),
+        "blocker.resolved" => Ok(EventType::BlockerResolved),
         "notification.sent" => Ok(EventType::NotificationSent),
+        "notification.acknowledged" => Ok(EventType::NotificationAcknowledged),
         other => Err(storage_error(format!("unknown event type in row: {other}")).into()),
     }
 }

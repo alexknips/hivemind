@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivemind.local/schemas/v0/blocker.resolved.json",
+  "title": "blocker.resolved event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_uuid", "correlation_id", "type", "actor_id", "source", "source_ref", "payload"],
+  "properties": {
+    "event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "event_uuid": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "causation_event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "type": { "const": "blocker.resolved" },
+    "actor_id": { "type": "string", "minLength": 1 },
+    "source": { "enum": ["cli", "agent", "slack", "api"] },
+    "source_ref": { "type": "string", "minLength": 1 },
+    "ts": { "type": ["string", "null"], "format": "date-time" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocker_id", "resolution_event_id", "resolution_reason"],
+      "properties": {
+        "blocker_id": { "$ref": "#/$defs/id" },
+        "resolution_event_id": { "type": ["integer", "null"], "minimum": 1 },
+        "resolution_reason": { "type": ["string", "null"], "minLength": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1 }
+  }
+}

@@ -396,6 +396,11 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
                 "required_owner_id".to_owned(),
                 optional_string_value(payload.required_owner_id.as_deref()),
             );
+            blocker_properties.insert("reported_at".to_owned(), event_timestamp(event));
+            blocker_properties.insert(
+                "reported_event_origin".to_owned(),
+                GraphValue::Int(event_origin),
+            );
             graph.upsert_node(NodeKind::Blocker, &payload.blocker_id, &blocker_properties)?;
 
             upsert_actor(graph, &payload.blocked_actor_id, &origin_properties)?;
@@ -425,6 +430,28 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
                     &origin_properties,
                 )?;
             }
+        }
+        EventPayload::BlockerResolved(payload) => {
+            let mut blocker_properties = origin_properties.clone();
+            blocker_properties.insert("resolved_at".to_owned(), event_timestamp(event));
+            blocker_properties.insert(
+                "resolution_event_id".to_owned(),
+                payload
+                    .resolution_event_id
+                    .and_then(|id| i64::try_from(id).ok())
+                    .map_or(GraphValue::Null, GraphValue::Int),
+            );
+            blocker_properties.insert(
+                "resolution_reason".to_owned(),
+                payload
+                    .resolution_reason
+                    .map_or(GraphValue::Null, GraphValue::String),
+            );
+            blocker_properties.insert(
+                "resolved_event_origin".to_owned(),
+                GraphValue::Int(event_origin),
+            );
+            graph.upsert_node(NodeKind::Blocker, &payload.blocker_id, &blocker_properties)?;
         }
         EventPayload::NotificationSent(payload) => {
             let notification_id = event.event_uuid.to_string();
@@ -488,6 +515,25 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
                 &notification_id,
                 &payload.recipient_actor_id,
                 &origin_properties,
+            )?;
+        }
+        EventPayload::NotificationAcknowledged(payload) => {
+            let mut notification_properties = origin_properties.clone();
+            notification_properties.insert(
+                "ack_at".to_owned(),
+                GraphValue::String(payload.ack_at.to_rfc3339()),
+            );
+            notification_properties.insert(
+                "snooze_until".to_owned(),
+                payload
+                    .snooze_until
+                    .map(|value| GraphValue::String(value.to_rfc3339()))
+                    .unwrap_or(GraphValue::Null),
+            );
+            graph.upsert_node(
+                NodeKind::Notification,
+                &payload.notification_id,
+                &notification_properties,
             )?;
         }
     }
@@ -565,6 +611,13 @@ fn event_origin(event: &Event) -> Result<i64> {
         .ok_or_else(|| projector_error("event_id is required before projection"))?;
     i64::try_from(event_id)
         .map_err(|error| projector_error(format!("event_id out of range: {error}")).into())
+}
+
+fn event_timestamp(event: &Event) -> GraphValue {
+    event
+        .ts
+        .map(|ts| GraphValue::String(ts.to_rfc3339()))
+        .unwrap_or(GraphValue::Null)
 }
 
 fn relation_kind(kind: EventRelationKind) -> RelationKind {

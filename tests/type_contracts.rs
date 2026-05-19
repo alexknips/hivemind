@@ -3,11 +3,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hivemind::events::{
-    self, BlockerReportedPayload, DecisionBlockerPriority, DecisionIdPayload,
-    DecisionProposedPayload, DecisionRequestedPayload, DecisionSupersededPayload, Event,
-    EventPayload, EventSource, EventType, EventValidationError, EvidenceRecordedPayload,
-    HypothesisRecordedPayload, NotificationSentPayload, RelationAddedPayload,
-    RelationKind as EventRelationKind,
+    self, BlockerReportedPayload, BlockerResolvedPayload, DecisionBlockerPriority,
+    DecisionIdPayload, DecisionProposedPayload, DecisionRequestedPayload,
+    DecisionSupersededPayload, Event, EventPayload, EventSource, EventType, EventValidationError,
+    EvidenceRecordedPayload, HypothesisRecordedPayload, NotificationAcknowledgedPayload,
+    NotificationSentPayload, RelationAddedPayload, RelationKind as EventRelationKind,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};
@@ -15,7 +15,7 @@ use hivemind::{CliError, CommandError, HivemindError, LedgerError, ProjectorErro
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const EVENT_TYPES: [EventType; 10] = [
+const EVENT_TYPES: [EventType; 12] = [
     EventType::DecisionProposed,
     EventType::DecisionRequested,
     EventType::DecisionAccepted,
@@ -25,7 +25,9 @@ const EVENT_TYPES: [EventType; 10] = [
     EventType::HypothesisRecorded,
     EventType::RelationAdded,
     EventType::BlockerReported,
+    EventType::BlockerResolved,
     EventType::NotificationSent,
+    EventType::NotificationAcknowledged,
 ];
 
 const EVENT_RELATION_KINDS: [EventRelationKind; 6] = [
@@ -290,7 +292,9 @@ fn event_type_name(event_type: EventType) -> &'static str {
         EventType::HypothesisRecorded => "hypothesis.recorded",
         EventType::RelationAdded => "relation.added",
         EventType::BlockerReported => "blocker.reported",
+        EventType::BlockerResolved => "blocker.resolved",
         EventType::NotificationSent => "notification.sent",
+        EventType::NotificationAcknowledged => "notification.acknowledged",
     }
 }
 
@@ -305,7 +309,9 @@ fn payload_variant_type(payload: &EventPayload) -> EventType {
         EventPayload::HypothesisRecorded(_) => EventType::HypothesisRecorded,
         EventPayload::RelationAdded(_) => EventType::RelationAdded,
         EventPayload::BlockerReported(_) => EventType::BlockerReported,
+        EventPayload::BlockerResolved(_) => EventType::BlockerResolved,
         EventPayload::NotificationSent(_) => EventType::NotificationSent,
+        EventPayload::NotificationAcknowledged(_) => EventType::NotificationAcknowledged,
     }
 }
 
@@ -339,8 +345,14 @@ fn typed_payload_from_value(
         EventType::BlockerReported => {
             EventPayload::BlockerReported(serde_json::from_value(payload)?)
         }
+        EventType::BlockerResolved => {
+            EventPayload::BlockerResolved(serde_json::from_value(payload)?)
+        }
         EventType::NotificationSent => {
             EventPayload::NotificationSent(serde_json::from_value(payload)?)
+        }
+        EventType::NotificationAcknowledged => {
+            EventPayload::NotificationAcknowledged(serde_json::from_value(payload)?)
         }
     })
 }
@@ -431,6 +443,14 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
             }),
         ),
         (
+            EventType::BlockerResolved,
+            EventPayload::BlockerResolved(BlockerResolvedPayload {
+                blocker_id: "blocker:minimal".to_owned(),
+                resolution_event_id: Some(1),
+                resolution_reason: None,
+            }),
+        ),
+        (
             EventType::NotificationSent,
             EventPayload::NotificationSent(NotificationSentPayload {
                 blocker_id: "blocker:minimal".to_owned(),
@@ -442,6 +462,16 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 sent_at: chrono::DateTime::parse_from_rfc3339("2026-05-19T11:30:00Z")
                     .unwrap()
                     .with_timezone(&chrono::Utc),
+            }),
+        ),
+        (
+            EventType::NotificationAcknowledged,
+            EventPayload::NotificationAcknowledged(NotificationAcknowledgedPayload {
+                notification_id: "notification:minimal".to_owned(),
+                ack_at: chrono::DateTime::parse_from_rfc3339("2026-05-19T11:45:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+                snooze_until: None,
             }),
         ),
     ]
@@ -458,7 +488,9 @@ fn payload_json(payload: &EventPayload) -> Value {
         EventPayload::HypothesisRecorded(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::RelationAdded(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::BlockerReported(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::BlockerResolved(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::NotificationSent(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::NotificationAcknowledged(payload) => serde_json::to_value(payload).unwrap(),
     }
 }
 

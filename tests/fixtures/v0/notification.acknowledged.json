@@ -1,0 +1,16 @@
+{
+  "event_id": 11,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe0b",
+  "correlation_id": "session-1",
+  "causation_event_id": 10,
+  "type": "notification.acknowledged",
+  "actor_id": "actor:architect",
+  "source": "api",
+  "source_ref": "review-console",
+  "payload": {
+    "notification_id": "notification-storage-choice-1",
+    "ack_at": "2026-05-17T21:15:43Z",
+    "snooze_until": null
+  },
+  "ts": "2026-05-17T21:15:43Z"
+}
