@@ -6,6 +6,8 @@ pub mod ingest;
 pub mod ledger;
 pub mod projector;
 pub mod queries;
+#[cfg(feature = "tui")]
+pub mod tui;
 
 pub use error::{
     CliError, CommandError, HivemindError, LedgerError, ProjectorError, QueryError, Result,

@@ -62,6 +62,7 @@ pub enum Command {
     Import(ImportArgs),
     Query(QueryArgs),
     Dump(DumpArgs),
+    Tui(TuiArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -314,6 +315,30 @@ pub struct QuerySearchDecisionsArgs {
     pub cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, Args)]
+pub struct TuiArgs {
+    #[arg(long = "q")]
+    pub query: Option<String>,
+
+    #[arg(long = "topic", value_delimiter = ',')]
+    pub topic_keys: Vec<String>,
+
+    #[arg(long = "status", value_delimiter = ',')]
+    pub statuses: Vec<QueryDecisionStatus>,
+
+    #[arg(long = "actor-id", value_delimiter = ',')]
+    pub actor_ids: Vec<String>,
+
+    #[arg(long = "source", value_delimiter = ',')]
+    pub sources: Vec<String>,
+
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "dot-output", default_value = "hivemind-neighborhood.dot")]
+    pub dot_output: PathBuf,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "snake_case")]
 pub enum QueryRelationKind {
@@ -406,6 +431,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Import(import) => run_import(cli, import),
         Command::Query(query) => run_query(cli, query),
         Command::Dump(dump) => run_dump(cli, dump),
+        Command::Tui(args) => run_tui(cli, args),
     }
 }
 
@@ -671,6 +697,74 @@ fn run_dump(cli: &Cli, dump: &DumpArgs) -> Result<String> {
         }
         GraphBackend::Kuzu => run_dump_with_kuzu(&ledger, &cli.hivemind_dir, dump),
     }
+}
+
+#[cfg(feature = "tui")]
+fn run_tui(cli: &Cli, args: &TuiArgs) -> Result<String> {
+    if cli.json {
+        return Err(CliError::InvalidInput(
+            "--json is not supported for the interactive tui command".to_owned(),
+        )
+        .into());
+    }
+
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let config = crate::tui::TuiConfig {
+        query: args.query.clone(),
+        topic_keys: args.topic_keys.clone(),
+        statuses: args
+            .statuses
+            .iter()
+            .copied()
+            .map(QueryDecisionStatus::as_decision_status)
+            .collect(),
+        actor_ids: args.actor_ids.clone(),
+        sources: args.sources.clone(),
+        limit: args.limit,
+        dot_output: args.dot_output.clone(),
+    };
+
+    match selected_graph_backend(cli)? {
+        GraphBackend::Memory => {
+            let graph = MemoryGraph::default();
+            rebuild_graph(&ledger, &graph)?;
+            crate::tui::run(&graph, config)?;
+        }
+        GraphBackend::Kuzu => run_tui_with_kuzu(&ledger, &cli.hivemind_dir, config)?,
+    }
+
+    Ok("tui exited".to_owned())
+}
+
+#[cfg(not(feature = "tui"))]
+fn run_tui(_cli: &Cli, _args: &TuiArgs) -> Result<String> {
+    Err(
+        CliError::InvalidInput("tui command requires building with --features tui".to_owned())
+            .into(),
+    )
+}
+
+#[cfg(all(feature = "tui", feature = "graph-kuzu"))]
+fn run_tui_with_kuzu(
+    ledger: &impl EventLedger,
+    hivemind_dir: &std::path::Path,
+    config: crate::tui::TuiConfig,
+) -> Result<()> {
+    let graph = crate::projector::kuzu::KuzuGraph::open(hivemind_dir)?;
+    rebuild_graph(ledger, &graph)?;
+    crate::tui::run(&graph, config)
+}
+
+#[cfg(all(feature = "tui", not(feature = "graph-kuzu")))]
+fn run_tui_with_kuzu(
+    _ledger: &impl EventLedger,
+    _hivemind_dir: &std::path::Path,
+    _config: crate::tui::TuiConfig,
+) -> Result<()> {
+    Err(CliError::InvalidInput(
+        "graph backend 'kuzu' requires building with --features graph-kuzu".to_owned(),
+    )
+    .into())
 }
 
 fn run_dump_with_graph(graph: &impl GraphView, dump: &DumpArgs) -> Result<String> {
@@ -1059,6 +1153,53 @@ mod tests {
             Command::Emit(command)
                 if matches!(command.command, EmitCommand::EvidenceRecorded(_))
         ));
+    }
+
+    #[test]
+    fn parses_tui_filters_and_export_path() {
+        let cli = Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            "./state",
+            "tui",
+            "--q",
+            "queue",
+            "--topic",
+            "infra,storage",
+            "--status",
+            "accepted",
+            "--actor-id",
+            "agent:codex:1",
+            "--source",
+            "agent",
+            "--limit",
+            "5",
+            "--dot-output",
+            "focused.dot",
+        ]);
+
+        let Command::Tui(args) = cli.command else {
+            panic!("expected tui command");
+        };
+        assert_eq!(args.query.as_deref(), Some("queue"));
+        assert_eq!(args.topic_keys, vec!["infra", "storage"]);
+        assert_eq!(args.statuses, vec![QueryDecisionStatus::Accepted]);
+        assert_eq!(args.actor_ids, vec!["agent:codex:1"]);
+        assert_eq!(args.sources, vec!["agent"]);
+        assert_eq!(args.limit, 5);
+        assert_eq!(args.dot_output, PathBuf::from("focused.dot"));
+    }
+
+    #[cfg(not(feature = "tui"))]
+    #[test]
+    fn tui_command_requires_feature() {
+        let cli = Cli::parse_from(["hivemind", "tui"]);
+
+        let error = run(&cli).expect_err("tui needs feature");
+
+        assert!(error
+            .to_string()
+            .contains("requires building with --features tui"));
     }
 
     #[test]

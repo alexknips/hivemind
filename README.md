@@ -131,6 +131,16 @@ Export the current projected graph as deterministic Graphviz DOT:
 cargo run -- dump --format dot > graph.dot
 ```
 
+Run the read-only decision search TUI with the optional terminal feature:
+
+```bash
+cargo run --features tui -- tui --q queue --topic architecture \
+  --status accepted --dot-output focused-neighborhood.dot
+```
+
+The TUI uses the same query APIs as the CLI, supports keyboard search and graph
+navigation, and exports the focused one-hop neighborhood as DOT with `x`.
+
 ## Read More
 
 - `docs/ARCHITECTURE.md` is the concise architecture summary for reviewers.
