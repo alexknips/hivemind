@@ -73,6 +73,7 @@ impl EventProvenance {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Event {
     pub event_id: Option<EventId>,
     pub event_uuid: Uuid,
@@ -90,6 +91,7 @@ pub struct Event {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DecisionProposedPayload {
     pub decision_id: String,
     pub title: String,
@@ -106,17 +108,20 @@ pub struct DecisionProposedPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DecisionIdPayload {
     pub decision_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DecisionSupersededPayload {
     pub old_decision_id: String,
     pub new_decision_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvidenceRecordedPayload {
     pub evidence_id: String,
     pub content: String,
@@ -124,6 +129,7 @@ pub struct EvidenceRecordedPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HypothesisRecordedPayload {
     pub hypothesis_id: String,
     pub statement: String,
@@ -146,6 +152,7 @@ pub enum RelationKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RelationAddedPayload {
     pub relation: RelationKind,
     pub from_id: String,
