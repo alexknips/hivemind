@@ -19,11 +19,14 @@ use crate::projector::{
     GraphView, NodeKind, RelationKind as GraphRelationKind,
 };
 use crate::queries::{
-    derive_decision_status, derive_hypothesis_status, get_active_decision_blockers,
-    get_blocker_notification_candidates, get_decision, get_decision_neighborhood,
+    derive_decision_status, derive_hypothesis_status, export_read_only_summary,
+    get_active_decision_blockers, get_blocker_notification_candidates, get_decision,
+    get_decision_neighborhood, get_decisions_changed_since, get_recent_activity,
     get_relevant_decisions, get_supersession_chain, search_decisions,
-    ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest, DecisionBlockerFilters,
-    DecisionStatus, HypothesisStatus, NeighborhoodRequest, SearchDecisionRequest,
+    ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest, ChangedSinceRequest,
+    DecisionBlockerFilters, DecisionStatus, HistoryFilterRequest, HypothesisStatus,
+    NeighborhoodRequest, ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQuery,
+    ReadOnlyExportRequest, RecentActivityRequest, SearchDecisionRequest,
 };
 use crate::{HivemindError, Result};
 
@@ -65,7 +68,7 @@ pub enum GraphBackend {
 pub enum Command {
     Emit(Box<EmitArgs>),
     Import(ImportArgs),
-    Query(QueryArgs),
+    Query(Box<QueryArgs>),
     Dump(DumpArgs),
     Tui(TuiArgs),
     Ingest(IngestArgs),
@@ -293,6 +296,12 @@ pub enum QueryCommand {
     GetActiveDecisionBlockers(QueryActiveDecisionBlockersArgs),
     #[command(name = "get_blocker_notification_candidates")]
     GetBlockerNotificationCandidates(QueryBlockerNotificationCandidatesArgs),
+    #[command(name = "get_recent_activity")]
+    GetRecentActivity(QueryRecentActivityArgs),
+    #[command(name = "get_decisions_changed_since")]
+    GetDecisionsChangedSince(QueryChangedSinceArgs),
+    #[command(name = "export_read_only_summary")]
+    ExportReadOnlySummary(QueryExportReadOnlySummaryArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -389,6 +398,116 @@ pub struct QueryBlockerNotificationCandidatesArgs {
 
     #[arg(long = "cursor")]
     pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryHistoryFilterArgs {
+    #[arg(long = "actor-id", value_delimiter = ',')]
+    pub actor_ids: Vec<String>,
+
+    #[arg(long = "source", value_delimiter = ',')]
+    pub sources: Vec<String>,
+
+    #[arg(long = "source-ref", value_delimiter = ',')]
+    pub source_refs: Vec<String>,
+
+    #[arg(long = "topic", value_delimiter = ',')]
+    pub topic_keys: Vec<String>,
+
+    #[arg(long = "status", value_delimiter = ',')]
+    pub statuses: Vec<QueryDecisionStatus>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryRecentActivityArgs {
+    #[command(flatten)]
+    pub filters: QueryHistoryFilterArgs,
+
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryChangedSinceArgs {
+    #[arg(long = "since-offset")]
+    pub since_offset: Option<u64>,
+
+    #[arg(long = "since-ts", alias = "since-timestamp")]
+    pub since_timestamp: Option<String>,
+
+    #[arg(long = "until-offset")]
+    pub until_offset: Option<u64>,
+
+    #[arg(long = "until-ts", alias = "until-timestamp")]
+    pub until_timestamp: Option<String>,
+
+    #[command(flatten)]
+    pub filters: QueryHistoryFilterArgs,
+
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryExportReadOnlySummaryArgs {
+    #[arg(long = "query", value_enum)]
+    pub query: QueryExportKind,
+
+    #[arg(long = "format", value_enum, default_value_t = QueryExportFormat::Json)]
+    pub format: QueryExportFormat,
+
+    #[arg(long = "generated-at")]
+    pub generated_at: Option<String>,
+
+    #[arg(long = "since-offset")]
+    pub since_offset: Option<u64>,
+
+    #[arg(long = "since-ts", alias = "since-timestamp")]
+    pub since_timestamp: Option<String>,
+
+    #[arg(long = "until-offset")]
+    pub until_offset: Option<u64>,
+
+    #[arg(long = "until-ts", alias = "until-timestamp")]
+    pub until_timestamp: Option<String>,
+
+    #[command(flatten)]
+    pub filters: QueryHistoryFilterArgs,
+
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum QueryExportKind {
+    RecentActivity,
+    DecisionsChangedSince,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum QueryExportFormat {
+    Json,
+    Markdown,
+}
+
+impl QueryExportFormat {
+    const fn as_query_format(self) -> QueryReadOnlyExportFormat {
+        match self {
+            QueryExportFormat::Json => QueryReadOnlyExportFormat::Json,
+            QueryExportFormat::Markdown => QueryReadOnlyExportFormat::Markdown,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Args)]
@@ -733,6 +852,10 @@ fn trimmed_optional<'a>(field: &'static str, value: &'a Option<String>) -> Resul
 fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {
     let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
 
+    if query.command.is_ledger_history_query() {
+        return run_query_with_ledger(&ledger, query);
+    }
+
     match selected_graph_backend(cli)? {
         GraphBackend::Memory => {
             let graph = MemoryGraph::default();
@@ -740,6 +863,134 @@ fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {
             run_query_with_graph(&graph, query)
         }
         GraphBackend::Kuzu => run_query_with_kuzu(&ledger, &cli.hivemind_dir, query),
+    }
+}
+
+impl QueryCommand {
+    fn is_ledger_history_query(&self) -> bool {
+        matches!(
+            self,
+            QueryCommand::GetRecentActivity(_)
+                | QueryCommand::GetDecisionsChangedSince(_)
+                | QueryCommand::ExportReadOnlySummary(_)
+        )
+    }
+}
+
+fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result<String> {
+    let json = match &query.command {
+        QueryCommand::GetRecentActivity(args) => serde_json::to_string(&get_recent_activity(
+            ledger,
+            &recent_activity_request(args)?,
+        )?)
+        .map_err(|error| CliError::InvalidInput(format!("json serialization failed: {error}")))?,
+        QueryCommand::GetDecisionsChangedSince(args) => serde_json::to_string(
+            &get_decisions_changed_since(ledger, &changed_since_request(args)?)?,
+        )
+        .map_err(|error| CliError::InvalidInput(format!("json serialization failed: {error}")))?,
+        QueryCommand::ExportReadOnlySummary(args) => {
+            let request = export_read_only_summary_request(args)?;
+            serde_json::to_string(&export_read_only_summary(ledger, &request)?).map_err(
+                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
+            )?
+        }
+        QueryCommand::GetDecision(_)
+        | QueryCommand::GetRelevantDecisions(_)
+        | QueryCommand::GetSupersessionChain(_)
+        | QueryCommand::GetDecisionNeighborhood(_)
+        | QueryCommand::SearchDecisions(_)
+        | QueryCommand::GetActiveDecisionBlockers(_)
+        | QueryCommand::GetBlockerNotificationCandidates(_) => {
+            return Err(
+                CliError::InvalidInput("query requires graph-backed execution".to_owned()).into(),
+            )
+        }
+    };
+
+    Ok(json)
+}
+
+fn recent_activity_request(args: &QueryRecentActivityArgs) -> Result<RecentActivityRequest> {
+    Ok(RecentActivityRequest {
+        filters: history_filter_request(&args.filters),
+        limit: args.limit,
+        cursor: args.cursor.clone(),
+    })
+}
+
+fn changed_since_request(args: &QueryChangedSinceArgs) -> Result<ChangedSinceRequest> {
+    Ok(ChangedSinceRequest {
+        since_offset: args.since_offset,
+        since_timestamp: parse_utc_timestamp("--since-ts", &args.since_timestamp)?,
+        until_offset: args.until_offset,
+        until_timestamp: parse_utc_timestamp("--until-ts", &args.until_timestamp)?,
+        filters: history_filter_request(&args.filters),
+        limit: args.limit,
+        cursor: args.cursor.clone(),
+    })
+}
+
+fn export_read_only_summary_request(
+    args: &QueryExportReadOnlySummaryArgs,
+) -> Result<ReadOnlyExportRequest> {
+    let generated_at =
+        parse_utc_timestamp("--generated-at", &args.generated_at)?.unwrap_or_else(Utc::now);
+    let filters = history_filter_request(&args.filters);
+    let query = match args.query {
+        QueryExportKind::RecentActivity => {
+            ReadOnlyExportQuery::RecentActivity(RecentActivityRequest {
+                filters,
+                limit: args.limit,
+                cursor: args.cursor.clone(),
+            })
+        }
+        QueryExportKind::DecisionsChangedSince => {
+            ReadOnlyExportQuery::DecisionsChangedSince(ChangedSinceRequest {
+                since_offset: args.since_offset,
+                since_timestamp: parse_utc_timestamp("--since-ts", &args.since_timestamp)?,
+                until_offset: args.until_offset,
+                until_timestamp: parse_utc_timestamp("--until-ts", &args.until_timestamp)?,
+                filters,
+                limit: args.limit,
+                cursor: args.cursor.clone(),
+            })
+        }
+    };
+
+    Ok(ReadOnlyExportRequest {
+        query,
+        format: args.format.as_query_format(),
+        generated_at,
+    })
+}
+
+fn history_filter_request(args: &QueryHistoryFilterArgs) -> HistoryFilterRequest {
+    HistoryFilterRequest {
+        actor_ids: args.actor_ids.clone(),
+        sources: args.sources.clone(),
+        source_refs: args.source_refs.clone(),
+        topic_keys: args.topic_keys.clone(),
+        statuses: args
+            .statuses
+            .iter()
+            .copied()
+            .map(QueryDecisionStatus::as_decision_status)
+            .collect(),
+    }
+}
+
+fn parse_utc_timestamp(
+    field: &'static str,
+    value: &Option<String>,
+) -> Result<Option<DateTime<Utc>>> {
+    match value.as_deref() {
+        None => Ok(None),
+        Some(value) => DateTime::parse_from_rfc3339(value)
+            .map(|timestamp| Some(timestamp.with_timezone(&Utc)))
+            .map_err(|error| {
+                CliError::InvalidInput(format!("{field} must be an RFC 3339 timestamp: {error}"))
+                    .into()
+            }),
     }
 }
 
@@ -840,6 +1091,13 @@ fn run_query_with_graph(graph: &impl GraphView, query: &QueryArgs) -> Result<Str
             serde_json::to_string(&get_blocker_notification_candidates(graph, &request)?).map_err(
                 |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
             )?
+        }
+        QueryCommand::GetRecentActivity(_)
+        | QueryCommand::GetDecisionsChangedSince(_)
+        | QueryCommand::ExportReadOnlySummary(_) => {
+            return Err(
+                CliError::InvalidInput("query requires ledger-backed execution".to_owned()).into(),
+            )
         }
     };
 
@@ -1584,6 +1842,100 @@ mod tests {
         assert_eq!(query["data"]["items"][0]["decision"]["id"], decision_id);
         assert_eq!(query["data"]["items"][0]["rank"], serde_json::json!(1));
         assert_eq!(query["data"]["next_cursor"], serde_json::Value::Null);
+
+        let _ = std::fs::remove_dir_all(&hivemind_dir);
+    }
+
+    #[test]
+    fn ledger_history_cli_queries_and_exports_read_only_summary() {
+        let hivemind_dir = unique_test_dir("query-ledger-history");
+        let decision_id = run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "agent-1",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "emit",
+            "decision.proposed",
+            "--title",
+            "Pick queue",
+            "--rationale",
+            "Need durable ingestion",
+            "--topic-keys",
+            "infra,queue",
+            "--options",
+            "sync,async",
+            "--chose",
+            "async",
+        ]))
+        .expect("emit decision succeeds");
+
+        let recent = run(&Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "query",
+            "get_recent_activity",
+            "--limit",
+            "1",
+            "--source",
+            "cli",
+        ]))
+        .expect("recent activity query succeeds");
+        let recent: serde_json::Value =
+            serde_json::from_str(&recent).expect("valid recent activity json");
+        assert_eq!(recent["result_count"], serde_json::json!(1));
+        assert_eq!(recent["data"]["items"][0]["decision_ids"][0], decision_id);
+        assert!(recent["data"]["items"][0]["citation_id"]
+            .as_str()
+            .expect("citation id")
+            .starts_with("event:"));
+
+        let changed = run(&Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "query",
+            "get_decisions_changed_since",
+            "--since-offset",
+            "0",
+            "--limit",
+            "1",
+        ]))
+        .expect("changed-since query succeeds");
+        let changed: serde_json::Value =
+            serde_json::from_str(&changed).expect("valid changed-since json");
+        assert_eq!(
+            changed["data"]["items"][0]["change_kind"],
+            serde_json::json!("new_decision")
+        );
+
+        let export = run(&Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "query",
+            "export_read_only_summary",
+            "--query",
+            "recent_activity",
+            "--format",
+            "markdown",
+            "--generated-at",
+            "2026-05-19T12:00:00Z",
+            "--limit",
+            "10",
+        ]))
+        .expect("export query succeeds");
+        let export: serde_json::Value = serde_json::from_str(&export).expect("valid export json");
+        assert_eq!(export["data"]["format"], serde_json::json!("markdown"));
+        assert_eq!(
+            export["data"]["citation_map"]["event:1"]["source"],
+            serde_json::json!("cli")
+        );
+        assert!(export["data"]["markdown"]
+            .as_str()
+            .expect("markdown body")
+            .contains("citation=event:1"));
 
         let _ = std::fs::remove_dir_all(&hivemind_dir);
     }

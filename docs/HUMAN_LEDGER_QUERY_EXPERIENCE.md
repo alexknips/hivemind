@@ -150,6 +150,51 @@ why it changed, who was involved, and which decisions are stale or contested.
 Agents can use the same exports as cited context without receiving decision
 authority.
 
+## Timeline, Changed-Since, And Export DTOs
+
+The first layer-2 history DTOs are deterministic ledger reads. They do not call
+LLMs, mutate state, or rank beyond explicit ledger ordering.
+
+`get_recent_activity(request)` returns newest-first timeline rows:
+
+- `filters`: applied `actor_ids`, `sources`, `source_refs`, `topic_keys`, and
+  decision `statuses`.
+- `limit`, `cursor`, `next_cursor`, and `total_matches`: bounded offset
+  pagination over the filtered timeline.
+- `ledger_range`: `from_offset_exclusive` and `to_offset_inclusive` for the
+  scanned ledger range.
+- `items`: event rows with `event_origin`, `event_uuid`, event `type`,
+  `change_kind`, actor, source/source ref, timestamp, affected decision ids,
+  affected graph nodes, and `citation_id`.
+
+`get_decisions_changed_since(request)` returns oldest-first changes in a
+resolved ledger window:
+
+- `resolved_since` and `resolved_until`: concrete offsets, plus caller-supplied
+  timestamps when timestamp bounds were used.
+- `boundary_event_offsets`: timestamp-to-offset resolutions so the same query
+  can be replayed exactly.
+- `filters`, `limit`, `cursor`, `next_cursor`, `total_matches`, and
+  `ledger_range`.
+- `items`: event rows classified as `new_decision`, `status_change`,
+  `new_evidence`, `refuted_assumption`, `supersession`, or `context_change`,
+  with the same citation and affected-node fields as timeline rows.
+
+Offset bounds are canonical. A `since_offset` is exclusive; `until_offset` is
+inclusive. Timestamp bounds resolve to the greatest event offset at or before
+the timestamp, then the query uses those offsets.
+
+`export_read_only_summary(request)` wraps either query for sharing:
+
+- `query`, `format`, `query_params`, `ledger_range`, and `generated_at`.
+- `result_count`, `truncated`, and `continuation_cursor`.
+- `citation_map`: maps `event:<offset>` citation ids to event id, UUID, type,
+  actor, source/source ref, and timestamp.
+- `json` for JSON exports or `markdown` for deterministic Markdown exports.
+
+The Markdown export is a mechanical rendering of bounded query rows and
+citations. It is not a narrative summary and must not hide truncation.
+
 ## Related Implementation Beads
 
 The UI path is represented by `hivemind-a2q5` after query support exists.

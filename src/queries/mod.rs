@@ -9,6 +9,10 @@ use crate::events::BlockerPriority;
 use crate::projector::{GraphParams, GraphRow, GraphValue, GraphView, NodeKind, RelationKind};
 use crate::Result;
 
+mod history;
+
+pub use history::*;
+
 const MAX_QUERY_RESULTS: usize = 1000;
 const DEFAULT_SEARCH_LIMIT: usize = 25;
 const MAX_SNIPPETS_PER_RESULT: usize = 5;

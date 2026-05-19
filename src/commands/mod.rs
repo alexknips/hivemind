@@ -393,7 +393,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 actor_id,
                 root_event_id,
                 RelationKind::HasOption,
-                &decision_id,
+                decision_id,
                 option_id,
                 event_uuid,
             )?);
@@ -404,7 +404,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 actor_id,
                 root_event_id,
                 RelationKind::Chose,
-                &decision_id,
+                decision_id,
                 chosen_option_id,
                 event_uuid,
             )?);
@@ -415,7 +415,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 actor_id,
                 root_event_id,
                 RelationKind::Assumes,
-                &decision_id,
+                decision_id,
                 hypothesis_id,
                 event_uuid,
             )?);
@@ -426,7 +426,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 actor_id,
                 root_event_id,
                 RelationKind::BasedOn,
-                &decision_id,
+                decision_id,
                 evidence_id,
                 event_uuid,
             )?);
