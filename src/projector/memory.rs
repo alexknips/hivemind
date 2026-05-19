@@ -145,6 +145,18 @@ impl GraphView for MemoryGraph {
             return Ok(Vec::new());
         }
 
+        if cypher.contains("MATCH (d:`Decision` {id: $id}) RETURN d.id AS id LIMIT 1;") {
+            let decision_id = required_param_string(params, "id")?;
+            let nodes = self.nodes_snapshot()?;
+            if nodes.contains_key(&(NodeKind::Decision, decision_id.to_owned())) {
+                return Ok(vec![GraphRow::from([(
+                    "id".to_owned(),
+                    GraphValue::String(decision_id.to_owned()),
+                )])]);
+            }
+            return Ok(Vec::new());
+        }
+
         if cypher.contains("RETURN count(d) AS count;") {
             let topic = required_param_string(params, "topic")?;
             let nodes = self.nodes_snapshot()?;
@@ -222,6 +234,35 @@ impl GraphView for MemoryGraph {
             return Ok(ids
                 .into_iter()
                 .map(|id| GraphRow::from([(alias.to_owned(), GraphValue::String(id))]))
+                .collect());
+        }
+
+        if cypher.contains("RETURN b.id AS id, r.event_origin AS event_origin ORDER BY b.id;") {
+            let relation = query_relation(cypher)?;
+            let id = required_param_string(params, "id")?;
+            let incoming = cypher.contains("<-[r:`");
+            let mut ids = self
+                .edges_snapshot()?
+                .into_iter()
+                .filter(|edge| {
+                    edge.relation == relation
+                        && if incoming {
+                            edge.to_id == id
+                        } else {
+                            edge.from_id == id
+                        }
+                })
+                .map(|edge| if incoming { edge.from_id } else { edge.to_id })
+                .collect::<Vec<_>>();
+            ids.sort();
+            return Ok(ids
+                .into_iter()
+                .map(|id| {
+                    GraphRow::from([
+                        ("id".to_owned(), GraphValue::String(id)),
+                        ("event_origin".to_owned(), GraphValue::Null),
+                    ])
+                })
                 .collect());
         }
 

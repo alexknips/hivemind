@@ -551,7 +551,7 @@ pub fn get_supersession_chain(
     graph: &impl GraphView,
     decision_id: &str,
 ) -> Result<QueryResponse<SupersessionChain>> {
-    let started = Instant::now();
+    let started = query_timer_start();
     if decision_id.trim().is_empty() {
         return Err(query_error("decision_id must not be empty").into());
     }
@@ -1422,6 +1422,10 @@ fn read_count(rows: Vec<GraphRow>, relation_table: &str) -> Result<u64> {
 
 fn query_error(error: impl std::fmt::Display) -> QueryError {
     QueryError::Execution(error.to_string())
+}
+
+fn query_timer_start() -> Instant {
+    Instant::now()
 }
 
 #[cfg(test)]

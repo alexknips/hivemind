@@ -144,7 +144,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         if let Some(chosen_option_id) = chosen_option_id {
             if !option_ids
                 .iter()
-                .any(|option_id| option_id == chosen_option_id)
+                .any(|option_id| same_identifier(option_id, chosen_option_id))
             {
                 return Err(CommandError::Validation(
                     "chosen_option_id must be one of option_ids".to_owned(),
@@ -298,7 +298,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("old_decision_id", old_decision_id)?;
         require_non_empty("new_decision_id", new_decision_id)?;
 
-        if old_decision_id == new_decision_id {
+        if same_identifier(old_decision_id, new_decision_id) {
             return Err(CommandError::Validation(
                 "old_decision_id and new_decision_id must be different".to_owned(),
             )
@@ -454,21 +454,21 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     fn evidence_exists(&self, evidence_id: &str) -> Result<bool> {
         self.scan_events(|event| {
             event.event_type == EventType::EvidenceRecorded
-                && payload_value_as_str(event, "evidence_id") == Some(evidence_id)
+                && payload_value_matches(event, "evidence_id", evidence_id)
         })
     }
 
     fn hypothesis_exists(&self, hypothesis_id: &str) -> Result<bool> {
         self.scan_events(|event| {
             event.event_type == EventType::HypothesisRecorded
-                && payload_value_as_str(event, "hypothesis_id") == Some(hypothesis_id)
+                && payload_value_matches(event, "hypothesis_id", hypothesis_id)
         })
     }
 
     fn decision_exists(&self, decision_id: &str) -> Result<bool> {
         self.scan_events(|event| {
             event.event_type == EventType::DecisionProposed
-                && payload_value_as_str(event, "decision_id") == Some(decision_id)
+                && payload_value_matches(event, "decision_id", decision_id)
         })
     }
 
@@ -480,8 +480,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     ) -> Result<bool> {
         self.scan_events(|event| {
             event.event_type == decision_event_type
-                && event.actor_id == actor_id
-                && payload_value_as_str(event, "decision_id") == Some(decision_id)
+                && same_identifier(event.actor_id.as_str(), actor_id)
+                && payload_value_matches(event, "decision_id", decision_id)
         })
     }
 
@@ -506,9 +506,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                     continue;
                 }
 
-                let same_relation = payload_value_as_str(event, "relation") == Some(relation_name);
-                let same_from = payload_value_as_str(event, "from_id") == Some(from_id);
-                let same_to = payload_value_as_str(event, "to_id") == Some(to_id);
+                let same_relation = payload_value_matches(event, "relation", relation_name);
+                let same_from = payload_value_matches(event, "from_id", from_id);
+                let same_to = payload_value_matches(event, "to_id", to_id);
                 if same_relation && same_from && same_to {
                     return Ok(event.event_id);
                 }
@@ -583,6 +583,14 @@ pub fn normalize_topic_key(input: &str) -> String {
 
 fn payload_value_as_str<'a>(event: &'a Event, key: &str) -> Option<&'a str> {
     event.payload.get(key).and_then(|value| value.as_str())
+}
+
+fn payload_value_matches(event: &Event, key: &str, expected: &str) -> bool {
+    payload_value_as_str(event, key).is_some_and(|actual| same_identifier(actual, expected))
+}
+
+fn same_identifier(left: &str, right: &str) -> bool {
+    left.eq(right)
 }
 
 const fn relation_kind_name(relation_kind: RelationKind) -> &'static str {
