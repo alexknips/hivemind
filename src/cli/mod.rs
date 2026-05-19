@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::commands::Commands;
 use crate::error::{CliError, CommandError};
-use crate::events::RelationKind as EventRelationKind;
+use crate::events::{EventProvenance, RelationKind as EventRelationKind};
 use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::projector::{
     rebuild_graph, GraphParams, GraphProperties, GraphRow, GraphValue, GraphView, NodeKind,
@@ -68,6 +68,8 @@ pub struct EmitArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum EmitCommand {
+    #[command(name = "decision.capture")]
+    DecisionCapture(EmitDecisionCaptureArgs),
     #[command(name = "decision.proposed")]
     DecisionProposed(EmitDecisionProposedArgs),
     #[command(name = "decision.accepted")]
@@ -86,6 +88,24 @@ pub enum EmitCommand {
     RelationAdded(EmitRelationAddedArgs),
     #[command(name = "relation.attach_evidence")]
     AttachEvidence(EmitAttachEvidenceArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct EmitDecisionCaptureArgs {
+    #[arg(long = "agent-tool")]
+    pub agent_tool: String,
+
+    #[arg(long = "agent-session")]
+    pub agent_session: String,
+
+    #[arg(long = "actor-id")]
+    pub actor_id: Option<String>,
+
+    #[arg(long = "source-ref")]
+    pub source_ref: Option<String>,
+
+    #[command(flatten)]
+    pub decision: EmitDecisionProposedArgs,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -275,38 +295,17 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
     let commands = Commands::new(&ledger);
 
     let output = match &emit.command {
+        EmitCommand::DecisionCapture(args) => {
+            let actor_id = agent_actor_id(args)?;
+            let source_ref = agent_source_ref(args, &actor_id)?;
+            let commands =
+                Commands::new_with_provenance(&ledger, EventProvenance::agent(source_ref));
+            let decision_id =
+                propose_decision_from_option_labels(&commands, &actor_id, &args.decision)?;
+            OutputEnvelope::new("emit", "decision_id", decision_id)
+        }
         EmitCommand::DecisionProposed(args) => {
-            let mut option_ids = Vec::with_capacity(args.option_ids.len());
-            let mut chosen_option_id = None;
-            for option_label in &args.option_ids {
-                let option_id = commands.record_option(
-                    &cli.actor,
-                    option_label,
-                    &format!("Option generated from CLI value '{option_label}'"),
-                )?;
-                if args.chosen_option_id.as_deref() == Some(option_label.as_str()) {
-                    chosen_option_id = Some(option_id.clone());
-                }
-                option_ids.push(option_id);
-            }
-
-            if args.chosen_option_id.is_some() && chosen_option_id.is_none() {
-                return Err(CliError::InvalidInput(
-                    "--chose must match one of the values passed to --options".to_owned(),
-                )
-                .into());
-            }
-
-            let decision_id = commands.propose_decision(
-                &cli.actor,
-                &args.title,
-                &args.rationale,
-                &args.topic_keys,
-                &option_ids,
-                chosen_option_id.as_deref(),
-                &args.hypothesis_ids,
-                &args.evidence_ids,
-            )?;
+            let decision_id = propose_decision_from_option_labels(&commands, &cli.actor, args)?;
             OutputEnvelope::new("emit", "decision_id", decision_id)
         }
         EmitCommand::DecisionAccepted(args) => {
@@ -366,6 +365,78 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
     };
 
     format_output(cli.json, &output)
+}
+
+fn propose_decision_from_option_labels<L: EventLedger>(
+    commands: &Commands<'_, L>,
+    actor_id: &str,
+    args: &EmitDecisionProposedArgs,
+) -> Result<String> {
+    let mut option_ids = Vec::with_capacity(args.option_ids.len());
+    let mut chosen_option_id = None;
+    for option_label in &args.option_ids {
+        let option_id = commands.record_option(
+            actor_id,
+            option_label,
+            &format!("Option generated from CLI value '{option_label}'"),
+        )?;
+        if args.chosen_option_id.as_deref() == Some(option_label.as_str()) {
+            chosen_option_id = Some(option_id.clone());
+        }
+        option_ids.push(option_id);
+    }
+
+    if args.chosen_option_id.is_some() && chosen_option_id.is_none() {
+        return Err(CliError::InvalidInput(
+            "--chose must match one of the values passed to --options".to_owned(),
+        )
+        .into());
+    }
+
+    commands.propose_decision(
+        actor_id,
+        &args.title,
+        &args.rationale,
+        &args.topic_keys,
+        &option_ids,
+        chosen_option_id.as_deref(),
+        &args.hypothesis_ids,
+        &args.evidence_ids,
+    )
+}
+
+fn agent_actor_id(args: &EmitDecisionCaptureArgs) -> Result<String> {
+    if let Some(actor_id) = trimmed_optional("--actor-id", &args.actor_id)? {
+        return Ok(actor_id.to_owned());
+    }
+
+    let tool = trimmed_required("--agent-tool", &args.agent_tool)?;
+    let session = trimmed_required("--agent-session", &args.agent_session)?;
+    Ok(format!("agent:{tool}:{session}"))
+}
+
+fn agent_source_ref(args: &EmitDecisionCaptureArgs, actor_id: &str) -> Result<String> {
+    if let Some(source_ref) = trimmed_optional("--source-ref", &args.source_ref)? {
+        return Ok(source_ref.to_owned());
+    }
+
+    Ok(actor_id.to_owned())
+}
+
+fn trimmed_required<'a>(field: &'static str, value: &'a str) -> Result<&'a str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        Err(CliError::InvalidInput(format!("{field} must not be empty")).into())
+    } else {
+        Ok(trimmed)
+    }
+}
+
+fn trimmed_optional<'a>(field: &'static str, value: &'a Option<String>) -> Result<Option<&'a str>> {
+    match value.as_deref() {
+        Some(raw) => Ok(Some(trimmed_required(field, raw)?)),
+        None => Ok(None),
+    }
 }
 
 fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {
@@ -1212,6 +1283,101 @@ mod tests {
         assert!(output.starts_with("decision-"));
     }
 
+    #[test]
+    fn emit_decision_capture_records_codex_and_claude_agent_provenance() {
+        let hivemind_dir = unique_test_dir("emit-agent-decision-capture");
+
+        let codex_decision = run(&Cli::parse_from([
+            "hivemind",
+            "--json",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "emit",
+            "decision.capture",
+            "--agent-tool",
+            "codex",
+            "--agent-session",
+            "session-1",
+            "--title",
+            "Use direct CLI capture for Codex",
+            "--rationale",
+            "Codex can invoke a deterministic local command from the workspace",
+            "--topic-keys",
+            "agents,capture",
+            "--options",
+            "direct-cli,mcp",
+            "--chose",
+            "direct-cli",
+        ]))
+        .expect("codex capture succeeds");
+        let codex_decision = envelope_value(&codex_decision);
+
+        let claude_decision = run(&Cli::parse_from([
+            "hivemind",
+            "--json",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "emit",
+            "decision.capture",
+            "--agent-tool",
+            "claude",
+            "--agent-session",
+            "session-2",
+            "--title",
+            "Use direct CLI capture for Claude",
+            "--rationale",
+            "Claude can call the same command with only identity changed",
+            "--topic-keys",
+            "agents,capture",
+            "--options",
+            "direct-cli,hooks",
+            "--chose",
+            "direct-cli",
+        ]))
+        .expect("claude capture succeeds");
+        let claude_decision = envelope_value(&claude_decision);
+
+        assert_decision_queryable(&hivemind_dir, &codex_decision);
+        assert_decision_queryable(&hivemind_dir, &claude_decision);
+
+        let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+        let events = ledger.read(0, 100).expect("events read");
+        for (decision_id, actor_id) in [
+            (&codex_decision, "agent:codex:session-1"),
+            (&claude_decision, "agent:claude:session-2"),
+        ] {
+            let event = events
+                .iter()
+                .find(|event| {
+                    event.event_type == crate::events::EventType::DecisionProposed
+                        && event
+                            .payload
+                            .get("decision_id")
+                            .and_then(|value| value.as_str())
+                            == Some(decision_id.as_str())
+                })
+                .expect("decision proposal exists");
+
+            assert_eq!(event.actor_id, actor_id);
+            assert_eq!(event.source, crate::events::EventSource::Agent);
+            assert_eq!(event.source_ref.as_deref(), Some(actor_id));
+
+            let proposal_id = event.event_id.expect("proposal has ledger origin");
+            let relation_events = events
+                .iter()
+                .filter(|event| event.causation_event_id == Some(proposal_id))
+                .collect::<Vec<_>>();
+            assert!(!relation_events.is_empty());
+            for relation_event in relation_events {
+                assert_eq!(relation_event.actor_id, actor_id);
+                assert_eq!(relation_event.source, crate::events::EventSource::Agent);
+                assert_eq!(relation_event.source_ref.as_deref(), Some(actor_id));
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&hivemind_dir);
+    }
+
     #[cfg(not(feature = "graph-kuzu"))]
     #[test]
     fn kuzu_backend_requires_feature() {
@@ -1322,5 +1488,34 @@ mod tests {
 
     fn unique_test_dir(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("hivemind-{name}-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn envelope_value(output: &str) -> String {
+        let output: serde_json::Value = serde_json::from_str(output).expect("valid json output");
+        assert_eq!(
+            output.get("kind").and_then(|value| value.as_str()),
+            Some("decision_id")
+        );
+        output
+            .get("value")
+            .and_then(|value| value.as_str())
+            .expect("decision id")
+            .to_owned()
+    }
+
+    fn assert_decision_queryable(hivemind_dir: &std::path::Path, decision_id: &str) {
+        let query = run(&Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "query",
+            "get_decision",
+            "--id",
+            decision_id,
+        ]))
+        .expect("query succeeds");
+        let query: serde_json::Value = serde_json::from_str(&query).expect("valid query json");
+        assert_eq!(query["result_count"], serde_json::json!(1));
+        assert_eq!(query["data"]["id"], serde_json::json!(decision_id));
     }
 }

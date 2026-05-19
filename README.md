@@ -83,6 +83,20 @@ cargo run -- --actor alice emit decision.proposed \
   --chose sqlite
 ```
 
+Agents can use the noninteractive capture path. It defaults the actor and
+provenance to `agent:<tool>:<session>` and writes events with `source=agent`:
+
+```bash
+cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
+  --agent-tool codex \
+  --agent-session "$CODEX_SESSION_ID" \
+  --title "Use direct CLI capture for agent decisions" \
+  --rationale "The local command is deterministic and does not depend on hooks" \
+  --topic-keys agents,capture \
+  --options direct-cli,mcp \
+  --chose direct-cli
+```
+
 The emit commands print the new entity id or event id. Add `--json` for a
 structured output envelope.
 
@@ -111,6 +125,7 @@ cargo run -- dump --format dot > graph.dot
 ## Read More
 
 - `docs/ARCHITECTURE.md` is the concise architecture summary for reviewers.
+- `docs/AGENT_DECISION_CAPTURE.md` documents the Claude/Codex capture path.
 - `PLAN.md` explains the slice-1 architecture and what is intentionally deferred.
 - `AGENTS.md` defines the project standards and non-goals for contributors.
 - `tests/seed/README.md` documents the deterministic seed dataset, replay smoke
