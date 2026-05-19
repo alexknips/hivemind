@@ -54,7 +54,7 @@ pub enum GraphBackend {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
-    Emit(EmitArgs),
+    Emit(Box<EmitArgs>),
     Query(QueryArgs),
     Dump(DumpArgs),
 }
@@ -849,10 +849,9 @@ mod tests {
         assert_eq!(cli.hivemind_dir, PathBuf::from("./state"));
         assert_eq!(cli.graph_backend, Some(GraphBackend::Memory));
         assert!(matches!(
-            cli.command,
-            Command::Emit(EmitArgs {
-                command: EmitCommand::EvidenceRecorded(_)
-            })
+            &cli.command,
+            Command::Emit(command)
+                if matches!(command.command, EmitCommand::EvidenceRecorded(_))
         ));
     }
 
