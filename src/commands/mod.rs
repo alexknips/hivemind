@@ -17,6 +17,21 @@ pub type OptionId = String;
 
 pub const MAX_TOPIC_KEY_LEN: usize = 64;
 
+#[derive(Debug, Clone)]
+pub struct DecisionProposalEventUuids {
+    pub proposal: Uuid,
+    pub has_option: Vec<Uuid>,
+    pub chose: Option<Uuid>,
+    pub assumes: Vec<Uuid>,
+    pub based_on: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecisionProposalEventIds {
+    pub proposal_event_id: EventId,
+    pub relation_event_ids: Vec<EventId>,
+}
+
 pub struct Commands<'a, L: EventLedger> {
     ledger: &'a L,
     provenance: EventProvenance,
@@ -46,19 +61,36 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("content", content)?;
 
         let evidence_id = generate_entity_id("evidence");
-        let event = self.event(
+        self.record_evidence_with_id(actor_id, &evidence_id, content, None, Uuid::new_v4())?;
+        Ok(evidence_id)
+    }
+
+    pub fn record_evidence_with_id(
+        &self,
+        actor_id: &str,
+        evidence_id: &str,
+        content: &str,
+        source: Option<&str>,
+        event_uuid: Uuid,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("evidence_id", evidence_id)?;
+        require_non_empty("content", content)?;
+        require_optional_non_empty("source", source)?;
+
+        let event = self.event_with_uuid(
             EventType::EvidenceRecorded,
             actor_id,
             json!({
                 "evidence_id": evidence_id,
                 "content": content,
-                "source": null
+                "source": source
             }),
             None,
+            event_uuid,
         );
 
-        self.ledger.append(event)?;
-        Ok(evidence_id)
+        self.ledger.append(event)
     }
 
     pub fn record_hypothesis(&self, actor_id: &str, statement: &str) -> Result<HypothesisId> {
@@ -66,7 +98,22 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("statement", statement)?;
 
         let hypothesis_id = generate_entity_id("hypothesis");
-        let event = self.event(
+        self.record_hypothesis_with_id(actor_id, &hypothesis_id, statement, Uuid::new_v4())?;
+        Ok(hypothesis_id)
+    }
+
+    pub fn record_hypothesis_with_id(
+        &self,
+        actor_id: &str,
+        hypothesis_id: &str,
+        statement: &str,
+        event_uuid: Uuid,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("hypothesis_id", hypothesis_id)?;
+        require_non_empty("statement", statement)?;
+
+        let event = self.event_with_uuid(
             EventType::HypothesisRecorded,
             actor_id,
             json!({
@@ -74,10 +121,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 "statement": statement
             }),
             None,
+            event_uuid,
         );
 
-        self.ledger.append(event)?;
-        Ok(hypothesis_id)
+        self.ledger.append(event)
     }
 
     pub fn record_option(
@@ -91,9 +138,25 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("description", description)?;
 
         let option_id = generate_entity_id("option");
-        let mut state = self.lock_state()?;
-        state.option_ids.insert(option_id.clone());
+        self.record_option_with_id(actor_id, &option_id, label, description)?;
         Ok(option_id)
+    }
+
+    pub fn record_option_with_id(
+        &self,
+        actor_id: &str,
+        option_id: &str,
+        label: &str,
+        description: &str,
+    ) -> Result<OptionId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("option_id", option_id)?;
+        require_non_empty("label", label)?;
+        require_non_empty("description", description)?;
+
+        let mut state = self.lock_state()?;
+        state.option_ids.insert(option_id.to_owned());
+        Ok(option_id.to_owned())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -172,9 +235,140 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }
         }
 
+        let event_uuids = DecisionProposalEventUuids {
+            proposal: Uuid::new_v4(),
+            has_option: repeat_uuid(option_ids.len()),
+            chose: chosen_option_id.map(|_| Uuid::new_v4()),
+            assumes: repeat_uuid(hypothesis_ids.len()),
+            based_on: repeat_uuid(evidence_ids.len()),
+        };
         let decision_id = generate_entity_id("decision");
 
-        let root_event = self.event(
+        self.propose_decision_with_id(
+            actor_id,
+            &decision_id,
+            title,
+            rationale,
+            topic_keys,
+            option_ids,
+            chosen_option_id,
+            hypothesis_ids,
+            evidence_ids,
+            event_uuids,
+        )?;
+
+        Ok(decision_id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_decision_with_id(
+        &self,
+        actor_id: &str,
+        decision_id: &str,
+        title: &str,
+        rationale: &str,
+        topic_keys: &[String],
+        option_ids: &[String],
+        chosen_option_id: Option<&str>,
+        hypothesis_ids: &[String],
+        evidence_ids: &[String],
+        event_uuids: DecisionProposalEventUuids,
+    ) -> Result<DecisionProposalEventIds> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("decision_id", decision_id)?;
+        require_non_empty("title", title)?;
+        require_non_empty("rationale", rationale)?;
+
+        if option_ids.is_empty() {
+            return Err(CommandError::Validation("option_ids must not be empty".to_owned()).into());
+        }
+
+        if event_uuids.has_option.len() != option_ids.len() {
+            return Err(CommandError::Validation(
+                "has_option event UUID count must match option_ids".to_owned(),
+            )
+            .into());
+        }
+
+        if event_uuids.assumes.len() != hypothesis_ids.len() {
+            return Err(CommandError::Validation(
+                "assumes event UUID count must match hypothesis_ids".to_owned(),
+            )
+            .into());
+        }
+
+        if event_uuids.based_on.len() != evidence_ids.len() {
+            return Err(CommandError::Validation(
+                "based_on event UUID count must match evidence_ids".to_owned(),
+            )
+            .into());
+        }
+
+        if chosen_option_id.is_some() != event_uuids.chose.is_some() {
+            return Err(CommandError::Validation(
+                "chose event UUID must be present exactly when chosen_option_id is present"
+                    .to_owned(),
+            )
+            .into());
+        }
+
+        let normalized_topic_keys: Vec<String> = topic_keys
+            .iter()
+            .map(|topic| normalize_topic_key(topic))
+            .filter(|topic| !topic.is_empty())
+            .collect();
+
+        if normalized_topic_keys.is_empty() {
+            return Err(CommandError::Validation(
+                "topic_keys must contain at least one non-empty normalized key".to_owned(),
+            )
+            .into());
+        }
+
+        {
+            let state = self.lock_state()?;
+            for option_id in option_ids {
+                if !state.option_ids.contains(option_id) {
+                    return Err(CommandError::Invariant(format!(
+                        "option does not exist: {option_id}"
+                    ))
+                    .into());
+                }
+            }
+        }
+
+        if let Some(chosen_option_id) = chosen_option_id {
+            let chosen_option_is_candidate = option_ids.iter().any(|option_id| {
+                // ubs:ignore: option IDs are public decision graph IDs, not secrets.
+                same_identifier(option_id, chosen_option_id)
+            });
+            if !chosen_option_is_candidate {
+                return Err(CommandError::Validation(
+                    "chosen_option_id must be one of option_ids".to_owned(),
+                )
+                .into());
+            }
+        }
+
+        for hypothesis_id in hypothesis_ids {
+            if !self.hypothesis_exists(hypothesis_id)? {
+                return Err(CommandError::Invariant(format!(
+                    "hypothesis does not exist: {hypothesis_id}"
+                ))
+                .into());
+            }
+        }
+
+        for evidence_id in evidence_ids {
+            if !self.evidence_exists(evidence_id)? {
+                return Err(CommandError::Invariant(format!(
+                    "evidence does not exist: {evidence_id}"
+                ))
+                .into());
+            }
+        }
+
+        let root_event = self.event_with_uuid(
             EventType::DecisionProposed,
             actor_id,
             json!({
@@ -188,54 +382,72 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 "evidence_ids": evidence_ids,
             }),
             None,
+            event_uuids.proposal,
         );
 
         let root_event_id = self.ledger.append(root_event)?;
+        let mut relation_event_ids = Vec::new();
 
-        for option_id in option_ids {
-            self.append_relation_event(
+        for (option_id, event_uuid) in option_ids.iter().zip(event_uuids.has_option) {
+            relation_event_ids.push(self.append_relation_event_with_uuid(
                 actor_id,
                 root_event_id,
                 RelationKind::HasOption,
                 &decision_id,
                 option_id,
-            )?;
+                event_uuid,
+            )?);
         }
 
-        if let Some(chosen_option_id) = chosen_option_id {
-            self.append_relation_event(
+        if let (Some(chosen_option_id), Some(event_uuid)) = (chosen_option_id, event_uuids.chose) {
+            relation_event_ids.push(self.append_relation_event_with_uuid(
                 actor_id,
                 root_event_id,
                 RelationKind::Chose,
                 &decision_id,
                 chosen_option_id,
-            )?;
+                event_uuid,
+            )?);
         }
 
-        for hypothesis_id in hypothesis_ids {
-            self.append_relation_event(
+        for (hypothesis_id, event_uuid) in hypothesis_ids.iter().zip(event_uuids.assumes) {
+            relation_event_ids.push(self.append_relation_event_with_uuid(
                 actor_id,
                 root_event_id,
                 RelationKind::Assumes,
                 &decision_id,
                 hypothesis_id,
-            )?;
+                event_uuid,
+            )?);
         }
 
-        for evidence_id in evidence_ids {
-            self.append_relation_event(
+        for (evidence_id, event_uuid) in evidence_ids.iter().zip(event_uuids.based_on) {
+            relation_event_ids.push(self.append_relation_event_with_uuid(
                 actor_id,
                 root_event_id,
                 RelationKind::BasedOn,
                 &decision_id,
                 evidence_id,
-            )?;
+                event_uuid,
+            )?);
         }
 
-        Ok(decision_id)
+        Ok(DecisionProposalEventIds {
+            proposal_event_id: root_event_id,
+            relation_event_ids,
+        })
     }
 
     pub fn accept_decision(&self, decision_id: &str, actor_id: &str) -> Result<EventId> {
+        self.accept_decision_with_uuid(decision_id, actor_id, Uuid::new_v4())
+    }
+
+    pub fn accept_decision_with_uuid(
+        &self,
+        decision_id: &str,
+        actor_id: &str,
+        event_uuid: Uuid,
+    ) -> Result<EventId> {
         require_non_empty("actor_id", actor_id)?;
         require_non_empty("decision_id", decision_id)?;
 
@@ -252,17 +464,27 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
-        let event = self.event(
+        let event = self.event_with_uuid(
             EventType::DecisionAccepted,
             actor_id,
             json!({ "decision_id": decision_id }),
             None,
+            event_uuid,
         );
 
         self.ledger.append(event)
     }
 
     pub fn reject_decision(&self, decision_id: &str, actor_id: &str) -> Result<EventId> {
+        self.reject_decision_with_uuid(decision_id, actor_id, Uuid::new_v4())
+    }
+
+    pub fn reject_decision_with_uuid(
+        &self,
+        decision_id: &str,
+        actor_id: &str,
+        event_uuid: Uuid,
+    ) -> Result<EventId> {
         require_non_empty("actor_id", actor_id)?;
         require_non_empty("decision_id", decision_id)?;
 
@@ -279,11 +501,12 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
-        let event = self.event(
+        let event = self.event_with_uuid(
             EventType::DecisionRejected,
             actor_id,
             json!({ "decision_id": decision_id }),
             None,
+            event_uuid,
         );
 
         self.ledger.append(event)
@@ -294,6 +517,21 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         old_decision_id: &str,
         new_decision_id: &str,
         actor_id: &str,
+    ) -> Result<EventId> {
+        self.supersede_decision_with_uuid(
+            old_decision_id,
+            new_decision_id,
+            actor_id,
+            Uuid::new_v4(),
+        )
+    }
+
+    pub fn supersede_decision_with_uuid(
+        &self,
+        old_decision_id: &str,
+        new_decision_id: &str,
+        actor_id: &str,
+        event_uuid: Uuid,
     ) -> Result<EventId> {
         require_non_empty("actor_id", actor_id)?;
         require_non_empty("old_decision_id", old_decision_id)?;
@@ -320,7 +558,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
-        let event = self.event(
+        let event = self.event_with_uuid(
             EventType::DecisionSuperseded,
             actor_id,
             json!({
@@ -328,6 +566,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 "new_decision_id": new_decision_id,
             }),
             None,
+            event_uuid,
         );
 
         self.ledger.append(event)
@@ -407,7 +646,26 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         from_id: &str,
         to_id: &str,
     ) -> Result<EventId> {
-        let event = self.event(
+        self.append_relation_event_with_uuid(
+            actor_id,
+            root_event_id,
+            relation,
+            from_id,
+            to_id,
+            Uuid::new_v4(),
+        )
+    }
+
+    fn append_relation_event_with_uuid(
+        &self,
+        actor_id: &str,
+        root_event_id: EventId,
+        relation: RelationKind,
+        from_id: &str,
+        to_id: &str,
+        event_uuid: Uuid,
+    ) -> Result<EventId> {
+        let event = self.event_with_uuid(
             EventType::RelationAdded,
             actor_id,
             json!({
@@ -420,21 +678,23 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             } else {
                 Some(root_event_id)
             },
+            event_uuid,
         );
 
         self.ledger.append(event)
     }
 
-    fn event(
+    fn event_with_uuid(
         &self,
         event_type: EventType,
         actor_id: &str,
         payload: serde_json::Value,
         causation_event_id: Option<EventId>,
+        event_uuid: Uuid,
     ) -> Event {
         Event {
             event_id: None,
-            event_uuid: Uuid::new_v4(),
+            event_uuid,
             correlation_id: None,
             causation_event_id,
             event_type,
@@ -619,8 +879,20 @@ fn require_non_empty(field: &'static str, value: &str) -> Result<()> {
     }
 }
 
+fn require_optional_non_empty(field: &'static str, value: Option<&str>) -> Result<()> {
+    if value.is_some_and(|value| value.trim().is_empty()) {
+        Err(CommandError::Validation(format!("{field} must not be empty")).into())
+    } else {
+        Ok(())
+    }
+}
+
 fn generate_entity_id(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4())
+}
+
+fn repeat_uuid(count: usize) -> Vec<Uuid> {
+    (0..count).map(|_| Uuid::new_v4()).collect()
 }
 
 #[cfg(test)]

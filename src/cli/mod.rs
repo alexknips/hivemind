@@ -7,6 +7,9 @@ use serde::Serialize;
 use crate::commands::Commands;
 use crate::error::{CliError, CommandError};
 use crate::events::{EventProvenance, RelationKind as EventRelationKind};
+use crate::ingest::{
+    import_documents, DocumentImportFormat, DocumentImportReport, DocumentImportRequest,
+};
 use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::projector::{
     memory::MemoryGraph, rebuild_graph, GraphParams, GraphProperties, GraphRow, GraphValue,
@@ -56,6 +59,7 @@ pub enum GraphBackend {
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
     Emit(Box<EmitArgs>),
+    Import(ImportArgs),
     Query(QueryArgs),
     Dump(DumpArgs),
 }
@@ -195,6 +199,48 @@ pub enum EmitRelationKind {
     Refutes,
     #[value(alias = "based_on")]
     BasedOn,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ImportArgs {
+    #[command(subcommand)]
+    pub command: ImportCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum ImportCommand {
+    #[command(name = "documents", alias = "document")]
+    Documents(ImportDocumentsArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ImportDocumentsArgs {
+    #[arg(long = "file", value_name = "PATH")]
+    pub files: Vec<PathBuf>,
+
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
+
+    #[arg(long = "format", value_enum, default_value_t = ImportDocumentFormat::Auto)]
+    pub format: ImportDocumentFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum ImportDocumentFormat {
+    Auto,
+    Markdown,
+    Text,
+}
+
+impl ImportDocumentFormat {
+    const fn as_ingest_format(self) -> DocumentImportFormat {
+        match self {
+            Self::Auto => DocumentImportFormat::Auto,
+            Self::Markdown => DocumentImportFormat::Markdown,
+            Self::Text => DocumentImportFormat::Text,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Args)]
@@ -357,6 +403,7 @@ pub fn run(cli: &Cli) -> Result<String> {
 
     match &cli.command {
         Command::Emit(command) => run_emit(cli, command),
+        Command::Import(import) => run_import(cli, import),
         Command::Query(query) => run_query(cli, query),
         Command::Dump(dump) => run_dump(cli, dump),
     }
@@ -437,6 +484,26 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
     };
 
     format_output(cli.json, &output)
+}
+
+fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+
+    match &import.command {
+        ImportCommand::Documents(args) => {
+            let mut paths = args.files.clone();
+            paths.extend(args.paths.clone());
+            let report = import_documents(
+                &ledger,
+                &DocumentImportRequest {
+                    paths,
+                    importer_actor_id: cli.actor.clone(),
+                    format: args.format.as_ingest_format(),
+                },
+            )?;
+            format_import_output(cli.json, &report)
+        }
+    }
 }
 
 fn propose_decision_from_option_labels<L: EventLedger>(
@@ -665,6 +732,26 @@ fn format_output(as_json: bool, envelope: &OutputEnvelope) -> Result<String> {
         })
     } else {
         Ok(envelope.value.clone())
+    }
+}
+
+fn format_import_output(as_json: bool, report: &DocumentImportReport) -> Result<String> {
+    if as_json {
+        serde_json::to_string(report).map_err(|error| {
+            CliError::InvalidInput(format!("json serialization failed: {error}")).into()
+        })
+    } else {
+        Ok(format!(
+            "import_run_id={} files_seen={} blocks_imported={} no_op={} conflicts={} duplicate_candidates={} validation_errors={} events_written={}",
+            report.import_run_id,
+            report.summary.files_seen,
+            report.summary.blocks_imported,
+            report.summary.blocks_noop,
+            report.summary.blocks_conflicted,
+            report.summary.duplicate_candidates,
+            report.summary.validation_errors,
+            report.summary.events_written
+        ))
     }
 }
 
@@ -1133,6 +1220,199 @@ mod tests {
         assert_eq!(query["data"]["next_cursor"], serde_json::Value::Null);
 
         let _ = std::fs::remove_dir_all(&hivemind_dir);
+    }
+
+    #[test]
+    fn import_documents_cli_imports_queryable_document_decisions_and_reimport_noops() {
+        let hivemind_dir = unique_test_dir("import-documents");
+        let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/documents");
+
+        let output = run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "importer:local",
+            "--json",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "import",
+            "documents",
+            fixtures.to_str().expect("utf-8 fixture path"),
+        ]))
+        .expect("document import succeeds");
+        let output: serde_json::Value = serde_json::from_str(&output).expect("valid import json");
+        assert_eq!(output["summary"]["blocks_imported"], serde_json::json!(2));
+        assert_eq!(output["summary"]["events_written"].as_u64(), Some(15));
+
+        let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+        let latest_after_first = ledger.latest_offset().expect("latest offset");
+
+        let search = run(&Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "query",
+            "search_decisions",
+            "--source",
+            "document",
+            "--topic",
+            "storage",
+        ]))
+        .expect("document decision search succeeds");
+        let search: serde_json::Value = serde_json::from_str(&search).expect("valid search json");
+        assert_eq!(search["result_count"], serde_json::json!(1));
+        assert_eq!(
+            search["data"]["items"][0]["decision"]["status"],
+            serde_json::json!("accepted")
+        );
+
+        let events = ledger.read(0, 100).expect("events read");
+        let storage_proposal = events
+            .iter()
+            .find(|event| {
+                event.event_type == crate::events::EventType::DecisionProposed
+                    && event.payload.get("title").and_then(|value| value.as_str())
+                        == Some("Use SQLite for the local prototype")
+            })
+            .expect("storage proposal event");
+        assert_eq!(storage_proposal.actor_id, "actor:alice");
+        assert_eq!(
+            storage_proposal.source,
+            crate::events::EventSource::Document
+        );
+        let storage_ref: serde_json::Value = serde_json::from_str(
+            storage_proposal
+                .source_ref
+                .as_deref()
+                .expect("document source ref"),
+        )
+        .expect("document source ref json");
+        assert_eq!(storage_ref["source"], serde_json::json!("document"));
+        assert_eq!(storage_ref["block_id"], serde_json::json!("local-storage"));
+        assert_eq!(storage_ref["provisional_actor"], serde_json::json!(false));
+        assert!(storage_ref["path"]
+            .as_str()
+            .expect("source path")
+            .ends_with("storage_decision.md"));
+        assert!(storage_ref["sha256"].as_str().expect("source hash").len() >= 64);
+        assert!(storage_ref["source_span"]["line_start"].as_u64().unwrap() > 0);
+        assert!(storage_ref["source_snippet"]
+            .as_str()
+            .expect("snippet")
+            .contains("Decision:"));
+
+        let report_proposal = events
+            .iter()
+            .find(|event| {
+                event.event_type == crate::events::EventType::DecisionProposed
+                    && event.payload.get("title").and_then(|value| value.as_str())
+                        == Some("Import weekly decision notes locally")
+            })
+            .expect("report proposal event");
+        assert_eq!(report_proposal.actor_id, "importer:local");
+        let report_ref: serde_json::Value = serde_json::from_str(
+            report_proposal
+                .source_ref
+                .as_deref()
+                .expect("document source ref"),
+        )
+        .expect("document source ref json");
+        assert_eq!(report_ref["provisional_actor"], serde_json::json!(true));
+        assert_eq!(report_ref["original_actor_id"], serde_json::Value::Null);
+
+        let second_output = run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "importer:local",
+            "--json",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "import",
+            "documents",
+            fixtures.to_str().expect("utf-8 fixture path"),
+        ]))
+        .expect("document re-import succeeds");
+        let second_output: serde_json::Value =
+            serde_json::from_str(&second_output).expect("valid import json");
+        assert_eq!(
+            second_output["summary"]["blocks_imported"],
+            serde_json::json!(0)
+        );
+        assert_eq!(
+            second_output["summary"]["blocks_noop"],
+            serde_json::json!(2)
+        );
+        assert_eq!(
+            second_output["summary"]["events_written"],
+            serde_json::json!(0)
+        );
+        assert_eq!(
+            ledger.latest_offset().expect("latest offset unchanged"),
+            latest_after_first
+        );
+
+        let _ = std::fs::remove_dir_all(&hivemind_dir);
+    }
+
+    #[test]
+    fn import_documents_cli_reports_changed_same_id_as_conflict_without_writes() {
+        let hivemind_dir = unique_test_dir("import-document-conflict-ledger");
+        let scratch_dir = unique_test_dir("import-document-conflict-doc");
+        std::fs::create_dir_all(&scratch_dir).expect("scratch dir");
+        let document_path = scratch_dir.join("decision.md");
+        std::fs::write(
+            &document_path,
+            "Decision:\n  id: conflict-demo\n  title: Keep first title\n  status: proposed\n  topic_keys: conflict\n  rationale: First rationale.\n  options:\n    - first option\n",
+        )
+        .expect("write initial doc");
+
+        run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "importer:local",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "import",
+            "documents",
+            "--file",
+            document_path.to_str().expect("utf-8 doc path"),
+        ]))
+        .expect("initial import succeeds");
+        let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+        let latest_after_first = ledger.latest_offset().expect("latest offset");
+
+        std::fs::write(
+            &document_path,
+            "Decision:\n  id: conflict-demo\n  title: Changed title\n  status: proposed\n  topic_keys: conflict\n  rationale: Changed rationale.\n  options:\n    - first option\n",
+        )
+        .expect("write changed doc");
+
+        let output = run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "importer:local",
+            "--json",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "import",
+            "documents",
+            "--file",
+            document_path.to_str().expect("utf-8 doc path"),
+        ]))
+        .expect("conflict import reports successfully");
+        let output: serde_json::Value = serde_json::from_str(&output).expect("valid import json");
+        assert_eq!(output["summary"]["blocks_conflicted"], serde_json::json!(1));
+        assert_eq!(output["summary"]["events_written"], serde_json::json!(0));
+        assert!(output["files"][0]["blocks"][0]["message"]
+            .as_str()
+            .expect("conflict message")
+            .contains("stable decision id already exists"));
+        assert_eq!(
+            ledger.latest_offset().expect("latest offset unchanged"),
+            latest_after_first
+        );
+
+        let _ = std::fs::remove_dir_all(&hivemind_dir);
+        let _ = std::fs::remove_dir_all(&scratch_dir);
     }
 
     #[test]

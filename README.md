@@ -97,6 +97,15 @@ cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
   --chose direct-cli
 ```
 
+Local markdown or text decision notes can be imported without network access.
+Only explicit `Decision:` blocks are imported, and re-importing identical input
+is reported as a no-op:
+
+```bash
+cargo run -- --actor alice --json import documents --file ./notes/decision.md
+cargo run -- --actor alice import documents ./notes/
+```
+
 The emit commands print the new entity id or event id. Add `--json` for a
 structured output envelope.
 

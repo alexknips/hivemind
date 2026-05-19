@@ -1,0 +1,13 @@
+Weekly import report
+
+Decision:
+  id: weekly-import-report
+  title: Import weekly decision notes locally
+  status: proposed
+  topics: ingestion, documents
+  rationale:
+    Deterministic import lets agents review decisions without network services.
+  options: local text import, hosted ingestion
+  selected: local text import
+  evidence:
+    - Document blocks can be reviewed before import.

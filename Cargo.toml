@@ -19,10 +19,11 @@ kuzu = { version = "0.11.3", optional = true }
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+sha2 = "0.10.9"
 thiserror = "2.0.17"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
-uuid = { version = "1.23.1", features = ["serde", "v4"] }
+uuid = { version = "1.23.1", features = ["serde", "v4", "v5"] }
 
 [dev-dependencies]
 jsonschema = { version = "0.46.5", default-features = false }

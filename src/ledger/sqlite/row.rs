@@ -114,6 +114,7 @@ fn parse_event_source(value: &str) -> Result<EventSource> {
         "cli" => Ok(EventSource::Cli),
         "agent" => Ok(EventSource::Agent),
         "slack" => Ok(EventSource::Slack),
+        "document" => Ok(EventSource::Document),
         "api" => Ok(EventSource::Api),
         other => Err(storage_error(format!("unknown event source in row: {other}")).into()),
     }
