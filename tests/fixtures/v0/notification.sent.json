@@ -1,0 +1,20 @@
+{
+  "event_id": 10,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe0a",
+  "correlation_id": "session-1",
+  "causation_event_id": 9,
+  "type": "notification.sent",
+  "actor_id": "agent:notifier",
+  "source": "slack",
+  "source_ref": "slack:T123:C456:1737282660.000100",
+  "payload": {
+    "blocker_id": "blocker-billing-notice",
+    "recipient_actor_id": "human:pricing-owner",
+    "channel": "slack",
+    "threshold_rule": "p1_human_required_direct_15m",
+    "source_event_ids": [8, 9],
+    "dedupe_key": "tenant:billing-migration:blocker-billing-notice:human:pricing-owner:P1",
+    "sent_at": "2026-05-19T10:45:00Z"
+  },
+  "ts": "2026-05-19T10:45:01Z"
+}

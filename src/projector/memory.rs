@@ -70,6 +70,19 @@ impl GraphView for MemoryGraph {
             )])]);
         }
 
+        if cypher.contains("RETURN node.id AS id LIMIT 1;") {
+            let kind = query_node_kind(cypher)?;
+            let id = required_param_string(params, "id")?;
+            let nodes = self.nodes_snapshot()?;
+            if nodes.contains_key(&(kind, id.to_owned())) {
+                return Ok(vec![GraphRow::from([(
+                    "id".to_owned(),
+                    GraphValue::String(id.to_owned()),
+                )])]);
+            }
+            return Ok(Vec::new());
+        }
+
         if cypher.contains("RETURN node.id AS id") {
             let kind = query_node_kind(cypher)?;
             let nodes = self.nodes_snapshot()?;

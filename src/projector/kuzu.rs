@@ -19,12 +19,24 @@ const NODE_DDL: &[(NodeKind, &str)] = &[
         "CREATE NODE TABLE IF NOT EXISTS `Decision` (id STRING, title STRING, rationale STRING, topic_keys STRING[], event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
+        NodeKind::DecisionRequest,
+        "CREATE NODE TABLE IF NOT EXISTS `DecisionRequest` (id STRING, decision_id STRING, topic_keys STRING[], reason STRING, priority STRING, required_owner_id STRING, authority_class STRING, requested_by STRING, client_request_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+    ),
+    (
         NodeKind::Actor,
         "CREATE NODE TABLE IF NOT EXISTS `Actor` (id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
+        NodeKind::Blocker,
+        "CREATE NODE TABLE IF NOT EXISTS `Blocker` (id STRING, blocked_actor_id STRING, decision_id STRING, topic_keys STRING[], blocked_ref STRING, blocked_ref_type STRING, reason STRING, priority STRING, last_progress_at STRING, required_owner_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+    ),
+    (
         NodeKind::Evidence,
         "CREATE NODE TABLE IF NOT EXISTS `Evidence` (id STRING, content STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+    ),
+    (
+        NodeKind::Notification,
+        "CREATE NODE TABLE IF NOT EXISTS `Notification` (id STRING, blocker_id STRING, recipient_actor_id STRING, channel STRING, threshold_rule STRING, source_event_ids STRING[], dedupe_key STRING, sent_at STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Option,
@@ -42,6 +54,18 @@ const RELATION_DDL: &[(RelationKind, &str)] = &[
         "CREATE REL TABLE IF NOT EXISTS `PROPOSED_BY` (FROM `Decision` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
+        RelationKind::DecisionRequestedBy,
+        "CREATE REL TABLE IF NOT EXISTS `DECISION_REQUESTED_BY` (FROM `DecisionRequest` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::DecisionRequestForDecision,
+        "CREATE REL TABLE IF NOT EXISTS `DECISION_REQUEST_FOR_DECISION` (FROM `DecisionRequest` TO `Decision`, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::DecisionRequestRequiredOwner,
+        "CREATE REL TABLE IF NOT EXISTS `DECISION_REQUEST_REQUIRED_OWNER` (FROM `DecisionRequest` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
         RelationKind::AcceptedBy,
         "CREATE REL TABLE IF NOT EXISTS `ACCEPTED_BY` (FROM `Decision` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
     ),
@@ -52,6 +76,26 @@ const RELATION_DDL: &[(RelationKind, &str)] = &[
     (
         RelationKind::Supersedes,
         "CREATE REL TABLE IF NOT EXISTS `SUPERSEDES` (FROM `Decision` TO `Decision`, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::BlockedActor,
+        "CREATE REL TABLE IF NOT EXISTS `BLOCKED_ACTOR` (FROM `Blocker` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::BlockerForDecision,
+        "CREATE REL TABLE IF NOT EXISTS `BLOCKER_FOR_DECISION` (FROM `Blocker` TO `Decision`, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::BlockerRequiredOwner,
+        "CREATE REL TABLE IF NOT EXISTS `BLOCKER_REQUIRED_OWNER` (FROM `Blocker` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::NotificationForBlocker,
+        "CREATE REL TABLE IF NOT EXISTS `NOTIFICATION_FOR_BLOCKER` (FROM `Notification` TO `Blocker`, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::NotificationRecipient,
+        "CREATE REL TABLE IF NOT EXISTS `NOTIFICATION_RECIPIENT` (FROM `Notification` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::BasedOn,

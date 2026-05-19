@@ -1,0 +1,21 @@
+{
+  "event_id": 8,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe08",
+  "correlation_id": "session-1",
+  "causation_event_id": null,
+  "type": "decision.requested",
+  "actor_id": "agent-a",
+  "source": "agent",
+  "source_ref": "agent:codex:session-1",
+  "payload": {
+    "topic_keys": ["billing-migration"],
+    "decision_id": "dec-1",
+    "reason": "Billing migration cannot continue until the pricing owner chooses the customer notice path.",
+    "priority": "P1",
+    "required_owner_id": "human:pricing-owner",
+    "authority_class": "human_required",
+    "requested_by": "agent-a",
+    "client_request_id": "client-request-1"
+  },
+  "ts": "2026-05-19T10:30:00Z"
+}

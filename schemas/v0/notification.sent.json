@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivemind.local/schemas/v0/notification.sent.json",
+  "title": "notification.sent event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_uuid", "correlation_id", "type", "actor_id", "source", "source_ref", "payload"],
+  "properties": {
+    "event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "event_uuid": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "causation_event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "type": { "const": "notification.sent" },
+    "actor_id": { "type": "string", "minLength": 1 },
+    "source": { "enum": ["cli", "agent", "slack", "api"] },
+    "source_ref": { "type": "string", "minLength": 1 },
+    "ts": { "type": ["string", "null"], "format": "date-time" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocker_id", "recipient_actor_id", "channel", "threshold_rule", "source_event_ids", "dedupe_key", "sent_at"],
+      "properties": {
+        "blocker_id": { "$ref": "#/$defs/id" },
+        "recipient_actor_id": { "$ref": "#/$defs/id" },
+        "channel": { "type": "string", "minLength": 1 },
+        "threshold_rule": { "type": "string", "minLength": 1 },
+        "source_event_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "integer", "minimum": 1 },
+          "uniqueItems": true
+        },
+        "dedupe_key": { "type": "string", "minLength": 1 },
+        "sent_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1 }
+  }
+}

@@ -932,12 +932,21 @@ fn render_dot(graph: &impl GraphView) -> Result<String> {
                 let status = decision_status_name(derive_decision_status(graph, id)?);
                 format!("{title}\\nstatus: {status}")
             }
+            NodeKind::DecisionRequest => graph_property_string(properties, "reason")
+                .map(|reason| format!("Decision request\\n{reason}"))
+                .unwrap_or_else(|| id.clone()),
             NodeKind::Hypothesis => {
                 let statement =
                     graph_property_string(properties, "statement").unwrap_or_else(|| id.clone());
                 let status = hypothesis_status_name(derive_hypothesis_status(graph, id)?);
                 format!("{statement}\\nstatus: {status}")
             }
+            NodeKind::Blocker => graph_property_string(properties, "reason")
+                .map(|reason| format!("Blocker\\n{reason}"))
+                .unwrap_or_else(|| id.clone()),
+            NodeKind::Notification => graph_property_string(properties, "channel")
+                .map(|channel| format!("Notification\\n{channel}"))
+                .unwrap_or_else(|| id.clone()),
             _ => graph_property_string(properties, "content")
                 .or_else(|| graph_property_string(properties, "label"))
                 .unwrap_or_else(|| id.clone()),
@@ -1007,8 +1016,17 @@ fn node_dump_query(kind: NodeKind) -> String {
         NodeKind::Decision => {
             "node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys"
         }
+        NodeKind::DecisionRequest => {
+            "node.id AS id, node.decision_id AS decision_id, node.topic_keys AS topic_keys, node.reason AS reason, node.priority AS priority, node.required_owner_id AS required_owner_id, node.authority_class AS authority_class, node.requested_by AS requested_by, node.client_request_id AS client_request_id"
+        }
         NodeKind::Actor => "node.id AS id",
+        NodeKind::Blocker => {
+            "node.id AS id, node.blocked_actor_id AS blocked_actor_id, node.decision_id AS decision_id, node.topic_keys AS topic_keys, node.blocked_ref AS blocked_ref, node.blocked_ref_type AS blocked_ref_type, node.reason AS reason, node.priority AS priority, node.last_progress_at AS last_progress_at, node.required_owner_id AS required_owner_id"
+        }
         NodeKind::Evidence => "node.id AS id, node.content AS content",
+        NodeKind::Notification => {
+            "node.id AS id, node.blocker_id AS blocker_id, node.recipient_actor_id AS recipient_actor_id, node.channel AS channel, node.threshold_rule AS threshold_rule, node.source_event_ids AS source_event_ids, node.dedupe_key AS dedupe_key, node.sent_at AS sent_at"
+        }
         NodeKind::Option => {
             "node.id AS id, node.label AS label, node.description AS description"
         }
@@ -1028,8 +1046,38 @@ fn node_properties_from_row(kind: NodeKind, row: &GraphRow) -> GraphProperties {
             insert_if_present(&mut properties, row, "rationale");
             insert_if_present(&mut properties, row, "topic_keys");
         }
+        NodeKind::DecisionRequest => {
+            insert_if_present(&mut properties, row, "decision_id");
+            insert_if_present(&mut properties, row, "topic_keys");
+            insert_if_present(&mut properties, row, "reason");
+            insert_if_present(&mut properties, row, "priority");
+            insert_if_present(&mut properties, row, "required_owner_id");
+            insert_if_present(&mut properties, row, "authority_class");
+            insert_if_present(&mut properties, row, "requested_by");
+            insert_if_present(&mut properties, row, "client_request_id");
+        }
         NodeKind::Actor => {}
+        NodeKind::Blocker => {
+            insert_if_present(&mut properties, row, "blocked_actor_id");
+            insert_if_present(&mut properties, row, "decision_id");
+            insert_if_present(&mut properties, row, "topic_keys");
+            insert_if_present(&mut properties, row, "blocked_ref");
+            insert_if_present(&mut properties, row, "blocked_ref_type");
+            insert_if_present(&mut properties, row, "reason");
+            insert_if_present(&mut properties, row, "priority");
+            insert_if_present(&mut properties, row, "last_progress_at");
+            insert_if_present(&mut properties, row, "required_owner_id");
+        }
         NodeKind::Evidence => insert_if_present(&mut properties, row, "content"),
+        NodeKind::Notification => {
+            insert_if_present(&mut properties, row, "blocker_id");
+            insert_if_present(&mut properties, row, "recipient_actor_id");
+            insert_if_present(&mut properties, row, "channel");
+            insert_if_present(&mut properties, row, "threshold_rule");
+            insert_if_present(&mut properties, row, "source_event_ids");
+            insert_if_present(&mut properties, row, "dedupe_key");
+            insert_if_present(&mut properties, row, "sent_at");
+        }
         NodeKind::Option => {
             insert_if_present(&mut properties, row, "label");
             insert_if_present(&mut properties, row, "description");
@@ -1059,8 +1107,11 @@ fn node_key(kind: NodeKind, id: &str) -> String {
 fn node_color(kind: NodeKind) -> &'static str {
     match kind {
         NodeKind::Decision => "#d6eaf8",
+        NodeKind::DecisionRequest => "#d7bde2",
         NodeKind::Actor => "#d5f5e3",
+        NodeKind::Blocker => "#f5b7b1",
         NodeKind::Evidence => "#fcf3cf",
+        NodeKind::Notification => "#d2b4de",
         NodeKind::Option => "#f9e79f",
         NodeKind::Hypothesis => "#f5cba7",
     }

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivemind.local/schemas/v0/blocker.reported.json",
+  "title": "blocker.reported event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_uuid", "correlation_id", "type", "actor_id", "source", "source_ref", "payload"],
+  "properties": {
+    "event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "event_uuid": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "causation_event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "type": { "const": "blocker.reported" },
+    "actor_id": { "type": "string", "minLength": 1 },
+    "source": { "enum": ["cli", "agent", "slack", "api"] },
+    "source_ref": { "type": "string", "minLength": 1 },
+    "ts": { "type": ["string", "null"], "format": "date-time" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocker_id", "blocked_actor_id", "decision_id", "topic_keys", "blocked_ref", "blocked_ref_type", "reason", "priority", "last_progress_at", "required_owner_id"],
+      "anyOf": [
+        {
+          "properties": {
+            "decision_id": { "$ref": "#/$defs/id" }
+          }
+        },
+        {
+          "properties": {
+            "topic_keys": { "$ref": "#/$defs/non_empty_id_array" }
+          }
+        }
+      ],
+      "properties": {
+        "blocker_id": { "$ref": "#/$defs/id" },
+        "blocked_actor_id": { "$ref": "#/$defs/id" },
+        "decision_id": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+        "topic_keys": { "$ref": "#/$defs/id_array" },
+        "blocked_ref": { "type": "string", "minLength": 1 },
+        "blocked_ref_type": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "priority": { "$ref": "#/$defs/priority" },
+        "last_progress_at": { "type": ["string", "null"], "format": "date-time" },
+        "required_owner_id": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1 },
+    "priority": { "enum": ["P0", "P1", "P2", "P3", "P4"] },
+    "id_array": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/id" },
+      "uniqueItems": true
+    },
+    "non_empty_id_array": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/id" },
+      "uniqueItems": true
+    }
+  }
+}

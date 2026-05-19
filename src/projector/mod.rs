@@ -29,17 +29,23 @@ pub enum GraphValue {
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
     Decision,
+    DecisionRequest,
     Actor,
+    Blocker,
     Evidence,
+    Notification,
     Option,
     Hypothesis,
 }
 
 impl NodeKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 8] = [
         Self::Decision,
+        Self::DecisionRequest,
         Self::Actor,
+        Self::Blocker,
         Self::Evidence,
+        Self::Notification,
         Self::Option,
         Self::Hypothesis,
     ];
@@ -47,8 +53,11 @@ impl NodeKind {
     pub const fn table_name(self) -> &'static str {
         match self {
             Self::Decision => "Decision",
+            Self::DecisionRequest => "DecisionRequest",
             Self::Actor => "Actor",
+            Self::Blocker => "Blocker",
             Self::Evidence => "Evidence",
+            Self::Notification => "Notification",
             Self::Option => "Option",
             Self::Hypothesis => "Hypothesis",
         }
@@ -59,9 +68,17 @@ impl NodeKind {
 #[serde(rename_all = "snake_case")]
 pub enum RelationKind {
     ProposedBy,
+    DecisionRequestedBy,
+    DecisionRequestForDecision,
+    DecisionRequestRequiredOwner,
     AcceptedBy,
     RejectedBy,
     Supersedes,
+    BlockedActor,
+    BlockerForDecision,
+    BlockerRequiredOwner,
+    NotificationForBlocker,
+    NotificationRecipient,
     BasedOn,
     HasOption,
     Chose,
@@ -71,11 +88,19 @@ pub enum RelationKind {
 }
 
 impl RelationKind {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 18] = [
         Self::ProposedBy,
+        Self::DecisionRequestedBy,
+        Self::DecisionRequestForDecision,
+        Self::DecisionRequestRequiredOwner,
         Self::AcceptedBy,
         Self::RejectedBy,
         Self::Supersedes,
+        Self::BlockedActor,
+        Self::BlockerForDecision,
+        Self::BlockerRequiredOwner,
+        Self::NotificationForBlocker,
+        Self::NotificationRecipient,
         Self::BasedOn,
         Self::HasOption,
         Self::Chose,
@@ -87,9 +112,17 @@ impl RelationKind {
     pub const fn table_name(self) -> &'static str {
         match self {
             Self::ProposedBy => "PROPOSED_BY",
+            Self::DecisionRequestedBy => "DECISION_REQUESTED_BY",
+            Self::DecisionRequestForDecision => "DECISION_REQUEST_FOR_DECISION",
+            Self::DecisionRequestRequiredOwner => "DECISION_REQUEST_REQUIRED_OWNER",
             Self::AcceptedBy => "ACCEPTED_BY",
             Self::RejectedBy => "REJECTED_BY",
             Self::Supersedes => "SUPERSEDES",
+            Self::BlockedActor => "BLOCKED_ACTOR",
+            Self::BlockerForDecision => "BLOCKER_FOR_DECISION",
+            Self::BlockerRequiredOwner => "BLOCKER_REQUIRED_OWNER",
+            Self::NotificationForBlocker => "NOTIFICATION_FOR_BLOCKER",
+            Self::NotificationRecipient => "NOTIFICATION_RECIPIENT",
             Self::BasedOn => "BASED_ON",
             Self::HasOption => "HAS_OPTION",
             Self::Chose => "CHOSE",
@@ -104,7 +137,15 @@ impl RelationKind {
             Self::ProposedBy | Self::AcceptedBy | Self::RejectedBy => {
                 (NodeKind::Decision, NodeKind::Actor)
             }
+            Self::DecisionRequestedBy | Self::DecisionRequestRequiredOwner => {
+                (NodeKind::DecisionRequest, NodeKind::Actor)
+            }
+            Self::DecisionRequestForDecision => (NodeKind::DecisionRequest, NodeKind::Decision),
             Self::Supersedes => (NodeKind::Decision, NodeKind::Decision),
+            Self::BlockedActor | Self::BlockerRequiredOwner => (NodeKind::Blocker, NodeKind::Actor),
+            Self::BlockerForDecision => (NodeKind::Blocker, NodeKind::Decision),
+            Self::NotificationForBlocker => (NodeKind::Notification, NodeKind::Blocker),
+            Self::NotificationRecipient => (NodeKind::Notification, NodeKind::Actor),
             Self::BasedOn => (NodeKind::Decision, NodeKind::Evidence),
             Self::HasOption | Self::Chose => (NodeKind::Decision, NodeKind::Option),
             Self::Assumes => (NodeKind::Decision, NodeKind::Hypothesis),
@@ -201,6 +242,71 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
                 )?;
             }
         }
+        EventPayload::DecisionRequested(payload) => {
+            let request_id = event.event_uuid.to_string();
+            let mut request_properties = origin_properties.clone();
+            request_properties.insert(
+                "decision_id".to_owned(),
+                optional_string_value(payload.decision_id.as_deref()),
+            );
+            request_properties.insert(
+                "topic_keys".to_owned(),
+                GraphValue::StringList(payload.topic_keys.clone()),
+            );
+            request_properties.insert(
+                "reason".to_owned(),
+                GraphValue::String(payload.reason.clone()),
+            );
+            request_properties.insert(
+                "priority".to_owned(),
+                GraphValue::String(payload.priority.as_str().to_owned()),
+            );
+            request_properties.insert(
+                "required_owner_id".to_owned(),
+                optional_string_value(payload.required_owner_id.as_deref()),
+            );
+            request_properties.insert(
+                "authority_class".to_owned(),
+                GraphValue::String(payload.authority_class.clone()),
+            );
+            request_properties.insert(
+                "requested_by".to_owned(),
+                GraphValue::String(payload.requested_by.clone()),
+            );
+            request_properties.insert(
+                "client_request_id".to_owned(),
+                GraphValue::String(payload.client_request_id.clone()),
+            );
+            graph.upsert_node(NodeKind::DecisionRequest, &request_id, &request_properties)?;
+
+            upsert_actor(graph, &payload.requested_by, &origin_properties)?;
+            graph.upsert_edge(
+                RelationKind::DecisionRequestedBy,
+                &request_id,
+                &payload.requested_by,
+                &origin_properties,
+            )?;
+
+            if let Some(required_owner_id) = &payload.required_owner_id {
+                upsert_actor(graph, required_owner_id, &origin_properties)?;
+                graph.upsert_edge(
+                    RelationKind::DecisionRequestRequiredOwner,
+                    &request_id,
+                    required_owner_id,
+                    &origin_properties,
+                )?;
+            }
+
+            if let Some(decision_id) = &payload.decision_id {
+                ensure_node_reference(graph, NodeKind::Decision, decision_id, &origin_properties)?;
+                graph.upsert_edge(
+                    RelationKind::DecisionRequestForDecision,
+                    &request_id,
+                    decision_id,
+                    &origin_properties,
+                )?;
+            }
+        }
         EventPayload::DecisionAccepted(payload) => graph.upsert_edge(
             RelationKind::AcceptedBy,
             &payload.decision_id,
@@ -249,6 +355,141 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
             &payload.to_id,
             &origin_properties,
         )?,
+        EventPayload::BlockerReported(payload) => {
+            let mut blocker_properties = origin_properties.clone();
+            blocker_properties.insert(
+                "blocked_actor_id".to_owned(),
+                GraphValue::String(payload.blocked_actor_id.clone()),
+            );
+            blocker_properties.insert(
+                "decision_id".to_owned(),
+                optional_string_value(payload.decision_id.as_deref()),
+            );
+            blocker_properties.insert(
+                "topic_keys".to_owned(),
+                GraphValue::StringList(payload.topic_keys.clone()),
+            );
+            blocker_properties.insert(
+                "blocked_ref".to_owned(),
+                GraphValue::String(payload.blocked_ref.clone()),
+            );
+            blocker_properties.insert(
+                "blocked_ref_type".to_owned(),
+                GraphValue::String(payload.blocked_ref_type.clone()),
+            );
+            blocker_properties.insert(
+                "reason".to_owned(),
+                GraphValue::String(payload.reason.clone()),
+            );
+            blocker_properties.insert(
+                "priority".to_owned(),
+                GraphValue::String(payload.priority.as_str().to_owned()),
+            );
+            blocker_properties.insert(
+                "last_progress_at".to_owned(),
+                payload
+                    .last_progress_at
+                    .map(|timestamp| GraphValue::String(timestamp.to_rfc3339()))
+                    .unwrap_or(GraphValue::Null),
+            );
+            blocker_properties.insert(
+                "required_owner_id".to_owned(),
+                optional_string_value(payload.required_owner_id.as_deref()),
+            );
+            graph.upsert_node(NodeKind::Blocker, &payload.blocker_id, &blocker_properties)?;
+
+            upsert_actor(graph, &payload.blocked_actor_id, &origin_properties)?;
+            graph.upsert_edge(
+                RelationKind::BlockedActor,
+                &payload.blocker_id,
+                &payload.blocked_actor_id,
+                &origin_properties,
+            )?;
+
+            if let Some(required_owner_id) = &payload.required_owner_id {
+                upsert_actor(graph, required_owner_id, &origin_properties)?;
+                graph.upsert_edge(
+                    RelationKind::BlockerRequiredOwner,
+                    &payload.blocker_id,
+                    required_owner_id,
+                    &origin_properties,
+                )?;
+            }
+
+            if let Some(decision_id) = &payload.decision_id {
+                ensure_node_reference(graph, NodeKind::Decision, decision_id, &origin_properties)?;
+                graph.upsert_edge(
+                    RelationKind::BlockerForDecision,
+                    &payload.blocker_id,
+                    decision_id,
+                    &origin_properties,
+                )?;
+            }
+        }
+        EventPayload::NotificationSent(payload) => {
+            let notification_id = event.event_uuid.to_string();
+            let mut notification_properties = origin_properties.clone();
+            notification_properties.insert(
+                "blocker_id".to_owned(),
+                GraphValue::String(payload.blocker_id.clone()),
+            );
+            notification_properties.insert(
+                "recipient_actor_id".to_owned(),
+                GraphValue::String(payload.recipient_actor_id.clone()),
+            );
+            notification_properties.insert(
+                "channel".to_owned(),
+                GraphValue::String(payload.channel.clone()),
+            );
+            notification_properties.insert(
+                "threshold_rule".to_owned(),
+                GraphValue::String(payload.threshold_rule.clone()),
+            );
+            notification_properties.insert(
+                "source_event_ids".to_owned(),
+                GraphValue::StringList(
+                    payload
+                        .source_event_ids
+                        .iter()
+                        .map(|event_id| event_id.to_string())
+                        .collect(),
+                ),
+            );
+            notification_properties.insert(
+                "dedupe_key".to_owned(),
+                GraphValue::String(payload.dedupe_key.clone()),
+            );
+            notification_properties.insert(
+                "sent_at".to_owned(),
+                GraphValue::String(payload.sent_at.to_rfc3339()),
+            );
+            graph.upsert_node(
+                NodeKind::Notification,
+                &notification_id,
+                &notification_properties,
+            )?;
+
+            ensure_node_reference(
+                graph,
+                NodeKind::Blocker,
+                &payload.blocker_id,
+                &origin_properties,
+            )?;
+            graph.upsert_edge(
+                RelationKind::NotificationForBlocker,
+                &notification_id,
+                &payload.blocker_id,
+                &origin_properties,
+            )?;
+
+            upsert_actor(graph, &payload.recipient_actor_id, &origin_properties)?;
+            graph.upsert_edge(
+                RelationKind::NotificationRecipient,
+                &notification_id,
+                &payload.recipient_actor_id,
+                &origin_properties,
+            )?;
+        }
     }
 
     Ok(())
@@ -273,6 +514,29 @@ fn upsert_actor(
     properties: &GraphProperties,
 ) -> Result<()> {
     graph.upsert_node(NodeKind::Actor, actor_id, properties)
+}
+
+fn ensure_node_reference(
+    graph: &impl GraphView,
+    kind: NodeKind,
+    id: &str,
+    properties: &GraphProperties,
+) -> Result<()> {
+    let table = kind.table_name();
+    let rows = graph.query(
+        &format!("MATCH (node:`{table}` {{id: $id}}) RETURN node.id AS id LIMIT 1;"),
+        &GraphParams::from([("id".to_owned(), GraphValue::String(id.to_owned()))]),
+    )?;
+    if rows.is_empty() {
+        graph.upsert_node(kind, id, properties)?;
+    }
+    Ok(())
+}
+
+fn optional_string_value(value: Option<&str>) -> GraphValue {
+    value.map_or(GraphValue::Null, |value| {
+        GraphValue::String(value.to_owned())
+    })
 }
 
 fn origin_properties(event: &Event, event_origin: i64) -> GraphProperties {
@@ -389,7 +653,24 @@ mod tests {
             Ok(())
         }
 
-        fn query(&self, _cypher: &str, _params: &GraphParams) -> Result<Vec<GraphRow>> {
+        fn query(&self, cypher: &str, params: &GraphParams) -> Result<Vec<GraphRow>> {
+            if cypher.contains("RETURN node.id AS id LIMIT 1;") {
+                let id = match params.get("id") {
+                    Some(GraphValue::String(id)) => id,
+                    _ => return Ok(Vec::new()),
+                };
+                for kind in NodeKind::ALL {
+                    if cypher.contains(&format!("`{}`", kind.table_name()))
+                        && self.nodes().contains_key(&(kind, id.clone()))
+                    {
+                        return Ok(vec![GraphRow::from([(
+                            "id".to_owned(),
+                            GraphValue::String(id.clone()),
+                        )])]);
+                    }
+                }
+            }
+
             Ok(Vec::new())
         }
 
@@ -445,6 +726,46 @@ mod tests {
                 .and_then(|properties| properties.get("source")),
             Some(&GraphValue::String("agent".to_owned()))
         );
+        let request_id = nodes
+            .iter()
+            .find_map(|((kind, id), properties)| {
+                (*kind == NodeKind::DecisionRequest
+                    && properties.get("client_request_id")
+                        == Some(&GraphValue::String("client-request:release-1".to_owned())))
+                .then(|| id.clone())
+            })
+            .expect("decision request node projected");
+        assert_eq!(
+            nodes
+                .get(&(NodeKind::DecisionRequest, request_id.clone()))
+                .and_then(|properties| properties.get("priority")),
+            Some(&GraphValue::String("P1".to_owned()))
+        );
+        assert_eq!(
+            nodes
+                .get(&(NodeKind::Blocker, "blocker:release-owner".to_owned()))
+                .and_then(|properties| properties.get("reason")),
+            Some(&GraphValue::String(
+                "Release migration cannot continue without owner approval".to_owned()
+            ))
+        );
+        let notification_id = nodes
+            .iter()
+            .find_map(|((kind, id), properties)| {
+                (*kind == NodeKind::Notification
+                    && properties.get("dedupe_key")
+                        == Some(&GraphValue::String(
+                            "tenant:release:blocker:release-owner:P1".to_owned(),
+                        )))
+                .then(|| id.clone())
+            })
+            .expect("notification node projected");
+        assert_eq!(
+            nodes
+                .get(&(NodeKind::Notification, notification_id.clone()))
+                .and_then(|properties| properties.get("source_event_ids")),
+            Some(&GraphValue::StringList(vec!["10".to_owned()]))
+        );
         drop(nodes);
 
         let edges = graph.edges();
@@ -468,6 +789,46 @@ mod tests {
             (RelationKind::RejectedBy, "decision:1", "actor:carol"),
             (RelationKind::Supersedes, "decision:2", "decision:1"),
             (RelationKind::Supports, "evidence:1", "hypothesis:1"),
+            (
+                RelationKind::DecisionRequestedBy,
+                request_id.as_str(),
+                "agent:release-bot",
+            ),
+            (
+                RelationKind::DecisionRequestForDecision,
+                request_id.as_str(),
+                "decision:1",
+            ),
+            (
+                RelationKind::DecisionRequestRequiredOwner,
+                request_id.as_str(),
+                "human:release-owner",
+            ),
+            (
+                RelationKind::BlockedActor,
+                "blocker:release-owner",
+                "agent:release-bot",
+            ),
+            (
+                RelationKind::BlockerForDecision,
+                "blocker:release-owner",
+                "decision:1",
+            ),
+            (
+                RelationKind::BlockerRequiredOwner,
+                "blocker:release-owner",
+                "human:release-owner",
+            ),
+            (
+                RelationKind::NotificationForBlocker,
+                notification_id.as_str(),
+                "blocker:release-owner",
+            ),
+            (
+                RelationKind::NotificationRecipient,
+                notification_id.as_str(),
+                "human:release-owner",
+            ),
         ] {
             assert!(
                 edges.contains_key(&(expected.0, expected.1.to_owned(), expected.2.to_owned())),
@@ -613,6 +974,49 @@ mod tests {
                     "to_id": "hypothesis:1"
                 }),
             ),
+            event(
+                EventType::DecisionRequested,
+                "agent:release-bot",
+                json!({
+                    "topic_keys": ["release"],
+                    "decision_id": "decision:1",
+                    "reason": "Release migration needs an owner decision",
+                    "priority": "P1",
+                    "required_owner_id": "human:release-owner",
+                    "authority_class": "human_required",
+                    "requested_by": "agent:release-bot",
+                    "client_request_id": "client-request:release-1"
+                }),
+            ),
+            event(
+                EventType::BlockerReported,
+                "agent:release-bot",
+                json!({
+                    "blocker_id": "blocker:release-owner",
+                    "blocked_actor_id": "agent:release-bot",
+                    "decision_id": "decision:1",
+                    "topic_keys": ["release"],
+                    "blocked_ref": "run:release-migration",
+                    "blocked_ref_type": "agent_run",
+                    "reason": "Release migration cannot continue without owner approval",
+                    "priority": "P1",
+                    "last_progress_at": "2026-05-19T10:30:00Z",
+                    "required_owner_id": "human:release-owner"
+                }),
+            ),
+            event(
+                EventType::NotificationSent,
+                "agent:notifier",
+                json!({
+                    "blocker_id": "blocker:release-owner",
+                    "recipient_actor_id": "human:release-owner",
+                    "channel": "slack",
+                    "threshold_rule": "p1_human_required_direct_15m",
+                    "source_event_ids": [10],
+                    "dedupe_key": "tenant:release:blocker:release-owner:P1",
+                    "sent_at": "2026-05-19T10:45:00Z"
+                }),
+            ),
         ] {
             ledger.append(event)?;
         }
@@ -623,7 +1027,7 @@ mod tests {
         Event {
             event_id: None,
             event_uuid: Uuid::new_v4(),
-            correlation_id: None,
+            correlation_id: Some("projection-test".to_owned()),
             causation_event_id: None,
             event_type,
             actor_id: actor_id.to_owned(),

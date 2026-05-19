@@ -87,24 +87,30 @@ pub(super) fn event_from_row(row: &Row<'_>) -> Result<Event> {
 fn event_type_as_str(event_type: EventType) -> &'static str {
     match event_type {
         EventType::DecisionProposed => "decision.proposed",
+        EventType::DecisionRequested => "decision.requested",
         EventType::DecisionAccepted => "decision.accepted",
         EventType::DecisionRejected => "decision.rejected",
         EventType::DecisionSuperseded => "decision.superseded",
         EventType::EvidenceRecorded => "evidence.recorded",
         EventType::HypothesisRecorded => "hypothesis.recorded",
         EventType::RelationAdded => "relation.added",
+        EventType::BlockerReported => "blocker.reported",
+        EventType::NotificationSent => "notification.sent",
     }
 }
 
 fn parse_event_type(value: &str) -> Result<EventType> {
     match value {
         "decision.proposed" => Ok(EventType::DecisionProposed),
+        "decision.requested" => Ok(EventType::DecisionRequested),
         "decision.accepted" => Ok(EventType::DecisionAccepted),
         "decision.rejected" => Ok(EventType::DecisionRejected),
         "decision.superseded" => Ok(EventType::DecisionSuperseded),
         "evidence.recorded" => Ok(EventType::EvidenceRecorded),
         "hypothesis.recorded" => Ok(EventType::HypothesisRecorded),
         "relation.added" => Ok(EventType::RelationAdded),
+        "blocker.reported" => Ok(EventType::BlockerReported),
+        "notification.sent" => Ok(EventType::NotificationSent),
         other => Err(storage_error(format!("unknown event type in row: {other}")).into()),
     }
 }

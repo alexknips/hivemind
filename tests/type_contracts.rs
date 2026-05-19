@@ -3,9 +3,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hivemind::events::{
-    self, DecisionIdPayload, DecisionProposedPayload, DecisionSupersededPayload, Event,
+    self, BlockerReportedPayload, DecisionBlockerPriority, DecisionIdPayload,
+    DecisionProposedPayload, DecisionRequestedPayload, DecisionSupersededPayload, Event,
     EventPayload, EventSource, EventType, EventValidationError, EvidenceRecordedPayload,
-    HypothesisRecordedPayload, RelationAddedPayload, RelationKind as EventRelationKind,
+    HypothesisRecordedPayload, NotificationSentPayload, RelationAddedPayload,
+    RelationKind as EventRelationKind,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};
@@ -13,14 +15,17 @@ use hivemind::{CliError, CommandError, HivemindError, LedgerError, ProjectorErro
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const EVENT_TYPES: [EventType; 7] = [
+const EVENT_TYPES: [EventType; 10] = [
     EventType::DecisionProposed,
+    EventType::DecisionRequested,
     EventType::DecisionAccepted,
     EventType::DecisionRejected,
     EventType::DecisionSuperseded,
     EventType::EvidenceRecorded,
     EventType::HypothesisRecorded,
     EventType::RelationAdded,
+    EventType::BlockerReported,
+    EventType::NotificationSent,
 ];
 
 const EVENT_RELATION_KINDS: [EventRelationKind; 6] = [
@@ -32,19 +37,30 @@ const EVENT_RELATION_KINDS: [EventRelationKind; 6] = [
     EventRelationKind::Refutes,
 ];
 
-const NODE_KINDS: [NodeKind; 5] = [
+const NODE_KINDS: [NodeKind; 8] = [
     NodeKind::Decision,
+    NodeKind::DecisionRequest,
     NodeKind::Actor,
+    NodeKind::Blocker,
     NodeKind::Evidence,
+    NodeKind::Notification,
     NodeKind::Option,
     NodeKind::Hypothesis,
 ];
 
-const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 10] = [
+const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 18] = [
     ProjectorRelationKind::ProposedBy,
+    ProjectorRelationKind::DecisionRequestedBy,
+    ProjectorRelationKind::DecisionRequestForDecision,
+    ProjectorRelationKind::DecisionRequestRequiredOwner,
     ProjectorRelationKind::AcceptedBy,
     ProjectorRelationKind::RejectedBy,
     ProjectorRelationKind::Supersedes,
+    ProjectorRelationKind::BlockedActor,
+    ProjectorRelationKind::BlockerForDecision,
+    ProjectorRelationKind::BlockerRequiredOwner,
+    ProjectorRelationKind::NotificationForBlocker,
+    ProjectorRelationKind::NotificationRecipient,
     ProjectorRelationKind::BasedOn,
     ProjectorRelationKind::HasOption,
     ProjectorRelationKind::Chose,
@@ -266,24 +282,30 @@ fn domain_error_conversions_preserve_error_category() {
 fn event_type_name(event_type: EventType) -> &'static str {
     match event_type {
         EventType::DecisionProposed => "decision.proposed",
+        EventType::DecisionRequested => "decision.requested",
         EventType::DecisionAccepted => "decision.accepted",
         EventType::DecisionRejected => "decision.rejected",
         EventType::DecisionSuperseded => "decision.superseded",
         EventType::EvidenceRecorded => "evidence.recorded",
         EventType::HypothesisRecorded => "hypothesis.recorded",
         EventType::RelationAdded => "relation.added",
+        EventType::BlockerReported => "blocker.reported",
+        EventType::NotificationSent => "notification.sent",
     }
 }
 
 fn payload_variant_type(payload: &EventPayload) -> EventType {
     match payload {
         EventPayload::DecisionProposed(_) => EventType::DecisionProposed,
+        EventPayload::DecisionRequested(_) => EventType::DecisionRequested,
         EventPayload::DecisionAccepted(_) => EventType::DecisionAccepted,
         EventPayload::DecisionRejected(_) => EventType::DecisionRejected,
         EventPayload::DecisionSuperseded(_) => EventType::DecisionSuperseded,
         EventPayload::EvidenceRecorded(_) => EventType::EvidenceRecorded,
         EventPayload::HypothesisRecorded(_) => EventType::HypothesisRecorded,
         EventPayload::RelationAdded(_) => EventType::RelationAdded,
+        EventPayload::BlockerReported(_) => EventType::BlockerReported,
+        EventPayload::NotificationSent(_) => EventType::NotificationSent,
     }
 }
 
@@ -294,6 +316,9 @@ fn typed_payload_from_value(
     Ok(match event_type {
         EventType::DecisionProposed => {
             EventPayload::DecisionProposed(serde_json::from_value(payload)?)
+        }
+        EventType::DecisionRequested => {
+            EventPayload::DecisionRequested(serde_json::from_value(payload)?)
         }
         EventType::DecisionAccepted => {
             EventPayload::DecisionAccepted(serde_json::from_value(payload)?)
@@ -311,6 +336,12 @@ fn typed_payload_from_value(
             EventPayload::HypothesisRecorded(serde_json::from_value(payload)?)
         }
         EventType::RelationAdded => EventPayload::RelationAdded(serde_json::from_value(payload)?),
+        EventType::BlockerReported => {
+            EventPayload::BlockerReported(serde_json::from_value(payload)?)
+        }
+        EventType::NotificationSent => {
+            EventPayload::NotificationSent(serde_json::from_value(payload)?)
+        }
     })
 }
 
@@ -327,6 +358,19 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 chosen_option_id: None,
                 hypothesis_ids: Vec::new(),
                 evidence_ids: Vec::new(),
+            }),
+        ),
+        (
+            EventType::DecisionRequested,
+            EventPayload::DecisionRequested(DecisionRequestedPayload {
+                topic_keys: vec!["release".to_owned()],
+                decision_id: Some("decision:minimal".to_owned()),
+                reason: "A human owner must approve the release path".to_owned(),
+                priority: DecisionBlockerPriority::P1,
+                required_owner_id: Some("human:owner".to_owned()),
+                authority_class: "human_required".to_owned(),
+                requested_by: "agent:contract-test".to_owned(),
+                client_request_id: "request:minimal".to_owned(),
             }),
         ),
         (
@@ -371,18 +415,50 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 to_id: "hypothesis:minimal".to_owned(),
             }),
         ),
+        (
+            EventType::BlockerReported,
+            EventPayload::BlockerReported(BlockerReportedPayload {
+                blocker_id: "blocker:minimal".to_owned(),
+                blocked_actor_id: "agent:contract-test".to_owned(),
+                decision_id: Some("decision:minimal".to_owned()),
+                topic_keys: Vec::new(),
+                blocked_ref: "run:minimal".to_owned(),
+                blocked_ref_type: "agent_run".to_owned(),
+                reason: "Contract tests need one valid blocker payload".to_owned(),
+                priority: DecisionBlockerPriority::P1,
+                last_progress_at: None,
+                required_owner_id: Some("human:owner".to_owned()),
+            }),
+        ),
+        (
+            EventType::NotificationSent,
+            EventPayload::NotificationSent(NotificationSentPayload {
+                blocker_id: "blocker:minimal".to_owned(),
+                recipient_actor_id: "human:owner".to_owned(),
+                channel: "slack".to_owned(),
+                threshold_rule: "p1_human_required_direct_15m".to_owned(),
+                source_event_ids: vec![9],
+                dedupe_key: "tenant:decision:minimal:blocker:minimal:P1".to_owned(),
+                sent_at: chrono::DateTime::parse_from_rfc3339("2026-05-19T11:30:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            }),
+        ),
     ]
 }
 
 fn payload_json(payload: &EventPayload) -> Value {
     match payload {
         EventPayload::DecisionProposed(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::DecisionRequested(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionAccepted(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionRejected(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionSuperseded(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::EvidenceRecorded(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::HypothesisRecorded(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::RelationAdded(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::BlockerReported(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::NotificationSent(payload) => serde_json::to_value(payload).unwrap(),
     }
 }
 
@@ -455,8 +531,11 @@ fn event_relation_contract(kind: EventRelationKind) -> (&'static str, &'static s
 fn node_kind_contract(kind: NodeKind) -> &'static str {
     match kind {
         NodeKind::Decision => "Decision",
+        NodeKind::DecisionRequest => "DecisionRequest",
         NodeKind::Actor => "Actor",
+        NodeKind::Blocker => "Blocker",
         NodeKind::Evidence => "Evidence",
+        NodeKind::Notification => "Notification",
         NodeKind::Option => "Option",
         NodeKind::Hypothesis => "Hypothesis",
     }
@@ -465,9 +544,45 @@ fn node_kind_contract(kind: NodeKind) -> &'static str {
 fn projector_relation_contract(kind: ProjectorRelationKind) -> (&'static str, NodeKind, NodeKind) {
     match kind {
         ProjectorRelationKind::ProposedBy => ("PROPOSED_BY", NodeKind::Decision, NodeKind::Actor),
+        ProjectorRelationKind::DecisionRequestedBy => (
+            "DECISION_REQUESTED_BY",
+            NodeKind::DecisionRequest,
+            NodeKind::Actor,
+        ),
+        ProjectorRelationKind::DecisionRequestForDecision => (
+            "DECISION_REQUEST_FOR_DECISION",
+            NodeKind::DecisionRequest,
+            NodeKind::Decision,
+        ),
+        ProjectorRelationKind::DecisionRequestRequiredOwner => (
+            "DECISION_REQUEST_REQUIRED_OWNER",
+            NodeKind::DecisionRequest,
+            NodeKind::Actor,
+        ),
         ProjectorRelationKind::AcceptedBy => ("ACCEPTED_BY", NodeKind::Decision, NodeKind::Actor),
         ProjectorRelationKind::RejectedBy => ("REJECTED_BY", NodeKind::Decision, NodeKind::Actor),
         ProjectorRelationKind::Supersedes => ("SUPERSEDES", NodeKind::Decision, NodeKind::Decision),
+        ProjectorRelationKind::BlockedActor => {
+            ("BLOCKED_ACTOR", NodeKind::Blocker, NodeKind::Actor)
+        }
+        ProjectorRelationKind::BlockerForDecision => (
+            "BLOCKER_FOR_DECISION",
+            NodeKind::Blocker,
+            NodeKind::Decision,
+        ),
+        ProjectorRelationKind::BlockerRequiredOwner => {
+            ("BLOCKER_REQUIRED_OWNER", NodeKind::Blocker, NodeKind::Actor)
+        }
+        ProjectorRelationKind::NotificationForBlocker => (
+            "NOTIFICATION_FOR_BLOCKER",
+            NodeKind::Notification,
+            NodeKind::Blocker,
+        ),
+        ProjectorRelationKind::NotificationRecipient => (
+            "NOTIFICATION_RECIPIENT",
+            NodeKind::Notification,
+            NodeKind::Actor,
+        ),
         ProjectorRelationKind::BasedOn => ("BASED_ON", NodeKind::Decision, NodeKind::Evidence),
         ProjectorRelationKind::HasOption => ("HAS_OPTION", NodeKind::Decision, NodeKind::Option),
         ProjectorRelationKind::Chose => ("CHOSE", NodeKind::Decision, NodeKind::Option),

@@ -9,6 +9,8 @@ pub type EventId = u64;
 pub enum EventType {
     #[serde(rename = "decision.proposed")]
     DecisionProposed,
+    #[serde(rename = "decision.requested")]
+    DecisionRequested,
     #[serde(rename = "decision.accepted")]
     DecisionAccepted,
     #[serde(rename = "decision.rejected")]
@@ -21,6 +23,10 @@ pub enum EventType {
     HypothesisRecorded,
     #[serde(rename = "relation.added")]
     RelationAdded,
+    #[serde(rename = "blocker.reported")]
+    BlockerReported,
+    #[serde(rename = "notification.sent")]
+    NotificationSent,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +132,73 @@ pub struct DecisionSupersededPayload {
     pub new_decision_id: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecisionBlockerPriority {
+    #[serde(rename = "P0", alias = "p0")]
+    P0,
+    #[serde(rename = "P1", alias = "p1")]
+    P1,
+    #[serde(rename = "P2", alias = "p2")]
+    P2,
+    #[serde(rename = "P3", alias = "p3")]
+    P3,
+    #[serde(rename = "P4", alias = "p4")]
+    P4,
+}
+
+impl DecisionBlockerPriority {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::P0 => "P0",
+            Self::P1 => "P1",
+            Self::P2 => "P2",
+            Self::P3 => "P3",
+            Self::P4 => "P4",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionRequestedPayload {
+    pub topic_keys: Vec<String>,
+    pub decision_id: Option<String>,
+    pub reason: String,
+    pub priority: DecisionBlockerPriority,
+    pub required_owner_id: Option<String>,
+    pub authority_class: String,
+    pub requested_by: String,
+    pub client_request_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockerReportedPayload {
+    pub blocker_id: String,
+    pub blocked_actor_id: String,
+    pub decision_id: Option<String>,
+    #[serde(default)]
+    pub topic_keys: Vec<String>,
+    pub blocked_ref: String,
+    pub blocked_ref_type: String,
+    pub reason: String,
+    pub priority: DecisionBlockerPriority,
+    pub last_progress_at: Option<DateTime<Utc>>,
+    pub required_owner_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationSentPayload {
+    pub blocker_id: String,
+    pub recipient_actor_id: String,
+    pub channel: String,
+    pub threshold_rule: String,
+    pub source_event_ids: Vec<EventId>,
+    pub dedupe_key: String,
+    pub sent_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EvidenceRecordedPayload {
@@ -168,24 +241,30 @@ pub struct RelationAddedPayload {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventPayload {
     DecisionProposed(DecisionProposedPayload),
+    DecisionRequested(DecisionRequestedPayload),
     DecisionAccepted(DecisionIdPayload),
     DecisionRejected(DecisionIdPayload),
     DecisionSuperseded(DecisionSupersededPayload),
     EvidenceRecorded(EvidenceRecordedPayload),
     HypothesisRecorded(HypothesisRecordedPayload),
     RelationAdded(RelationAddedPayload),
+    BlockerReported(BlockerReportedPayload),
+    NotificationSent(NotificationSentPayload),
 }
 
 impl EventPayload {
     pub fn event_type(&self) -> EventType {
         match self {
             Self::DecisionProposed(_) => EventType::DecisionProposed,
+            Self::DecisionRequested(_) => EventType::DecisionRequested,
             Self::DecisionAccepted(_) => EventType::DecisionAccepted,
             Self::DecisionRejected(_) => EventType::DecisionRejected,
             Self::DecisionSuperseded(_) => EventType::DecisionSuperseded,
             Self::EvidenceRecorded(_) => EventType::EvidenceRecorded,
             Self::HypothesisRecorded(_) => EventType::HypothesisRecorded,
             Self::RelationAdded(_) => EventType::RelationAdded,
+            Self::BlockerReported(_) => EventType::BlockerReported,
+            Self::NotificationSent(_) => EventType::NotificationSent,
         }
     }
 }
@@ -203,6 +282,12 @@ pub enum EventValidationError {
 
     #[error("{0} contains an empty value")]
     EmptyListValue(&'static str),
+
+    #[error("{0} must contain at least one value")]
+    EmptyList(&'static str),
+
+    #[error("{0} contains a non-positive event id")]
+    InvalidEventIdListValue(&'static str),
 
     #[error("payload does not match event type {event_type:?}: {source}")]
     Payload {
@@ -230,6 +315,22 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty_values("payload.hypothesis_ids", &payload.hypothesis_ids)?;
             require_non_empty_values("payload.evidence_ids", &payload.evidence_ids)?;
             Ok(EventPayload::DecisionProposed(payload))
+        }
+        EventType::DecisionRequested => {
+            require_event_provenance(event)?;
+            let payload: DecisionRequestedPayload = parse_payload(event)?;
+            require_non_empty_list("payload.topic_keys", &payload.topic_keys)?;
+            require_non_empty_values("payload.topic_keys", &payload.topic_keys)?;
+            require_optional_non_empty("payload.decision_id", payload.decision_id.as_deref())?;
+            require_non_empty("payload.reason", &payload.reason)?;
+            require_optional_non_empty(
+                "payload.required_owner_id",
+                payload.required_owner_id.as_deref(),
+            )?;
+            require_non_empty("payload.authority_class", &payload.authority_class)?;
+            require_non_empty("payload.requested_by", &payload.requested_by)?;
+            require_non_empty("payload.client_request_id", &payload.client_request_id)?;
+            Ok(EventPayload::DecisionRequested(payload))
         }
         EventType::DecisionAccepted => {
             let payload: DecisionIdPayload = parse_payload(event)?;
@@ -266,6 +367,38 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty("payload.to_id", &payload.to_id)?;
             Ok(EventPayload::RelationAdded(payload))
         }
+        EventType::BlockerReported => {
+            require_event_provenance(event)?;
+            let payload: BlockerReportedPayload = parse_payload(event)?;
+            require_non_empty("payload.blocker_id", &payload.blocker_id)?;
+            require_non_empty("payload.blocked_actor_id", &payload.blocked_actor_id)?;
+            require_optional_non_empty("payload.decision_id", payload.decision_id.as_deref())?;
+            require_non_empty_values("payload.topic_keys", &payload.topic_keys)?;
+            if payload.decision_id.is_none() && payload.topic_keys.is_empty() {
+                return Err(EventValidationError::EmptyField(
+                    "payload.decision_id_or_topic_keys",
+                ));
+            }
+            require_non_empty("payload.blocked_ref", &payload.blocked_ref)?;
+            require_non_empty("payload.blocked_ref_type", &payload.blocked_ref_type)?;
+            require_non_empty("payload.reason", &payload.reason)?;
+            require_optional_non_empty(
+                "payload.required_owner_id",
+                payload.required_owner_id.as_deref(),
+            )?;
+            Ok(EventPayload::BlockerReported(payload))
+        }
+        EventType::NotificationSent => {
+            require_event_provenance(event)?;
+            let payload: NotificationSentPayload = parse_payload(event)?;
+            require_non_empty("payload.blocker_id", &payload.blocker_id)?;
+            require_non_empty("payload.recipient_actor_id", &payload.recipient_actor_id)?;
+            require_non_empty("payload.channel", &payload.channel)?;
+            require_non_empty("payload.threshold_rule", &payload.threshold_rule)?;
+            require_non_empty_event_ids("payload.source_event_ids", &payload.source_event_ids)?;
+            require_non_empty("payload.dedupe_key", &payload.dedupe_key)?;
+            Ok(EventPayload::NotificationSent(payload))
+        }
     }
 }
 
@@ -281,6 +414,11 @@ fn validate_common(event: &Event) -> std::result::Result<(), EventValidationErro
     require_non_empty("actor_id", &event.actor_id)?;
     require_optional_non_empty("source_ref", event.source_ref.as_deref())?;
     require_optional_non_empty("correlation_id", event.correlation_id.as_deref())
+}
+
+fn require_event_provenance(event: &Event) -> std::result::Result<(), EventValidationError> {
+    require_present_non_empty("source_ref", event.source_ref.as_deref())?;
+    require_present_non_empty("correlation_id", event.correlation_id.as_deref())
 }
 
 fn parse_payload<T>(event: &Event) -> std::result::Result<T, EventValidationError>
@@ -315,6 +453,27 @@ fn require_optional_non_empty(
     }
 }
 
+fn require_present_non_empty(
+    field: &'static str,
+    value: Option<&str>,
+) -> std::result::Result<(), EventValidationError> {
+    match value {
+        Some(value) => require_non_empty(field, value),
+        None => Err(EventValidationError::EmptyField(field)),
+    }
+}
+
+fn require_non_empty_list(
+    field: &'static str,
+    values: &[String],
+) -> std::result::Result<(), EventValidationError> {
+    if values.is_empty() {
+        Err(EventValidationError::EmptyList(field))
+    } else {
+        Ok(())
+    }
+}
+
 fn require_non_empty_values(
     field: &'static str,
     values: &[String],
@@ -324,6 +483,19 @@ fn require_non_empty_values(
     } else {
         Ok(())
     }
+}
+
+fn require_non_empty_event_ids(
+    field: &'static str,
+    values: &[EventId],
+) -> std::result::Result<(), EventValidationError> {
+    if values.is_empty() {
+        return Err(EventValidationError::EmptyList(field));
+    }
+    if values.contains(&0) {
+        return Err(EventValidationError::InvalidEventIdListValue(field));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -336,6 +508,11 @@ mod tests {
             include_str!("../schemas/v0/decision.proposed.json"),
             include_str!("../tests/fixtures/v0/decision.proposed.json"),
             EventType::DecisionProposed,
+        ),
+        (
+            include_str!("../schemas/v0/decision.requested.json"),
+            include_str!("../tests/fixtures/v0/decision.requested.json"),
+            EventType::DecisionRequested,
         ),
         (
             include_str!("../schemas/v0/decision.accepted.json"),
@@ -366,6 +543,16 @@ mod tests {
             include_str!("../schemas/v0/relation.added.json"),
             include_str!("../tests/fixtures/v0/relation.added.json"),
             EventType::RelationAdded,
+        ),
+        (
+            include_str!("../schemas/v0/blocker.reported.json"),
+            include_str!("../tests/fixtures/v0/blocker.reported.json"),
+            EventType::BlockerReported,
+        ),
+        (
+            include_str!("../schemas/v0/notification.sent.json"),
+            include_str!("../tests/fixtures/v0/notification.sent.json"),
+            EventType::NotificationSent,
         ),
     ];
 
@@ -434,6 +621,66 @@ mod tests {
         assert!(matches!(
             validate(&event),
             Err(EventValidationError::Payload { .. })
+        ));
+    }
+
+    #[test]
+    fn blocker_report_requires_decision_or_topic_anchor() {
+        let event = Event {
+            event_id: Some(9),
+            event_uuid: Uuid::parse_str("018f5d8a-03fb-7df0-8e36-64d7410cfe09").unwrap(),
+            correlation_id: Some("session-1".to_owned()),
+            causation_event_id: None,
+            event_type: EventType::BlockerReported,
+            actor_id: "agent-a".to_owned(),
+            source: EventSource::Agent,
+            source_ref: Some("agent:codex:session-1".to_owned()),
+            payload: json!({
+                "blocker_id": "blocker-1",
+                "blocked_actor_id": "agent-a",
+                "decision_id": null,
+                "topic_keys": [],
+                "blocked_ref": "run-1",
+                "blocked_ref_type": "agent_run",
+                "reason": "No owner can make the decision yet.",
+                "priority": "P1",
+                "last_progress_at": null,
+                "required_owner_id": null
+            }),
+            ts: None,
+        };
+
+        assert!(matches!(
+            validate(&event),
+            Err(EventValidationError::EmptyField(
+                "payload.decision_id_or_topic_keys"
+            ))
+        ));
+    }
+
+    #[test]
+    fn notification_sent_requires_source_event_ids() {
+        let mut event: Event =
+            serde_json::from_str(include_str!("../tests/fixtures/v0/notification.sent.json"))
+                .unwrap();
+        event.payload["source_event_ids"] = json!([]);
+
+        assert!(matches!(
+            validate(&event),
+            Err(EventValidationError::EmptyList("payload.source_event_ids"))
+        ));
+    }
+
+    #[test]
+    fn blocker_notification_events_require_source_provenance() {
+        let mut event: Event =
+            serde_json::from_str(include_str!("../tests/fixtures/v0/blocker.reported.json"))
+                .unwrap();
+        event.source_ref = None;
+
+        assert!(matches!(
+            validate(&event),
+            Err(EventValidationError::EmptyField("source_ref"))
         ));
     }
 }

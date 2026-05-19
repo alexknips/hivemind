@@ -1,0 +1,23 @@
+{
+  "event_id": 9,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe09",
+  "correlation_id": "session-1",
+  "causation_event_id": 8,
+  "type": "blocker.reported",
+  "actor_id": "agent-a",
+  "source": "agent",
+  "source_ref": "agent:codex:session-1",
+  "payload": {
+    "blocker_id": "blocker-billing-notice",
+    "blocked_actor_id": "agent-a",
+    "decision_id": "dec-1",
+    "topic_keys": ["billing-migration"],
+    "blocked_ref": "run:billing-migration-42",
+    "blocked_ref_type": "agent_run",
+    "reason": "The migration changes customer commitments and needs pricing-owner approval.",
+    "priority": "P1",
+    "last_progress_at": "2026-05-19T10:15:00Z",
+    "required_owner_id": "human:pricing-owner"
+  },
+  "ts": "2026-05-19T10:31:00Z"
+}

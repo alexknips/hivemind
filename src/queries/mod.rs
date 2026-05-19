@@ -977,11 +977,20 @@ fn node_rows(graph: &impl GraphView, kind: NodeKind) -> Result<BTreeMap<String, 
         NodeKind::Decision => format!(
             "MATCH (node:`{table}`) RETURN node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
         ),
+        NodeKind::DecisionRequest => format!(
+            "MATCH (node:`{table}`) RETURN node.id AS id, node.decision_id AS decision_id, node.topic_keys AS topic_keys, node.reason AS reason, node.priority AS priority, node.required_owner_id AS required_owner_id, node.authority_class AS authority_class, node.requested_by AS requested_by, node.client_request_id AS client_request_id, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
+        ),
         NodeKind::Actor => format!(
             "MATCH (node:`{table}`) RETURN node.id AS id, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
         ),
+        NodeKind::Blocker => format!(
+            "MATCH (node:`{table}`) RETURN node.id AS id, node.blocked_actor_id AS blocked_actor_id, node.decision_id AS decision_id, node.topic_keys AS topic_keys, node.blocked_ref AS blocked_ref, node.blocked_ref_type AS blocked_ref_type, node.reason AS reason, node.priority AS priority, node.last_progress_at AS last_progress_at, node.required_owner_id AS required_owner_id, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
+        ),
         NodeKind::Evidence => format!(
             "MATCH (node:`{table}`) RETURN node.id AS id, node.content AS content, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
+        ),
+        NodeKind::Notification => format!(
+            "MATCH (node:`{table}`) RETURN node.id AS id, node.blocker_id AS blocker_id, node.recipient_actor_id AS recipient_actor_id, node.channel AS channel, node.threshold_rule AS threshold_rule, node.source_event_ids AS source_event_ids, node.dedupe_key AS dedupe_key, node.sent_at AS sent_at, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
         ),
         NodeKind::Option => format!(
             "MATCH (node:`{table}`) RETURN node.id AS id, node.label AS label, node.description AS description, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
