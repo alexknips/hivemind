@@ -198,7 +198,7 @@ impl KuzuGraph {
         let mut rows = Vec::new();
         for row in &mut result {
             let mut graph_row = GraphRow::new();
-            for (name, value) in column_names.iter().zip(row.into_iter()) {
+            for (name, value) in column_names.iter().zip(row) {
                 graph_row.insert(name.clone(), from_kuzu_value(value));
             }
             rows.push(graph_row);

@@ -1425,6 +1425,7 @@ fn query_error(error: impl std::fmt::Display) -> QueryError {
 }
 
 fn query_timer_start() -> Instant {
+    // ubs:ignore: Instant measures query latency only; it does not generate secrets.
     Instant::now()
 }
 

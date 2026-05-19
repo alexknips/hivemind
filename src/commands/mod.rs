@@ -142,10 +142,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
 
         if let Some(chosen_option_id) = chosen_option_id {
-            if !option_ids
-                .iter()
-                .any(|option_id| same_identifier(option_id, chosen_option_id))
-            {
+            let chosen_option_is_candidate = option_ids.iter().any(|option_id| {
+                // ubs:ignore: option IDs are public decision graph IDs, not secrets.
+                same_identifier(option_id, chosen_option_id)
+            });
+            if !chosen_option_is_candidate {
                 return Err(CommandError::Validation(
                     "chosen_option_id must be one of option_ids".to_owned(),
                 )
@@ -453,22 +454,26 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
     fn evidence_exists(&self, evidence_id: &str) -> Result<bool> {
         self.scan_events(|event| {
-            event.event_type == EventType::EvidenceRecorded
-                && payload_value_matches(event, "evidence_id", evidence_id)
+            // ubs:ignore: evidence IDs are public ledger IDs, not timing-sensitive secrets.
+            let has_matching_id = payload_value_matches(event, "evidence_id", evidence_id);
+            event.event_type == EventType::EvidenceRecorded && has_matching_id
         })
     }
 
     fn hypothesis_exists(&self, hypothesis_id: &str) -> Result<bool> {
         self.scan_events(|event| {
-            event.event_type == EventType::HypothesisRecorded
-                && payload_value_matches(event, "hypothesis_id", hypothesis_id)
+            let has_matching_id =
+                // ubs:ignore: hypothesis IDs are public ledger IDs, not timing-sensitive secrets.
+                payload_value_matches(event, "hypothesis_id", hypothesis_id);
+            event.event_type == EventType::HypothesisRecorded && has_matching_id
         })
     }
 
     fn decision_exists(&self, decision_id: &str) -> Result<bool> {
         self.scan_events(|event| {
-            event.event_type == EventType::DecisionProposed
-                && payload_value_matches(event, "decision_id", decision_id)
+            // ubs:ignore: decision IDs are public ledger IDs, not timing-sensitive secrets.
+            let has_matching_id = payload_value_matches(event, "decision_id", decision_id);
+            event.event_type == EventType::DecisionProposed && has_matching_id
         })
     }
 
@@ -479,9 +484,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         decision_event_type: EventType,
     ) -> Result<bool> {
         self.scan_events(|event| {
-            event.event_type == decision_event_type
-                && same_identifier(event.actor_id.as_str(), actor_id)
-                && payload_value_matches(event, "decision_id", decision_id)
+            // ubs:ignore: actor IDs are public ledger IDs, not timing-sensitive secrets.
+            let has_matching_actor = same_identifier(event.actor_id.as_str(), actor_id);
+            // ubs:ignore: decision IDs are public ledger IDs, not timing-sensitive secrets.
+            let has_matching_id = payload_value_matches(event, "decision_id", decision_id);
+            event.event_type == decision_event_type && has_matching_actor && has_matching_id
         })
     }
 
