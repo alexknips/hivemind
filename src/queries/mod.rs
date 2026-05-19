@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
+use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 
 use crate::error::QueryError;
+use crate::events::BlockerPriority;
 use crate::projector::{GraphParams, GraphRow, GraphValue, GraphView, NodeKind, RelationKind};
 use crate::Result;
 
@@ -11,6 +13,7 @@ const MAX_QUERY_RESULTS: usize = 1000;
 const DEFAULT_SEARCH_LIMIT: usize = 25;
 const MAX_SNIPPETS_PER_RESULT: usize = 5;
 const SNIPPET_MAX_CHARS: usize = 160;
+const DEFAULT_BLOCKER_STALE_AFTER_SECONDS: i64 = 24 * 60 * 60;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -171,6 +174,111 @@ pub struct SearchMatchedNode {
     pub id: String,
     pub kind: NodeKind,
     pub field: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ActiveDecisionBlockersRequest {
+    pub filters: DecisionBlockerFilters,
+    pub limit: usize,
+    pub cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct DecisionBlockerFilters {
+    pub decision_ids: Vec<String>,
+    pub topic_keys: Vec<String>,
+    pub required_owner_ids: Vec<String>,
+    pub blocked_actor_ids: Vec<String>,
+    pub priorities: Vec<BlockerPriority>,
+    pub now: Option<DateTime<Utc>>,
+    pub stale_after_seconds: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DecisionBlockerResults {
+    pub filters: DecisionBlockerFilters,
+    pub limit: usize,
+    pub cursor: Option<String>,
+    pub next_cursor: Option<String>,
+    pub total_matches: usize,
+    pub items: Vec<DecisionBlockerView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DecisionBlockerView {
+    pub id: String,
+    pub decision_id: Option<String>,
+    pub decision_status: Option<DecisionStatus>,
+    pub topic_keys: Vec<String>,
+    pub priority: BlockerPriority,
+    pub reason: String,
+    pub blocked_actor_id: String,
+    pub blocked_ref: String,
+    pub blocked_ref_type: String,
+    pub required_owner_id: Option<String>,
+    pub reported_at: DateTime<Utc>,
+    pub last_progress_at: DateTime<Utc>,
+    pub stale: bool,
+    pub refuted_assumption_ids: Vec<String>,
+    pub threshold_rule: String,
+    pub notification_state: BlockerNotificationState,
+    pub source_event_ids: Vec<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct BlockerNotificationState {
+    pub state: BlockerNotificationStateKind,
+    pub notification_id: Option<String>,
+    pub channel: Option<String>,
+    pub recipient_actor_id: Option<String>,
+    pub threshold_rule: Option<String>,
+    pub dedupe_key: Option<String>,
+    pub last_sent_at: Option<DateTime<Utc>>,
+    pub acknowledged_at: Option<DateTime<Utc>>,
+    pub snooze_until: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockerNotificationStateKind {
+    None,
+    Sent,
+    Acknowledged,
+    Snoozed,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlockerNotificationCandidatesRequest {
+    pub now: DateTime<Utc>,
+    pub policy_version: String,
+    pub limit: usize,
+    pub cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct BlockerNotificationCandidates {
+    pub now: DateTime<Utc>,
+    pub policy_version: String,
+    pub limit: usize,
+    pub cursor: Option<String>,
+    pub next_cursor: Option<String>,
+    pub total_matches: usize,
+    pub items: Vec<BlockerNotificationCandidate>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct BlockerNotificationCandidate {
+    pub blocker_id: String,
+    pub decision_id: Option<String>,
+    pub topic_keys: Vec<String>,
+    pub priority: BlockerPriority,
+    pub reason: String,
+    pub recipient_actor_id: String,
+    pub channel: String,
+    pub threshold_rule: String,
+    pub dedupe_key: String,
+    pub source_event_ids: Vec<u64>,
+    pub notification_state: BlockerNotificationState,
 }
 
 pub fn get_decision(
@@ -547,6 +655,129 @@ pub fn search_decisions(
     })
 }
 
+pub fn get_active_decision_blockers(
+    graph: &impl GraphView,
+    request: &ActiveDecisionBlockersRequest,
+) -> Result<QueryResponse<DecisionBlockerResults>> {
+    let started = Instant::now();
+    let filters = normalized_blocker_filters(&request.filters);
+    let limit = normalized_limit(request.limit);
+    let cursor = normalized_query(request.cursor.as_deref());
+    let offset = parse_cursor(cursor.as_deref())?;
+
+    let blockers = active_decision_blockers(graph, &filters)?;
+    let total_matches = blockers.len();
+    let items: Vec<DecisionBlockerView> = blockers.into_iter().skip(offset).take(limit).collect();
+    let next_offset = offset.saturating_add(items.len());
+    let next_cursor = (next_offset < total_matches).then(|| next_offset.to_string());
+
+    Ok(QueryResponse {
+        result_count: items.len(),
+        truncated: next_cursor.is_some(),
+        latency_ms: started.elapsed().as_millis(),
+        data: DecisionBlockerResults {
+            filters,
+            limit,
+            cursor,
+            next_cursor,
+            total_matches,
+            items,
+        },
+    })
+}
+
+pub fn get_blocker_notification_candidates(
+    graph: &impl GraphView,
+    request: &BlockerNotificationCandidatesRequest,
+) -> Result<QueryResponse<BlockerNotificationCandidates>> {
+    let started = Instant::now();
+    let policy_version = request.policy_version.trim();
+    if policy_version.is_empty() {
+        return Err(query_error("policy_version must not be empty").into());
+    }
+
+    let limit = normalized_limit(request.limit);
+    let cursor = normalized_query(request.cursor.as_deref());
+    let offset = parse_cursor(cursor.as_deref())?;
+    let filters = DecisionBlockerFilters {
+        now: Some(request.now),
+        ..DecisionBlockerFilters::default()
+    };
+
+    let mut candidates = Vec::new();
+    for blocker in active_decision_blockers(graph, &filters)? {
+        let Some(required_owner_id) = blocker.required_owner_id.as_ref() else {
+            continue;
+        };
+        let rule = threshold_rule_for(blocker.priority);
+        let eligible_at = blocker.reported_at + Duration::seconds(rule.initial_delay_seconds);
+        if request.now < eligible_at {
+            continue;
+        }
+
+        if let Some(snooze_until) = blocker.notification_state.snooze_until {
+            if request.now < snooze_until {
+                continue;
+            }
+        }
+
+        if let Some(last_sent_at) = blocker.notification_state.last_sent_at {
+            let repeat_at = last_sent_at + Duration::seconds(rule.repeat_after_seconds);
+            if request.now < repeat_at {
+                continue;
+            }
+        }
+
+        candidates.push(BlockerNotificationCandidate {
+            blocker_id: blocker.id.clone(),
+            decision_id: blocker.decision_id.clone(),
+            topic_keys: blocker.topic_keys.clone(),
+            priority: blocker.priority,
+            reason: blocker.reason.clone(),
+            recipient_actor_id: required_owner_id.clone(),
+            channel: rule.channel.to_owned(),
+            threshold_rule: rule.name.to_owned(),
+            dedupe_key: blocker_dedupe_key(&blocker),
+            source_event_ids: blocker.source_event_ids.clone(),
+            notification_state: blocker.notification_state.clone(),
+        });
+    }
+
+    candidates.sort_by(|left, right| {
+        (
+            left.priority,
+            left.decision_id.as_deref().unwrap_or_default(),
+            &left.blocker_id,
+        )
+            .cmp(&(
+                right.priority,
+                right.decision_id.as_deref().unwrap_or_default(),
+                &right.blocker_id,
+            ))
+    });
+
+    let total_matches = candidates.len();
+    let items: Vec<BlockerNotificationCandidate> =
+        candidates.into_iter().skip(offset).take(limit).collect();
+    let next_offset = offset.saturating_add(items.len());
+    let next_cursor = (next_offset < total_matches).then(|| next_offset.to_string());
+
+    Ok(QueryResponse {
+        result_count: items.len(),
+        truncated: next_cursor.is_some(),
+        latency_ms: started.elapsed().as_millis(),
+        data: BlockerNotificationCandidates {
+            now: request.now,
+            policy_version: policy_version.to_owned(),
+            limit,
+            cursor,
+            next_cursor,
+            total_matches,
+            items,
+        },
+    })
+}
+
 pub fn get_supersession_chain(
     graph: &impl GraphView,
     decision_id: &str,
@@ -875,6 +1106,321 @@ fn decision_node_exists(graph: &impl GraphView, decision_id: &str) -> Result<boo
     Ok(!rows.is_empty())
 }
 
+fn active_decision_blockers(
+    graph: &impl GraphView,
+    filters: &DecisionBlockerFilters,
+) -> Result<Vec<DecisionBlockerView>> {
+    let blocker_rows = node_rows(graph, NodeKind::Blocker)?;
+    let notification_rows = node_rows(graph, NodeKind::Notification)?;
+    let edges = relation_edges_by_kind(graph)?;
+
+    let mut blockers = Vec::new();
+    for (id, row) in blocker_rows {
+        if optional_string(&row, "resolved_at").is_some() {
+            continue;
+        }
+
+        let decision_id = optional_string(&row, "decision_id");
+        if !filters.decision_ids.is_empty()
+            && !decision_id
+                .as_ref()
+                .is_some_and(|id| filters.decision_ids.iter().any(|expected| expected == id))
+        {
+            continue;
+        }
+
+        let topic_keys = optional_string_list(&row, "topic_keys");
+        if !filters.topic_keys.is_empty()
+            && !filters
+                .topic_keys
+                .iter()
+                .all(|topic| topic_keys.iter().any(|candidate| candidate == topic))
+        {
+            continue;
+        }
+
+        let blocked_actor_id = required_string(&row, "blocked_actor_id")?;
+        if !filters.blocked_actor_ids.is_empty()
+            && !filters
+                .blocked_actor_ids
+                .iter()
+                .any(|expected| expected == &blocked_actor_id)
+        {
+            continue;
+        }
+
+        let required_owner_id = optional_string(&row, "required_owner_id");
+        if !filters.required_owner_ids.is_empty()
+            && !filters
+                .required_owner_ids
+                .iter()
+                .any(|expected| required_owner_id.as_deref() == Some(expected.as_str()))
+        {
+            continue;
+        }
+
+        let priority = blocker_priority_from_row(&row)?;
+        if !filters.priorities.is_empty() && !filters.priorities.contains(&priority) {
+            continue;
+        }
+
+        let reported_at = required_datetime(&row, "reported_at")?;
+        let last_progress_at = optional_datetime(&row, "last_progress_at")?.unwrap_or(reported_at);
+        let stale_after_seconds = filters
+            .stale_after_seconds
+            .filter(|seconds| *seconds > 0)
+            .unwrap_or(DEFAULT_BLOCKER_STALE_AFTER_SECONDS);
+        let stale = filters.now.is_some_and(|now| {
+            now.signed_duration_since(last_progress_at) >= Duration::seconds(stale_after_seconds)
+        });
+
+        let decision_status = if let Some(decision_id) = decision_id.as_deref() {
+            if decision_node_exists(graph, decision_id)? {
+                Some(derive_decision_status(graph, decision_id)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let refuted_assumption_ids = if let Some(decision_id) = decision_id.as_deref() {
+            refuted_assumption_ids(graph, &edges, decision_id)?
+        } else {
+            Vec::new()
+        };
+
+        blockers.push(DecisionBlockerView {
+            id: id.clone(),
+            decision_id,
+            decision_status,
+            topic_keys,
+            priority,
+            reason: required_string(&row, "reason")?,
+            blocked_actor_id,
+            blocked_ref: required_string(&row, "blocked_ref")?,
+            blocked_ref_type: required_string(&row, "blocked_ref_type")?,
+            required_owner_id,
+            reported_at,
+            last_progress_at,
+            stale,
+            refuted_assumption_ids,
+            threshold_rule: threshold_rule_for(priority).name.to_owned(),
+            notification_state: notification_state_for_blocker(
+                &notification_rows,
+                &id,
+                filters.now,
+            )?,
+            source_event_ids: source_event_ids_for_blocker(&row),
+        });
+    }
+
+    blockers.sort_by(|left, right| {
+        (left.priority, left.reported_at, &left.id).cmp(&(
+            right.priority,
+            right.reported_at,
+            &right.id,
+        ))
+    });
+    Ok(blockers)
+}
+
+fn normalized_blocker_filters(filters: &DecisionBlockerFilters) -> DecisionBlockerFilters {
+    DecisionBlockerFilters {
+        decision_ids: normalized_filter_values(&filters.decision_ids),
+        topic_keys: normalized_filter_values(&filters.topic_keys),
+        required_owner_ids: normalized_filter_values(&filters.required_owner_ids),
+        blocked_actor_ids: normalized_filter_values(&filters.blocked_actor_ids),
+        priorities: filters
+            .priorities
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        now: filters.now,
+        stale_after_seconds: filters.stale_after_seconds,
+    }
+}
+
+fn refuted_assumption_ids(
+    graph: &impl GraphView,
+    edges: &BTreeMap<RelationKind, Vec<(String, String)>>,
+    decision_id: &str,
+) -> Result<Vec<String>> {
+    let mut ids = Vec::new();
+    for hypothesis_id in relation_targets(edges, &[RelationKind::Assumes], decision_id) {
+        if derive_hypothesis_status(graph, &hypothesis_id)? == HypothesisStatus::Refuted {
+            ids.push(hypothesis_id);
+        }
+    }
+    ids.sort();
+    Ok(ids)
+}
+
+fn notification_state_for_blocker(
+    notification_rows: &BTreeMap<String, GraphRow>,
+    blocker_id: &str,
+    now: Option<DateTime<Utc>>,
+) -> Result<BlockerNotificationState> {
+    let mut records = Vec::new();
+    for (id, row) in notification_rows {
+        if optional_string(row, "blocker_id").as_deref() != Some(blocker_id) {
+            continue;
+        }
+
+        records.push(NotificationRecord {
+            id: id.clone(),
+            recipient_actor_id: optional_string(row, "recipient_actor_id"),
+            channel: optional_string(row, "channel"),
+            threshold_rule: optional_string(row, "threshold_rule"),
+            dedupe_key: optional_string(row, "dedupe_key"),
+            sent_at: optional_datetime(row, "sent_at")?,
+            ack_at: optional_datetime(row, "ack_at")?,
+            snooze_until: optional_datetime(row, "snooze_until")?,
+        });
+    }
+
+    records.sort_by(|left, right| {
+        (
+            left.sent_at.unwrap_or(DateTime::<Utc>::UNIX_EPOCH),
+            &left.id,
+        )
+            .cmp(&(
+                right.sent_at.unwrap_or(DateTime::<Utc>::UNIX_EPOCH),
+                &right.id,
+            ))
+    });
+
+    let Some(record) = records.last() else {
+        return Ok(BlockerNotificationState {
+            state: BlockerNotificationStateKind::None,
+            notification_id: None,
+            channel: None,
+            recipient_actor_id: None,
+            threshold_rule: None,
+            dedupe_key: None,
+            last_sent_at: None,
+            acknowledged_at: None,
+            snooze_until: None,
+        });
+    };
+
+    let state = if record
+        .snooze_until
+        .is_some_and(|snooze_until| now.is_none_or(|now| now < snooze_until))
+    {
+        BlockerNotificationStateKind::Snoozed
+    } else if record.ack_at.is_some() {
+        BlockerNotificationStateKind::Acknowledged
+    } else {
+        BlockerNotificationStateKind::Sent
+    };
+
+    Ok(BlockerNotificationState {
+        state,
+        notification_id: Some(record.id.clone()),
+        channel: record.channel.clone(),
+        recipient_actor_id: record.recipient_actor_id.clone(),
+        threshold_rule: record.threshold_rule.clone(),
+        dedupe_key: record.dedupe_key.clone(),
+        last_sent_at: record.sent_at,
+        acknowledged_at: record.ack_at,
+        snooze_until: record.snooze_until,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct NotificationRecord {
+    id: String,
+    recipient_actor_id: Option<String>,
+    channel: Option<String>,
+    threshold_rule: Option<String>,
+    dedupe_key: Option<String>,
+    sent_at: Option<DateTime<Utc>>,
+    ack_at: Option<DateTime<Utc>>,
+    snooze_until: Option<DateTime<Utc>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ThresholdRule {
+    name: &'static str,
+    channel: &'static str,
+    initial_delay_seconds: i64,
+    repeat_after_seconds: i64,
+}
+
+fn threshold_rule_for(priority: BlockerPriority) -> ThresholdRule {
+    match priority {
+        BlockerPriority::P0 => ThresholdRule {
+            name: "p0_direct_immediate",
+            channel: "direct",
+            initial_delay_seconds: 0,
+            repeat_after_seconds: 15 * 60,
+        },
+        BlockerPriority::P1 => ThresholdRule {
+            name: "p1_direct_15m",
+            channel: "direct",
+            initial_delay_seconds: 15 * 60,
+            repeat_after_seconds: 2 * 60 * 60,
+        },
+        BlockerPriority::P2 => ThresholdRule {
+            name: "p2_queue_immediate",
+            channel: "queue",
+            initial_delay_seconds: 0,
+            repeat_after_seconds: 24 * 60 * 60,
+        },
+        BlockerPriority::P3 => ThresholdRule {
+            name: "p3_digest_2d",
+            channel: "digest",
+            initial_delay_seconds: 2 * 24 * 60 * 60,
+            repeat_after_seconds: 3 * 24 * 60 * 60,
+        },
+        BlockerPriority::P4 => ThresholdRule {
+            name: "p4_digest_2d",
+            channel: "digest",
+            initial_delay_seconds: 2 * 24 * 60 * 60,
+            repeat_after_seconds: 3 * 24 * 60 * 60,
+        },
+    }
+}
+
+fn blocker_dedupe_key(blocker: &DecisionBlockerView) -> String {
+    let subject = blocker
+        .decision_id
+        .as_ref()
+        .map(|decision_id| format!("decision:{decision_id}"))
+        .unwrap_or_else(|| {
+            let topic_key = if blocker.topic_keys.is_empty() {
+                "none".to_owned()
+            } else {
+                blocker.topic_keys.join("+")
+            };
+            format!("topic:{topic_key}")
+        });
+    format!(
+        "tenant:default|{subject}|state:active|blocked_actor:{}|required_owner:{}|priority:{}",
+        blocker.blocked_actor_id,
+        blocker.required_owner_id.as_deref().unwrap_or("none"),
+        blocker.priority.as_str().to_ascii_lowercase()
+    )
+}
+
+fn blocker_priority_from_row(row: &GraphRow) -> Result<BlockerPriority> {
+    let priority = required_string(row, "priority")?;
+    BlockerPriority::parse(&priority)
+        .ok_or_else(|| query_error(format!("unknown blocker priority: {priority}")).into())
+}
+
+fn source_event_ids_for_blocker(row: &GraphRow) -> Vec<u64> {
+    ["reported_event_origin", "event_origin"]
+        .into_iter()
+        .filter_map(|key| optional_int(row, key))
+        .filter_map(|value| u64::try_from(value).ok())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 #[derive(Clone, Debug)]
 struct ScoredDecisionSearchResult {
     rank: u8,
@@ -983,20 +1529,20 @@ fn node_rows(graph: &impl GraphView, kind: NodeKind) -> Result<BTreeMap<String, 
         NodeKind::Actor => format!(
             "MATCH (node:`{table}`) RETURN node.id AS id, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
         ),
-        NodeKind::Blocker => format!(
-            "MATCH (node:`{table}`) RETURN node.id AS id, node.blocked_actor_id AS blocked_actor_id, node.decision_id AS decision_id, node.topic_keys AS topic_keys, node.blocked_ref AS blocked_ref, node.blocked_ref_type AS blocked_ref_type, node.reason AS reason, node.priority AS priority, node.last_progress_at AS last_progress_at, node.required_owner_id AS required_owner_id, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
-        ),
         NodeKind::Evidence => format!(
             "MATCH (node:`{table}`) RETURN node.id AS id, node.content AS content, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
-        ),
-        NodeKind::Notification => format!(
-            "MATCH (node:`{table}`) RETURN node.id AS id, node.blocker_id AS blocker_id, node.recipient_actor_id AS recipient_actor_id, node.channel AS channel, node.threshold_rule AS threshold_rule, node.source_event_ids AS source_event_ids, node.dedupe_key AS dedupe_key, node.sent_at AS sent_at, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
         ),
         NodeKind::Option => format!(
             "MATCH (node:`{table}`) RETURN node.id AS id, node.label AS label, node.description AS description, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
         ),
         NodeKind::Hypothesis => format!(
             "MATCH (node:`{table}`) RETURN node.id AS id, node.statement AS statement, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
+        ),
+        NodeKind::Blocker => format!(
+            "MATCH (node:`{table}`) RETURN node.id AS id, node.blocked_actor_id AS blocked_actor_id, node.decision_id AS decision_id, node.topic_keys AS topic_keys, node.blocked_ref AS blocked_ref, node.blocked_ref_type AS blocked_ref_type, node.reason AS reason, node.priority AS priority, node.last_progress_at AS last_progress_at, node.required_owner_id AS required_owner_id, node.reported_at AS reported_at, node.reported_event_origin AS reported_event_origin, node.resolved_at AS resolved_at, node.resolution_event_id AS resolution_event_id, node.resolution_reason AS resolution_reason, node.resolved_event_origin AS resolved_event_origin, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
+        ),
+        NodeKind::Notification => format!(
+            "MATCH (node:`{table}`) RETURN node.id AS id, node.blocker_id AS blocker_id, node.recipient_actor_id AS recipient_actor_id, node.channel AS channel, node.threshold_rule AS threshold_rule, node.source_event_ids AS source_event_ids, node.dedupe_key AS dedupe_key, node.sent_at AS sent_at, node.ack_at AS ack_at, node.snooze_until AS snooze_until, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
         ),
     };
 
@@ -1402,6 +1948,20 @@ fn optional_int(row: &GraphRow, key: &str) -> Option<i64> {
     }
 }
 
+fn required_datetime(row: &GraphRow, key: &str) -> Result<DateTime<Utc>> {
+    optional_datetime(row, key)?
+        .ok_or_else(|| query_error(format!("row missing timestamp field: {key}")).into())
+}
+
+fn optional_datetime(row: &GraphRow, key: &str) -> Result<Option<DateTime<Utc>>> {
+    let Some(value) = optional_string(row, key) else {
+        return Ok(None);
+    };
+    DateTime::parse_from_rfc3339(&value)
+        .map(|value| Some(value.with_timezone(&Utc)))
+        .map_err(|error| query_error(format!("invalid timestamp in {key}: {error}")).into())
+}
+
 fn optional_string_list(row: &GraphRow, key: &str) -> Vec<String> {
     match row.get(key) {
         Some(GraphValue::StringList(values)) => values.clone(),
@@ -1444,7 +2004,12 @@ mod tests {
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
 
-    use crate::projector::GraphProperties;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use crate::events::{Event, EventSource, EventType, RelationKind as EventRelationKind};
+    use crate::ledger::{EventLedger, InMemoryEventLedger};
+    use crate::projector::{memory::MemoryGraph, rebuild_graph, GraphProperties};
 
     use super::*;
 
@@ -1591,6 +2156,254 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn active_decision_blockers_include_status_indicators_and_notification_state() -> Result<()> {
+        let graph = graph_from_events([
+            test_event(
+                1,
+                EventType::HypothesisRecorded,
+                "actor:analyst",
+                json!({
+                    "hypothesis_id": "hypothesis:queue-safe",
+                    "statement": "Queue handoff is safe"
+                }),
+                "2026-01-01T00:00:00Z",
+            ),
+            test_event(
+                2,
+                EventType::EvidenceRecorded,
+                "actor:auditor",
+                json!({
+                    "evidence_id": "evidence:incident",
+                    "content": "Recent replay found data loss",
+                    "source": "test"
+                }),
+                "2026-01-01T00:01:00Z",
+            ),
+            test_event(
+                3,
+                EventType::DecisionProposed,
+                "actor:planner",
+                json!({
+                    "decision_id": "decision:queue",
+                    "title": "Choose queue behavior",
+                    "rationale": "Workers need a durable handoff",
+                    "topic_keys": ["infra"],
+                    "option_ids": [],
+                    "chosen_option_id": null,
+                    "hypothesis_ids": ["hypothesis:queue-safe"],
+                    "evidence_ids": []
+                }),
+                "2026-01-01T00:02:00Z",
+            ),
+            test_event(
+                4,
+                EventType::RelationAdded,
+                "actor:auditor",
+                json!({
+                    "relation": EventRelationKind::Refutes,
+                    "from_id": "evidence:incident",
+                    "to_id": "hypothesis:queue-safe"
+                }),
+                "2026-01-01T00:03:00Z",
+            ),
+            test_event(
+                5,
+                EventType::BlockerReported,
+                "agent:worker",
+                json!({
+                    "blocker_id": "blocker:queue-owner",
+                    "blocked_actor_id": "agent:worker",
+                    "decision_id": "decision:queue",
+                    "topic_keys": ["infra"],
+                    "blocked_ref": "task:rollout",
+                    "blocked_ref_type": "task",
+                    "reason": "Need owner to choose rollback or queue hardening",
+                    "priority": "p1",
+                    "last_progress_at": "2026-01-01T00:00:00Z",
+                    "required_owner_id": "actor:owner"
+                }),
+                "2026-01-01T00:10:00Z",
+            ),
+            test_event(
+                6,
+                EventType::NotificationSent,
+                "notification-worker",
+                json!({
+                    "blocker_id": "blocker:queue-owner",
+                    "recipient_actor_id": "actor:owner",
+                    "channel": "direct",
+                    "threshold_rule": "p1_direct_15m",
+                    "source_event_ids": [5],
+                    "dedupe_key": "tenant:default|decision:decision:queue|state:active|blocked_actor:agent:worker|required_owner:actor:owner|priority:p1",
+                    "sent_at": "2026-01-01T00:30:00Z"
+                }),
+                "2026-01-01T00:30:00Z",
+            ),
+            test_event(
+                7,
+                EventType::BlockerReported,
+                "agent:other",
+                json!({
+                    "blocker_id": "blocker:resolved",
+                    "blocked_actor_id": "agent:other",
+                    "decision_id": null,
+                    "topic_keys": ["infra"],
+                    "blocked_ref": "task:old",
+                    "blocked_ref_type": "task",
+                    "reason": "Old blocker",
+                    "priority": "p2",
+                    "last_progress_at": "2026-01-01T00:00:00Z",
+                    "required_owner_id": "actor:owner"
+                }),
+                "2026-01-01T00:05:00Z",
+            ),
+            test_event(
+                8,
+                EventType::BlockerResolved,
+                "actor:owner",
+                json!({
+                    "blocker_id": "blocker:resolved",
+                    "resolution_event_id": 7,
+                    "resolution_reason": null
+                }),
+                "2026-01-01T00:06:00Z",
+            ),
+        ])?;
+
+        let response = get_active_decision_blockers(
+            &graph,
+            &ActiveDecisionBlockersRequest {
+                filters: DecisionBlockerFilters {
+                    now: Some(ts("2026-01-01T02:00:00Z")),
+                    stale_after_seconds: Some(60 * 60),
+                    ..DecisionBlockerFilters::default()
+                },
+                limit: 10,
+                cursor: None,
+            },
+        )?;
+
+        assert_eq!(response.result_count, 1);
+        assert!(!response.truncated);
+        let blocker = &response.data.items[0];
+        assert_eq!(blocker.id, "blocker:queue-owner");
+        assert_eq!(blocker.decision_status, Some(DecisionStatus::Proposed));
+        assert!(blocker.stale);
+        assert_eq!(
+            blocker.refuted_assumption_ids,
+            vec!["hypothesis:queue-safe".to_owned()]
+        );
+        assert_eq!(
+            blocker.notification_state.state,
+            BlockerNotificationStateKind::Sent
+        );
+        assert_eq!(
+            blocker.notification_state.notification_id.as_deref(),
+            Some("00000000-0000-0000-0000-000000000006")
+        );
+        assert_eq!(blocker.source_event_ids, vec![5]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn notification_candidates_use_thresholds_and_dedupe_keys() -> Result<()> {
+        let graph = graph_from_events([test_event(
+            1,
+            EventType::BlockerReported,
+            "agent:worker",
+            json!({
+                "blocker_id": "blocker:topic-only",
+                "blocked_actor_id": "agent:worker",
+                "decision_id": null,
+                "topic_keys": ["billing", "rollout"],
+                "blocked_ref": "issue:123",
+                "blocked_ref_type": "issue",
+                "reason": "Need human approval before continuing rollout",
+                "priority": "p1",
+                "last_progress_at": "2026-01-01T00:00:00Z",
+                "required_owner_id": "actor:owner"
+            }),
+            "2026-01-01T00:00:00Z",
+        )])?;
+
+        let too_early = get_blocker_notification_candidates(
+            &graph,
+            &BlockerNotificationCandidatesRequest {
+                now: ts("2026-01-01T00:14:59Z"),
+                policy_version: "default-v1".to_owned(),
+                limit: 10,
+                cursor: None,
+            },
+        )?;
+        assert_eq!(too_early.result_count, 0);
+
+        let response = get_blocker_notification_candidates(
+            &graph,
+            &BlockerNotificationCandidatesRequest {
+                now: ts("2026-01-01T00:15:00Z"),
+                policy_version: "default-v1".to_owned(),
+                limit: 10,
+                cursor: None,
+            },
+        )?;
+
+        assert_eq!(response.result_count, 1);
+        let candidate = &response.data.items[0];
+        assert_eq!(candidate.blocker_id, "blocker:topic-only");
+        assert_eq!(candidate.channel, "direct");
+        assert_eq!(candidate.threshold_rule, "p1_direct_15m");
+        assert_eq!(
+            candidate.dedupe_key,
+            "tenant:default|topic:billing+rollout|state:active|blocked_actor:agent:worker|required_owner:actor:owner|priority:p1"
+        );
+        assert_eq!(candidate.source_event_ids, vec![1]);
+        assert_eq!(
+            candidate.notification_state.state,
+            BlockerNotificationStateKind::None
+        );
+
+        Ok(())
+    }
+
+    fn graph_from_events(events: impl IntoIterator<Item = Event>) -> Result<MemoryGraph> {
+        let ledger = InMemoryEventLedger::new();
+        for event in events {
+            ledger.append(event)?;
+        }
+        let graph = MemoryGraph::default();
+        rebuild_graph(&ledger, &graph)?;
+        Ok(graph)
+    }
+
+    fn test_event(
+        sequence: u128,
+        event_type: EventType,
+        actor_id: &str,
+        payload: serde_json::Value,
+        timestamp: &str,
+    ) -> Event {
+        Event {
+            event_id: None,
+            event_uuid: Uuid::from_u128(sequence),
+            correlation_id: Some("blocker-query-test".to_owned()),
+            causation_event_id: None,
+            event_type,
+            actor_id: actor_id.to_owned(),
+            source: EventSource::Api,
+            source_ref: Some("blocker-query-test".to_owned()),
+            payload,
+            ts: Some(ts(timestamp)),
+        }
+    }
+
+    fn ts(timestamp: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(timestamp)
+            .expect("test timestamp parses")
+            .with_timezone(&Utc)
     }
 
     fn relation_from_query(cypher: &str) -> Result<RelationKind> {

@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use chrono::{DateTime, Utc};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 use crate::commands::Commands;
 use crate::error::{CliError, CommandError};
-use crate::events::{EventProvenance, RelationKind as EventRelationKind};
+use crate::events::{BlockerPriority, EventProvenance, RelationKind as EventRelationKind};
 use crate::ingest::{
     import_documents, DocumentImportFormat, DocumentImportReport, DocumentImportRequest,
 };
@@ -16,9 +17,11 @@ use crate::projector::{
     GraphView, NodeKind, RelationKind as GraphRelationKind,
 };
 use crate::queries::{
-    derive_decision_status, derive_hypothesis_status, get_decision, get_decision_neighborhood,
-    get_relevant_decisions, get_supersession_chain, search_decisions, DecisionStatus,
-    HypothesisStatus, NeighborhoodRequest, SearchDecisionRequest,
+    derive_decision_status, derive_hypothesis_status, get_active_decision_blockers,
+    get_blocker_notification_candidates, get_decision, get_decision_neighborhood,
+    get_relevant_decisions, get_supersession_chain, search_decisions,
+    ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest, DecisionBlockerFilters,
+    DecisionStatus, HypothesisStatus, NeighborhoodRequest, SearchDecisionRequest,
 };
 use crate::{HivemindError, Result};
 
@@ -262,6 +265,10 @@ pub enum QueryCommand {
     GetDecisionNeighborhood(QueryDecisionNeighborhoodArgs),
     #[command(name = "search_decisions")]
     SearchDecisions(QuerySearchDecisionsArgs),
+    #[command(name = "get_active_decision_blockers")]
+    GetActiveDecisionBlockers(QueryActiveDecisionBlockersArgs),
+    #[command(name = "get_blocker_notification_candidates")]
+    GetBlockerNotificationCandidates(QueryBlockerNotificationCandidatesArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -307,6 +314,51 @@ pub struct QuerySearchDecisionsArgs {
 
     #[arg(long = "source", value_delimiter = ',')]
     pub sources: Vec<String>,
+
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryActiveDecisionBlockersArgs {
+    #[arg(long = "decision-id", value_delimiter = ',')]
+    pub decision_ids: Vec<String>,
+
+    #[arg(long = "topic", value_delimiter = ',')]
+    pub topic_keys: Vec<String>,
+
+    #[arg(long = "owner", value_delimiter = ',')]
+    pub required_owner_ids: Vec<String>,
+
+    #[arg(long = "blocked-actor", value_delimiter = ',')]
+    pub blocked_actor_ids: Vec<String>,
+
+    #[arg(long = "priority", value_delimiter = ',')]
+    pub priorities: Vec<QueryBlockerPriority>,
+
+    #[arg(long = "now")]
+    pub now: Option<String>,
+
+    #[arg(long = "stale-after-seconds")]
+    pub stale_after_seconds: Option<i64>,
+
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryBlockerNotificationCandidatesArgs {
+    #[arg(long = "now")]
+    pub now: String,
+
+    #[arg(long = "policy-version", default_value = "default-v1")]
+    pub policy_version: String,
 
     #[arg(long = "limit", default_value_t = 25)]
     pub limit: usize,
@@ -378,6 +430,28 @@ pub enum QueryDecisionStatus {
     Rejected,
     Contested,
     Superseded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum QueryBlockerPriority {
+    P0,
+    P1,
+    P2,
+    P3,
+    P4,
+}
+
+impl QueryBlockerPriority {
+    const fn as_blocker_priority(self) -> BlockerPriority {
+        match self {
+            QueryBlockerPriority::P0 => BlockerPriority::P0,
+            QueryBlockerPriority::P1 => BlockerPriority::P1,
+            QueryBlockerPriority::P2 => BlockerPriority::P2,
+            QueryBlockerPriority::P3 => BlockerPriority::P3,
+            QueryBlockerPriority::P4 => BlockerPriority::P4,
+        }
+    }
 }
 
 impl QueryDecisionStatus {
@@ -681,9 +755,57 @@ fn run_query_with_graph(graph: &impl GraphView, query: &QueryArgs) -> Result<Str
                 CliError::InvalidInput(format!("json serialization failed: {error}"))
             })?
         }
+        QueryCommand::GetActiveDecisionBlockers(args) => {
+            let request = ActiveDecisionBlockersRequest {
+                filters: DecisionBlockerFilters {
+                    decision_ids: args.decision_ids.clone(),
+                    topic_keys: args.topic_keys.clone(),
+                    required_owner_ids: args.required_owner_ids.clone(),
+                    blocked_actor_ids: args.blocked_actor_ids.clone(),
+                    priorities: args
+                        .priorities
+                        .iter()
+                        .copied()
+                        .map(QueryBlockerPriority::as_blocker_priority)
+                        .collect(),
+                    now: parse_query_datetime(args.now.as_deref(), "--now")?,
+                    stale_after_seconds: args.stale_after_seconds,
+                },
+                limit: args.limit,
+                cursor: args.cursor.clone(),
+            };
+            serde_json::to_string(&get_active_decision_blockers(graph, &request)?).map_err(
+                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
+            )?
+        }
+        QueryCommand::GetBlockerNotificationCandidates(args) => {
+            let request = BlockerNotificationCandidatesRequest {
+                now: parse_required_query_datetime(&args.now, "--now")?,
+                policy_version: args.policy_version.clone(),
+                limit: args.limit,
+                cursor: args.cursor.clone(),
+            };
+            serde_json::to_string(&get_blocker_notification_candidates(graph, &request)?).map_err(
+                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
+            )?
+        }
     };
 
     Ok(json)
+}
+
+fn parse_query_datetime(value: Option<&str>, flag: &str) -> Result<Option<DateTime<Utc>>> {
+    value
+        .map(|value| parse_required_query_datetime(value, flag))
+        .transpose()
+}
+
+fn parse_required_query_datetime(value: &str, flag: &str) -> Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|value| value.with_timezone(&Utc))
+        .map_err(|error| {
+            CliError::InvalidInput(format!("{flag} must be an RFC3339 timestamp: {error}")).into()
+        })
 }
 
 fn run_dump(cli: &Cli, dump: &DumpArgs) -> Result<String> {

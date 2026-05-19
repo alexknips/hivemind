@@ -1,0 +1,16 @@
+{
+  "event_id": 9,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe09",
+  "correlation_id": "session-1",
+  "causation_event_id": 8,
+  "type": "blocker.resolved",
+  "actor_id": "actor:architect",
+  "source": "api",
+  "source_ref": "review-console",
+  "payload": {
+    "blocker_id": "blocker-storage-choice",
+    "resolution_event_id": 2,
+    "resolution_reason": null
+  },
+  "ts": "2026-05-17T21:20:43Z"
+}
