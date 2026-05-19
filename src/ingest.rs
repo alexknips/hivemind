@@ -221,6 +221,116 @@ fn require_non_empty(field: &'static str, value: &str) -> Result<()> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlackIngestOutcome {
+    Imported {
+        decision_id: String,
+        evidence_id: String,
+        option_ids: Vec<String>,
+    },
+    AlreadyImported {
+        decision_id: String,
+    },
+}
+
+impl SlackIngestOutcome {
+    pub fn decision_id(&self) -> &str {
+        match self {
+            Self::Imported { decision_id, .. } | Self::AlreadyImported { decision_id } => {
+                decision_id
+            }
+        }
+    }
+}
+
+pub fn import_slack_thread<L: EventLedger>(
+    ledger: &L,
+    draft: &SlackDecisionDraft,
+) -> Result<SlackIngestOutcome> {
+    if let Some(decision_id) = find_existing_slack_decision(ledger, &draft.source_ref)? {
+        return Ok(SlackIngestOutcome::AlreadyImported { decision_id });
+    }
+
+    let commands =
+        Commands::new_with_provenance(ledger, EventProvenance::slack(draft.source_ref.clone()));
+
+    let evidence_id = commands.record_evidence(&draft.actor_id, &draft.thread_context)?;
+
+    let mut option_ids = Vec::with_capacity(draft.option_labels.len());
+    let mut chosen_option_id = None;
+    for label in &draft.option_labels {
+        let option_id = commands.record_option(
+            &draft.actor_id,
+            label,
+            &format!("Slack option '{label}' captured from {}", draft.source_ref),
+        )?;
+        if draft.chosen_option_label.as_deref() == Some(label.as_str()) {
+            chosen_option_id = Some(option_id.clone());
+        }
+        option_ids.push(option_id);
+    }
+
+    if draft.chosen_option_label.is_some() && chosen_option_id.is_none() {
+        return Err(CommandError::Validation(
+            "Chosen marker must match one of the Options entries".to_owned(),
+        )
+        .into());
+    }
+
+    let decision_id = commands.propose_decision(
+        &draft.actor_id,
+        &draft.title,
+        &draft.rationale,
+        &draft.topic_keys,
+        &option_ids,
+        chosen_option_id.as_deref(),
+        &[],
+        std::slice::from_ref(&evidence_id),
+    )?;
+
+    Ok(SlackIngestOutcome::Imported {
+        decision_id,
+        evidence_id,
+        option_ids,
+    })
+}
+
+fn find_existing_slack_decision<L: EventLedger>(
+    ledger: &L,
+    source_ref: &str,
+) -> Result<Option<String>> {
+    const PAGE_SIZE: usize = 1024;
+    let mut offset = 0;
+    loop {
+        let events = ledger.read(offset, PAGE_SIZE)?;
+        if events.is_empty() {
+            return Ok(None);
+        }
+        for event in &events {
+            if event.event_type == EventType::DecisionProposed
+                && event.source == EventSource::Slack
+                && event.source_ref.as_deref() == Some(source_ref)
+            {
+                if let Some(decision_id) = decision_id_of(event) {
+                    return Ok(Some(decision_id));
+                }
+            }
+        }
+        match events.last().and_then(|event| event.event_id) {
+            Some(last) => offset = last,
+            None => return Ok(None),
+        }
+    }
+}
+
+fn decision_id_of(event: &Event) -> Option<String> {
+    event
+        .payload
+        .get("decision_id")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentImportFormat {
     Auto,

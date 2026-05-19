@@ -8,7 +8,9 @@ use crate::commands::Commands;
 use crate::error::{CliError, CommandError};
 use crate::events::{EventProvenance, RelationKind as EventRelationKind};
 use crate::ingest::{
-    import_documents, DocumentImportFormat, DocumentImportReport, DocumentImportRequest,
+    extract_slack_decision_draft, import_documents, import_slack_thread,
+    parse_slack_thread_fixture, DocumentImportFormat, DocumentImportReport, DocumentImportRequest,
+    SlackIngestOutcome, DEFAULT_SLACK_MENTION,
 };
 use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::projector::{
@@ -63,6 +65,28 @@ pub enum Command {
     Query(QueryArgs),
     Dump(DumpArgs),
     Tui(TuiArgs),
+    Ingest(IngestArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct IngestArgs {
+    #[command(subcommand)]
+    pub command: IngestCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum IngestCommand {
+    #[command(name = "slack-thread")]
+    SlackThread(IngestSlackThreadArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct IngestSlackThreadArgs {
+    #[arg(long)]
+    pub file: PathBuf,
+
+    #[arg(long, default_value = DEFAULT_SLACK_MENTION)]
+    pub mention: String,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -432,7 +456,35 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Query(query) => run_query(cli, query),
         Command::Dump(dump) => run_dump(cli, dump),
         Command::Tui(args) => run_tui(cli, args),
+        Command::Ingest(args) => run_ingest(cli, args),
     }
+}
+
+fn run_ingest(cli: &Cli, ingest: &IngestArgs) -> Result<String> {
+    match &ingest.command {
+        IngestCommand::SlackThread(args) => run_ingest_slack_thread(cli, args),
+    }
+}
+
+fn run_ingest_slack_thread(cli: &Cli, args: &IngestSlackThreadArgs) -> Result<String> {
+    let contents = std::fs::read_to_string(&args.file).map_err(|error| {
+        CliError::InvalidInput(format!(
+            "could not read slack thread file {}: {error}",
+            args.file.display()
+        ))
+    })?;
+    let thread = parse_slack_thread_fixture(&contents)?;
+    let draft = extract_slack_decision_draft(&thread, &args.mention)?;
+
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let outcome = import_slack_thread(&ledger, &draft)?;
+
+    let kind = match outcome {
+        SlackIngestOutcome::Imported { .. } => "decision_id",
+        SlackIngestOutcome::AlreadyImported { .. } => "decision_id_existing",
+    };
+    let envelope = OutputEnvelope::new("ingest", kind, outcome.decision_id().to_owned());
+    format_output(cli.json, &envelope)
 }
 
 fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
@@ -1700,6 +1752,152 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&hivemind_dir);
+    }
+
+    #[test]
+    fn ingest_slack_thread_creates_queryable_decision_with_slack_provenance() {
+        let hivemind_dir = unique_test_dir("ingest-slack-thread");
+        let fixture = workspace_fixture("tests/fixtures/slack/thread_with_mention.json");
+
+        let output = run(&Cli::parse_from([
+            "hivemind",
+            "--json",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "ingest",
+            "slack-thread",
+            "--file",
+            fixture.to_str().expect("utf-8 fixture path"),
+        ]))
+        .expect("ingest succeeds");
+
+        let output: serde_json::Value = serde_json::from_str(&output).expect("json output");
+        assert_eq!(output["subcommand"], serde_json::json!("ingest"));
+        assert_eq!(output["kind"], serde_json::json!("decision_id"));
+        let decision_id = output["value"].as_str().expect("decision id").to_owned();
+        assert!(decision_id.starts_with("decision-"));
+
+        assert_decision_queryable(&hivemind_dir, &decision_id);
+
+        let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+        let events = ledger.read(0, 100).expect("events read");
+        let proposal = events
+            .iter()
+            .find(|event| {
+                event.event_type == crate::events::EventType::DecisionProposed
+                    && event
+                        .payload
+                        .get("decision_id")
+                        .and_then(|value| value.as_str())
+                        == Some(decision_id.as_str())
+            })
+            .expect("proposal event present");
+        assert_eq!(proposal.actor_id, "slack:T123:U111");
+        assert_eq!(proposal.source, crate::events::EventSource::Slack);
+        assert_eq!(
+            proposal.source_ref.as_deref(),
+            Some("slack://T123/C456/1715970800.000100")
+        );
+
+        let proposal_id = proposal.event_id.expect("proposal event id");
+        let related: Vec<_> = events
+            .iter()
+            .filter(|event| event.causation_event_id == Some(proposal_id))
+            .collect();
+        assert!(!related.is_empty(), "proposal must fan out relations");
+        for event in &related {
+            assert_eq!(event.source, crate::events::EventSource::Slack);
+            assert_eq!(
+                event.source_ref.as_deref(),
+                Some("slack://T123/C456/1715970800.000100")
+            );
+        }
+
+        let evidence_count = events
+            .iter()
+            .filter(|event| {
+                event.event_type == crate::events::EventType::EvidenceRecorded
+                    && event.source == crate::events::EventSource::Slack
+            })
+            .count();
+        assert_eq!(evidence_count, 1);
+
+        let _ = std::fs::remove_dir_all(&hivemind_dir);
+    }
+
+    #[test]
+    fn ingest_slack_thread_is_idempotent_on_reimport() {
+        let hivemind_dir = unique_test_dir("ingest-slack-thread-reimport");
+        let fixture = workspace_fixture("tests/fixtures/slack/thread_with_mention.json");
+
+        let args = [
+            "hivemind",
+            "--json",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "ingest",
+            "slack-thread",
+            "--file",
+            fixture.to_str().expect("utf-8 fixture path"),
+        ];
+
+        let first: serde_json::Value =
+            serde_json::from_str(&run(&Cli::parse_from(args)).expect("first ingest")).unwrap();
+        assert_eq!(first["kind"], serde_json::json!("decision_id"));
+        let first_decision = first["value"]
+            .as_str()
+            .expect("first decision id")
+            .to_owned();
+
+        let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+        let first_event_count = ledger.read(0, 1024).expect("read events").len();
+
+        let second: serde_json::Value =
+            serde_json::from_str(&run(&Cli::parse_from(args)).expect("second ingest")).unwrap();
+        assert_eq!(second["kind"], serde_json::json!("decision_id_existing"));
+        assert_eq!(second["value"].as_str(), Some(first_decision.as_str()));
+
+        let second_event_count = ledger.read(0, 1024).expect("read events").len();
+        assert_eq!(
+            first_event_count, second_event_count,
+            "re-import must not append events"
+        );
+
+        let _ = std::fs::remove_dir_all(&hivemind_dir);
+    }
+
+    #[test]
+    fn ingest_slack_thread_rejects_thread_without_mention() {
+        let hivemind_dir = unique_test_dir("ingest-slack-thread-no-mention");
+        let fixture = workspace_fixture("tests/fixtures/slack/thread_without_mention.json");
+
+        let error = run(&Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "ingest",
+            "slack-thread",
+            "--file",
+            fixture.to_str().expect("utf-8 fixture path"),
+        ]))
+        .expect_err("mention gate rejects thread");
+
+        assert!(
+            error.to_string().contains("missing required mention"),
+            "error should mention gate: {error}"
+        );
+
+        let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+        assert!(
+            ledger.read(0, 10).expect("read events").is_empty(),
+            "no events should have been written"
+        );
+
+        let _ = std::fs::remove_dir_all(&hivemind_dir);
+    }
+
+    fn workspace_fixture(relative: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
     }
 
     #[cfg(not(feature = "graph-kuzu"))]
