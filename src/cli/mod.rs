@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
@@ -10,8 +9,8 @@ use crate::error::{CliError, CommandError};
 use crate::events::{EventProvenance, RelationKind as EventRelationKind};
 use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::projector::{
-    rebuild_graph, GraphParams, GraphProperties, GraphRow, GraphValue, GraphView, NodeKind,
-    RelationKind as GraphRelationKind,
+    memory::MemoryGraph, rebuild_graph, GraphParams, GraphProperties, GraphRow, GraphValue,
+    GraphView, NodeKind, RelationKind as GraphRelationKind,
 };
 use crate::queries::{
     derive_decision_status, derive_hypothesis_status, get_decision, get_relevant_decisions,
@@ -444,7 +443,7 @@ fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {
 
     match selected_graph_backend(cli)? {
         GraphBackend::Memory => {
-            let graph = DumpGraph::default();
+            let graph = MemoryGraph::default();
             rebuild_graph(&ledger, &graph)?;
             run_query_with_graph(&graph, query)
         }
@@ -480,7 +479,7 @@ fn run_dump(cli: &Cli, dump: &DumpArgs) -> Result<String> {
 
     match selected_graph_backend(cli)? {
         GraphBackend::Memory => {
-            let graph = DumpGraph::default();
+            let graph = MemoryGraph::default();
             rebuild_graph(&ledger, &graph)?;
             run_dump_with_graph(&graph, dump)
         }
@@ -677,7 +676,7 @@ fn graph_nodes(graph: &impl GraphView) -> Result<BTreeMap<(NodeKind, String), Gr
     Ok(nodes)
 }
 
-fn graph_edges(graph: &impl GraphView) -> Result<BTreeSet<DumpEdge>> {
+fn graph_edges(graph: &impl GraphView) -> Result<BTreeSet<DotEdge>> {
     let mut edges = BTreeSet::new();
     for relation in GraphRelationKind::ALL {
         let (from_kind, to_kind) = relation.endpoints();
@@ -691,7 +690,7 @@ fn graph_edges(graph: &impl GraphView) -> Result<BTreeSet<DumpEdge>> {
             &GraphParams::new(),
         )?;
         for row in rows {
-            edges.insert(DumpEdge {
+            edges.insert(DotEdge {
                 relation,
                 from_kind,
                 from_id: required_row_string(&row, "from_id")?,
@@ -797,331 +796,12 @@ fn required_row_string(row: &GraphRow, key: &str) -> Result<String> {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct DumpEdge {
+struct DotEdge {
     relation: GraphRelationKind,
     from_kind: NodeKind,
     from_id: String,
     to_kind: NodeKind,
     to_id: String,
-}
-
-#[derive(Debug, Default)]
-struct DumpGraph {
-    nodes: Mutex<BTreeMap<(NodeKind, String), GraphProperties>>,
-    edges: Mutex<BTreeSet<DumpEdge>>,
-}
-
-impl GraphView for DumpGraph {
-    fn upsert_node(&self, kind: NodeKind, id: &str, properties: &GraphProperties) -> Result<()> {
-        let key = (kind, id.to_owned());
-        let mut nodes = self.nodes_lock()?;
-        let mut existing = nodes
-            .get(&(kind, id.to_owned()))
-            .cloned()
-            .unwrap_or_default();
-        existing.extend(properties.clone());
-        nodes.insert(key, existing);
-        Ok(())
-    }
-
-    fn upsert_edge(
-        &self,
-        kind: GraphRelationKind,
-        from_id: &str,
-        to_id: &str,
-        _properties: &GraphProperties,
-    ) -> Result<()> {
-        let (from_kind, to_kind) = kind.endpoints();
-        let mut edges = self.edges_lock()?;
-        edges.insert(DumpEdge {
-            relation: kind,
-            from_kind,
-            from_id: from_id.to_owned(),
-            to_kind,
-            to_id: to_id.to_owned(),
-        });
-        Ok(())
-    }
-
-    fn query(&self, cypher: &str, params: &GraphParams) -> Result<Vec<GraphRow>> {
-        if cypher.contains("RETURN count(rel) AS count;") {
-            let relation = query_relation(cypher)?;
-            let id = required_param_string(params, "id")?;
-            let incoming = cypher.contains("<-[rel:");
-            let edges = self.edges_snapshot()?;
-            let count = edges
-                .iter()
-                .filter(|edge| {
-                    if edge.relation != relation {
-                        return false;
-                    }
-                    if incoming {
-                        edge.to_id == id
-                    } else {
-                        edge.from_id == id
-                    }
-                })
-                .count();
-            let count = i64::try_from(count)
-                .map_err(|error| CliError::InvalidInput(format!("count overflow: {error}")))?;
-            return Ok(vec![GraphRow::from([(
-                "count".to_owned(),
-                GraphValue::Int(count),
-            )])]);
-        }
-
-        if cypher.contains("RETURN node.id AS id") {
-            let kind = query_node_kind(cypher)?;
-            let nodes = self.nodes_snapshot()?;
-            let mut rows = nodes
-                .iter()
-                .filter_map(|((node_kind, id), properties)| {
-                    if *node_kind != kind {
-                        return None;
-                    }
-                    let mut row =
-                        GraphRow::from([("id".to_owned(), GraphValue::String(id.clone()))]);
-                    row.extend(properties.clone());
-                    Some(row)
-                })
-                .collect::<Vec<_>>();
-            rows.sort_by(|left, right| {
-                required_row_string(left, "id")
-                    .unwrap_or_default()
-                    .cmp(&required_row_string(right, "id").unwrap_or_default())
-            });
-            return Ok(rows);
-        }
-
-        if cypher.contains("RETURN from.id AS from_id, to.id AS to_id") {
-            let relation = query_relation(cypher)?;
-            let mut rows = self
-                .edges_snapshot()?
-                .into_iter()
-                .filter(|edge| edge.relation == relation)
-                .map(|edge| {
-                    GraphRow::from([
-                        ("from_id".to_owned(), GraphValue::String(edge.from_id)),
-                        ("to_id".to_owned(), GraphValue::String(edge.to_id)),
-                    ])
-                })
-                .collect::<Vec<_>>();
-            rows.sort_by(|left, right| {
-                let left_key = format!(
-                    "{}:{}",
-                    required_row_string(left, "from_id").unwrap_or_default(),
-                    required_row_string(left, "to_id").unwrap_or_default()
-                );
-                let right_key = format!(
-                    "{}:{}",
-                    required_row_string(right, "from_id").unwrap_or_default(),
-                    required_row_string(right, "to_id").unwrap_or_default()
-                );
-                left_key.cmp(&right_key)
-            });
-            return Ok(rows);
-        }
-
-        if cypher.contains("RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys LIMIT 1;") {
-            let decision_id = required_param_string(params, "id")?;
-            let nodes = self.nodes_snapshot()?;
-            if let Some(properties) = nodes.get(&(NodeKind::Decision, decision_id.to_owned())) {
-                return Ok(vec![GraphRow::from([
-                    ("id".to_owned(), GraphValue::String(decision_id.to_owned())),
-                    (
-                        "title".to_owned(),
-                        graph_property_or_default(properties, "title"),
-                    ),
-                    (
-                        "rationale".to_owned(),
-                        graph_property_or_default(properties, "rationale"),
-                    ),
-                    (
-                        "topic_keys".to_owned(),
-                        graph_property_or_default(properties, "topic_keys"),
-                    ),
-                ])]);
-            }
-            return Ok(Vec::new());
-        }
-
-        if cypher.contains("RETURN count(d) AS count;") {
-            let topic = required_param_string(params, "topic")?;
-            let nodes = self.nodes_snapshot()?;
-            let count = nodes
-                .iter()
-                .filter(|((kind, _), properties)| {
-                    *kind == NodeKind::Decision
-                        && topic_keys(properties)
-                            .iter()
-                            .any(|candidate| candidate == topic)
-                })
-                .count();
-            let count = i64::try_from(count)
-                .map_err(|error| CliError::InvalidInput(format!("count overflow: {error}")))?;
-            return Ok(vec![GraphRow::from([(
-                "count".to_owned(),
-                GraphValue::Int(count),
-            )])]);
-        }
-
-        if cypher.contains("WHERE $topic IN d.topic_keys RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys ORDER BY d.id LIMIT 1000;") {
-            let topic = required_param_string(params, "topic")?;
-            let nodes = self.nodes_snapshot()?;
-            let mut decisions = nodes
-                .iter()
-                .filter_map(|((kind, id), properties)| {
-                    if *kind != NodeKind::Decision
-                        || !topic_keys(properties).iter().any(|candidate| candidate == topic)
-                    {
-                        return None;
-                    }
-                    Some(GraphRow::from([
-                        ("id".to_owned(), GraphValue::String(id.clone())),
-                        (
-                            "title".to_owned(),
-                            graph_property_or_default(properties, "title"),
-                        ),
-                        (
-                            "rationale".to_owned(),
-                            graph_property_or_default(properties, "rationale"),
-                        ),
-                        (
-                            "topic_keys".to_owned(),
-                            graph_property_or_default(properties, "topic_keys"),
-                        ),
-                    ]))
-                })
-                .collect::<Vec<_>>();
-            decisions.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
-            decisions.truncate(1000);
-            return Ok(decisions);
-        }
-
-        if cypher.contains("RETURN n.id AS") {
-            let relation = query_relation(cypher)?;
-            let decision_id = required_param_string(params, "id")?;
-            let alias = if cypher.contains("AS option_id") {
-                "option_id"
-            } else if cypher.contains("AS evidence_id") {
-                "evidence_id"
-            } else if cypher.contains("AS hypothesis_id") {
-                "hypothesis_id"
-            } else {
-                return Err(CliError::InvalidInput(format!(
-                    "unknown neighbor alias in query: {cypher}"
-                ))
-                .into());
-            };
-            let mut ids = self
-                .edges_snapshot()?
-                .into_iter()
-                .filter(|edge| edge.relation == relation && edge.from_id == decision_id)
-                .map(|edge| edge.to_id)
-                .collect::<Vec<_>>();
-            ids.sort();
-            return Ok(ids
-                .into_iter()
-                .map(|id| GraphRow::from([(alias.to_owned(), GraphValue::String(id))]))
-                .collect());
-        }
-
-        if cypher.contains("MATCH (d:`Decision` {id: $id})-[:`SUPERSEDES`]->(other:`Decision`)") {
-            let id = required_param_string(params, "id")?;
-            let mut older = self
-                .edges_snapshot()?
-                .into_iter()
-                .filter(|edge| edge.relation == GraphRelationKind::Supersedes && edge.from_id == id)
-                .map(|edge| edge.to_id)
-                .collect::<Vec<_>>();
-            older.sort();
-            return Ok(older
-                .into_iter()
-                .map(|value| GraphRow::from([("id".to_owned(), GraphValue::String(value))]))
-                .collect());
-        }
-
-        if cypher.contains("MATCH (other:`Decision`)-[:`SUPERSEDES`]->(d:`Decision` {id: $id})") {
-            let id = required_param_string(params, "id")?;
-            let mut newer = self
-                .edges_snapshot()?
-                .into_iter()
-                .filter(|edge| edge.relation == GraphRelationKind::Supersedes && edge.to_id == id)
-                .map(|edge| edge.from_id)
-                .collect::<Vec<_>>();
-            newer.sort();
-            return Ok(newer
-                .into_iter()
-                .map(|value| GraphRow::from([("id".to_owned(), GraphValue::String(value))]))
-                .collect());
-        }
-
-        Err(CliError::InvalidInput(format!("unsupported query: {cypher}")).into())
-    }
-
-    fn wipe(&self) -> Result<()> {
-        self.nodes_lock()?.clear();
-        self.edges_lock()?.clear();
-        Ok(())
-    }
-}
-
-impl DumpGraph {
-    fn nodes_lock(&self) -> Result<MutexGuard<'_, BTreeMap<(NodeKind, String), GraphProperties>>> {
-        self.nodes
-            .lock()
-            .map_err(|error| CliError::InvalidInput(format!("node lock poisoned: {error}")).into())
-    }
-
-    fn edges_lock(&self) -> Result<MutexGuard<'_, BTreeSet<DumpEdge>>> {
-        self.edges
-            .lock()
-            .map_err(|error| CliError::InvalidInput(format!("edge lock poisoned: {error}")).into())
-    }
-
-    fn nodes_snapshot(&self) -> Result<BTreeMap<(NodeKind, String), GraphProperties>> {
-        Ok(self.nodes_lock()?.clone())
-    }
-
-    fn edges_snapshot(&self) -> Result<BTreeSet<DumpEdge>> {
-        Ok(self.edges_lock()?.clone())
-    }
-}
-
-fn query_relation(cypher: &str) -> Result<GraphRelationKind> {
-    for relation in GraphRelationKind::ALL {
-        if cypher.contains(&format!("`{}`", relation.table_name())) {
-            return Ok(relation);
-        }
-    }
-    Err(CliError::InvalidInput(format!("unknown relation in query: {cypher}")).into())
-}
-
-fn query_node_kind(cypher: &str) -> Result<NodeKind> {
-    for kind in NodeKind::ALL {
-        if cypher.contains(&format!("`{}`", kind.table_name())) {
-            return Ok(kind);
-        }
-    }
-    Err(CliError::InvalidInput(format!("unknown node kind in query: {cypher}")).into())
-}
-
-fn required_param_string<'a>(params: &'a GraphParams, key: &str) -> Result<&'a str> {
-    match params.get(key) {
-        Some(GraphValue::String(value)) => Ok(value),
-        _ => Err(CliError::InvalidInput(format!("missing string param: {key}")).into()),
-    }
-}
-
-fn graph_property_or_default(properties: &GraphProperties, key: &str) -> GraphValue {
-    properties.get(key).cloned().unwrap_or(GraphValue::Null)
-}
-
-fn topic_keys(properties: &GraphProperties) -> Vec<String> {
-    match properties.get("topic_keys") {
-        Some(GraphValue::StringList(values)) => values.clone(),
-        _ => Vec::new(),
-    }
 }
 
 #[derive(Debug, Serialize)]

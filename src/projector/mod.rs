@@ -7,6 +7,7 @@ use crate::Result;
 
 #[cfg(feature = "graph-kuzu")]
 pub mod kuzu;
+pub mod memory;
 
 pub type GraphProperties = BTreeMap<String, GraphValue>;
 pub type GraphParams = BTreeMap<String, GraphValue>;
