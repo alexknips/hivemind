@@ -128,10 +128,19 @@ fn claude_code_capture_command_writes_human_decision() -> TestResult<()> {
 
 fn read_json(path: impl AsRef<Path>) -> TestResult<Value> {
     let path = path.as_ref();
-    let input = fs::read_to_string(path)
-        .map_err(|error| format!("{} is readable: {error}", path.display()))?;
-    serde_json::from_str(&input)
-        .map_err(|error| format!("{} is valid json: {error}", path.display()).into())
+    let input = fs::read_to_string(path).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!("{} is readable: {error}", path.display()),
+        )
+    })?;
+    let value = serde_json::from_str(&input).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} is valid json: {error}", path.display()),
+        )
+    })?;
+    Ok(value)
 }
 
 fn assert_no_todos(name: &str, body: &str) {
