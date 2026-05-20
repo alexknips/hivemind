@@ -21,12 +21,13 @@ use crate::projector::{
 use crate::queries::{
     derive_decision_status, derive_hypothesis_status, export_read_only_summary,
     get_active_decision_blockers, get_blocker_notification_candidates, get_decision,
-    get_decision_neighborhood, get_decisions_changed_since, get_recent_activity,
-    get_relevant_decisions, get_supersession_chain, search_decisions,
+    get_decision_neighborhood, get_decisions_added_since, get_decisions_changed_since,
+    get_recent_activity, get_relevant_decisions, get_supersession_chain, search_decisions,
     ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest, ChangedSinceRequest,
-    DecisionBlockerFilters, DecisionStatus, HistoryFilterRequest, HypothesisStatus,
-    NeighborhoodRequest, ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQuery,
-    ReadOnlyExportRequest, RecentActivityRequest, SearchDecisionRequest,
+    DecisionBlockerFilters, DecisionStatus, DecisionsAddedSinceFilterRequest,
+    DecisionsAddedSinceRequest, HistoryFilterRequest, HypothesisStatus, NeighborhoodRequest,
+    ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQuery, ReadOnlyExportRequest,
+    RecentActivityRequest, SearchDecisionRequest,
 };
 use crate::{HivemindError, Result};
 
@@ -300,6 +301,8 @@ pub enum QueryCommand {
     GetRecentActivity(QueryRecentActivityArgs),
     #[command(name = "get_decisions_changed_since")]
     GetDecisionsChangedSince(QueryChangedSinceArgs),
+    #[command(name = "get_decisions_added_since")]
+    GetDecisionsAddedSince(QueryAddedSinceArgs),
     #[command(name = "export_read_only_summary")]
     ExportReadOnlySummary(QueryExportReadOnlySummaryArgs),
 }
@@ -443,6 +446,45 @@ pub struct QueryChangedSinceArgs {
 
     #[arg(long = "until-ts", alias = "until-timestamp")]
     pub until_timestamp: Option<String>,
+
+    #[command(flatten)]
+    pub filters: QueryHistoryFilterArgs,
+
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryAddedSinceArgs {
+    #[arg(long = "since")]
+    pub since: Option<String>,
+
+    #[arg(long = "since-offset")]
+    pub since_offset: Option<u64>,
+
+    #[arg(long = "since-ts", alias = "since-timestamp")]
+    pub since_timestamp: Option<String>,
+
+    #[arg(long = "until")]
+    pub until: Option<String>,
+
+    #[arg(long = "until-offset")]
+    pub until_offset: Option<u64>,
+
+    #[arg(long = "until-ts", alias = "until-timestamp")]
+    pub until_timestamp: Option<String>,
+
+    #[arg(long = "timezone", default_value = "UTC")]
+    pub timezone: String,
+
+    #[arg(long = "now")]
+    pub now: Option<String>,
+
+    #[arg(long = "import-run", value_delimiter = ',')]
+    pub import_run_ids: Vec<String>,
 
     #[command(flatten)]
     pub filters: QueryHistoryFilterArgs,
@@ -872,6 +914,7 @@ impl QueryCommand {
             self,
             QueryCommand::GetRecentActivity(_)
                 | QueryCommand::GetDecisionsChangedSince(_)
+                | QueryCommand::GetDecisionsAddedSince(_)
                 | QueryCommand::ExportReadOnlySummary(_)
         )
     }
@@ -886,6 +929,10 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
         .map_err(|error| CliError::InvalidInput(format!("json serialization failed: {error}")))?,
         QueryCommand::GetDecisionsChangedSince(args) => serde_json::to_string(
             &get_decisions_changed_since(ledger, &changed_since_request(args)?)?,
+        )
+        .map_err(|error| CliError::InvalidInput(format!("json serialization failed: {error}")))?,
+        QueryCommand::GetDecisionsAddedSince(args) => serde_json::to_string(
+            &get_decisions_added_since(ledger, &added_since_request(args)?)?,
         )
         .map_err(|error| CliError::InvalidInput(format!("json serialization failed: {error}")))?,
         QueryCommand::ExportReadOnlySummary(args) => {
@@ -908,6 +955,127 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
     };
 
     Ok(json)
+}
+
+fn added_since_request(args: &QueryAddedSinceArgs) -> Result<DecisionsAddedSinceRequest> {
+    let now = parse_utc_timestamp("--now", &args.now)?;
+    let timezone = TimeZoneSpec::parse(&args.timezone)?;
+    let since_timestamp = resolve_diff_bound(
+        "--since",
+        args.since.as_deref(),
+        args.since_timestamp.as_deref(),
+        now,
+        timezone,
+    )?;
+    let until_timestamp = resolve_diff_bound(
+        "--until",
+        args.until.as_deref(),
+        args.until_timestamp.as_deref(),
+        now,
+        timezone,
+    )?;
+
+    Ok(DecisionsAddedSinceRequest {
+        since_offset: args.since_offset,
+        since_timestamp,
+        until_offset: args.until_offset,
+        until_timestamp,
+        filters: DecisionsAddedSinceFilterRequest {
+            actor_ids: args.filters.actor_ids.clone(),
+            sources: args.filters.sources.clone(),
+            source_refs: args.filters.source_refs.clone(),
+            import_run_ids: args.import_run_ids.clone(),
+            topic_keys: args.filters.topic_keys.clone(),
+            statuses: args
+                .filters
+                .statuses
+                .iter()
+                .copied()
+                .map(QueryDecisionStatus::as_decision_status)
+                .collect(),
+        },
+        limit: args.limit,
+        cursor: args.cursor.clone(),
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TimeZoneSpec {
+    Utc,
+}
+
+impl TimeZoneSpec {
+    fn parse(value: &str) -> Result<Self> {
+        match value.trim() {
+            "" | "UTC" | "utc" | "Etc/UTC" => Ok(Self::Utc),
+            other => Err(CliError::InvalidInput(format!(
+                "--timezone {other} is not supported in slice 1; only UTC is accepted"
+            ))
+            .into()),
+        }
+    }
+}
+
+fn resolve_diff_bound(
+    flag: &'static str,
+    raw: Option<&str>,
+    explicit_ts: Option<&str>,
+    now: Option<DateTime<Utc>>,
+    timezone: TimeZoneSpec,
+) -> Result<Option<DateTime<Utc>>> {
+    if let Some(ts) = explicit_ts {
+        return parse_utc_timestamp(flag, &Some(ts.to_owned()));
+    }
+    let Some(value) = raw.map(str::trim) else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Ok(Some(parsed.with_timezone(&Utc)));
+    }
+    let now = now.unwrap_or_else(Utc::now);
+    let resolved = resolve_relative_phrase(value, now, timezone).ok_or_else(|| {
+        CliError::InvalidInput(format!(
+            "{flag} must be an RFC3339 timestamp or supported phrase (got: {value})"
+        ))
+    })?;
+    Ok(Some(resolved))
+}
+
+fn resolve_relative_phrase(
+    phrase: &str,
+    now: DateTime<Utc>,
+    timezone: TimeZoneSpec,
+) -> Option<DateTime<Utc>> {
+    let normalized = phrase.trim().to_ascii_lowercase();
+    let TimeZoneSpec::Utc = timezone;
+    match normalized.as_str() {
+        "now" => Some(now),
+        "last week" | "last_week" | "last-week" => Some(start_of_previous_iso_week_utc(now)),
+        "this week" | "this_week" | "this-week" => Some(start_of_current_iso_week_utc(now)),
+        "yesterday" => Some(start_of_day_utc(now) - chrono::Duration::days(1)),
+        "today" => Some(start_of_day_utc(now)),
+        _ => None,
+    }
+}
+
+fn start_of_day_utc(now: DateTime<Utc>) -> DateTime<Utc> {
+    use chrono::TimeZone;
+    Utc.from_utc_datetime(&now.date_naive().and_hms_opt(0, 0, 0).expect("midnight"))
+}
+
+fn start_of_current_iso_week_utc(now: DateTime<Utc>) -> DateTime<Utc> {
+    use chrono::{Datelike, TimeZone};
+    let date = now.date_naive();
+    let days_from_monday = i64::from(date.weekday().num_days_from_monday());
+    let monday = date - chrono::Duration::days(days_from_monday);
+    Utc.from_utc_datetime(&monday.and_hms_opt(0, 0, 0).expect("midnight"))
+}
+
+fn start_of_previous_iso_week_utc(now: DateTime<Utc>) -> DateTime<Utc> {
+    start_of_current_iso_week_utc(now) - chrono::Duration::days(7)
 }
 
 fn recent_activity_request(args: &QueryRecentActivityArgs) -> Result<RecentActivityRequest> {
@@ -1094,6 +1262,7 @@ fn run_query_with_graph(graph: &impl GraphView, query: &QueryArgs) -> Result<Str
         }
         QueryCommand::GetRecentActivity(_)
         | QueryCommand::GetDecisionsChangedSince(_)
+        | QueryCommand::GetDecisionsAddedSince(_)
         | QueryCommand::ExportReadOnlySummary(_) => {
             return Err(
                 CliError::InvalidInput("query requires ledger-backed execution".to_owned()).into(),
@@ -1607,6 +1776,141 @@ impl OutputEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolves_since_last_week_against_frozen_now_in_utc() {
+        use chrono::TimeZone;
+        let now = Utc.with_ymd_and_hms(2026, 5, 19, 12, 0, 0).unwrap();
+        let resolved = resolve_diff_bound(
+            "--since",
+            Some("last week"),
+            None,
+            Some(now),
+            TimeZoneSpec::Utc,
+        )
+        .expect("resolves last week");
+        assert_eq!(
+            resolved,
+            Some(Utc.with_ymd_and_hms(2026, 5, 11, 0, 0, 0).unwrap()),
+            "last week must resolve to the start of the previous ISO week (Mon 00:00 UTC)"
+        );
+    }
+
+    #[test]
+    fn resolves_today_yesterday_this_week_against_frozen_now() {
+        use chrono::TimeZone;
+        let now = Utc.with_ymd_and_hms(2026, 5, 19, 12, 0, 0).unwrap();
+        assert_eq!(
+            resolve_diff_bound("--since", Some("today"), None, Some(now), TimeZoneSpec::Utc)
+                .unwrap(),
+            Some(Utc.with_ymd_and_hms(2026, 5, 19, 0, 0, 0).unwrap())
+        );
+        assert_eq!(
+            resolve_diff_bound(
+                "--since",
+                Some("yesterday"),
+                None,
+                Some(now),
+                TimeZoneSpec::Utc,
+            )
+            .unwrap(),
+            Some(Utc.with_ymd_and_hms(2026, 5, 18, 0, 0, 0).unwrap())
+        );
+        assert_eq!(
+            resolve_diff_bound(
+                "--since",
+                Some("this week"),
+                None,
+                Some(now),
+                TimeZoneSpec::Utc,
+            )
+            .unwrap(),
+            Some(Utc.with_ymd_and_hms(2026, 5, 18, 0, 0, 0).unwrap())
+        );
+        assert_eq!(
+            resolve_diff_bound("--since", Some("now"), None, Some(now), TimeZoneSpec::Utc).unwrap(),
+            Some(now)
+        );
+    }
+
+    #[test]
+    fn non_utc_timezone_is_rejected_in_slice_1() {
+        let error = TimeZoneSpec::parse("America/New_York").expect_err("non-utc rejected");
+        assert!(error
+            .to_string()
+            .contains("only UTC is accepted"));
+    }
+
+    #[test]
+    fn explicit_rfc3339_in_since_takes_precedence_over_phrase_parser() {
+        let resolved = resolve_diff_bound(
+            "--since",
+            Some("2026-05-01T08:30:00Z"),
+            None,
+            None,
+            TimeZoneSpec::Utc,
+        )
+        .expect("rfc3339 parses");
+        use chrono::TimeZone;
+        assert_eq!(
+            resolved,
+            Some(Utc.with_ymd_and_hms(2026, 5, 1, 8, 30, 0).unwrap())
+        );
+    }
+
+    #[test]
+    fn unknown_phrase_returns_friendly_error() {
+        use chrono::TimeZone;
+        let now = Utc.with_ymd_and_hms(2026, 5, 19, 12, 0, 0).unwrap();
+        let error = resolve_diff_bound(
+            "--since",
+            Some("two fortnights ago"),
+            None,
+            Some(now),
+            TimeZoneSpec::Utc,
+        )
+        .expect_err("unknown phrase rejected");
+        assert!(error
+            .to_string()
+            .contains("supported phrase"));
+    }
+
+    #[test]
+    fn parses_get_decisions_added_since_command() {
+        let cli = Cli::parse_from([
+            "hivemind",
+            "query",
+            "get_decisions_added_since",
+            "--since",
+            "last week",
+            "--timezone",
+            "UTC",
+            "--now",
+            "2026-05-19T12:00:00Z",
+            "--source",
+            "document",
+            "--limit",
+            "10",
+        ]);
+        let Command::Query(args) = cli.command else {
+            panic!("expected query command");
+        };
+        let QueryCommand::GetDecisionsAddedSince(args) = args.command else {
+            panic!("expected GetDecisionsAddedSince");
+        };
+        assert_eq!(args.since.as_deref(), Some("last week"));
+        assert_eq!(args.now.as_deref(), Some("2026-05-19T12:00:00Z"));
+        assert_eq!(args.filters.sources, vec!["document"]);
+        assert_eq!(args.limit, 10);
+
+        let request = added_since_request(&args).expect("request built");
+        use chrono::TimeZone;
+        assert_eq!(
+            request.since_timestamp,
+            Some(Utc.with_ymd_and_hms(2026, 5, 11, 0, 0, 0).unwrap())
+        );
+        assert_eq!(request.filters.sources, vec!["document"]);
+    }
 
     #[test]
     fn parses_global_flags_and_emit_subcommand() {
