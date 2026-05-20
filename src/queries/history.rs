@@ -195,6 +195,98 @@ pub struct DecisionsChangedSinceResults {
     pub items: Vec<DecisionChangeRow>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DecisionsAddedSinceFilterRequest {
+    pub actor_ids: Vec<String>,
+    pub sources: Vec<String>,
+    pub source_refs: Vec<String>,
+    pub import_run_ids: Vec<String>,
+    pub topic_keys: Vec<String>,
+    pub statuses: Vec<DecisionStatus>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DecisionsAddedSinceRequest {
+    pub since_offset: Option<EventId>,
+    pub since_timestamp: Option<DateTime<Utc>>,
+    pub until_offset: Option<EventId>,
+    pub until_timestamp: Option<DateTime<Utc>>,
+    pub filters: DecisionsAddedSinceFilterRequest,
+    pub limit: usize,
+    pub cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct DecisionsAddedSinceFilters {
+    pub actor_ids: Vec<String>,
+    pub sources: Vec<String>,
+    pub source_refs: Vec<String>,
+    pub import_run_ids: Vec<String>,
+    pub topic_keys: Vec<String>,
+    pub statuses: Vec<DecisionStatus>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DecisionEventProvenance {
+    pub event_origin: EventId,
+    pub event_uuid: String,
+    pub event_type: EventType,
+    pub actor_id: String,
+    pub source: EventSource,
+    pub source_ref: Option<String>,
+    pub import_run_id: Option<String>,
+    pub ts: Option<DateTime<Utc>>,
+    pub citation_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DecisionChange {
+    pub change_kind: HistoryChangeKind,
+    pub provenance: DecisionEventProvenance,
+    pub affected_nodes: Vec<AffectedNode>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct AddedDecisionEntry {
+    pub decision_id: String,
+    pub status: DecisionStatus,
+    pub topic_keys: Vec<String>,
+    pub creation: DecisionEventProvenance,
+    pub option_ids: Vec<String>,
+    pub evidence_ids: Vec<String>,
+    pub hypothesis_ids: Vec<String>,
+    pub changes_in_window: Vec<DecisionChange>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ChangedDecisionEntry {
+    pub decision_id: String,
+    pub status: DecisionStatus,
+    pub topic_keys: Vec<String>,
+    pub creation: Option<DecisionEventProvenance>,
+    pub option_ids: Vec<String>,
+    pub evidence_ids: Vec<String>,
+    pub hypothesis_ids: Vec<String>,
+    pub changes_in_window: Vec<DecisionChange>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DecisionsAddedSinceResults {
+    pub resolved_since: ChangeBoundary,
+    pub resolved_until: ChangeBoundary,
+    pub boundary_event_offsets: BoundaryEventOffsets,
+    pub filters: DecisionsAddedSinceFilters,
+    pub limit: usize,
+    pub cursor: Option<String>,
+    pub next_cursor: Option<String>,
+    pub total_matches: usize,
+    pub total_added: usize,
+    pub total_changed_existing: usize,
+    pub ledger_range: LedgerRange,
+    pub added_decisions: Vec<AddedDecisionEntry>,
+    pub changed_existing_decisions: Vec<ChangedDecisionEntry>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ReadOnlyExport {
     pub query: ReadOnlyExportQueryKind,
@@ -332,6 +424,389 @@ pub fn get_decisions_changed_since(
             items,
         },
     })
+}
+
+pub fn get_decisions_added_since(
+    ledger: &impl EventLedger,
+    request: &DecisionsAddedSinceRequest,
+) -> Result<QueryResponse<DecisionsAddedSinceResults>> {
+    let started = Instant::now();
+    let events = read_all_events(ledger)?;
+    let latest_offset = ledger.latest_offset()?;
+    let window = resolve_added_since_window(&events, latest_offset, request);
+    let index = DecisionIndex::from_events(&events)?;
+    let filters = normalized_added_since_filters(&request.filters);
+    let limit = normalized_history_limit(request.limit);
+    let cursor = normalized_query(request.cursor.as_deref());
+    let offset = parse_history_cursor(cursor.as_deref())?;
+
+    let mut creation_events: BTreeMap<String, &Event> = BTreeMap::new();
+    let mut per_decision_changes: BTreeMap<String, Vec<(EventId, &Event)>> = BTreeMap::new();
+
+    for event in &events {
+        let event_id = event_id(event)?;
+        let payload = events::validate(event).map_err(query_validation_error)?;
+        let in_window = event_id > window.since_offset && event_id <= window.until_offset;
+        if matches!(payload, EventPayload::DecisionProposed(_)) {
+            for decision_id in decision_ids_for_payload(&payload, &index) {
+                creation_events.entry(decision_id).or_insert(event);
+            }
+        }
+        if !in_window {
+            continue;
+        }
+        for decision_id in decision_ids_for_payload(&payload, &index) {
+            per_decision_changes
+                .entry(decision_id)
+                .or_default()
+                .push((event_id, event));
+        }
+    }
+
+    let mut added: Vec<AddedDecisionEntry> = Vec::new();
+    let mut changed: Vec<ChangedDecisionEntry> = Vec::new();
+
+    for (decision_id, change_events) in &per_decision_changes {
+        let entry = index.decisions.get(decision_id);
+        let topic_keys = entry.map(|entry| entry.topic_keys.clone()).unwrap_or_default();
+        let status = index
+            .status(decision_id)
+            .unwrap_or(DecisionStatus::Proposed);
+        let option_ids = entry
+            .map(|entry| entry.option_ids.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let evidence_ids = entry
+            .map(|entry| entry.evidence_ids.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let hypothesis_ids = entry
+            .map(|entry| entry.hypothesis_ids.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        let creation_event = creation_events.get(decision_id).copied();
+        let creation_provenance = creation_event
+            .map(decision_event_provenance)
+            .transpose()?;
+        let creation_in_window = creation_provenance
+            .as_ref()
+            .is_some_and(|prov| prov.event_origin > window.since_offset && prov.event_origin <= window.until_offset);
+
+        let mut changes = Vec::with_capacity(change_events.len());
+        for (event_id_value, event) in change_events {
+            if creation_in_window
+                && creation_provenance
+                    .as_ref()
+                    .is_some_and(|prov| prov.event_origin == *event_id_value)
+            {
+                continue;
+            }
+            let payload = events::validate(event).map_err(query_validation_error)?;
+            let change_kind = change_kind_for_payload(&payload);
+            let affected_nodes = affected_nodes_for_event(event, &payload);
+            let provenance = decision_event_provenance(event)?;
+            changes.push(DecisionChange {
+                change_kind,
+                provenance,
+                affected_nodes,
+            });
+        }
+
+        let decision_matches_filters = decision_matches_added_since_filters(
+            decision_id,
+            &topic_keys,
+            status,
+            &filters,
+            creation_provenance.as_ref(),
+            &changes,
+        );
+        if !decision_matches_filters {
+            continue;
+        }
+
+        if creation_in_window {
+            let creation =
+                creation_provenance.expect("creation provenance present when in window");
+            added.push(AddedDecisionEntry {
+                decision_id: decision_id.clone(),
+                status,
+                topic_keys,
+                creation,
+                option_ids,
+                evidence_ids,
+                hypothesis_ids,
+                changes_in_window: changes,
+            });
+        } else {
+            changed.push(ChangedDecisionEntry {
+                decision_id: decision_id.clone(),
+                status,
+                topic_keys,
+                creation: creation_provenance,
+                option_ids,
+                evidence_ids,
+                hypothesis_ids,
+                changes_in_window: changes,
+            });
+        }
+    }
+
+    added.sort_by(|left, right| {
+        (left.creation.event_origin, &left.decision_id)
+            .cmp(&(right.creation.event_origin, &right.decision_id))
+    });
+    changed.sort_by(|left, right| {
+        let left_origin = changed_primary_origin(&left.changes_in_window);
+        let right_origin = changed_primary_origin(&right.changes_in_window);
+        (left_origin, &left.decision_id).cmp(&(right_origin, &right.decision_id))
+    });
+
+    let total_added = added.len();
+    let total_changed = changed.len();
+    let total_matches = total_added.saturating_add(total_changed);
+
+    let mut combined: Vec<DiffEntry> = Vec::with_capacity(total_matches);
+    for entry in added.into_iter() {
+        combined.push(DiffEntry::Added(entry));
+    }
+    for entry in changed.into_iter() {
+        combined.push(DiffEntry::Changed(entry));
+    }
+
+    let paginated: Vec<DiffEntry> = combined.into_iter().skip(offset).take(limit).collect();
+    let next_offset = offset.saturating_add(paginated.len());
+    let next_cursor = (next_offset < total_matches).then(|| next_offset.to_string());
+
+    let mut added_page: Vec<AddedDecisionEntry> = Vec::new();
+    let mut changed_page: Vec<ChangedDecisionEntry> = Vec::new();
+    for entry in paginated {
+        match entry {
+            DiffEntry::Added(entry) => added_page.push(entry),
+            DiffEntry::Changed(entry) => changed_page.push(entry),
+        }
+    }
+
+    Ok(QueryResponse {
+        result_count: added_page.len() + changed_page.len(),
+        truncated: next_cursor.is_some(),
+        latency_ms: started.elapsed().as_millis(),
+        data: DecisionsAddedSinceResults {
+            resolved_since: ChangeBoundary {
+                offset: window.since_offset,
+                timestamp: request.since_timestamp,
+            },
+            resolved_until: ChangeBoundary {
+                offset: window.until_offset,
+                timestamp: request.until_timestamp,
+            },
+            boundary_event_offsets: window.boundary_event_offsets,
+            filters: filters.into_view(),
+            limit,
+            cursor,
+            next_cursor,
+            total_matches,
+            total_added,
+            total_changed_existing: total_changed,
+            ledger_range: LedgerRange {
+                from_offset_exclusive: window.since_offset,
+                to_offset_inclusive: window.until_offset,
+            },
+            added_decisions: added_page,
+            changed_existing_decisions: changed_page,
+        },
+    })
+}
+
+enum DiffEntry {
+    Added(AddedDecisionEntry),
+    Changed(ChangedDecisionEntry),
+}
+
+fn changed_primary_origin(changes: &[DecisionChange]) -> EventId {
+    changes
+        .iter()
+        .map(|change| change.provenance.event_origin)
+        .min()
+        .unwrap_or_default()
+}
+
+#[derive(Clone, Debug, Default)]
+struct NormalizedAddedSinceFilters {
+    actor_ids: Vec<String>,
+    sources: Vec<String>,
+    source_refs: Vec<String>,
+    import_run_ids: Vec<String>,
+    topic_keys: Vec<String>,
+    statuses: Vec<DecisionStatus>,
+}
+
+impl NormalizedAddedSinceFilters {
+    fn into_view(self) -> DecisionsAddedSinceFilters {
+        DecisionsAddedSinceFilters {
+            actor_ids: self.actor_ids,
+            sources: self.sources,
+            source_refs: self.source_refs,
+            import_run_ids: self.import_run_ids,
+            topic_keys: self.topic_keys,
+            statuses: self.statuses,
+        }
+    }
+}
+
+fn normalized_added_since_filters(
+    request: &DecisionsAddedSinceFilterRequest,
+) -> NormalizedAddedSinceFilters {
+    NormalizedAddedSinceFilters {
+        actor_ids: normalized_string_values(request.actor_ids.clone()),
+        sources: normalized_string_values(request.sources.clone()),
+        source_refs: normalized_string_values(request.source_refs.clone()),
+        import_run_ids: normalized_string_values(request.import_run_ids.clone()),
+        topic_keys: normalized_string_values(request.topic_keys.clone()),
+        statuses: request
+            .statuses
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+    }
+}
+
+fn decision_matches_added_since_filters(
+    _decision_id: &str,
+    topic_keys: &[String],
+    status: DecisionStatus,
+    filters: &NormalizedAddedSinceFilters,
+    creation: Option<&DecisionEventProvenance>,
+    changes: &[DecisionChange],
+) -> bool {
+    if !filters.statuses.is_empty() && !filters.statuses.contains(&status) {
+        return false;
+    }
+    if !filters.topic_keys.is_empty()
+        && !filters
+            .topic_keys
+            .iter()
+            .all(|topic| topic_keys.iter().any(|candidate| candidate == topic))
+    {
+        return false;
+    }
+
+    let mut provenances: Vec<&DecisionEventProvenance> = changes
+        .iter()
+        .map(|change| &change.provenance)
+        .collect();
+    if let Some(creation) = creation {
+        provenances.push(creation);
+    }
+
+    if !filters.actor_ids.is_empty()
+        && !provenances
+            .iter()
+            .any(|prov| filters.actor_ids.iter().any(|id| id == &prov.actor_id))
+    {
+        return false;
+    }
+    if !filters.sources.is_empty()
+        && !provenances.iter().any(|prov| {
+            filters
+                .sources
+                .iter()
+                .any(|expected| prov.source.as_str().eq_ignore_ascii_case(expected))
+        })
+    {
+        return false;
+    }
+    if !filters.source_refs.is_empty()
+        && !provenances.iter().any(|prov| {
+            prov.source_ref
+                .as_deref()
+                .is_some_and(|source_ref| {
+                    filters
+                        .source_refs
+                        .iter()
+                        .any(|expected| expected == source_ref)
+                })
+        })
+    {
+        return false;
+    }
+    if !filters.import_run_ids.is_empty()
+        && !provenances.iter().any(|prov| {
+            prov.import_run_id
+                .as_deref()
+                .is_some_and(|run_id| {
+                    filters
+                        .import_run_ids
+                        .iter()
+                        .any(|expected| expected == run_id)
+                })
+        })
+    {
+        return false;
+    }
+
+    true
+}
+
+fn decision_event_provenance(event: &Event) -> Result<DecisionEventProvenance> {
+    let event_id = event_id(event)?;
+    Ok(DecisionEventProvenance {
+        event_origin: event_id,
+        event_uuid: event.event_uuid.to_string(),
+        event_type: event.event_type,
+        actor_id: event.actor_id.clone(),
+        source: event.source,
+        source_ref: event.source_ref.clone(),
+        import_run_id: extract_import_run_id(event.source_ref.as_deref()),
+        ts: event.ts,
+        citation_id: citation_id(event_id),
+    })
+}
+
+fn extract_import_run_id(source_ref: Option<&str>) -> Option<String> {
+    let raw = source_ref?;
+    let value: Value = serde_json::from_str(raw).ok()?;
+    value
+        .get("import_run_id")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
+}
+
+#[derive(Debug)]
+struct ResolvedAddedSinceWindow {
+    since_offset: EventId,
+    until_offset: EventId,
+    boundary_event_offsets: BoundaryEventOffsets,
+}
+
+fn resolve_added_since_window(
+    events: &[Event],
+    latest_offset: EventId,
+    request: &DecisionsAddedSinceRequest,
+) -> ResolvedAddedSinceWindow {
+    let since_timestamp_offset = request
+        .since_timestamp
+        .map(|timestamp| timestamp_boundary_offset(events, timestamp));
+    let until_timestamp_offset = request
+        .until_timestamp
+        .map(|timestamp| timestamp_boundary_offset(events, timestamp));
+
+    let mut since_offset = request.since_offset.unwrap_or_default();
+    if let Some(offset) = since_timestamp_offset {
+        since_offset = since_offset.max(offset);
+    }
+    let mut until_offset = request.until_offset.unwrap_or(latest_offset);
+    if let Some(offset) = until_timestamp_offset {
+        until_offset = until_offset.min(offset);
+    }
+
+    ResolvedAddedSinceWindow {
+        since_offset,
+        until_offset,
+        boundary_event_offsets: BoundaryEventOffsets {
+            since_timestamp_offset,
+            until_timestamp_offset,
+        },
+    }
 }
 
 pub fn export_read_only_summary(
@@ -505,6 +980,9 @@ struct DecisionIndexEntry {
     accepted: bool,
     rejected: bool,
     superseded_by: BTreeSet<String>,
+    option_ids: BTreeSet<String>,
+    evidence_ids: BTreeSet<String>,
+    hypothesis_ids: BTreeSet<String>,
 }
 
 impl DecisionIndex {
@@ -518,6 +996,11 @@ impl DecisionIndex {
                         .entry(payload.decision_id.clone())
                         .or_default();
                     entry.topic_keys = normalized_string_values(payload.topic_keys);
+                    entry.option_ids.extend(payload.option_ids);
+                    entry.evidence_ids.extend(payload.evidence_ids);
+                    entry
+                        .hypothesis_ids
+                        .extend(payload.hypothesis_ids.iter().cloned());
                     for hypothesis_id in payload.hypothesis_ids {
                         index
                             .assumed_by_hypothesis
@@ -560,21 +1043,43 @@ impl DecisionIndex {
                         .superseded_by
                         .insert(payload.new_decision_id);
                 }
-                EventPayload::RelationAdded(payload)
-                    if payload.relation == EventRelationKind::Assumes =>
-                {
-                    index
-                        .assumed_by_hypothesis
-                        .entry(payload.to_id)
-                        .or_default()
-                        .insert(payload.from_id);
-                }
+                EventPayload::RelationAdded(payload) => match payload.relation {
+                    EventRelationKind::Assumes => {
+                        index
+                            .decisions
+                            .entry(payload.from_id.clone())
+                            .or_default()
+                            .hypothesis_ids
+                            .insert(payload.to_id.clone());
+                        index
+                            .assumed_by_hypothesis
+                            .entry(payload.to_id)
+                            .or_default()
+                            .insert(payload.from_id);
+                    }
+                    EventRelationKind::BasedOn => {
+                        index
+                            .decisions
+                            .entry(payload.from_id)
+                            .or_default()
+                            .evidence_ids
+                            .insert(payload.to_id);
+                    }
+                    EventRelationKind::HasOption | EventRelationKind::Chose => {
+                        index
+                            .decisions
+                            .entry(payload.from_id)
+                            .or_default()
+                            .option_ids
+                            .insert(payload.to_id);
+                    }
+                    EventRelationKind::Supports | EventRelationKind::Refutes => {}
+                },
                 EventPayload::EvidenceRecorded(_)
                 | EventPayload::HypothesisRecorded(_)
                 | EventPayload::BlockerResolved(_)
                 | EventPayload::NotificationSent(_)
-                | EventPayload::NotificationAcknowledged(_)
-                | EventPayload::RelationAdded(_) => {}
+                | EventPayload::NotificationAcknowledged(_) => {}
             }
         }
         Ok(index)
@@ -1587,5 +2092,261 @@ mod tests {
     fn ts(sequence: u64) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 5, 19, 12, 0, 0).unwrap()
             + chrono::Duration::seconds(i64::try_from(sequence).unwrap())
+    }
+
+    #[test]
+    fn added_since_returns_empty_for_window_before_any_event() -> Result<()> {
+        let ledger = fixture_ledger()?;
+        let response = get_decisions_added_since(
+            &ledger,
+            &DecisionsAddedSinceRequest {
+                since_timestamp: Some(Utc.with_ymd_and_hms(2026, 5, 18, 0, 0, 0).unwrap()),
+                until_timestamp: Some(Utc.with_ymd_and_hms(2026, 5, 19, 11, 0, 0).unwrap()),
+                limit: 10,
+                ..DecisionsAddedSinceRequest::default()
+            },
+        )?;
+
+        assert_eq!(response.data.total_added, 0);
+        assert_eq!(response.data.total_changed_existing, 0);
+        assert!(response.data.added_decisions.is_empty());
+        assert!(response.data.changed_existing_decisions.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn added_since_separates_added_and_changed_with_deterministic_order() -> Result<()> {
+        let ledger = fixture_ledger()?;
+
+        let response = get_decisions_added_since(
+            &ledger,
+            &DecisionsAddedSinceRequest {
+                since_offset: Some(0),
+                limit: 50,
+                ..DecisionsAddedSinceRequest::default()
+            },
+        )?;
+
+        assert_eq!(response.data.total_added, 2);
+        assert_eq!(response.data.total_changed_existing, 0);
+        let added_ids: Vec<_> = response
+            .data
+            .added_decisions
+            .iter()
+            .map(|entry| entry.decision_id.clone())
+            .collect();
+        assert_eq!(added_ids, vec!["decision-a", "decision-b"]);
+
+        let decision_a = &response.data.added_decisions[0];
+        assert_eq!(decision_a.creation.event_origin, 3);
+        assert_eq!(decision_a.status, DecisionStatus::Superseded);
+        assert_eq!(decision_a.evidence_ids, vec!["evidence-1"]);
+        assert_eq!(decision_a.hypothesis_ids, vec!["hypothesis-1"]);
+        let kinds: Vec<_> = decision_a
+            .changes_in_window
+            .iter()
+            .map(|change| change.change_kind)
+            .collect();
+        assert!(kinds.contains(&HistoryChangeKind::StatusChange));
+        assert!(kinds.contains(&HistoryChangeKind::RefutedAssumption));
+        assert!(kinds.contains(&HistoryChangeKind::Supersession));
+
+        let decision_b = &response.data.added_decisions[1];
+        assert_eq!(decision_b.creation.event_origin, 5);
+        assert!(decision_b
+            .changes_in_window
+            .iter()
+            .any(|change| change.change_kind == HistoryChangeKind::NewEvidence));
+        assert_eq!(decision_b.evidence_ids, vec!["evidence-1"]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn added_since_classifies_changed_existing_when_creation_is_before_window() -> Result<()> {
+        let ledger = fixture_ledger()?;
+
+        let response = get_decisions_added_since(
+            &ledger,
+            &DecisionsAddedSinceRequest {
+                since_offset: Some(5),
+                limit: 50,
+                ..DecisionsAddedSinceRequest::default()
+            },
+        )?;
+
+        assert_eq!(response.data.total_added, 0);
+        assert_eq!(response.data.total_changed_existing, 2);
+        let changed_ids: Vec<_> = response
+            .data
+            .changed_existing_decisions
+            .iter()
+            .map(|entry| entry.decision_id.clone())
+            .collect();
+        assert_eq!(changed_ids, vec!["decision-b", "decision-a"]);
+
+        let decision_b_change = &response.data.changed_existing_decisions[0];
+        assert!(decision_b_change.creation.is_some());
+        assert_eq!(
+            decision_b_change.creation.as_ref().unwrap().event_origin,
+            5
+        );
+        let decision_a_change = &response.data.changed_existing_decisions[1];
+        assert!(decision_a_change
+            .changes_in_window
+            .iter()
+            .any(|change| change.change_kind == HistoryChangeKind::Supersession));
+
+        Ok(())
+    }
+
+    #[test]
+    fn added_since_resolves_timestamps_to_offsets_and_reports_boundaries() -> Result<()> {
+        let ledger = fixture_ledger()?;
+
+        let response = get_decisions_added_since(
+            &ledger,
+            &DecisionsAddedSinceRequest {
+                since_timestamp: Some(ts(2)),
+                until_timestamp: Some(ts(5)),
+                limit: 10,
+                ..DecisionsAddedSinceRequest::default()
+            },
+        )?;
+
+        assert_eq!(response.data.resolved_since.offset, 2);
+        assert_eq!(response.data.resolved_until.offset, 5);
+        assert_eq!(
+            response.data.boundary_event_offsets.since_timestamp_offset,
+            Some(2)
+        );
+        assert_eq!(
+            response.data.boundary_event_offsets.until_timestamp_offset,
+            Some(5)
+        );
+        assert_eq!(response.data.total_added, 2);
+        assert_eq!(response.data.total_changed_existing, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn added_since_paginates_with_continuation_cursor() -> Result<()> {
+        let ledger = fixture_ledger()?;
+
+        let first = get_decisions_added_since(
+            &ledger,
+            &DecisionsAddedSinceRequest {
+                since_offset: Some(0),
+                limit: 1,
+                ..DecisionsAddedSinceRequest::default()
+            },
+        )?;
+        assert_eq!(first.result_count, 1);
+        assert!(first.truncated);
+        assert_eq!(first.data.next_cursor.as_deref(), Some("1"));
+        assert_eq!(first.data.added_decisions.len(), 1);
+        assert_eq!(first.data.added_decisions[0].decision_id, "decision-a");
+
+        let second = get_decisions_added_since(
+            &ledger,
+            &DecisionsAddedSinceRequest {
+                since_offset: Some(0),
+                limit: 1,
+                cursor: Some("1".to_owned()),
+                ..DecisionsAddedSinceRequest::default()
+            },
+        )?;
+        assert_eq!(second.result_count, 1);
+        assert!(!second.truncated);
+        assert!(second.data.next_cursor.is_none());
+        assert_eq!(second.data.added_decisions[0].decision_id, "decision-b");
+
+        Ok(())
+    }
+
+    #[test]
+    fn added_since_filters_by_import_run_id_extracted_from_source_ref() -> Result<()> {
+        use crate::events::EventSource;
+        use crate::ledger::InMemoryEventLedger;
+
+        let ledger = InMemoryEventLedger::new();
+        let import_source_ref = serde_json::json!({
+            "source": "document",
+            "path": "/docs/notes.md",
+            "sha256": "abc",
+            "import_run_id": "import:2026-05-19T12:00:00Z:r1",
+            "block_id": "blk-1",
+            "source_span": {"start_byte": 0, "end_byte": 10},
+            "source_snippet": "hi",
+            "importer_actor_id": "actor:importer",
+            "original_actor_id": null,
+            "provisional_actor": true
+        })
+        .to_string();
+
+        let mut e1 = event(
+            1,
+            EventType::DecisionProposed,
+            "actor:doc",
+            json!({
+                "decision_id": "decision-doc-1",
+                "title": "Doc decision",
+                "rationale": "Imported",
+                "topic_keys": ["docs"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        );
+        e1.source = EventSource::Document;
+        e1.source_ref = Some(import_source_ref.clone());
+        ledger.append(e1)?;
+
+        let mut e2 = event(
+            2,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision-other",
+                "title": "Other",
+                "rationale": "Plain",
+                "topic_keys": ["other"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        );
+        e2.source = EventSource::Api;
+        e2.source_ref = Some("plain-ref".to_owned());
+        ledger.append(e2)?;
+
+        let response = get_decisions_added_since(
+            &ledger,
+            &DecisionsAddedSinceRequest {
+                since_offset: Some(0),
+                limit: 10,
+                filters: DecisionsAddedSinceFilterRequest {
+                    import_run_ids: vec!["import:2026-05-19T12:00:00Z:r1".to_owned()],
+                    ..DecisionsAddedSinceFilterRequest::default()
+                },
+                ..DecisionsAddedSinceRequest::default()
+            },
+        )?;
+
+        assert_eq!(response.data.total_added, 1);
+        assert_eq!(
+            response.data.added_decisions[0].decision_id,
+            "decision-doc-1"
+        );
+        assert_eq!(
+            response.data.added_decisions[0]
+                .creation
+                .import_run_id
+                .as_deref(),
+            Some("import:2026-05-19T12:00:00Z:r1")
+        );
+        Ok(())
     }
 }
