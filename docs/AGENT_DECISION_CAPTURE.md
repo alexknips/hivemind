@@ -52,6 +52,53 @@ cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
   --chose direct-cli
 ```
 
+### Codex Distribution Bundle
+
+Codex exposes several extension surfaces relevant to HiveMind capture:
+
+- `AGENTS.md` gives Codex repository and global instructions before work starts.
+  This is useful for pointing contributors at HiveMind capture guidance, but it
+  is not an installable transport. See
+  <https://developers.openai.com/codex/guides/agents-md>.
+- Skills package reusable instructions, resources, and optional scripts. Codex
+  can invoke them explicitly or choose them by description, and it can read
+  skills from repo, user, admin, and system locations. See
+  <https://developers.openai.com/codex/skills>.
+- Plugins are the installable distribution unit for reusable Codex workflows.
+  They can bundle skills, apps, MCP servers, and lifecycle configuration. See
+  <https://developers.openai.com/codex/plugins> and
+  <https://developers.openai.com/codex/plugins/build>.
+- Hooks can run deterministic scripts during the Codex lifecycle, but matching
+  hooks can run concurrently, non-managed command hooks require trust review,
+  and plugin hooks are off by default unless enabled. Hooks are therefore not
+  the primary capture path. See <https://developers.openai.com/codex/hooks>.
+- MCP connects Codex to third-party tools and context in the CLI and IDE
+  extension. It is a good future interface for a shared HiveMind service, but
+  local capture does not require MCP setup. See
+  <https://developers.openai.com/codex/mcp>.
+
+This repository ships `plugins/hivemind-capture`, exposed through
+`.agents/plugins/marketplace.json`. The plugin bundles the
+`$hivemind-capture` skill, which keeps the direct CLI as the write path and uses
+the same actor-id convention as Claude: `agent:codex:<session>` and
+`agent:claude:<session>`.
+
+Install from a HiveMind checkout by starting Codex in the repository, opening
+`/plugins`, choosing `HiveMind Plugins`, and installing `HiveMind Capture`.
+Install from another machine by adding the repository marketplace first:
+
+```bash
+codex plugin marketplace add https://github.com/alexknips/hivemind.git
+```
+
+For instruction-only use, copy
+`plugins/hivemind-capture/skills/hivemind-capture` to `$HOME/.agents/skills/`
+and invoke `$hivemind-capture`.
+
+The skill is backend agnostic. Use the default local ledger with
+`HIVEMIND_DIR=./hivemind`, or set `HIVEMIND_DIR`/`--hivemind-dir` to a shared
+ledger path. The capture verb and query behavior stay the same.
+
 ## Reliability Tradeoffs
 
 Direct CLI/API capture is the critical path because it is explicit, testable,

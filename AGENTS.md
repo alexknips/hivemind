@@ -84,6 +84,12 @@ These apply to the system itself and to its contributors:
 
 A coding agent should be able to start using HiveMind in **under five minutes**: install the CLI, point it at a directory, call `hivemind emit decision.proposed …`, and immediately query it back. If it takes longer than that, the API is wrong.
 
+Codex users can install the HiveMind capture bundle from
+`.agents/plugins/marketplace.json` or copy
+`plugins/hivemind-capture/skills/hivemind-capture` into `$HOME/.agents/skills/`.
+The bundle points Codex at `hivemind emit decision.capture` and preserves the
+actor format `agent:codex:<session>`.
+
 A new human contributor should be able to read this file, `PLAN.md`, and the relevant slice's beads, and understand the entire architecture in **under an hour**. If they can't, the documentation is wrong.
 
 ---

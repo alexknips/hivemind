@@ -1,0 +1,38 @@
+{
+  "name": "hivemind-capture",
+  "version": "0.1.0",
+  "description": "Capture Codex decisions into HiveMind through the deterministic local CLI.",
+  "author": {
+    "name": "HiveMind contributors",
+    "url": "https://github.com/alexknips/hivemind"
+  },
+  "homepage": "https://github.com/alexknips/hivemind/blob/master/docs/AGENT_DECISION_CAPTURE.md",
+  "repository": "https://github.com/alexknips/hivemind",
+  "license": "UNLICENSED",
+  "keywords": [
+    "hivemind",
+    "decision-memory",
+    "codex",
+    "provenance"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "HiveMind Capture",
+    "shortDescription": "Record Codex decisions with actor provenance.",
+    "longDescription": "Installs the hivemind-capture skill. The skill teaches Codex when to preserve a durable organizational decision and how to call the HiveMind decision.capture CLI against either a local or shared ledger.",
+    "developerName": "HiveMind contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Skills",
+      "Local CLI",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/alexknips/hivemind",
+    "defaultPrompt": [
+      "Use $hivemind-capture to record this decision.",
+      "Capture the selected option in HiveMind.",
+      "Query HiveMind for recent agent captures."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

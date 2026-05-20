@@ -1,0 +1,20 @@
+{
+  "name": "hivemind-plugins",
+  "interface": {
+    "displayName": "HiveMind Plugins"
+  },
+  "plugins": [
+    {
+      "name": "hivemind-capture",
+      "source": {
+        "source": "local",
+        "path": "./plugins/hivemind-capture"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

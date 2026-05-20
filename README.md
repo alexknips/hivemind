@@ -103,6 +103,28 @@ cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
   --chose direct-cli
 ```
 
+### Codex Capture Plugin
+
+The repository ships a Codex plugin marketplace at
+`.agents/plugins/marketplace.json`. The `hivemind-capture` plugin packages a
+Codex skill that tells agents when to preserve a decision and how to call the
+same `decision.capture` CLI shown above. The skill keeps direct CLI capture as
+the critical path; hooks and MCP are supplemental integration surfaces.
+
+From a local HiveMind checkout, start Codex in this repository, open `/plugins`,
+choose `HiveMind Plugins`, and install `HiveMind Capture`. From another
+checkout or machine, add this repository as a marketplace first:
+
+```bash
+codex plugin marketplace add https://github.com/alexknips/hivemind.git
+```
+
+Users who only want the instruction bundle can copy
+`plugins/hivemind-capture/skills/hivemind-capture` into `$HOME/.agents/skills/`
+and invoke `$hivemind-capture` directly. Local capture defaults to
+`./hivemind/`; set `HIVEMIND_DIR` or pass `--hivemind-dir` to point Codex at a
+shared ledger.
+
 Local markdown or text decision notes can be imported without network access.
 Only explicit `Decision:` blocks are imported, and re-importing identical input
 is reported as a no-op:
