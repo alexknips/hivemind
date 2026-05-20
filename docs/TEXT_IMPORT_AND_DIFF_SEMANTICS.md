@@ -138,6 +138,14 @@ derivation. `--on-conflict add_context` appends proposed evidence and
 hypotheses to the existing decision as new context. The importer must not infer
 supersession from edited prose.
 
+After deterministic no-op and exact duplicate checks, the importer may report
+fuzzy duplicate candidates for changed prose. This advisory match compares only
+explicit imported decision fields such as title, rationale, topic keys, and the
+stable block id. Each match must include the matched decision id, event origin,
+source reference, algorithm name, field overlap scores, and the reviewer action
+required. A fuzzy match never silently merges, supersedes, or accepts a decision;
+ambiguous matches write nothing until a reviewer resolves them explicitly.
+
 ## Temporal Diff
 
 The temporal diff query returns bounded, deterministic changes in the decision

@@ -423,6 +423,10 @@ pub struct DocumentBlockImportReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reviewer_action: Option<DocumentReviewerAction>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub similarity_matches: Vec<DocumentSimilarityMatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source_span: Option<DocumentSourceSpan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_snippet: Option<String>,
@@ -549,6 +553,39 @@ pub struct DocumentConflictAffectedDependencies {
     pub hypothesis_ids: Vec<String>,
     pub supersedes_decision_ids: Vec<String>,
     pub superseded_by_decision_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentReviewerAction {
+    ResolveImportConflict,
+    ReviewFuzzyDuplicateCandidate,
+    ReviewAmbiguousFuzzyMatches,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentSimilarityMatch {
+    pub decision_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_origin: Option<u64>,
+    pub score: u32,
+    pub review_required: bool,
+    pub basis: DocumentSimilarityBasis,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentSimilarityBasis {
+    pub algorithm: &'static str,
+    pub title_token_overlap: u32,
+    pub rationale_token_overlap: u32,
+    pub topic_key_overlap: u32,
+    pub same_stable_block_id: bool,
+    pub matched_fields: Vec<&'static str>,
+    pub source_path: String,
+    pub source_block_id: String,
+    pub source_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -788,6 +825,8 @@ fn import_document_file<L: EventLedger>(
                 decision_id: None,
                 status: DocumentBlockImportStatus::ValidationError,
                 message: Some(error.to_string()),
+                reviewer_action: None,
+                similarity_matches: Vec::new(),
                 source_span: Some(raw_block.span),
                 source_snippet: Some(compact_snippet(&raw_block.text)),
                 event_ids: Vec::new(),
@@ -834,6 +873,8 @@ fn import_document_decision_block<L: EventLedger>(
             decision_id: Some(identities.decision_id),
             status: DocumentBlockImportStatus::NoOp,
             message: Some("identical decision block already imported".to_owned()),
+            reviewer_action: None,
+            similarity_matches: Vec::new(),
             source_span: Some(draft.span),
             source_snippet: Some(draft.snippet.clone()),
             event_ids: Vec::new(),
@@ -851,12 +892,17 @@ fn import_document_decision_block<L: EventLedger>(
             message: Some(format!(
                 "same source hash and block id were already imported from {existing_path}"
             )),
+            reviewer_action: None,
+            similarity_matches: Vec::new(),
             source_span: Some(draft.span),
             source_snippet: Some(draft.snippet.clone()),
             event_ids: Vec::new(),
             conflict: None,
         });
     }
+
+    let similarity_matches =
+        find_document_similarity_matches(ledger, draft, &identities.decision_id)?;
 
     if decision_id_exists(ledger, &identities.decision_id)? {
         return resolve_document_import_conflict(
@@ -869,7 +915,28 @@ fn import_document_decision_block<L: EventLedger>(
             importer_actor_id,
             import_run_id,
             conflict_resolution,
+            similarity_matches,
         );
+    }
+
+    if !similarity_matches.is_empty() {
+        let reviewer_action = if similarity_matches.len() > 1 {
+            DocumentReviewerAction::ReviewAmbiguousFuzzyMatches
+        } else {
+            DocumentReviewerAction::ReviewFuzzyDuplicateCandidate
+        };
+        return Ok(DocumentBlockImportReport {
+            block_id: draft.block_id.clone(),
+            decision_id: Some(identities.decision_id),
+            status: DocumentBlockImportStatus::DuplicateCandidate,
+            message: Some("fuzzy duplicate candidate requires explicit reviewer action".to_owned()),
+            reviewer_action: Some(reviewer_action),
+            similarity_matches,
+            source_span: Some(draft.span),
+            source_snippet: Some(draft.snippet.clone()),
+            event_ids: Vec::new(),
+            conflict: None,
+        });
     }
 
     for superseded_decision_id in &identities.supersedes_decision_ids {
@@ -881,6 +948,8 @@ fn import_document_decision_block<L: EventLedger>(
                 message: Some(format!(
                     "superseded decision does not exist: {superseded_decision_id}"
                 )),
+                reviewer_action: None,
+                similarity_matches: Vec::new(),
                 source_span: Some(draft.span),
                 source_snippet: Some(draft.snippet.clone()),
                 event_ids: Vec::new(),
@@ -909,6 +978,8 @@ fn import_document_decision_block<L: EventLedger>(
         decision_id: Some(identities.decision_id),
         status: DocumentBlockImportStatus::Imported,
         message: None,
+        reviewer_action: None,
+        similarity_matches: Vec::new(),
         source_span: Some(draft.span),
         source_snippet: Some(draft.snippet.clone()),
         event_ids,
@@ -1052,6 +1123,7 @@ fn resolve_document_import_conflict<L: EventLedger>(
     importer_actor_id: &str,
     import_run_id: &str,
     selected_action: DocumentConflictResolutionAction,
+    similarity_matches: Vec<DocumentSimilarityMatch>,
 ) -> Result<DocumentBlockImportReport> {
     let existing = existing_document_conflict_item(ledger, existing_decision_id)?;
     let affected_dependencies = affected_dependencies_for_decision(ledger, existing_decision_id)?;
@@ -1071,6 +1143,13 @@ fn resolve_document_import_conflict<L: EventLedger>(
         affected_dependencies,
         resolved_decision_id: None,
     };
+    let report_reviewer_action = match selected_action {
+        DocumentConflictResolutionAction::Report if similarity_matches.len() > 1 => {
+            Some(DocumentReviewerAction::ReviewAmbiguousFuzzyMatches)
+        }
+        DocumentConflictResolutionAction::Report => Some(DocumentReviewerAction::ResolveImportConflict),
+        _ => None,
+    };
 
     match selected_action {
         DocumentConflictResolutionAction::Report => conflict_block_report(
@@ -1079,6 +1158,8 @@ fn resolve_document_import_conflict<L: EventLedger>(
             DocumentBlockImportStatus::Conflict,
             "stable decision id already exists with different imported content",
             Vec::new(),
+            report_reviewer_action,
+            similarity_matches,
             conflict,
         ),
         DocumentConflictResolutionAction::KeepExisting => conflict_block_report(
@@ -1087,6 +1168,8 @@ fn resolve_document_import_conflict<L: EventLedger>(
             DocumentBlockImportStatus::ConflictKeptExisting,
             "kept existing ledger-derived decision; no events written",
             Vec::new(),
+            None,
+            similarity_matches,
             conflict,
         ),
         DocumentConflictResolutionAction::Supersede => {
@@ -1104,6 +1187,8 @@ fn resolve_document_import_conflict<L: EventLedger>(
                     DocumentBlockImportStatus::ValidationError,
                     &format!("superseded decision does not exist: {missing_decision_id}"),
                     Vec::new(),
+                    None,
+                    similarity_matches,
                     conflict,
                 );
             }
@@ -1133,6 +1218,8 @@ fn resolve_document_import_conflict<L: EventLedger>(
                 DocumentBlockImportStatus::ConflictSuperseded,
                 "captured proposed update as a superseding decision",
                 event_ids,
+                None,
+                similarity_matches,
                 conflict,
             )
         }
@@ -1174,6 +1261,8 @@ fn resolve_document_import_conflict<L: EventLedger>(
                 DocumentBlockImportStatus::ConflictContested,
                 "contested existing decision with an explicit rejection event",
                 event_ids,
+                None,
+                similarity_matches,
                 conflict,
             )
         }
@@ -1206,6 +1295,8 @@ fn resolve_document_import_conflict<L: EventLedger>(
                 status,
                 message,
                 event_ids,
+                None,
+                similarity_matches,
                 conflict,
             )
         }
@@ -1218,6 +1309,8 @@ fn conflict_block_report(
     status: DocumentBlockImportStatus,
     message: &str,
     event_ids: Vec<u64>,
+    reviewer_action: Option<DocumentReviewerAction>,
+    similarity_matches: Vec<DocumentSimilarityMatch>,
     conflict: DocumentImportConflictReport,
 ) -> Result<DocumentBlockImportReport> {
     Ok(DocumentBlockImportReport {
@@ -1225,6 +1318,8 @@ fn conflict_block_report(
         decision_id: Some(existing_decision_id.to_owned()),
         status,
         message: Some(message.to_owned()),
+        reviewer_action,
+        similarity_matches,
         source_span: Some(draft.span),
         source_snippet: Some(draft.snippet.clone()),
         event_ids,
@@ -2217,6 +2312,189 @@ fn find_document_duplicate_candidate<L: EventLedger>(
             return Ok(None);
         }
     }
+}
+
+const DOCUMENT_FUZZY_ALGORITHM: &str = "document_fuzzy_v1";
+const DOCUMENT_FUZZY_MATCH_THRESHOLD: u32 = 70;
+const DOCUMENT_FUZZY_STABLE_BLOCK_ID_SCORE: u32 = 75;
+const DOCUMENT_FUZZY_MAX_MATCHES: usize = 5;
+const DOCUMENT_FUZZY_STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "as", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or", "our",
+    "the", "to", "use", "using", "with",
+];
+
+fn find_document_similarity_matches<L: EventLedger>(
+    ledger: &L,
+    draft: &DocumentDecisionDraft,
+    decision_id: &str,
+) -> Result<Vec<DocumentSimilarityMatch>> {
+    let mut offset = 0;
+    let mut matches = Vec::new();
+    const PAGE_SIZE: usize = 1024;
+
+    loop {
+        let events = ledger.read(offset, PAGE_SIZE)?;
+        if events.is_empty() {
+            break;
+        }
+
+        for event in &events {
+            if event.event_type != EventType::DecisionProposed
+                || event.source != EventSource::Document
+            {
+                continue;
+            }
+            let Some(source_ref_raw) = event.source_ref.as_deref() else {
+                continue;
+            };
+            let Ok(source_ref) = serde_json::from_str::<DocumentSourceRef>(source_ref_raw) else {
+                continue;
+            };
+            if let Some(similarity_match) =
+                document_similarity_match(draft, decision_id, event, &source_ref, source_ref_raw)
+            {
+                matches.push(similarity_match);
+            }
+        }
+
+        if let Some(last_event_id) = events.last().and_then(|event| event.event_id) {
+            offset = last_event_id;
+        } else {
+            break;
+        }
+    }
+
+    matches.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.event_origin.cmp(&right.event_origin))
+            .then_with(|| left.decision_id.cmp(&right.decision_id))
+    });
+    matches.truncate(DOCUMENT_FUZZY_MAX_MATCHES);
+    Ok(matches)
+}
+
+fn document_similarity_match(
+    draft: &DocumentDecisionDraft,
+    decision_id: &str,
+    event: &Event,
+    source_ref: &DocumentSourceRef,
+    source_ref_raw: &str,
+) -> Option<DocumentSimilarityMatch> {
+    let existing_decision_id = event.payload.get("decision_id")?.as_str()?.to_owned();
+    let existing_title = event.payload.get("title")?.as_str()?;
+    let existing_rationale = event.payload.get("rationale")?.as_str()?;
+    let existing_topic_keys = payload_string_list(&event.payload, "topic_keys");
+
+    let title_overlap = token_overlap_percent(
+        &comparable_tokens(&draft.title),
+        &comparable_tokens(existing_title),
+    );
+    let rationale_overlap = token_overlap_percent(
+        &comparable_tokens(&draft.rationale),
+        &comparable_tokens(existing_rationale),
+    );
+    let topic_overlap = token_overlap_percent(
+        &comparable_topic_keys(&draft.topic_keys),
+        &comparable_topic_keys(&existing_topic_keys),
+    );
+    let same_stable_block_id = stable_component(&source_ref.block_id)
+        == stable_component(&draft.block_id)
+        || existing_decision_id == decision_id;
+
+    let mut score = ((title_overlap * 45) + (rationale_overlap * 35) + (topic_overlap * 20)) / 100;
+    if same_stable_block_id {
+        score = score.max(DOCUMENT_FUZZY_STABLE_BLOCK_ID_SCORE);
+    }
+    if score < DOCUMENT_FUZZY_MATCH_THRESHOLD {
+        return None;
+    }
+
+    let mut matched_fields = Vec::new();
+    if same_stable_block_id {
+        matched_fields.push("block_id");
+    }
+    if title_overlap >= 50 {
+        matched_fields.push("title");
+    }
+    if rationale_overlap >= 50 {
+        matched_fields.push("rationale");
+    }
+    if topic_overlap >= 50 {
+        matched_fields.push("topic_keys");
+    }
+    if matched_fields.is_empty() {
+        matched_fields.push("weighted_score");
+    }
+
+    Some(DocumentSimilarityMatch {
+        decision_id: existing_decision_id,
+        event_origin: event.event_id,
+        score,
+        review_required: true,
+        basis: DocumentSimilarityBasis {
+            algorithm: DOCUMENT_FUZZY_ALGORITHM,
+            title_token_overlap: title_overlap,
+            rationale_token_overlap: rationale_overlap,
+            topic_key_overlap: topic_overlap,
+            same_stable_block_id,
+            matched_fields,
+            source_path: source_ref.path.clone(),
+            source_block_id: source_ref.block_id.clone(),
+            source_hash: source_ref.sha256.clone(),
+            source_ref: Some(source_ref_raw.to_owned()),
+        },
+    })
+}
+
+fn payload_string_list(payload: &serde_json::Value, key: &str) -> Vec<String> {
+    payload
+        .get(key)
+        .and_then(|value| value.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+        .collect()
+}
+
+fn comparable_tokens(input: &str) -> BTreeSet<String> {
+    let transliterated = deunicode::deunicode(input);
+    let mut tokens = BTreeSet::new();
+    let mut current = String::new();
+
+    for character in transliterated.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            current.push(character);
+            continue;
+        }
+        push_similarity_token(&mut tokens, &mut current);
+    }
+    push_similarity_token(&mut tokens, &mut current);
+
+    tokens
+}
+
+fn comparable_topic_keys(keys: &[String]) -> BTreeSet<String> {
+    keys.iter()
+        .map(|key| stable_component(key))
+        .filter(|key| !key.is_empty())
+        .collect()
+}
+
+fn push_similarity_token(tokens: &mut BTreeSet<String>, current: &mut String) {
+    if current.len() > 1 && !DOCUMENT_FUZZY_STOP_WORDS.contains(&current.as_str()) {
+        tokens.insert(current.clone());
+    }
+    current.clear();
+}
+
+fn token_overlap_percent(left: &BTreeSet<String>, right: &BTreeSet<String>) -> u32 {
+    if left.is_empty() || right.is_empty() {
+        return 0;
+    }
+    let intersection = left.intersection(right).count() as u32;
+    ((intersection * 200) / (left.len() as u32 + right.len() as u32)).min(100)
 }
 
 fn scan_ledger<L: EventLedger>(ledger: &L, predicate: impl Fn(&Event) -> bool) -> Result<bool> {

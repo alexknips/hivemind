@@ -1038,6 +1038,17 @@ fn import_documents_cli_imports_queryable_document_decisions_and_reimport_noops(
         second_output["summary"]["events_written"],
         serde_json::json!(0)
     );
+    let reimport_blocks = second_output["files"]
+        .as_array()
+        .expect("files array")
+        .iter()
+        .flat_map(|file| file["blocks"].as_array().expect("blocks array"));
+    for block in reimport_blocks {
+        assert!(
+            block.get("similarity_matches").is_none(),
+            "exact re-import must stay separate from fuzzy advisory matching"
+        );
+    }
     assert_eq!(
         ledger.latest_offset().expect("latest offset unchanged"),
         latest_after_first
@@ -1095,11 +1106,31 @@ fn import_documents_cli_reports_changed_same_id_as_conflict_without_writes() {
     let output: serde_json::Value = serde_json::from_str(&output).expect("valid import json");
     assert_eq!(output["summary"]["blocks_conflicted"], serde_json::json!(1));
     assert_eq!(output["summary"]["events_written"], serde_json::json!(0));
-    assert!(output["files"][0]["blocks"][0]["message"]
+    let block = &output["files"][0]["blocks"][0];
+    assert!(block["message"]
         .as_str()
         .expect("conflict message")
         .contains("stable decision id already exists"));
-    let conflict = &output["files"][0]["blocks"][0]["conflict"];
+    assert_eq!(
+        block["reviewer_action"],
+        serde_json::json!("resolve_import_conflict")
+    );
+    let matches = block["similarity_matches"]
+        .as_array()
+        .expect("conflict should include traceable fuzzy match");
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0]["review_required"], serde_json::json!(true));
+    assert!(matches[0]["event_origin"].as_u64().is_some());
+    assert_eq!(
+        matches[0]["basis"]["algorithm"],
+        serde_json::json!("document_fuzzy_v1")
+    );
+    assert_eq!(
+        matches[0]["basis"]["same_stable_block_id"],
+        serde_json::json!(true)
+    );
+    assert!(matches[0]["basis"]["source_ref"].as_str().is_some());
+    let conflict = &block["conflict"];
     assert_eq!(conflict["selected_action"], serde_json::json!("report"));
     assert_eq!(
         conflict["existing"]["title"],
@@ -1436,6 +1467,235 @@ fn import_documents_cli_can_resolve_conflict_by_adding_context() {
     assert_eq!(
         diff["data"]["changed_existing_decisions"][0]["decision_id"],
         serde_json::json!(decision_id)
+    );
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+}
+
+#[test]
+fn import_documents_cli_reports_near_duplicate_fuzzy_candidate_without_writes() {
+    let hivemind_dir = unique_test_dir("import-document-fuzzy-ledger");
+    let scratch_dir = unique_test_dir("import-document-fuzzy-docs");
+    std::fs::create_dir_all(&scratch_dir).expect("scratch dir");
+    let original_path = scratch_dir.join("storage.md");
+    let edited_path = scratch_dir.join("edited-storage.md");
+    std::fs::write(
+        &original_path,
+        "Decision:\n  id: local-sqlite\n  title: Use SQLite for local prototype storage\n  status: accepted\n  actor: actor:alice\n  topic_keys: storage, local\n  rationale: SQLite keeps setup small and replay fast for the local prototype.\n  options:\n    - sqlite\n    - postgres\n  chose: sqlite\n",
+    )
+    .expect("write original doc");
+
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:local",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        original_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("original import succeeds");
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let latest_after_original = ledger.latest_offset().expect("latest offset");
+
+    std::fs::write(
+        &edited_path,
+        "Decision:\n  id: choose-sqlite-store\n  title: Choose SQLite as the local prototype store\n  status: accepted\n  topic_keys: local, storage\n  rationale: Embedded SQLite keeps setup light and replay tests fast for the prototype.\n  options:\n    - sqlite\n    - flat files\n  chose: sqlite\n",
+    )
+    .expect("write near duplicate doc");
+
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:local",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        edited_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("near duplicate import reports successfully");
+    let output: serde_json::Value = serde_json::from_str(&output).expect("valid import json");
+    assert_eq!(
+        output["summary"]["duplicate_candidates"],
+        serde_json::json!(1)
+    );
+    assert_eq!(output["summary"]["events_written"], serde_json::json!(0));
+    let block = &output["files"][0]["blocks"][0];
+    assert_eq!(block["status"], serde_json::json!("duplicate_candidate"));
+    assert_eq!(
+        block["reviewer_action"],
+        serde_json::json!("review_fuzzy_duplicate_candidate")
+    );
+    assert!(block["message"]
+        .as_str()
+        .expect("candidate message")
+        .contains("fuzzy duplicate candidate"));
+    let matches = block["similarity_matches"]
+        .as_array()
+        .expect("similarity matches");
+    assert_eq!(matches.len(), 1);
+    assert!(matches[0]["score"].as_u64().expect("score") >= 70);
+    assert_eq!(matches[0]["review_required"], serde_json::json!(true));
+    assert!(matches[0]["decision_id"]
+        .as_str()
+        .expect("matched decision id")
+        .contains("local-sqlite"));
+    assert!(matches[0]["basis"]["matched_fields"]
+        .as_array()
+        .expect("matched fields")
+        .iter()
+        .any(|field| field == "title"));
+    assert!(matches[0]["basis"]["source_ref"].as_str().is_some());
+    assert_eq!(
+        ledger.latest_offset().expect("latest offset unchanged"),
+        latest_after_original
+    );
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+}
+
+#[test]
+fn import_documents_cli_requires_review_for_ambiguous_fuzzy_matches() {
+    let hivemind_dir = unique_test_dir("import-document-ambiguous-ledger");
+    let scratch_dir = unique_test_dir("import-document-ambiguous-docs");
+    std::fs::create_dir_all(&scratch_dir).expect("scratch dir");
+    let storage_path = scratch_dir.join("storage.md");
+    let offline_path = scratch_dir.join("offline.md");
+    let candidate_path = scratch_dir.join("candidate.md");
+    std::fs::write(
+        &storage_path,
+        "Decision:\n  id: local-storage\n  title: Use SQLite for local prototype storage\n  status: proposed\n  topic_keys: storage\n  rationale: SQLite keeps local storage durable and replay tests fast without a service.\n  options:\n    - sqlite\n    - postgres\n  chose: sqlite\n",
+    )
+    .expect("write storage doc");
+    std::fs::write(
+        &offline_path,
+        "Decision:\n  id: offline-cache\n  title: Use SQLite for local offline storage\n  status: proposed\n  topic_keys: offline\n  rationale: SQLite keeps offline data durable without a service.\n  options:\n    - sqlite\n    - indexeddb\n  chose: sqlite\n",
+    )
+    .expect("write offline doc");
+
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:local",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        storage_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("storage import succeeds");
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:local",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        offline_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("offline import succeeds");
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let latest_after_seed = ledger.latest_offset().expect("latest offset");
+
+    std::fs::write(
+        &candidate_path,
+        "Decision:\n  id: sqlite-local-offline\n  title: Use SQLite for local offline storage\n  status: proposed\n  topic_keys: storage, offline\n  rationale: SQLite keeps local offline storage durable and replay tests fast without a service.\n  options:\n    - sqlite\n    - postgres\n  chose: sqlite\n",
+    )
+    .expect("write ambiguous doc");
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:local",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        candidate_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("ambiguous import reports successfully");
+    let output: serde_json::Value = serde_json::from_str(&output).expect("valid import json");
+    let block = &output["files"][0]["blocks"][0];
+    assert_eq!(block["status"], serde_json::json!("duplicate_candidate"));
+    assert_eq!(
+        block["reviewer_action"],
+        serde_json::json!("review_ambiguous_fuzzy_matches")
+    );
+    let matches = block["similarity_matches"]
+        .as_array()
+        .expect("ambiguous matches");
+    assert_eq!(matches.len(), 2);
+    assert_eq!(output["summary"]["events_written"], serde_json::json!(0));
+    assert_eq!(
+        ledger.latest_offset().expect("latest offset unchanged"),
+        latest_after_seed
+    );
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+}
+
+#[test]
+fn import_documents_cli_imports_non_duplicate_without_similarity_matches() {
+    let hivemind_dir = unique_test_dir("import-document-non-duplicate-ledger");
+    let scratch_dir = unique_test_dir("import-document-non-duplicate-docs");
+    std::fs::create_dir_all(&scratch_dir).expect("scratch dir");
+    let storage_path = scratch_dir.join("storage.md");
+    let notifications_path = scratch_dir.join("notifications.md");
+    std::fs::write(
+        &storage_path,
+        "Decision:\n  id: local-sqlite\n  title: Use SQLite for local prototype storage\n  status: accepted\n  topic_keys: storage, local\n  rationale: SQLite keeps setup small and replay fast for the local prototype.\n  options:\n    - sqlite\n    - postgres\n  chose: sqlite\n",
+    )
+    .expect("write storage doc");
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:local",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        storage_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("storage import succeeds");
+
+    std::fs::write(
+        &notifications_path,
+        "Decision:\n  id: queued-notifications\n  title: Queue blocker notifications before delivery\n  status: proposed\n  topic_keys: notifications, reliability\n  rationale: A queue lets retries happen independently when Slack is temporarily unavailable.\n  options:\n    - queued delivery\n    - direct send\n  chose: queued delivery\n",
+    )
+    .expect("write notifications doc");
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:local",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        notifications_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("non duplicate import succeeds");
+    let output: serde_json::Value = serde_json::from_str(&output).expect("valid import json");
+    let block = &output["files"][0]["blocks"][0];
+    assert_eq!(block["status"], serde_json::json!("imported"));
+    assert_eq!(output["summary"]["blocks_imported"], serde_json::json!(1));
+    assert!(
+        block.get("similarity_matches").is_none(),
+        "non-duplicates should not carry fuzzy matches"
     );
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);
