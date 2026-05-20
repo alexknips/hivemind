@@ -47,7 +47,7 @@ cargo test --features graph-kuzu kuzu -- --nocapture
 ```
 
 Only run the Kuzu feature tests when changing the Kuzu adapter or explicit Kuzu
-CLI path. See `docs/ARCHITECTURE.md` for the current native-link blocker.
+CLI path. See `docs/ARCHITECTURE.md` for native dependency notes.
 
 Additional slice-1 harnesses:
 

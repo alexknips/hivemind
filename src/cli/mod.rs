@@ -1661,8 +1661,12 @@ mod tests {
             "focused.dot",
         ]);
 
-        let Command::Tui(args) = cli.command else {
-            panic!("expected tui command"); // ubs:ignore: test-only parser guard; not a production panic surface.
+        let args = match cli.command {
+            Command::Tui(args) => args,
+            command => {
+                assert!(matches!(command, Command::Tui(_)), "expected tui command");
+                return;
+            }
         };
         assert_eq!(args.query.as_deref(), Some("queue"));
         assert_eq!(args.topic_keys, vec!["infra", "storage"]);

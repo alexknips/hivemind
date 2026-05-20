@@ -73,17 +73,19 @@ This matches the remote-store decision in `docs/REMOTE_DB.md`: SQLite and Kuzu
 are local prototype storage. Shared multi-user and multi-agent deployments need
 a HiveMind service with a remote canonical ledger and projection.
 
-## Kuzu Build Cost And Blocker
+## Kuzu Build Cost And Native Dependencies
 
 The Rust `kuzu` crate builds bundled native C++ code. Developers should run
 default `cargo test` for routine work. Run `cargo test --features graph-kuzu`
 only when changing the Kuzu adapter or explicit Kuzu CLI path.
 
-Current blocker: `hivemind-oj7qr` tracks a link failure in this environment.
-`cargo test --features graph-kuzu kuzu -- --nocapture` compiles the bundled Kuzu
-C++ code, then `rust-lld` fails on missing cxxbridge symbols from `kuzu 0.11.3`
-such as `PreparedStatement$isSuccess`, `Value$get_value_i64`, and
-`QueryResult$getNext`. Until that is fixed, Kuzu runtime tests cannot execute.
+`kuzu 0.11.3` depends on `cxx 1.0.138`, and HiveMind pins the optional
+`cxx-build` dependency to the same version so Kuzu's generated bridge symbols
+match the runtime bridge crate. Do not loosen that pin without running:
+
+```bash
+cargo test --features graph-kuzu kuzu -- --nocapture
+```
 
 ## Open Slice 2 Decisions
 
