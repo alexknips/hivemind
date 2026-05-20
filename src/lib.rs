@@ -4,6 +4,7 @@ pub mod error;
 pub mod events;
 pub mod ingest;
 pub mod ledger;
+pub mod mcp;
 pub mod projector;
 pub mod queries;
 pub mod slack_app;

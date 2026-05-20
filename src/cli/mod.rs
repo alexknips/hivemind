@@ -50,7 +50,12 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
-    #[arg(long, global = true, default_value = "./hivemind/")]
+    #[arg(
+        long,
+        global = true,
+        env = "HIVEMIND_DIR",
+        default_value = "./hivemind/"
+    )]
     pub hivemind_dir: PathBuf,
 
     #[arg(long, global = true, value_enum)]
@@ -79,6 +84,17 @@ pub enum Command {
     Ingest(IngestArgs),
     #[command(name = "slack-app")]
     SlackApp(SlackAppArgs),
+    /// Run an MCP (Model Context Protocol) stdio server that exposes
+    /// HiveMind's capture/query surface to MCP-aware clients.
+    Mcp(McpArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct McpArgs {
+    /// Override the session identifier embedded in event provenance for
+    /// captures coming through this server. Defaults to a generated id.
+    #[arg(long)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -846,7 +862,20 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Tui(args) => run_tui(cli, args),
         Command::Ingest(args) => run_ingest(cli, args),
         Command::SlackApp(args) => run_slack_app(cli, args),
+        Command::Mcp(args) => run_mcp(cli, args),
     }
+}
+
+fn run_mcp(cli: &Cli, args: &McpArgs) -> Result<String> {
+    let mut config = crate::mcp::McpConfig::new(cli.hivemind_dir.clone());
+    if let Some(session_id) = args.session_id.as_deref().map(str::trim) {
+        if !session_id.is_empty() {
+            config = config.with_session_id(session_id);
+        }
+    }
+    crate::mcp::serve_stdio(&config)?;
+    // The stdio loop only returns once stdin closes — no payload to print.
+    Ok(String::new())
 }
 
 fn run_ingest(cli: &Cli, ingest: &IngestArgs) -> Result<String> {
@@ -1772,6 +1801,13 @@ fn default_actor() -> String {
                 .filter(|value| !value.trim().is_empty())
         })
         .unwrap_or_else(|| "unknown-actor".to_owned())
+}
+
+/// Public DOT renderer for callers outside the CLI module (e.g. the MCP
+/// server). Delegates to the same internal implementation `hivemind dump`
+/// uses so output stays identical across transports.
+pub fn render_decision_dot(graph: &impl GraphView) -> Result<String> {
+    render_dot(graph)
 }
 
 fn render_dot(graph: &impl GraphView) -> Result<String> {
