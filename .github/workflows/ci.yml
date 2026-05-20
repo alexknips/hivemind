@@ -42,4 +42,4 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run UBS critical scan
-        run: ~/.local/share/ubs/modules/ubs-rust.sh . --format=json --quiet --no-cargo
+        run: ~/.local/share/ubs/modules/ubs-rust.sh . --format=json --quiet --ci --no-cargo --fail-critical=1
