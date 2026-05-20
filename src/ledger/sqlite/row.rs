@@ -123,6 +123,7 @@ fn parse_event_source(value: &str) -> Result<EventSource> {
     match value {
         "cli" => Ok(EventSource::Cli),
         "agent" => Ok(EventSource::Agent),
+        "human" => Ok(EventSource::Human),
         "slack" => Ok(EventSource::Slack),
         "document" => Ok(EventSource::Document),
         "api" => Ok(EventSource::Api),

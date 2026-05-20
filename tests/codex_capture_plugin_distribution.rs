@@ -1,5 +1,7 @@
 use std::fs;
 use std::path::Path;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
@@ -32,13 +34,95 @@ fn codex_capture_plugin_bundle_is_installable_and_points_at_cli_capture() -> Tes
     assert_no_todos("plugin manifest", &manifest.to_string());
 
     let skill =
-        fs::read_to_string(root.join("plugins/hivemind-capture/skills/hivemind-capture/SKILL.md"))
-            .expect("skill is readable");
+        fs::read_to_string(root.join("plugins/hivemind-capture/skills/hivemind-capture/SKILL.md"))?;
     assert_no_todos("skill", &skill);
     assert!(skill.contains("decision.capture"));
     assert!(skill.contains("--agent-tool codex"));
     assert!(skill.contains("agent:codex:<session>"));
     assert!(skill.contains("HIVEMIND_DIR"));
+    Ok(())
+}
+
+#[test]
+fn claude_code_capture_command_writes_human_decision() -> TestResult<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let settings = read_json(root.join(".claude/settings.json"))?;
+    assert_eq!(settings["env"]["HIVEMIND_DIR"], "./hivemind");
+    assert!(settings["permissions"]["allow"]
+        .as_array()
+        .expect("allow list")
+        .iter()
+        .any(|permission| permission == "Bash(.claude/scripts/capture-decision.sh:*)"));
+
+    let command = fs::read_to_string(root.join(".claude/commands/capture-decision.md"))?;
+    assert!(command.contains("/capture-decision"));
+    assert!(command.contains("--source human"));
+    assert!(command.contains("--source agent"));
+
+    let script = root.join(".claude/scripts/capture-decision.sh");
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_nanos()
+        .to_string();
+    let hivemind_dir = std::env::temp_dir().join(format!("hivemind-claude-capture-{unique}"));
+
+    let output = Command::new(&script)
+        .current_dir(root)
+        .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+        .env("HIVEMIND_DIR", &hivemind_dir)
+        .args([
+            "--source",
+            "human",
+            "--actor-id",
+            "human:test-user",
+            "--title",
+            "Capture Claude Code slash command decisions",
+            "--rationale",
+            "Project-local Claude Code commands should write manual decisions with human provenance",
+            "--topic-keys",
+            "claude,capture",
+            "--options",
+            "repo-command,manual-shell",
+            "--chose",
+            "repo-command",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "capture script failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let query = Command::new(env!("CARGO_BIN_EXE_hivemind"))
+        .arg("--hivemind-dir")
+        .arg(&hivemind_dir)
+        .args([
+            "query",
+            "search_decisions",
+            "--q",
+            "slash command",
+            "--actor-id",
+            "human:test-user",
+            "--source",
+            "human",
+            "--limit",
+            "5",
+        ])
+        .output()?;
+    assert!(
+        query.status.success(),
+        "query failed: {}",
+        String::from_utf8_lossy(&query.stderr)
+    );
+    let query: Value = serde_json::from_slice(&query.stdout)?;
+    assert_eq!(query["result_count"], 1);
+    assert_eq!(
+        query["data"]["items"][0]["graph_context"]["actor_ids"][0],
+        "human:test-user"
+    );
+
+    let _ = fs::remove_dir_all(hivemind_dir);
     Ok(())
 }
 

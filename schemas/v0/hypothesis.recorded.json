@@ -12,7 +12,7 @@
     "causation_event_id": { "type": ["integer", "null"], "minimum": 1 },
     "type": { "const": "hypothesis.recorded" },
     "actor_id": { "type": "string", "minLength": 1 },
-    "source": { "enum": ["cli", "agent", "slack", "api"] },
+    "source": { "enum": ["cli", "agent", "human", "slack", "api"] },
     "source_ref": { "type": ["string", "null"], "minLength": 1 },
     "ts": { "type": ["string", "null"], "format": "date-time" },
     "payload": {

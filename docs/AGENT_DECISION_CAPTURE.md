@@ -39,6 +39,22 @@ cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
   --chose direct-cli
 ```
 
+This repository also ships a project-local Claude Code command:
+
+```bash
+/capture-decision --title "Keep capture in the commands layer" \
+  --rationale "The write path should validate and append events without query-time inference" \
+  --topic-keys agents,capture \
+  --options direct-cli,mcp \
+  --chose direct-cli
+```
+
+The command calls `.claude/scripts/capture-decision.sh`. By default it records
+manual slash-command captures as `actor_id=human:<git-user>` with
+`source=human`. Pass `--source agent` when Claude Code is recording an
+autonomous agent decision; that uses `agent:claude:<session>` and
+`source=agent`.
+
 ## Codex
 
 ```bash

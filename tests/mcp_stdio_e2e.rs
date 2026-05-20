@@ -16,19 +16,12 @@ fn unique_dir(label: &str) -> PathBuf {
     dir
 }
 
-fn binary_path() -> PathBuf {
-    // CARGO sets these for integration tests; the harness manifest binary is
-    // built before tests run, so this path always exists.
-    let bin = env!("CARGO_BIN_EXE_hivemind");
-    PathBuf::from(bin)
-}
-
 #[test]
 fn mcp_stdio_server_handles_initialize_list_and_capture() {
     let hivemind_dir = unique_dir("roundtrip");
     let _ = std::fs::create_dir_all(&hivemind_dir);
 
-    let mut child = Command::new(binary_path())
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hivemind"))
         .arg("--hivemind-dir")
         .arg(&hivemind_dir)
         .arg("mcp")
@@ -136,7 +129,7 @@ fn mcp_capture_evidence_persists_across_invocations() {
     let hivemind_dir = unique_dir("evidence");
     let _ = std::fs::create_dir_all(&hivemind_dir);
 
-    let mut child = Command::new(binary_path())
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hivemind"))
         .arg("--hivemind-dir")
         .arg(&hivemind_dir)
         .arg("mcp")

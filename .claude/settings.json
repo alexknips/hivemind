@@ -1,0 +1,14 @@
+{
+  "env": {
+    "HIVEMIND_DIR": "./hivemind",
+    "HIVEMIND_CAPTURE_SCRIPT": ".claude/scripts/capture-decision.sh"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(.claude/scripts/capture-decision.sh:*)",
+      "Bash(git config user.email)",
+      "Bash(git config user.name)",
+      "Bash(mkdir -p ./hivemind)"
+    ]
+  }
+}

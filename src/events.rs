@@ -39,6 +39,7 @@ pub enum EventSource {
     #[default]
     Cli,
     Agent,
+    Human,
     Slack,
     Document,
     Api,
@@ -49,6 +50,7 @@ impl EventSource {
         match self {
             Self::Cli => "cli",
             Self::Agent => "agent",
+            Self::Human => "human",
             Self::Slack => "slack",
             Self::Document => "document",
             Self::Api => "api",
@@ -73,6 +75,10 @@ impl EventProvenance {
 
     pub fn agent(source_ref: impl Into<String>) -> Self {
         Self::new(EventSource::Agent, Some(source_ref.into()))
+    }
+
+    pub fn human(source_ref: impl Into<String>) -> Self {
+        Self::new(EventSource::Human, Some(source_ref.into()))
     }
 
     pub fn slack(source_ref: impl Into<String>) -> Self {

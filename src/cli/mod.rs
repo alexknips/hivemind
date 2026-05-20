@@ -295,13 +295,22 @@ pub enum EmitCommand {
     AttachEvidence(EmitAttachEvidenceArgs),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DecisionCaptureSource {
+    Agent,
+    Human,
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct EmitDecisionCaptureArgs {
+    #[arg(long = "source", value_enum, default_value_t = DecisionCaptureSource::Agent)]
+    pub source: DecisionCaptureSource,
+
     #[arg(long = "agent-tool")]
-    pub agent_tool: String,
+    pub agent_tool: Option<String>,
 
     #[arg(long = "agent-session")]
-    pub agent_session: String,
+    pub agent_session: Option<String>,
 
     #[arg(long = "actor-id")]
     pub actor_id: Option<String>,
@@ -984,10 +993,9 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
 
     let output = match &emit.command {
         EmitCommand::DecisionCapture(args) => {
-            let actor_id = agent_actor_id(args)?;
-            let source_ref = agent_source_ref(args, &actor_id)?;
-            let commands =
-                Commands::new_with_provenance(&ledger, EventProvenance::agent(source_ref));
+            let actor_id = capture_actor_id(args)?;
+            let provenance = capture_provenance(args, &actor_id)?;
+            let commands = Commands::new_with_provenance(&ledger, provenance);
             let decision_id =
                 propose_decision_from_option_labels(&commands, &actor_id, &args.decision)?;
             OutputEnvelope::new("emit", "decision_id", decision_id)
@@ -1113,22 +1121,43 @@ fn propose_decision_from_option_labels<L: EventLedger>(
     )
 }
 
-fn agent_actor_id(args: &EmitDecisionCaptureArgs) -> Result<String> {
+fn capture_actor_id(args: &EmitDecisionCaptureArgs) -> Result<String> {
     if let Some(actor_id) = trimmed_optional("--actor-id", &args.actor_id)? {
         return Ok(actor_id.to_owned());
     }
 
-    let tool = trimmed_required("--agent-tool", &args.agent_tool)?;
-    let session = trimmed_required("--agent-session", &args.agent_session)?;
-    Ok(format!("agent:{tool}:{session}"))
+    match args.source {
+        DecisionCaptureSource::Agent => {
+            let tool = trimmed_required_option("--agent-tool", &args.agent_tool)?;
+            let session = trimmed_required_option("--agent-session", &args.agent_session)?;
+            Ok(format!("agent:{tool}:{session}"))
+        }
+        DecisionCaptureSource::Human => Err(CliError::InvalidInput(
+            "--actor-id is required when --source human".to_owned(),
+        )
+        .into()),
+    }
 }
 
-fn agent_source_ref(args: &EmitDecisionCaptureArgs, actor_id: &str) -> Result<String> {
+fn capture_provenance(args: &EmitDecisionCaptureArgs, actor_id: &str) -> Result<EventProvenance> {
     if let Some(source_ref) = trimmed_optional("--source-ref", &args.source_ref)? {
-        return Ok(source_ref.to_owned());
+        return Ok(match args.source {
+            DecisionCaptureSource::Agent => EventProvenance::agent(source_ref),
+            DecisionCaptureSource::Human => EventProvenance::human(source_ref),
+        });
     }
 
-    Ok(actor_id.to_owned())
+    Ok(match args.source {
+        DecisionCaptureSource::Agent => EventProvenance::agent(actor_id),
+        DecisionCaptureSource::Human => EventProvenance::human(actor_id),
+    })
+}
+
+fn trimmed_required_option<'a>(field: &'static str, value: &'a Option<String>) -> Result<&'a str> {
+    let Some(value) = value.as_deref() else {
+        return Err(CliError::InvalidInput(format!("{field} must be provided")).into());
+    };
+    trimmed_required(field, value)
 }
 
 fn trimmed_required<'a>(field: &'static str, value: &'a str) -> Result<&'a str> {
@@ -2163,7 +2192,8 @@ mod tests {
     }
 
     #[test]
-    fn parses_get_decisions_added_since_command() {
+    fn parses_get_decisions_added_since_command(
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         let cli = Cli::parse_from([
             "hivemind",
             "query",
@@ -2179,25 +2209,11 @@ mod tests {
             "--limit",
             "10",
         ]);
-        let args = match cli.command {
-            Command::Query(args) => args,
-            command => {
-                assert!(
-                    matches!(command, Command::Query(_)),
-                    "expected query command"
-                );
-                return;
-            }
+        let Command::Query(args) = cli.command else {
+            return Err("expected query command".into());
         };
-        let args = match args.command {
-            QueryCommand::GetDecisionsAddedSince(args) => args,
-            command => {
-                assert!(
-                    matches!(command, QueryCommand::GetDecisionsAddedSince(_)),
-                    "expected GetDecisionsAddedSince"
-                );
-                return;
-            }
+        let QueryCommand::GetDecisionsAddedSince(args) = args.command else {
+            return Err("expected GetDecisionsAddedSince".into());
         };
         assert_eq!(args.since.as_deref(), Some("last week"));
         assert_eq!(args.now.as_deref(), Some("2026-05-19T12:00:00Z"));
@@ -2211,6 +2227,7 @@ mod tests {
             Some(Utc.with_ymd_and_hms(2026, 5, 11, 0, 0, 0).unwrap())
         );
         assert_eq!(request.filters.sources, vec!["document"]);
+        Ok(())
     }
 
     #[test]
@@ -2840,6 +2857,70 @@ mod tests {
                 assert_eq!(relation_event.source, crate::events::EventSource::Agent);
                 assert_eq!(relation_event.source_ref.as_deref(), Some(actor_id));
             }
+        }
+
+        let _ = std::fs::remove_dir_all(&hivemind_dir);
+    }
+
+    #[test]
+    fn emit_decision_capture_records_human_provenance_when_requested() {
+        let hivemind_dir = unique_test_dir("emit-human-decision-capture");
+
+        let human_decision = run(&Cli::parse_from([
+            "hivemind",
+            "--json",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "emit",
+            "decision.capture",
+            "--source",
+            "human",
+            "--actor-id",
+            "human:alice",
+            "--title",
+            "Capture manual Claude Code decisions as human writes",
+            "--rationale",
+            "A slash command typed by a human should preserve the human as the actor",
+            "--topic-keys",
+            "agents,capture",
+            "--options",
+            "manual-slash,agent-inference",
+            "--chose",
+            "manual-slash",
+        ]))
+        .expect("human capture succeeds");
+        let human_decision = envelope_value(&human_decision);
+
+        assert_decision_queryable(&hivemind_dir, &human_decision);
+
+        let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+        let events = ledger.read(0, 100).expect("events read");
+        let event = events
+            .iter()
+            .find(|event| {
+                event.event_type == crate::events::EventType::DecisionProposed
+                    && event
+                        .payload
+                        .get("decision_id")
+                        .and_then(|value| value.as_str())
+                        == Some(human_decision.as_str())
+            })
+            .expect("decision proposal exists");
+
+        assert_eq!(event.actor_id, "human:alice");
+        assert_eq!(event.source, crate::events::EventSource::Human);
+        assert_eq!(event.source_ref.as_deref(), Some("human:alice"));
+
+        let proposal_id = event.event_id.expect("proposal has ledger origin");
+        let relation_events = events
+            .iter()
+            .filter(|event| event.causation_event_id == Some(proposal_id))
+            .collect::<Vec<_>>();
+        assert!(!relation_events.is_empty());
+        for relation_event in relation_events {
+            assert_eq!(relation_event.actor_id, "human:alice");
+            assert_eq!(relation_event.source, crate::events::EventSource::Human);
+            assert_eq!(relation_event.source_ref.as_deref(), Some("human:alice"));
         }
 
         let _ = std::fs::remove_dir_all(&hivemind_dir);
