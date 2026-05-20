@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use hivemind::events::{
     self, BlockerReportedPayload, BlockerResolvedPayload, DecisionBlockerPriority,
     DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload, DecisionRequestedPayload,
-    DecisionSupersededPayload, Event, EventPayload, EventSource, EventType, EventValidationError,
-    EvidenceRecordedPayload, HypothesisRecordedPayload, NotificationAcknowledgedPayload,
-    NotificationSentPayload, RelationAddedPayload, RelationKind as EventRelationKind,
+    DecisionSupersededPayload, Event, EventBuilder, EventEnvelope, EventPayload, EventSource,
+    EventType, EventValidationError, EvidenceRecordedPayload, HypothesisRecordedPayload,
+    NotificationAcknowledgedPayload, NotificationSentPayload, RelationAddedPayload,
+    RelationKind as EventRelationKind,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};
@@ -102,6 +103,45 @@ fn event_payload_variants_have_stable_event_types() {
 
         let event = event_with_payload(event_type, payload_json(&payload));
         let validated = events::validate(&event).expect("minimal typed payload validates");
+        assert_eq!(payload_variant_type(&validated), event_type);
+    }
+}
+
+#[test]
+fn event_builder_derives_event_type_from_payload_variant() {
+    let cases = [
+        (
+            EventType::DecisionAccepted,
+            EventPayload::DecisionAccepted(DecisionIdPayload {
+                decision_id: "decision-accepted".to_owned(),
+            }),
+        ),
+        (
+            EventType::DecisionRejected,
+            EventPayload::DecisionRejected(DecisionRejectedPayload {
+                decision_id: "decision-rejected".to_owned(),
+                reason: None,
+            }),
+        ),
+    ];
+
+    for (event_type, payload) in cases {
+        let envelope = EventEnvelope::new(payload.clone());
+        assert_eq!(envelope.event_type(), event_type);
+        assert_eq!(envelope.payload().event_type(), event_type);
+
+        let event = EventBuilder::new(
+            Uuid::parse_str("018f5d8a-03fb-7df0-8e36-64d7410cfe10").unwrap(),
+            "actor:alice",
+            envelope,
+        )
+        .build()
+        .expect("typed event builds");
+
+        assert_eq!(event.event_type, event_type);
+        assert_eq!(event.payload, payload.to_value().unwrap());
+
+        let validated = events::validate(&event).expect("typed event validates");
         assert_eq!(payload_variant_type(&validated), event_type);
     }
 }

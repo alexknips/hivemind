@@ -318,6 +318,148 @@ impl EventPayload {
             Self::NotificationAcknowledged(_) => EventType::NotificationAcknowledged,
         }
     }
+
+    pub fn to_value(&self) -> std::result::Result<Value, serde_json::Error> {
+        match self {
+            Self::DecisionProposed(payload) => serde_json::to_value(payload),
+            Self::DecisionRequested(payload) => serde_json::to_value(payload),
+            Self::DecisionAccepted(payload) => serde_json::to_value(payload),
+            Self::DecisionRejected(payload) => serde_json::to_value(payload),
+            Self::DecisionSuperseded(payload) => serde_json::to_value(payload),
+            Self::EvidenceRecorded(payload) => serde_json::to_value(payload),
+            Self::HypothesisRecorded(payload) => serde_json::to_value(payload),
+            Self::RelationAdded(payload) => serde_json::to_value(payload),
+            Self::BlockerReported(payload) => serde_json::to_value(payload),
+            Self::BlockerResolved(payload) => serde_json::to_value(payload),
+            Self::NotificationSent(payload) => serde_json::to_value(payload),
+            Self::NotificationAcknowledged(payload) => serde_json::to_value(payload),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventEnvelope {
+    event_type: EventType,
+    payload: EventPayload,
+}
+
+impl EventEnvelope {
+    pub fn new(payload: EventPayload) -> Self {
+        let event_type = payload.event_type();
+        Self {
+            event_type,
+            payload,
+        }
+    }
+
+    pub fn event_type(&self) -> EventType {
+        self.event_type
+    }
+
+    pub fn payload(&self) -> &EventPayload {
+        &self.payload
+    }
+
+    pub fn into_payload(self) -> EventPayload {
+        self.payload
+    }
+}
+
+impl From<EventPayload> for EventEnvelope {
+    fn from(payload: EventPayload) -> Self {
+        Self::new(payload)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum EventBuildError {
+    #[error("payload for event type {event_type:?} could not be serialized: {source}")]
+    PayloadSerialization {
+        event_type: EventType,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventBuilder {
+    event_id: Option<EventId>,
+    event_uuid: Uuid,
+    correlation_id: Option<String>,
+    causation_event_id: Option<EventId>,
+    actor_id: String,
+    source: EventSource,
+    source_ref: Option<String>,
+    envelope: EventEnvelope,
+    ts: Option<DateTime<Utc>>,
+}
+
+impl EventBuilder {
+    pub fn new(
+        event_uuid: Uuid,
+        actor_id: impl Into<String>,
+        payload: impl Into<EventEnvelope>,
+    ) -> Self {
+        Self {
+            event_id: None,
+            event_uuid,
+            correlation_id: None,
+            causation_event_id: None,
+            actor_id: actor_id.into(),
+            source: EventSource::default(),
+            source_ref: None,
+            envelope: payload.into(),
+            ts: None,
+        }
+    }
+
+    pub fn event_id(mut self, event_id: Option<EventId>) -> Self {
+        self.event_id = event_id;
+        self
+    }
+
+    pub fn correlation_id(mut self, correlation_id: Option<String>) -> Self {
+        self.correlation_id = correlation_id;
+        self
+    }
+
+    pub fn causation_event_id(mut self, causation_event_id: Option<EventId>) -> Self {
+        self.causation_event_id = causation_event_id;
+        self
+    }
+
+    pub fn provenance(mut self, provenance: EventProvenance) -> Self {
+        self.source = provenance.source;
+        self.source_ref = provenance.source_ref;
+        self
+    }
+
+    pub fn timestamp(mut self, ts: Option<DateTime<Utc>>) -> Self {
+        self.ts = ts;
+        self
+    }
+
+    pub fn build(self) -> std::result::Result<Event, EventBuildError> {
+        let event_type = self.envelope.event_type();
+        let payload = self
+            .envelope
+            .into_payload()
+            .to_value()
+            .map_err(|source| EventBuildError::PayloadSerialization { event_type, source })?;
+
+        Ok(Event {
+            event_id: self.event_id,
+            event_uuid: self.event_uuid,
+            correlation_id: self.correlation_id,
+            causation_event_id: self.causation_event_id,
+            event_type,
+            actor_id: self.actor_id,
+            source: self.source,
+            source_ref: self.source_ref,
+            payload,
+            ts: self.ts,
+        })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

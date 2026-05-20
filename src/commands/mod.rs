@@ -3,11 +3,14 @@ use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::Utc;
-use serde_json::json;
 use uuid::Uuid;
 
 use crate::error::CommandError;
-use crate::events::{Event, EventId, EventProvenance, EventType, RelationKind};
+use crate::events::{
+    DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload, DecisionSupersededPayload,
+    Event, EventBuilder, EventId, EventPayload, EventProvenance, EventType,
+    EvidenceRecordedPayload, HypothesisRecordedPayload, RelationAddedPayload, RelationKind,
+};
 use crate::ledger::EventLedger;
 use crate::Result;
 
@@ -102,16 +105,15 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_optional_non_empty("source", source)?;
 
         let event = self.event_with_uuid(
-            EventType::EvidenceRecorded,
             actor_id,
-            json!({
-                "evidence_id": evidence_id,
-                "content": content,
-                "source": source
+            EventPayload::EvidenceRecorded(EvidenceRecordedPayload {
+                evidence_id: evidence_id.to_owned(),
+                content: content.to_owned(),
+                source: source.map(ToOwned::to_owned),
             }),
             None,
             event_uuid,
-        );
+        )?;
 
         self.ledger.append(event)
     }
@@ -137,15 +139,14 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("statement", statement)?;
 
         let event = self.event_with_uuid(
-            EventType::HypothesisRecorded,
             actor_id,
-            json!({
-                "hypothesis_id": hypothesis_id,
-                "statement": statement
+            EventPayload::HypothesisRecorded(HypothesisRecordedPayload {
+                hypothesis_id: hypothesis_id.to_owned(),
+                statement: statement.to_owned(),
             }),
             None,
             event_uuid,
-        );
+        )?;
 
         self.ledger.append(event)
     }
@@ -392,21 +393,20 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
 
         let root_event = self.event_with_uuid(
-            EventType::DecisionProposed,
             actor_id,
-            json!({
-                "decision_id": decision_id,
-                "title": title,
-                "rationale": rationale,
-                "topic_keys": normalized_topic_keys,
-                "option_ids": option_ids,
-                "chosen_option_id": chosen_option_id,
-                "hypothesis_ids": hypothesis_ids,
-                "evidence_ids": evidence_ids,
+            EventPayload::DecisionProposed(DecisionProposedPayload {
+                decision_id: decision_id.to_owned(),
+                title: title.to_owned(),
+                rationale: rationale.to_owned(),
+                topic_keys: normalized_topic_keys,
+                option_ids: option_ids.to_vec(),
+                chosen_option_id: chosen_option_id.map(ToOwned::to_owned),
+                hypothesis_ids: hypothesis_ids.to_vec(),
+                evidence_ids: evidence_ids.to_vec(),
             }),
             None,
             event_uuids.proposal,
-        );
+        )?;
 
         let root_event_id = self.ledger.append(root_event)?;
         let mut relation_event_ids = Vec::new();
@@ -488,12 +488,13 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
 
         let event = self.event_with_uuid(
-            EventType::DecisionAccepted,
             actor_id,
-            json!({ "decision_id": decision_id }),
+            EventPayload::DecisionAccepted(DecisionIdPayload {
+                decision_id: decision_id.to_owned(),
+            }),
             None,
             event_uuid,
-        );
+        )?;
 
         self.ledger.append(event)
     }
@@ -537,15 +538,14 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
 
         let event = self.event_with_uuid(
-            EventType::DecisionRejected,
             actor_id,
-            json!({
-                "decision_id": decision_id,
-                "reason": reason,
+            EventPayload::DecisionRejected(DecisionRejectedPayload {
+                decision_id: decision_id.to_owned(),
+                reason: Some(reason.to_owned()),
             }),
             None,
             event_uuid,
-        );
+        )?;
 
         self.ledger.append(event)
     }
@@ -573,12 +573,14 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
 
         let event = self.event_with_uuid(
-            EventType::DecisionRejected,
             actor_id,
-            json!({ "decision_id": decision_id }),
+            EventPayload::DecisionRejected(DecisionRejectedPayload {
+                decision_id: decision_id.to_owned(),
+                reason: None,
+            }),
             None,
             event_uuid,
-        );
+        )?;
 
         self.ledger.append(event)
     }
@@ -630,15 +632,14 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
 
         let event = self.event_with_uuid(
-            EventType::DecisionSuperseded,
             actor_id,
-            json!({
-                "old_decision_id": old_decision_id,
-                "new_decision_id": new_decision_id,
+            EventPayload::DecisionSuperseded(DecisionSupersededPayload {
+                old_decision_id: old_decision_id.to_owned(),
+                new_decision_id: new_decision_id.to_owned(),
             }),
             None,
             event_uuid,
-        );
+        )?;
 
         self.ledger.append(event)
     }
@@ -895,12 +896,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         event_uuid: Uuid,
     ) -> Result<EventId> {
         let event = self.event_with_uuid(
-            EventType::RelationAdded,
             actor_id,
-            json!({
-                "relation": relation,
-                "from_id": from_id,
-                "to_id": to_id,
+            EventPayload::RelationAdded(RelationAddedPayload {
+                relation,
+                from_id: from_id.to_owned(),
+                to_id: to_id.to_owned(),
             }),
             if root_event_id == 0 {
                 None
@@ -908,31 +908,27 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 Some(root_event_id)
             },
             event_uuid,
-        );
+        )?;
 
         self.ledger.append(event)
     }
 
     fn event_with_uuid(
         &self,
-        event_type: EventType,
         actor_id: &str,
-        payload: serde_json::Value,
+        payload: EventPayload,
         causation_event_id: Option<EventId>,
         event_uuid: Uuid,
-    ) -> Event {
-        Event {
-            event_id: None,
-            event_uuid,
-            correlation_id: None,
-            causation_event_id,
-            event_type,
-            actor_id: actor_id.to_owned(),
-            source: self.provenance.source,
-            source_ref: self.provenance.source_ref.clone(),
-            payload,
-            ts: Some(Utc::now()),
-        }
+    ) -> Result<Event> {
+        EventBuilder::new(event_uuid, actor_id, payload)
+            .provenance(self.provenance.clone())
+            .causation_event_id(causation_event_id)
+            .timestamp(Some(Utc::now()))
+            .build()
+            .map_err(|error| {
+                CommandError::Invariant(format!("failed to build typed event envelope: {error}"))
+                    .into()
+            })
     }
 
     fn lock_state(&self) -> Result<MutexGuard<'_, CommandState>> {
