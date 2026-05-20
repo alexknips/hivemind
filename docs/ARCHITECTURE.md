@@ -41,6 +41,13 @@ HTTP/library for embedded use) is independent of what HiveMind does. The
 choice does not change the rules. The principles (`PRINCIPLES.md`) constrain
 what HiveMind does; this section names how surfaces relate to that.
 
+The `suggest` CLI namespace is the local layer-3 surface. For example,
+`suggest document-candidates` can call an external document extractor or consume
+an LLM response file to produce pending-review decision candidates, and
+`suggest materialize-document-candidates` can turn selected candidates into
+ordinary `Decision:` blocks. Neither command appends ledger events; writes still
+go through explicit `emit` or `import documents` commands.
+
 ## Event To Query Flow
 
 The event ledger is authoritative. Every append records an actor, event UUID,

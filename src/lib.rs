@@ -9,6 +9,7 @@ pub mod mcp;
 pub mod projector;
 pub mod queries;
 pub mod slack_app;
+pub mod suggest;
 #[cfg(feature = "tui")]
 pub mod tui;
 

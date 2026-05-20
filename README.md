@@ -319,6 +319,27 @@ hivemind --actor alice --json import documents ./prepared
 OCR text files such as `scan.ocr.txt` are marked `review_required`, and that
 uncertainty is preserved in the final imported source reference.
 
+LLM-assisted document extraction stays in the layer-3 suggestion path. It can
+read an unstructured local document and an external extractor response without
+writing ledger events:
+
+```bash
+hivemind --json suggest document-candidates \
+  --file ./notes/memo.txt \
+  --llm-response ./llm-candidates.json > candidates.json
+```
+
+After review, materialize selected candidates into ordinary `Decision:` blocks,
+then import that reviewed file explicitly:
+
+```bash
+hivemind --actor alice --json suggest materialize-document-candidates \
+  --input candidates.json \
+  --candidate-id candidate:document:abc123 \
+  --output reviewed.md
+hivemind --actor alice --json import documents --file reviewed.md
+```
+
 The emit commands print the new entity id or event id. Add `--json` for a
 structured output envelope.
 

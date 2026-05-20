@@ -94,10 +94,80 @@ Slice 1 extraction is deterministic structured-marker extraction:
    hypotheses, supersession, and relations represented in the block.
 4. Report validation errors without writing partial events for that block.
 
-LLM-assisted extraction is later layer-3 work. It may propose candidate blocks,
-but those candidates must be reviewed or materialized as explicit structured
-input before the write layer appends ledger events. The importer must not call
-an LLM from the write path.
+LLM-assisted extraction is layer-3 suggestion work. It may propose candidate
+blocks, but those candidates must be reviewed or materialized as explicit
+structured input before the write layer appends ledger events. The importer must
+not call an LLM from the write path.
+
+## LLM Candidate Workflow
+
+`hivemind suggest document-candidates` is outside the write and query paths. It
+reads local UTF-8 markdown or text documents, sends source text plus provenance
+to an external extractor command or consumes an already-produced LLM response
+file, and returns pending-review candidates. The command does not open the
+ledger and does not append events.
+
+Each candidate includes:
+
+- A structured decision draft: `id`, `title`, `status`, `topic_keys`,
+  `rationale`, `options`, optional `chose`, `evidence`, and `hypotheses`.
+- Source document provenance: canonical path, SHA-256, byte and line span, and
+  source snippet.
+- An extraction explanation and optional non-numeric confidence explanation.
+- A materialization hint that points to the explicit review step.
+
+The external extractor protocol is JSON over stdin/stdout when
+`--extractor-command hivemind-document-extractor` is used. The executable name
+is fixed so this path can be installed deliberately without allowing arbitrary
+command execution from document-processing input. For offline review or tests,
+`--llm-response <path>` can supply the same response JSON directly:
+
+```bash
+hivemind --json suggest document-candidates \
+  --file ./decision-memo.txt \
+  --llm-response ./llm-response.json > candidates.json
+```
+
+The accepted LLM response shape is:
+
+```json
+{
+  "candidates": [
+    {
+      "file_index": 0,
+      "source_span": {
+        "byte_start": 0,
+        "byte_end": 120,
+        "line_start": 1,
+        "line_end": 4
+      },
+      "title": "Use reviewed document extraction",
+      "status": "proposed",
+      "topic_keys": ["documents", "layer3"],
+      "rationale": "Automatic ledger writes would bypass review.",
+      "option_labels": ["review candidates first", "auto-import everything"],
+      "chosen_option_label": "review candidates first",
+      "evidence": ["The memo says automatic ledger writes would bypass review."],
+      "hypotheses": ["Reviewers can inspect the candidate file quickly."],
+      "explanation": "The excerpt names a choice and its rationale."
+    }
+  ]
+}
+```
+
+After a human or agent reviewer accepts a candidate, materialize it to a normal
+document-import block:
+
+```bash
+hivemind --actor reviewer:alice --json suggest materialize-document-candidates \
+  --input candidates.json \
+  --candidate-id candidate:document:abc123 \
+  --output reviewed.md
+```
+
+Only a later explicit `hivemind import documents --file reviewed.md` command
+writes events. This keeps deterministic import usable without any LLM workflow
+installed or enabled.
 
 ## PDF And OCR Preparation
 

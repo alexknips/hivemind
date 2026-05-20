@@ -43,6 +43,10 @@ use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
     SlackCaptureRequest, SlackCaptureSurface, SlackCommandRequest, SlackWorkspaceInstall,
 };
+use crate::suggest::{
+    materialize_document_extraction_candidates, propose_document_extraction_candidates,
+    DocumentCandidateExtractor, DocumentCandidateMaterializationRequest, DocumentCandidateRequest,
+};
 use crate::{HivemindError, Result};
 
 #[derive(Debug, Clone, Parser)]
@@ -92,6 +96,7 @@ pub enum Command {
     Disagree(DisagreeArgs),
     Supersede(SupersedeArgs),
     Import(ImportArgs),
+    Suggest(SuggestArgs),
     Query(Box<QueryArgs>),
     Dump(DumpArgs),
     Tui(TuiArgs),
@@ -577,6 +582,59 @@ impl PrepareDocumentFormat {
 }
 
 #[derive(Debug, Clone, Args)]
+pub struct SuggestArgs {
+    #[command(subcommand)]
+    pub command: SuggestCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum SuggestCommand {
+    #[command(name = "document-candidates")]
+    DocumentCandidates(SuggestDocumentCandidatesArgs),
+    #[command(name = "materialize-document-candidates")]
+    MaterializeDocumentCandidates(MaterializeDocumentCandidatesArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SuggestDocumentCandidatesArgs {
+    #[arg(long = "file", value_name = "PATH")]
+    pub files: Vec<PathBuf>,
+
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
+
+    #[arg(long = "format", value_enum, default_value_t = ImportDocumentFormat::Auto)]
+    pub format: ImportDocumentFormat,
+
+    #[arg(long = "extractor-command", value_enum)]
+    pub extractor_command: Option<DocumentExtractorCommandArg>,
+
+    #[arg(long = "extractor-arg", value_name = "ARG")]
+    pub extractor_args: Vec<String>,
+
+    #[arg(long = "llm-response", value_name = "PATH")]
+    pub llm_response: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct MaterializeDocumentCandidatesArgs {
+    #[arg(long = "input", value_name = "PATH")]
+    pub input: PathBuf,
+
+    #[arg(long = "candidate-id", value_name = "ID")]
+    pub candidate_ids: Vec<String>,
+
+    #[arg(long = "output", value_name = "PATH")]
+    pub output: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "kebab_case")]
+pub enum DocumentExtractorCommandArg {
+    HivemindDocumentExtractor,
+}
+
+#[derive(Debug, Clone, Args)]
 pub struct QueryArgs {
     #[command(subcommand)]
     pub command: QueryCommand,
@@ -1038,6 +1096,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Disagree(args) => run_disagree(cli, args),
         Command::Supersede(args) => run_supersede(cli, args),
         Command::Import(import) => run_import(cli, import),
+        Command::Suggest(suggest) => run_suggest(cli, suggest),
         Command::Query(query) => run_query(cli, query),
         Command::Dump(dump) => run_dump(cli, dump),
         Command::Tui(args) => run_tui(cli, args),
@@ -1401,6 +1460,59 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
             })?;
             format_prepare_documents_output(cli.json, &report)
         }
+    }
+}
+
+fn run_suggest(cli: &Cli, suggest: &SuggestArgs) -> Result<String> {
+    match &suggest.command {
+        SuggestCommand::DocumentCandidates(args) => {
+            let mut paths = args.files.clone();
+            paths.extend(args.paths.clone());
+            let report = propose_document_extraction_candidates(&DocumentCandidateRequest {
+                paths,
+                format: args.format.as_ingest_format(),
+                extractor: document_candidate_extractor(args)?,
+            })?;
+            format_json_value(cli.json, &report)
+        }
+        SuggestCommand::MaterializeDocumentCandidates(args) => {
+            let report = materialize_document_extraction_candidates(
+                &DocumentCandidateMaterializationRequest {
+                    input: args.input.clone(),
+                    candidate_ids: args.candidate_ids.clone(),
+                    output: args.output.clone(),
+                    reviewed_by: cli.actor.clone(),
+                },
+            )?;
+            format_json_value(cli.json, &report)
+        }
+    }
+}
+
+fn document_candidate_extractor(
+    args: &SuggestDocumentCandidatesArgs,
+) -> Result<DocumentCandidateExtractor> {
+    match (&args.extractor_command, &args.llm_response) {
+        (Some(_), Some(_)) => Err(CliError::InvalidInput(
+            "use either --extractor-command or --llm-response, not both".to_owned(),
+        )
+        .into()),
+        (Some(_), None) => Ok(DocumentCandidateExtractor::Command {
+            args: args.extractor_args.clone(),
+        }),
+        (None, Some(path)) => {
+            if !args.extractor_args.is_empty() {
+                return Err(CliError::InvalidInput(
+                    "--extractor-arg requires --extractor-command".to_owned(),
+                )
+                .into());
+            }
+            Ok(DocumentCandidateExtractor::ResponseFile(path.clone()))
+        }
+        (None, None) => Err(CliError::InvalidInput(
+            "document-candidates requires --extractor-command or --llm-response".to_owned(),
+        )
+        .into()),
     }
 }
 

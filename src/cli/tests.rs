@@ -243,6 +243,50 @@ fn parses_global_flags_and_emit_subcommand() {
 }
 
 #[test]
+fn parses_suggest_document_candidates_fixed_extractor_command() {
+    let cli = Cli::parse_from([
+        "hivemind",
+        "suggest",
+        "document-candidates",
+        "--file",
+        "memo.txt",
+        "--format",
+        "text",
+        "--extractor-command",
+        "hivemind-document-extractor",
+        "--extractor-arg=--model=reviewer",
+    ]);
+
+    let args = match cli.command {
+        Command::Suggest(args) => args,
+        command => {
+            assert!(
+                matches!(command, Command::Suggest(_)),
+                "expected suggest command"
+            );
+            return;
+        }
+    };
+    let args = match args.command {
+        SuggestCommand::DocumentCandidates(args) => args,
+        command => {
+            assert!(
+                matches!(command, SuggestCommand::DocumentCandidates(_)),
+                "expected document-candidates command"
+            );
+            return;
+        }
+    };
+    assert_eq!(args.files, vec![PathBuf::from("memo.txt")]);
+    assert_eq!(args.format, ImportDocumentFormat::Text);
+    assert_eq!(
+        args.extractor_command,
+        Some(DocumentExtractorCommandArg::HivemindDocumentExtractor)
+    );
+    assert_eq!(args.extractor_args, vec!["--model=reviewer"]);
+}
+
+#[test]
 fn cli_version_comes_from_cargo_package_version() {
     assert_eq!(
         Cli::command().get_version(),
@@ -913,6 +957,140 @@ fn ledger_history_cli_queries_and_exports_read_only_summary() {
         .contains("citation=event:1"));
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn suggest_document_candidates_materializes_reviewed_block_before_import() {
+    let root = unique_test_dir("suggest-document-candidates");
+    let hivemind_dir = root.join("hive");
+    std::fs::create_dir_all(&root).expect("scratch dir");
+    let document = root.join("memo.txt");
+    let memo = "Architecture memo\nThe team chose reviewed document extraction for local decision notes because automatic ledger writes would bypass review. Considered options were review candidates first and auto-import everything. The assumption is that reviewers can inspect the candidate file quickly.\n";
+    std::fs::write(&document, memo).expect("write memo");
+    let excerpt = "The team chose reviewed document extraction for local decision notes because automatic ledger writes would bypass review.";
+    let byte_start = memo.find(excerpt).expect("excerpt start");
+    let byte_end = byte_start + excerpt.len();
+    let response = root.join("llm-response.json");
+    std::fs::write(
+        &response,
+        serde_json::json!({
+            "candidates": [{
+                "file_index": 0,
+                "source_span": {
+                    "byte_start": byte_start,
+                    "byte_end": byte_end,
+                    "line_start": 2,
+                    "line_end": 2
+                },
+                "title": "Use reviewed document extraction",
+                "topic_keys": ["documents", "layer3"],
+                "rationale": "Automatic ledger writes would bypass review.",
+                "option_labels": ["review candidates first", "auto-import everything"],
+                "chosen_option_label": "review candidates first",
+                "evidence": ["The memo says automatic ledger writes would bypass review."],
+                "hypotheses": ["Reviewers can inspect the candidate file quickly."],
+                "explanation": "The excerpt names a choice and its rationale."
+            }]
+        })
+        .to_string(),
+    )
+    .expect("write llm response");
+
+    let candidates = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "suggest",
+        "document-candidates",
+        "--file",
+        document.to_str().expect("utf-8 document path"),
+        "--format",
+        "text",
+        "--llm-response",
+        response.to_str().expect("utf-8 response path"),
+    ]))
+    .expect("candidate suggestion succeeds");
+    assert!(
+        !hivemind_dir.join("ledger.sqlite").exists(),
+        "suggestion must not open or append to the ledger"
+    );
+    let candidates_json: serde_json::Value =
+        serde_json::from_str(&candidates).expect("valid candidate json");
+    assert_eq!(
+        candidates_json["workflow"],
+        serde_json::json!("hivemind.document_extraction_candidates.v1")
+    );
+    assert_eq!(
+        candidates_json["summary"]["candidates_proposed"],
+        serde_json::json!(1)
+    );
+    assert_eq!(
+        candidates_json["candidates"][0]["review_status"],
+        serde_json::json!("pending_review")
+    );
+    assert!(candidates_json["candidates"][0]["source"]["snippet"]
+        .as_str()
+        .expect("source snippet")
+        .contains("reviewed document extraction"));
+    let candidate_id = candidates_json["candidates"][0]["candidate_id"]
+        .as_str()
+        .expect("candidate id")
+        .to_owned();
+    let candidate_report = root.join("candidates.json");
+    std::fs::write(&candidate_report, candidates).expect("write candidate report");
+    let materialized = root.join("reviewed.md");
+
+    let materialized_report = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "reviewer:alice",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "suggest",
+        "materialize-document-candidates",
+        "--input",
+        candidate_report.to_str().expect("utf-8 candidate path"),
+        "--candidate-id",
+        &candidate_id,
+        "--output",
+        materialized.to_str().expect("utf-8 output path"),
+    ]))
+    .expect("materialization succeeds");
+    assert!(
+        !hivemind_dir.join("ledger.sqlite").exists(),
+        "materialization must not append to the ledger"
+    );
+    let materialized_report: serde_json::Value =
+        serde_json::from_str(&materialized_report).expect("valid materialization json");
+    assert_eq!(
+        materialized_report["candidates_materialized"],
+        serde_json::json!(1)
+    );
+    let reviewed_block = std::fs::read_to_string(&materialized).expect("materialized block");
+    assert!(reviewed_block.contains("Decision:"));
+    assert!(reviewed_block.contains("reviewed_by: reviewer:alice"));
+    assert!(reviewed_block.contains("Source document"));
+
+    let imported = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "reviewer:alice",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        materialized.to_str().expect("utf-8 materialized path"),
+    ]))
+    .expect("reviewed materialized block imports");
+    let imported: serde_json::Value = serde_json::from_str(&imported).expect("valid import json");
+    assert_eq!(imported["summary"]["blocks_imported"], serde_json::json!(1));
+    assert!(hivemind_dir.join("ledger.sqlite").exists());
+
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
