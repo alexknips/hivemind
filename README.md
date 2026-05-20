@@ -154,6 +154,8 @@ navigation, and exports the focused one-hop neighborhood as DOT with `x`.
 - `docs/LOCAL_CAPTURE_DEMO.md` documents the local Slack plus agent capture demo.
 - `docs/TEXT_IMPORT_AND_DIFF_SEMANTICS.md` defines local document import and
   temporal decision diff semantics for Milestone 2.
+- `docs/M2_WEEKLY_DIFF_DEMO.md` walks through the Milestone 2 end-to-end flow:
+  import documents locally, then ask which decisions were added since last week.
 - `PLAN.md` explains the slice-1 architecture and what is intentionally deferred.
 - `AGENTS.md` defines the project standards and non-goals for contributors.
 - `tests/seed/README.md` documents the deterministic seed dataset, replay smoke
