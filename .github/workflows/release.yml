@@ -23,18 +23,22 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: hivemind-linux-x86_64
             linker: ""
+            stripper: strip
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             artifact: hivemind-linux-arm64
             linker: aarch64-linux-gnu-gcc
+            stripper: aarch64-linux-gnu-strip
           - os: macos-13
             target: x86_64-apple-darwin
             artifact: hivemind-macos-x86_64
             linker: ""
+            stripper: strip
           - os: macos-14
             target: aarch64-apple-darwin
             artifact: hivemind-macos-arm64
             linker: ""
+            stripper: strip
 
     steps:
       - name: Check out repository
@@ -60,6 +64,8 @@ jobs:
           set -euo pipefail
           if [ -n "${{ matrix.linker }}" ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="${{ matrix.linker }}"
+            export CC_aarch64_unknown_linux_gnu="${{ matrix.linker }}"
+            export AR_aarch64_unknown_linux_gnu="aarch64-linux-gnu-ar"
           fi
           cargo build --release --locked --target "${{ matrix.target }}"
 
@@ -70,6 +76,12 @@ jobs:
           archive="${{ matrix.artifact }}.tar.gz"
           mkdir -p dist package
           cp "target/${{ matrix.target }}/release/hivemind" package/hivemind
+          stripper="${{ matrix.stripper }}"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            strip -x package/hivemind
+          elif [ -n "${stripper}" ]; then
+            "${stripper}" package/hivemind
+          fi
           tar -C package -czf "dist/${archive}" hivemind
           if command -v sha256sum >/dev/null 2>&1; then
             (cd dist && sha256sum "${archive}" > "${archive}.sha256")

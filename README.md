@@ -1,5 +1,7 @@
 # HiveMind
 
+[![CI](https://github.com/alexknips/hivemind/actions/workflows/ci.yml/badge.svg)](https://github.com/alexknips/hivemind/actions/workflows/ci.yml)
+
 HiveMind is a Rust prototype for organizational decision memory. It records
 what was decided, why it was decided, who acted, what options were considered,
 and what evidence or hypotheses the decision depends on.

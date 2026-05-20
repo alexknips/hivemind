@@ -9,10 +9,19 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   rust:
-    name: Rust checks
-    runs-on: ubuntu-latest
+    name: Rust checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
 
     steps:
       - name: Check out repository
@@ -30,10 +39,64 @@ jobs:
         run: cargo fmt --check
 
       - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+  tui-feature:
+    name: Optional TUI feature
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run TUI clippy
+        run: cargo clippy --locked --all-targets --features tui -- -D warnings
+
+      - name: Run TUI tests
+        run: cargo test --locked --features tui
+
+  kuzu-feature:
+    name: Optional Kuzu feature (non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # graph-kuzu has a tracked native link issue (hivemind-oj7qr). Keep the
+      # signal visible without blocking default CI until that bead lands.
+      - name: Run Kuzu feature tests
+        run: cargo test --locked --features graph-kuzu kuzu -- --nocapture
+
+  ubs:
+    name: UBS critical scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
 
       - name: Install UBS
         run: |
