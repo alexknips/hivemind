@@ -13,7 +13,7 @@ graph-kuzu = ["dep:kuzu", "dep:cxx-build"]
 tui = ["dep:crossterm", "dep:ratatui"]
 
 [dependencies]
-clap = { version = "4.6.1", features = ["derive"] }
+clap = { version = "4.6.1", features = ["derive", "env"] }
 chrono = { version = "0.4.42", features = ["serde"] }
 crossterm = { version = "0.28.1", optional = true }
 deunicode = "1.6.2"

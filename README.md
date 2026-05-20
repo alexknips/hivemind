@@ -29,9 +29,10 @@ available behind the optional `graph-kuzu` feature with `--graph-backend kuzu`
 or `HIVEMIND_GRAPH_BACKEND=kuzu`; it rebuilds `./hivemind/graph.kuzu` from the
 SQLite ledger before query/dump reads.
 
-Not in slice 1: HTTP, MCP, signing, federation, compaction, similarity search,
+Not in slice 1: HTTP, signing, federation, compaction, similarity search,
 ranking, recommendations, or any LLM-backed query behavior. Those belong to the
-later agentic layer.
+later agentic layer. The MCP server (see below) is a layer-1/2 transport
+wrapper only — no smart behavior happens behind it.
 
 ## Build And Test
 
@@ -124,6 +125,57 @@ Users who only want the instruction bundle can copy
 and invoke `$hivemind-capture` directly. Local capture defaults to
 `./hivemind/`; set `HIVEMIND_DIR` or pass `--hivemind-dir` to point Codex at a
 shared ledger.
+
+### MCP Server
+
+Any MCP-aware client (Claude Desktop, Claude Code, Cursor, Codex with MCP
+support, etc.) can capture and query decisions through the bundled MCP stdio
+server. The server is a thin transport: capture tools call into the same
+`Commands` API the CLI uses, query tools call into the same `queries` API.
+Smart behavior stays out — see the slice scope above.
+
+```bash
+hivemind --hivemind-dir ./hivemind/ mcp
+```
+
+Once installed, point your MCP client at the same binary. Example config for
+Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`
+on macOS):
+
+```json
+{
+  "mcpServers": {
+    "hivemind": {
+      "command": "hivemind",
+      "args": ["mcp"],
+      "env": { "HIVEMIND_DIR": "/absolute/path/to/your/hivemind/dir" }
+    }
+  }
+}
+```
+
+Cursor uses the same shape under `mcp.servers`. The server exposes seven tools:
+
+| Tool | Layer | Wraps |
+| --- | --- | --- |
+| `capture_decision` | write | `emit decision.proposed` |
+| `capture_evidence` | write | `emit evidence.recorded` |
+| `capture_hypothesis` | write | `emit hypothesis.recorded` |
+| `get_decision` | read | `query get_decision` |
+| `get_relevant_decisions` | read | `query get_relevant_decisions` |
+| `get_supersession_chain` | read | `query get_supersession_chain` |
+| `dump_graph` | read | `dump --format dot` |
+
+Every capture requires an explicit `actor_id`. Prefix it with the originating
+tool, e.g. `agent:claude:<session>`, so provenance stays readable. The server
+records `source=agent` plus a per-session `source_ref` for every write; pass
+`--session-id` to override the generated default. Anonymous writes are
+rejected because the underlying `Commands` API requires a non-empty actor.
+
+`HIVEMIND_DIR` selects the ledger directory if `--hivemind-dir` is not set.
+`HIVEMIND_GRAPH_BACKEND` is honored the same way the CLI honors it, so a
+shared `kuzu` projection works under MCP when the `graph-kuzu` feature is
+compiled in.
 
 Local markdown or text decision notes can be imported without network access.
 Only explicit `Decision:` blocks are imported, and re-importing identical input
