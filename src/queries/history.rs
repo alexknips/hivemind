@@ -468,7 +468,9 @@ pub fn get_decisions_added_since(
 
     for (decision_id, change_events) in &per_decision_changes {
         let entry = index.decisions.get(decision_id);
-        let topic_keys = entry.map(|entry| entry.topic_keys.clone()).unwrap_or_default();
+        let topic_keys = entry
+            .map(|entry| entry.topic_keys.clone())
+            .unwrap_or_default();
         let status = index
             .status(decision_id)
             .unwrap_or(DecisionStatus::Proposed);
@@ -483,12 +485,10 @@ pub fn get_decisions_added_since(
             .unwrap_or_default();
 
         let creation_event = creation_events.get(decision_id).copied();
-        let creation_provenance = creation_event
-            .map(decision_event_provenance)
-            .transpose()?;
-        let creation_in_window = creation_provenance
-            .as_ref()
-            .is_some_and(|prov| prov.event_origin > window.since_offset && prov.event_origin <= window.until_offset);
+        let creation_provenance = creation_event.map(decision_event_provenance).transpose()?;
+        let creation_in_window = creation_provenance.as_ref().is_some_and(|prov| {
+            prov.event_origin > window.since_offset && prov.event_origin <= window.until_offset
+        });
 
         let mut changes = Vec::with_capacity(change_events.len());
         for (event_id_value, event) in change_events {
@@ -523,8 +523,7 @@ pub fn get_decisions_added_since(
         }
 
         if creation_in_window {
-            let creation =
-                creation_provenance.expect("creation provenance present when in window");
+            let creation = creation_provenance.expect("creation provenance present when in window");
             added.push(AddedDecisionEntry {
                 decision_id: decision_id.clone(),
                 status,
@@ -690,10 +689,8 @@ fn decision_matches_added_since_filters(
         return false;
     }
 
-    let mut provenances: Vec<&DecisionEventProvenance> = changes
-        .iter()
-        .map(|change| &change.provenance)
-        .collect();
+    let mut provenances: Vec<&DecisionEventProvenance> =
+        changes.iter().map(|change| &change.provenance).collect();
     if let Some(creation) = creation {
         provenances.push(creation);
     }
@@ -717,28 +714,24 @@ fn decision_matches_added_since_filters(
     }
     if !filters.source_refs.is_empty()
         && !provenances.iter().any(|prov| {
-            prov.source_ref
-                .as_deref()
-                .is_some_and(|source_ref| {
-                    filters
-                        .source_refs
-                        .iter()
-                        .any(|expected| expected == source_ref)
-                })
+            prov.source_ref.as_deref().is_some_and(|source_ref| {
+                filters
+                    .source_refs
+                    .iter()
+                    .any(|expected| expected == source_ref)
+            })
         })
     {
         return false;
     }
     if !filters.import_run_ids.is_empty()
         && !provenances.iter().any(|prov| {
-            prov.import_run_id
-                .as_deref()
-                .is_some_and(|run_id| {
-                    filters
-                        .import_run_ids
-                        .iter()
-                        .any(|expected| expected == run_id)
-                })
+            prov.import_run_id.as_deref().is_some_and(|run_id| {
+                filters
+                    .import_run_ids
+                    .iter()
+                    .any(|expected| expected == run_id)
+            })
         })
     {
         return false;
@@ -2187,10 +2180,7 @@ mod tests {
 
         let decision_b_change = &response.data.changed_existing_decisions[0];
         assert!(decision_b_change.creation.is_some());
-        assert_eq!(
-            decision_b_change.creation.as_ref().unwrap().event_origin,
-            5
-        );
+        assert_eq!(decision_b_change.creation.as_ref().unwrap().event_origin, 5);
         let decision_a_change = &response.data.changed_existing_decisions[1];
         assert!(decision_a_change
             .changes_in_window

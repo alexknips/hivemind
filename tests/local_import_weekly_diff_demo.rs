@@ -117,7 +117,9 @@ fn local_import_plus_weekly_diff_demo_proves_decisions_added_window() -> TestRes
             let parsed: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
             parsed["source"] == "document"
                 && parsed["block_id"] == "weekly-cache-eviction"
-                && parsed["path"].as_str().is_some_and(|p| p.ends_with("cache_eviction.md"))
+                && parsed["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("cache_eviction.md"))
         }),
         "source_ref must carry document path, block id, and import_run_id",
     );

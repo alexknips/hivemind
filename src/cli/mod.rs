@@ -1836,9 +1836,7 @@ mod tests {
     #[test]
     fn non_utc_timezone_is_rejected_in_slice_1() {
         let error = TimeZoneSpec::parse("America/New_York").expect_err("non-utc rejected");
-        assert!(error
-            .to_string()
-            .contains("only UTC is accepted"));
+        assert!(error.to_string().contains("only UTC is accepted"));
     }
 
     #[test]
@@ -1870,9 +1868,7 @@ mod tests {
             TimeZoneSpec::Utc,
         )
         .expect_err("unknown phrase rejected");
-        assert!(error
-            .to_string()
-            .contains("supported phrase"));
+        assert!(error.to_string().contains("supported phrase"));
     }
 
     #[test]
