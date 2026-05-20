@@ -33,6 +33,53 @@ Not in slice 1: HTTP, MCP, signing, federation, compaction, similarity search,
 ranking, recommendations, or any LLM-backed query behavior. Those belong to the
 later agentic layer.
 
+## Install
+
+Install the default CLI directly from Git:
+
+```bash
+cargo install --git https://github.com/alexknips/hivemind --locked hivemind
+```
+
+Tagged releases publish prebuilt tarballs for Linux and macOS on x86_64 and
+ARM64. The installer selects the matching asset and verifies its SHA-256
+checksum before copying `hivemind` into `~/.local/bin`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alexknips/hivemind/master/scripts/install.sh | sh
+```
+
+Set `HIVEMIND_VERSION=v0.1.0` to install a specific release tag or
+`HIVEMIND_INSTALL_DIR=/usr/local/bin` to choose another destination.
+
+Verify the installed binary:
+
+```bash
+hivemind --version
+hivemind --help
+```
+
+The release asset names are:
+
+| Platform | Asset |
+| --- | --- |
+| Linux x86_64 | `hivemind-linux-x86_64.tar.gz` |
+| Linux ARM64 | `hivemind-linux-arm64.tar.gz` |
+| macOS x86_64 | `hivemind-macos-x86_64.tar.gz` |
+| macOS ARM64 | `hivemind-macos-arm64.tar.gz` |
+
+Kuzu support and the terminal UI are optional and not part of the default
+binary:
+
+```bash
+cargo install --git https://github.com/alexknips/hivemind --locked --features graph-kuzu hivemind
+cargo install --git https://github.com/alexknips/hivemind --locked --features tui hivemind
+```
+
+The crate is prepared for packaging but is not published to crates.io in this
+slice; `Cargo.toml` keeps `publish = false` until the project explicitly
+reserves the name and chooses a redistributable crate license.
+
 ## Build And Test
 
 ```bash
@@ -75,13 +122,13 @@ Use `--actor` to identify the human or agent taking the action. Use
 `--hivemind-dir` to choose the ledger directory.
 
 ```bash
-cargo run -- --actor alice emit evidence.recorded \
+hivemind --actor alice emit evidence.recorded \
   --content "SQLite WAL is sufficient for slice-1 local writes"
 
-cargo run -- --actor alice emit hypothesis.recorded \
+hivemind --actor alice emit hypothesis.recorded \
   --statement "Embedded storage keeps onboarding under five minutes"
 
-cargo run -- --actor alice emit decision.proposed \
+hivemind --actor alice emit decision.proposed \
   --title "Use embedded storage for slice 1" \
   --rationale "It keeps the prototype single-process and easy to replay" \
   --topic-keys architecture,storage \
@@ -93,7 +140,7 @@ Agents can use the noninteractive capture path. It defaults the actor and
 provenance to `agent:<tool>:<session>` and writes events with `source=agent`:
 
 ```bash
-cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
+hivemind --hivemind-dir ./hivemind/ emit decision.capture \
   --agent-tool codex \
   --agent-session "$CODEX_SESSION_ID" \
   --title "Use direct CLI capture for agent decisions" \
@@ -130,8 +177,8 @@ Only explicit `Decision:` blocks are imported, and re-importing identical input
 is reported as a no-op:
 
 ```bash
-cargo run -- --actor alice --json import documents --file ./notes/decision.md
-cargo run -- --actor alice import documents ./notes/
+hivemind --actor alice --json import documents --file ./notes/decision.md
+hivemind --actor alice import documents ./notes/
 ```
 
 The emit commands print the new entity id or event id. Add `--json` for a
@@ -140,29 +187,31 @@ structured output envelope.
 Query commands return JSON:
 
 ```bash
-cargo run -- query get_decision --id decision-001
-cargo run -- query get_relevant_decisions --topic architecture
-cargo run -- query get_relevant_decisions --topic architecture --status accepted
-cargo run -- query get_supersession_chain --id decision-001
+hivemind query get_decision --id decision-001
+hivemind query get_relevant_decisions --topic architecture
+hivemind query get_relevant_decisions --topic architecture --status accepted
+hivemind query get_supersession_chain --id decision-001
 ```
 
-Use the persistent local Kuzu projection explicitly:
+With a binary installed using `--features graph-kuzu`, use the persistent local
+Kuzu projection explicitly:
 
 ```bash
-cargo run --features graph-kuzu -- --graph-backend kuzu query get_relevant_decisions \
+hivemind --graph-backend kuzu query get_relevant_decisions \
   --topic architecture
 ```
 
 Export the current projected graph as deterministic Graphviz DOT:
 
 ```bash
-cargo run -- dump --format dot > graph.dot
+hivemind dump --format dot > graph.dot
 ```
 
-Run the read-only decision search TUI with the optional terminal feature:
+With a binary installed using `--features tui`, run the read-only decision
+search TUI:
 
 ```bash
-cargo run --features tui -- tui --q queue --topic architecture \
+hivemind tui --q queue --topic architecture \
   --status accepted --dot-output focused-neighborhood.dot
 ```
 

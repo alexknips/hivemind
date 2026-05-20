@@ -748,7 +748,7 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
             vec![
                 Line::from("Empty ledger."),
                 Line::from("Seed: cargo test --test seed -- --include-ignored"),
-                Line::from("Emit: cargo run -- emit decision.proposed --title ... --rationale ..."),
+                Line::from("Emit: hivemind emit decision.proposed --title ... --rationale ..."),
             ]
         } else {
             let constraints = app.active_constraints();
@@ -889,7 +889,7 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
             "Seed: cargo test --test seed -- --include-ignored",
         ));
         lines.push(Line::from(
-            "Or emit the first decision with cargo run -- emit decision.proposed.",
+            "Or emit the first decision with hivemind emit decision.proposed.",
         ));
     } else {
         lines.push(Line::from("No selected decision."));

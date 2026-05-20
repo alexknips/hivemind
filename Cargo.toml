@@ -2,10 +2,23 @@
 name = "hivemind"
 version = "0.1.0"
 edition = "2021"
+description = "Organizational decision-memory ledger and query CLI"
+repository = "https://github.com/alexknips/hivemind"
+homepage = "https://github.com/alexknips/hivemind"
+documentation = "https://github.com/alexknips/hivemind#readme"
+readme = "README.md"
+license-file = "LICENSE"
+keywords = ["decision", "ledger", "cli", "agents", "provenance"]
+categories = ["command-line-utilities"]
+publish = false
 
 [lib]
 name = "hivemind"
 path = "src/lib.rs"
+
+[[bin]]
+name = "hivemind"
+path = "src/main.rs"
 
 [features]
 default = []

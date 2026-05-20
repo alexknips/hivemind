@@ -1776,6 +1776,7 @@ impl OutputEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn resolves_since_last_week_against_frozen_now_in_utc() {
@@ -1936,6 +1937,14 @@ mod tests {
             Command::Emit(command)
                 if matches!(command.command, EmitCommand::EvidenceRecorded(_))
         ));
+    }
+
+    #[test]
+    fn cli_version_comes_from_cargo_package_version() {
+        assert_eq!(
+            Cli::command().get_version(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]
