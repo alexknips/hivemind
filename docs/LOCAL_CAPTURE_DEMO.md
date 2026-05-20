@@ -26,7 +26,8 @@ the same ids returned by query. The report shows the durable provenance contract
 - Both paths reach the same ledger and query surfaces without Slack credentials,
   MCP configuration, hosted services, or network access.
 
-The production step is to replace the fixture-backed Slack import and temporary
-local directory with a signed Slack app endpoint and shared service/database.
-The write contract should stay the same: every captured decision keeps explicit
-`source`, `source_ref`, `actor_id`, and event-origin provenance.
+The local-first Slack app path in `docs/SLACK_APP.md` replaces the
+fixture-backed import with install state, queued Slack-originated captures, and
+Slack command responses. The write contract stays the same: every captured
+decision keeps explicit `source`, `source_ref`, `actor_id`, and event-origin
+provenance.

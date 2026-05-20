@@ -29,6 +29,10 @@ use crate::queries::{
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQuery, ReadOnlyExportRequest,
     RecentActivityRequest, SearchDecisionRequest,
 };
+use crate::slack_app::{
+    handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
+    SlackCaptureRequest, SlackCaptureSurface, SlackCommandRequest, SlackWorkspaceInstall,
+};
 use crate::{HivemindError, Result};
 
 #[derive(Debug, Clone, Parser)]
@@ -73,6 +77,8 @@ pub enum Command {
     Dump(DumpArgs),
     Tui(TuiArgs),
     Ingest(IngestArgs),
+    #[command(name = "slack-app")]
+    SlackApp(SlackAppArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -94,6 +100,153 @@ pub struct IngestSlackThreadArgs {
 
     #[arg(long, default_value = DEFAULT_SLACK_MENTION)]
     pub mention: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SlackAppArgs {
+    #[command(subcommand)]
+    pub command: SlackAppCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum SlackAppCommand {
+    Manifest(SlackManifestArgs),
+    #[command(name = "oauth-url")]
+    OauthUrl(SlackOauthUrlArgs),
+    Install(SlackInstallArgs),
+    #[command(name = "enqueue-capture")]
+    EnqueueCapture(SlackEnqueueCaptureArgs),
+    Drain(SlackDrainArgs),
+    Command(SlackCommandArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SlackManifestArgs {
+    #[arg(long = "request-url")]
+    pub request_url: String,
+
+    #[arg(long = "event-url")]
+    pub event_url: Option<String>,
+
+    #[arg(long = "redirect-url")]
+    pub redirect_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SlackOauthUrlArgs {
+    #[arg(long = "client-id")]
+    pub client_id: String,
+
+    #[arg(long = "redirect-uri")]
+    pub redirect_uri: String,
+
+    #[arg(long)]
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SlackInstallArgs {
+    #[arg(long = "team-id")]
+    pub team_id: String,
+
+    #[arg(long = "team-name")]
+    pub team_name: String,
+
+    #[arg(long = "bot-token")]
+    pub bot_token: String,
+
+    #[arg(long = "signing-secret")]
+    pub signing_secret: String,
+
+    #[arg(long = "hivemind-url", default_value = "http://127.0.0.1:8787")]
+    pub hivemind_url: String,
+
+    #[arg(long = "reaction-emoji", default_value = "hivemind")]
+    pub reaction_emoji: String,
+
+    #[arg(long = "actor-map")]
+    pub actor_mappings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SlackEnqueueCaptureArgs {
+    #[arg(long = "team-id")]
+    pub team_id: String,
+
+    #[arg(long = "user-id")]
+    pub user_id: String,
+
+    #[arg(long = "channel-id")]
+    pub channel_id: String,
+
+    #[arg(long = "message-ts")]
+    pub message_ts: String,
+
+    #[arg(long = "thread-ts")]
+    pub thread_ts: Option<String>,
+
+    #[arg(long)]
+    pub permalink: String,
+
+    #[arg(long, value_enum)]
+    pub surface: SlackCaptureSurfaceArg,
+
+    #[arg(long = "reaction-emoji")]
+    pub reaction_emoji: Option<String>,
+
+    #[arg(long)]
+    pub title: String,
+
+    #[arg(long)]
+    pub rationale: String,
+
+    #[arg(long = "topic-keys", value_delimiter = ',')]
+    pub topic_keys: Vec<String>,
+
+    #[arg(long = "options", value_delimiter = ',')]
+    pub option_labels: Vec<String>,
+
+    #[arg(long = "chose")]
+    pub chosen_option_label: Option<String>,
+
+    #[arg(long = "thread-text", default_value = "")]
+    pub thread_text: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SlackDrainArgs {}
+
+#[derive(Debug, Clone, Args)]
+pub struct SlackCommandArgs {
+    #[arg(long = "team-id")]
+    pub team_id: String,
+
+    #[arg(long = "user-id")]
+    pub user_id: String,
+
+    #[arg(long)]
+    pub text: String,
+
+    #[arg(long, default_value_t = 5)]
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum SlackCaptureSurfaceArg {
+    SlashCommand,
+    MessageAction,
+    Reaction,
+}
+
+impl SlackCaptureSurfaceArg {
+    const fn as_slack_surface(self) -> SlackCaptureSurface {
+        match self {
+            SlackCaptureSurfaceArg::SlashCommand => SlackCaptureSurface::SlashCommand,
+            SlackCaptureSurfaceArg::MessageAction => SlackCaptureSurface::MessageAction,
+            SlackCaptureSurfaceArg::Reaction => SlackCaptureSurface::Reaction,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Args)]
@@ -692,6 +845,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Dump(dump) => run_dump(cli, dump),
         Command::Tui(args) => run_tui(cli, args),
         Command::Ingest(args) => run_ingest(cli, args),
+        Command::SlackApp(args) => run_slack_app(cli, args),
     }
 }
 
@@ -720,6 +874,79 @@ fn run_ingest_slack_thread(cli: &Cli, args: &IngestSlackThreadArgs) -> Result<St
     };
     let envelope = OutputEnvelope::new("ingest", kind, outcome.decision_id().to_owned());
     format_output(cli.json, &envelope)
+}
+
+fn run_slack_app(cli: &Cli, args: &SlackAppArgs) -> Result<String> {
+    let store = SlackAppStore::new(&cli.hivemind_dir);
+    match &args.command {
+        SlackAppCommand::Manifest(args) => {
+            let manifest = slack_app_manifest(
+                &args.request_url,
+                args.event_url.as_deref(),
+                args.redirect_url.as_deref(),
+            )?;
+            format_json_value(cli.json, &manifest)
+        }
+        SlackAppCommand::OauthUrl(args) => {
+            slack_oauth_install_url(&args.client_id, &args.redirect_uri, &args.state)
+        }
+        SlackAppCommand::Install(args) => {
+            let summary = store.install_workspace(SlackWorkspaceInstall {
+                team_id: args.team_id.clone(),
+                team_name: args.team_name.clone(),
+                bot_token: args.bot_token.clone(),
+                signing_secret: args.signing_secret.clone(),
+                hivemind_url: args.hivemind_url.clone(),
+                reaction_emoji: args.reaction_emoji.clone(),
+                actor_mappings: parse_actor_mappings(&args.actor_mappings)?,
+            })?;
+            format_json_value(cli.json, &summary)
+        }
+        SlackAppCommand::EnqueueCapture(args) => {
+            let event = store.enqueue_capture(SlackCaptureRequest {
+                team_id: args.team_id.clone(),
+                user_id: args.user_id.clone(),
+                channel_id: args.channel_id.clone(),
+                message_ts: args.message_ts.clone(),
+                thread_ts: args
+                    .thread_ts
+                    .clone()
+                    .unwrap_or_else(|| args.message_ts.clone()),
+                permalink: args.permalink.clone(),
+                surface: args.surface.as_slack_surface(),
+                reaction_emoji: args.reaction_emoji.clone(),
+                title: args.title.clone(),
+                rationale: args.rationale.clone(),
+                topic_keys: args.topic_keys.clone(),
+                option_labels: args.option_labels.clone(),
+                chosen_option_label: args.chosen_option_label.clone(),
+                thread_text: args.thread_text.clone(),
+            })?;
+            format_json_value(cli.json, &event)
+        }
+        SlackAppCommand::Drain(_) => {
+            let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+            let report = store.drain_queue(&ledger)?;
+            format_json_value(cli.json, &report)
+        }
+        SlackAppCommand::Command(args) => {
+            let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+            let graph = MemoryGraph::default();
+            rebuild_graph(&ledger, &graph)?;
+            let response = handle_slack_command(
+                &ledger,
+                &graph,
+                &store,
+                &SlackCommandRequest {
+                    team_id: args.team_id.clone(),
+                    user_id: args.user_id.clone(),
+                    text: args.text.clone(),
+                    limit: args.limit,
+                },
+            )?;
+            format_json_value(cli.json, &response)
+        }
+    }
 }
 
 fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
@@ -1430,6 +1657,33 @@ fn format_output(as_json: bool, envelope: &OutputEnvelope) -> Result<String> {
     }
 }
 
+fn format_json_value<T: Serialize>(compact: bool, value: &T) -> Result<String> {
+    if compact {
+        serde_json::to_string(value).map_err(|error| {
+            CliError::InvalidInput(format!("json serialization failed: {error}")).into()
+        })
+    } else {
+        serde_json::to_string_pretty(value).map_err(|error| {
+            CliError::InvalidInput(format!("json serialization failed: {error}")).into()
+        })
+    }
+}
+
+fn parse_actor_mappings(values: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut mappings = BTreeMap::new();
+    for value in values {
+        let (slack_user, actor_id) = value.split_once('=').ok_or_else(|| {
+            CliError::InvalidInput(
+                "--actor-map must use SlackUser=HiveMindActorId format".to_owned(),
+            )
+        })?;
+        let slack_user = trimmed_required("--actor-map Slack user", slack_user)?;
+        let actor_id = trimmed_required("--actor-map actor id", actor_id)?;
+        mappings.insert(slack_user.to_owned(), actor_id.to_owned());
+    }
+    Ok(mappings)
+}
+
 fn format_import_output(as_json: bool, report: &DocumentImportReport) -> Result<String> {
     if as_json {
         serde_json::to_string(report).map_err(|error| {
@@ -1889,11 +2143,25 @@ mod tests {
             "--limit",
             "10",
         ]);
-        let Command::Query(args) = cli.command else {
-            panic!("expected query command");
+        let args = match cli.command {
+            Command::Query(args) => args,
+            command => {
+                assert!(
+                    matches!(command, Command::Query(_)),
+                    "expected query command"
+                );
+                return;
+            }
         };
-        let QueryCommand::GetDecisionsAddedSince(args) = args.command else {
-            panic!("expected GetDecisionsAddedSince");
+        let args = match args.command {
+            QueryCommand::GetDecisionsAddedSince(args) => args,
+            command => {
+                assert!(
+                    matches!(command, QueryCommand::GetDecisionsAddedSince(_)),
+                    "expected GetDecisionsAddedSince"
+                );
+                return;
+            }
         };
         assert_eq!(args.since.as_deref(), Some("last week"));
         assert_eq!(args.now.as_deref(), Some("2026-05-19T12:00:00Z"));

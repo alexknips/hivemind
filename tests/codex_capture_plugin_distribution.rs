@@ -3,11 +3,13 @@ use std::path::Path;
 
 use serde_json::Value;
 
+type TestResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
 #[test]
-fn codex_capture_plugin_bundle_is_installable_and_points_at_cli_capture() {
+fn codex_capture_plugin_bundle_is_installable_and_points_at_cli_capture() -> TestResult<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
 
-    let marketplace = read_json(root.join(".agents/plugins/marketplace.json"));
+    let marketplace = read_json(root.join(".agents/plugins/marketplace.json"))?;
     assert_eq!(marketplace["name"], "hivemind-plugins");
     assert_eq!(marketplace["interface"]["displayName"], "HiveMind Plugins");
 
@@ -24,7 +26,7 @@ fn codex_capture_plugin_bundle_is_installable_and_points_at_cli_capture() {
     assert_eq!(plugin["policy"]["installation"], "AVAILABLE");
     assert_eq!(plugin["policy"]["authentication"], "ON_INSTALL");
 
-    let manifest = read_json(root.join("plugins/hivemind-capture/.codex-plugin/plugin.json"));
+    let manifest = read_json(root.join("plugins/hivemind-capture/.codex-plugin/plugin.json"))?;
     assert_eq!(manifest["name"], "hivemind-capture");
     assert_eq!(manifest["skills"], "./skills/");
     assert_no_todos("plugin manifest", &manifest.to_string());
@@ -37,12 +39,15 @@ fn codex_capture_plugin_bundle_is_installable_and_points_at_cli_capture() {
     assert!(skill.contains("--agent-tool codex"));
     assert!(skill.contains("agent:codex:<session>"));
     assert!(skill.contains("HIVEMIND_DIR"));
+    Ok(())
 }
 
-fn read_json(path: impl AsRef<Path>) -> Value {
+fn read_json(path: impl AsRef<Path>) -> TestResult<Value> {
     let path = path.as_ref();
-    serde_json::from_str(&fs::read_to_string(path).expect("json file is readable"))
-        .unwrap_or_else(|error| panic!("{} is valid json: {error}", path.display()))
+    let input = fs::read_to_string(path)
+        .map_err(|error| format!("{} is readable: {error}", path.display()))?;
+    serde_json::from_str(&input)
+        .map_err(|error| format!("{} is valid json: {error}", path.display()).into())
 }
 
 fn assert_no_todos(name: &str, body: &str) {

@@ -102,6 +102,7 @@ Additional slice-1 harnesses:
 cargo test --test golden
 cargo test --test golden -- --bless
 cargo test --test local_capture_demo -- --nocapture
+cargo test --test slack_app -- --nocapture
 cargo test --test seed -- --include-ignored
 cargo test --test seed replay_smoke -- --nocapture
 ```
@@ -110,6 +111,11 @@ cargo test --test seed replay_smoke -- --nocapture
 Slack-style plus agent capture prototype against a temp ledger. It ingests a
 fake Slack thread, records Codex and Claude decisions through `decision.capture`,
 and verifies topic/status queries expose distinct Slack and agent provenance.
+
+`cargo test --test slack_app -- --nocapture` exercises the real local-first
+Slack app shell: manifest generation, workspace install state, queued thread
+capture, queue drain into the HiveMind ledger, `/hivemind query`, and
+`/hivemind show` responses with source citations.
 
 `cargo test --test seed -- --include-ignored` writes a deterministic demo ledger
 under `./hivemind/` unless `HIVEMIND_SEED_DIR` points somewhere else. The replay
@@ -223,6 +229,8 @@ navigation, and exports the focused one-hop neighborhood as DOT with `x`.
 - `docs/ARCHITECTURE.md` is the concise architecture summary for reviewers.
 - `docs/AGENT_DECISION_CAPTURE.md` documents the Claude/Codex capture path.
 - `docs/LOCAL_CAPTURE_DEMO.md` documents the local Slack plus agent capture demo.
+- `docs/SLACK_APP.md` documents the local-first Slack app install, queue, and
+  query surface.
 - `docs/TEXT_IMPORT_AND_DIFF_SEMANTICS.md` defines local document import and
   temporal decision diff semantics for Milestone 2.
 - `docs/M2_WEEKLY_DIFF_DEMO.md` walks through the Milestone 2 end-to-end flow:

@@ -6,6 +6,7 @@ pub mod ingest;
 pub mod ledger;
 pub mod projector;
 pub mod queries;
+pub mod slack_app;
 #[cfg(feature = "tui")]
 pub mod tui;
 
