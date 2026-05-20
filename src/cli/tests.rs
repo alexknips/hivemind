@@ -1099,9 +1099,343 @@ fn import_documents_cli_reports_changed_same_id_as_conflict_without_writes() {
         .as_str()
         .expect("conflict message")
         .contains("stable decision id already exists"));
+    let conflict = &output["files"][0]["blocks"][0]["conflict"];
+    assert_eq!(conflict["selected_action"], serde_json::json!("report"));
+    assert_eq!(
+        conflict["existing"]["title"],
+        serde_json::json!("Keep first title")
+    );
+    assert_eq!(
+        conflict["proposed_update"]["title"],
+        serde_json::json!("Changed title")
+    );
+    assert_eq!(
+        conflict["proposed_update"]["source"]["block_id"],
+        serde_json::json!("conflict-demo")
+    );
+    assert_eq!(
+        conflict["affected_dependencies"]["option_ids"]
+            .as_array()
+            .expect("option ids")
+            .len(),
+        1
+    );
+    assert!(conflict["available_actions"]
+        .as_array()
+        .expect("actions")
+        .contains(&serde_json::json!("supersede")));
     assert_eq!(
         ledger.latest_offset().expect("latest offset unchanged"),
         latest_after_first
+    );
+
+    let kept_output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:local",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--on-conflict",
+        "keep_existing",
+        "--file",
+        document_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("keep-existing conflict import reports successfully");
+    let kept_output: serde_json::Value =
+        serde_json::from_str(&kept_output).expect("valid import json");
+    assert_eq!(
+        kept_output["files"][0]["blocks"][0]["status"],
+        serde_json::json!("conflict_kept_existing")
+    );
+    assert_eq!(
+        kept_output["summary"]["blocks_resolved"],
+        serde_json::json!(1)
+    );
+    assert_eq!(
+        kept_output["summary"]["events_written"],
+        serde_json::json!(0)
+    );
+    assert_eq!(
+        ledger
+            .latest_offset()
+            .expect("latest offset still unchanged"),
+        latest_after_first
+    );
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+}
+
+#[test]
+fn import_documents_cli_can_resolve_conflict_as_supersession() {
+    let hivemind_dir = unique_test_dir("import-document-conflict-supersede-ledger");
+    let scratch_dir = unique_test_dir("import-document-conflict-supersede-doc");
+    std::fs::create_dir_all(&scratch_dir).expect("scratch dir");
+    let document_path = scratch_dir.join("decision.md");
+    std::fs::write(
+        &document_path,
+        "Decision:\n  id: conflict-demo\n  title: Keep first title\n  status: accepted\n  actor: actor:alice\n  topic_keys: conflict\n  rationale: First rationale.\n  options:\n    - first option\n  chose: first option\n",
+    )
+    .expect("write initial doc");
+
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:local",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        document_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("initial import succeeds");
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let latest_after_first = ledger.latest_offset().expect("latest offset");
+
+    std::fs::write(
+        &document_path,
+        "Decision:\n  id: conflict-demo\n  title: Superseding title\n  status: accepted\n  actor: actor:bob\n  topic_keys: conflict\n  rationale: Replacement rationale.\n  options:\n    - second option\n  chose: second option\n",
+    )
+    .expect("write changed doc");
+
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "reviewer:local",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--on-conflict",
+        "supersede",
+        "--file",
+        document_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("supersede import succeeds");
+    let output: serde_json::Value = serde_json::from_str(&output).expect("valid import json");
+    assert_eq!(output["summary"]["blocks_resolved"], serde_json::json!(1));
+    assert_eq!(
+        output["files"][0]["blocks"][0]["status"],
+        serde_json::json!("conflict_superseded")
+    );
+    let old_decision_id = output["files"][0]["blocks"][0]["decision_id"]
+        .as_str()
+        .expect("old decision id");
+    let new_decision_id = output["files"][0]["blocks"][0]["conflict"]["resolved_decision_id"]
+        .as_str()
+        .expect("resolved decision id");
+    assert_ne!(old_decision_id, new_decision_id);
+    assert!(ledger.latest_offset().expect("events appended") > latest_after_first);
+
+    let old_view = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "get_decision",
+        "--id",
+        old_decision_id,
+    ]))
+    .expect("old decision query succeeds");
+    let old_view: serde_json::Value = serde_json::from_str(&old_view).expect("valid json");
+    assert_eq!(old_view["data"]["status"], serde_json::json!("superseded"));
+
+    let new_view = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "get_decision",
+        "--id",
+        new_decision_id,
+    ]))
+    .expect("new decision query succeeds");
+    let new_view: serde_json::Value = serde_json::from_str(&new_view).expect("valid json");
+    assert_eq!(new_view["data"]["status"], serde_json::json!("accepted"));
+    assert_eq!(
+        new_view["data"]["title"],
+        serde_json::json!("Superseding title")
+    );
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+}
+
+#[test]
+fn import_documents_cli_can_resolve_conflict_by_contesting_existing_decision() {
+    let hivemind_dir = unique_test_dir("import-document-conflict-contest-ledger");
+    let scratch_dir = unique_test_dir("import-document-conflict-contest-doc");
+    std::fs::create_dir_all(&scratch_dir).expect("scratch dir");
+    let document_path = scratch_dir.join("decision.md");
+    std::fs::write(
+        &document_path,
+        "Decision:\n  id: conflict-demo\n  title: Keep first title\n  status: accepted\n  actor: actor:alice\n  topic_keys: conflict\n  rationale: First rationale.\n  options:\n    - first option\n  chose: first option\n",
+    )
+    .expect("write initial doc");
+
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:local",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        document_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("initial import succeeds");
+
+    std::fs::write(
+        &document_path,
+        "Decision:\n  id: conflict-demo\n  title: Contesting title\n  status: proposed\n  topic_keys: conflict\n  rationale: This changed import disagrees with the accepted decision.\n  options:\n    - second option\n",
+    )
+    .expect("write changed doc");
+
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "reviewer:local",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--on-conflict",
+        "contest",
+        "--file",
+        document_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("contest import succeeds");
+    let output: serde_json::Value = serde_json::from_str(&output).expect("valid import json");
+    assert_eq!(
+        output["files"][0]["blocks"][0]["status"],
+        serde_json::json!("conflict_contested")
+    );
+    let decision_id = output["files"][0]["blocks"][0]["decision_id"]
+        .as_str()
+        .expect("decision id");
+
+    let view = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "get_decision",
+        "--id",
+        decision_id,
+    ]))
+    .expect("decision query succeeds");
+    let view: serde_json::Value = serde_json::from_str(&view).expect("valid json");
+    assert_eq!(view["data"]["status"], serde_json::json!("contested"));
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+}
+
+#[test]
+fn import_documents_cli_can_resolve_conflict_by_adding_context() {
+    let hivemind_dir = unique_test_dir("import-document-conflict-context-ledger");
+    let scratch_dir = unique_test_dir("import-document-conflict-context-doc");
+    std::fs::create_dir_all(&scratch_dir).expect("scratch dir");
+    let document_path = scratch_dir.join("decision.md");
+    std::fs::write(
+        &document_path,
+        "Decision:\n  id: conflict-demo\n  title: Keep first title\n  status: proposed\n  topic_keys: conflict\n  rationale: First rationale.\n  options:\n    - first option\n",
+    )
+    .expect("write initial doc");
+
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:local",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        document_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("initial import succeeds");
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let latest_after_first = ledger.latest_offset().expect("latest offset");
+
+    std::fs::write(
+        &document_path,
+        "Decision:\n  id: conflict-demo\n  title: Changed title\n  status: proposed\n  topic_keys: conflict\n  rationale: Changed rationale.\n  options:\n    - first option\n  evidence:\n    - New evidence from re-import.\n  hypotheses:\n    - New assumption from re-import.\n",
+    )
+    .expect("write changed doc");
+
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "reviewer:local",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--on-conflict",
+        "add_context",
+        "--file",
+        document_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("add context import succeeds");
+    let output: serde_json::Value = serde_json::from_str(&output).expect("valid import json");
+    assert_eq!(
+        output["files"][0]["blocks"][0]["status"],
+        serde_json::json!("conflict_context_added")
+    );
+    let decision_id = output["files"][0]["blocks"][0]["decision_id"]
+        .as_str()
+        .expect("decision id");
+
+    let view = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "get_decision",
+        "--id",
+        decision_id,
+    ]))
+    .expect("decision query succeeds");
+    let view: serde_json::Value = serde_json::from_str(&view).expect("valid json");
+    assert_eq!(
+        view["data"]["evidence_ids"]
+            .as_array()
+            .expect("evidence ids")
+            .len(),
+        1
+    );
+    assert_eq!(
+        view["data"]["hypotheses"]
+            .as_array()
+            .expect("hypotheses")
+            .len(),
+        1
+    );
+
+    let diff = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "get_decisions_added_since",
+        "--since-offset",
+        &latest_after_first.to_string(),
+    ]))
+    .expect("diff query succeeds");
+    let diff: serde_json::Value = serde_json::from_str(&diff).expect("valid json");
+    assert_eq!(diff["data"]["total_changed_existing"], serde_json::json!(1));
+    assert_eq!(
+        diff["data"]["changed_existing_decisions"][0]["decision_id"],
+        serde_json::json!(decision_id)
     );
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);

@@ -295,10 +295,13 @@ compiled in.
 
 Local markdown or text decision notes can be imported without network access.
 Only explicit `Decision:` blocks are imported, and re-importing identical input
-is reported as a no-op:
+is reported as a no-op. Changed same-id re-imports report conflicts by default;
+reviewers can resolve them explicitly with `--on-conflict keep_existing`,
+`supersede`, `contest`, or `add_context`:
 
 ```bash
 hivemind --actor alice --json import documents --file ./notes/decision.md
+hivemind --actor alice --json import documents --on-conflict supersede ./notes/
 hivemind --actor alice import documents ./notes/
 ```
 

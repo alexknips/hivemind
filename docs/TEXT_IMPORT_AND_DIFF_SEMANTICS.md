@@ -120,16 +120,23 @@ Stable decision ids are derived in this order:
 Re-import behavior:
 
 - Same source hash and same block id: no-op.
-- Same block id with changed content: report a conflict and write nothing by
-  default.
+- Same block id with changed content: report a conflict with the existing
+  captured decision, the proposed update, source provenance, affected graph
+  dependencies, and explicit resolution actions. The default writes nothing.
 - Same content under a different path: report a duplicate candidate unless the
   user explicitly imports it as a distinct source.
 - Missing old block on a later import: write nothing by default. Absence in a
   document is not a decision supersession or rejection.
 
-Updates, supersessions, and conflict resolution require explicit fields in the
-source block or explicit importer flags in a later implementation. The importer
-must not infer supersession from edited prose.
+Conflict resolution uses explicit importer flags. `--on-conflict keep_existing`
+records no events and leaves the graph unchanged. `--on-conflict supersede`
+captures the proposed update as a new decision and appends a
+`decision.superseded` event from the new decision to the existing decision.
+`--on-conflict contest` appends a rejection event by the importing reviewer so
+accepted decisions become `contested` through normal read-layer status
+derivation. `--on-conflict add_context` appends proposed evidence and
+hypotheses to the existing decision as new context. The importer must not infer
+supersession from edited prose.
 
 ## Temporal Diff
 

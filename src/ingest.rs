@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,7 +10,7 @@ use uuid::Uuid;
 
 use crate::commands::{Commands, DecisionProposalEventUuids};
 use crate::error::{CliError, CommandError};
-use crate::events::{Event, EventProvenance, EventSource, EventType};
+use crate::events::{self, Event, EventPayload, EventProvenance, EventSource, EventType};
 use crate::ledger::EventLedger;
 use crate::Result;
 
@@ -367,6 +368,7 @@ pub struct DocumentImportRequest {
     pub paths: Vec<PathBuf>,
     pub importer_actor_id: String,
     pub format: DocumentImportFormat,
+    pub conflict_resolution: DocumentConflictResolutionAction,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -384,6 +386,7 @@ pub struct DocumentImportSummary {
     pub blocks_imported: usize,
     pub blocks_noop: usize,
     pub blocks_conflicted: usize,
+    pub blocks_resolved: usize,
     pub duplicate_candidates: usize,
     pub validation_errors: usize,
     pub events_written: usize,
@@ -424,6 +427,8 @@ pub struct DocumentBlockImportReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_snippet: Option<String>,
     pub event_ids: Vec<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<DocumentImportConflictReport>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -432,8 +437,118 @@ pub enum DocumentBlockImportStatus {
     Imported,
     NoOp,
     Conflict,
+    ConflictKeptExisting,
+    ConflictSuperseded,
+    ConflictContested,
+    ConflictContextAdded,
     DuplicateCandidate,
     ValidationError,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentConflictResolutionAction {
+    #[default]
+    Report,
+    KeepExisting,
+    Supersede,
+    Contest,
+    AddContext,
+}
+
+impl DocumentConflictResolutionAction {
+    fn available_actions() -> Vec<Self> {
+        vec![
+            Self::KeepExisting,
+            Self::Supersede,
+            Self::Contest,
+            Self::AddContext,
+        ]
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Report => "report",
+            Self::KeepExisting => "keep_existing",
+            Self::Supersede => "supersede",
+            Self::Contest => "contest",
+            Self::AddContext => "add_context",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentConflictDecisionStatus {
+    Proposed,
+    Accepted,
+    Rejected,
+    Contested,
+    Superseded,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentImportConflictReport {
+    pub selected_action: DocumentConflictResolutionAction,
+    pub available_actions: Vec<DocumentConflictResolutionAction>,
+    pub existing: DocumentConflictExistingItem,
+    pub proposed_update: DocumentConflictProposedUpdate,
+    pub affected_dependencies: DocumentConflictAffectedDependencies,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_decision_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentConflictExistingItem {
+    pub decision_id: String,
+    pub title: String,
+    pub rationale: String,
+    pub topic_keys: Vec<String>,
+    pub status: DocumentConflictDecisionStatus,
+    pub actor_id: String,
+    pub event_origin: u64,
+    pub source: EventSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_run_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentConflictProposedUpdate {
+    pub decision_id: String,
+    pub title: String,
+    pub status: ImportedDecisionStatus,
+    pub topic_keys: Vec<String>,
+    pub rationale: String,
+    pub option_labels: Vec<String>,
+    pub evidence: Vec<String>,
+    pub hypotheses: Vec<String>,
+    pub supersedes: Vec<String>,
+    pub source: DocumentConflictSourceProvenance,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentConflictSourceProvenance {
+    pub source: String,
+    pub path: String,
+    pub sha256: String,
+    pub import_run_id: String,
+    pub block_id: String,
+    pub source_span: DocumentSourceSpan,
+    pub source_snippet: String,
+    pub importer_actor_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_actor_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DocumentConflictAffectedDependencies {
+    pub option_ids: Vec<String>,
+    pub evidence_ids: Vec<String>,
+    pub hypothesis_ids: Vec<String>,
+    pub supersedes_decision_ids: Vec<String>,
+    pub superseded_by_decision_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -456,6 +571,15 @@ struct DocumentSourceRef {
     importer_actor_id: String,
     original_actor_id: Option<String>,
     provisional_actor: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    conflict_resolution: Option<DocumentConflictSourceRefResolution>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DocumentConflictSourceRefResolution {
+    action: DocumentConflictResolutionAction,
+    existing_decision_id: String,
+    resolved_decision_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -475,8 +599,9 @@ struct DocumentDecisionDraft {
     snippet: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ImportedDecisionStatus {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportedDecisionStatus {
     Proposed,
     Accepted,
     Rejected,
@@ -656,6 +781,7 @@ fn import_document_file<L: EventLedger>(
                 &namespace,
                 request.importer_actor_id.trim(),
                 import_run_id,
+                request.conflict_resolution,
             )?,
             Err(error) => DocumentBlockImportReport {
                 block_id: raw_block.fallback_id(),
@@ -665,6 +791,7 @@ fn import_document_file<L: EventLedger>(
                 source_span: Some(raw_block.span),
                 source_snippet: Some(compact_snippet(&raw_block.text)),
                 event_ids: Vec::new(),
+                conflict: None,
             },
         };
         block_reports.push(block_report);
@@ -697,6 +824,7 @@ fn import_document_decision_block<L: EventLedger>(
     namespace: &str,
     importer_actor_id: &str,
     import_run_id: &str,
+    conflict_resolution: DocumentConflictResolutionAction,
 ) -> Result<DocumentBlockImportReport> {
     let identities = DocumentImportIdentities::new(draft, canonical_path, source_hash, namespace)?;
 
@@ -709,6 +837,7 @@ fn import_document_decision_block<L: EventLedger>(
             source_span: Some(draft.span),
             source_snippet: Some(draft.snippet.clone()),
             event_ids: Vec::new(),
+            conflict: None,
         });
     }
 
@@ -725,21 +854,22 @@ fn import_document_decision_block<L: EventLedger>(
             source_span: Some(draft.span),
             source_snippet: Some(draft.snippet.clone()),
             event_ids: Vec::new(),
+            conflict: None,
         });
     }
 
     if decision_id_exists(ledger, &identities.decision_id)? {
-        return Ok(DocumentBlockImportReport {
-            block_id: draft.block_id.clone(),
-            decision_id: Some(identities.decision_id),
-            status: DocumentBlockImportStatus::Conflict,
-            message: Some(
-                "stable decision id already exists with different imported content".to_owned(),
-            ),
-            source_span: Some(draft.span),
-            source_snippet: Some(draft.snippet.clone()),
-            event_ids: Vec::new(),
-        });
+        return resolve_document_import_conflict(
+            ledger,
+            draft,
+            &identities.decision_id,
+            canonical_path,
+            source_hash,
+            namespace,
+            importer_actor_id,
+            import_run_id,
+            conflict_resolution,
+        );
     }
 
     for superseded_decision_id in &identities.supersedes_decision_ids {
@@ -754,6 +884,7 @@ fn import_document_decision_block<L: EventLedger>(
                 source_span: Some(draft.span),
                 source_snippet: Some(draft.snippet.clone()),
                 event_ids: Vec::new(),
+                conflict: None,
             });
         }
     }
@@ -762,7 +893,38 @@ fn import_document_decision_block<L: EventLedger>(
         .original_actor_id
         .as_deref()
         .unwrap_or(importer_actor_id);
-    let source_ref = serde_json::to_string(&DocumentSourceRef {
+    let source_ref = document_source_ref(
+        draft,
+        canonical_path,
+        source_hash,
+        importer_actor_id,
+        import_run_id,
+        None,
+    )?;
+    let event_ids =
+        write_document_decision_events(ledger, draft, &identities, actor_id, &source_ref)?;
+
+    Ok(DocumentBlockImportReport {
+        block_id: draft.block_id.clone(),
+        decision_id: Some(identities.decision_id),
+        status: DocumentBlockImportStatus::Imported,
+        message: None,
+        source_span: Some(draft.span),
+        source_snippet: Some(draft.snippet.clone()),
+        event_ids,
+        conflict: None,
+    })
+}
+
+fn document_source_ref(
+    draft: &DocumentDecisionDraft,
+    canonical_path: &str,
+    source_hash: &str,
+    importer_actor_id: &str,
+    import_run_id: &str,
+    conflict_resolution: Option<DocumentConflictSourceRefResolution>,
+) -> Result<String> {
+    serde_json::to_string(&DocumentSourceRef {
         source: "document".to_owned(),
         path: canonical_path.to_owned(),
         sha256: source_hash.to_owned(),
@@ -773,13 +935,22 @@ fn import_document_decision_block<L: EventLedger>(
         importer_actor_id: importer_actor_id.to_owned(),
         original_actor_id: draft.original_actor_id.clone(),
         provisional_actor: draft.original_actor_id.is_none(),
+        conflict_resolution,
     })
     .map_err(|error| {
-        CommandError::Validation(format!("source_ref serialization failed: {error}"))
-    })?;
+        CommandError::Validation(format!("source_ref serialization failed: {error}")).into()
+    })
+}
 
+fn write_document_decision_events<L: EventLedger>(
+    ledger: &L,
+    draft: &DocumentDecisionDraft,
+    identities: &DocumentImportIdentities,
+    actor_id: &str,
+    source_ref: &str,
+) -> Result<Vec<u64>> {
     let commands =
-        Commands::new_with_provenance(ledger, EventProvenance::document(source_ref.clone()));
+        Commands::new_with_provenance(ledger, EventProvenance::document(source_ref.to_owned()));
     let mut event_ids = Vec::new();
 
     for (evidence_id, evidence, event_uuid) in identities
@@ -793,7 +964,7 @@ fn import_document_decision_block<L: EventLedger>(
             actor_id,
             evidence_id,
             evidence,
-            Some(source_ref.as_str()),
+            Some(source_ref),
             event_uuid,
         )?);
     }
@@ -831,7 +1002,7 @@ fn import_document_decision_block<L: EventLedger>(
         identities.chosen_option_id.as_deref(),
         &identities.hypothesis_ids,
         &identities.evidence_ids,
-        identities.proposal_event_uuids,
+        identities.proposal_event_uuids.clone(),
     )?;
     event_ids.push(proposal_events.proposal_event_id);
     event_ids.extend(proposal_events.relation_event_ids);
@@ -857,7 +1028,7 @@ fn import_document_decision_block<L: EventLedger>(
     for (superseded_decision_id, event_uuid) in identities
         .supersedes_decision_ids
         .iter()
-        .zip(identities.supersedes_event_uuids)
+        .zip(identities.supersedes_event_uuids.clone())
     {
         event_ids.push(commands.supersede_decision_with_uuid(
             superseded_decision_id,
@@ -867,15 +1038,583 @@ fn import_document_decision_block<L: EventLedger>(
         )?);
     }
 
+    Ok(event_ids)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_document_import_conflict<L: EventLedger>(
+    ledger: &L,
+    draft: &DocumentDecisionDraft,
+    existing_decision_id: &str,
+    canonical_path: &str,
+    source_hash: &str,
+    namespace: &str,
+    importer_actor_id: &str,
+    import_run_id: &str,
+    selected_action: DocumentConflictResolutionAction,
+) -> Result<DocumentBlockImportReport> {
+    let existing = existing_document_conflict_item(ledger, existing_decision_id)?;
+    let affected_dependencies = affected_dependencies_for_decision(ledger, existing_decision_id)?;
+    let proposed_update = proposed_conflict_update(
+        draft,
+        existing_decision_id,
+        canonical_path,
+        source_hash,
+        importer_actor_id,
+        import_run_id,
+    );
+    let mut conflict = DocumentImportConflictReport {
+        selected_action,
+        available_actions: DocumentConflictResolutionAction::available_actions(),
+        existing,
+        proposed_update,
+        affected_dependencies,
+        resolved_decision_id: None,
+    };
+
+    match selected_action {
+        DocumentConflictResolutionAction::Report => conflict_block_report(
+            draft,
+            existing_decision_id,
+            DocumentBlockImportStatus::Conflict,
+            "stable decision id already exists with different imported content",
+            Vec::new(),
+            conflict,
+        ),
+        DocumentConflictResolutionAction::KeepExisting => conflict_block_report(
+            draft,
+            existing_decision_id,
+            DocumentBlockImportStatus::ConflictKeptExisting,
+            "kept existing ledger-derived decision; no events written",
+            Vec::new(),
+            conflict,
+        ),
+        DocumentConflictResolutionAction::Supersede => {
+            let identities = DocumentImportIdentities::new_conflict_supersession(
+                draft,
+                canonical_path,
+                source_hash,
+                namespace,
+                existing_decision_id,
+            )?;
+            if let Some(missing_decision_id) = missing_superseded_decision(ledger, &identities)? {
+                return conflict_block_report(
+                    draft,
+                    existing_decision_id,
+                    DocumentBlockImportStatus::ValidationError,
+                    &format!("superseded decision does not exist: {missing_decision_id}"),
+                    Vec::new(),
+                    conflict,
+                );
+            }
+            let resolved_decision_id = identities.decision_id.clone();
+            let source_ref = document_source_ref(
+                draft,
+                canonical_path,
+                source_hash,
+                importer_actor_id,
+                import_run_id,
+                Some(DocumentConflictSourceRefResolution {
+                    action: selected_action,
+                    existing_decision_id: existing_decision_id.to_owned(),
+                    resolved_decision_id: Some(resolved_decision_id.clone()),
+                }),
+            )?;
+            let actor_id = draft
+                .original_actor_id
+                .as_deref()
+                .unwrap_or(importer_actor_id);
+            let event_ids =
+                write_document_decision_events(ledger, draft, &identities, actor_id, &source_ref)?;
+            conflict.resolved_decision_id = Some(resolved_decision_id);
+            conflict_block_report(
+                draft,
+                existing_decision_id,
+                DocumentBlockImportStatus::ConflictSuperseded,
+                "captured proposed update as a superseding decision",
+                event_ids,
+                conflict,
+            )
+        }
+        DocumentConflictResolutionAction::Contest => {
+            let source_ref = document_source_ref(
+                draft,
+                canonical_path,
+                source_hash,
+                importer_actor_id,
+                import_run_id,
+                Some(DocumentConflictSourceRefResolution {
+                    action: selected_action,
+                    existing_decision_id: existing_decision_id.to_owned(),
+                    resolved_decision_id: None,
+                }),
+            )?;
+            let commands =
+                Commands::new_with_provenance(ledger, EventProvenance::document(source_ref));
+            let event_uuid = conflict_resolution_uuid(
+                selected_action,
+                canonical_path,
+                source_hash,
+                draft,
+                "decision.rejected",
+                0,
+            );
+            let event_ids = if event_uuid_exists(ledger, event_uuid)? {
+                Vec::new()
+            } else {
+                vec![commands.reject_decision_with_uuid(
+                    existing_decision_id,
+                    importer_actor_id,
+                    event_uuid,
+                )?]
+            };
+            conflict_block_report(
+                draft,
+                existing_decision_id,
+                DocumentBlockImportStatus::ConflictContested,
+                "contested existing decision with an explicit rejection event",
+                event_ids,
+                conflict,
+            )
+        }
+        DocumentConflictResolutionAction::AddContext => {
+            let event_ids = add_conflict_context_events(
+                ledger,
+                draft,
+                existing_decision_id,
+                canonical_path,
+                source_hash,
+                namespace,
+                importer_actor_id,
+                import_run_id,
+            )?;
+            let status = if draft.evidence.is_empty() && draft.hypotheses.is_empty() {
+                DocumentBlockImportStatus::ValidationError
+            } else {
+                DocumentBlockImportStatus::ConflictContextAdded
+            };
+            let message = if draft.evidence.is_empty() && draft.hypotheses.is_empty() {
+                "add_context requires at least one evidence or hypothesis item"
+            } else if event_ids.is_empty() {
+                "proposed evidence and hypotheses were already attached"
+            } else {
+                "added proposed evidence and hypotheses to the existing decision"
+            };
+            conflict_block_report(
+                draft,
+                existing_decision_id,
+                status,
+                message,
+                event_ids,
+                conflict,
+            )
+        }
+    }
+}
+
+fn conflict_block_report(
+    draft: &DocumentDecisionDraft,
+    existing_decision_id: &str,
+    status: DocumentBlockImportStatus,
+    message: &str,
+    event_ids: Vec<u64>,
+    conflict: DocumentImportConflictReport,
+) -> Result<DocumentBlockImportReport> {
     Ok(DocumentBlockImportReport {
         block_id: draft.block_id.clone(),
-        decision_id: Some(identities.decision_id),
-        status: DocumentBlockImportStatus::Imported,
-        message: None,
+        decision_id: Some(existing_decision_id.to_owned()),
+        status,
+        message: Some(message.to_owned()),
         source_span: Some(draft.span),
         source_snippet: Some(draft.snippet.clone()),
         event_ids,
+        conflict: Some(conflict),
     })
+}
+
+fn proposed_conflict_update(
+    draft: &DocumentDecisionDraft,
+    decision_id: &str,
+    canonical_path: &str,
+    source_hash: &str,
+    importer_actor_id: &str,
+    import_run_id: &str,
+) -> DocumentConflictProposedUpdate {
+    DocumentConflictProposedUpdate {
+        decision_id: decision_id.to_owned(),
+        title: draft.title.clone(),
+        status: draft.status,
+        topic_keys: draft.topic_keys.clone(),
+        rationale: draft.rationale.clone(),
+        option_labels: draft.option_labels.clone(),
+        evidence: draft.evidence.clone(),
+        hypotheses: draft.hypotheses.clone(),
+        supersedes: draft.supersedes.clone(),
+        source: DocumentConflictSourceProvenance {
+            source: "document".to_owned(),
+            path: canonical_path.to_owned(),
+            sha256: source_hash.to_owned(),
+            import_run_id: import_run_id.to_owned(),
+            block_id: draft.block_id.clone(),
+            source_span: draft.span,
+            source_snippet: draft.snippet.clone(),
+            importer_actor_id: importer_actor_id.to_owned(),
+            original_actor_id: draft.original_actor_id.clone(),
+        },
+    }
+}
+
+fn existing_document_conflict_item<L: EventLedger>(
+    ledger: &L,
+    decision_id: &str,
+) -> Result<DocumentConflictExistingItem> {
+    let mut offset = 0;
+    const PAGE_SIZE: usize = 1024;
+    let mut item = None;
+    let mut accepted = false;
+    let mut rejected = false;
+    let mut superseded_by = BTreeSet::new();
+
+    loop {
+        let events = ledger.read(offset, PAGE_SIZE)?;
+        if events.is_empty() {
+            break;
+        }
+
+        for event in &events {
+            if !matches!(
+                event.event_type,
+                EventType::DecisionProposed
+                    | EventType::DecisionAccepted
+                    | EventType::DecisionRejected
+                    | EventType::DecisionSuperseded
+            ) {
+                continue;
+            }
+            match events::validate(event).map_err(|error| {
+                CommandError::Invariant(format!("invalid ledger event during import scan: {error}"))
+            })? {
+                EventPayload::DecisionProposed(payload)
+                    if payload.decision_id == decision_id && item.is_none() =>
+                {
+                    item = Some(DocumentConflictExistingItem {
+                        decision_id: payload.decision_id,
+                        title: payload.title,
+                        rationale: payload.rationale,
+                        topic_keys: payload.topic_keys,
+                        status: DocumentConflictDecisionStatus::Proposed,
+                        actor_id: event.actor_id.clone(),
+                        event_origin: event.event_id.unwrap_or_default(),
+                        source: event.source,
+                        source_ref: event.source_ref.clone(),
+                        import_run_id: import_run_id_from_source_ref(event.source_ref.as_deref()),
+                    });
+                }
+                EventPayload::DecisionAccepted(payload) if payload.decision_id == decision_id => {
+                    accepted = true;
+                }
+                EventPayload::DecisionRejected(payload) if payload.decision_id == decision_id => {
+                    rejected = true;
+                }
+                EventPayload::DecisionSuperseded(payload)
+                    if payload.old_decision_id == decision_id =>
+                {
+                    superseded_by.insert(payload.new_decision_id);
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(last_event_id) = events.last().and_then(|event| event.event_id) {
+            offset = last_event_id;
+        } else {
+            break;
+        }
+    }
+
+    let mut item = item.ok_or_else(|| {
+        CommandError::Invariant(format!(
+            "decision exists check passed but proposal was not found: {decision_id}"
+        ))
+    })?;
+    item.status = conflict_decision_status(accepted, rejected, !superseded_by.is_empty());
+    Ok(item)
+}
+
+fn affected_dependencies_for_decision<L: EventLedger>(
+    ledger: &L,
+    decision_id: &str,
+) -> Result<DocumentConflictAffectedDependencies> {
+    let mut offset = 0;
+    const PAGE_SIZE: usize = 1024;
+    let mut dependencies = DocumentConflictAffectedDependencies::default();
+    let mut option_ids = BTreeSet::new();
+    let mut evidence_ids = BTreeSet::new();
+    let mut hypothesis_ids = BTreeSet::new();
+    let mut supersedes_decision_ids = BTreeSet::new();
+    let mut superseded_by_decision_ids = BTreeSet::new();
+
+    loop {
+        let events = ledger.read(offset, PAGE_SIZE)?;
+        if events.is_empty() {
+            break;
+        }
+
+        for event in &events {
+            if !matches!(
+                event.event_type,
+                EventType::DecisionProposed
+                    | EventType::RelationAdded
+                    | EventType::DecisionSuperseded
+            ) {
+                continue;
+            }
+            match events::validate(event).map_err(|error| {
+                CommandError::Invariant(format!("invalid ledger event during import scan: {error}"))
+            })? {
+                EventPayload::DecisionProposed(payload) if payload.decision_id == decision_id => {
+                    option_ids.extend(payload.option_ids);
+                    evidence_ids.extend(payload.evidence_ids);
+                    hypothesis_ids.extend(payload.hypothesis_ids);
+                }
+                EventPayload::RelationAdded(payload) if payload.from_id == decision_id => {
+                    match payload.relation {
+                        events::RelationKind::HasOption | events::RelationKind::Chose => {
+                            option_ids.insert(payload.to_id);
+                        }
+                        events::RelationKind::BasedOn => {
+                            evidence_ids.insert(payload.to_id);
+                        }
+                        events::RelationKind::Assumes => {
+                            hypothesis_ids.insert(payload.to_id);
+                        }
+                        events::RelationKind::Supports | events::RelationKind::Refutes => {}
+                    }
+                }
+                EventPayload::DecisionSuperseded(payload)
+                    if payload.old_decision_id == decision_id =>
+                {
+                    superseded_by_decision_ids.insert(payload.new_decision_id);
+                }
+                EventPayload::DecisionSuperseded(payload)
+                    if payload.new_decision_id == decision_id =>
+                {
+                    supersedes_decision_ids.insert(payload.old_decision_id);
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(last_event_id) = events.last().and_then(|event| event.event_id) {
+            offset = last_event_id;
+        } else {
+            break;
+        }
+    }
+
+    dependencies.option_ids = option_ids.into_iter().collect();
+    dependencies.evidence_ids = evidence_ids.into_iter().collect();
+    dependencies.hypothesis_ids = hypothesis_ids.into_iter().collect();
+    dependencies.supersedes_decision_ids = supersedes_decision_ids.into_iter().collect();
+    dependencies.superseded_by_decision_ids = superseded_by_decision_ids.into_iter().collect();
+    Ok(dependencies)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_conflict_context_events<L: EventLedger>(
+    ledger: &L,
+    draft: &DocumentDecisionDraft,
+    existing_decision_id: &str,
+    canonical_path: &str,
+    source_hash: &str,
+    namespace: &str,
+    importer_actor_id: &str,
+    import_run_id: &str,
+) -> Result<Vec<u64>> {
+    if draft.evidence.is_empty() && draft.hypotheses.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let source_ref = document_source_ref(
+        draft,
+        canonical_path,
+        source_hash,
+        importer_actor_id,
+        import_run_id,
+        Some(DocumentConflictSourceRefResolution {
+            action: DocumentConflictResolutionAction::AddContext,
+            existing_decision_id: existing_decision_id.to_owned(),
+            resolved_decision_id: None,
+        }),
+    )?;
+    let commands =
+        Commands::new_with_provenance(ledger, EventProvenance::document(source_ref.clone()));
+    let actor_id = importer_actor_id;
+    let block_component = stable_component(&format!(
+        "{}-context-{}",
+        draft.block_id,
+        &source_hash[..12]
+    ));
+    let mut event_ids = Vec::new();
+
+    for (index, evidence) in draft.evidence.iter().enumerate() {
+        let evidence_id = format!(
+            "evidence:document:{namespace}:{block_component}:{}-{}",
+            index + 1,
+            stable_component(evidence)
+        );
+        let record_uuid = conflict_resolution_uuid(
+            DocumentConflictResolutionAction::AddContext,
+            canonical_path,
+            source_hash,
+            draft,
+            "evidence.recorded",
+            index + 1,
+        );
+        if !event_uuid_exists(ledger, record_uuid)? && !evidence_id_exists(ledger, &evidence_id)? {
+            event_ids.push(commands.record_evidence_with_id(
+                actor_id,
+                &evidence_id,
+                evidence,
+                Some(source_ref.as_str()),
+                record_uuid,
+            )?);
+        }
+        let relation_uuid = conflict_resolution_uuid(
+            DocumentConflictResolutionAction::AddContext,
+            canonical_path,
+            source_hash,
+            draft,
+            "relation.based_on",
+            index + 1,
+        );
+        if !event_uuid_exists(ledger, relation_uuid)? {
+            event_ids.push(commands.attach_evidence_with_uuid(
+                existing_decision_id,
+                &evidence_id,
+                actor_id,
+                relation_uuid,
+            )?);
+        }
+    }
+
+    for (index, hypothesis) in draft.hypotheses.iter().enumerate() {
+        let hypothesis_id = format!(
+            "hypothesis:document:{namespace}:{block_component}:{}-{}",
+            index + 1,
+            stable_component(hypothesis)
+        );
+        let record_uuid = conflict_resolution_uuid(
+            DocumentConflictResolutionAction::AddContext,
+            canonical_path,
+            source_hash,
+            draft,
+            "hypothesis.recorded",
+            index + 1,
+        );
+        if !event_uuid_exists(ledger, record_uuid)?
+            && !hypothesis_id_exists(ledger, &hypothesis_id)?
+        {
+            event_ids.push(commands.record_hypothesis_with_id(
+                actor_id,
+                &hypothesis_id,
+                hypothesis,
+                record_uuid,
+            )?);
+        }
+        let relation_uuid = conflict_resolution_uuid(
+            DocumentConflictResolutionAction::AddContext,
+            canonical_path,
+            source_hash,
+            draft,
+            "relation.assumes",
+            index + 1,
+        );
+        if !event_uuid_exists(ledger, relation_uuid)? {
+            event_ids.push(commands.assume_hypothesis_with_uuid(
+                existing_decision_id,
+                &hypothesis_id,
+                actor_id,
+                relation_uuid,
+            )?);
+        }
+    }
+
+    Ok(event_ids)
+}
+
+fn conflict_resolution_uuid(
+    action: DocumentConflictResolutionAction,
+    canonical_path: &str,
+    source_hash: &str,
+    draft: &DocumentDecisionDraft,
+    role: &str,
+    index: usize,
+) -> Uuid {
+    import_uuid(&format!(
+        "import:v1:{canonical_path}:{source_hash}:{}:{}-{}:conflict:{}:{role}:{index}",
+        draft.block_id,
+        draft.span.byte_start,
+        draft.span.byte_end,
+        action.label()
+    ))
+}
+
+fn conflict_decision_status(
+    accepted: bool,
+    rejected: bool,
+    superseded: bool,
+) -> DocumentConflictDecisionStatus {
+    if superseded {
+        DocumentConflictDecisionStatus::Superseded
+    } else {
+        match (accepted, rejected) {
+            (true, true) => DocumentConflictDecisionStatus::Contested,
+            (true, false) => DocumentConflictDecisionStatus::Accepted,
+            (false, true) => DocumentConflictDecisionStatus::Rejected,
+            (false, false) => DocumentConflictDecisionStatus::Proposed,
+        }
+    }
+}
+
+fn import_run_id_from_source_ref(source_ref: Option<&str>) -> Option<String> {
+    let raw = source_ref?;
+    let parsed = serde_json::from_str::<DocumentSourceRef>(raw).ok()?;
+    Some(parsed.import_run_id)
+}
+
+fn evidence_id_exists<L: EventLedger>(ledger: &L, evidence_id: &str) -> Result<bool> {
+    scan_ledger(ledger, |event| {
+        event.event_type == EventType::EvidenceRecorded
+            && event
+                .payload
+                .get("evidence_id")
+                .and_then(|value| value.as_str())
+                == Some(evidence_id)
+    })
+}
+
+fn hypothesis_id_exists<L: EventLedger>(ledger: &L, hypothesis_id: &str) -> Result<bool> {
+    scan_ledger(ledger, |event| {
+        event.event_type == EventType::HypothesisRecorded
+            && event
+                .payload
+                .get("hypothesis_id")
+                .and_then(|value| value.as_str())
+                == Some(hypothesis_id)
+    })
+}
+
+fn missing_superseded_decision<L: EventLedger>(
+    ledger: &L,
+    identities: &DocumentImportIdentities,
+) -> Result<Option<String>> {
+    for superseded_decision_id in &identities.supersedes_decision_ids {
+        if !decision_id_exists(ledger, superseded_decision_id)? {
+            return Ok(Some(superseded_decision_id.clone()));
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Debug, Clone)]
@@ -901,11 +1640,47 @@ impl DocumentImportIdentities {
         source_hash: &str,
         namespace: &str,
     ) -> Result<Self> {
-        let block_component = stable_component(&draft.block_id);
-        let decision_id = stable_decision_id(namespace, &draft.block_id);
+        Self::new_with_identity_block(
+            draft,
+            canonical_path,
+            source_hash,
+            namespace,
+            &draft.block_id,
+            &[],
+        )
+    }
+
+    fn new_conflict_supersession(
+        draft: &DocumentDecisionDraft,
+        canonical_path: &str,
+        source_hash: &str,
+        namespace: &str,
+        existing_decision_id: &str,
+    ) -> Result<Self> {
+        let identity_block_id = format!("{}-supersedes-{}", draft.block_id, &source_hash[..12]);
+        Self::new_with_identity_block(
+            draft,
+            canonical_path,
+            source_hash,
+            namespace,
+            &identity_block_id,
+            &[existing_decision_id.to_owned()],
+        )
+    }
+
+    fn new_with_identity_block(
+        draft: &DocumentDecisionDraft,
+        canonical_path: &str,
+        source_hash: &str,
+        namespace: &str,
+        identity_block_id: &str,
+        extra_supersedes_decision_ids: &[String],
+    ) -> Result<Self> {
+        let block_component = stable_component(identity_block_id);
+        let decision_id = stable_decision_id(namespace, identity_block_id);
         let role_prefix = format!(
             "import:v1:{canonical_path}:{source_hash}:{}:{}-{}",
-            draft.block_id, draft.span.byte_start, draft.span.byte_end
+            identity_block_id, draft.span.byte_start, draft.span.byte_end
         );
 
         let option_ids = draft
@@ -969,11 +1744,22 @@ impl DocumentImportIdentities {
                 )
             })
             .collect::<Vec<_>>();
-        let supersedes_decision_ids = draft
+        let mut supersedes_decision_ids = Vec::new();
+        for id in extra_supersedes_decision_ids {
+            if !supersedes_decision_ids.contains(id) {
+                supersedes_decision_ids.push(id.clone());
+            }
+        }
+        for id in draft
             .supersedes
             .iter()
             .map(|id| stable_decision_reference(namespace, id))
-            .collect::<Vec<_>>();
+        {
+            if !supersedes_decision_ids.contains(&id) {
+                supersedes_decision_ids.push(id);
+            }
+        }
+        let supersedes_count = supersedes_decision_ids.len();
         let proposal_uuid = import_uuid(&format!("{role_prefix}:decision.proposed"));
 
         Ok(Self {
@@ -1020,7 +1806,7 @@ impl DocumentImportIdentities {
             supersedes_event_uuids: repeated_role_uuids(
                 &role_prefix,
                 "decision.superseded",
-                draft.supersedes.len(),
+                supersedes_count,
             ),
         })
     }
@@ -1365,6 +2151,10 @@ fn accumulate_file_summary(summary: &mut DocumentImportSummary, file: &DocumentF
             DocumentBlockImportStatus::Imported => summary.blocks_imported += 1,
             DocumentBlockImportStatus::NoOp => summary.blocks_noop += 1,
             DocumentBlockImportStatus::Conflict => summary.blocks_conflicted += 1,
+            DocumentBlockImportStatus::ConflictKeptExisting
+            | DocumentBlockImportStatus::ConflictSuperseded
+            | DocumentBlockImportStatus::ConflictContested
+            | DocumentBlockImportStatus::ConflictContextAdded => summary.blocks_resolved += 1,
             DocumentBlockImportStatus::DuplicateCandidate => summary.duplicate_candidates += 1,
             DocumentBlockImportStatus::ValidationError => summary.validation_errors += 1,
         }

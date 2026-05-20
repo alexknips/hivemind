@@ -16,8 +16,8 @@ use crate::identity::{
 };
 use crate::ingest::{
     extract_slack_decision_draft, import_documents, import_slack_thread,
-    parse_slack_thread_fixture, DocumentImportFormat, DocumentImportReport, DocumentImportRequest,
-    SlackIngestOutcome, DEFAULT_SLACK_MENTION,
+    parse_slack_thread_fixture, DocumentConflictResolutionAction, DocumentImportFormat,
+    DocumentImportReport, DocumentImportRequest, SlackIngestOutcome, DEFAULT_SLACK_MENTION,
 };
 use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::projector::{
@@ -488,6 +488,9 @@ pub struct ImportDocumentsArgs {
 
     #[arg(long = "format", value_enum, default_value_t = ImportDocumentFormat::Auto)]
     pub format: ImportDocumentFormat,
+
+    #[arg(long = "on-conflict", value_enum, default_value_t = ImportDocumentConflictAction::Report)]
+    pub on_conflict: ImportDocumentConflictAction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -504,6 +507,32 @@ impl ImportDocumentFormat {
             Self::Auto => DocumentImportFormat::Auto,
             Self::Markdown => DocumentImportFormat::Markdown,
             Self::Text => DocumentImportFormat::Text,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum ImportDocumentConflictAction {
+    Report,
+    #[value(alias = "keep")]
+    KeepExisting,
+    #[value(alias = "capture_superseding_decision")]
+    Supersede,
+    #[value(alias = "contest_existing")]
+    Contest,
+    #[value(alias = "add_new_context", alias = "add_new_evidence_hypothesis")]
+    AddContext,
+}
+
+impl ImportDocumentConflictAction {
+    const fn as_ingest_action(self) -> DocumentConflictResolutionAction {
+        match self {
+            Self::Report => DocumentConflictResolutionAction::Report,
+            Self::KeepExisting => DocumentConflictResolutionAction::KeepExisting,
+            Self::Supersede => DocumentConflictResolutionAction::Supersede,
+            Self::Contest => DocumentConflictResolutionAction::Contest,
+            Self::AddContext => DocumentConflictResolutionAction::AddContext,
         }
     }
 }
@@ -1319,6 +1348,7 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
                     paths,
                     importer_actor_id: cli.actor.clone(),
                     format: args.format.as_ingest_format(),
+                    conflict_resolution: args.on_conflict.as_ingest_action(),
                 },
             )?;
             format_import_output(cli.json, &report)
@@ -2173,12 +2203,13 @@ fn format_import_output(as_json: bool, report: &DocumentImportReport) -> Result<
         })
     } else {
         Ok(format!(
-            "import_run_id={} files_seen={} blocks_imported={} no_op={} conflicts={} duplicate_candidates={} validation_errors={} events_written={}",
+            "import_run_id={} files_seen={} blocks_imported={} no_op={} conflicts={} resolved={} duplicate_candidates={} validation_errors={} events_written={}",
             report.import_run_id,
             report.summary.files_seen,
             report.summary.blocks_imported,
             report.summary.blocks_noop,
             report.summary.blocks_conflicted,
+            report.summary.blocks_resolved,
             report.summary.duplicate_candidates,
             report.summary.validation_errors,
             report.summary.events_written

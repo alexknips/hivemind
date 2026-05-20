@@ -757,6 +757,16 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         evidence_id: &str,
         actor_id: &str,
     ) -> Result<EventId> {
+        self.attach_evidence_with_uuid(decision_id, evidence_id, actor_id, Uuid::new_v4())
+    }
+
+    pub fn attach_evidence_with_uuid(
+        &self,
+        decision_id: &str,
+        evidence_id: &str,
+        actor_id: &str,
+        event_uuid: Uuid,
+    ) -> Result<EventId> {
         require_non_empty("actor_id", actor_id)?;
         require_non_empty("decision_id", decision_id)?;
         require_non_empty("evidence_id", evidence_id)?;
@@ -772,7 +782,47 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             );
         }
 
-        self.append_relation_event(actor_id, 0, RelationKind::BasedOn, decision_id, evidence_id)
+        self.append_relation_event_with_uuid(
+            actor_id,
+            0,
+            RelationKind::BasedOn,
+            decision_id,
+            evidence_id,
+            event_uuid,
+        )
+    }
+
+    pub fn assume_hypothesis_with_uuid(
+        &self,
+        decision_id: &str,
+        hypothesis_id: &str,
+        actor_id: &str,
+        event_uuid: Uuid,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("decision_id", decision_id)?;
+        require_non_empty("hypothesis_id", hypothesis_id)?;
+
+        if !self.decision_exists(decision_id)? {
+            return Err(
+                CommandError::Invariant(format!("decision does not exist: {decision_id}")).into(),
+            );
+        }
+        if !self.hypothesis_exists(hypothesis_id)? {
+            return Err(CommandError::Invariant(format!(
+                "hypothesis does not exist: {hypothesis_id}"
+            ))
+            .into());
+        }
+
+        self.append_relation_event_with_uuid(
+            actor_id,
+            0,
+            RelationKind::Assumes,
+            decision_id,
+            hypothesis_id,
+            event_uuid,
+        )
     }
 
     pub fn relate_evidence_to_hypothesis(
