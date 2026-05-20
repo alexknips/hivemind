@@ -16,8 +16,10 @@ use crate::identity::{
 };
 use crate::ingest::{
     extract_slack_decision_draft, import_documents, import_slack_thread,
-    parse_slack_thread_fixture, DocumentConflictResolutionAction, DocumentImportFormat,
-    DocumentImportReport, DocumentImportRequest, SlackIngestOutcome, DEFAULT_SLACK_MENTION,
+    parse_slack_thread_fixture, prepare_document_texts, DocumentConflictResolutionAction,
+    DocumentImportFormat, DocumentImportReport, DocumentImportRequest, DocumentPreparationFormat,
+    DocumentPreparationReport, DocumentPreparationRequest, SlackIngestOutcome,
+    DEFAULT_SLACK_MENTION,
 };
 use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::projector::{
@@ -476,6 +478,8 @@ pub struct ImportArgs {
 pub enum ImportCommand {
     #[command(name = "documents", alias = "document")]
     Documents(ImportDocumentsArgs),
+    #[command(name = "prepare-documents", alias = "prepare-document")]
+    PrepareDocuments(PrepareDocumentsArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -533,6 +537,41 @@ impl ImportDocumentConflictAction {
             Self::Supersede => DocumentConflictResolutionAction::Supersede,
             Self::Contest => DocumentConflictResolutionAction::Contest,
             Self::AddContext => DocumentConflictResolutionAction::AddContext,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct PrepareDocumentsArgs {
+    #[arg(long = "file", value_name = "PATH")]
+    pub files: Vec<PathBuf>,
+
+    #[arg(value_name = "PATH")]
+    pub paths: Vec<PathBuf>,
+
+    #[arg(long = "format", value_enum, default_value_t = PrepareDocumentFormat::Auto)]
+    pub format: PrepareDocumentFormat,
+
+    #[arg(long = "output-dir", value_name = "DIR")]
+    pub output_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum PrepareDocumentFormat {
+    Auto,
+    Pdf,
+    Text,
+    OcrText,
+}
+
+impl PrepareDocumentFormat {
+    const fn as_ingest_format(self) -> DocumentPreparationFormat {
+        match self {
+            Self::Auto => DocumentPreparationFormat::Auto,
+            Self::Pdf => DocumentPreparationFormat::Pdf,
+            Self::Text => DocumentPreparationFormat::Text,
+            Self::OcrText => DocumentPreparationFormat::OcrText,
         }
     }
 }
@@ -1336,10 +1375,9 @@ fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
 }
 
 fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
-    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
-
     match &import.command {
         ImportCommand::Documents(args) => {
+            let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
             let mut paths = args.files.clone();
             paths.extend(args.paths.clone());
             let report = import_documents(
@@ -1352,6 +1390,16 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
                 },
             )?;
             format_import_output(cli.json, &report)
+        }
+        ImportCommand::PrepareDocuments(args) => {
+            let mut paths = args.files.clone();
+            paths.extend(args.paths.clone());
+            let report = prepare_document_texts(&DocumentPreparationRequest {
+                paths,
+                format: args.format.as_ingest_format(),
+                output_dir: args.output_dir.clone(),
+            })?;
+            format_prepare_documents_output(cli.json, &report)
         }
     }
 }
@@ -2213,6 +2261,29 @@ fn format_import_output(as_json: bool, report: &DocumentImportReport) -> Result<
             report.summary.duplicate_candidates,
             report.summary.validation_errors,
             report.summary.events_written
+        ))
+    }
+}
+
+fn format_prepare_documents_output(
+    as_json: bool,
+    report: &DocumentPreparationReport,
+) -> Result<String> {
+    if as_json {
+        serde_json::to_string(report).map_err(|error| {
+            CliError::InvalidInput(format!("json serialization failed: {error}")).into()
+        })
+    } else {
+        Ok(format!(
+            "preparation_run_id={} files_seen={} files_prepared={} review_required={} needs_ocr={} validation_errors={} pages_seen={} bytes_written={}",
+            report.preparation_run_id,
+            report.summary.files_seen,
+            report.summary.files_prepared,
+            report.summary.files_review_required,
+            report.summary.files_needing_ocr,
+            report.summary.validation_errors,
+            report.summary.pages_seen,
+            report.summary.bytes_written
         ))
     }
 }

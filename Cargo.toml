@@ -30,6 +30,7 @@ clap = { version = "4.6.1", features = ["derive", "env"] }
 chrono = { version = "0.4.42", features = ["serde"] }
 crossterm = { version = "0.28.1", optional = true }
 deunicode = "1.6.2"
+pdf-extract = "0.10.0"
 # kuzu 0.11.3 depends on cxx 1.0.138 but allows newer cxx-build generators.
 # Keep the generated bridge symbols aligned with kuzu's runtime cxx crate.
 cxx-build = { version = "=1.0.138", optional = true }

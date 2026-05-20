@@ -305,6 +305,20 @@ hivemind --actor alice --json import documents --on-conflict supersede ./notes/
 hivemind --actor alice import documents ./notes/
 ```
 
+PDFs and OCR-backed text are prepared before import. The preparation command
+does not write ledger events; it materializes reviewable text with source/page
+metadata, then the reviewed output can be imported through the same document
+importer:
+
+```bash
+hivemind --json import prepare-documents ./sources/decision.pdf \
+  --output-dir ./prepared
+hivemind --actor alice --json import documents ./prepared
+```
+
+OCR text files such as `scan.ocr.txt` are marked `review_required`, and that
+uncertainty is preserved in the final imported source reference.
+
 The emit commands print the new entity id or event id. Add `--json` for a
 structured output envelope.
 

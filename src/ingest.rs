@@ -363,12 +363,153 @@ impl DocumentImportFormat {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentPreparationFormat {
+    Auto,
+    Pdf,
+    Text,
+    OcrText,
+}
+
+impl DocumentPreparationFormat {
+    fn source_kind_for_path(self, path: &Path) -> Option<DocumentPreparationSourceKind> {
+        match self {
+            Self::Pdf => Some(DocumentPreparationSourceKind::PdfText),
+            Self::Text => Some(DocumentPreparationSourceKind::Text),
+            Self::OcrText => Some(DocumentPreparationSourceKind::OcrText),
+            Self::Auto => {
+                let extension = path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(|extension| extension.to_ascii_lowercase());
+                let file_name = path
+                    .file_name()
+                    .and_then(|file_name| file_name.to_str())
+                    .map(|file_name| file_name.to_ascii_lowercase())
+                    .unwrap_or_default();
+                match extension.as_deref() {
+                    Some("pdf") => Some(DocumentPreparationSourceKind::PdfText),
+                    Some("ocr") => Some(DocumentPreparationSourceKind::OcrText),
+                    Some("txt") | Some("md") | Some("markdown") => {
+                        if file_name.contains(".ocr.") || file_name.ends_with("-ocr.txt") {
+                            Some(DocumentPreparationSourceKind::OcrText)
+                        } else {
+                            Some(DocumentPreparationSourceKind::Text)
+                        }
+                    }
+                    _ => None,
+                }
+            }
+        }
+    }
+
+    fn accepts_path(self, path: &Path) -> bool {
+        self.source_kind_for_path(path).is_some()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DocumentImportRequest {
     pub paths: Vec<PathBuf>,
     pub importer_actor_id: String,
     pub format: DocumentImportFormat,
     pub conflict_resolution: DocumentConflictResolutionAction,
+}
+
+#[derive(Debug, Clone)]
+pub struct DocumentPreparationRequest {
+    pub paths: Vec<PathBuf>,
+    pub format: DocumentPreparationFormat,
+    pub output_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentPreparationReport {
+    pub preparation_run_id: String,
+    pub summary: DocumentPreparationSummary,
+    pub files: Vec<DocumentPreparedFileReport>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DocumentPreparationSummary {
+    pub files_seen: usize,
+    pub files_prepared: usize,
+    pub files_review_required: usize,
+    pub files_needing_ocr: usize,
+    pub files_skipped: usize,
+    pub validation_errors: usize,
+    pub pages_seen: usize,
+    pub bytes_written: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentPreparedFileReport {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<DocumentPreparationSourceKind>,
+    pub status: DocumentPreparationFileStatus,
+    pub review_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepared_path: Option<String>,
+    pub pages: Vec<DocumentPreparedPageReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intermediate_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentPreparationFileStatus {
+    Prepared,
+    ReviewRequired,
+    NeedsOcr,
+    SkippedUnsupported,
+    ValidationError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentPreparationSourceKind {
+    PdfText,
+    Text,
+    OcrText,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentPreparedPageReport {
+    pub page_number: usize,
+    pub source_span: DocumentSourceSpan,
+    pub source_snippet: String,
+    #[serde(skip)]
+    pub text: String,
+    pub review_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_confidence: Option<u8>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ocr_uncertainty: Vec<String>,
+    pub source_ref: DocumentPreparedSourceRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DocumentPreparedSourceRef {
+    pub source: String,
+    pub path: String,
+    pub sha256: String,
+    pub preparation_run_id: String,
+    pub extraction_kind: DocumentPreparationSourceKind,
+    pub page_number: usize,
+    pub source_span: DocumentSourceSpan,
+    pub source_snippet: String,
+    pub ocr_review_required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_confidence: Option<u8>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ocr_uncertainty: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -610,6 +751,8 @@ struct DocumentSourceRef {
     provisional_actor: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     conflict_resolution: Option<DocumentConflictSourceRefResolution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prepared_from: Option<DocumentPreparedSourceRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -634,6 +777,7 @@ struct DocumentDecisionDraft {
     supersedes: Vec<String>,
     span: DocumentSourceSpan,
     snippet: String,
+    prepared_source_ref: Option<DocumentPreparedSourceRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -708,6 +852,373 @@ pub fn import_documents<L: EventLedger>(
         summary,
         files: file_reports,
     })
+}
+
+pub fn prepare_document_texts(
+    request: &DocumentPreparationRequest,
+) -> Result<DocumentPreparationReport> {
+    let files = collect_document_preparation_paths(&request.paths, request.format)?;
+    let preparation_run_id = preparation_run_id(&files);
+    let mut summary = DocumentPreparationSummary {
+        files_seen: files.len(),
+        ..DocumentPreparationSummary::default()
+    };
+    let mut file_reports = Vec::with_capacity(files.len());
+
+    if let Some(output_dir) = &request.output_dir {
+        fs::create_dir_all(output_dir).map_err(|error| {
+            CliError::InvalidInput(format!(
+                "cannot create prepared document output directory {}: {error}",
+                output_dir.display()
+            ))
+        })?;
+    }
+
+    for file in files {
+        let report = prepare_document_file(&file, request, &preparation_run_id)?;
+        accumulate_preparation_summary(&mut summary, &report);
+        file_reports.push(report);
+    }
+
+    Ok(DocumentPreparationReport {
+        preparation_run_id,
+        summary,
+        files: file_reports,
+    })
+}
+
+fn collect_document_preparation_paths(
+    paths: &[PathBuf],
+    format: DocumentPreparationFormat,
+) -> Result<Vec<PathBuf>> {
+    if paths.is_empty() {
+        return Err(CliError::InvalidInput(
+            "import prepare-documents requires at least one --file or path".to_owned(),
+        )
+        .into());
+    }
+
+    let mut files = Vec::new();
+    for path in paths {
+        collect_document_preparation_path(path, format, true, &mut files)?;
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
+fn collect_document_preparation_path(
+    path: &Path,
+    format: DocumentPreparationFormat,
+    explicit: bool,
+    files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        CliError::InvalidInput(format!(
+            "cannot read document preparation path {}: {error}",
+            path.display()
+        ))
+    })?;
+
+    if metadata.is_file() {
+        if explicit || format.accepts_path(path) {
+            files.push(path.to_owned());
+        }
+        return Ok(());
+    }
+
+    if metadata.is_dir() {
+        let mut entries = fs::read_dir(path)
+            .map_err(|error| {
+                CliError::InvalidInput(format!(
+                    "cannot list document preparation directory {}: {error}",
+                    path.display()
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| {
+                CliError::InvalidInput(format!(
+                    "cannot read document preparation directory entry in {}: {error}",
+                    path.display()
+                ))
+            })?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            collect_document_preparation_path(&entry.path(), format, false, files)?;
+        }
+        return Ok(());
+    }
+
+    Err(CliError::InvalidInput(format!(
+        "document preparation path is neither file nor directory: {}",
+        path.display()
+    ))
+    .into())
+}
+
+fn prepare_document_file(
+    path: &Path,
+    request: &DocumentPreparationRequest,
+    preparation_run_id: &str,
+) -> Result<DocumentPreparedFileReport> {
+    let Some(source_kind) = request.format.source_kind_for_path(path) else {
+        return Ok(DocumentPreparedFileReport {
+            path: path.display().to_string(),
+            canonical_path: None,
+            source_hash: None,
+            source_kind: None,
+            status: DocumentPreparationFileStatus::SkippedUnsupported,
+            review_required: false,
+            message: Some("unsupported document preparation extension".to_owned()),
+            prepared_path: None,
+            pages: Vec::new(),
+            intermediate_text: None,
+        });
+    };
+
+    let bytes = fs::read(path).map_err(|error| {
+        CliError::InvalidInput(format!(
+            "cannot read document preparation source {}: {error}",
+            path.display()
+        ))
+    })?;
+    let source_hash = sha256_hex(&bytes);
+    let canonical_path = fs::canonicalize(path).map_err(|error| {
+        CliError::InvalidInput(format!(
+            "cannot canonicalize document preparation source {}: {error}",
+            path.display()
+        ))
+    })?;
+    let canonical_path = canonical_path.display().to_string();
+
+    let extracted_pages = match source_kind {
+        DocumentPreparationSourceKind::PdfText => match pdf_extract::extract_text_by_pages(path) {
+            Ok(pages) => pages,
+            Err(error) => {
+                return Ok(DocumentPreparedFileReport {
+                    path: path.display().to_string(),
+                    canonical_path: Some(canonical_path),
+                    source_hash: Some(source_hash),
+                    source_kind: Some(source_kind),
+                    status: DocumentPreparationFileStatus::ValidationError,
+                    review_required: false,
+                    message: Some(format!("could not extract PDF text: {error}")),
+                    prepared_path: None,
+                    pages: Vec::new(),
+                    intermediate_text: None,
+                });
+            }
+        },
+        DocumentPreparationSourceKind::Text | DocumentPreparationSourceKind::OcrText => {
+            vec![String::from_utf8(bytes).map_err(|error| {
+                CliError::InvalidInput(format!(
+                    "document preparation source {} is not valid UTF-8: {error}",
+                    path.display()
+                ))
+            })?]
+        }
+    };
+
+    if source_kind == DocumentPreparationSourceKind::PdfText
+        && extracted_pages.iter().all(|page| page.trim().is_empty())
+    {
+        return Ok(DocumentPreparedFileReport {
+            path: path.display().to_string(),
+            canonical_path: Some(canonical_path),
+            source_hash: Some(source_hash),
+            source_kind: Some(source_kind),
+            status: DocumentPreparationFileStatus::NeedsOcr,
+            review_required: true,
+            message: Some(
+                "PDF has no extractable text layer; run OCR and prepare the OCR text output"
+                    .to_owned(),
+            ),
+            prepared_path: None,
+            pages: Vec::new(),
+            intermediate_text: None,
+        });
+    }
+
+    let pages = extracted_pages
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, text)| {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let page_number = index + 1;
+            Some(prepared_page_report(
+                &canonical_path,
+                &source_hash,
+                preparation_run_id,
+                source_kind,
+                page_number,
+                &text,
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    if pages.is_empty() {
+        return Ok(DocumentPreparedFileReport {
+            path: path.display().to_string(),
+            canonical_path: Some(canonical_path),
+            source_hash: Some(source_hash),
+            source_kind: Some(source_kind),
+            status: DocumentPreparationFileStatus::NeedsOcr,
+            review_required: true,
+            message: Some("no usable extracted text; OCR review is required".to_owned()),
+            prepared_path: None,
+            pages,
+            intermediate_text: None,
+        });
+    }
+
+    let review_required = pages.iter().any(|page| page.review_required);
+    let intermediate_text = render_prepared_document_text(preparation_run_id, &pages)?;
+    let (prepared_path, bytes_written) = maybe_write_prepared_document(
+        path,
+        request.output_dir.as_deref(),
+        &source_hash,
+        &intermediate_text,
+    )?;
+    let status = if review_required {
+        DocumentPreparationFileStatus::ReviewRequired
+    } else {
+        DocumentPreparationFileStatus::Prepared
+    };
+
+    let mut report = DocumentPreparedFileReport {
+        path: path.display().to_string(),
+        canonical_path: Some(canonical_path),
+        source_hash: Some(source_hash),
+        source_kind: Some(source_kind),
+        status,
+        review_required,
+        message: review_required
+            .then(|| "OCR uncertainty must be reviewed before import".to_owned()),
+        prepared_path,
+        pages,
+        intermediate_text: Some(intermediate_text),
+    };
+    if bytes_written > 0 {
+        report
+            .message
+            .get_or_insert_with(|| "prepared intermediate text written for review".to_owned());
+    }
+    Ok(report)
+}
+
+fn prepared_page_report(
+    canonical_path: &str,
+    source_hash: &str,
+    preparation_run_id: &str,
+    source_kind: DocumentPreparationSourceKind,
+    page_number: usize,
+    text: &str,
+) -> DocumentPreparedPageReport {
+    let span = span_for_prepared_text(text);
+    let source_snippet = compact_snippet(text);
+    let ocr_uncertainty = if source_kind == DocumentPreparationSourceKind::OcrText {
+        vec!["ocr_confidence_unavailable".to_owned()]
+    } else {
+        Vec::new()
+    };
+    let review_required = !ocr_uncertainty.is_empty();
+    let source_ref = DocumentPreparedSourceRef {
+        source: "document_preparation".to_owned(),
+        path: canonical_path.to_owned(),
+        sha256: source_hash.to_owned(),
+        preparation_run_id: preparation_run_id.to_owned(),
+        extraction_kind: source_kind,
+        page_number,
+        source_span: span,
+        source_snippet: source_snippet.clone(),
+        ocr_review_required: review_required,
+        ocr_confidence: None,
+        ocr_uncertainty: ocr_uncertainty.clone(),
+    };
+
+    DocumentPreparedPageReport {
+        page_number,
+        source_span: span,
+        source_snippet,
+        text: text.to_owned(),
+        review_required,
+        ocr_confidence: None,
+        ocr_uncertainty,
+        source_ref,
+    }
+}
+
+fn render_prepared_document_text(
+    preparation_run_id: &str,
+    pages: &[DocumentPreparedPageReport],
+) -> Result<String> {
+    let mut output = String::new();
+    output.push_str("# hivemind-prepared-document: v1\n");
+    output.push_str(&format!("# preparation_run_id: {preparation_run_id}\n"));
+    output.push_str("# reviewer_note: Review this extracted text before importing with `hivemind import documents`.\n\n");
+
+    for page in pages {
+        let source_ref = serde_json::to_string(&page.source_ref).map_err(|error| {
+            CommandError::Validation(format!("prepared source_ref serialization failed: {error}"))
+        })?;
+        output.push_str(&format!("# hivemind-source-ref: {source_ref}\n"));
+        output.push_str(&format!("# source_page: {}\n", page.page_number));
+        if page.review_required {
+            output.push_str("# ocr_review_required: true\n");
+            for uncertainty in &page.ocr_uncertainty {
+                output.push_str(&format!("# ocr_uncertainty: {uncertainty}\n"));
+            }
+        }
+        output.push_str(page.text.trim_end());
+        output.push_str("\n\n");
+    }
+
+    Ok(output)
+}
+
+fn maybe_write_prepared_document(
+    source_path: &Path,
+    output_dir: Option<&Path>,
+    source_hash: &str,
+    intermediate_text: &str,
+) -> Result<(Option<String>, usize)> {
+    let Some(output_dir) = output_dir else {
+        return Ok((None, 0));
+    };
+
+    let output_path = prepared_output_path(source_path, output_dir, source_hash);
+    fs::write(&output_path, intermediate_text).map_err(|error| {
+        CliError::InvalidInput(format!(
+            "cannot write prepared document {}: {error}",
+            output_path.display()
+        ))
+    })?;
+    Ok((
+        Some(output_path.display().to_string()),
+        intermediate_text.len(),
+    ))
+}
+
+fn prepared_output_path(source_path: &Path, output_dir: &Path, source_hash: &str) -> PathBuf {
+    let stem = source_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(stable_component)
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| "document".to_owned());
+    output_dir.join(format!("{stem}-{}.prepared.txt", &source_hash[..12]))
+}
+
+fn span_for_prepared_text(text: &str) -> DocumentSourceSpan {
+    DocumentSourceSpan {
+        byte_start: 0,
+        byte_end: text.len(),
+        line_start: 1,
+        line_end: text.lines().count().max(1),
+    }
 }
 
 fn collect_document_import_path(
@@ -977,7 +1488,11 @@ fn import_document_decision_block<L: EventLedger>(
         block_id: draft.block_id.clone(),
         decision_id: Some(identities.decision_id),
         status: DocumentBlockImportStatus::Imported,
-        message: None,
+        message: draft.prepared_source_ref.as_ref().and_then(|source_ref| {
+            source_ref
+                .ocr_review_required
+                .then(|| "prepared OCR source requires reviewer verification".to_owned())
+        }),
         reviewer_action: None,
         similarity_matches: Vec::new(),
         source_span: Some(draft.span),
@@ -1007,6 +1522,7 @@ fn document_source_ref(
         original_actor_id: draft.original_actor_id.clone(),
         provisional_actor: draft.original_actor_id.is_none(),
         conflict_resolution,
+        prepared_from: draft.prepared_source_ref.clone(),
     })
     .map_err(|error| {
         CommandError::Validation(format!("source_ref serialization failed: {error}")).into()
@@ -1147,7 +1663,9 @@ fn resolve_document_import_conflict<L: EventLedger>(
         DocumentConflictResolutionAction::Report if similarity_matches.len() > 1 => {
             Some(DocumentReviewerAction::ReviewAmbiguousFuzzyMatches)
         }
-        DocumentConflictResolutionAction::Report => Some(DocumentReviewerAction::ResolveImportConflict),
+        DocumentConflictResolutionAction::Report => {
+            Some(DocumentReviewerAction::ResolveImportConflict)
+        }
         _ => None,
     };
 
@@ -1912,6 +2430,7 @@ struct RawDocumentDecisionBlock {
     span: DocumentSourceSpan,
     text: String,
     lines: Vec<SourceLine>,
+    prepared_source_ref: Option<DocumentPreparedSourceRef>,
 }
 
 impl RawDocumentDecisionBlock {
@@ -1967,10 +2486,27 @@ fn find_document_decision_blocks(input: &str) -> Vec<RawDocumentDecisionBlock> {
             },
             text: text.to_owned(),
             lines: block_lines.to_vec(),
+            prepared_source_ref: prepared_source_ref_before(&lines, start_index),
         });
     }
 
     blocks
+}
+
+fn prepared_source_ref_before(
+    lines: &[SourceLine],
+    start_index: usize,
+) -> Option<DocumentPreparedSourceRef> {
+    lines[..start_index]
+        .iter()
+        .rev()
+        .filter_map(|line| {
+            line.text
+                .trim()
+                .strip_prefix("# hivemind-source-ref:")
+                .map(str::trim)
+        })
+        .find_map(|value| serde_json::from_str::<DocumentPreparedSourceRef>(value).ok())
 }
 
 fn source_lines(input: &str) -> Vec<SourceLine> {
@@ -2144,6 +2680,7 @@ fn parse_document_decision_block(raw: &RawDocumentDecisionBlock) -> Result<Docum
         supersedes: fields.supersedes,
         span: raw.span,
         snippet: compact_snippet(&raw.text),
+        prepared_source_ref: raw.prepared_source_ref.clone(),
     })
 }
 
@@ -2253,6 +2790,28 @@ fn accumulate_file_summary(summary: &mut DocumentImportSummary, file: &DocumentF
             DocumentBlockImportStatus::DuplicateCandidate => summary.duplicate_candidates += 1,
             DocumentBlockImportStatus::ValidationError => summary.validation_errors += 1,
         }
+    }
+}
+
+fn accumulate_preparation_summary(
+    summary: &mut DocumentPreparationSummary,
+    file: &DocumentPreparedFileReport,
+) {
+    summary.pages_seen += file.pages.len();
+    if file.prepared_path.is_some() {
+        if let Some(text) = file.intermediate_text.as_deref() {
+            summary.bytes_written += text.len();
+        }
+    }
+    match file.status {
+        DocumentPreparationFileStatus::Prepared => summary.files_prepared += 1,
+        DocumentPreparationFileStatus::ReviewRequired => {
+            summary.files_prepared += 1;
+            summary.files_review_required += 1;
+        }
+        DocumentPreparationFileStatus::NeedsOcr => summary.files_needing_ocr += 1,
+        DocumentPreparationFileStatus::SkippedUnsupported => summary.files_skipped += 1,
+        DocumentPreparationFileStatus::ValidationError => summary.validation_errors += 1,
     }
 }
 
@@ -2620,6 +3179,19 @@ fn import_run_id(files: &[PathBuf]) -> String {
 
 fn short_sha256_hex(bytes: &[u8]) -> String {
     sha256_hex(bytes).chars().take(12).collect()
+}
+
+fn preparation_run_id(files: &[PathBuf]) -> String {
+    let seed = files
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join("|");
+    format!(
+        "prepare:{}:{}",
+        Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        short_sha256_hex(seed.as_bytes())
+    )
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

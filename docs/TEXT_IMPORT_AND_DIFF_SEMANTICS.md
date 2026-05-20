@@ -14,6 +14,7 @@ The first import slice accepts UTF-8 local files in these forms:
 - Markdown files (`.md`, `.markdown`).
 - Plain text files (`.txt`).
 - Markdown or plain text files containing explicit HiveMind decision blocks.
+- Prepared PDF/OCR text emitted by `hivemind import prepare-documents`.
 
 Only explicit decision blocks create decision events in the first slice. An
 unmarked document is reported as `skipped_unmarked`; it is not heuristically
@@ -97,6 +98,29 @@ LLM-assisted extraction is later layer-3 work. It may propose candidate blocks,
 but those candidates must be reviewed or materialized as explicit structured
 input before the write layer appends ledger events. The importer must not call
 an LLM from the write path.
+
+## PDF And OCR Preparation
+
+PDF and OCR inputs use a preparation step, not a direct ledger write:
+
+```bash
+hivemind --json import prepare-documents ./source.pdf --output-dir ./prepared
+hivemind --actor alice --json import documents ./prepared
+```
+
+`prepare-documents` extracts text PDF pages and OCR-backed UTF-8 files such as
+`scan.ocr.txt` into deterministic intermediate text. Each prepared page includes
+a `# hivemind-source-ref: {...}` comment containing the original source path,
+source hash, preparation run id, extraction kind, page number, page span, and a
+short source snippet. The reviewed intermediate text remains ordinary document
+input; `import documents` still performs the same structured block validation
+before writing events.
+
+PDFs without an extractable text layer are reported as `needs_ocr` and write no
+prepared text. OCR-backed text is reported as `review_required` when confidence
+metadata is unavailable, and that uncertainty is carried through the imported
+event source reference as `prepared_from.ocr_review_required` and
+`prepared_from.ocr_uncertainty`.
 
 ## Idempotency And Re-Import
 

@@ -1058,6 +1058,204 @@ fn import_documents_cli_imports_queryable_document_decisions_and_reimport_noops(
 }
 
 #[test]
+fn prepare_documents_cli_extracts_pdf_text_for_reviewed_import() {
+    let hivemind_dir = unique_test_dir("prepare-pdf-ledger");
+    let scratch_dir = unique_test_dir("prepare-pdf-source");
+    let output_dir = scratch_dir.join("prepared");
+    std::fs::create_dir_all(&scratch_dir).expect("scratch dir");
+    let pdf_path = scratch_dir.join("decision.pdf");
+    write_simple_pdf(
+        &pdf_path,
+        &[
+            "Decision:",
+            "id: pdf-ingestion",
+            "title: Preserve PDF decisions",
+            "status: accepted",
+            "actor: actor:pdf",
+            "topic_keys: documents, pdf",
+            "rationale: Text PDF extraction keeps reviewers in front of ledger writes.",
+            "options:",
+            "- prepare text",
+            "- direct ledger write",
+            "chose: prepare text",
+            "evidence:",
+            "- Page extraction keeps the original page reference.",
+        ],
+    );
+
+    let prepared = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "import",
+        "prepare-documents",
+        "--output-dir",
+        output_dir.to_str().expect("utf-8 output dir"),
+        pdf_path.to_str().expect("utf-8 pdf path"),
+    ]))
+    .expect("PDF preparation succeeds");
+    let prepared: serde_json::Value =
+        serde_json::from_str(&prepared).expect("valid preparation json");
+    assert_eq!(prepared["summary"]["files_prepared"], serde_json::json!(1));
+    assert_eq!(
+        prepared["summary"]["files_review_required"],
+        serde_json::json!(0)
+    );
+    assert_eq!(
+        prepared["files"][0]["source_kind"],
+        serde_json::json!("pdf_text")
+    );
+    let prepared_path = PathBuf::from(
+        prepared["files"][0]["prepared_path"]
+            .as_str()
+            .expect("prepared path"),
+    );
+    let prepared_text = std::fs::read_to_string(&prepared_path).expect("prepared text");
+    assert!(prepared_text.contains("# hivemind-source-ref:"));
+    assert!(prepared_text.contains("Decision:"));
+
+    let imported = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:pdf",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        prepared_path.to_str().expect("utf-8 prepared path"),
+    ]))
+    .expect("prepared PDF text imports");
+    let imported: serde_json::Value = serde_json::from_str(&imported).expect("valid import json");
+    assert_eq!(imported["summary"]["blocks_imported"], serde_json::json!(1));
+
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let events = ledger.read(0, 100).expect("events read");
+    let proposal = events
+        .iter()
+        .find(|event| {
+            event.event_type == crate::events::EventType::DecisionProposed
+                && event.payload.get("title").and_then(|value| value.as_str())
+                    == Some("Preserve PDF decisions")
+        })
+        .expect("PDF proposal event");
+    let source_ref: serde_json::Value =
+        serde_json::from_str(proposal.source_ref.as_deref().expect("document source ref"))
+            .expect("document source ref json");
+    assert_eq!(
+        source_ref["prepared_from"]["extraction_kind"],
+        serde_json::json!("pdf_text")
+    );
+    assert_eq!(
+        source_ref["prepared_from"]["page_number"],
+        serde_json::json!(1)
+    );
+    assert_eq!(
+        source_ref["prepared_from"]["ocr_review_required"],
+        serde_json::json!(false)
+    );
+    assert!(source_ref["prepared_from"]["path"]
+        .as_str()
+        .expect("source path")
+        .ends_with("decision.pdf"));
+
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn prepare_documents_cli_surfaces_ocr_uncertainty_before_import() {
+    let hivemind_dir = unique_test_dir("prepare-ocr-ledger");
+    let scratch_dir = unique_test_dir("prepare-ocr-source");
+    let output_dir = scratch_dir.join("prepared");
+    std::fs::create_dir_all(&scratch_dir).expect("scratch dir");
+    let ocr_path = scratch_dir.join("scanned.ocr.txt");
+    std::fs::write(
+        &ocr_path,
+        "Decision:\nid: scanned-ingestion\ntitle: Review scanned decisions\nstatus: proposed\ntopic_keys: documents, ocr\nrationale: OCR text can contain recognition mistakes and must be reviewed.\noptions:\n- prepare text\n- trust raw OCR\nchose: prepare text\n",
+    )
+    .expect("write OCR text");
+
+    let prepared = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "import",
+        "prepare-documents",
+        "--output-dir",
+        output_dir.to_str().expect("utf-8 output dir"),
+        ocr_path.to_str().expect("utf-8 OCR path"),
+    ]))
+    .expect("OCR preparation succeeds");
+    let prepared: serde_json::Value =
+        serde_json::from_str(&prepared).expect("valid preparation json");
+    assert_eq!(prepared["summary"]["files_prepared"], serde_json::json!(1));
+    assert_eq!(
+        prepared["summary"]["files_review_required"],
+        serde_json::json!(1)
+    );
+    assert_eq!(
+        prepared["files"][0]["source_kind"],
+        serde_json::json!("ocr_text")
+    );
+    assert_eq!(
+        prepared["files"][0]["pages"][0]["ocr_uncertainty"][0],
+        serde_json::json!("ocr_confidence_unavailable")
+    );
+    let prepared_path = PathBuf::from(
+        prepared["files"][0]["prepared_path"]
+            .as_str()
+            .expect("prepared path"),
+    );
+    let prepared_text = std::fs::read_to_string(&prepared_path).expect("prepared text");
+    assert!(prepared_text.contains("# ocr_review_required: true"));
+
+    let imported = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:ocr",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        prepared_path.to_str().expect("utf-8 prepared path"),
+    ]))
+    .expect("reviewed OCR text imports");
+    let imported: serde_json::Value = serde_json::from_str(&imported).expect("valid import json");
+    assert_eq!(imported["summary"]["blocks_imported"], serde_json::json!(1));
+    assert!(imported["files"][0]["blocks"][0]["message"]
+        .as_str()
+        .expect("OCR import message")
+        .contains("OCR"));
+
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let events = ledger.read(0, 100).expect("events read");
+    let proposal = events
+        .iter()
+        .find(|event| {
+            event.event_type == crate::events::EventType::DecisionProposed
+                && event.payload.get("title").and_then(|value| value.as_str())
+                    == Some("Review scanned decisions")
+        })
+        .expect("OCR proposal event");
+    let source_ref: serde_json::Value =
+        serde_json::from_str(proposal.source_ref.as_deref().expect("document source ref"))
+            .expect("document source ref json");
+    assert_eq!(
+        source_ref["prepared_from"]["ocr_review_required"],
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        source_ref["prepared_from"]["ocr_uncertainty"][0],
+        serde_json::json!("ocr_confidence_unavailable")
+    );
+
+    let _ = std::fs::remove_dir_all(&scratch_dir);
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
 fn import_documents_cli_reports_changed_same_id_as_conflict_without_writes() {
     let hivemind_dir = unique_test_dir("import-document-conflict-ledger");
     let scratch_dir = unique_test_dir("import-document-conflict-doc");
@@ -2117,6 +2315,45 @@ fn format_error_outputs_structured_json() {
 
 fn unique_test_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("hivemind-{name}-{}", uuid::Uuid::new_v4()))
+}
+
+fn write_simple_pdf(path: &std::path::Path, lines: &[&str]) {
+    let mut content = String::from("BT\n/F1 12 Tf\n72 720 Td\n");
+    for line in lines {
+        content.push_str(&format!("({}) Tj\n0 -14 Td\n", escape_pdf_text(line)));
+    }
+    content.push_str("ET\n");
+
+    let objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_owned(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+        format!("<< /Length {} >>\nstream\n{}endstream", content.len(), content),
+    ];
+
+    let mut pdf = String::from("%PDF-1.4\n");
+    let mut offsets = Vec::with_capacity(objects.len());
+    for (index, object) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.push_str(&format!("{} 0 obj\n{}\nendobj\n", index + 1, object));
+    }
+    let xref_offset = pdf.len();
+    pdf.push_str("xref\n0 6\n0000000000 65535 f \n");
+    for offset in offsets {
+        pdf.push_str(&format!("{offset:010} 00000 n \n"));
+    }
+    pdf.push_str(&format!(
+        "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
+    ));
+    std::fs::write(path, pdf).expect("write PDF fixture");
+}
+
+fn escape_pdf_text(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('(', "\\(")
+        .replace(')', "\\)")
 }
 
 fn envelope_value(output: &str) -> String {
