@@ -1,0 +1,86 @@
+{
+  "data": {
+    "edges": [
+      {
+        "from": "decision-005",
+        "relation": "proposed_by",
+        "to": "actor:planner"
+      },
+      {
+        "from": "decision-005",
+        "relation": "based_on",
+        "to": "evidence-001"
+      },
+      {
+        "from": "decision-005",
+        "relation": "has_option",
+        "to": "option-005-a"
+      },
+      {
+        "from": "decision-005",
+        "relation": "has_option",
+        "to": "option-005-b"
+      },
+      {
+        "from": "decision-005",
+        "relation": "chose",
+        "to": "option-005-b"
+      },
+      {
+        "from": "decision-005",
+        "relation": "assumes",
+        "to": "hypothesis-001"
+      },
+      {
+        "from": "evidence-001",
+        "relation": "supports",
+        "to": "hypothesis-001"
+      },
+      {
+        "from": "evidence-004",
+        "relation": "refutes",
+        "to": "hypothesis-001"
+      }
+    ],
+    "nodes": [
+      {
+        "decision_status": "proposed",
+        "id": "decision-005",
+        "kind": "decision"
+      },
+      {
+        "id": "actor:planner",
+        "kind": "actor"
+      },
+      {
+        "id": "evidence-001",
+        "kind": "evidence"
+      },
+      {
+        "id": "evidence-004",
+        "kind": "evidence"
+      },
+      {
+        "id": "option-005-a",
+        "kind": "option"
+      },
+      {
+        "id": "option-005-b",
+        "kind": "option"
+      },
+      {
+        "hypothesis_status": "refuted",
+        "id": "hypothesis-001",
+        "kind": "hypothesis"
+      }
+    ],
+    "root": {
+      "id": "decision-005",
+      "kind": "decision",
+      "present": true
+    }
+  },
+  "latency_ms": 0,
+  "result_count": 15,
+  "truncated": false
+}

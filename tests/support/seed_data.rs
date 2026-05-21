@@ -25,11 +25,33 @@ pub fn seed_to_dir(seed_dir: &Path) -> TestResult<()> {
 pub fn seed_events() -> Vec<Event> {
     let mut builder = SeedBuilder::default();
 
-    for index in 1..=5 {
-        builder.evidence(
-            &format!("evidence-{index:03}"),
-            &format!("Seed evidence {index}: fabricated observation for replay demos"),
-        );
+    for (evidence_id, content) in [
+        (
+            "evidence-001",
+            "Seed evidence 001: embedded projection replay drift packet",
+        ),
+        (
+            "evidence-002",
+            "Seed evidence 002: CLI automation output stayed stable",
+        ),
+        (
+            "evidence-003",
+            "Seed evidence 003: audit trail reconstructs provenance",
+        ),
+        (
+            "evidence-004",
+            "Seed evidence 004: packet-capture refutes projection freshness",
+        ),
+        (
+            "evidence-005",
+            "Seed evidence 005: empty result pages render without fallback rows",
+        ),
+        (
+            "evidence-006",
+            "Seed evidence 006: packet-capture shows delta mirror search coverage",
+        ),
+    ] {
+        builder.evidence(evidence_id, content);
     }
 
     builder.hypothesis(
@@ -44,6 +66,10 @@ pub fn seed_events() -> Vec<Event> {
         "hypothesis-003",
         "Decision provenance is sufficient for later audits",
     );
+    builder.hypothesis(
+        "hypothesis-004",
+        "Hypothesis text needle keeps search coverage anchored",
+    );
 
     let topics = ["architecture", "operations", "security", "product"];
     for index in 1..=30 {
@@ -55,12 +81,15 @@ pub fn seed_events() -> Vec<Event> {
             5 | 6 => vec!["hypothesis-001"],
             7..=10 => vec!["hypothesis-002"],
             11..=15 => vec!["hypothesis-003"],
+            21 => vec!["hypothesis-004"],
             _ => Vec::new(),
         };
         let evidence = match index {
             5 | 6 => vec!["evidence-001"],
             7..=10 => vec!["evidence-002"],
             11..=15 => vec!["evidence-003"],
+            20 => vec!["evidence-006"],
+            21 => vec!["evidence-005"],
             _ => Vec::new(),
         };
         builder.decision(index, topic, &hypotheses, &evidence);
@@ -71,6 +100,8 @@ pub fn seed_events() -> Vec<Event> {
     builder.reject("decision-004", "actor:bob");
     builder.supersede("decision-001", "decision-002");
     builder.supersede("decision-002", "decision-003");
+    builder.supersede("decision-016", "decision-018");
+    builder.supersede("decision-016", "decision-019");
     builder.relation(
         RelationKind::Supports,
         "evidence-001",
@@ -162,8 +193,16 @@ impl SeedBuilder {
         evidence_ids: &[&str],
     ) {
         let decision_id = format!("decision-{index:03}");
-        let option_a = format!("option-{index:03}-a");
-        let option_b = format!("option-{index:03}-b");
+        let (option_a, option_b) = match index {
+            20 => (
+                "option-020-manual-reconciliation".to_owned(),
+                "option-020-delta-mirror".to_owned(),
+            ),
+            _ => (
+                format!("option-{index:03}-a"),
+                format!("option-{index:03}-b"),
+            ),
+        };
         self.push(
             EventType::DecisionProposed,
             "actor:planner",
