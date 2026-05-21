@@ -159,13 +159,28 @@ hivemind --hivemind-dir ./hivemind/ emit decision.capture \
   --chose direct-cli
 ```
 
-### Codex Capture Plugin
+### Agent Capture Plugins
 
-The repository ships a Codex plugin marketplace at
-`.agents/plugins/marketplace.json`. The `hivemind-capture` plugin packages a
-Codex skill that tells agents when to preserve a decision and how to call the
-same `decision.capture` CLI shown above. The skill keeps direct CLI capture as
-the critical path; hooks and MCP are supplemental integration surfaces.
+The repository ships installable capture bundles for Claude Code and Codex. Both
+packages teach agents when to preserve a decision and how to call the same
+`decision.capture` CLI shown above. The direct CLI remains the critical write
+path; MCP is bundled as a supplemental tool transport.
+
+Claude Code uses the marketplace at `.claude-plugin/marketplace.json` and the
+plugin in `plugins/hivemind-capture`. Install it from Claude Code:
+
+```text
+/plugin marketplace add alexknips/hivemind
+/plugin install hivemind-capture@hivemind
+/reload-plugins
+```
+
+In this repository, `.claude/settings.json` advertises the marketplace and
+enables `hivemind-capture@hivemind` so trusted Claude Code sessions are prompted
+to install it. The plugin provides `/hivemind-capture:capture-decision`,
+`/hivemind-capture:query-decisions`, and a `hivemind` MCP server wired to
+`hivemind mcp`. See `plugins/hivemind-capture/README.md` for uninstall and
+verification steps.
 
 From a local HiveMind checkout, start Codex in this repository, open `/plugins`,
 choose `HiveMind Plugins`, and install `HiveMind Capture`. From another
