@@ -1,0 +1,21 @@
+{
+  "data": {
+    "cursor": null,
+    "filters": {
+      "actor_ids": [],
+      "sources": [],
+      "statuses": [],
+      "topic_keys": [
+        "architecture"
+      ]
+    },
+    "items": [],
+    "limit": 5,
+    "next_cursor": null,
+    "query": "no-such-search-needle",
+    "total_matches": 0
+  },
+  "latency_ms": 0,
+  "result_count": 0,
+  "truncated": false
+}

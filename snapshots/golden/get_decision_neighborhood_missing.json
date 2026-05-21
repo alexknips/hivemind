@@ -1,0 +1,14 @@
+{
+  "data": {
+    "edges": [],
+    "nodes": [],
+    "root": {
+      "id": "decision-missing",
+      "kind": "decision",
+      "present": false
+    }
+  },
+  "latency_ms": 0,
+  "result_count": 0,
+  "truncated": false
+}

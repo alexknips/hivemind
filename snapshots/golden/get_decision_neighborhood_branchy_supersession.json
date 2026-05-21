@@ -1,0 +1,73 @@
+{
+  "data": {
+    "edges": [
+      {
+        "from": "decision-016",
+        "relation": "proposed_by",
+        "to": "actor:planner"
+      },
+      {
+        "from": "decision-018",
+        "relation": "supersedes",
+        "to": "decision-016"
+      },
+      {
+        "from": "decision-019",
+        "relation": "supersedes",
+        "to": "decision-016"
+      },
+      {
+        "from": "decision-016",
+        "relation": "has_option",
+        "to": "option-016-a"
+      },
+      {
+        "from": "decision-016",
+        "relation": "has_option",
+        "to": "option-016-b"
+      },
+      {
+        "from": "decision-016",
+        "relation": "chose",
+        "to": "option-016-b"
+      }
+    ],
+    "nodes": [
+      {
+        "decision_status": "superseded",
+        "id": "decision-016",
+        "kind": "decision"
+      },
+      {
+        "decision_status": "proposed",
+        "id": "decision-018",
+        "kind": "decision"
+      },
+      {
+        "decision_status": "proposed",
+        "id": "decision-019",
+        "kind": "decision"
+      },
+      {
+        "id": "actor:planner",
+        "kind": "actor"
+      },
+      {
+        "id": "option-016-a",
+        "kind": "option"
+      },
+      {
+        "id": "option-016-b",
+        "kind": "option"
+      }
+    ],
+    "root": {
+      "id": "decision-016",
+      "kind": "decision",
+      "present": true
+    }
+  },
+  "latency_ms": 0,
+  "result_count": 12,
+  "truncated": false
+}

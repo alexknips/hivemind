@@ -1,0 +1,100 @@
+{
+  "data": {
+    "cursor": null,
+    "filters": {
+      "actor_ids": [],
+      "sources": [],
+      "statuses": [],
+      "topic_keys": [
+        "slice-one"
+      ]
+    },
+    "items": [
+      {
+        "decision": {
+          "chosen_option_id": "option-001-b",
+          "evidence_ids": [],
+          "hypotheses": [],
+          "id": "decision-001",
+          "option_ids": [
+            "option-001-a",
+            "option-001-b"
+          ],
+          "rationale": "Deterministic rationale for seed decision 001",
+          "status": "superseded",
+          "title": "Seed decision 001",
+          "topic_keys": [
+            "architecture",
+            "slice-one"
+          ]
+        },
+        "graph_context": {
+          "actor_ids": [
+            "actor:planner"
+          ],
+          "evidence_ids": [],
+          "hypotheses": [],
+          "matched_nodes": [],
+          "option_ids": [
+            "option-001-a",
+            "option-001-b"
+          ],
+          "superseded_by_decision_ids": [
+            "decision-002"
+          ],
+          "supersedes_decision_ids": []
+        },
+        "matched_fields": [],
+        "rank": 4,
+        "snippets": []
+      },
+      {
+        "decision": {
+          "chosen_option_id": "option-002-b",
+          "evidence_ids": [],
+          "hypotheses": [],
+          "id": "decision-002",
+          "option_ids": [
+            "option-002-a",
+            "option-002-b"
+          ],
+          "rationale": "Deterministic rationale for seed decision 002",
+          "status": "superseded",
+          "title": "Seed decision 002",
+          "topic_keys": [
+            "operations",
+            "slice-one"
+          ]
+        },
+        "graph_context": {
+          "actor_ids": [
+            "actor:planner"
+          ],
+          "evidence_ids": [],
+          "hypotheses": [],
+          "matched_nodes": [],
+          "option_ids": [
+            "option-002-a",
+            "option-002-b"
+          ],
+          "superseded_by_decision_ids": [
+            "decision-003"
+          ],
+          "supersedes_decision_ids": [
+            "decision-001"
+          ]
+        },
+        "matched_fields": [],
+        "rank": 4,
+        "snippets": []
+      }
+    ],
+    "limit": 2,
+    "next_cursor": "2",
+    "query": null,
+    "total_matches": 30
+  },
+  "latency_ms": 0,
+  "result_count": 2,
+  "truncated": true
+}

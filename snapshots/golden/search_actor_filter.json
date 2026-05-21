@@ -1,0 +1,62 @@
+{
+  "data": {
+    "cursor": null,
+    "filters": {
+      "actor_ids": [
+        "actor:bob"
+      ],
+      "sources": [],
+      "statuses": [
+        "contested"
+      ],
+      "topic_keys": []
+    },
+    "items": [
+      {
+        "decision": {
+          "chosen_option_id": "option-004-b",
+          "evidence_ids": [],
+          "hypotheses": [],
+          "id": "decision-004",
+          "option_ids": [
+            "option-004-a",
+            "option-004-b"
+          ],
+          "rationale": "Deterministic rationale for seed decision 004",
+          "status": "contested",
+          "title": "Seed decision 004",
+          "topic_keys": [
+            "product",
+            "slice-one"
+          ]
+        },
+        "graph_context": {
+          "actor_ids": [
+            "actor:alice",
+            "actor:bob",
+            "actor:planner"
+          ],
+          "evidence_ids": [],
+          "hypotheses": [],
+          "matched_nodes": [],
+          "option_ids": [
+            "option-004-a",
+            "option-004-b"
+          ],
+          "superseded_by_decision_ids": [],
+          "supersedes_decision_ids": []
+        },
+        "matched_fields": [],
+        "rank": 4,
+        "snippets": []
+      }
+    ],
+    "limit": 10,
+    "next_cursor": null,
+    "query": null,
+    "total_matches": 1
+  },
+  "latency_ms": 0,
+  "result_count": 1,
+  "truncated": false
+}

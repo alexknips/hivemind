@@ -18,16 +18,151 @@ const QUERY_SPECS: &[QuerySpec] = &[
         name: "get_decision",
         snapshot_file: "get_decision.json",
         args: &["query", "get_decision", "--id", "decision-005"],
+        expectation: QueryExpectation::Success,
     },
     QuerySpec {
         name: "get_relevant_decisions",
         snapshot_file: "get_relevant_decisions.json",
         args: &["query", "get_relevant_decisions", "--topic", "architecture"],
+        expectation: QueryExpectation::Success,
     },
     QuerySpec {
         name: "get_supersession_chain",
         snapshot_file: "get_supersession_chain.json",
         args: &["query", "get_supersession_chain", "--id", "decision-002"],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "search_actor_filter",
+        snapshot_file: "search_actor_filter.json",
+        args: &[
+            "query",
+            "search_decisions",
+            "--actor-id",
+            "actor:bob",
+            "--status",
+            "contested",
+            "--limit",
+            "10",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "search_evidence_text",
+        snapshot_file: "search_evidence_text.json",
+        args: &[
+            "query",
+            "search_decisions",
+            "--q",
+            "packet-capture",
+            "--limit",
+            "5",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "search_option_text",
+        snapshot_file: "search_option_text.json",
+        args: &[
+            "query",
+            "search_decisions",
+            "--q",
+            "delta-mirror",
+            "--limit",
+            "5",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "search_hypothesis_text",
+        snapshot_file: "search_hypothesis_text.json",
+        args: &[
+            "query",
+            "search_decisions",
+            "--q",
+            "hypothesis text needle",
+            "--limit",
+            "5",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "search_empty_results",
+        snapshot_file: "search_empty_results.json",
+        args: &[
+            "query",
+            "search_decisions",
+            "--q",
+            "no-such-search-needle",
+            "--topic",
+            "architecture",
+            "--limit",
+            "5",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "search_empty_page",
+        snapshot_file: "search_empty_page.json",
+        args: &[
+            "query",
+            "search_decisions",
+            "--topic",
+            "slice-one",
+            "--limit",
+            "5",
+            "--cursor",
+            "30",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "search_truncated",
+        snapshot_file: "search_truncated.json",
+        args: &[
+            "query",
+            "search_decisions",
+            "--topic",
+            "slice-one",
+            "--limit",
+            "2",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "get_decision_neighborhood_refuted",
+        snapshot_file: "get_decision_neighborhood_refuted.json",
+        args: &["query", "get_decision_neighborhood", "--id", "decision-005"],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "get_decision_neighborhood_branchy_supersession",
+        snapshot_file: "get_decision_neighborhood_branchy_supersession.json",
+        args: &["query", "get_decision_neighborhood", "--id", "decision-016"],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "get_decision_neighborhood_missing",
+        snapshot_file: "get_decision_neighborhood_missing.json",
+        args: &[
+            "query",
+            "get_decision_neighborhood",
+            "--id",
+            "decision-missing",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "get_decision_neighborhood_invalid_id",
+        snapshot_file: "get_decision_neighborhood_invalid_id.json",
+        args: &["query", "get_decision_neighborhood", "--id", ""],
+        expectation: QueryExpectation::Error,
+    },
+    QuerySpec {
+        name: "get_supersession_chain_branch_error",
+        snapshot_file: "get_supersession_chain_branch_error.json",
+        args: &["query", "get_supersession_chain", "--id", "decision-016"],
+        expectation: QueryExpectation::Error,
     },
 ];
 
@@ -95,10 +230,21 @@ fn capture_query_outputs(seed_dir: &Path) -> TestResult<Vec<QueryOutput>> {
         let mut argv = vec!["hivemind", "--hivemind-dir", seed_dir.as_str()];
         argv.extend(spec.args.iter().copied());
         let cli = Cli::parse_from(argv);
-        outputs.push(QueryOutput {
-            spec,
-            json: canonical_query_json(&run(&cli)?)?,
-        });
+        let json = match (spec.expectation, run(&cli)) {
+            (QueryExpectation::Success, Ok(raw_json)) => canonical_query_json(&raw_json)?,
+            (QueryExpectation::Success, Err(error)) => {
+                return Err(format!("{} failed unexpectedly: {error}", spec.name).into());
+            }
+            (QueryExpectation::Error, Ok(raw_json)) => {
+                return Err(format!(
+                    "{} succeeded unexpectedly with output: {raw_json}",
+                    spec.name
+                )
+                .into());
+            }
+            (QueryExpectation::Error, Err(error)) => canonical_error_json(&error.to_string())?,
+        };
+        outputs.push(QueryOutput { spec, json });
     }
 
     Ok(outputs)
@@ -110,6 +256,10 @@ fn canonical_query_json(raw_json: &str) -> TestResult<String> {
         object.insert("latency_ms".to_owned(), json!(0));
     }
     Ok(serde_json::to_string_pretty(&value)?)
+}
+
+fn canonical_error_json(error: &str) -> TestResult<String> {
+    Ok(serde_json::to_string_pretty(&json!({ "error": error }))?)
 }
 
 fn bless_snapshots(outputs: &[QueryOutput]) -> TestResult<()> {
@@ -202,6 +352,13 @@ struct QuerySpec {
     name: &'static str,
     snapshot_file: &'static str,
     args: &'static [&'static str],
+    expectation: QueryExpectation,
+}
+
+#[derive(Clone, Copy)]
+enum QueryExpectation {
+    Success,
+    Error,
 }
 
 struct QueryOutput {

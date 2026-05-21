@@ -74,6 +74,40 @@ fn seed_dataset_covers_slice_one_demo_cases() {
         })
         .count();
     assert!(assuming_decisions >= 2);
+
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::EvidenceRecorded
+            && payload_str(event, "evidence_id") == Some("evidence-006")
+            && payload_str(event, "content")
+                .is_some_and(|content| content.contains("packet-capture"))
+    }));
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::HypothesisRecorded
+            && payload_str(event, "hypothesis_id") == Some("hypothesis-004")
+            && payload_str(event, "statement")
+                .is_some_and(|statement| statement.contains("Hypothesis text needle"))
+    }));
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::DecisionProposed
+            && payload_str(event, "decision_id") == Some("decision-020")
+            && event
+                .payload
+                .get("option_ids")
+                .and_then(|value| value.as_array())
+                .is_some_and(|ids| {
+                    ids.iter()
+                        .any(|id| id.as_str() == Some("option-020-delta-mirror"))
+                })
+    }));
+
+    let branchy_supersessions = events
+        .iter()
+        .filter(|event| {
+            event.event_type == EventType::DecisionSuperseded
+                && payload_str(event, "old_decision_id") == Some("decision-016")
+        })
+        .count();
+    assert_eq!(branchy_supersessions, 2);
 }
 
 #[test]

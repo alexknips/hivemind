@@ -1,0 +1,73 @@
+{
+  "data": {
+    "cursor": null,
+    "filters": {
+      "actor_ids": [],
+      "sources": [],
+      "statuses": [],
+      "topic_keys": []
+    },
+    "items": [
+      {
+        "decision": {
+          "chosen_option_id": "option-020-delta-mirror",
+          "evidence_ids": [
+            "evidence-006"
+          ],
+          "hypotheses": [],
+          "id": "decision-020",
+          "option_ids": [
+            "option-020-delta-mirror",
+            "option-020-manual-reconciliation"
+          ],
+          "rationale": "Deterministic rationale for seed decision 020",
+          "status": "proposed",
+          "title": "Seed decision 020",
+          "topic_keys": [
+            "product",
+            "slice-one"
+          ]
+        },
+        "graph_context": {
+          "actor_ids": [
+            "actor:planner"
+          ],
+          "evidence_ids": [
+            "evidence-006"
+          ],
+          "hypotheses": [],
+          "matched_nodes": [
+            {
+              "field": "evidence.content",
+              "id": "evidence-006",
+              "kind": "evidence"
+            }
+          ],
+          "option_ids": [
+            "option-020-delta-mirror",
+            "option-020-manual-reconciliation"
+          ],
+          "superseded_by_decision_ids": [],
+          "supersedes_decision_ids": []
+        },
+        "matched_fields": [
+          "evidence.content"
+        ],
+        "rank": 3,
+        "snippets": [
+          {
+            "field": "evidence.content",
+            "value": "Seed evidence 006: packet-capture shows delta mirror search coverage"
+          }
+        ]
+      }
+    ],
+    "limit": 5,
+    "next_cursor": null,
+    "query": "packet-capture",
+    "total_matches": 1
+  },
+  "latency_ms": 0,
+  "result_count": 1,
+  "truncated": false
+}
