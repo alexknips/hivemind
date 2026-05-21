@@ -1142,11 +1142,8 @@ fn parse_document_decision_block(raw: &RawDocumentDecisionBlock) -> Result<Docum
             active_list = None;
             active_scalar = None;
             match key.as_str() {
-                "decision" => {
-                    if !value.is_empty() {
-                        fields.title = Some(value.to_owned());
-                    }
-                }
+                "decision" if !value.is_empty() => fields.title = Some(value.to_owned()),
+                "decision" => {}
                 "id" => fields.block_id = non_empty_value(value, "id")?,
                 "title" => fields.title = non_empty_value(value, "title")?,
                 "status" => fields.status = non_empty_value(value, "status")?,
