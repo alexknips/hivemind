@@ -1,6 +1,6 @@
 ---
 name: hivemind-capture
-description: Capture durable organizational decisions from Codex into HiveMind with full provenance. Use when a Codex session chooses between options, records architecture/integration/policy rationale, accepts or rejects a decision, supersedes prior direction, or needs to verify agent-captured decisions. Do not use for chat logs, task tracking, private scratch memory, or speculative notes.
+description: Capture durable organizational decisions from Claude Code or Codex into HiveMind with full provenance. Use when an agent session chooses between options, records architecture/integration/policy rationale, accepts or rejects a decision, supersedes prior direction, or needs to verify agent-captured decisions. Do not use for chat logs, task tracking, private scratch memory, or speculative notes.
 ---
 
 # HiveMind Capture
@@ -38,11 +38,13 @@ ledger write must stay explicit and deterministic.
    ```
 
 2. Use the Codex session as the actor identity. Prefer a real session id from
-   the environment. If none is available, choose a stable session label and do
-   not reuse it across unrelated sessions:
+   the environment. Claude Code uses the same rule with Claude session
+   variables. If none is available, choose a stable session label and do not
+   reuse it across unrelated sessions:
 
    ```bash
    export HIVEMIND_CODEX_SESSION="${CODEX_SESSION_ID:-${CODEX_TASK_ID:-manual-session}}"
+   export HIVEMIND_CLAUDE_SESSION="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-manual-session}}"
    ```
 
    HiveMind will derive `actor_id=agent:codex:<session>` unless `--actor-id` is
@@ -64,6 +66,12 @@ ledger write must stay explicit and deterministic.
 
    If the `hivemind` binary is not on `PATH`, run the same command from a
    HiveMind source checkout with `cargo run --` before the flags.
+
+   From the Claude Code plugin, prefer the installed slash command:
+
+   ```text
+   /hivemind-capture:capture-decision --title "Prefer direct CLI capture before MCP" --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" --topic-keys agents,capture --options direct-cli,mcp,hook --chose direct-cli
+   ```
 
 4. Attach existing evidence or hypotheses only when their ids are already known:
 

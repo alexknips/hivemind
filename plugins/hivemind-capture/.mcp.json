@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "hivemind": {
+      "command": "hivemind",
+      "args": [
+        "--hivemind-dir",
+        "${user_config.hivemind_dir}",
+        "mcp"
+      ],
+      "env": {
+        "HIVEMIND_DIR": "${user_config.hivemind_dir}"
+      }
+    }
+  }
+}

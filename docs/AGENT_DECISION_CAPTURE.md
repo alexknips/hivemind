@@ -55,6 +55,37 @@ manual slash-command captures as `actor_id=human:<git-user>` with
 autonomous agent decision; that uses `agent:claude:<session>` and
 `source=agent`.
 
+### Claude Code Distribution Bundle
+
+This repository also ships a Claude Code marketplace at
+`.claude-plugin/marketplace.json`. The marketplace exposes
+`plugins/hivemind-capture` as the `hivemind-capture@hivemind` plugin.
+
+Install from Claude Code:
+
+```text
+/plugin marketplace add alexknips/hivemind
+/plugin install hivemind-capture@hivemind
+/reload-plugins
+```
+
+The repository-level `.claude/settings.json` advertises that marketplace and
+enables `hivemind-capture@hivemind` so trusted checkouts prompt contributors to
+install it. The plugin includes:
+
+- `/hivemind-capture:capture-decision`, which defaults to
+  `actor_id=agent:claude:<session>` and prints a one-line confirmation plus a
+  query suggestion.
+- `/hivemind-capture:query-decisions`, which runs bounded
+  `query search_decisions` reads without ranking or summarizing.
+- `.mcp.json`, which wires the `hivemind` MCP server to `hivemind mcp`.
+- The `hivemind-capture` skill for durable decision boundaries and provenance
+  rules.
+
+The default backend is `${CLAUDE_PROJECT_DIR}/hivemind`. To switch to a shared
+backend, set the plugin option `hivemind_dir`, export `HIVEMIND_DIR`, or pass
+`--hivemind-dir` to the command.
+
 ## Codex
 
 ```bash

@@ -1,0 +1,30 @@
+{
+  "name": "hivemind-capture",
+  "version": "0.1.0",
+  "description": "Capture and query HiveMind decisions from Claude Code through the deterministic local CLI and MCP server.",
+  "author": {
+    "name": "HiveMind contributors",
+    "url": "https://github.com/alexknips/hivemind"
+  },
+  "homepage": "https://github.com/alexknips/hivemind/blob/master/plugins/hivemind-capture/README.md",
+  "repository": "https://github.com/alexknips/hivemind",
+  "license": "UNLICENSED",
+  "keywords": [
+    "hivemind",
+    "decision-memory",
+    "claude-code",
+    "mcp",
+    "provenance"
+  ],
+  "commands": "./commands/",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "userConfig": {
+    "hivemind_dir": {
+      "type": "directory",
+      "title": "HiveMind ledger directory",
+      "description": "Local or shared HiveMind ledger directory used by commands and MCP.",
+      "default": "${CLAUDE_PROJECT_DIR}/hivemind"
+    }
+  }
+}

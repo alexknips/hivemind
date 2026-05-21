@@ -10,5 +10,16 @@
       "Bash(git config user.name)",
       "Bash(mkdir -p ./hivemind)"
     ]
+  },
+  "extraKnownMarketplaces": {
+    "hivemind": {
+      "source": {
+        "source": "github",
+        "repo": "alexknips/hivemind"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "hivemind-capture@hivemind": true
   }
 }
