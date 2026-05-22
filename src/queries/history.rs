@@ -486,16 +486,18 @@ pub fn get_decisions_added_since(
 
         let creation_event = creation_events.get(decision_id).copied();
         let creation_provenance = creation_event.map(decision_event_provenance).transpose()?;
-        let creation_in_window = creation_provenance.as_ref().is_some_and(|prov| {
-            prov.event_origin > window.since_offset && prov.event_origin <= window.until_offset
-        });
+        let creation_in_window = creation_provenance
+            .as_ref()
+            .filter(|prov| {
+                prov.event_origin > window.since_offset && prov.event_origin <= window.until_offset
+            })
+            .cloned();
 
         let mut changes = Vec::with_capacity(change_events.len());
         for (event_id_value, event) in change_events {
             if creation_in_window
-                && creation_provenance
-                    .as_ref()
-                    .is_some_and(|prov| prov.event_origin == *event_id_value)
+                .as_ref()
+                .is_some_and(|prov| prov.event_origin == *event_id_value)
             {
                 continue;
             }
@@ -522,8 +524,7 @@ pub fn get_decisions_added_since(
             continue;
         }
 
-        if creation_in_window {
-            let creation = creation_provenance.expect("creation provenance present when in window");
+        if let Some(creation) = creation_in_window {
             added.push(AddedDecisionEntry {
                 decision_id: decision_id.clone(),
                 status,

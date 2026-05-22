@@ -650,21 +650,21 @@ impl<T: Serialize> From<crate::queries::QueryResponse<T>> for QueryEnvelope<T> {
 // ---------------------------------------------------------------------------
 
 fn success_response(id: Value, result: Value) -> String {
-    serde_json::to_string(&json!({
+    json!({
         "jsonrpc": "2.0",
         "id": id,
         "result": result,
-    }))
-    .expect("static JSON envelope serializes")
+    })
+    .to_string()
 }
 
 fn error_response(id: Value, code: i32, message: String) -> String {
-    serde_json::to_string(&json!({
+    json!({
         "jsonrpc": "2.0",
         "id": id,
         "error": { "code": code, "message": message },
-    }))
-    .expect("static JSON envelope serializes")
+    })
+    .to_string()
 }
 
 fn tool_success(payload: Value) -> Value {

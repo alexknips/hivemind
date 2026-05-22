@@ -1347,16 +1347,17 @@ fn resolve_relative_phrase(
 }
 
 fn start_of_day_utc(now: DateTime<Utc>) -> DateTime<Utc> {
+    use chrono::NaiveTime;
     use chrono::TimeZone;
-    Utc.from_utc_datetime(&now.date_naive().and_hms_opt(0, 0, 0).expect("midnight"))
+    Utc.from_utc_datetime(&now.date_naive().and_time(NaiveTime::MIN))
 }
 
 fn start_of_current_iso_week_utc(now: DateTime<Utc>) -> DateTime<Utc> {
-    use chrono::{Datelike, TimeZone};
+    use chrono::{Datelike, NaiveTime, TimeZone};
     let date = now.date_naive();
     let days_from_monday = i64::from(date.weekday().num_days_from_monday());
     let monday = date - chrono::Duration::days(days_from_monday);
-    Utc.from_utc_datetime(&monday.and_hms_opt(0, 0, 0).expect("midnight"))
+    Utc.from_utc_datetime(&monday.and_time(NaiveTime::MIN))
 }
 
 fn start_of_previous_iso_week_utc(now: DateTime<Utc>) -> DateTime<Utc> {
