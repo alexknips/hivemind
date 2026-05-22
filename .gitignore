@@ -1,3 +1,21 @@
 /.gc/
 /hivemind/
 /target/
+
+# Local tool/editor state
+/.gitignore.local
+/.vscode/
+/.ntm/
+/.bv/
+
+# Local MCP configs and generated backups
+/cursor.mcp.json
+/gemini.mcp.json
+/opencode.json
+/*.mcp.json.*.bak
+/*.json.*.bak
+
+# Local planning scratchpads
+/initial.md
+/plan_*.diff
+/plan_*.md
