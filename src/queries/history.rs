@@ -1,5 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
@@ -1583,17 +1584,18 @@ fn render_recent_activity_markdown(
     );
 
     for row in &results.items {
-        output.push_str(&format!(
-            "- event {} {:?} {:?} actor={} source={} citation={}\n",
+        let _ = writeln!(
+            output,
+            "- event {} {:?} {:?} actor={} source={} citation={}",
             row.event_origin,
             row.event_type,
             row.change_kind,
             row.actor_id,
             row.source.as_str(),
             row.citation_id
-        ));
+        );
         if !row.decision_ids.is_empty() {
-            output.push_str(&format!("  decisions: {}\n", row.decision_ids.join(", ")));
+            let _ = writeln!(output, "  decisions: {}", row.decision_ids.join(", "));
         }
     }
 
@@ -1611,23 +1613,25 @@ fn render_changed_since_markdown(
         results.items.len(),
         results.next_cursor.as_deref(),
     );
-    output.push_str(&format!(
+    let _ = write!(
+        output,
         "Resolved since: offset {}\nResolved until: offset {}\n\n",
         results.resolved_since.offset, results.resolved_until.offset
-    ));
+    );
 
     for row in &results.items {
-        output.push_str(&format!(
-            "- event {} {:?} {:?} actor={} source={} citation={}\n",
+        let _ = writeln!(
+            output,
+            "- event {} {:?} {:?} actor={} source={} citation={}",
             row.event_origin,
             row.event_type,
             row.change_kind,
             row.actor_id,
             row.source.as_str(),
             row.citation_id
-        ));
+        );
         if !row.decision_ids.is_empty() {
-            output.push_str(&format!("  decisions: {}\n", row.decision_ids.join(", ")));
+            let _ = writeln!(output, "  decisions: {}", row.decision_ids.join(", "));
         }
     }
 

@@ -13,6 +13,7 @@
 //!  * Query tools delegate to [`crate::queries`] (layer 2, read).
 //!  * No layer-3 "smart" behavior happens here — the server is a thin transport.
 
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
@@ -436,7 +437,12 @@ fn tool_capture_decision(args: Value, config: &McpConfig) -> std::result::Result
             .and_then(Value::as_str)
             .filter(|s| !s.trim().is_empty())
             .map(|s| s.to_owned())
-            .unwrap_or_else(|| format!("Option generated from MCP value '{label}'"));
+            .unwrap_or_else(|| {
+                let mut description =
+                    String::with_capacity("Option generated from MCP value ''".len() + label.len());
+                let _ = write!(description, "Option generated from MCP value '{label}'");
+                description
+            });
 
         let option_id = commands.record_option(&actor_id, &label, &description)?;
         if chosen_label.as_deref() == Some(label.as_str()) {

@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -203,12 +204,13 @@ fn required_marker(value: Option<String>, marker: &'static str) -> Result<String
 fn render_thread_context(thread: &SlackThreadFixture, source_ref: &str) -> String {
     let mut context = format!("Slack thread {source_ref}\n");
     for message in &thread.messages {
-        context.push_str(&format!(
-            "{} {}: {}\n",
+        let _ = writeln!(
+            context,
+            "{} {}: {}",
             message.ts,
             message.user_id,
             message.text.trim()
-        ));
+        );
     }
     context
 }
@@ -259,11 +261,15 @@ pub fn import_slack_thread<L: EventLedger>(
     let mut option_ids = Vec::with_capacity(draft.option_labels.len());
     let mut chosen_option_id = None;
     for label in &draft.option_labels {
-        let option_id = commands.record_option(
-            &draft.actor_id,
-            label,
-            &format!("Slack option '{label}' captured from {}", draft.source_ref),
-        )?;
+        let mut description = String::with_capacity(
+            "Slack option '' captured from ".len() + label.len() + draft.source_ref.len(),
+        );
+        let _ = write!(
+            description,
+            "Slack option '{label}' captured from {}",
+            draft.source_ref
+        );
+        let option_id = commands.record_option(&draft.actor_id, label, &description)?;
         if draft.chosen_option_label.as_deref() == Some(label.as_str()) {
             chosen_option_id = Some(option_id.clone());
         }
@@ -807,13 +813,12 @@ fn import_document_decision_block<L: EventLedger>(
         )?);
     }
 
+    let mut imported_option_description =
+        String::with_capacity("Option imported from document block ".len() + draft.block_id.len());
+    imported_option_description.push_str("Option imported from document block ");
+    imported_option_description.push_str(&draft.block_id);
     for (option_id, label) in identities.option_ids.iter().zip(&draft.option_labels) {
-        commands.record_option_with_id(
-            actor_id,
-            option_id,
-            label,
-            &format!("Option imported from document block {}", draft.block_id),
-        )?;
+        commands.record_option_with_id(actor_id, option_id, label, &imported_option_description)?;
     }
 
     let proposal_events = commands.propose_decision_with_id(
@@ -908,10 +913,12 @@ impl DocumentImportIdentities {
             .iter()
             .enumerate()
             .map(|(index, label)| {
-                format!(
-                    "option:document:{namespace}:{block_component}:{}-{}",
+                stable_document_child_id(
+                    "option",
+                    namespace,
+                    &block_component,
                     index + 1,
-                    stable_component(label)
+                    stable_component(label),
                 )
             })
             .collect::<Vec<_>>();
@@ -935,10 +942,12 @@ impl DocumentImportIdentities {
             .iter()
             .enumerate()
             .map(|(index, content)| {
-                format!(
-                    "evidence:document:{namespace}:{block_component}:{}-{}",
+                stable_document_child_id(
+                    "evidence",
+                    namespace,
+                    &block_component,
                     index + 1,
-                    stable_component(content)
+                    stable_component(content),
                 )
             })
             .collect::<Vec<_>>();
@@ -947,10 +956,12 @@ impl DocumentImportIdentities {
             .iter()
             .enumerate()
             .map(|(index, statement)| {
-                format!(
-                    "hypothesis:document:{namespace}:{block_component}:{}-{}",
+                stable_document_child_id(
+                    "hypothesis",
+                    namespace,
+                    &block_component,
                     index + 1,
-                    stable_component(statement)
+                    stable_component(statement),
                 )
             })
             .collect::<Vec<_>>();
@@ -1480,10 +1491,31 @@ fn stable_component(input: &str) -> String {
     }
 }
 
+fn stable_document_child_id(
+    kind: &str,
+    namespace: &str,
+    block_component: &str,
+    index: usize,
+    component: String,
+) -> String {
+    let mut id = String::with_capacity(
+        kind.len() + namespace.len() + block_component.len() + component.len() + 24,
+    );
+    let _ = write!(
+        id,
+        "{kind}:document:{namespace}:{block_component}:{index}-{component}"
+    );
+    id
+}
+
 fn repeated_role_uuids(role_prefix: &str, role: &str, count: usize) -> Vec<Uuid> {
-    (0..count)
-        .map(|index| import_uuid(&format!("{role_prefix}:{role}:{}", index + 1)))
-        .collect()
+    let mut uuids = Vec::with_capacity(count);
+    for index in 0..count {
+        let mut key = String::with_capacity(role_prefix.len() + role.len() + 16);
+        let _ = write!(key, "{role_prefix}:{role}:{}", index + 1);
+        uuids.push(import_uuid(&key));
+    }
+    uuids
 }
 
 fn import_uuid(key: &str) -> Uuid {
@@ -1507,7 +1539,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut output = String::with_capacity(digest.len() * 2);
     for byte in digest {
-        output.push_str(&format!("{byte:02x}"));
+        let _ = write!(output, "{byte:02x}");
     }
     output
 }

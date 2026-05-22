@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -205,18 +206,12 @@ impl GraphView for KuzuGraph {
         let connection = self.connection()?;
         for kind in RelationKind::ALL.iter().rev() {
             connection
-                .query(&format!(
-                    "DROP TABLE IF EXISTS {};",
-                    quote_identifier(kind.table_name())?
-                ))
+                .query(&drop_table_query(kind.table_name())?)
                 .map_err(projector_error)?;
         }
         for kind in NodeKind::ALL.iter().rev() {
             connection
-                .query(&format!(
-                    "DROP TABLE IF EXISTS {};",
-                    quote_identifier(kind.table_name())?
-                ))
+                .query(&drop_table_query(kind.table_name())?)
                 .map_err(projector_error)?;
         }
         self.initialize_schema()
@@ -258,12 +253,19 @@ fn set_clause(alias: &str, properties: &GraphProperties) -> Result<String> {
 
     let mut assignments = Vec::new();
     for key in properties.keys() {
-        assignments.push(format!(
-            "{alias}.{} = ${key}",
-            quote_identifier(key.as_str())?
-        ));
+        let quoted = quote_identifier(key.as_str())?;
+        let mut assignment = String::with_capacity(alias.len() + quoted.len() + key.len() + 5);
+        let _ = write!(assignment, "{alias}.{quoted} = ${key}");
+        assignments.push(assignment);
     }
     Ok(format!(" SET {}", assignments.join(", ")))
+}
+
+fn drop_table_query(table: &str) -> Result<String> {
+    let quoted = quote_identifier(table)?;
+    let mut query = String::with_capacity(quoted.len() + "DROP TABLE IF EXISTS ;".len());
+    let _ = write!(query, "DROP TABLE IF EXISTS {quoted};");
+    Ok(query)
 }
 
 fn quote_identifier(identifier: &str) -> Result<String> {

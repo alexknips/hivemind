@@ -18,10 +18,7 @@ impl GraphView for MemoryGraph {
     fn upsert_node(&self, kind: NodeKind, id: &str, properties: &GraphProperties) -> Result<()> {
         let key = (kind, id.to_owned());
         let mut nodes = self.nodes_lock()?;
-        let mut existing = nodes
-            .get(&(kind, id.to_owned()))
-            .cloned()
-            .unwrap_or_default();
+        let mut existing = nodes.get(&key).cloned().unwrap_or_default();
         existing.extend(properties.clone());
         nodes.insert(key, existing);
         Ok(())
@@ -98,11 +95,7 @@ impl GraphView for MemoryGraph {
                     Some(row)
                 })
                 .collect::<Vec<_>>();
-            rows.sort_by(|left, right| {
-                required_row_string(left, "id")
-                    .unwrap_or_default()
-                    .cmp(&required_row_string(right, "id").unwrap_or_default())
-            });
+            rows.sort_by(|left, right| row_string(left, "id").cmp(row_string(right, "id")));
             return Ok(rows);
         }
 
@@ -120,17 +113,8 @@ impl GraphView for MemoryGraph {
                 })
                 .collect::<Vec<_>>();
             rows.sort_by(|left, right| {
-                let left_key = format!(
-                    "{}:{}",
-                    required_row_string(left, "from_id").unwrap_or_default(),
-                    required_row_string(left, "to_id").unwrap_or_default()
-                );
-                let right_key = format!(
-                    "{}:{}",
-                    required_row_string(right, "from_id").unwrap_or_default(),
-                    required_row_string(right, "to_id").unwrap_or_default()
-                );
-                left_key.cmp(&right_key)
+                (row_string(left, "from_id"), row_string(left, "to_id"))
+                    .cmp(&(row_string(right, "from_id"), row_string(right, "to_id")))
             });
             return Ok(rows);
         }
@@ -218,7 +202,7 @@ impl GraphView for MemoryGraph {
                     ]))
                 })
                 .collect::<Vec<_>>();
-            decisions.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
+            decisions.sort_by(|left, right| row_string(left, "id").cmp(row_string(right, "id")));
             decisions.truncate(1000);
             return Ok(decisions);
         }
@@ -350,7 +334,7 @@ struct MemoryEdge {
 
 fn query_relation(cypher: &str) -> Result<RelationKind> {
     for relation in RelationKind::ALL {
-        if cypher.contains(&format!("`{}`", relation.table_name())) {
+        if contains_quoted_identifier(cypher, relation.table_name()) {
             return Ok(relation);
         }
     }
@@ -359,7 +343,7 @@ fn query_relation(cypher: &str) -> Result<RelationKind> {
 
 fn query_node_kind(cypher: &str) -> Result<NodeKind> {
     for kind in NodeKind::ALL {
-        if cypher.contains(&format!("`{}`", kind.table_name())) {
+        if contains_quoted_identifier(cypher, kind.table_name()) {
             return Ok(kind);
         }
     }
@@ -384,11 +368,19 @@ fn topic_keys(properties: &GraphProperties) -> Vec<String> {
     }
 }
 
-fn required_row_string(row: &GraphRow, key: &str) -> Result<String> {
+fn row_string<'a>(row: &'a GraphRow, key: &str) -> &'a str {
     match row.get(key) {
-        Some(GraphValue::String(value)) => Ok(value.clone()),
-        _ => Err(memory_error(format!("row missing string field: {key}")).into()),
+        Some(GraphValue::String(value)) => value.as_str(),
+        _ => "",
     }
+}
+
+fn contains_quoted_identifier(cypher: &str, identifier: &str) -> bool {
+    cypher
+        .split('`')
+        .skip(1)
+        .step_by(2)
+        .any(|quoted| quoted == identifier)
 }
 
 fn memory_error(error: impl std::fmt::Display) -> ProjectorError {

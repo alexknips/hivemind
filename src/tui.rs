@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -567,21 +568,25 @@ impl DecisionSearchApp {
     }
 
     fn active_constraints(&self) -> Vec<String> {
-        let mut constraints = Vec::new();
+        let topics = normalized_csv_values(&self.topic_input);
+        let actors = normalized_csv_values(&self.actor_input);
+        let mut constraints = Vec::with_capacity(
+            1 + topics.len() + self.statuses.len() + actors.len() + self.source_filters.len(),
+        );
         if !self.query_input.trim().is_empty() {
-            constraints.push(format!("q={}", self.query_input.trim()));
+            constraints.push(labeled_value("q", self.query_input.trim()));
         }
-        for topic in normalized_csv_values(&self.topic_input) {
-            constraints.push(format!("topic={topic}"));
+        for topic in topics {
+            constraints.push(labeled_value("topic", &topic));
         }
         for status in &self.statuses {
-            constraints.push(format!("status={}", decision_status_label(*status)));
+            constraints.push(labeled_value("status", decision_status_label(*status)));
         }
-        for actor in normalized_csv_values(&self.actor_input) {
-            constraints.push(format!("actor={actor}"));
+        for actor in actors {
+            constraints.push(labeled_value("actor", &actor));
         }
         for source in &self.source_filters {
-            constraints.push(format!("source={source}"));
+            constraints.push(labeled_value("source", source));
         }
         constraints
     }
@@ -782,19 +787,25 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
             } else {
                 ""
             };
-            let topics = if result.decision.topic_keys.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", result.decision.topic_keys.join(","))
-            };
-            ListItem::new(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(
-                    format!("{} ", decision_status_label(result.decision.status)),
+                    decision_status_label(result.decision.status),
                     status_style(result.decision.status),
                 ),
+                Span::raw(" "),
                 Span::styled(&result.decision.id, Style::default().fg(Color::Cyan)),
-                Span::raw(format!(" {}{}{}", result.decision.title, topics, stale)),
-            ]))
+                Span::raw(" "),
+                Span::raw(result.decision.title.as_str()),
+            ];
+            if !result.decision.topic_keys.is_empty() {
+                spans.push(Span::raw(" ["));
+                spans.push(Span::raw(result.decision.topic_keys.join(",")));
+                spans.push(Span::raw("]"));
+            }
+            if !stale.is_empty() {
+                spans.push(Span::raw(stale));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect::<Vec<_>>();
     let list = List::new(items)
@@ -1023,8 +1034,10 @@ fn graph_entries(neighborhood: &NeighborhoodView) -> Vec<GraphEntry> {
         if edges.is_empty() {
             continue;
         }
+        let mut header = String::with_capacity(relation.table_name().len() + 8);
+        let _ = write!(header, "{} ({})", relation.table_name(), edges.len());
         entries.push(GraphEntry {
-            label: format!("{} ({})", relation.table_name(), edges.len()),
+            label: header,
             relation: Some(relation),
             node_kind: None,
             node_id: None,
@@ -1036,8 +1049,10 @@ fn graph_entries(neighborhood: &NeighborhoodView) -> Vec<GraphEntry> {
                 edge.from.as_str(),
                 edge.to.as_str(),
             );
+            let mut label = String::with_capacity(edge.from.len() + edge.to.len() + 6);
+            let _ = write!(label, "  {} -> {}", edge.from, edge.to);
             entries.push(GraphEntry {
-                label: format!("  {} -> {}", edge.from, edge.to),
+                label,
                 relation: Some(relation),
                 node_kind,
                 node_id: node_id.map(str::to_owned),
@@ -1079,16 +1094,17 @@ pub fn render_neighborhood_dot(neighborhood: &NeighborhoodView) -> String {
     for node in &neighborhood.nodes {
         let mut label = format!("{}:{}", node.kind.table_name(), node.id);
         if let Some(status) = node.decision_status {
-            label.push_str(&format!("\\nstatus: {}", decision_status_label(status)));
+            let _ = write!(label, "\\nstatus: {}", decision_status_label(status));
         }
         if let Some(status) = node.hypothesis_status {
-            label.push_str(&format!("\\nstatus: {}", hypothesis_status_label(status)));
+            let _ = write!(label, "\\nstatus: {}", hypothesis_status_label(status));
         }
-        dot.push_str(&format!(
+        let _ = write!(
+            dot,
             "  \"{}\" [label=\"{}\", shape=box];\n",
             dot_node_key(node.kind, &node.id),
             escape_dot(&label)
-        ));
+        );
     }
     for edge in &neighborhood.edges {
         let from_kind = nodes
@@ -1099,12 +1115,13 @@ pub fn render_neighborhood_dot(neighborhood: &NeighborhoodView) -> String {
             .get(edge.to.as_str())
             .map(|node| node.kind)
             .unwrap_or(NodeKind::Decision);
-        dot.push_str(&format!(
+        let _ = write!(
+            dot,
             "  \"{}\" -> \"{}\" [label=\"{}\"];\n",
             dot_node_key(from_kind, &edge.from),
             dot_node_key(to_kind, &edge.to),
             edge.relation.table_name()
-        ));
+        );
     }
     dot.push_str("}\n");
     dot
@@ -1236,6 +1253,14 @@ fn list_or_none(values: &[String]) -> String {
     } else {
         values.join(", ")
     }
+}
+
+fn labeled_value(label: &str, value: &str) -> String {
+    let mut output = String::with_capacity(label.len() + value.len() + 1);
+    output.push_str(label);
+    output.push('=');
+    output.push_str(value);
+    output
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {

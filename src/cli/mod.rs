@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
@@ -1091,11 +1092,13 @@ fn propose_decision_from_option_labels<L: EventLedger>(
     let mut option_ids = Vec::with_capacity(args.option_ids.len());
     let mut chosen_option_id = None;
     for option_label in &args.option_ids {
-        let option_id = commands.record_option(
-            actor_id,
-            option_label,
-            &format!("Option generated from CLI value '{option_label}'"),
-        )?;
+        let mut option_description =
+            String::with_capacity("Option generated from CLI value ''".len() + option_label.len());
+        let _ = write!(
+            option_description,
+            "Option generated from CLI value '{option_label}'"
+        );
+        let option_id = commands.record_option(actor_id, option_label, &option_description)?;
         if args.chosen_option_id.as_deref() == Some(option_label.as_str()) {
             chosen_option_id = Some(option_id.clone());
         }
@@ -1851,47 +1854,63 @@ fn render_dot(graph: &impl GraphView) -> Result<String> {
                 let title =
                     graph_property_string(properties, "title").unwrap_or_else(|| id.clone());
                 let status = decision_status_name(derive_decision_status(graph, id)?);
-                format!("{title}\\nstatus: {status}")
+                label_with_status(&title, status)
             }
             NodeKind::DecisionRequest => graph_property_string(properties, "reason")
-                .map(|reason| format!("Decision request\\n{reason}"))
+                .map(|reason| prefixed_dot_label("Decision request", &reason))
                 .unwrap_or_else(|| id.clone()),
             NodeKind::Hypothesis => {
                 let statement =
                     graph_property_string(properties, "statement").unwrap_or_else(|| id.clone());
                 let status = hypothesis_status_name(derive_hypothesis_status(graph, id)?);
-                format!("{statement}\\nstatus: {status}")
+                label_with_status(&statement, status)
             }
             NodeKind::Blocker => graph_property_string(properties, "reason")
-                .map(|reason| format!("Blocker\\n{reason}"))
+                .map(|reason| prefixed_dot_label("Blocker", &reason))
                 .unwrap_or_else(|| id.clone()),
             NodeKind::Notification => graph_property_string(properties, "channel")
-                .map(|channel| format!("Notification\\n{channel}"))
+                .map(|channel| prefixed_dot_label("Notification", &channel))
                 .unwrap_or_else(|| id.clone()),
             _ => graph_property_string(properties, "content")
                 .or_else(|| graph_property_string(properties, "label"))
                 .unwrap_or_else(|| id.clone()),
         };
 
-        dot.push_str(&format!(
+        let _ = write!(
+            dot,
             "  \"{}\" [label=\"{}\", shape=box, style=filled, fillcolor=\"{}\"];\n",
             node_key(*kind, id),
             escape_dot(&label),
             node_color(*kind)
-        ));
+        );
     }
 
     for edge in &edges {
-        dot.push_str(&format!(
+        let _ = write!(
+            dot,
             "  \"{}\" -> \"{}\" [label=\"{}\"];\n",
             node_key(edge.from_kind, &edge.from_id),
             node_key(edge.to_kind, &edge.to_id),
             edge.relation.table_name()
-        ));
+        );
     }
 
     dot.push_str("}\n");
     Ok(dot)
+}
+
+fn label_with_status(label: &str, status: &str) -> String {
+    let mut output = String::with_capacity(label.len() + status.len() + "\\nstatus: ".len());
+    let _ = write!(output, "{label}\\nstatus: {status}");
+    output
+}
+
+fn prefixed_dot_label(prefix: &str, value: &str) -> String {
+    let mut output = String::with_capacity(prefix.len() + value.len() + 2);
+    output.push_str(prefix);
+    output.push_str("\\n");
+    output.push_str(value);
+    output
 }
 
 fn graph_nodes(graph: &impl GraphView) -> Result<BTreeMap<(NodeKind, String), GraphProperties>> {
@@ -1910,15 +1929,15 @@ fn graph_edges(graph: &impl GraphView) -> Result<BTreeSet<DotEdge>> {
     let mut edges = BTreeSet::new();
     for relation in GraphRelationKind::ALL {
         let (from_kind, to_kind) = relation.endpoints();
-        let rows = graph.query(
-            &format!(
-                "MATCH (from:`{}`)-[rel:`{}`]->(to:`{}`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;",
-                from_kind.table_name(),
-                relation.table_name(),
-                to_kind.table_name()
-            ),
-            &GraphParams::new(),
-        )?;
+        let mut query = String::new();
+        let _ = write!(
+            query,
+            "MATCH (from:`{}`)-[rel:`{}`]->(to:`{}`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;",
+            from_kind.table_name(),
+            relation.table_name(),
+            to_kind.table_name()
+        );
+        let rows = graph.query(&query, &GraphParams::new())?;
         for row in rows {
             edges.insert(DotEdge {
                 relation,
