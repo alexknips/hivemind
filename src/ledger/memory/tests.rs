@@ -1,3 +1,5 @@
+// Parent module gates this file with #[cfg(test)]; repeat the marker so UBS can filter test-only assertions.
+#[cfg(test)]
 use crate::ledger::contract_tests::{
     assert_dedup_by_event_uuid, assert_monotonic_append, assert_read_offset_and_limit,
     assert_replay_from_zero_in_order,

@@ -933,7 +933,11 @@ impl DocumentImportIdentities {
                             "chose/selected option '{label}' must match one of options"
                         ))
                     })?;
-                Some(option_ids[index].clone())
+                Some(option_ids.get(index).cloned().ok_or_else(|| {
+                    CommandError::Invariant(
+                        "chosen option index must map to a generated option id".to_owned(),
+                    )
+                })?)
             }
             None => None,
         };
@@ -1052,25 +1056,36 @@ fn find_document_decision_blocks(input: &str) -> Vec<RawDocumentDecisionBlock> {
     let mut blocks = Vec::with_capacity(starts.len());
 
     for (start_position, start_index) in starts.iter().copied().enumerate() {
+        let Some(start_line) = lines.get(start_index) else {
+            continue;
+        };
         let end_index = starts
             .get(start_position + 1)
             .copied()
             .unwrap_or(lines.len());
-        let byte_start = lines[start_index].byte_start;
+        let Some(last_line) = end_index.checked_sub(1).and_then(|index| lines.get(index)) else {
+            continue;
+        };
+        let byte_start = start_line.byte_start;
         let byte_end = lines
             .get(end_index)
             .map(|line| line.byte_start)
             .unwrap_or_else(|| input.len());
-        let line_end = lines[end_index.saturating_sub(1)].number;
+        let Some(text) = input.get(byte_start..byte_end) else {
+            continue;
+        };
+        let Some(block_lines) = lines.get(start_index..end_index) else {
+            continue;
+        };
         blocks.push(RawDocumentDecisionBlock {
             span: DocumentSourceSpan {
                 byte_start,
                 byte_end,
-                line_start: lines[start_index].number,
-                line_end,
+                line_start: start_line.number,
+                line_end: last_line.number,
             },
-            text: input[byte_start..byte_end].to_owned(),
-            lines: lines[start_index..end_index].to_vec(),
+            text: text.to_owned(),
+            lines: block_lines.to_vec(),
         });
     }
 
@@ -1462,7 +1477,7 @@ fn document_namespace(canonical_path: &str) -> String {
         .map(stable_component)
         .filter(|stem| !stem.is_empty())
         .unwrap_or_else(|| "document".to_owned());
-    format!("{stem}-{}", &sha256_hex(canonical_path.as_bytes())[..12])
+    format!("{stem}-{}", short_sha256_hex(canonical_path.as_bytes()))
 }
 
 fn stable_component(input: &str) -> String {
@@ -1485,7 +1500,7 @@ fn stable_component(input: &str) -> String {
         normalized.pop();
     }
     if normalized.is_empty() {
-        sha256_hex(input.as_bytes())[..12].to_owned()
+        short_sha256_hex(input.as_bytes())
     } else {
         normalized
     }
@@ -1531,8 +1546,12 @@ fn import_run_id(files: &[PathBuf]) -> String {
     format!(
         "import:{}:{}",
         Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
-        &sha256_hex(seed.as_bytes())[..12]
+        short_sha256_hex(seed.as_bytes())
     )
+}
+
+fn short_sha256_hex(bytes: &[u8]) -> String {
+    sha256_hex(bytes).chars().take(12).collect()
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

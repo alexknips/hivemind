@@ -105,7 +105,9 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Run UBS critical scan
-        run: ~/.local/share/ubs/modules/ubs-rust.sh . --format=json --quiet --ci --no-cargo --fail-critical=1
+        # Runtime panic-surface signal should exclude test assertions, which are
+        # test oracles rather than production invariants.
+        run: ~/.local/share/ubs/modules/ubs-rust.sh . --format=json --quiet --ci --no-cargo --exclude=worktrees --exclude-tests --fail-critical=1
 
       # UBS warning baseline established by hivemind-ubs-warning-triage-baseline-h4p2m and
       # tightened by hivemind-41n8s on 2026-05-22 with `ubs --ci --only=rust .`:
