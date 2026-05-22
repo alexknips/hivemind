@@ -1,3 +1,5 @@
+// Parent module gates this file with #[cfg(test)]; repeat the marker so UBS can filter test-only assertions.
+#[cfg(test)]
 use chrono::Utc;
 use serde_json::json;
 use uuid::Uuid;

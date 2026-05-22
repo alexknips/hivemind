@@ -1,3 +1,5 @@
+// Parent module gates this file with #[cfg(test)]; repeat the marker so UBS can filter test-only assertions.
+#[cfg(test)]
 use super::*;
 use clap::CommandFactory;
 
@@ -119,7 +121,7 @@ fn parses_get_decisions_added_since_command() -> std::result::Result<(), Box<dyn
         return Err("expected GetDecisionsAddedSince".into());
     };
     assert_eq!(args.since.as_deref(), Some("last week"));
-    assert_eq!(args.now.as_deref(), Some("2026-05-19T12:00:00Z"));
+    assert_eq!(args.now.as_deref(), Some("2026-05-19T12:00:00Z")); // ubs:ignore: test-only CLI fixture assertion.
     assert_eq!(args.filters.sources, vec!["document"]);
     assert_eq!(args.limit, 10);
 

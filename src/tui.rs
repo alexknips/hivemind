@@ -665,9 +665,12 @@ fn render(frame: &mut Frame<'_>, app: &DecisionSearchApp) {
         ])
         .split(frame.area());
 
-    render_filter_bar(frame, chunks[0], app);
-    render_main(frame, chunks[1], app);
-    render_status_bar(frame, chunks[2], app);
+    let filter_area = chunks.first().copied().unwrap_or_else(|| frame.area());
+    let main_area = chunks.get(1).copied().unwrap_or_else(|| frame.area());
+    let status_area = chunks.get(2).copied().unwrap_or_else(|| frame.area());
+    render_filter_bar(frame, filter_area, app);
+    render_main(frame, main_area, app);
+    render_status_bar(frame, status_area, app);
 
     if app.help_open {
         render_help_overlay(frame);
@@ -733,13 +736,17 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(34), Constraint::Percentage(66)])
         .split(area);
+    let left_area = columns.first().copied().unwrap_or(area);
+    let right_area = columns.get(1).copied().unwrap_or(area);
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
-        .split(columns[1]);
-    render_results(frame, columns[0], app);
-    render_detail(frame, right[0], app);
-    render_graph(frame, right[1], app);
+        .split(right_area);
+    let detail_area = right.first().copied().unwrap_or(right_area);
+    let graph_area = right.get(1).copied().unwrap_or(right_area);
+    render_results(frame, left_area, app);
+    render_detail(frame, detail_area, app);
+    render_graph(frame, graph_area, app);
 }
 
 fn render_results(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
