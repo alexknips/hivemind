@@ -1876,9 +1876,9 @@ fn render_dot(graph: &impl GraphView) -> Result<String> {
                 .unwrap_or_else(|| id.clone()),
         };
 
-        let _ = write!(
+        let _ = writeln!(
             dot,
-            "  \"{}\" [label=\"{}\", shape=box, style=filled, fillcolor=\"{}\"];\n",
+            "  \"{}\" [label=\"{}\", shape=box, style=filled, fillcolor=\"{}\"];",
             node_key(*kind, id),
             escape_dot(&label),
             node_color(*kind)
@@ -1886,9 +1886,9 @@ fn render_dot(graph: &impl GraphView) -> Result<String> {
     }
 
     for edge in &edges {
-        let _ = write!(
+        let _ = writeln!(
             dot,
-            "  \"{}\" -> \"{}\" [label=\"{}\"];\n",
+            "  \"{}\" -> \"{}\" [label=\"{}\"];",
             node_key(edge.from_kind, &edge.from_id),
             node_key(edge.to_kind, &edge.to_id),
             edge.relation.table_name()
@@ -1901,7 +1901,9 @@ fn render_dot(graph: &impl GraphView) -> Result<String> {
 
 fn label_with_status(label: &str, status: &str) -> String {
     let mut output = String::with_capacity(label.len() + status.len() + "\\nstatus: ".len());
-    let _ = write!(output, "{label}\\nstatus: {status}");
+    output.push_str(label);
+    output.push_str("\\nstatus: ");
+    output.push_str(status);
     output
 }
 

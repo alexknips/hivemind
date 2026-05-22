@@ -1101,14 +1101,16 @@ pub fn render_neighborhood_dot(neighborhood: &NeighborhoodView) -> String {
     for node in &neighborhood.nodes {
         let mut label = format!("{}:{}", node.kind.table_name(), node.id);
         if let Some(status) = node.decision_status {
-            let _ = write!(label, "\\nstatus: {}", decision_status_label(status));
+            label.push_str("\\nstatus: ");
+            label.push_str(decision_status_label(status));
         }
         if let Some(status) = node.hypothesis_status {
-            let _ = write!(label, "\\nstatus: {}", hypothesis_status_label(status));
+            label.push_str("\\nstatus: ");
+            label.push_str(hypothesis_status_label(status));
         }
-        let _ = write!(
+        let _ = writeln!(
             dot,
-            "  \"{}\" [label=\"{}\", shape=box];\n",
+            "  \"{}\" [label=\"{}\", shape=box];",
             dot_node_key(node.kind, &node.id),
             escape_dot(&label)
         );
@@ -1122,9 +1124,9 @@ pub fn render_neighborhood_dot(neighborhood: &NeighborhoodView) -> String {
             .get(edge.to.as_str())
             .map(|node| node.kind)
             .unwrap_or(NodeKind::Decision);
-        let _ = write!(
+        let _ = writeln!(
             dot,
-            "  \"{}\" -> \"{}\" [label=\"{}\"];\n",
+            "  \"{}\" -> \"{}\" [label=\"{}\"];",
             dot_node_key(from_kind, &edge.from),
             dot_node_key(to_kind, &edge.to),
             edge.relation.table_name()
