@@ -106,3 +106,22 @@ jobs:
 
       - name: Run UBS critical scan
         run: ~/.local/share/ubs/modules/ubs-rust.sh . --format=json --quiet --ci --no-cargo --fail-critical=1
+
+      # UBS warning baseline established by hivemind-ubs-warning-triage-baseline-h4p2m on
+      # 2026-05-22 with `ubs --ci --only=rust --beads-jsonl=/tmp/ubs.jsonl .`:
+      # 1937 warnings across 47 Rust files. Top categories are tracked in BR:
+      # unwrap/expect panic inventory (hivemind-dfc5e), runtime panic surfaces
+      # (hivemind-gofiy), and loop allocation hotspots (hivemind-41n8s). This
+      # gate prevents regression while allowing those inventories to be paid down.
+      - name: Run UBS warning baseline scan
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_warnings=1937
+          ~/.local/bin/ubs --ci --only=rust --report-json=/tmp/ubs-warning-summary.json .
+          warnings="$(jq -r '.totals.warning' /tmp/ubs-warning-summary.json)"
+          if [ "${warnings}" -gt "${baseline_warnings}" ]; then
+            echo "UBS warning count grew from ${baseline_warnings} to ${warnings}."
+            exit 1
+          fi
+          echo "UBS warning count ${warnings} is within baseline ${baseline_warnings}."
