@@ -67,6 +67,18 @@ capture surfaces should too.
 A bead advances this front if it brings HiveMind to a new decision surface
 without compromising the principles.
 
+### Adoption ease
+
+Make HiveMind installable, configurable, and producing value within five
+minutes of "I want to try this." Every install surface, every capture path,
+and every plugin must respect this threshold. Adoption *depth* is a different
+concern — covered by the other fronts. The question here is whether someone
+gets past the activation barrier at all.
+
+A bead advances this front if it reduces the time-to-first-captured-decision
+for a new adopter — a new human user, a new agent integration, or a new repo
+trying HiveMind for the first time.
+
 ### Layer-3 capabilities
 
 Compactification, similarity, ranking, recommendations, summarization. The
