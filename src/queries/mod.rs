@@ -28,8 +28,9 @@ pub use neighborhood::{
 };
 pub use relevant::get_relevant_decisions;
 pub use search::{
-    search_decisions, DecisionSearchResult, DecisionSearchResults, SearchDecisionFilters,
-    SearchDecisionRequest, SearchGraphContext, SearchMatchedNode, SearchSnippet,
+    search_decisions, search_decisions_fts, DecisionSearchResult, DecisionSearchResults,
+    SearchDecisionFilters, SearchDecisionRequest, SearchGraphContext, SearchMatchedNode,
+    SearchSnippet,
 };
 pub use status::{
     derive_decision_status, derive_hypothesis_status, DecisionStatus, HypothesisStatus,

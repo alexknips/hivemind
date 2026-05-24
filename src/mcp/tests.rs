@@ -41,7 +41,7 @@ fn initialize_reports_server_metadata() {
 }
 
 #[test]
-fn tools_list_includes_all_seven_tools() {
+fn tools_list_includes_all_eight_tools() {
     let dir = unique_dir("list");
     let config = McpConfig::new(&dir).with_session_id("test-session");
     let responses = drive(
@@ -61,6 +61,7 @@ fn tools_list_includes_all_seven_tools() {
         "get_decision",
         "get_relevant_decisions",
         "get_supersession_chain",
+        "search_decisions",
         "dump_graph",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
@@ -178,6 +179,67 @@ fn write_tools_default_actor_to_configured_agent_session() {
     assert_eq!(
         proposal.source_ref.as_deref(),
         Some("agent:claude:session-123")
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn search_decisions_tool_returns_fts_query_response() {
+    let dir = unique_dir("search");
+    let config = McpConfig::new(&dir).with_session_id("search-session");
+
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "actor_id": "agent:test:search",
+                "title": "Adopt authentication boundary",
+                "rationale": "OAuth routing keeps decision search anchored",
+                "topic_keys": ["security"],
+                "options": [
+                    {"label": "gateway"},
+                    {"label": "sidecar"}
+                ],
+                "chosen_option_label": "gateway"
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[capture.as_str()]);
+    let decision_id = responses[0]["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("decision_id")
+        .to_owned();
+
+    let search = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "search_decisions",
+            "arguments": {
+                "q": "gateway",
+                "topic": ["security"],
+                "actor_id": ["agent:test:search"],
+                "limit": 5
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[search.as_str()]);
+    let structured = &responses[0]["result"]["structuredContent"];
+    assert_eq!(structured["result_count"], serde_json::json!(1));
+    assert_eq!(
+        structured["data"]["items"][0]["decision"]["id"],
+        decision_id
+    );
+    assert_eq!(
+        structured["data"]["items"][0]["matched_fields"],
+        serde_json::json!(["option.id"])
     );
 
     let _ = std::fs::remove_dir_all(&dir);

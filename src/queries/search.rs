@@ -1,16 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection};
 use serde::Serialize;
 
+use crate::events::{self, EventPayload};
+use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::projector::{GraphRow, GraphView, NodeKind, RelationKind};
 use crate::Result;
 
 use super::decision::{DecisionView, HypothesisContext};
 use super::shared::{
     node_rows, normalized_filter_values, normalized_limit, normalized_query, normalized_statuses,
-    optional_string, optional_string_list, parse_cursor, query_terms, relation_edges_by_kind,
-    relation_sources, relation_targets,
+    optional_string, optional_string_list, parse_cursor, query_error, query_terms,
+    relation_edges_by_kind, relation_sources, relation_targets,
 };
 use super::status::{derive_decision_status, derive_hypothesis_status, DecisionStatus};
 use super::QueryResponse;
@@ -25,6 +29,8 @@ pub struct SearchDecisionRequest {
     pub statuses: Vec<DecisionStatus>,
     pub actor_ids: Vec<String>,
     pub sources: Vec<String>,
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
     pub limit: usize,
     pub cursor: Option<String>,
 }
@@ -37,6 +43,8 @@ impl Default for SearchDecisionRequest {
             statuses: Vec::new(),
             actor_ids: Vec::new(),
             sources: Vec::new(),
+            since: None,
+            until: None,
             limit: super::shared::DEFAULT_SEARCH_LIMIT,
             cursor: None,
         }
@@ -60,6 +68,10 @@ pub struct SearchDecisionFilters {
     pub statuses: Vec<DecisionStatus>,
     pub actor_ids: Vec<String>,
     pub sources: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub since: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -109,7 +121,426 @@ pub fn search_decisions(
     let limit = normalized_limit(request.limit);
     let cursor = normalized_query(request.cursor.as_deref());
     let offset = parse_cursor(cursor.as_deref())?;
+    if request.since.is_some() || request.until.is_some() {
+        return Err(query_error("timestamp filters require FTS-backed decision search").into());
+    }
 
+    let mut scored = collect_graph_search_results(
+        graph,
+        query.as_deref(),
+        &terms,
+        &topic_keys,
+        &statuses,
+        &actor_ids,
+        &sources,
+    )?;
+
+    scored.sort_by(|left, right| (left.rank, &left.id).cmp(&(right.rank, &right.id)));
+
+    let total_matches = scored.len();
+    let items: Vec<DecisionSearchResult> = scored
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|scored| scored.result)
+        .collect();
+    let next_offset = offset.saturating_add(items.len());
+    let next_cursor = (next_offset < total_matches).then(|| next_offset.to_string());
+
+    Ok(QueryResponse {
+        result_count: items.len(),
+        truncated: next_cursor.is_some(),
+        latency_ms: started.elapsed().as_millis(),
+        data: DecisionSearchResults {
+            query,
+            filters: SearchDecisionFilters {
+                topic_keys,
+                statuses,
+                actor_ids,
+                sources,
+                since: request.since,
+                until: request.until,
+            },
+            limit,
+            cursor,
+            next_cursor,
+            total_matches,
+            items,
+        },
+    })
+}
+
+pub fn search_decisions_fts(
+    ledger: &SqliteEventLedger,
+    graph: &impl GraphView,
+    request: &SearchDecisionRequest,
+) -> Result<QueryResponse<DecisionSearchResults>> {
+    let started = Instant::now();
+    let query = normalized_query(request.query.as_deref());
+    let terms = query_terms(query.as_deref());
+    let topic_keys = normalized_filter_values(&request.topic_keys);
+    let statuses = normalized_statuses(&request.statuses);
+    let actor_ids = normalized_filter_values(&request.actor_ids);
+    let sources = normalized_filter_values(&request.sources);
+    let since = request.since;
+    let until = request.until;
+    if let (Some(since), Some(until)) = (since, until) {
+        if since > until {
+            return Err(query_error("--since must be earlier than or equal to --until").into());
+        }
+    }
+    let limit = normalized_limit(request.limit);
+    let cursor = normalized_query(request.cursor.as_deref());
+    let offset = parse_cursor(cursor.as_deref())?;
+
+    let documents = collect_graph_search_results(graph, None, &[], &[], &[], &[], &[])?;
+    rebuild_decision_search_fts(ledger, &documents)?;
+    let fts_matches = query_decision_search_fts(ledger, query.as_deref())?;
+    let proposed_at = decision_proposed_at_by_id(ledger)?;
+
+    let mut documents_by_id = documents
+        .into_iter()
+        .map(|document| (document.id.clone(), document))
+        .collect::<BTreeMap<_, _>>();
+    let mut scored = Vec::new();
+    for fts_match in fts_matches {
+        if !date_in_range(
+            proposed_at.get(&fts_match.decision_id).copied(),
+            since,
+            until,
+        ) {
+            continue;
+        }
+        let Some(mut document) = documents_by_id.remove(&fts_match.decision_id) else {
+            continue;
+        };
+        if !document_matches_filters(&document, &topic_keys, &statuses, &actor_ids, &sources) {
+            continue;
+        }
+
+        let match_info = match query.as_deref() {
+            Some(_) => evaluate_search_match(query.as_deref(), &terms, &document.fields)
+                .unwrap_or_else(|| SearchMatchInfo {
+                    rank: 3,
+                    matched_fields: Vec::new(),
+                    snippets: Vec::new(),
+                    matched_nodes: Vec::new(),
+                }),
+            None => SearchMatchInfo {
+                rank: 4,
+                matched_fields: Vec::new(),
+                snippets: Vec::new(),
+                matched_nodes: Vec::new(),
+            },
+        };
+        document.rank = match_info.rank;
+        document.result.rank = match_info.rank;
+        document.result.matched_fields = match_info.matched_fields;
+        document.result.snippets = match_info.snippets;
+        document.result.graph_context.matched_nodes = match_info.matched_nodes;
+        scored.push(FtsScoredDecisionSearchResult {
+            score: fts_match.score,
+            id: document.id.clone(),
+            result: document.result,
+        });
+    }
+
+    scored.sort_by(|left, right| {
+        left.score
+            .total_cmp(&right.score)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    let total_matches = scored.len();
+    let items: Vec<DecisionSearchResult> = scored
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|scored| scored.result)
+        .collect();
+    let next_offset = offset.saturating_add(items.len());
+    let next_cursor = (next_offset < total_matches).then(|| next_offset.to_string());
+
+    Ok(QueryResponse {
+        result_count: items.len(),
+        truncated: next_cursor.is_some(),
+        latency_ms: started.elapsed().as_millis(),
+        data: DecisionSearchResults {
+            query,
+            filters: SearchDecisionFilters {
+                topic_keys,
+                statuses,
+                actor_ids,
+                sources,
+                since,
+                until,
+            },
+            limit,
+            cursor,
+            next_cursor,
+            total_matches,
+            items,
+        },
+    })
+}
+
+struct FtsScoredDecisionSearchResult {
+    score: f64,
+    id: String,
+    result: DecisionSearchResult,
+}
+
+struct FtsDecisionMatch {
+    decision_id: String,
+    score: f64,
+}
+
+fn rebuild_decision_search_fts(
+    ledger: &SqliteEventLedger,
+    documents: &[ScoredDecisionSearchResult],
+) -> Result<()> {
+    let mut connection = Connection::open(ledger.path())
+        .map_err(|error| query_error(format!("open decision search index: {error}")))?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| query_error(format!("begin decision search index rebuild: {error}")))?;
+    transaction
+        .execute_batch(
+            "DROP TABLE IF EXISTS decision_search_fts;
+             CREATE VIRTUAL TABLE decision_search_fts USING fts5(
+                 decision_id,
+                 title,
+                 rationale,
+                 topic_keys,
+                 status,
+                 actor_text,
+                 source,
+                 option_text,
+                 evidence_text,
+                 hypothesis_text,
+                 supersession_text,
+                 tokenize = 'unicode61'
+             );",
+        )
+        .map_err(|error| query_error(format!("initialize decision search index: {error}")))?;
+    {
+        let mut statement = transaction
+            .prepare(
+                "INSERT INTO decision_search_fts (
+                    decision_id,
+                    title,
+                    rationale,
+                    topic_keys,
+                    status,
+                    actor_text,
+                    source,
+                    option_text,
+                    evidence_text,
+                    hypothesis_text,
+                    supersession_text
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            )
+            .map_err(|error| {
+                query_error(format!("prepare decision search index insert: {error}"))
+            })?;
+        for document in documents {
+            statement
+                .execute(params![
+                    field_text(&document.fields, &["decision.id"]),
+                    field_text(&document.fields, &["decision.title"]),
+                    field_text(&document.fields, &["decision.rationale"]),
+                    field_text(&document.fields, &["decision.topic"]),
+                    field_text(&document.fields, &["decision.status"]),
+                    field_text(&document.fields, &["actor.id", "actor.source_ref"]),
+                    field_text(&document.fields, &["decision.source"]),
+                    field_text(
+                        &document.fields,
+                        &["option.id", "option.label", "option.description"],
+                    ),
+                    field_text(&document.fields, &["evidence.id", "evidence.content"]),
+                    field_text(&document.fields, &["hypothesis.id", "hypothesis.statement"]),
+                    field_text(&document.fields, &["supersedes.id", "superseded_by.id"]),
+                ])
+                .map_err(|error| {
+                    query_error(format!(
+                        "insert decision search index row for {}: {error}",
+                        document.id
+                    ))
+                })?;
+        }
+    }
+    transaction
+        .commit()
+        .map_err(|error| query_error(format!("commit decision search index rebuild: {error}")))?;
+    Ok(())
+}
+
+fn query_decision_search_fts(
+    ledger: &SqliteEventLedger,
+    query: Option<&str>,
+) -> Result<Vec<FtsDecisionMatch>> {
+    let connection = Connection::open(ledger.path())
+        .map_err(|error| query_error(format!("open decision search index: {error}")))?;
+    let mut matches = Vec::new();
+    if let Some(query) = query {
+        let Some(fts_query) = fts5_query(query) else {
+            return Ok(Vec::new());
+        };
+        let mut statement = connection
+            .prepare(
+                "SELECT decision_id,
+                        bm25(decision_search_fts, 8.0, 5.0, 3.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0) AS score
+                   FROM decision_search_fts
+                  WHERE decision_search_fts MATCH ?1
+                  ORDER BY score ASC, decision_id ASC",
+            )
+            .map_err(|error| query_error(format!("prepare decision search query: {error}")))?;
+        let rows = statement
+            .query_map(params![fts_query], |row| {
+                Ok(FtsDecisionMatch {
+                    decision_id: row.get(0)?,
+                    score: row.get(1)?,
+                })
+            })
+            .map_err(|error| query_error(format!("execute decision search query: {error}")))?;
+        for row in rows {
+            matches.push(row.map_err(|error| query_error(format!("read search row: {error}")))?);
+        }
+    } else {
+        let mut statement = connection
+            .prepare("SELECT decision_id FROM decision_search_fts ORDER BY decision_id ASC")
+            .map_err(|error| query_error(format!("prepare unfiltered decision search: {error}")))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(FtsDecisionMatch {
+                    decision_id: row.get(0)?,
+                    score: 0.0,
+                })
+            })
+            .map_err(|error| query_error(format!("execute unfiltered decision search: {error}")))?;
+        for row in rows {
+            matches.push(row.map_err(|error| query_error(format!("read search row: {error}")))?);
+        }
+    }
+    Ok(matches)
+}
+
+fn decision_proposed_at_by_id(
+    ledger: &impl EventLedger,
+) -> Result<BTreeMap<String, DateTime<Utc>>> {
+    let mut proposed_at = BTreeMap::new();
+    ledger.replay_from(0, &mut |event| {
+        let payload = events::validate(event)
+            .map_err(|error| query_error(format!("invalid event during search replay: {error}")))?;
+        if let EventPayload::DecisionProposed(payload) = payload {
+            if let Some(ts) = event.ts {
+                proposed_at.insert(payload.decision_id, ts);
+            }
+        }
+        Ok(())
+    })?;
+    Ok(proposed_at)
+}
+
+fn date_in_range(
+    proposed_at: Option<DateTime<Utc>>,
+    since: Option<DateTime<Utc>>,
+    until: Option<DateTime<Utc>>,
+) -> bool {
+    if since.is_none() && until.is_none() {
+        return true;
+    }
+    let Some(proposed_at) = proposed_at else {
+        return false;
+    };
+    since.map_or(true, |since| proposed_at >= since)
+        && until.map_or(true, |until| proposed_at <= until)
+}
+
+fn document_matches_filters(
+    document: &ScoredDecisionSearchResult,
+    topic_keys: &[String],
+    statuses: &[DecisionStatus],
+    actor_ids: &[String],
+    sources: &[String],
+) -> bool {
+    let decision = &document.result.decision;
+    if !topic_keys.is_empty()
+        && !topic_keys.iter().all(|topic| {
+            decision
+                .topic_keys
+                .iter()
+                .any(|candidate| candidate == topic)
+        })
+    {
+        return false;
+    }
+    if !statuses.is_empty() && !statuses.contains(&decision.status) {
+        return false;
+    }
+    if !actor_ids.is_empty()
+        && !actor_ids.iter().any(|actor_id| {
+            document
+                .result
+                .graph_context
+                .actor_ids
+                .iter()
+                .any(|candidate| candidate == actor_id)
+        })
+    {
+        return false;
+    }
+    if !sources.is_empty() {
+        let source = field_text(&document.fields, &["decision.source"]);
+        if !sources
+            .iter()
+            .any(|expected| source.eq_ignore_ascii_case(expected))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn field_text(fields: &[SearchField], field_names: &[&str]) -> String {
+    fields
+        .iter()
+        .filter(|field| field_names.iter().any(|name| field.field == *name))
+        .map(|field| field.value.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn fts5_query(query: &str) -> Option<String> {
+    let terms = query
+        .split(|character: char| !character.is_alphanumeric())
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" AND "))
+    }
+}
+
+struct ScoredDecisionSearchResult {
+    rank: u8,
+    id: String,
+    result: DecisionSearchResult,
+    fields: Vec<SearchField>,
+}
+
+fn collect_graph_search_results(
+    graph: &impl GraphView,
+    query: Option<&str>,
+    terms: &[String],
+    topic_keys: &[String],
+    statuses: &[DecisionStatus],
+    actor_ids: &[String],
+    sources: &[String],
+) -> Result<Vec<ScoredDecisionSearchResult>> {
     let decision_rows = node_rows(graph, NodeKind::Decision)?;
     let actor_rows = node_rows(graph, NodeKind::Actor)?;
     let evidence_rows = node_rows(graph, NodeKind::Evidence)?;
@@ -268,13 +699,14 @@ pub fn search_decisions(
             ));
         }
 
-        let Some(match_info) = evaluate_search_match(query.as_deref(), &terms, &fields) else {
+        let Some(match_info) = evaluate_search_match(query, terms, &fields) else {
             continue;
         };
 
         scored.push(ScoredDecisionSearchResult {
             rank: match_info.rank,
             id: id.clone(),
+            fields,
             result: DecisionSearchResult {
                 decision: DecisionView {
                     id,
@@ -303,43 +735,7 @@ pub fn search_decisions(
         });
     }
 
-    scored.sort_by(|left, right| (left.rank, &left.id).cmp(&(right.rank, &right.id)));
-
-    let total_matches = scored.len();
-    let items: Vec<DecisionSearchResult> = scored
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|scored| scored.result)
-        .collect();
-    let next_offset = offset.saturating_add(items.len());
-    let next_cursor = (next_offset < total_matches).then(|| next_offset.to_string());
-
-    Ok(QueryResponse {
-        result_count: items.len(),
-        truncated: next_cursor.is_some(),
-        latency_ms: started.elapsed().as_millis(),
-        data: DecisionSearchResults {
-            query,
-            filters: SearchDecisionFilters {
-                topic_keys,
-                statuses,
-                actor_ids,
-                sources,
-            },
-            limit,
-            cursor,
-            next_cursor,
-            total_matches,
-            items,
-        },
-    })
-}
-
-struct ScoredDecisionSearchResult {
-    rank: u8,
-    id: String,
-    result: DecisionSearchResult,
+    Ok(scored)
 }
 
 #[derive(Clone, Debug)]

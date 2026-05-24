@@ -29,8 +29,8 @@ use crate::queries::{
     get_active_decision_blockers, get_blocker_notification_candidates, get_decision,
     get_decision_neighborhood, get_decisions_added_since, get_decisions_changed_since,
     get_recent_activity, get_relevant_decisions, get_supersession_chain, search_decisions,
-    ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest, ChangedSinceRequest,
-    DecisionBlockerFilters, DecisionStatus, DecisionsAddedSinceFilterRequest,
+    search_decisions_fts, ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest,
+    ChangedSinceRequest, DecisionBlockerFilters, DecisionStatus, DecisionsAddedSinceFilterRequest,
     DecisionsAddedSinceRequest, HistoryFilterRequest, HypothesisStatus, NeighborhoodRequest,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQuery, ReadOnlyExportRequest,
     RecentActivityRequest, SearchDecisionRequest,
@@ -484,6 +484,8 @@ pub enum QueryCommand {
     GetSupersessionChain(QueryDecisionArgs),
     #[command(name = "get_decision_neighborhood")]
     GetDecisionNeighborhood(QueryDecisionNeighborhoodArgs),
+    #[command(name = "search")]
+    Search(QuerySearchDecisionsArgs),
     #[command(name = "search_decisions")]
     SearchDecisions(QuerySearchDecisionsArgs),
     #[command(name = "get_active_decision_blockers")]
@@ -543,6 +545,12 @@ pub struct QuerySearchDecisionsArgs {
 
     #[arg(long = "source", value_delimiter = ',')]
     pub sources: Vec<String>,
+
+    #[arg(long = "since")]
+    pub since: Option<String>,
+
+    #[arg(long = "until")]
+    pub until: Option<String>,
 
     #[arg(long = "limit", default_value_t = 25)]
     pub limit: usize,
@@ -916,6 +924,8 @@ fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
             statuses: vec![DecisionStatus::Proposed],
             actor_ids: vec![cli.actor.clone()],
             sources: vec!["cli".to_owned()],
+            since: None,
+            until: None,
             limit: 5,
             cursor: None,
         },
@@ -1307,7 +1317,7 @@ fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {
         GraphBackend::Memory => {
             let graph = MemoryGraph::default();
             rebuild_graph(&ledger, &graph)?;
-            run_query_with_graph(&graph, query)
+            run_query_with_graph(&ledger, &graph, query)
         }
         GraphBackend::Kuzu => run_query_with_kuzu(&ledger, &cli.hivemind_dir, query),
     }
@@ -1350,6 +1360,7 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
         | QueryCommand::GetRelevantDecisions(_)
         | QueryCommand::GetSupersessionChain(_)
         | QueryCommand::GetDecisionNeighborhood(_)
+        | QueryCommand::Search(_)
         | QueryCommand::SearchDecisions(_)
         | QueryCommand::GetActiveDecisionBlockers(_)
         | QueryCommand::GetBlockerNotificationCandidates(_) => {
@@ -1568,7 +1579,11 @@ fn parse_utc_timestamp(
     }
 }
 
-fn run_query_with_graph(graph: &impl GraphView, query: &QueryArgs) -> Result<String> {
+fn run_query_with_graph(
+    ledger: &SqliteEventLedger,
+    graph: &impl GraphView,
+    query: &QueryArgs,
+) -> Result<String> {
     let json = match &query.command {
         QueryCommand::GetDecision(args) => {
             serde_json::to_string(&get_decision(graph, &args.decision_id)?).map_err(|error| {
@@ -1613,24 +1628,17 @@ fn run_query_with_graph(graph: &impl GraphView, query: &QueryArgs) -> Result<Str
                 CliError::InvalidInput(format!("json serialization failed: {error}"))
             })?
         }
+        QueryCommand::Search(args) => {
+            let request = search_decision_request(args)?;
+            serde_json::to_string(&search_decisions_fts(ledger, graph, &request)?).map_err(
+                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
+            )?
+        }
         QueryCommand::SearchDecisions(args) => {
-            let request = SearchDecisionRequest {
-                query: args.query.clone(),
-                topic_keys: args.topic_keys.clone(),
-                statuses: args
-                    .statuses
-                    .iter()
-                    .copied()
-                    .map(QueryDecisionStatus::as_decision_status)
-                    .collect(),
-                actor_ids: args.actor_ids.clone(),
-                sources: args.sources.clone(),
-                limit: args.limit,
-                cursor: args.cursor.clone(),
-            };
-            serde_json::to_string(&search_decisions(graph, &request)?).map_err(|error| {
-                CliError::InvalidInput(format!("json serialization failed: {error}"))
-            })?
+            let request = search_decision_request(args)?;
+            serde_json::to_string(&search_decisions_fts(ledger, graph, &request)?).map_err(
+                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
+            )?
         }
         QueryCommand::GetActiveDecisionBlockers(args) => {
             let request = ActiveDecisionBlockersRequest {
@@ -1683,6 +1691,25 @@ fn parse_query_datetime(value: Option<&str>, flag: &str) -> Result<Option<DateTi
     value
         .map(|value| parse_required_query_datetime(value, flag))
         .transpose()
+}
+
+fn search_decision_request(args: &QuerySearchDecisionsArgs) -> Result<SearchDecisionRequest> {
+    Ok(SearchDecisionRequest {
+        query: args.query.clone(),
+        topic_keys: args.topic_keys.clone(),
+        statuses: args
+            .statuses
+            .iter()
+            .copied()
+            .map(QueryDecisionStatus::as_decision_status)
+            .collect(),
+        actor_ids: args.actor_ids.clone(),
+        sources: args.sources.clone(),
+        since: parse_query_datetime(args.since.as_deref(), "--since")?,
+        until: parse_query_datetime(args.until.as_deref(), "--until")?,
+        limit: args.limit,
+        cursor: args.cursor.clone(),
+    })
 }
 
 fn parse_required_query_datetime(value: &str, flag: &str) -> Result<DateTime<Utc>> {
@@ -1782,18 +1809,18 @@ fn run_dump_with_graph(graph: &impl GraphView, dump: &DumpArgs) -> Result<String
 
 #[cfg(feature = "graph-kuzu")]
 fn run_query_with_kuzu(
-    ledger: &impl EventLedger,
+    ledger: &SqliteEventLedger,
     hivemind_dir: &std::path::Path,
     query: &QueryArgs,
 ) -> Result<String> {
     let graph = crate::projector::kuzu::KuzuGraph::open(hivemind_dir)?;
     rebuild_graph(ledger, &graph)?;
-    run_query_with_graph(&graph, query)
+    run_query_with_graph(ledger, &graph, query)
 }
 
 #[cfg(not(feature = "graph-kuzu"))]
 fn run_query_with_kuzu(
-    _ledger: &impl EventLedger,
+    _ledger: &SqliteEventLedger,
     _hivemind_dir: &std::path::Path,
     _query: &QueryArgs,
 ) -> Result<String> {

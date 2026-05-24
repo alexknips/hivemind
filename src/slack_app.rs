@@ -485,6 +485,8 @@ fn render_query_response<L: EventLedger, G: GraphView>(
         &SearchDecisionRequest {
             query: Some(query.to_owned()),
             limit: limit.clamp(1, 10),
+            since: None,
+            until: None,
             ..SearchDecisionRequest::default()
         },
     )?;

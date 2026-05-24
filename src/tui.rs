@@ -297,6 +297,8 @@ impl DecisionSearchApp {
             statuses: self.statuses.clone(),
             actor_ids: normalized_csv_values(&self.actor_input),
             sources: self.source_filters.clone(),
+            since: None,
+            until: None,
             limit: self.limit,
             cursor: self.cursor.clone(),
         }

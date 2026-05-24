@@ -858,6 +858,8 @@ fn search_decisions_matches_title_rationale_topic_status_and_actor() -> Result<(
             statuses: vec![DecisionStatus::Accepted],
             actor_ids: vec!["actor:2".to_owned()],
             sources: vec!["agent".to_owned()],
+            since: None,
+            until: None,
             limit: 10,
             cursor: None,
         },

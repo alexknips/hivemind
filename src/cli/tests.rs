@@ -418,6 +418,66 @@ fn search_decisions_cli_returns_query_response() {
 }
 
 #[test]
+fn search_cli_alias_uses_fts_surface_with_time_filters() {
+    let hivemind_dir = unique_test_dir("query-search-fts");
+    let decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-fts",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Adopt authentication boundary",
+        "--rationale",
+        "OAuth routing keeps search reproducible",
+        "--topic-keys",
+        "security,auth",
+        "--options",
+        "gateway,sidecar",
+        "--chose",
+        "gateway",
+    ]))
+    .expect("emit decision succeeds");
+
+    let query = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "search",
+        "--q",
+        "gateway",
+        "--topic",
+        "security",
+        "--actor-id",
+        "agent-fts",
+        "--since",
+        "2000-01-01T00:00:00Z",
+        "--until",
+        "2999-01-01T00:00:00Z",
+        "--limit",
+        "5",
+    ]))
+    .expect("search query succeeds");
+    let query: serde_json::Value = serde_json::from_str(&query).expect("valid query json");
+
+    assert_eq!(query["result_count"], serde_json::json!(1));
+    assert_eq!(query["data"]["items"][0]["decision"]["id"], decision_id);
+    assert_eq!(
+        query["data"]["items"][0]["matched_fields"],
+        serde_json::json!(["option.id"])
+    );
+    assert_eq!(
+        query["data"]["filters"]["since"],
+        serde_json::json!("2000-01-01T00:00:00Z")
+    );
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
 fn ledger_history_cli_queries_and_exports_read_only_summary() {
     let hivemind_dir = unique_test_dir("query-ledger-history");
     let decision_id = run(&Cli::parse_from([

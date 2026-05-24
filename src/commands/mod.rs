@@ -137,7 +137,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("label", label)?;
         require_non_empty("description", description)?;
 
-        let option_id = generate_entity_id("option");
+        let option_id = generate_option_id(label);
         self.record_option_with_id(actor_id, &option_id, label, description)?;
         Ok(option_id)
     }
@@ -889,6 +889,12 @@ fn require_optional_non_empty(field: &'static str, value: Option<&str>) -> Resul
 
 fn generate_entity_id(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4())
+}
+
+fn generate_option_id(label: &str) -> String {
+    let slug = normalize_topic_key(label);
+    let slug = if slug.is_empty() { "option" } else { &slug };
+    format!("option-{slug}-{}", Uuid::new_v4())
 }
 
 fn repeat_uuid(count: usize) -> Vec<Uuid> {

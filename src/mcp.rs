@@ -17,6 +17,7 @@ use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tracing::{debug, warn};
@@ -28,7 +29,8 @@ use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool
 use crate::ledger::SqliteEventLedger;
 use crate::projector::{memory::MemoryGraph, rebuild_graph};
 use crate::queries::{
-    get_decision, get_relevant_decisions, get_supersession_chain, DecisionStatus,
+    get_decision, get_relevant_decisions, get_supersession_chain, search_decisions_fts,
+    DecisionStatus, SearchDecisionRequest,
 };
 use crate::Result;
 
@@ -273,6 +275,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "get_decision" => tool_get_decision(arguments, config),
         "get_relevant_decisions" => tool_get_relevant_decisions(arguments, config),
         "get_supersession_chain" => tool_get_supersession_chain(arguments, config),
+        "search_decisions" => tool_search_decisions(arguments, config),
         "dump_graph" => tool_dump_graph(arguments, config),
         other => return Err(RpcError::invalid_params(format!("unknown tool: {other}"))),
     };
@@ -373,6 +376,27 @@ fn tool_definitions() -> Vec<Value> {
                 "required": ["decision_id"],
                 "properties": {
                     "decision_id": { "type": "string" }
+                }
+            }
+        }),
+        json!({
+            "name": "search_decisions",
+            "description": "Full-text search over decisions. Equivalent to `hivemind query search`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "q": { "type": "string", "description": "Full-text query." },
+                    "topic": { "type": "array", "items": { "type": "string" } },
+                    "status": {
+                        "type": "array",
+                        "items": { "type": "string", "enum": ["proposed", "accepted", "rejected", "contested", "superseded"] }
+                    },
+                    "actor_id": { "type": "array", "items": { "type": "string" } },
+                    "source": { "type": "array", "items": { "type": "string" } },
+                    "since": { "type": "string", "description": "RFC3339 lower bound for decision proposal time." },
+                    "until": { "type": "string", "description": "RFC3339 upper bound for decision proposal time." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                    "cursor": { "type": "string" }
                 }
             }
         }),
@@ -554,6 +578,32 @@ fn tool_get_supersession_chain(
     Ok(serde_json::to_value(QueryEnvelope::from(response))?)
 }
 
+fn tool_search_decisions(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let query = optional_string(&args, "q")?;
+    let statuses = optional_string_array(&args, "status")?
+        .into_iter()
+        .map(|status| parse_decision_status(&status))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let limit = optional_usize(&args, "limit")?.unwrap_or(25);
+    let request = SearchDecisionRequest {
+        query,
+        topic_keys: optional_string_array(&args, "topic")?,
+        statuses,
+        actor_ids: optional_string_array(&args, "actor_id")?,
+        sources: optional_string_array(&args, "source")?,
+        since: optional_datetime(&args, "since")?,
+        until: optional_datetime(&args, "until")?,
+        limit,
+        cursor: optional_string(&args, "cursor")?,
+    };
+    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let graph = MemoryGraph::default();
+    rebuild_graph(&ledger, &graph)?;
+    let response = search_decisions_fts(&ledger, &graph, &request)?;
+    Ok(serde_json::to_value(QueryEnvelope::from(response))?)
+}
+
 fn tool_dump_graph(_args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
     let graph = open_memory_graph(&config.hivemind_dir)?;
     let dot = crate::cli::render_decision_dot(&graph)?;
@@ -628,6 +678,53 @@ fn optional_string_array(
         Some(Value::Array(items)) => collect_strings(items, field),
         Some(_) => Err(RpcError::invalid_params(format!(
             "`{field}` must be an array of strings"
+        ))),
+    }
+}
+
+fn optional_datetime(
+    args: &Map<String, Value>,
+    field: &str,
+) -> std::result::Result<Option<DateTime<Utc>>, RpcError> {
+    let Some(value) = optional_string(args, field)? else {
+        return Ok(None);
+    };
+    DateTime::parse_from_rfc3339(&value)
+        .map(|value| Some(value.with_timezone(&Utc)))
+        .map_err(|error| RpcError::invalid_params(format!("`{field}` must be RFC3339: {error}")))
+}
+
+fn optional_usize(
+    args: &Map<String, Value>,
+    field: &str,
+) -> std::result::Result<Option<usize>, RpcError> {
+    match args.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => {
+            let Some(value) = number.as_u64() else {
+                return Err(RpcError::invalid_params(format!(
+                    "`{field}` must be a non-negative integer"
+                )));
+            };
+            usize::try_from(value).map(Some).map_err(|error| {
+                RpcError::invalid_params(format!("`{field}` is too large: {error}"))
+            })
+        }
+        Some(_) => Err(RpcError::invalid_params(format!(
+            "`{field}` must be an integer"
+        ))),
+    }
+}
+
+fn parse_decision_status(value: &str) -> std::result::Result<DecisionStatus, RpcError> {
+    match value {
+        "proposed" => Ok(DecisionStatus::Proposed),
+        "accepted" => Ok(DecisionStatus::Accepted),
+        "rejected" => Ok(DecisionStatus::Rejected),
+        "contested" => Ok(DecisionStatus::Contested),
+        "superseded" => Ok(DecisionStatus::Superseded),
+        other => Err(RpcError::invalid_params(format!(
+            "unknown status `{other}`"
         ))),
     }
 }
