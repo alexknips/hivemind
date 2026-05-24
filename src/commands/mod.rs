@@ -994,6 +994,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn find_matching_supersede(
         &self,
         actor_id: &str,

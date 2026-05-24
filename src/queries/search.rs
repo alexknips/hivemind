@@ -453,8 +453,8 @@ fn date_in_range(
     let Some(proposed_at) = proposed_at else {
         return false;
     };
-    since.map_or(true, |since| proposed_at >= since)
-        && until.map_or(true, |until| proposed_at <= until)
+    since.is_none_or(|since| proposed_at >= since)
+        && until.is_none_or(|until| proposed_at <= until)
 }
 
 fn document_matches_filters(
