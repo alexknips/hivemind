@@ -1,6 +1,6 @@
 # AGENTS.md — HiveMind High Bar
 
-This document defines the **standard of excellence** that any agent (human or AI) contributing to HiveMind is expected to meet. It is not the implementation plan (see `PLAN.md`). It is the bar.
+This document defines the **standard of excellence** that any agent (human or AI) contributing to HiveMind is expected to meet. Direction and active investments live in [`VISION.md`](VISION.md), [`PRINCIPLES.md`](PRINCIPLES.md), and [`STRATEGY.md`](STRATEGY.md); planning lives in beads. This document is the bar.
 
 HiveMind is a system for **corporate, multi-human, multi-agent decision-making memory**. It must be designed and built to a standard that justifies organizations and autonomous agents trusting it as the source of truth for *what was decided, why, by whom, and what it depends on*.
 
@@ -49,7 +49,7 @@ A function that crosses layers is a bug. A query that calls an LLM is a bug. A w
 
 - Every event has an `actor_id`. Anonymous writes are not allowed.
 - Every node and edge in the graph carries `event_origin` — the ledger offset that created it.
-- Optional cryptographic signing (Ed25519) is a slice-2 commitment, not a vague aspiration. When a multi-organization deployment lands, signing becomes mandatory.
+- Optional cryptographic signing (Ed25519) is a real commitment for the shared-backend / multi-org direction, not a vague aspiration. When a multi-organization deployment lands, signing becomes mandatory.
 - `contested` decisions are surfaced as a top-level status — never hidden in flags.
 - A `Hypothesis` flipping to `refuted` propagates to every `Decision` that `ASSUMES` it. This propagation is visible in queries by default.
 
@@ -62,9 +62,9 @@ HiveMind must scale past the single-developer prototype to:
 - **Multi-actor concurrent writes** without losing causality. Optimistic concurrency on supersessions; concurrent supersessions of the same target both survive and are flagged as such.
 - **Multi-host queries** with bounded response sizes, pagination, and cycle protection. No query ever returns the whole graph.
 - **Cross-organization federation** eventually. The ledger format and identity model must not preclude federation, even if it's not built day one.
-- **Tens of thousands of decisions per organization** without query latency degrading beyond agent usability (p95 < 250ms target at slice-2 scale).
+- **Tens of thousands of decisions per organization** without query latency degrading beyond agent usability (p95 < 250ms target at multi-org scale).
 
-The prototype (slice 1) is intentionally smaller, but no design choice in slice 1 may foreclose any of the above. If a choice is convenient now but blocks scaling later, it's wrong.
+The current local prototype is intentionally smaller, but no design choice today may foreclose any of the above. If a choice is convenient now but blocks scaling later, it's wrong.
 
 ---
 
@@ -90,7 +90,7 @@ Codex users can install the HiveMind capture bundle from
 The bundle points Codex at `hivemind emit decision.capture` and preserves the
 actor format `agent:codex:<session>`.
 
-A new human contributor should be able to read this file, `PLAN.md`, and the relevant slice's beads, and understand the entire architecture in **under an hour**. If they can't, the documentation is wrong.
+A new human contributor should be able to read this file, [`VISION.md`](VISION.md), [`PRINCIPLES.md`](PRINCIPLES.md), [`STRATEGY.md`](STRATEGY.md), and the currently-ready beads, and understand the project's direction and architecture in **under an hour**. If they can't, the documentation is wrong.
 
 ---
 
@@ -110,12 +110,13 @@ This is the standard. Anything less and we are not building organizational memor
 
 ## 9. Documentation boundary
 
-Work tracking belongs in Beads, not ordinary repo files.
+Work tracking belongs in Beads, not ordinary repo files. Planning lives in
+beads exclusively; the level-1 docs (`VISION.md`, `PRINCIPLES.md`,
+`STRATEGY.md`) are the compass beads are judged against.
 
-- Use Beads for task breakdowns, dependencies, milestones, follow-ups, routing, status, and implementation queues.
+- Use Beads for task breakdowns, dependencies, follow-ups, routing, status, and implementation queues.
 - Keep ordinary docs and source comments focused on stable product behavior, architecture, commands, contributor rules, and validation guidance.
-- `PLAN.md` is the sole planning exception. Do not add planning sections to other docs as a substitute for beads.
-- When a planning detail must be preserved, update or create the relevant bead or bead note instead of adding it to docs.
+- Do not add planning sections to docs as a substitute for beads. When a planning detail must be preserved, update or create the relevant bead or bead note instead.
 
 <!-- bv-agent-instructions-v2 -->
 

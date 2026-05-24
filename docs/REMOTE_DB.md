@@ -8,8 +8,8 @@ to `org_id` below are storage-level tenant keys, not a separate identity model.
 
 ## Recommendation
 
-Build the next shared HiveMind persistence slice as a HiveMind service backed by
-Postgres:
+Build the next shared HiveMind persistence layer as a HiveMind service backed
+by Postgres:
 
 - Postgres is the canonical remote event ledger.
 - Postgres also holds the first shared graph projection in typed node and edge
@@ -87,7 +87,7 @@ product API, not database credentials or a git/file synchronization workflow.
 
 | Backend | Use now? | Reason |
 | --- | --- | --- |
-| Postgres ledger plus Postgres projection | Yes | Best short-run fit: mature Rust clients, hosted and self-hosted options, ACID transactions, JSONB payloads, indexes, row-level security options, backups, and operational familiarity. Graph traversal is less elegant than Cypher, but HiveMind's slice-2 queries are bounded and status derivation is explicit. |
+| Postgres ledger plus Postgres projection | Yes | Best short-run fit: mature Rust clients, hosted and self-hosted options, ACID transactions, JSONB payloads, indexes, row-level security options, backups, and operational familiarity. Graph traversal is less elegant than Cypher, but HiveMind's shared-backend queries are bounded and status derivation is explicit. |
 | Neo4j / Aura | Not canonical yet | Strong graph tooling, Cypher, hosted Aura, ACID graph transactions, and visualization. The Rust path is weaker than Postgres: Neo4j's official driver list does not include Rust, so Rust service code uses the HTTP Query API or unofficial Bolt crates. It also introduces a second remote system before the ledger/service contract is proven. Keep as a later `GraphView` projection candidate. |
 | Memgraph | Not canonical yet | Attractive for Cypher-compatible server graph queries and streaming-style graph workloads. It should not own HiveMind writes because ledger audit, org tenancy, command validation, and non-developer auth still need the HiveMind service. Query portability with Neo4j/Kuzu is close but not identical. |
 | FalkorDB | Not canonical yet | Has a first-party Rust client and simple server deployment, plus openCypher-style querying. It is a reasonable future graph projection experiment, but Redis-module operations, product lock-in, and auth/multi-tenancy shape are worse short-run fits than one Postgres-backed service. |
@@ -96,7 +96,7 @@ product API, not database credentials or a git/file synchronization workflow.
 
 ## Local To Remote Mapping
 
-Current slice-1 storage remains useful:
+Current local storage remains useful:
 
 - `SqliteEventLedger` stays the zero-ops local ledger.
 - `KuzuGraph` stays the local graph projection and query parity target.

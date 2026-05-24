@@ -1,6 +1,6 @@
 # Agent Decision Capture
 
-Status: slice-1 local prototype for `hivemind-claude-codex-agent-capture-tco7`.
+Status: shipped. Originally landed under bead `hivemind-claude-codex-agent-capture-tco7`.
 
 HiveMind exposes a noninteractive CLI path for Claude, Codex, and similar coding
 agents to record a decision directly into the local ledger:

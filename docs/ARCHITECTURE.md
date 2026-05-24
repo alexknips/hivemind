@@ -18,8 +18,9 @@ status from explicit edges. It does not call LLMs, rank, cluster, summarize, or
 invent confidence.
 
 Layer 3 is agentic suggestion and analysis. Compactification, similarity,
-ranking, recommendations, and other smart behavior belong here in slice 2 or
-later, outside the write and query paths.
+ranking, recommendations, and other smart behavior belong here, outside the
+write and query paths. See [`STRATEGY.md → Layer-3 capabilities`](../STRATEGY.md#layer-3-capabilities)
+for the active investment direction.
 
 ## Surface Uniformity
 
@@ -57,8 +58,10 @@ Flow:
 5. Query functions run deterministic graph reads and derive decision or
    hypothesis status from edges.
 
-Repeated projection is intentionally idempotent for slice 1: graph state can be
-wiped and rebuilt from SQLite without changing query answers.
+Repeated projection is intentionally idempotent: graph state can be wiped and
+rebuilt from the ledger without changing query answers. This is the property
+the [auditability principle](../PRINCIPLES.md#2-every-state-change-is-auditable)
+relies on under the current state model.
 
 ## State Model (current direction, may change)
 
@@ -80,7 +83,7 @@ that depends on the current behavior.
 
 ## Storage Backend (current direction, may change)
 
-SQLite is the storage backend for the slice-1 local prototype. It is a
+SQLite is the storage backend for the current local prototype. It is a
 temporary choice. The long-term storage backend is open and will be decided
 under [STRATEGY.md → Shared backend](../STRATEGY.md#shared-backend). Any future
 backend must preserve [auditability](../PRINCIPLES.md#2-every-state-change-is-auditable)
@@ -115,7 +118,7 @@ commitment above.
 This is an architectural decision so future agent integrations don't assume MCP
 is mandatory.
 
-## Slice 1 Storage
+## Current Storage Layout
 
 `./hivemind/ledger.sqlite` is the local SQLite event ledger. It is the default
 source of truth for local CLI usage.
@@ -134,7 +137,7 @@ separate product backend.
 
 ## Current Default Behavior
 
-Production/default slice-1 behavior after this change is:
+Current default behavior:
 
 - `emit` writes only to SQLite.
 - `query` and `dump` use the in-memory graph unless explicitly told otherwise.
@@ -161,12 +164,17 @@ match the runtime bridge crate. Do not loosen that pin without running:
 cargo test --features graph-kuzu kuzu -- --nocapture
 ```
 
-## Open Slice 2 Decisions
+## Open Architectural Questions
+
+These are open architectural questions tracked under
+[`STRATEGY.md`](../STRATEGY.md) fronts (mostly *Shared backend* and *Layer-3
+capabilities*). They are not committed direction; specific beads will narrow
+each one when picked up.
 
 - The shared remote database/service architecture and rollout.
 - Whether the first remote projection is Postgres tables, Neo4j, another graph
   service, or a parity-tested combination.
 - Multi-organization identity, auth, and signing.
-- Pagination and response continuation beyond slice-1 defensive limits.
+- Pagination and response continuation beyond the current defensive limits.
 - Compactification, similarity, ranking, and other layer-3 behavior.
 - How to represent concurrent supersessions and richer decision dependencies.

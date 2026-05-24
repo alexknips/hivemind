@@ -2,14 +2,20 @@
 
 [![CI](https://github.com/alexknips/hivemind/actions/workflows/ci.yml/badge.svg)](https://github.com/alexknips/hivemind/actions/workflows/ci.yml)
 
-HiveMind is a Rust prototype for organizational decision memory. It records
-what was decided, why it was decided, who acted, what options were considered,
-and what evidence or hypotheses the decision depends on.
+HiveMind is the substrate for human governance of agentic decision-making.
+It records what was decided, why it was decided, who acted (human or agent),
+what options were considered, and what evidence or hypotheses the decision
+depends on — so humans can see, query, and contest every decision their
+agents make, instead of relinquishing oversight as agents take on more work.
 
-The project is deliberately a decision graph, not a chat archive, notes app, or
-task tracker. Humans and agents are both represented as actors, disagreement is
-preserved as first-class state, and decision status is derived from graph
-relations instead of being silently overwritten.
+The project is deliberately a decision graph, not a chat archive, notes app,
+or task tracker. Humans and agents are both represented as actors,
+disagreement is preserved as first-class state, and decision status is
+derived from graph relations instead of being silently overwritten.
+
+See [VISION.md](VISION.md) for the full positioning,
+[PRINCIPLES.md](PRINCIPLES.md) for the load-bearing constraints, and
+[STRATEGY.md](STRATEGY.md) for the active investment fronts.
 
 ## Quickstart
 
@@ -45,30 +51,37 @@ hivemind --hivemind-dir ./hivemind query search_decisions \
   --limit 5
 ```
 
-## Slice-1 Scope
+## What HiveMind Does Today
 
-Slice 1 proves the write and read layers:
-
-- A typed event ledger records decision, evidence, hypothesis, option, and
-  relation events.
-- A projector turns ledger events into a graph view with five node types:
-  `Decision`, `Actor`, `Evidence`, `Option`, and `Hypothesis`.
-- Query code derives decision status, including `contested` and `superseded`,
-  from explicit graph edges.
-- The CLI exposes `emit`, `query`, and `dump` commands over the same command and
-  query modules used by tests.
+- **Write.** A typed event ledger records decision, evidence, hypothesis,
+  option, and relation events. The `commands` module validates invariants and
+  appends to the ledger; both CLI and MCP write through the same internal
+  functions.
+- **Project.** Ledger events are projected into a graph view with five node
+  types: `Decision`, `Actor`, `Evidence`, `Option`, and `Hypothesis`. Status
+  (`proposed`, `accepted`, `contested`, `superseded`) is derived from explicit
+  graph edges, not stored.
+- **Read.** Query code derives status, walks supersession chains, and surfaces
+  contested decisions through deterministic graph reads. Search includes
+  topic/status filters and FTS-backed full-text search; `recent`, `disagree`,
+  and `supersede` are first-class verbs on both CLI and MCP.
+- **Capture from agents.** Installable plugins for Claude Code and Codex,
+  plus the bundled MCP stdio server, let agents capture decisions in-flow
+  with auto-populated actor and provenance defaults.
 
 The default CLI stores events in SQLite at `./hivemind/ledger.sqlite` or the
-directory passed with `--hivemind-dir`. Queries and DOT dumps replay the ledger
-into an in-memory graph view by default. A Kuzu-backed `GraphView` path is
-available behind the optional `graph-kuzu` feature with `--graph-backend kuzu`
-or `HIVEMIND_GRAPH_BACKEND=kuzu`; it rebuilds `./hivemind/graph.kuzu` from the
-SQLite ledger before query/dump reads.
+directory passed with `--hivemind-dir`. Queries and DOT dumps replay the
+ledger into an in-memory graph view by default. A Kuzu-backed projection is
+available behind the optional `graph-kuzu` feature.
 
-Not in slice 1: HTTP, signing, federation, compaction, similarity search,
-ranking, recommendations, or any LLM-backed query behavior. Those belong to the
-later agentic layer. The MCP server (see below) is a layer-1/2 transport
-wrapper only — no smart behavior happens behind it.
+SQLite is a deliberate short-term choice; the long-term storage backend is
+open. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the current state
+model and what is marked temporary.
+
+Out of scope today: compactification, similarity search, semantic ranking,
+LLM-backed query, multi-tenant shared backend, federation. These belong to
+the agentic layer above the ledger and to the shared-backend front —
+[`STRATEGY.md`](STRATEGY.md) tracks where each one stands.
 
 ## Install
 
@@ -113,9 +126,9 @@ cargo install --git https://github.com/alexknips/hivemind --locked --features gr
 cargo install --git https://github.com/alexknips/hivemind --locked --features tui hivemind
 ```
 
-The crate is prepared for packaging but is not published to crates.io in this
-slice; `Cargo.toml` keeps `publish = false` until the project explicitly
-reserves the name and chooses a redistributable crate license.
+The crate is prepared for packaging but is not yet published to crates.io;
+`Cargo.toml` keeps `publish = false` until the project explicitly reserves
+the name and chooses a redistributable crate license.
 
 ## Build And Test
 
@@ -133,7 +146,7 @@ cargo test --features graph-kuzu kuzu -- --nocapture
 Only run the Kuzu feature tests when changing the Kuzu adapter or explicit Kuzu
 CLI path. See `docs/ARCHITECTURE.md` for native dependency notes.
 
-Additional slice-1 harnesses:
+Additional test harnesses:
 
 ```bash
 cargo test --test golden
@@ -167,14 +180,14 @@ writes default to `human:<git config user.email>` with `source=human`. Use
 
 ```bash
 hivemind --actor alice emit evidence.recorded \
-  --content "SQLite WAL is sufficient for slice-1 local writes"
+  --content "SQLite WAL is sufficient for current local writes"
 
 hivemind --actor alice emit hypothesis.recorded \
   --statement "Embedded storage keeps onboarding under five minutes"
 
 hivemind emit decision.proposed \
-  --title "Use embedded storage for slice 1" \
-  --rationale "It keeps the prototype single-process and easy to replay" \
+  --title "Use embedded storage for the local prototype" \
+  --rationale "It keeps the local install single-process and easy to replay" \
   --topic-keys architecture,storage \
   --options sqlite,postgres \
   --chose sqlite
@@ -235,7 +248,7 @@ Any MCP-aware client (Claude Desktop, Claude Code, Cursor, Codex with MCP
 support, etc.) can capture and query decisions through the bundled MCP stdio
 server. The server is a thin transport: capture tools call into the same
 `Commands` API the CLI uses, query tools call into the same `queries` API.
-Smart behavior stays out — see the slice scope above.
+Smart behavior stays out — see the "What HiveMind Does Today" section above.
 
 ```bash
 hivemind --hivemind-dir ./hivemind/ mcp
@@ -328,16 +341,40 @@ navigation, and exports the focused one-hop neighborhood as DOT with `x`.
 
 ## Read More
 
-- `docs/ARCHITECTURE.md` is the concise architecture summary for reviewers.
-- `docs/AGENT_DECISION_CAPTURE.md` documents the Claude/Codex capture path.
-- `docs/LOCAL_CAPTURE_DEMO.md` documents the local Slack plus agent capture demo.
-- `docs/SLACK_APP.md` documents the local-first Slack app install, queue, and
-  query surface.
-- `docs/TEXT_IMPORT_AND_DIFF_SEMANTICS.md` defines local document import and
-  temporal decision diff semantics for Milestone 2.
-- `docs/M2_WEEKLY_DIFF_DEMO.md` walks through the Milestone 2 end-to-end flow:
-  import documents locally, then ask which decisions were added since last week.
-- `PLAN.md` explains the slice-1 architecture and what is intentionally deferred.
-- `AGENTS.md` defines the project standards and non-goals for contributors.
-- `tests/seed/README.md` documents the deterministic seed dataset, replay smoke
-  test, and golden snapshot workflow.
+Level-1 guidance (read these first):
+
+- [`VISION.md`](VISION.md) — why HiveMind exists, who it's for, and the bet on
+  human governance of agentic decision-making.
+- [`PRINCIPLES.md`](PRINCIPLES.md) — the constraints HiveMind cannot trade
+  away.
+- [`STRATEGY.md`](STRATEGY.md) — active investment fronts; the filter a bead
+  is judged against.
+
+Architecture and surfaces:
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — three-layer architecture,
+  surface uniformity, state model, storage, and other architectural decisions
+  (some marked temporary).
+- [`docs/MULTI_TENANCY.md`](docs/MULTI_TENANCY.md) — multi-tenant model for
+  the MCP/API surface.
+- [`docs/SEARCH_DESIGN.md`](docs/SEARCH_DESIGN.md) — storage-agnostic search
+  surface design.
+- [`docs/REMOTE_DB.md`](docs/REMOTE_DB.md) — long-term shared-backend
+  direction.
+
+Per-feature docs:
+
+- [`docs/AGENT_DECISION_CAPTURE.md`](docs/AGENT_DECISION_CAPTURE.md) — the
+  Claude/Codex capture path.
+- [`docs/LOCAL_CAPTURE_DEMO.md`](docs/LOCAL_CAPTURE_DEMO.md) — local Slack plus
+  agent capture demo.
+- [`docs/SLACK_APP.md`](docs/SLACK_APP.md) — local-first Slack app install,
+  queue, and query surface.
+- [`docs/TEXT_IMPORT_AND_DIFF_SEMANTICS.md`](docs/TEXT_IMPORT_AND_DIFF_SEMANTICS.md)
+  — local document import and temporal decision diff semantics.
+- [`docs/M2_WEEKLY_DIFF_DEMO.md`](docs/M2_WEEKLY_DIFF_DEMO.md) — import
+  documents locally, then ask which decisions were added since last week.
+- [`AGENTS.md`](AGENTS.md) — project standards and non-goals for
+  contributors.
+- [`tests/seed/README.md`](tests/seed/README.md) — deterministic seed
+  dataset, replay smoke test, and golden snapshot workflow.

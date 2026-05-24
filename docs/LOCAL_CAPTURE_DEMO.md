@@ -1,8 +1,8 @@
 # Local Capture Demo
 
-This demo proves the slice-1 local prototype can capture Slack-style human
-decisions and direct agent decisions into one HiveMind ledger, then query them
-through the same read path.
+This demo proves the local prototype can capture Slack-style human decisions
+and direct agent decisions into one HiveMind ledger, then query them through
+the same read path.
 
 Run it with:
 
