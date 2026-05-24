@@ -3,6 +3,9 @@
 This document records the accepted short-run recommendation for shared HiveMind
 persistence.
 
+The tenant model is defined in [`MULTI_TENANCY.md`](MULTI_TENANCY.md). References
+to `org_id` below are storage-level tenant keys, not a separate identity model.
+
 ## Recommendation
 
 Build the next shared HiveMind persistence slice as a HiveMind service backed by

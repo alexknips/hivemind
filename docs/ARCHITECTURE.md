@@ -31,8 +31,9 @@ identically through every surface.
 
 This commitment prevents surfaces from drifting apart. It also makes the
 internal layer the only place where business invariants are enforced —
-validation, provenance, supersession rules, multi-tenant scoping — so adding
-a new transport cannot accidentally bypass a rule.
+validation, provenance, supersession rules, multi-tenant scoping (see
+[`MULTI_TENANCY.md`](MULTI_TENANCY.md)) — so adding a new transport cannot
+accidentally bypass a rule.
 
 The choice of transport (CLI for humans at terminals, MCP for agents, future
 HTTP/library for embedded use) is independent of what HiveMind does. The
