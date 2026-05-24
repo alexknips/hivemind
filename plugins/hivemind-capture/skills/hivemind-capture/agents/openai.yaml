@@ -1,4 +1,4 @@
 interface:
   display_name: "HiveMind Capture"
   short_description: "Capture Codex decisions into HiveMind with provenance."
-  default_prompt: "Capture this decision in HiveMind."
+  default_prompt: "Capture durable Codex decision moments in HiveMind as soon as the agent chooses a direction."

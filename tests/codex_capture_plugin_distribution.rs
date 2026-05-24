@@ -51,6 +51,9 @@ fn codex_capture_plugin_bundle_is_installable_and_points_at_cli_capture() -> Tes
     assert!(skill.contains("decision.capture"));
     assert!(skill.contains("--agent-tool codex"));
     assert!(skill.contains("agent:codex:<session>"));
+    assert!(skill.contains("Automatic Capture Triggers"));
+    assert!(skill.contains("CODEX_THREAD_ID"));
+    assert!(skill.contains("Capture immediately after the decision is made"));
     assert!(skill.contains("HIVEMIND_DIR"));
     Ok(())
 }
@@ -341,6 +344,74 @@ fn codex_capture_defaults_actor_from_session_environment() -> TestResult<()> {
     assert_eq!(
         event.source_ref.as_deref(),
         Some("agent:codex:plugin-test-session")
+    );
+
+    let _ = fs::remove_dir_all(hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn capture_plugin_scripts_derive_codex_session_context() -> TestResult<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_nanos()
+        .to_string();
+    let hivemind_dir = std::env::temp_dir().join(format!("hivemind-codex-plugin-{unique}"));
+    let actor_id = "agent:codex:codex-thread-test";
+
+    let capture_script = root.join("plugins/hivemind-capture/scripts/capture-decision.sh");
+    let output = Command::new(&capture_script)
+        .current_dir(root)
+        .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+        .env("HIVEMIND_DIR", &hivemind_dir)
+        .env("CODEX_THREAD_ID", "codex-thread-test")
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .env_remove("CLAUDE_SESSION_ID")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .args([
+            "--title",
+            "Derive Codex plugin session defaults",
+            "--rationale",
+            "The Codex path should capture decisions without manual actor or source setup",
+            "--topic-keys",
+            "codex,plugin,capture",
+            "--options",
+            "manual-provenance,session-context",
+            "--chose",
+            "session-context",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "codex plugin capture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Captured HiveMind decision decision-"));
+    assert!(stdout.contains(actor_id));
+
+    let query_script = root.join("plugins/hivemind-capture/scripts/query-decisions.sh");
+    let query = Command::new(&query_script)
+        .current_dir(root)
+        .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+        .env("HIVEMIND_DIR", &hivemind_dir)
+        .env("CODEX_THREAD_ID", "codex-thread-test")
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .env_remove("CLAUDE_SESSION_ID")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .args(["--q", "session defaults", "--limit", "5"])
+        .output()?;
+    assert!(
+        query.status.success(),
+        "codex plugin query failed: {}",
+        String::from_utf8_lossy(&query.stderr)
+    );
+    let query: Value = serde_json::from_slice(&query.stdout)?;
+    assert_eq!(query["result_count"], 1);
+    assert_eq!(
+        query["data"]["items"][0]["graph_context"]["actor_ids"][0],
+        actor_id
     );
 
     let _ = fs::remove_dir_all(hivemind_dir);

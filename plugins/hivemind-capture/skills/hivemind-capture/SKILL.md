@@ -25,6 +25,26 @@ Do not capture these:
 - Private agent scratch memory.
 - Inferred confidence or similarity judgments.
 
+## Automatic Capture Triggers
+
+When this skill is installed, do not wait for the user to ask for capture. Use
+it during the session whenever a durable decision moment occurs:
+
+- You make a non-trivial architecture, integration, storage, security, or
+  process choice that later work will depend on.
+- You choose or recommend one option from alternatives the user presented.
+- You replace an earlier direction you chose in the same session.
+
+Capture immediately after the decision is made and before moving on to dependent
+work. Keep the trigger deterministic: capture the explicit choice and rationale
+you just made; do not run search, similarity, ranking, or model-based inference
+to decide whether the decision is important.
+
+For supersession, first capture the replacement decision. If the previous
+decision id is known, emit `decision.superseded` with the same actor identity.
+If it is not known, do not invent an id; make the supersession relationship clear
+in the new decision rationale.
+
 ## Capture Workflow
 
 Use the HiveMind CLI as the write transport. Skills improve recall, but the
@@ -37,27 +57,40 @@ ledger write must stay explicit and deterministic.
    export HIVEMIND_DIR="${HIVEMIND_DIR:-./hivemind}"
    ```
 
-2. Use the current agent session as the actor identity. HiveMind derives Codex
-   sessions from `CODEX_SESSION_ID`, `CODEX_TASK_ID`, or
-   `HIVEMIND_CODEX_SESSION`; Claude Code uses `CLAUDE_SESSION_ID`,
-   `CLAUDE_CODE_SESSION_ID`, or `HIVEMIND_CLAUDE_SESSION`. If none is
-   available, choose a stable session label and do not reuse it across unrelated
-   sessions:
+2. Use session context as the actor identity. The plugin helper does this for
+   Claude Code and Codex, so agents should not invent `actor_id`, `source`, or
+   `source_ref` values:
 
    ```bash
-   export HIVEMIND_CODEX_SESSION="${CODEX_SESSION_ID:-${CODEX_TASK_ID:-manual-session}}"
-   export HIVEMIND_CLAUDE_SESSION="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-manual-session}}"
+   plugins/hivemind-capture/scripts/capture-decision.sh \
+     --title "Prefer direct CLI capture before MCP" \
+     --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" \
+     --topic-keys agents,capture \
+     --options direct-cli,mcp,hook \
+     --chose direct-cli
    ```
 
-   HiveMind derives `actor_id=agent:codex:<session>` for Codex and
+   The helper records `source=agent`, derives `actor_id=agent:<tool>:<session>`,
+   and sets `source_ref` to the same actor id unless explicitly overridden.
+   Codex records as `agent:codex:<session>` using `CODEX_THREAD_ID`,
+   `CODEX_SESSION_ID`, or `CODEX_TASK_ID` when present, then Gas City session
+   variables. Claude Code records as `agent:claude:<session>` using
+   `CLAUDE_SESSION_ID` or `CLAUDE_CODE_SESSION_ID`, then Gas City session
+   variables.
+
+   The CLI derives `actor_id=agent:codex:<session>` for Codex and
    `actor_id=agent:claude:<session>` for Claude unless `--actor-id` is
    explicitly provided. Use `--agent-tool codex --agent-session <session>` only
-   when overriding the environment-derived defaults.
+   when the helper is unavailable or when overriding the environment-derived
+   defaults.
 
-3. Capture a new proposed decision:
+3. Capture a new proposed decision directly when the helper is unavailable:
 
    ```bash
+   HIVEMIND_AGENT_SESSION="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" emit decision.capture \
+     --agent-tool codex \
+     --agent-session "$HIVEMIND_AGENT_SESSION" \
      --title "Prefer direct CLI capture before MCP" \
      --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" \
      --topic-keys agents,capture \
@@ -77,7 +110,10 @@ ledger write must stay explicit and deterministic.
 4. Attach existing evidence or hypotheses only when their ids are already known:
 
    ```bash
+   HIVEMIND_AGENT_SESSION="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" emit decision.capture \
+     --agent-tool codex \
+     --agent-session "$HIVEMIND_AGENT_SESSION" \
      --title "Use shared ledger storage for the integration demo" \
      --rationale "Multiple agents must query the same provenance without local file copying" \
      --topic-keys agents,capture,storage \
@@ -91,13 +127,15 @@ ledger write must stay explicit and deterministic.
    with the same actor id:
 
    ```bash
-   hivemind --actor "agent:codex:$HIVEMIND_CODEX_SESSION" \
+   HIVEMIND_AGENT_SESSION="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}"
+   hivemind --actor "agent:codex:$HIVEMIND_AGENT_SESSION" \
      --hivemind-dir "$HIVEMIND_DIR" emit decision.accepted \
      --decision-id decision-001
    ```
 
    ```bash
-   hivemind --actor "agent:codex:$HIVEMIND_CODEX_SESSION" \
+   HIVEMIND_AGENT_SESSION="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}"
+   hivemind --actor "agent:codex:$HIVEMIND_AGENT_SESSION" \
      --hivemind-dir "$HIVEMIND_DIR" emit decision.superseded \
      --old decision-001 \
      --new decision-002
@@ -106,8 +144,9 @@ ledger write must stay explicit and deterministic.
 6. Verify the write through the read path:
 
    ```bash
+   HIVEMIND_AGENT_SESSION="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" query search_decisions \
-     --actor-id "agent:codex:$HIVEMIND_CODEX_SESSION" \
+     --actor-id "agent:codex:$HIVEMIND_AGENT_SESSION" \
      --source agent \
      --limit 10
    ```

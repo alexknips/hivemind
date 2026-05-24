@@ -11,7 +11,8 @@ Options:
   --source human|agent       Provenance source. Defaults to agent.
   --actor-id ID              Override actor id.
   --source-ref REF           Override source_ref. Defaults to actor id.
-  --agent-session SESSION    Claude session id for --source agent.
+  --agent-tool TOOL          Agent tool name. Defaults from session context.
+  --agent-session SESSION    Agent session id. Defaults from session context.
   --hivemind-dir DIR         Ledger directory. Defaults to plugin config,
                              $HIVEMIND_DIR, or <project>/hivemind.
 
@@ -46,6 +47,55 @@ human_actor_id() {
   printf 'human:%s' "$raw"
 }
 
+first_nonempty() {
+  local value
+  for value in "$@"; do
+    if [[ -n "$value" ]]; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+detect_agent_tool() {
+  if [[ -n "${CLAUDE_SESSION_ID:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_PROJECT_DIR:-}${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+    printf 'claude\n'
+  elif [[ -n "${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CODEX_TASK_ID:-}" ]]; then
+    printf 'codex\n'
+  else
+    printf 'claude\n'
+  fi
+}
+
+detect_agent_session() {
+  case "$1" in
+    codex)
+      first_nonempty \
+        "${CODEX_THREAD_ID:-}" \
+        "${CODEX_SESSION_ID:-}" \
+        "${CODEX_TASK_ID:-}" \
+        "${GC_SESSION_ID:-}" \
+        "${GC_SESSION_NAME:-}" \
+        "manual-session"
+      ;;
+    claude)
+      first_nonempty \
+        "${CLAUDE_SESSION_ID:-}" \
+        "${CLAUDE_CODE_SESSION_ID:-}" \
+        "${GC_SESSION_ID:-}" \
+        "${GC_SESSION_NAME:-}" \
+        "manual-session"
+      ;;
+    *)
+      first_nonempty \
+        "${GC_SESSION_ID:-}" \
+        "${GC_SESSION_NAME:-}" \
+        "manual-session"
+      ;;
+  esac
+}
+
 install_hint() {
   cat >&2 <<'HINT'
 HiveMind CLI was not found.
@@ -62,8 +112,8 @@ HIVEMIND_DIR="${HIVEMIND_DIR:-${CLAUDE_PLUGIN_OPTION_HIVEMIND_DIR:-$PROJECT_ROOT
 SOURCE="agent"
 ACTOR_ID=""
 SOURCE_REF=""
-AGENT_TOOL="claude"
-AGENT_SESSION="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-manual-session}}"
+AGENT_TOOL=""
+AGENT_SESSION=""
 FORWARDED=()
 
 while [[ $# -gt 0 ]]; do
@@ -117,6 +167,13 @@ case "$SOURCE" in
 esac
 
 mkdir -p "$HIVEMIND_DIR"
+
+if [[ -z "$AGENT_TOOL" ]]; then
+  AGENT_TOOL="$(detect_agent_tool)"
+fi
+if [[ -z "$AGENT_SESSION" ]]; then
+  AGENT_SESSION="$(detect_agent_session "$AGENT_TOOL")"
+fi
 
 PROVENANCE=(--source "$SOURCE")
 if [[ "$SOURCE" == "human" ]]; then

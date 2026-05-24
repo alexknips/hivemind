@@ -10,6 +10,12 @@ This directory is both the Codex capture plugin and the Claude Code
 - A `hivemind` MCP stdio server wired to `hivemind mcp`.
 - The `hivemind-capture` skill for capture boundaries and provenance rules.
 
+The shared helper defaults to `source=agent` and derives
+`actor_id=agent:<tool>:<session>` from the active session. Under Codex it uses
+`CODEX_THREAD_ID`, `CODEX_SESSION_ID`, or `CODEX_TASK_ID`; under Claude Code it
+uses `CLAUDE_SESSION_ID` or `CLAUDE_CODE_SESSION_ID`. In Gas City sessions it can
+fall back to `GC_SESSION_ID`/`GC_SESSION_NAME`.
+
 ## Install
 
 Install the HiveMind CLI first so `hivemind` is on `PATH`.
