@@ -77,6 +77,43 @@ When the state model is reconsidered, the change belongs in this section, in
 the architecture decision log, and in the principles cross-check of any bead
 that depends on the current behavior.
 
+## Storage Backend (current direction, may change)
+
+SQLite is the storage backend for the slice-1 local prototype. It is a
+temporary choice. The long-term storage backend is open and will be decided
+under [STRATEGY.md → Shared backend](../STRATEGY.md#shared-backend). Any future
+backend must preserve [auditability](../PRINCIPLES.md#2-every-state-change-is-auditable)
+in full; the SQLite implementation simply happens to do so via event-sourcing
+today.
+
+Code paths that depend on SQLite specifics (FTS5 search, SQLite pragmas,
+file-on-disk semantics) should be reachable only through the internal commands
+and queries layer, never from CLI, MCP, or API surfaces — so that swapping
+storage replaces only one layer.
+
+## Graph Projection Backend
+
+Kuzu is an optional persistent graph projection, not a primary store. The
+default query path is in-memory graph projection from the ledger; Kuzu is
+opt-in via the `graph-kuzu` feature flag and `--graph-backend kuzu` or
+`HIVEMIND_GRAPH_BACKEND=kuzu`.
+
+This is an architectural decision: the projection is *derived* state, not
+source-of-truth, regardless of whether it lives in memory or in Kuzu. If the
+state-model decision changes (see *State Model* above), this section may need
+to change too.
+
+## Agent Transport
+
+MCP is one transport HiveMind exposes for agents (and for any MCP-aware client).
+It is not the only one. The CLI is equally valid for agents that prefer to
+shell out, future HTTP and library bindings will be valid for embedded use, and
+all of them go through the same internal functions per the *Surface Uniformity*
+commitment above.
+
+This is an architectural decision so future agent integrations don't assume MCP
+is mandatory.
+
 ## Slice 1 Storage
 
 `./hivemind/ledger.sqlite` is the local SQLite event ledger. It is the default
