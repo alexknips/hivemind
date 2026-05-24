@@ -69,26 +69,31 @@ jobs:
       - name: Run TUI tests
         run: cargo test --locked --features tui
 
-  kuzu-feature:
-    name: Optional Kuzu feature (non-blocking)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    timeout-minutes: 20
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
-
-      # graph-kuzu has a tracked native link issue (hivemind-oj7qr). Keep the
-      # signal visible without blocking default CI until that bead lands.
-      - name: Run Kuzu feature tests
-        run: cargo test --locked --features graph-kuzu kuzu -- --nocapture
+  # The graph-kuzu CI job is disabled until the native link issue (tracked in
+  # bead hivemind-oj7qr) is resolved. With the current bundled C++ build, the
+  # job exceeds the 20-minute timeout on GitHub-hosted runners, and a timeout
+  # cancellation bypasses `continue-on-error`, causing the whole workflow to
+  # surface as failing. Re-enable when the link issue is fixed or once we
+  # decide on a faster build path.
+  #
+  # kuzu-feature:
+  #   name: Optional Kuzu feature (non-blocking)
+  #   runs-on: ubuntu-latest
+  #   continue-on-error: true
+  #   timeout-minutes: 20
+  #
+  #   steps:
+  #     - name: Check out repository
+  #       uses: actions/checkout@v4
+  #
+  #     - name: Install Rust toolchain
+  #       uses: dtolnay/rust-toolchain@stable
+  #
+  #     - name: Cache cargo artifacts
+  #       uses: Swatinem/rust-cache@v2
+  #
+  #     - name: Run Kuzu feature tests
+  #       run: cargo test --locked --features graph-kuzu kuzu -- --nocapture
 
   ubs:
     name: UBS critical scan
