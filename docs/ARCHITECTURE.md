@@ -21,6 +21,24 @@ Layer 3 is agentic suggestion and analysis. Compactification, similarity,
 ranking, recommendations, and other smart behavior belong here in slice 2 or
 later, outside the write and query paths.
 
+## Surface Uniformity
+
+All external surfaces — CLI, MCP, future API or client library — are thin
+wrappers over the same internal functions in the `commands` and `queries`
+modules. There is no behavior that exists in one surface but not another. When
+a new operation is added, it is added once in the internal layer and exposed
+identically through every surface.
+
+This commitment prevents surfaces from drifting apart. It also makes the
+internal layer the only place where business invariants are enforced —
+validation, provenance, supersession rules, multi-tenant scoping — so adding
+a new transport cannot accidentally bypass a rule.
+
+The choice of transport (CLI for humans at terminals, MCP for agents, future
+HTTP/library for embedded use) is independent of what HiveMind does. The
+choice does not change the rules. The principles (`PRINCIPLES.md`) constrain
+what HiveMind does; this section names how surfaces relate to that.
+
 ## Event To Query Flow
 
 The event ledger is authoritative. Every append records an actor, event UUID,
@@ -40,6 +58,24 @@ Flow:
 
 Repeated projection is intentionally idempotent for slice 1: graph state can be
 wiped and rebuilt from SQLite without changing query answers.
+
+## State Model (current direction, may change)
+
+The current implementation realizes [the auditability principle](../PRINCIPLES.md#2-every-state-change-is-auditable)
+via event-sourcing: the event ledger is the source of truth, and the projected
+graph (plus any indexes, derived statuses, and search structures) is rebuildable
+from it.
+
+This state model is an architectural decision, not a principle. It is the path
+HiveMind takes today to satisfy auditability. The model may be revisited as the
+project encounters features that are awkward or unavailable under a pure
+event-sourced design — for example, operations that benefit from the graph
+being directly mutable as a primary store. Any future state model must preserve
+auditability in full; that constraint is non-negotiable.
+
+When the state model is reconsidered, the change belongs in this section, in
+the architecture decision log, and in the principles cross-check of any bead
+that depends on the current behavior.
 
 ## Slice 1 Storage
 

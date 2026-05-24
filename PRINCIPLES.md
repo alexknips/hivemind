@@ -21,12 +21,20 @@ probabilistic between the actor and the record.
 If a feature requires reaching from the agentic layer back into ingest or
 projection, the feature is the wrong shape, not the architecture.
 
-## 2. Events are authoritative; state is derived
+## 2. Every state change is auditable
 
-Decision status (`proposed`, `accepted`, `contested`, `superseded`) is computed
-from graph edges, not stored as a column. The projected graph can be wiped and
-rebuilt from the ledger without changing a single query answer. State you
-cannot replay is state you cannot audit, and HiveMind exists to be audited.
+There is always a complete, replayable record of how HiveMind reached its
+current state. Status, derivations, reversals, supersessions — all can be
+reconstructed from the audit record without inference or guesswork. State
+you cannot replay is state you cannot audit, and HiveMind exists to be
+audited.
+
+This is the load-bearing property. *How* it is realized — event-sourcing
+today, possibly a different model tomorrow — is an architectural decision
+documented in `docs/ARCHITECTURE.md`. The principle is the property, not the
+mechanism. Any implementation that preserves complete auditability satisfies
+the principle; any implementation that doesn't, doesn't, no matter how
+elegant.
 
 This is what makes a decision survivable across migrations, backends, and
 years.

@@ -36,10 +36,12 @@ records:
 - the disagreement, where it existed
 - the supersession, when it happened
 
-Status (`proposed`, `accepted`, `contested`, `superseded`) is derived from the
-graph, not stored as a property. The ledger never lies because the smart
-behavior — search, ranking, compactification, recommendations — cannot reach
-into the write path. Smart layers run on top of the ledger, never inside it.
+Status (`proposed`, `accepted`, `contested`, `superseded`) is derived, not
+stored — it follows from the underlying structure and reflects current truth
+without anyone having to keep it in sync by hand. The audit trail never lies
+because the smart behavior — search, ranking, compactification,
+recommendations — cannot reach into the write path. Smart layers run on top
+of the record, never inside it.
 
 ## Who it's for
 
