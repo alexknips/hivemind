@@ -9,8 +9,9 @@ use serde_json::{json, Value};
 
 use crate::error::QueryError;
 use crate::events::{
-    self, DecisionIdPayload, DecisionProposedPayload, DecisionSupersededPayload, Event, EventId,
-    EventPayload, EventSource, EventType, RelationAddedPayload, RelationKind as EventRelationKind,
+    self, DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload,
+    DecisionSupersededPayload, Event, EventId, EventPayload, EventSource, EventType,
+    RelationAddedPayload, RelationKind as EventRelationKind,
 };
 use crate::ledger::EventLedger;
 use crate::projector::NodeKind;
@@ -1194,8 +1195,10 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
     let mut ids = BTreeSet::new();
     match payload {
         EventPayload::DecisionProposed(DecisionProposedPayload { decision_id, .. })
-        | EventPayload::DecisionAccepted(DecisionIdPayload { decision_id })
-        | EventPayload::DecisionRejected(DecisionIdPayload { decision_id }) => {
+        | EventPayload::DecisionAccepted(DecisionIdPayload { decision_id }) => {
+            ids.insert(decision_id.clone());
+        }
+        EventPayload::DecisionRejected(DecisionRejectedPayload { decision_id, .. }) => {
             ids.insert(decision_id.clone());
         }
         EventPayload::DecisionSuperseded(DecisionSupersededPayload {
@@ -1264,7 +1267,10 @@ fn affected_nodes_for_event(event: &Event, payload: &EventPayload) -> Vec<Affect
                     .map(|id| affected_node(id, NodeKind::Evidence)),
             );
         }
-        EventPayload::DecisionAccepted(payload) | EventPayload::DecisionRejected(payload) => {
+        EventPayload::DecisionAccepted(payload) => {
+            nodes.insert(affected_node(&payload.decision_id, NodeKind::Decision));
+        }
+        EventPayload::DecisionRejected(payload) => {
             nodes.insert(affected_node(&payload.decision_id, NodeKind::Decision));
         }
         EventPayload::DecisionRequested(payload) => {

@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::commands::Commands;
 use crate::error::{CliError, CommandError};
-use crate::events::{BlockerPriority, EventProvenance, RelationKind as EventRelationKind};
+use crate::events::{BlockerPriority, EventId, EventProvenance, RelationKind as EventRelationKind};
 use crate::identity::{
     agent_actor_id, default_actor, default_agent_session, default_agent_tool,
     default_human_actor_id,
@@ -85,6 +85,8 @@ pub enum Command {
     /// Capture and query a first decision on an isolated temporary ledger.
     Quickstart(QuickstartArgs),
     Emit(Box<EmitArgs>),
+    Disagree(DisagreeArgs),
+    Supersede(SupersedeArgs),
     Import(ImportArgs),
     Query(Box<QueryArgs>),
     Dump(DumpArgs),
@@ -110,6 +112,42 @@ pub struct McpArgs {
     /// Agent tool name used when MCP write calls omit actor_id.
     #[arg(long = "agent-tool")]
     pub agent_tool: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct DisagreeArgs {
+    #[arg(long = "decision")]
+    pub decision_id: String,
+
+    #[arg(long)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct SupersedeArgs {
+    #[arg(long = "old")]
+    pub old_decision_id: String,
+
+    #[arg(long)]
+    pub title: String,
+
+    #[arg(long)]
+    pub rationale: String,
+
+    #[arg(long = "topic-keys", value_delimiter = ',')]
+    pub topic_keys: Vec<String>,
+
+    #[arg(long = "options", value_delimiter = ',')]
+    pub option_labels: Vec<String>,
+
+    #[arg(long = "chose")]
+    pub chosen_option_label: Option<String>,
+
+    #[arg(long = "hypotheses", value_delimiter = ',')]
+    pub hypothesis_ids: Vec<String>,
+
+    #[arg(long = "evidence", value_delimiter = ',')]
+    pub evidence_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -889,6 +927,8 @@ pub fn run(cli: &Cli) -> Result<String> {
     match &cli.command {
         Command::Quickstart(args) => run_quickstart(cli, args),
         Command::Emit(command) => run_emit(cli, command),
+        Command::Disagree(args) => run_disagree(cli, args),
+        Command::Supersede(args) => run_supersede(cli, args),
         Command::Import(import) => run_import(cli, import),
         Command::Query(query) => run_query(cli, query),
         Command::Dump(dump) => run_dump(cli, dump),
@@ -1175,6 +1215,55 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
     };
 
     format_output(cli.json, &output)
+}
+
+fn run_disagree(cli: &Cli, args: &DisagreeArgs) -> Result<String> {
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let commands =
+        Commands::new_with_provenance(&ledger, EventProvenance::human(cli.actor.clone()));
+    let event_id = commands.disagree(&cli.actor, &args.decision_id, &args.reason)?;
+    let decision_status = decision_status_after_write(&ledger, &args.decision_id)?;
+
+    format_disagree_output(
+        cli.json,
+        &DisagreeCommandOutput {
+            decision_id: args.decision_id.clone(),
+            event_id,
+            decision_status,
+        },
+    )
+}
+
+fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let commands =
+        Commands::new_with_provenance(&ledger, EventProvenance::human(cli.actor.clone()));
+    let outcome = commands.supersede(
+        &cli.actor,
+        &args.old_decision_id,
+        &args.title,
+        &args.rationale,
+        &args.topic_keys,
+        &args.option_labels,
+        args.chosen_option_label.as_deref(),
+        &args.hypothesis_ids,
+        &args.evidence_ids,
+    )?;
+    let old_decision_status = decision_status_after_write(&ledger, &args.old_decision_id)?;
+    let new_decision_status = decision_status_after_write(&ledger, &outcome.new_decision_id)?;
+
+    format_supersede_output(
+        cli.json,
+        &SupersedeCommandOutput {
+            old_decision_id: args.old_decision_id.clone(),
+            new_decision_id: outcome.new_decision_id,
+            proposal_event_id: outcome.proposal_event_id,
+            relation_event_ids: outcome.relation_event_ids,
+            superseded_event_id: outcome.superseded_event_id,
+            old_decision_status,
+            new_decision_status,
+        },
+    )
 }
 
 fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
@@ -1863,6 +1952,35 @@ fn format_output(as_json: bool, envelope: &OutputEnvelope) -> Result<String> {
     }
 }
 
+fn format_disagree_output(as_json: bool, output: &DisagreeCommandOutput) -> Result<String> {
+    if as_json {
+        return format_json_value(true, output);
+    }
+
+    Ok(format!(
+        "event_id={} decision_id={} status={}",
+        output.event_id,
+        output.decision_id,
+        decision_status_label(output.decision_status)
+    ))
+}
+
+fn format_supersede_output(as_json: bool, output: &SupersedeCommandOutput) -> Result<String> {
+    if as_json {
+        return format_json_value(true, output);
+    }
+
+    Ok(format!(
+        "proposal_event_id={} superseded_event_id={} old_decision_id={} new_decision_id={} old_status={} new_status={}",
+        output.proposal_event_id,
+        output.superseded_event_id,
+        output.old_decision_id,
+        output.new_decision_id,
+        decision_status_label(output.old_decision_status),
+        decision_status_label(output.new_decision_status)
+    ))
+}
+
 fn format_json_value<T: Serialize>(compact: bool, value: &T) -> Result<String> {
     if compact {
         serde_json::to_string(value).map_err(|error| {
@@ -1872,6 +1990,25 @@ fn format_json_value<T: Serialize>(compact: bool, value: &T) -> Result<String> {
         serde_json::to_string_pretty(value).map_err(|error| {
             CliError::InvalidInput(format!("json serialization failed: {error}")).into()
         })
+    }
+}
+
+fn decision_status_after_write(
+    ledger: &impl EventLedger,
+    decision_id: &str,
+) -> Result<DecisionStatus> {
+    let graph = MemoryGraph::default();
+    rebuild_graph(ledger, &graph)?;
+    derive_decision_status(&graph, decision_id)
+}
+
+const fn decision_status_label(status: DecisionStatus) -> &'static str {
+    match status {
+        DecisionStatus::Proposed => "proposed",
+        DecisionStatus::Accepted => "accepted",
+        DecisionStatus::Rejected => "rejected",
+        DecisionStatus::Contested => "contested",
+        DecisionStatus::Superseded => "superseded",
     }
 }
 
@@ -2260,6 +2397,24 @@ impl OutputEnvelope {
             value,
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+struct DisagreeCommandOutput {
+    decision_id: String,
+    event_id: EventId,
+    decision_status: DecisionStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct SupersedeCommandOutput {
+    old_decision_id: String,
+    new_decision_id: String,
+    proposal_event_id: EventId,
+    relation_event_ids: Vec<EventId>,
+    superseded_event_id: EventId,
+    old_decision_status: DecisionStatus,
+    new_decision_status: DecisionStatus,
 }
 
 #[cfg(test)]

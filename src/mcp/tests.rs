@@ -1,6 +1,7 @@
 // Parent module gates this file with #[cfg(test)]; repeat the marker so UBS can filter test-only assertions.
 #[cfg(test)]
 use super::*;
+use crate::ledger::EventLedger;
 use std::io::Cursor;
 use std::path::PathBuf;
 
@@ -41,7 +42,7 @@ fn initialize_reports_server_metadata() {
 }
 
 #[test]
-fn tools_list_includes_all_eight_tools() {
+fn tools_list_includes_all_ten_tools() {
     let dir = unique_dir("list");
     let config = McpConfig::new(&dir).with_session_id("test-session");
     let responses = drive(
@@ -58,6 +59,8 @@ fn tools_list_includes_all_eight_tools() {
         "capture_decision",
         "capture_evidence",
         "capture_hypothesis",
+        "disagree_decision",
+        "supersede_decision",
         "get_decision",
         "get_relevant_decisions",
         "get_supersession_chain",
@@ -240,6 +243,148 @@ fn search_decisions_tool_returns_fts_query_response() {
     assert_eq!(
         structured["data"]["items"][0]["matched_fields"],
         serde_json::json!(["option.id"])
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn disagree_decision_tool_contests_and_defaults_actor() {
+    let dir = unique_dir("disagree");
+    let config = McpConfig::new(&dir).with_session_id("disagree-session");
+
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "actor_id": "agent:test:1",
+                "title": "Keep auth as-is",
+                "rationale": "Avoids migration work",
+                "topic_keys": ["auth"],
+                "options": [{"label": "keep"}]
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[capture.as_str()]);
+    let decision_id = responses[0]["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("decision id")
+        .to_owned();
+
+    let ledger = SqliteEventLedger::open(&dir).expect("ledger opens");
+    Commands::new(&ledger)
+        .accept_decision(&decision_id, "actor:bob")
+        .expect("accept succeeds");
+
+    let disagree = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "disagree_decision",
+            "arguments": {
+                "decision_id": decision_id,
+                "reason": "misses auth implications"
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[disagree.as_str()]);
+    let structured = &responses[0]["result"]["structuredContent"];
+    assert_eq!(
+        structured["decision_status"],
+        serde_json::json!("contested")
+    );
+    let event_id = structured["event_id"].as_u64().expect("event id");
+
+    let events = ledger.read(0, 20).expect("events read");
+    let rejected = events
+        .iter()
+        .find(|event| event.event_id == Some(event_id))
+        .expect("rejected event");
+    assert_eq!(rejected.actor_id, "agent:codex:disagree-session");
+    assert_eq!(rejected.source, crate::events::EventSource::Agent);
+    assert_eq!(
+        rejected.payload.get("reason").and_then(Value::as_str),
+        Some("misses auth implications")
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn supersede_decision_tool_marks_old_and_is_idempotent() {
+    let dir = unique_dir("supersede");
+    let config = McpConfig::new(&dir).with_session_id("supersede-session");
+
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "actor_id": "agent:test:1",
+                "title": "Use shared admin token",
+                "rationale": "Fastest path",
+                "topic_keys": ["auth"],
+                "options": [{"label": "shared-token"}]
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[capture.as_str()]);
+    let old_decision_id = responses[0]["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("decision id")
+        .to_owned();
+
+    let supersede = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "supersede_decision",
+            "arguments": {
+                "old_decision_id": old_decision_id,
+                "title": "Use scoped service tokens",
+                "rationale": "Scoped tokens preserve audit boundaries",
+                "options": [{"label": "scoped-service-tokens"}],
+                "chosen_option_label": "scoped-service-tokens"
+            }
+        }
+    })
+    .to_string();
+    let first = drive(&config, &[supersede.as_str()]);
+    let first_structured = &first[0]["result"]["structuredContent"];
+    assert_eq!(
+        first_structured["old_decision_status"],
+        serde_json::json!("superseded")
+    );
+    assert_eq!(
+        first_structured["new_decision_status"],
+        serde_json::json!("proposed")
+    );
+
+    let ledger = SqliteEventLedger::open(&dir).expect("ledger opens");
+    let latest_after_first = ledger.latest_offset().expect("latest offset");
+    let second = drive(&config, &[supersede.as_str()]);
+    let second_structured = &second[0]["result"]["structuredContent"];
+    assert_eq!(
+        second_structured["new_decision_id"],
+        first_structured["new_decision_id"]
+    );
+    assert_eq!(
+        second_structured["superseded_event_id"],
+        first_structured["superseded_event_id"]
+    );
+    assert_eq!(
+        ledger.latest_offset().expect("latest offset unchanged"),
+        latest_after_first
     );
 
     let _ = std::fs::remove_dir_all(&dir);

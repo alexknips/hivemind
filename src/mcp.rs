@@ -29,8 +29,8 @@ use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool
 use crate::ledger::SqliteEventLedger;
 use crate::projector::{memory::MemoryGraph, rebuild_graph};
 use crate::queries::{
-    get_decision, get_relevant_decisions, get_supersession_chain, search_decisions_fts,
-    DecisionStatus, SearchDecisionRequest,
+    derive_decision_status, get_decision, get_relevant_decisions, get_supersession_chain,
+    search_decisions_fts, DecisionStatus, SearchDecisionRequest,
 };
 use crate::Result;
 
@@ -272,6 +272,8 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "capture_decision" => tool_capture_decision(arguments, config),
         "capture_evidence" => tool_capture_evidence(arguments, config),
         "capture_hypothesis" => tool_capture_hypothesis(arguments, config),
+        "disagree_decision" => tool_disagree_decision(arguments, config),
+        "supersede_decision" => tool_supersede_decision(arguments, config),
         "get_decision" => tool_get_decision(arguments, config),
         "get_relevant_decisions" => tool_get_relevant_decisions(arguments, config),
         "get_supersession_chain" => tool_get_supersession_chain(arguments, config),
@@ -342,6 +344,52 @@ fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<session>`." },
                     "statement": { "type": "string" }
+                }
+            }
+        }),
+        json!({
+            "name": "disagree_decision",
+            "description": "Record an actor disagreement with a decision and return the resulting derived status. Wraps `hivemind disagree`.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["decision_id", "reason"],
+                "properties": {
+                    "actor_id": { "type": "string", "description": "Disagreeing actor. Defaults to `agent:codex:<session>` when omitted." },
+                    "decision_id": { "type": "string" },
+                    "reason": { "type": "string" }
+                }
+            }
+        }),
+        json!({
+            "name": "supersede_decision",
+            "description": "Propose a replacement decision and mark it as superseding an old decision. Wraps `hivemind supersede`.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["old_decision_id", "title", "rationale"],
+                "properties": {
+                    "actor_id": { "type": "string", "description": "Superseding actor. Defaults to `agent:codex:<session>` when omitted." },
+                    "old_decision_id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "rationale": { "type": "string" },
+                    "topic_keys": { "type": "array", "items": { "type": "string" } },
+                    "options": {
+                        "type": "array",
+                        "items": {
+                            "anyOf": [
+                                { "type": "string" },
+                                {
+                                    "type": "object",
+                                    "required": ["label"],
+                                    "properties": {
+                                        "label": { "type": "string" }
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    "chosen_option_label": { "type": "string" },
+                    "hypothesis_ids": { "type": "array", "items": { "type": "string" } },
+                    "evidence_ids": { "type": "array", "items": { "type": "string" } }
                 }
             }
         }),
@@ -534,6 +582,70 @@ fn tool_capture_hypothesis(
     Ok(json!({ "hypothesis_id": hypothesis_id }))
 }
 
+fn tool_disagree_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let actor_id = mcp_actor_id(&args, config)?;
+    let decision_id = require_string(&args, "decision_id")?;
+    let reason = require_string(&args, "reason")?;
+
+    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let commands =
+        Commands::new_with_provenance(&ledger, EventProvenance::agent(config.session_id.clone()));
+    let event_id = commands.disagree(&actor_id, &decision_id, &reason)?;
+    let graph = open_memory_graph(&config.hivemind_dir)?;
+    let decision_status = derive_decision_status(&graph, &decision_id)?;
+
+    Ok(json!({
+        "decision_id": decision_id,
+        "event_id": event_id,
+        "decision_status": decision_status,
+    }))
+}
+
+fn tool_supersede_decision(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let actor_id = mcp_actor_id(&args, config)?;
+    let old_decision_id = require_string(&args, "old_decision_id")?;
+    let title = require_string(&args, "title")?;
+    let rationale = require_string(&args, "rationale")?;
+    let topic_keys = optional_string_array(&args, "topic_keys")?;
+    let option_labels = optional_option_labels(&args, "options")?;
+    let chosen_option_label = optional_string(&args, "chosen_option_label")?;
+    let hypothesis_ids = optional_string_array(&args, "hypothesis_ids")?;
+    let evidence_ids = optional_string_array(&args, "evidence_ids")?;
+
+    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let commands =
+        Commands::new_with_provenance(&ledger, EventProvenance::agent(config.session_id.clone()));
+    let outcome = commands.supersede(
+        &actor_id,
+        &old_decision_id,
+        &title,
+        &rationale,
+        &topic_keys,
+        &option_labels,
+        chosen_option_label.as_deref(),
+        &hypothesis_ids,
+        &evidence_ids,
+    )?;
+    let graph = open_memory_graph(&config.hivemind_dir)?;
+    let old_decision_status = derive_decision_status(&graph, &old_decision_id)?;
+    let new_decision_status = derive_decision_status(&graph, &outcome.new_decision_id)?;
+
+    Ok(json!({
+        "old_decision_id": old_decision_id,
+        "new_decision_id": outcome.new_decision_id,
+        "proposal_event_id": outcome.proposal_event_id,
+        "relation_event_ids": outcome.relation_event_ids,
+        "superseded_event_id": outcome.superseded_event_id,
+        "old_decision_status": old_decision_status,
+        "new_decision_status": new_decision_status,
+    }))
+}
+
 fn tool_get_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
     let decision_id = require_string(&args, "decision_id")?;
@@ -716,6 +828,39 @@ fn optional_usize(
     }
 }
 
+fn optional_option_labels(
+    args: &Map<String, Value>,
+    field: &str,
+) -> std::result::Result<Vec<String>, RpcError> {
+    match args.get(field) {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| match item {
+                Value::String(s) if !s.trim().is_empty() => Ok(s.clone()),
+                Value::Object(map) => map
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|label| !label.is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        RpcError::invalid_params(format!(
+                            "`{field}[{index}].label` must be a non-empty string"
+                        ))
+                    }),
+                _ => Err(RpcError::invalid_params(format!(
+                    "`{field}[{index}]` must be a non-empty string or an object with a non-empty label"
+                ))),
+            })
+            .collect(),
+        Some(_) => Err(RpcError::invalid_params(format!(
+            "`{field}` must be an array"
+        ))),
+    }
+}
+
 fn parse_decision_status(value: &str) -> std::result::Result<DecisionStatus, RpcError> {
     match value {
         "proposed" => Ok(DecisionStatus::Proposed),
@@ -726,6 +871,20 @@ fn parse_decision_status(value: &str) -> std::result::Result<DecisionStatus, Rpc
         other => Err(RpcError::invalid_params(format!(
             "unknown status `{other}`"
         ))),
+    }
+}
+
+fn mcp_actor_id(
+    args: &Map<String, Value>,
+    config: &McpConfig,
+) -> std::result::Result<String, RpcError> {
+    if let Some(actor_id) = optional_string(args, "actor_id")? {
+        return Ok(actor_id);
+    }
+    if config.session_id.starts_with("agent:") {
+        Ok(config.session_id.clone())
+    } else {
+        Ok(format!("agent:codex:{}", config.session_id))
     }
 }
 

@@ -280,6 +280,159 @@ fn supersede_requires_both_decisions_to_exist() {
 }
 
 #[test]
+fn disagree_records_reason_and_is_idempotent_for_same_actor() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option");
+    let decision_id = commands
+        .propose_decision(
+            "actor:alice",
+            "Decision A",
+            "rationale",
+            &["Core".to_owned()],
+            &[option_id],
+            None,
+            &[],
+            &[],
+        )
+        .expect("decision");
+
+    commands
+        .accept_decision(&decision_id, "actor:bob")
+        .expect("accept succeeds");
+    let first_event_id = commands
+        .disagree("actor:carol", &decision_id, "misses auth implications")
+        .expect("disagree succeeds");
+    let latest_after_first = ledger.latest_offset().expect("latest offset");
+    let second_event_id = commands
+        .disagree("actor:carol", &decision_id, "misses auth implications")
+        .expect("retry succeeds");
+
+    assert_eq!(second_event_id, first_event_id);
+    assert_eq!(
+        ledger.latest_offset().expect("latest offset unchanged"),
+        latest_after_first
+    );
+
+    let events = ledger.read(0, 20).expect("events read");
+    let rejected = events
+        .iter()
+        .find(|event| event.event_id == Some(first_event_id))
+        .expect("rejection event");
+    assert_eq!(rejected.event_type, EventType::DecisionRejected);
+    assert_eq!(
+        rejected
+            .payload
+            .get("reason")
+            .and_then(|value| value.as_str()),
+        Some("misses auth implications")
+    );
+}
+
+#[test]
+fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option");
+    let old_decision_id = commands
+        .propose_decision(
+            "actor:alice",
+            "Decision A",
+            "rationale",
+            &["Core".to_owned()],
+            &[option_id],
+            None,
+            &[],
+            &[],
+        )
+        .expect("decision");
+
+    let first = commands
+        .supersede(
+            "actor:alice",
+            &old_decision_id,
+            "Decision B",
+            "New rationale",
+            &[],
+            &["Replacement".to_owned()],
+            None,
+            &[],
+            &[],
+        )
+        .expect("supersede succeeds");
+    let latest_after_first = ledger.latest_offset().expect("latest offset");
+    let second = commands
+        .supersede(
+            "actor:alice",
+            &old_decision_id,
+            "Decision B",
+            "New rationale",
+            &[],
+            &["Replacement".to_owned()],
+            None,
+            &[],
+            &[],
+        )
+        .expect("retry succeeds");
+
+    assert_eq!(second, first);
+    assert_eq!(
+        ledger.latest_offset().expect("latest offset unchanged"),
+        latest_after_first
+    );
+
+    let events = ledger.read(0, 20).expect("events read");
+    let superseded = events
+        .iter()
+        .find(|event| event.event_id == Some(first.superseded_event_id))
+        .expect("superseded event");
+    assert_eq!(superseded.event_type, EventType::DecisionSuperseded);
+    assert_eq!(
+        superseded
+            .payload
+            .get("old_decision_id")
+            .and_then(|value| value.as_str()),
+        Some(old_decision_id.as_str())
+    );
+    assert_eq!(
+        superseded
+            .payload
+            .get("new_decision_id")
+            .and_then(|value| value.as_str()),
+        Some(first.new_decision_id.as_str())
+    );
+}
+
+#[test]
+fn first_class_disagree_and_supersede_require_existing_targets() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    assert!(commands
+        .disagree("actor:alice", "decision-missing", "reason")
+        .is_err());
+    assert!(commands
+        .supersede(
+            "actor:alice",
+            "decision-missing",
+            "Decision B",
+            "New rationale",
+            &["Core".to_owned()],
+            &["Replacement".to_owned()],
+            None,
+            &[],
+            &[],
+        )
+        .is_err());
+}
+
+#[test]
 fn attach_evidence_requires_existing_endpoints() {
     let ledger = InMemoryEventLedger::new();
     let commands = Commands::new(&ledger);

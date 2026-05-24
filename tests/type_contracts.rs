@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use hivemind::events::{
     self, BlockerReportedPayload, BlockerResolvedPayload, DecisionBlockerPriority,
-    DecisionIdPayload, DecisionProposedPayload, DecisionRequestedPayload,
+    DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload, DecisionRequestedPayload,
     DecisionSupersededPayload, Event, EventPayload, EventSource, EventType, EventValidationError,
     EvidenceRecordedPayload, HypothesisRecordedPayload, NotificationAcknowledgedPayload,
     NotificationSentPayload, RelationAddedPayload, RelationKind as EventRelationKind,
@@ -393,8 +393,9 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
         ),
         (
             EventType::DecisionRejected,
-            EventPayload::DecisionRejected(DecisionIdPayload {
+            EventPayload::DecisionRejected(DecisionRejectedPayload {
                 decision_id: "decision:minimal".to_owned(),
+                reason: Some("Contract tests need disagreement rationale".to_owned()),
             }),
         ),
         (
@@ -513,7 +514,6 @@ fn shape_compatible(left: EventType, right: EventType) -> bool {
     matches!(
         (left, right),
         (EventType::DecisionAccepted, EventType::DecisionRejected)
-            | (EventType::DecisionRejected, EventType::DecisionAccepted)
     )
 }
 

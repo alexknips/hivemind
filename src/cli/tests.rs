@@ -364,6 +364,209 @@ fn emit_proposes_decision_with_cli_option_labels() {
 }
 
 #[test]
+fn disagree_cli_records_reason_contests_and_is_idempotent() {
+    let hivemind_dir = unique_test_dir("disagree-cli");
+    let decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:alice",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Keep current auth",
+        "--rationale",
+        "Lowest immediate migration cost",
+        "--topic-keys",
+        "auth",
+        "--options",
+        "keep",
+    ]))
+    .expect("decision proposed");
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:bob",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.accepted",
+        "--decision-id",
+        &decision_id,
+    ]))
+    .expect("decision accepted");
+
+    let first_output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:carol",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "disagree",
+        "--decision",
+        &decision_id,
+        "--reason",
+        "misses auth implications",
+    ]))
+    .expect("disagree succeeds");
+    let first_output: serde_json::Value =
+        serde_json::from_str(&first_output).expect("valid disagree json");
+    assert_eq!(first_output["decision_id"], serde_json::json!(decision_id));
+    assert_eq!(
+        first_output["decision_status"],
+        serde_json::json!("contested")
+    );
+    let first_event_id = first_output["event_id"].as_u64().expect("event id");
+
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let latest_after_first = ledger.latest_offset().expect("latest offset");
+    let second_output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:carol",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "disagree",
+        "--decision",
+        &decision_id,
+        "--reason",
+        "misses auth implications",
+    ]))
+    .expect("disagree retry succeeds");
+    let second_output: serde_json::Value =
+        serde_json::from_str(&second_output).expect("valid disagree json");
+    assert_eq!(second_output["event_id"].as_u64(), Some(first_event_id));
+    assert_eq!(
+        ledger.latest_offset().expect("latest offset unchanged"),
+        latest_after_first
+    );
+
+    let events = ledger.read(0, 20).expect("events read");
+    let rejected = events
+        .iter()
+        .find(|event| event.event_id == Some(first_event_id))
+        .expect("rejected event");
+    assert_eq!(
+        rejected.event_type,
+        crate::events::EventType::DecisionRejected
+    );
+    assert_eq!(rejected.source, crate::events::EventSource::Human);
+    assert_eq!(
+        rejected
+            .payload
+            .get("reason")
+            .and_then(|value| value.as_str()),
+        Some("misses auth implications")
+    );
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn supersede_cli_proposes_replacement_marks_old_and_is_idempotent() {
+    let hivemind_dir = unique_test_dir("supersede-cli");
+    let old_decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:alice",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Use shared admin token",
+        "--rationale",
+        "Fastest path",
+        "--topic-keys",
+        "auth",
+        "--options",
+        "shared-token",
+    ]))
+    .expect("decision proposed");
+
+    let first_output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:bob",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "supersede",
+        "--old",
+        &old_decision_id,
+        "--title",
+        "Use scoped service tokens",
+        "--rationale",
+        "Scoped tokens preserve audit boundaries",
+        "--options",
+        "scoped-service-tokens",
+        "--chose",
+        "scoped-service-tokens",
+    ]))
+    .expect("supersede succeeds");
+    let first_output: serde_json::Value =
+        serde_json::from_str(&first_output).expect("valid supersede json");
+    assert_eq!(
+        first_output["old_decision_id"],
+        serde_json::json!(old_decision_id)
+    );
+    assert!(first_output["new_decision_id"]
+        .as_str()
+        .expect("new decision id")
+        .starts_with("decision-"));
+    assert_eq!(
+        first_output["old_decision_status"],
+        serde_json::json!("superseded")
+    );
+    assert_eq!(
+        first_output["new_decision_status"],
+        serde_json::json!("proposed")
+    );
+
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let latest_after_first = ledger.latest_offset().expect("latest offset");
+    let second_output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:bob",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "supersede",
+        "--old",
+        &old_decision_id,
+        "--title",
+        "Use scoped service tokens",
+        "--rationale",
+        "Scoped tokens preserve audit boundaries",
+        "--options",
+        "scoped-service-tokens",
+        "--chose",
+        "scoped-service-tokens",
+    ]))
+    .expect("supersede retry succeeds");
+    let second_output: serde_json::Value =
+        serde_json::from_str(&second_output).expect("valid supersede json");
+    assert_eq!(
+        second_output["new_decision_id"],
+        first_output["new_decision_id"]
+    );
+    assert_eq!(
+        second_output["superseded_event_id"],
+        first_output["superseded_event_id"]
+    );
+    assert_eq!(
+        ledger.latest_offset().expect("latest offset unchanged"),
+        latest_after_first
+    );
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
 fn search_decisions_cli_returns_query_response() {
     let hivemind_dir = unique_test_dir("query-search-decisions");
     let decision_id = run(&Cli::parse_from([

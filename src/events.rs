@@ -137,6 +137,14 @@ pub struct DecisionIdPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct DecisionRejectedPayload {
+    pub decision_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DecisionSupersededPayload {
     pub old_decision_id: String,
     pub new_decision_id: String,
@@ -282,7 +290,7 @@ pub enum EventPayload {
     DecisionProposed(DecisionProposedPayload),
     DecisionRequested(DecisionRequestedPayload),
     DecisionAccepted(DecisionIdPayload),
-    DecisionRejected(DecisionIdPayload),
+    DecisionRejected(DecisionRejectedPayload),
     DecisionSuperseded(DecisionSupersededPayload),
     EvidenceRecorded(EvidenceRecordedPayload),
     HypothesisRecorded(HypothesisRecordedPayload),
@@ -381,8 +389,9 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             Ok(EventPayload::DecisionAccepted(payload))
         }
         EventType::DecisionRejected => {
-            let payload: DecisionIdPayload = parse_payload(event)?;
+            let payload: DecisionRejectedPayload = parse_payload(event)?;
             require_non_empty("payload.decision_id", &payload.decision_id)?;
+            require_optional_non_empty("payload.reason", payload.reason.as_deref())?;
             Ok(EventPayload::DecisionRejected(payload))
         }
         EventType::DecisionSuperseded => {

@@ -20,7 +20,8 @@
       "additionalProperties": false,
       "required": ["decision_id"],
       "properties": {
-        "decision_id": { "type": "string", "minLength": 1 }
+        "decision_id": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
       }
     }
   }

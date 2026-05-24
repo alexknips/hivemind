@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::Utc;
@@ -32,6 +33,14 @@ pub struct DecisionProposalEventIds {
     pub relation_event_ids: Vec<EventId>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupersedeOutcome {
+    pub new_decision_id: DecisionId,
+    pub proposal_event_id: EventId,
+    pub relation_event_ids: Vec<EventId>,
+    pub superseded_event_id: EventId,
+}
+
 pub struct Commands<'a, L: EventLedger> {
     ledger: &'a L,
     provenance: EventProvenance,
@@ -41,6 +50,20 @@ pub struct Commands<'a, L: EventLedger> {
 #[derive(Default)]
 struct CommandState {
     option_ids: HashSet<OptionId>,
+}
+
+#[derive(Debug, Clone)]
+struct DecisionProposalSnapshot {
+    event_id: EventId,
+    decision_id: DecisionId,
+    actor_id: String,
+    title: String,
+    rationale: String,
+    topic_keys: Vec<String>,
+    option_ids: Vec<String>,
+    chosen_option_id: Option<String>,
+    hypothesis_ids: Vec<String>,
+    evidence_ids: Vec<String>,
 }
 
 impl<'a, L: EventLedger> Commands<'a, L> {
@@ -479,6 +502,54 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         self.reject_decision_with_uuid(decision_id, actor_id, Uuid::new_v4())
     }
 
+    pub fn disagree(&self, actor_id: &str, decision_id: &str, reason: &str) -> Result<EventId> {
+        self.disagree_with_uuid(actor_id, decision_id, reason, Uuid::new_v4())
+    }
+
+    pub fn disagree_with_uuid(
+        &self,
+        actor_id: &str,
+        decision_id: &str,
+        reason: &str,
+        event_uuid: Uuid,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("decision_id", decision_id)?;
+        require_non_empty("reason", reason)?;
+
+        if !self.decision_exists(decision_id)? {
+            return Err(
+                CommandError::Invariant(format!("decision does not exist: {decision_id}")).into(),
+            );
+        }
+
+        if let Some(existing_event_id) =
+            self.find_decision_event_id(decision_id, actor_id, EventType::DecisionRejected)?
+        {
+            return Ok(existing_event_id);
+        }
+
+        if self.actor_has_decision_event(decision_id, actor_id, EventType::DecisionAccepted)? {
+            return Err(CommandError::Invariant(format!(
+                "actor {actor_id} cannot accept and reject decision {decision_id}"
+            ))
+            .into());
+        }
+
+        let event = self.event_with_uuid(
+            EventType::DecisionRejected,
+            actor_id,
+            json!({
+                "decision_id": decision_id,
+                "reason": reason,
+            }),
+            None,
+            event_uuid,
+        );
+
+        self.ledger.append(event)
+    }
+
     pub fn reject_decision_with_uuid(
         &self,
         decision_id: &str,
@@ -570,6 +641,114 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         );
 
         self.ledger.append(event)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn supersede(
+        &self,
+        actor_id: &str,
+        old_decision_id: &str,
+        new_title: &str,
+        new_rationale: &str,
+        topic_keys: &[String],
+        option_labels: &[String],
+        chosen_option_label: Option<&str>,
+        hypothesis_ids: &[String],
+        evidence_ids: &[String],
+    ) -> Result<SupersedeOutcome> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("old_decision_id", old_decision_id)?;
+        require_non_empty("new_title", new_title)?;
+        require_non_empty("new_rationale", new_rationale)?;
+        require_optional_non_empty("chosen_option_label", chosen_option_label)?;
+
+        let old_decision = self
+            .decision_proposal_snapshot(old_decision_id)?
+            .ok_or_else(|| {
+                CommandError::Invariant(format!("decision does not exist: {old_decision_id}"))
+            })?;
+        let effective_topic_keys =
+            effective_topic_keys(topic_keys, old_decision.topic_keys.as_slice())?;
+        let option_labels = effective_option_labels(new_title, option_labels, chosen_option_label)?;
+        let option_ids = deterministic_supersede_option_ids(
+            actor_id,
+            old_decision_id,
+            new_title,
+            new_rationale,
+            &option_labels,
+        );
+        let chosen_label = chosen_option_label.map(str::trim);
+        let chosen_option_id = chosen_label
+            .map(|label| {
+                option_labels
+                    .iter()
+                    .position(|option_label| option_label == label)
+                    .map(|index| option_ids[index].clone())
+                    .ok_or_else(|| {
+                        CommandError::Validation(
+                            "chosen_option_label must be one of option_labels".to_owned(),
+                        )
+                    })
+            })
+            .transpose()?;
+
+        if let Some(existing) = self.find_matching_supersede(
+            actor_id,
+            old_decision_id,
+            new_title,
+            new_rationale,
+            &effective_topic_keys,
+            &option_ids,
+            chosen_option_id.as_deref(),
+            hypothesis_ids,
+            evidence_ids,
+        )? {
+            return Ok(existing);
+        }
+
+        for (option_label, option_id) in option_labels.iter().zip(&option_ids) {
+            let mut option_description = String::with_capacity(
+                "Option generated from supersede value ''".len() + option_label.len(),
+            );
+            let _ = write!(
+                option_description,
+                "Option generated from supersede value '{option_label}'"
+            );
+            self.record_option_with_id(actor_id, option_id, option_label, &option_description)?;
+        }
+
+        let new_decision_id = generate_entity_id("decision");
+        let proposal_event_ids = self.propose_decision_with_id(
+            actor_id,
+            &new_decision_id,
+            new_title,
+            new_rationale,
+            &effective_topic_keys,
+            &option_ids,
+            chosen_option_id.as_deref(),
+            hypothesis_ids,
+            evidence_ids,
+            DecisionProposalEventUuids {
+                proposal: Uuid::new_v4(),
+                has_option: repeat_uuid(option_ids.len()),
+                chose: chosen_option_id.as_ref().map(|_| Uuid::new_v4()),
+                assumes: repeat_uuid(hypothesis_ids.len()),
+                based_on: repeat_uuid(evidence_ids.len()),
+            },
+        )?;
+        let superseded_event_id = self.supersede_decision_with_uuid(
+            old_decision_id,
+            &new_decision_id,
+            actor_id,
+            Uuid::new_v4(),
+        )?;
+
+        Ok(SupersedeOutcome {
+            new_decision_id,
+            proposal_event_id: proposal_event_ids.proposal_event_id,
+            relation_event_ids: proposal_event_ids.relation_event_ids,
+            superseded_event_id,
+        })
     }
 
     pub fn attach_evidence(
@@ -743,13 +922,177 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         actor_id: &str,
         decision_event_type: EventType,
     ) -> Result<bool> {
-        self.scan_events(|event| {
-            // ubs:ignore: actor IDs are public ledger IDs, not timing-sensitive secrets.
-            let has_matching_actor = same_identifier(event.actor_id.as_str(), actor_id);
-            // ubs:ignore: decision IDs are public ledger IDs, not timing-sensitive secrets.
-            let has_matching_id = payload_value_matches(event, "decision_id", decision_id);
-            event.event_type == decision_event_type && has_matching_actor && has_matching_id
-        })
+        Ok(self
+            .find_decision_event_id(decision_id, actor_id, decision_event_type)?
+            .is_some())
+    }
+
+    fn find_decision_event_id(
+        &self,
+        decision_id: &str,
+        actor_id: &str,
+        decision_event_type: EventType,
+    ) -> Result<Option<EventId>> {
+        let mut offset = 0;
+        const PAGE_SIZE: usize = 1024;
+
+        loop {
+            let events = self.ledger.read(offset, PAGE_SIZE)?;
+            if events.is_empty() {
+                return Ok(None);
+            }
+
+            for event in &events {
+                // ubs:ignore: actor IDs are public ledger IDs, not timing-sensitive secrets.
+                let has_matching_actor = same_identifier(event.actor_id.as_str(), actor_id);
+                // ubs:ignore: decision IDs are public ledger IDs, not timing-sensitive secrets.
+                let has_matching_id = payload_value_matches(event, "decision_id", decision_id);
+                if event.event_type == decision_event_type && has_matching_actor && has_matching_id
+                {
+                    return Ok(event.event_id);
+                }
+            }
+
+            if let Some(last_event_id) = events.last().and_then(|event| event.event_id) {
+                offset = last_event_id;
+            } else {
+                return Ok(None);
+            }
+        }
+    }
+
+    fn decision_proposal_snapshot(
+        &self,
+        decision_id: &str,
+    ) -> Result<Option<DecisionProposalSnapshot>> {
+        let mut offset = 0;
+        const PAGE_SIZE: usize = 1024;
+
+        loop {
+            let events = self.ledger.read(offset, PAGE_SIZE)?;
+            if events.is_empty() {
+                return Ok(None);
+            }
+
+            for event in &events {
+                if event.event_type != EventType::DecisionProposed {
+                    continue;
+                }
+                let Some(snapshot) = decision_proposal_snapshot_from_event(event) else {
+                    continue;
+                };
+                if same_identifier(snapshot.decision_id.as_str(), decision_id) {
+                    return Ok(Some(snapshot));
+                }
+            }
+
+            if let Some(last_event_id) = events.last().and_then(|event| event.event_id) {
+                offset = last_event_id;
+            } else {
+                return Ok(None);
+            }
+        }
+    }
+
+    fn find_matching_supersede(
+        &self,
+        actor_id: &str,
+        old_decision_id: &str,
+        new_title: &str,
+        new_rationale: &str,
+        topic_keys: &[String],
+        option_ids: &[String],
+        chosen_option_id: Option<&str>,
+        hypothesis_ids: &[String],
+        evidence_ids: &[String],
+    ) -> Result<Option<SupersedeOutcome>> {
+        let mut proposals = HashMap::new();
+        let mut superseded_events = Vec::new();
+        let mut relation_event_ids_by_causation: HashMap<EventId, Vec<EventId>> = HashMap::new();
+        let mut offset = 0;
+        const PAGE_SIZE: usize = 1024;
+
+        loop {
+            let events = self.ledger.read(offset, PAGE_SIZE)?;
+            if events.is_empty() {
+                break;
+            }
+
+            for event in &events {
+                match event.event_type {
+                    EventType::DecisionProposed => {
+                        if let Some(snapshot) = decision_proposal_snapshot_from_event(event) {
+                            proposals.insert(snapshot.decision_id.clone(), snapshot);
+                        }
+                    }
+                    EventType::DecisionSuperseded => {
+                        let Some(event_id) = event.event_id else {
+                            continue;
+                        };
+                        let Some(old_id) = payload_value_as_str(event, "old_decision_id") else {
+                            continue;
+                        };
+                        let Some(new_id) = payload_value_as_str(event, "new_decision_id") else {
+                            continue;
+                        };
+                        // ubs:ignore: actor and decision IDs are public graph IDs.
+                        if same_identifier(event.actor_id.as_str(), actor_id)
+                            && same_identifier(old_id, old_decision_id)
+                        {
+                            superseded_events.push((event_id, new_id.to_owned()));
+                        }
+                    }
+                    EventType::RelationAdded => {
+                        if let (Some(causation_event_id), Some(event_id)) =
+                            (event.causation_event_id, event.event_id)
+                        {
+                            relation_event_ids_by_causation
+                                .entry(causation_event_id)
+                                .or_default()
+                                .push(event_id);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(last_event_id) = events.last().and_then(|event| event.event_id) {
+                offset = last_event_id;
+            } else {
+                break;
+            }
+        }
+
+        for (superseded_event_id, new_decision_id) in superseded_events {
+            let Some(proposal) = proposals.get(&new_decision_id) else {
+                continue;
+            };
+            // ubs:ignore: actor and decision IDs are public graph IDs.
+            if !same_identifier(proposal.actor_id.as_str(), actor_id) {
+                continue;
+            }
+            if proposal.title == new_title
+                && proposal.rationale == new_rationale
+                && proposal.topic_keys == topic_keys
+                && proposal.option_ids == option_ids
+                && proposal.chosen_option_id.as_deref() == chosen_option_id
+                && proposal.hypothesis_ids == hypothesis_ids
+                && proposal.evidence_ids == evidence_ids
+            {
+                let relation_event_ids = relation_event_ids_by_causation
+                    .get(&proposal.event_id)
+                    .cloned()
+                    .unwrap_or_default();
+                return Ok(Some(SupersedeOutcome {
+                    new_decision_id,
+                    proposal_event_id: proposal.event_id,
+                    relation_event_ids,
+                    superseded_event_id,
+                }));
+            }
+        }
+
+        Ok(None)
     }
 
     fn find_relation_event_id(
@@ -846,6 +1189,108 @@ pub fn normalize_topic_key(input: &str) -> String {
     }
 
     normalized
+}
+
+fn effective_topic_keys(requested: &[String], fallback: &[String]) -> Result<Vec<String>> {
+    let normalized_requested = normalize_topic_keys(requested);
+    let effective = if normalized_requested.is_empty() {
+        fallback.to_vec()
+    } else {
+        normalized_requested
+    };
+
+    if effective.is_empty() {
+        Err(CommandError::Validation(
+            "topic_keys must contain at least one non-empty normalized key".to_owned(),
+        )
+        .into())
+    } else {
+        Ok(effective)
+    }
+}
+
+fn normalize_topic_keys(topic_keys: &[String]) -> Vec<String> {
+    topic_keys
+        .iter()
+        .map(|topic| normalize_topic_key(topic))
+        .filter(|topic| !topic.is_empty())
+        .collect()
+}
+
+fn effective_option_labels(
+    new_title: &str,
+    option_labels: &[String],
+    chosen_option_label: Option<&str>,
+) -> Result<Vec<String>> {
+    let mut labels = Vec::with_capacity(option_labels.len().max(1));
+    for option_label in option_labels {
+        let trimmed = option_label.trim();
+        if trimmed.is_empty() {
+            return Err(CommandError::Validation(
+                "option_labels must not contain empty values".to_owned(),
+            )
+            .into());
+        }
+        labels.push(trimmed.to_owned());
+    }
+
+    if labels.is_empty() {
+        let fallback = chosen_option_label
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .unwrap_or_else(|| new_title.trim());
+        labels.push(fallback.to_owned());
+    }
+
+    Ok(labels)
+}
+
+fn deterministic_supersede_option_ids(
+    actor_id: &str,
+    old_decision_id: &str,
+    new_title: &str,
+    new_rationale: &str,
+    option_labels: &[String],
+) -> Vec<String> {
+    option_labels
+        .iter()
+        .enumerate()
+        .map(|(index, option_label)| {
+            let stable_name =
+                format!("{actor_id}\0{old_decision_id}\0{new_title}\0{new_rationale}\0{index}\0{option_label}");
+            format!("option-{}", Uuid::new_v5(&Uuid::NAMESPACE_URL, stable_name.as_bytes()))
+        })
+        .collect()
+}
+
+fn decision_proposal_snapshot_from_event(event: &Event) -> Option<DecisionProposalSnapshot> {
+    let event_id = event.event_id?;
+    Some(DecisionProposalSnapshot {
+        event_id,
+        decision_id: payload_value_as_str(event, "decision_id")?.to_owned(),
+        actor_id: event.actor_id.clone(),
+        title: payload_value_as_str(event, "title")?.to_owned(),
+        rationale: payload_value_as_str(event, "rationale")?.to_owned(),
+        topic_keys: payload_string_list(event, "topic_keys"),
+        option_ids: payload_string_list(event, "option_ids"),
+        chosen_option_id: payload_value_as_str(event, "chosen_option_id").map(str::to_owned),
+        hypothesis_ids: payload_string_list(event, "hypothesis_ids"),
+        evidence_ids: payload_string_list(event, "evidence_ids"),
+    })
+}
+
+fn payload_string_list(event: &Event, key: &str) -> Vec<String> {
+    event
+        .payload
+        .get(key)
+        .and_then(|value| value.as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn payload_value_as_str<'a>(event: &'a Event, key: &str) -> Option<&'a str> {
