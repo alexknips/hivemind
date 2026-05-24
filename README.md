@@ -161,7 +161,8 @@ ledger, projection, or query failures.
 
 ## CLI Shape
 
-Use `--actor` to identify the human or agent taking the action. Use
+Use `--actor` to override the human or agent taking the action. Bare terminal
+writes default to `human:<git config user.email>` with `source=human`. Use
 `--hivemind-dir` to choose the ledger directory.
 
 ```bash
@@ -171,7 +172,7 @@ hivemind --actor alice emit evidence.recorded \
 hivemind --actor alice emit hypothesis.recorded \
   --statement "Embedded storage keeps onboarding under five minutes"
 
-hivemind --actor alice emit decision.proposed \
+hivemind emit decision.proposed \
   --title "Use embedded storage for slice 1" \
   --rationale "It keeps the prototype single-process and easy to replay" \
   --topic-keys architecture,storage \
@@ -184,8 +185,6 @@ provenance to `agent:<tool>:<session>` and writes events with `source=agent`:
 
 ```bash
 hivemind --hivemind-dir ./hivemind/ emit decision.capture \
-  --agent-tool codex \
-  --agent-session "$CODEX_SESSION_ID" \
   --title "Use direct CLI capture for agent decisions" \
   --rationale "The local command is deterministic and does not depend on hooks" \
   --topic-keys agents,capture \

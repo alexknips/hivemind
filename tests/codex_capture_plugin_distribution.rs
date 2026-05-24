@@ -5,6 +5,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use hivemind::ledger::{EventLedger, SqliteEventLedger};
 use serde_json::Value;
 
 type TestResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -182,6 +183,11 @@ fn claude_code_plugin_bundle_is_installable_and_wires_cli_mcp() -> TestResult<()
         .expect("mcp args")
         .iter()
         .any(|arg| arg == "mcp"));
+    assert!(mcp["mcpServers"]["hivemind"]["args"]
+        .as_array()
+        .expect("mcp args")
+        .windows(2)
+        .any(|pair| pair[0] == "--agent-tool" && pair[1] == "claude"));
     assert_eq!(
         mcp["mcpServers"]["hivemind"]["env"]["HIVEMIND_DIR"],
         "${user_config.hivemind_dir}"
@@ -276,6 +282,112 @@ fn claude_code_plugin_capture_and_query_scripts_write_agent_decision() -> TestRe
     Ok(())
 }
 
+#[test]
+fn codex_capture_defaults_actor_from_session_environment() -> TestResult<()> {
+    let hivemind_dir = unique_temp_dir("hivemind-codex-default-capture")?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_hivemind"))
+        .env_remove("HIVEMIND_ACTOR")
+        .env_remove("HIVEMIND_AGENT_TOOL")
+        .env_remove("HIVEMIND_AGENT_SESSION")
+        .env_remove("HIVEMIND_CODEX_SESSION")
+        .env_remove("HIVEMIND_CLAUDE_SESSION")
+        .env_remove("CLAUDE_SESSION_ID")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env("CODEX_SESSION_ID", "plugin-test-session")
+        .arg("--json")
+        .arg("--hivemind-dir")
+        .arg(&hivemind_dir)
+        .args([
+            "emit",
+            "decision.capture",
+            "--title",
+            "Capture Codex plugin decisions without setup",
+            "--rationale",
+            "The Codex capture path should derive actor provenance from the session",
+            "--topic-keys",
+            "codex,plugin,capture",
+            "--options",
+            "default-actor,manual-actor",
+            "--chose",
+            "default-actor",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "codex capture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output: Value = serde_json::from_slice(&output.stdout)?;
+    let event = proposal_event(
+        &hivemind_dir,
+        output["value"].as_str().expect("decision id"),
+    )?;
+    assert_eq!(event.actor_id, "agent:codex:plugin-test-session");
+    assert_eq!(event.source.as_str(), "agent");
+    assert_eq!(
+        event.source_ref.as_deref(),
+        Some("agent:codex:plugin-test-session")
+    );
+
+    let _ = fs::remove_dir_all(hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn human_cli_emit_defaults_actor_and_source_from_git_email() -> TestResult<()> {
+    let scratch = unique_temp_dir("hivemind-human-cli-default")?;
+    let repo = scratch.join("repo");
+    let hivemind_dir = scratch.join("ledger");
+    fs::create_dir_all(&repo)?;
+    run_git(&repo, ["init"])?;
+    run_git(
+        &repo,
+        ["config", "user.email", "Ada.Example+Decisions@Example.COM"],
+    )?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_hivemind"))
+        .current_dir(&repo)
+        .env_remove("HIVEMIND_ACTOR")
+        .arg("--json")
+        .arg("--hivemind-dir")
+        .arg(&hivemind_dir)
+        .args([
+            "emit",
+            "decision.proposed",
+            "--title",
+            "Use git identity for human CLI writes",
+            "--rationale",
+            "Bare terminal writes should still carry human provenance",
+            "--topic-keys",
+            "cli,provenance",
+            "--options",
+            "git-email,manual-actor",
+            "--chose",
+            "git-email",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "human CLI emit failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output: Value = serde_json::from_slice(&output.stdout)?;
+    let event = proposal_event(
+        &hivemind_dir,
+        output["value"].as_str().expect("decision id"),
+    )?;
+    assert_eq!(event.actor_id, "human:ada.example-decisions@example.com");
+    assert_eq!(event.source.as_str(), "human");
+    assert_eq!(
+        event.source_ref.as_deref(),
+        Some("human:ada.example-decisions@example.com")
+    );
+
+    let _ = fs::remove_dir_all(scratch);
+    Ok(())
+}
+
 fn read_json(path: impl AsRef<Path>) -> TestResult<Value> {
     let path = path.as_ref();
     let input = fs::read_to_string(path).map_err(|error| {
@@ -291,6 +403,38 @@ fn read_json(path: impl AsRef<Path>) -> TestResult<Value> {
         )
     })?;
     Ok(value)
+}
+
+fn unique_temp_dir(label: &str) -> TestResult<std::path::PathBuf> {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_nanos()
+        .to_string();
+    let path = std::env::temp_dir().join(format!("{label}-{unique}"));
+    fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
+fn run_git<const N: usize>(cwd: &Path, args: [&str; N]) -> TestResult<()> {
+    let output = Command::new("git").current_dir(cwd).args(args).output()?;
+    assert!(
+        output.status.success(),
+        "git failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn proposal_event(hivemind_dir: &Path, decision_id: &str) -> TestResult<hivemind::events::Event> {
+    let ledger = SqliteEventLedger::open(hivemind_dir)?;
+    let events = ledger.read(0, 100)?;
+    events
+        .into_iter()
+        .find(|event| {
+            event.event_type == hivemind::events::EventType::DecisionProposed
+                && event.payload.get("decision_id").and_then(Value::as_str) == Some(decision_id)
+        })
+        .ok_or_else(|| format!("proposal event for {decision_id} should exist").into())
 }
 
 fn assert_no_todos(name: &str, body: &str) {

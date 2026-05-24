@@ -10,6 +10,10 @@ use uuid::Uuid;
 use crate::commands::Commands;
 use crate::error::{CliError, CommandError};
 use crate::events::{BlockerPriority, EventProvenance, RelationKind as EventRelationKind};
+use crate::identity::{
+    agent_actor_id, default_actor, default_agent_session, default_agent_tool,
+    default_human_actor_id,
+};
 use crate::ingest::{
     extract_slack_decision_draft, import_documents, import_slack_thread,
     parse_slack_thread_fixture, DocumentImportFormat, DocumentImportReport, DocumentImportRequest,
@@ -102,6 +106,10 @@ pub struct McpArgs {
     /// captures coming through this server. Defaults to a generated id.
     #[arg(long)]
     pub session_id: Option<String>,
+
+    /// Agent tool name used when MCP write calls omit actor_id.
+    #[arg(long = "agent-tool")]
+    pub agent_tool: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -968,6 +976,11 @@ fn format_quickstart_report(report: &QuickstartReport) -> String {
 
 fn run_mcp(cli: &Cli, args: &McpArgs) -> Result<String> {
     let mut config = crate::mcp::McpConfig::new(cli.hivemind_dir.clone());
+    if let Some(agent_tool) = args.agent_tool.as_deref().map(str::trim) {
+        if !agent_tool.is_empty() {
+            config = config.with_agent_tool(agent_tool);
+        }
+    }
     if let Some(session_id) = args.session_id.as_deref().map(str::trim) {
         if !session_id.is_empty() {
             config = config.with_session_id(session_id);
@@ -1080,7 +1093,7 @@ fn run_slack_app(cli: &Cli, args: &SlackAppArgs) -> Result<String> {
 
 fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
     let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
-    let commands = Commands::new(&ledger);
+    let commands = Commands::new_with_provenance(&ledger, cli_emit_provenance(&cli.actor));
 
     let output = match &emit.command {
         EmitCommand::DecisionCapture(args) => {
@@ -1221,15 +1234,28 @@ fn capture_actor_id(args: &EmitDecisionCaptureArgs) -> Result<String> {
 
     match args.source {
         DecisionCaptureSource::Agent => {
-            let tool = trimmed_required_option("--agent-tool", &args.agent_tool)?;
-            let session = trimmed_required_option("--agent-session", &args.agent_session)?;
-            Ok(format!("agent:{tool}:{session}"))
+            let tool = capture_agent_tool(args)?;
+            let session = capture_agent_session(args, &tool)?;
+            Ok(agent_actor_id(&tool, &session))
         }
-        DecisionCaptureSource::Human => Err(CliError::InvalidInput(
-            "--actor-id is required when --source human".to_owned(),
-        )
-        .into()),
+        DecisionCaptureSource::Human => Ok(default_human_actor_id()),
     }
+}
+
+fn capture_agent_tool(args: &EmitDecisionCaptureArgs) -> Result<String> {
+    trimmed_optional("--agent-tool", &args.agent_tool).map(|value| {
+        value
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(default_agent_tool)
+    })
+}
+
+fn capture_agent_session(args: &EmitDecisionCaptureArgs, tool: &str) -> Result<String> {
+    trimmed_optional("--agent-session", &args.agent_session).map(|value| {
+        value
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| default_agent_session(tool))
+    })
 }
 
 fn capture_provenance(args: &EmitDecisionCaptureArgs, actor_id: &str) -> Result<EventProvenance> {
@@ -1246,11 +1272,12 @@ fn capture_provenance(args: &EmitDecisionCaptureArgs, actor_id: &str) -> Result<
     })
 }
 
-fn trimmed_required_option<'a>(field: &'static str, value: &'a Option<String>) -> Result<&'a str> {
-    let Some(value) = value.as_deref() else {
-        return Err(CliError::InvalidInput(format!("{field} must be provided")).into());
-    };
-    trimmed_required(field, value)
+fn cli_emit_provenance(actor_id: &str) -> EventProvenance {
+    if actor_id.trim().starts_with("human:") {
+        EventProvenance::human(actor_id.trim().to_owned())
+    } else {
+        EventProvenance::cli()
+    }
 }
 
 fn trimmed_required<'a>(field: &'static str, value: &'a str) -> Result<&'a str> {
@@ -1912,18 +1939,6 @@ fn parse_graph_backend(value: &str) -> Result<GraphBackend> {
         ))
         .into()),
     }
-}
-
-fn default_actor() -> String {
-    std::env::var("HIVEMIND_ACTOR")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            std::env::var("USER")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        })
-        .unwrap_or_else(|| "unknown-actor".to_owned())
 }
 
 /// Public DOT renderer for callers outside the CLI module (e.g. the MCP

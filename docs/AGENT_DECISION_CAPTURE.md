@@ -7,8 +7,6 @@ agents to record a decision directly into the local ledger:
 
 ```bash
 cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
-  --agent-tool codex \
-  --agent-session "$CODEX_SESSION_ID" \
   --title "Use direct CLI capture for agent decisions" \
   --rationale "The local command is deterministic and does not depend on hooks" \
   --topic-keys agents,capture \
@@ -20,7 +18,10 @@ The command writes canonical ledger events. The decision proposal and its
 fan-out relation events carry:
 
 - `source=agent`
-- `actor_id=agent:<tool>:<session>` unless `--actor-id` is provided
+- `actor_id=agent:<tool>:<session>` unless `--actor-id` is provided. Tool and
+  session default from `HIVEMIND_AGENT_TOOL`, Claude session variables, or
+  Codex session variables; `--agent-tool` and `--agent-session` are explicit
+  overrides.
 - `source_ref=<actor_id>` unless `--source-ref` is provided
 
 Use `--evidence` and `--hypotheses` with existing evidence and hypothesis ids
@@ -30,8 +31,6 @@ when the decision depends on already captured context.
 
 ```bash
 cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
-  --agent-tool claude \
-  --agent-session "${CLAUDE_SESSION_ID:-manual-session}" \
   --title "Keep capture in the commands layer" \
   --rationale "The write path should validate and append events without query-time inference" \
   --topic-keys agents,capture \
@@ -90,8 +89,6 @@ backend, set the plugin option `hivemind_dir`, export `HIVEMIND_DIR`, or pass
 
 ```bash
 cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
-  --agent-tool codex \
-  --agent-session "${CODEX_SESSION_ID:-manual-session}" \
   --title "Prefer direct CLI capture before MCP" \
   --rationale "Codex can invoke the same local command in any checkout" \
   --topic-keys agents,capture \

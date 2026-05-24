@@ -24,6 +24,7 @@ use tracing::{debug, warn};
 use crate::commands::Commands;
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::EventProvenance;
+use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool};
 use crate::ledger::SqliteEventLedger;
 use crate::projector::{memory::MemoryGraph, rebuild_graph};
 use crate::queries::{
@@ -50,18 +51,28 @@ const JSONRPC_INTERNAL_ERROR: i32 = -32603;
 #[derive(Debug, Clone)]
 pub struct McpConfig {
     pub hivemind_dir: PathBuf,
-    /// Session identifier embedded in event provenance for every capture.
+    /// Tool name embedded in default actor ids for write tools.
+    pub agent_tool: String,
+    /// Session identifier used to build the default actor id for write tools.
     /// Tools that don't provide a per-call `actor_id` fall back to this label
-    /// prefixed with the originating tool when known.
+    /// prefixed with the configured agent tool.
     pub session_id: String,
 }
 
 impl McpConfig {
     pub fn new(hivemind_dir: impl Into<PathBuf>) -> Self {
+        let agent_tool = default_agent_tool();
+        let session_id = agent_session_from_env(&agent_tool).unwrap_or_else(default_session_id);
         Self {
             hivemind_dir: hivemind_dir.into(),
-            session_id: default_session_id(),
+            agent_tool,
+            session_id,
         }
+    }
+
+    pub fn with_agent_tool(mut self, agent_tool: impl Into<String>) -> Self {
+        self.agent_tool = agent_tool.into();
+        self
     }
 
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
@@ -280,12 +291,12 @@ fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "capture_decision",
-            "description": "Record a proposed decision with rationale, topic keys, and at least one option. Wraps `hivemind emit decision.proposed`.",
+            "description": "Record a proposed decision with rationale, topic keys, and at least one option. Defaults actor_id to agent:<tool>:<session> and writes source=agent.",
             "inputSchema": {
                 "type": "object",
-                "required": ["actor_id", "title", "rationale", "topic_keys", "options"],
+                "required": ["title", "rationale", "topic_keys", "options"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Capturing actor. Prefix with the originating tool, e.g. `agent:claude:<session>`." },
+                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<session>`." },
                     "title": { "type": "string" },
                     "rationale": { "type": "string" },
                     "topic_keys": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
@@ -309,24 +320,24 @@ fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "capture_evidence",
-            "description": "Record an evidence item that can be attached to decisions or hypotheses. Wraps `hivemind emit evidence.recorded`.",
+            "description": "Record an evidence item that can be attached to decisions or hypotheses. Defaults actor_id to agent:<tool>:<session> and writes source=agent.",
             "inputSchema": {
                 "type": "object",
-                "required": ["actor_id", "content"],
+                "required": ["content"],
                 "properties": {
-                    "actor_id": { "type": "string" },
+                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<session>`." },
                     "content": { "type": "string" }
                 }
             }
         }),
         json!({
             "name": "capture_hypothesis",
-            "description": "Record a hypothesis. Wraps `hivemind emit hypothesis.recorded`.",
+            "description": "Record a hypothesis. Defaults actor_id to agent:<tool>:<session> and writes source=agent.",
             "inputSchema": {
                 "type": "object",
-                "required": ["actor_id", "statement"],
+                "required": ["statement"],
                 "properties": {
-                    "actor_id": { "type": "string" },
+                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<session>`." },
                     "statement": { "type": "string" }
                 }
             }
@@ -382,7 +393,7 @@ fn tool_definitions() -> Vec<Value> {
 
 fn tool_capture_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let actor_id = require_string(&args, "actor_id")?;
+    let actor_id = actor_id_or_default(&args, config)?;
     let title = require_string(&args, "title")?;
     let rationale = require_string(&args, "rationale")?;
     let topic_keys = require_string_array(&args, "topic_keys")?;
@@ -407,8 +418,7 @@ fn tool_capture_decision(args: Value, config: &McpConfig) -> std::result::Result
     let evidence_ids = optional_string_array(&args, "evidence_ids")?;
 
     let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
-    let commands =
-        Commands::new_with_provenance(&ledger, EventProvenance::agent(config.session_id.clone()));
+    let commands = Commands::new_with_provenance(&ledger, EventProvenance::agent(actor_id.clone()));
 
     let mut option_ids: Vec<String> = Vec::with_capacity(options.len());
     let mut chosen_option_id: Option<String> = None;
@@ -477,12 +487,11 @@ fn tool_capture_decision(args: Value, config: &McpConfig) -> std::result::Result
 
 fn tool_capture_evidence(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let actor_id = require_string(&args, "actor_id")?;
+    let actor_id = actor_id_or_default(&args, config)?;
     let content = require_string(&args, "content")?;
 
     let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
-    let commands =
-        Commands::new_with_provenance(&ledger, EventProvenance::agent(config.session_id.clone()));
+    let commands = Commands::new_with_provenance(&ledger, EventProvenance::agent(actor_id.clone()));
     let evidence_id = commands.record_evidence(&actor_id, &content)?;
     Ok(json!({ "evidence_id": evidence_id }))
 }
@@ -492,12 +501,11 @@ fn tool_capture_hypothesis(
     config: &McpConfig,
 ) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let actor_id = require_string(&args, "actor_id")?;
+    let actor_id = actor_id_or_default(&args, config)?;
     let statement = require_string(&args, "statement")?;
 
     let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
-    let commands =
-        Commands::new_with_provenance(&ledger, EventProvenance::agent(config.session_id.clone()));
+    let commands = Commands::new_with_provenance(&ledger, EventProvenance::agent(actor_id.clone()));
     let hypothesis_id = commands.record_hypothesis(&actor_id, &statement)?;
     Ok(json!({ "hypothesis_id": hypothesis_id }))
 }
@@ -562,6 +570,15 @@ fn open_memory_graph(hivemind_dir: &Path) -> Result<MemoryGraph> {
 // ---------------------------------------------------------------------------
 // JSON helpers
 // ---------------------------------------------------------------------------
+
+fn actor_id_or_default(
+    args: &Map<String, Value>,
+    config: &McpConfig,
+) -> std::result::Result<String, RpcError> {
+    optional_string(args, "actor_id").map(|actor_id| {
+        actor_id.unwrap_or_else(|| agent_actor_id(&config.agent_tool, &config.session_id))
+    })
+}
 
 fn require_string(args: &Map<String, Value>, field: &str) -> std::result::Result<String, RpcError> {
     match args.get(field) {

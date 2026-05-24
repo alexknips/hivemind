@@ -138,6 +138,52 @@ fn capture_then_get_round_trips_a_decision() {
 }
 
 #[test]
+fn write_tools_default_actor_to_configured_agent_session() {
+    let dir = unique_dir("default-actor");
+    let config = McpConfig::new(&dir)
+        .with_agent_tool("claude")
+        .with_session_id("session-123");
+
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "title": "Default MCP actor",
+                "rationale": "MCP write tools should not require per-call actor boilerplate",
+                "topic_keys": ["capture"],
+                "options": [{"label": "default"}, {"label": "explicit"}],
+                "chosen_option_label": "default"
+            }
+        }
+    })
+    .to_string();
+
+    let responses = drive(&config, &[capture.as_str()]);
+    assert_eq!(
+        responses[0]["result"]["isError"],
+        serde_json::Value::Bool(false)
+    );
+
+    let ledger = SqliteEventLedger::open(&dir).expect("ledger opens");
+    let events = crate::ledger::EventLedger::read(&ledger, 0, 16).expect("events read");
+    let proposal = events
+        .iter()
+        .find(|event| event.event_type == crate::events::EventType::DecisionProposed)
+        .expect("proposal exists");
+    assert_eq!(proposal.actor_id, "agent:claude:session-123");
+    assert_eq!(proposal.source, crate::events::EventSource::Agent);
+    assert_eq!(
+        proposal.source_ref.as_deref(),
+        Some("agent:claude:session-123")
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn missing_required_field_reports_invalid_params() {
     let dir = unique_dir("missing");
     let config = McpConfig::new(&dir).with_session_id("test-session");

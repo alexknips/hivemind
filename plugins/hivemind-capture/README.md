@@ -40,6 +40,22 @@ The default ledger is `${CLAUDE_PROJECT_DIR}/hivemind`. To use a shared backend
 or another local ledger, set the plugin option `hivemind_dir`, export
 `HIVEMIND_DIR`, or pass `--hivemind-dir` to the commands.
 
+## Provenance Defaults
+
+Claude plugin writes default to `actor_id=agent:claude:<session>` and
+`source=agent`. The slash command uses `CLAUDE_SESSION_ID` or
+`CLAUDE_CODE_SESSION_ID`; the bundled MCP server starts with `--agent-tool
+claude` and uses the same session environment for write tools when `actor_id` is
+omitted.
+
+Codex skill writes use the same convention with
+`actor_id=agent:codex:<session>`, deriving the session from
+`CODEX_SESSION_ID`, `CODEX_TASK_ID`, or `HIVEMIND_CODEX_SESSION`.
+
+Bare terminal writes such as `hivemind emit decision.proposed ...` default to
+`actor_id=human:<git config user.email>` and `source=human` when `--actor` is
+not supplied.
+
 ## Verify
 
 Capture one decision:

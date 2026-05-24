@@ -37,26 +37,27 @@ ledger write must stay explicit and deterministic.
    export HIVEMIND_DIR="${HIVEMIND_DIR:-./hivemind}"
    ```
 
-2. Use the Codex session as the actor identity. Prefer a real session id from
-   the environment. Claude Code uses the same rule with Claude session
-   variables. If none is available, choose a stable session label and do not
-   reuse it across unrelated sessions:
+2. Use the current agent session as the actor identity. HiveMind derives Codex
+   sessions from `CODEX_SESSION_ID`, `CODEX_TASK_ID`, or
+   `HIVEMIND_CODEX_SESSION`; Claude Code uses `CLAUDE_SESSION_ID`,
+   `CLAUDE_CODE_SESSION_ID`, or `HIVEMIND_CLAUDE_SESSION`. If none is
+   available, choose a stable session label and do not reuse it across unrelated
+   sessions:
 
    ```bash
    export HIVEMIND_CODEX_SESSION="${CODEX_SESSION_ID:-${CODEX_TASK_ID:-manual-session}}"
    export HIVEMIND_CLAUDE_SESSION="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-manual-session}}"
    ```
 
-   HiveMind will derive `actor_id=agent:codex:<session>` unless `--actor-id` is
-   explicitly provided. Keep Claude captures aligned as
-   `agent:claude:<session>`.
+   HiveMind derives `actor_id=agent:codex:<session>` for Codex and
+   `actor_id=agent:claude:<session>` for Claude unless `--actor-id` is
+   explicitly provided. Use `--agent-tool codex --agent-session <session>` only
+   when overriding the environment-derived defaults.
 
 3. Capture a new proposed decision:
 
    ```bash
    hivemind --hivemind-dir "$HIVEMIND_DIR" emit decision.capture \
-     --agent-tool codex \
-     --agent-session "$HIVEMIND_CODEX_SESSION" \
      --title "Prefer direct CLI capture before MCP" \
      --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" \
      --topic-keys agents,capture \
@@ -77,8 +78,6 @@ ledger write must stay explicit and deterministic.
 
    ```bash
    hivemind --hivemind-dir "$HIVEMIND_DIR" emit decision.capture \
-     --agent-tool codex \
-     --agent-session "$HIVEMIND_CODEX_SESSION" \
      --title "Use shared ledger storage for the integration demo" \
      --rationale "Multiple agents must query the same provenance without local file copying" \
      --topic-keys agents,capture,storage \
