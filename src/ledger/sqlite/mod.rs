@@ -2,6 +2,7 @@ mod row;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -13,6 +14,7 @@ use super::backend_error::storage_error;
 use super::EventLedger;
 
 const LEDGER_DB_NAME: &str = "ledger.sqlite";
+const SQLITE_BUSY_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug)]
 pub struct SqliteEventLedger {
@@ -25,6 +27,9 @@ impl SqliteEventLedger {
         fs::create_dir_all(hivemind_dir.as_ref()).map_err(storage_error)?;
         let path = hivemind_dir.as_ref().join(LEDGER_DB_NAME);
         let connection = Connection::open(&path).map_err(storage_error)?;
+        connection
+            .busy_timeout(Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS))
+            .map_err(storage_error)?;
 
         initialize_schema(&connection)?;
 

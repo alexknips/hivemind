@@ -58,6 +58,19 @@ fn uses_wal_and_creates_file() -> Result<()> {
 }
 
 #[test]
+fn configures_busy_timeout_for_write_contention() -> Result<()> {
+    with_sqlite_ledger("busy-timeout", |ledger| {
+        let busy_timeout_ms: i64 = ledger
+            .connection
+            .query_row("PRAGMA busy_timeout;", [], |row| row.get(0))
+            .map_err(storage_error)?;
+
+        assert_eq!(busy_timeout_ms, 30_000);
+        Ok(())
+    })
+}
+
+#[test]
 #[ignore = "performance benchmark; run in isolated environment"]
 fn ten_k_append_plus_read_stays_fast() -> Result<()> {
     with_sqlite_ledger("ten-k-fast", |ledger| {
