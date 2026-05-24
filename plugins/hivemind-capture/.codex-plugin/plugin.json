@@ -16,14 +16,16 @@
     "provenance"
   ],
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "HiveMind Capture",
     "shortDescription": "Record Codex decisions with actor provenance.",
-    "longDescription": "Installs the hivemind-capture skill. The skill teaches Codex when to preserve a durable organizational decision and how to call the HiveMind decision.capture CLI against either a local or shared ledger.",
+    "longDescription": "Installs the hivemind-capture skill and MCP server. The skill teaches Codex when to preserve a durable organizational decision and how to call the HiveMind decision.capture CLI against either a local or shared ledger.",
     "developerName": "HiveMind contributors",
     "category": "Productivity",
     "capabilities": [
       "Skills",
+      "MCP",
       "Local CLI",
       "Write"
     ],

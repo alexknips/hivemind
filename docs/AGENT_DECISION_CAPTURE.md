@@ -81,9 +81,10 @@ install it. The plugin includes:
 - The `hivemind-capture` skill for durable decision boundaries and provenance
   rules.
 
-The default backend is `${CLAUDE_PROJECT_DIR}/hivemind`. To switch to a shared
-backend, set the plugin option `hivemind_dir`, export `HIVEMIND_DIR`, or pass
-`--hivemind-dir` to the command.
+The default backend is the project-local `./hivemind/` directory. The bundled
+MCP descriptor pins that location for agents launched from this checkout. For
+slash-command captures that need another ledger, set the plugin option
+`hivemind_dir`, export `HIVEMIND_DIR`, or pass `--hivemind-dir` to the command.
 
 ## Codex
 

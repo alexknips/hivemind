@@ -36,9 +36,11 @@ Claude Code can also test the plugin directory directly:
 claude --plugin-dir ./plugins/hivemind-capture
 ```
 
-The default ledger is `${CLAUDE_PROJECT_DIR}/hivemind`. To use a shared backend
-or another local ledger, set the plugin option `hivemind_dir`, export
-`HIVEMIND_DIR`, or pass `--hivemind-dir` to the commands.
+The default ledger is the project-local `./hivemind/` directory. The bundled MCP
+server descriptor pins that location so agents launched from this checkout use
+the same ledger without per-session setup. To use another ledger for slash
+commands, set the plugin option `hivemind_dir`, export `HIVEMIND_DIR`, or pass
+`--hivemind-dir`.
 
 ## Provenance Defaults
 

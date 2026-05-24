@@ -34,7 +34,16 @@ fn codex_capture_plugin_bundle_is_installable_and_points_at_cli_capture() -> Tes
     let manifest = read_json(root.join("plugins/hivemind-capture/.codex-plugin/plugin.json"))?;
     assert_eq!(manifest["name"], "hivemind-capture");
     assert_eq!(manifest["skills"], "./skills/");
+    assert_eq!(manifest["mcpServers"], "./.mcp.json");
+    assert!(manifest["interface"]["capabilities"]
+        .as_array()
+        .expect("capabilities")
+        .iter()
+        .any(|capability| capability == "MCP"));
     assert_no_todos("plugin manifest", &manifest.to_string());
+
+    let mcp = read_json(root.join("plugins/hivemind-capture/.mcp.json"))?;
+    assert_mcp_pins_shared_ledger(&mcp);
 
     let skill =
         fs::read_to_string(root.join("plugins/hivemind-capture/skills/hivemind-capture/SKILL.md"))?;
@@ -51,7 +60,7 @@ fn claude_code_capture_command_writes_human_decision() -> TestResult<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
 
     let settings = read_json(root.join(".claude/settings.json"))?;
-    assert_eq!(settings["env"]["HIVEMIND_DIR"], "./hivemind");
+    assert_eq!(settings["env"]["HIVEMIND_DIR"], "./hivemind/");
     assert_eq!(
         settings["extraKnownMarketplaces"]["hivemind"]["source"]["source"],
         "github"
@@ -145,6 +154,9 @@ fn claude_code_capture_command_writes_human_decision() -> TestResult<()> {
 fn claude_code_plugin_bundle_is_installable_and_wires_cli_mcp() -> TestResult<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
 
+    let repo_mcp = read_json(root.join(".mcp.json"))?;
+    assert_mcp_pins_shared_ledger(&repo_mcp);
+
     let marketplace = read_json(root.join(".claude-plugin/marketplace.json"))?;
     assert_eq!(marketplace["name"], "hivemind");
     assert_eq!(marketplace["owner"]["name"], "HiveMind contributors");
@@ -172,7 +184,7 @@ fn claude_code_plugin_bundle_is_installable_and_wires_cli_mcp() -> TestResult<()
     assert_eq!(manifest["mcpServers"], "./.mcp.json");
     assert_eq!(
         manifest["userConfig"]["hivemind_dir"]["default"],
-        "${CLAUDE_PROJECT_DIR}/hivemind"
+        "./hivemind/"
     );
     assert_no_todos("Claude plugin manifest", &manifest.to_string());
 
@@ -190,8 +202,9 @@ fn claude_code_plugin_bundle_is_installable_and_wires_cli_mcp() -> TestResult<()
         .any(|pair| pair[0] == "--agent-tool" && pair[1] == "claude"));
     assert_eq!(
         mcp["mcpServers"]["hivemind"]["env"]["HIVEMIND_DIR"],
-        "${user_config.hivemind_dir}"
+        "./hivemind/"
     );
+    assert_mcp_pins_shared_ledger(&mcp);
 
     let capture_command =
         fs::read_to_string(root.join("plugins/hivemind-capture/commands/capture-decision.md"))?;
@@ -386,6 +399,23 @@ fn human_cli_emit_defaults_actor_and_source_from_git_email() -> TestResult<()> {
 
     let _ = fs::remove_dir_all(scratch);
     Ok(())
+}
+
+fn assert_mcp_pins_shared_ledger(mcp: &Value) {
+    let server = &mcp["mcpServers"]["hivemind"];
+    assert_eq!(server["command"], "hivemind");
+    assert_eq!(server["env"]["HIVEMIND_DIR"], "./hivemind/");
+
+    let args = server["args"].as_array().expect("mcp args");
+    assert!(
+        args.windows(2)
+            .any(|window| window[0] == "--hivemind-dir" && window[1] == "./hivemind/"),
+        "mcp args should pin --hivemind-dir ./hivemind/: {args:?}"
+    );
+    assert!(
+        args.iter().any(|arg| arg == "mcp"),
+        "mcp args should run the mcp subcommand: {args:?}"
+    );
 }
 
 fn read_json(path: impl AsRef<Path>) -> TestResult<Value> {

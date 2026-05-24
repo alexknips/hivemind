@@ -23,8 +23,8 @@
     "hivemind_dir": {
       "type": "directory",
       "title": "HiveMind ledger directory",
-      "description": "Local or shared HiveMind ledger directory used by commands and MCP.",
-      "default": "${CLAUDE_PROJECT_DIR}/hivemind"
+      "description": "Local or shared HiveMind ledger directory used by slash commands.",
+      "default": "./hivemind/"
     }
   }
 }

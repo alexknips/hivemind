@@ -5,9 +5,7 @@
       "args": [
         "--hivemind-dir",
         "./hivemind/",
-        "mcp",
-        "--agent-tool",
-        "claude"
+        "mcp"
       ],
       "env": {
         "HIVEMIND_DIR": "./hivemind/"

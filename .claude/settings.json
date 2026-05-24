@@ -1,6 +1,6 @@
 {
   "env": {
-    "HIVEMIND_DIR": "./hivemind",
+    "HIVEMIND_DIR": "./hivemind/",
     "HIVEMIND_CAPTURE_SCRIPT": ".claude/scripts/capture-decision.sh"
   },
   "permissions": {
