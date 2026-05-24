@@ -174,6 +174,39 @@ fn cli_version_comes_from_cargo_package_version() {
 }
 
 #[test]
+fn quickstart_records_and_queries_decision_on_temp_ledger() {
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "--json",
+        "quickstart",
+    ]))
+    .expect("quickstart succeeds");
+    let output: serde_json::Value = serde_json::from_str(&output).expect("valid quickstart json");
+    let ledger_dir = PathBuf::from(
+        output["ledger_dir"]
+            .as_str()
+            .expect("quickstart reports ledger dir"),
+    );
+    let decision_id = output["decision_id"]
+        .as_str()
+        .expect("quickstart reports decision id");
+
+    assert_eq!(output["actor_id"], serde_json::json!("human:alice"));
+    assert_eq!(output["query"]["result_count"], serde_json::json!(1));
+    assert_eq!(output["query"]["total_matches"], serde_json::json!(1));
+    assert_eq!(output["query"]["truncated"], serde_json::json!(false));
+    assert_eq!(
+        output["query"]["first_result_id"],
+        serde_json::json!(decision_id)
+    );
+    assert!(ledger_dir.join("ledger.sqlite").exists());
+
+    let _ = std::fs::remove_dir_all(&ledger_dir);
+}
+
+#[test]
 fn parses_tui_filters_and_export_path() {
     let cli = Cli::parse_from([
         "hivemind",

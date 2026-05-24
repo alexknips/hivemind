@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::commands::Commands;
 use crate::error::{CliError, CommandError};
@@ -77,6 +78,8 @@ pub enum GraphBackend {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
+    /// Capture and query a first decision on an isolated temporary ledger.
+    Quickstart(QuickstartArgs),
     Emit(Box<EmitArgs>),
     Import(ImportArgs),
     Query(Box<QueryArgs>),
@@ -89,6 +92,9 @@ pub enum Command {
     /// HiveMind's capture/query surface to MCP-aware clients.
     Mcp(McpArgs),
 }
+
+#[derive(Debug, Clone, Args)]
+pub struct QuickstartArgs {}
 
 #[derive(Debug, Clone, Args)]
 pub struct McpArgs {
@@ -865,6 +871,7 @@ pub fn run(cli: &Cli) -> Result<String> {
     validate_global_flags(cli)?;
 
     match &cli.command {
+        Command::Quickstart(args) => run_quickstart(cli, args),
         Command::Emit(command) => run_emit(cli, command),
         Command::Import(import) => run_import(cli, import),
         Command::Query(query) => run_query(cli, query),
@@ -874,6 +881,89 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::SlackApp(args) => run_slack_app(cli, args),
         Command::Mcp(args) => run_mcp(cli, args),
     }
+}
+
+fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
+    let ledger_dir = std::env::temp_dir().join(format!("hivemind-quickstart-{}", Uuid::new_v4()));
+    let ledger = SqliteEventLedger::open(&ledger_dir)?;
+    let commands = Commands::new(&ledger);
+    let decision_args = EmitDecisionProposedArgs {
+        title: "Try HiveMind quickstart".to_owned(),
+        rationale: "A first decision should be captured with actor provenance and queried back immediately.".to_owned(),
+        topic_keys: vec!["quickstart".to_owned(), "onboarding".to_owned()],
+        option_ids: vec!["local-ledger".to_owned(), "spreadsheet".to_owned()],
+        chosen_option_id: Some("local-ledger".to_owned()),
+        hypothesis_ids: Vec::new(),
+        evidence_ids: Vec::new(),
+    };
+    let decision_id = propose_decision_from_option_labels(&commands, &cli.actor, &decision_args)?;
+
+    let graph = MemoryGraph::default();
+    rebuild_graph(&ledger, &graph)?;
+    let query = search_decisions(
+        &graph,
+        &SearchDecisionRequest {
+            query: Some("quickstart".to_owned()),
+            topic_keys: vec!["quickstart".to_owned()],
+            statuses: vec![DecisionStatus::Proposed],
+            actor_ids: vec![cli.actor.clone()],
+            sources: vec!["cli".to_owned()],
+            limit: 5,
+            cursor: None,
+        },
+    )?;
+    let first_result_id = query
+        .data
+        .items
+        .first()
+        .map(|item| item.decision.id.clone());
+
+    if first_result_id.as_deref() != Some(decision_id.as_str()) {
+        return Err(CliError::InvalidInput(
+            "quickstart query did not return captured decision".to_owned(),
+        )
+        .into());
+    }
+
+    let report = QuickstartReport {
+        ledger_dir: ledger_dir.display().to_string(),
+        actor_id: cli.actor.clone(),
+        decision_id,
+        query: QuickstartQueryReport {
+            result_count: query.result_count,
+            total_matches: query.data.total_matches,
+            truncated: query.truncated,
+            first_result_id,
+        },
+    };
+
+    if cli.json {
+        format_json_value(true, &report)
+    } else {
+        Ok(format_quickstart_report(&report))
+    }
+}
+
+fn format_quickstart_report(report: &QuickstartReport) -> String {
+    format!(
+        "HiveMind quickstart complete.\n\
+         Ledger: {ledger_dir}\n\
+         Actor: {actor_id}\n\
+         Captured: {decision_id}\n\
+         Queried: found {first_result_id} ({result_count} result, truncated={truncated})\n\n\
+         Try the query again:\n\
+           hivemind --hivemind-dir {ledger_dir} query search_decisions --topic quickstart --limit 5",
+        ledger_dir = report.ledger_dir,
+        actor_id = report.actor_id,
+        decision_id = report.decision_id,
+        first_result_id = report
+            .query
+            .first_result_id
+            .as_deref()
+            .unwrap_or("<missing>"),
+        result_count = report.query.result_count,
+        truncated = report.query.truncated
+    )
 }
 
 fn run_mcp(cli: &Cli, args: &McpArgs) -> Result<String> {
@@ -2095,6 +2185,22 @@ struct DotEdge {
     from_id: String,
     to_kind: NodeKind,
     to_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct QuickstartReport {
+    ledger_dir: String,
+    actor_id: String,
+    decision_id: String,
+    query: QuickstartQueryReport,
+}
+
+#[derive(Debug, Serialize)]
+struct QuickstartQueryReport {
+    result_count: usize,
+    total_matches: usize,
+    truncated: bool,
+    first_result_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

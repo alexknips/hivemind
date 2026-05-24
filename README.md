@@ -11,6 +11,40 @@ task tracker. Humans and agents are both represented as actors, disagreement is
 preserved as first-class state, and decision status is derived from graph
 relations instead of being silently overwritten.
 
+## Quickstart
+
+The fastest first run uses an isolated temporary ledger, captures one decision,
+and immediately queries it back:
+
+```bash
+hivemind --actor human:alice quickstart
+```
+
+From a fresh clone before installing the binary:
+
+```bash
+cargo run -- --actor human:alice quickstart
+```
+
+The `--actor` value is mandatory provenance. Use a stable human id such as
+`human:alice` or an agent id such as `agent:codex:<session>`. If `--actor` is
+omitted, the CLI falls back to `HIVEMIND_ACTOR`, then `USER`.
+
+To capture and query the first real decision in the current directory:
+
+```bash
+hivemind --actor human:alice --hivemind-dir ./hivemind emit decision.proposed \
+  --title "Use HiveMind for architecture decisions" \
+  --rationale "We need a durable record of what was decided, why, and by whom" \
+  --topic-keys onboarding,architecture \
+  --options hivemind,notes \
+  --chose hivemind
+
+hivemind --hivemind-dir ./hivemind query search_decisions \
+  --topic onboarding \
+  --limit 5
+```
+
 ## Slice-1 Scope
 
 Slice 1 proves the write and read layers:
