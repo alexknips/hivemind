@@ -28,12 +28,14 @@ use crate::queries::{
     derive_decision_status, derive_hypothesis_status, export_read_only_summary,
     get_active_decision_blockers, get_blocker_notification_candidates, get_decision,
     get_decision_neighborhood, get_decisions_added_since, get_decisions_changed_since,
-    get_recent_activity, get_relevant_decisions, get_supersession_chain, search_decisions,
-    search_decisions_fts, ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest,
-    ChangedSinceRequest, DecisionBlockerFilters, DecisionStatus, DecisionsAddedSinceFilterRequest,
-    DecisionsAddedSinceRequest, HistoryFilterRequest, HypothesisStatus, NeighborhoodRequest,
+    get_recent_activity, get_recent_decisions, get_relevant_decisions, get_supersession_chain,
+    search_decisions, search_decisions_fts, ActiveDecisionBlockersRequest,
+    BlockerNotificationCandidatesRequest, ChangedSinceRequest, DecisionBlockerFilters,
+    DecisionStatus, DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
+    HistoryFilterRequest, HypothesisStatus, NeighborhoodRequest,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQuery, ReadOnlyExportRequest,
-    RecentActivityRequest, SearchDecisionRequest,
+    RecentActivityRequest, RecentDecisionFilterRequest, RecentDecisionsRequest,
+    RecentDecisionsResults, SearchDecisionRequest,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -50,7 +52,7 @@ use crate::{HivemindError, Result};
     arg_required_else_help = true
 )]
 pub struct Cli {
-    #[arg(long, global = true, default_value_t = default_actor())]
+    #[arg(long, default_value_t = default_actor())]
     pub actor: String,
 
     #[arg(long, global = true)]
@@ -530,6 +532,8 @@ pub enum QueryCommand {
     GetActiveDecisionBlockers(QueryActiveDecisionBlockersArgs),
     #[command(name = "get_blocker_notification_candidates")]
     GetBlockerNotificationCandidates(QueryBlockerNotificationCandidatesArgs),
+    #[command(name = "recent")]
+    RecentDecisions(QueryRecentDecisionsArgs),
     #[command(name = "get_recent_activity")]
     GetRecentActivity(QueryRecentActivityArgs),
     #[command(name = "get_decisions_changed_since")]
@@ -670,6 +674,42 @@ pub struct QueryRecentActivityArgs {
 
     #[arg(long = "cursor")]
     pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryRecentDecisionsArgs {
+    #[arg(long = "since")]
+    pub since: String,
+
+    #[arg(long = "until")]
+    pub until: Option<String>,
+
+    #[arg(long = "timezone", default_value = "UTC")]
+    pub timezone: String,
+
+    #[arg(long = "now")]
+    pub now: Option<String>,
+
+    #[arg(long = "actor", value_delimiter = ',')]
+    pub actor_patterns: Vec<String>,
+
+    #[arg(long = "topic", value_delimiter = ',')]
+    pub topic_keys: Vec<String>,
+
+    #[arg(long = "status", value_delimiter = ',')]
+    pub statuses: Vec<QueryDecisionStatus>,
+
+    #[arg(long = "source", value_delimiter = ',')]
+    pub sources: Vec<String>,
+
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
+
+    #[arg(long = "summary")]
+    pub summary: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1416,7 +1456,8 @@ impl QueryCommand {
     fn is_ledger_history_query(&self) -> bool {
         matches!(
             self,
-            QueryCommand::GetRecentActivity(_)
+            QueryCommand::RecentDecisions(_)
+                | QueryCommand::GetRecentActivity(_)
                 | QueryCommand::GetDecisionsChangedSince(_)
                 | QueryCommand::GetDecisionsAddedSince(_)
                 | QueryCommand::ExportReadOnlySummary(_)
@@ -1426,6 +1467,15 @@ impl QueryCommand {
 
 fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result<String> {
     let json = match &query.command {
+        QueryCommand::RecentDecisions(args) => {
+            let response = get_recent_decisions(ledger, &recent_decisions_request(args)?)?;
+            if args.summary {
+                return Ok(render_recent_decisions_summary(&response.data));
+            }
+            serde_json::to_string(&response).map_err(|error| {
+                CliError::InvalidInput(format!("json serialization failed: {error}"))
+            })?
+        }
         QueryCommand::GetRecentActivity(args) => serde_json::to_string(&get_recent_activity(
             ledger,
             &recent_activity_request(args)?,
@@ -1504,6 +1554,74 @@ fn added_since_request(args: &QueryAddedSinceArgs) -> Result<DecisionsAddedSince
     })
 }
 
+fn recent_decisions_request(args: &QueryRecentDecisionsArgs) -> Result<RecentDecisionsRequest> {
+    let now = parse_utc_timestamp("--now", &args.now)?;
+    let timezone = TimeZoneSpec::parse(&args.timezone)?;
+    let since_timestamp =
+        resolve_diff_bound("--since", Some(args.since.as_str()), None, now, timezone)?
+            .ok_or_else(|| CliError::InvalidInput("--since must not be empty".to_owned()))?;
+    let until_timestamp =
+        resolve_diff_bound("--until", args.until.as_deref(), None, now, timezone)?;
+
+    Ok(RecentDecisionsRequest {
+        since_timestamp,
+        until_timestamp,
+        filters: RecentDecisionFilterRequest {
+            actor_patterns: args.actor_patterns.clone(),
+            sources: args.sources.clone(),
+            topic_keys: args.topic_keys.clone(),
+            statuses: args
+                .statuses
+                .iter()
+                .copied()
+                .map(QueryDecisionStatus::as_decision_status)
+                .collect(),
+        },
+        limit: args.limit,
+        cursor: args.cursor.clone(),
+    })
+}
+
+fn render_recent_decisions_summary(results: &RecentDecisionsResults) -> String {
+    if results.items.is_empty() {
+        return "No recent decisions found".to_owned();
+    }
+
+    let mut output = String::new();
+    for item in &results.items {
+        let timestamp = item
+            .creation
+            .ts
+            .map(|ts| ts.to_rfc3339())
+            .unwrap_or_else(|| "unknown-ts".to_owned());
+        let _ = writeln!(
+            output,
+            "{}\t{}\t{}\t{}\tactor={}\tsource={}\tcitation={}",
+            timestamp,
+            decision_status_label(item.status),
+            item.decision_id,
+            item.title,
+            item.actor_ids.join(","),
+            item.creation.source.as_str(),
+            item.creation.citation_id
+        );
+    }
+    if let Some(next_cursor) = &results.next_cursor {
+        let _ = writeln!(output, "truncated=true next_cursor={next_cursor}");
+    }
+    output.trim_end().to_owned()
+}
+
+fn decision_status_label(status: DecisionStatus) -> &'static str {
+    match status {
+        DecisionStatus::Proposed => "proposed",
+        DecisionStatus::Accepted => "accepted",
+        DecisionStatus::Rejected => "rejected",
+        DecisionStatus::Contested => "contested",
+        DecisionStatus::Superseded => "superseded",
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum TimeZoneSpec {
     Utc,
@@ -1540,13 +1658,43 @@ fn resolve_diff_bound(
     if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
         return Ok(Some(parsed.with_timezone(&Utc)));
     }
+    if let Some(parsed) = parse_utc_date(value) {
+        return Ok(Some(parsed));
+    }
     let now = now.unwrap_or_else(Utc::now);
+    if let Some(resolved) = resolve_relative_duration(value, now) {
+        return Ok(Some(resolved));
+    }
     let resolved = resolve_relative_phrase(value, now, timezone).ok_or_else(|| {
         CliError::InvalidInput(format!(
-            "{flag} must be an RFC3339 timestamp or supported phrase (got: {value})"
+            "{flag} must be an RFC3339 timestamp, YYYY-MM-DD date, duration like 7d/24h, or supported phrase (got: {value})"
         ))
     })?;
     Ok(Some(resolved))
+}
+
+fn parse_utc_date(value: &str) -> Option<DateTime<Utc>> {
+    use chrono::{NaiveDate, NaiveTime, TimeZone};
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .ok()
+        .map(|date| Utc.from_utc_datetime(&date.and_time(NaiveTime::MIN)))
+}
+
+fn resolve_relative_duration(value: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    let (amount, unit) = value.split_at(value.len().checked_sub(1)?);
+    let amount = amount.parse::<i64>().ok()?;
+    if amount < 0 {
+        return None;
+    }
+    let duration = match unit.to_ascii_lowercase().as_str() {
+        "s" => chrono::Duration::seconds(amount),
+        "m" => chrono::Duration::minutes(amount),
+        "h" => chrono::Duration::hours(amount),
+        "d" => chrono::Duration::days(amount),
+        "w" => chrono::Duration::weeks(amount),
+        _ => return None,
+    };
+    now.checked_sub_signed(duration)
 }
 
 fn resolve_relative_phrase(
@@ -1763,7 +1911,8 @@ fn run_query_with_graph(
                 |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
             )?
         }
-        QueryCommand::GetRecentActivity(_)
+        QueryCommand::RecentDecisions(_)
+        | QueryCommand::GetRecentActivity(_)
         | QueryCommand::GetDecisionsChangedSince(_)
         | QueryCommand::GetDecisionsAddedSince(_)
         | QueryCommand::ExportReadOnlySummary(_) => {
@@ -2000,16 +2149,6 @@ fn decision_status_after_write(
     let graph = MemoryGraph::default();
     rebuild_graph(ledger, &graph)?;
     derive_decision_status(&graph, decision_id)
-}
-
-const fn decision_status_label(status: DecisionStatus) -> &'static str {
-    match status {
-        DecisionStatus::Proposed => "proposed",
-        DecisionStatus::Accepted => "accepted",
-        DecisionStatus::Rejected => "rejected",
-        DecisionStatus::Contested => "contested",
-        DecisionStatus::Superseded => "superseded",
-    }
 }
 
 fn parse_actor_mappings(values: &[String]) -> Result<BTreeMap<String, String>> {

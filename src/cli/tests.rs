@@ -82,6 +82,32 @@ fn explicit_rfc3339_in_since_takes_precedence_over_phrase_parser() {
 }
 
 #[test]
+fn resolves_duration_and_date_bounds_against_frozen_now() {
+    use chrono::TimeZone;
+    let now = Utc.with_ymd_and_hms(2026, 5, 19, 12, 0, 0).unwrap();
+
+    assert_eq!(
+        resolve_diff_bound("--since", Some("7d"), None, Some(now), TimeZoneSpec::Utc).unwrap(),
+        Some(Utc.with_ymd_and_hms(2026, 5, 12, 12, 0, 0).unwrap())
+    );
+    assert_eq!(
+        resolve_diff_bound("--since", Some("24h"), None, Some(now), TimeZoneSpec::Utc).unwrap(),
+        Some(Utc.with_ymd_and_hms(2026, 5, 18, 12, 0, 0).unwrap())
+    );
+    assert_eq!(
+        resolve_diff_bound(
+            "--since",
+            Some("2026-05-15"),
+            None,
+            Some(now),
+            TimeZoneSpec::Utc
+        )
+        .unwrap(),
+        Some(Utc.with_ymd_and_hms(2026, 5, 15, 0, 0, 0).unwrap())
+    );
+}
+
+#[test]
 fn unknown_phrase_returns_friendly_error() {
     use chrono::TimeZone;
     let now = Utc.with_ymd_and_hms(2026, 5, 19, 12, 0, 0).unwrap();
@@ -132,6 +158,57 @@ fn parses_get_decisions_added_since_command() -> std::result::Result<(), Box<dyn
         Some(Utc.with_ymd_and_hms(2026, 5, 11, 0, 0, 0).unwrap())
     );
     assert_eq!(request.filters.sources, vec!["document"]);
+    Ok(())
+}
+
+#[test]
+fn parses_recent_decisions_command_with_composable_filters(
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse_from([
+        "hivemind",
+        "query",
+        "recent",
+        "--since",
+        "7d",
+        "--until",
+        "2026-05-19",
+        "--now",
+        "2026-05-19T12:00:00Z",
+        "--actor",
+        "agent:claude:*",
+        "--topic",
+        "architecture",
+        "--status",
+        "accepted",
+        "--source",
+        "agent",
+        "--summary",
+    ]);
+    let Command::Query(args) = cli.command else {
+        return Err("expected query command".into());
+    };
+    let QueryCommand::RecentDecisions(args) = args.command else {
+        return Err("expected RecentDecisions".into());
+    };
+    assert_eq!(args.since, "7d");
+    assert_eq!(args.until.as_deref(), Some("2026-05-19"));
+    assert_eq!(args.actor_patterns, vec!["agent:claude:*"]);
+    assert_eq!(args.topic_keys, vec!["architecture"]);
+    assert_eq!(args.statuses, vec![QueryDecisionStatus::Accepted]);
+    assert_eq!(args.sources, vec!["agent"]);
+    assert!(args.summary);
+
+    let request = recent_decisions_request(&args).expect("request built");
+    use chrono::TimeZone;
+    assert_eq!(
+        request.since_timestamp,
+        Utc.with_ymd_and_hms(2026, 5, 12, 12, 0, 0).unwrap()
+    );
+    assert_eq!(
+        request.until_timestamp,
+        Some(Utc.with_ymd_and_hms(2026, 5, 19, 0, 0, 0).unwrap())
+    );
+    assert_eq!(request.filters.actor_patterns, vec!["agent:claude:*"]);
     Ok(())
 }
 
@@ -724,6 +801,70 @@ fn ledger_history_cli_queries_and_exports_read_only_summary() {
         .as_str()
         .expect("citation id")
         .starts_with("event:"));
+
+    let recent_decisions = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "recent",
+        "--since",
+        "7d",
+        "--actor",
+        "agent-1",
+        "--topic",
+        "infra",
+        "--status",
+        "proposed",
+        "--source",
+        "cli",
+        "--limit",
+        "5",
+    ]))
+    .expect("recent decisions query succeeds");
+    let recent_decisions: serde_json::Value =
+        serde_json::from_str(&recent_decisions).expect("valid recent decisions json");
+    assert_eq!(recent_decisions["result_count"], serde_json::json!(1));
+    assert_eq!(
+        recent_decisions["data"]["items"][0]["decision_id"],
+        decision_id
+    );
+    assert_eq!(
+        recent_decisions["data"]["items"][0]["status"],
+        serde_json::json!("proposed")
+    );
+
+    let empty_recent_decisions = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "recent",
+        "--since",
+        "9999-01-01",
+    ]))
+    .expect("empty recent decisions query succeeds");
+    let empty_recent_decisions: serde_json::Value =
+        serde_json::from_str(&empty_recent_decisions).expect("valid empty recent decisions json");
+    assert_eq!(empty_recent_decisions["result_count"], serde_json::json!(0));
+    assert_eq!(
+        empty_recent_decisions["data"]["items"],
+        serde_json::json!([])
+    );
+
+    let recent_summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "recent",
+        "--since",
+        "7d",
+        "--summary",
+    ]))
+    .expect("recent decisions summary query succeeds");
+    assert!(recent_summary.contains(&decision_id));
+    assert!(recent_summary.contains("proposed"));
 
     let changed = run(&Cli::parse_from([
         "hivemind",

@@ -49,6 +49,23 @@ impl Default for RecentActivityRequest {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
+pub struct RecentDecisionFilterRequest {
+    pub actor_patterns: Vec<String>,
+    pub sources: Vec<String>,
+    pub topic_keys: Vec<String>,
+    pub statuses: Vec<DecisionStatus>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecentDecisionsRequest {
+    pub since_timestamp: DateTime<Utc>,
+    pub until_timestamp: Option<DateTime<Utc>>,
+    pub filters: RecentDecisionFilterRequest,
+    pub limit: usize,
+    pub cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChangedSinceRequest {
     pub since_offset: Option<EventId>,
     pub since_timestamp: Option<DateTime<Utc>>,
@@ -154,6 +171,43 @@ pub struct RecentActivityResults {
     pub total_matches: usize,
     pub ledger_range: LedgerRange,
     pub items: Vec<ActivityRow>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct RecentDecisionFilters {
+    pub actor_patterns: Vec<String>,
+    pub sources: Vec<String>,
+    pub topic_keys: Vec<String>,
+    pub statuses: Vec<DecisionStatus>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RecentDecisionEntry {
+    pub decision_id: String,
+    pub title: String,
+    pub rationale: String,
+    pub status: DecisionStatus,
+    pub topic_keys: Vec<String>,
+    pub actor_ids: Vec<String>,
+    pub creation: DecisionEventProvenance,
+    pub chosen_option_id: Option<String>,
+    pub option_ids: Vec<String>,
+    pub evidence_ids: Vec<String>,
+    pub hypothesis_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RecentDecisionsResults {
+    pub resolved_since: ChangeBoundary,
+    pub resolved_until: ChangeBoundary,
+    pub boundary_event_offsets: BoundaryEventOffsets,
+    pub filters: RecentDecisionFilters,
+    pub limit: usize,
+    pub cursor: Option<String>,
+    pub next_cursor: Option<String>,
+    pub total_matches: usize,
+    pub ledger_range: LedgerRange,
+    pub items: Vec<RecentDecisionEntry>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -355,6 +409,115 @@ pub fn get_recent_activity(
                 to_offset_inclusive: latest_offset,
             },
             items,
+        },
+    })
+}
+
+pub fn get_recent_decisions(
+    ledger: &impl EventLedger,
+    request: &RecentDecisionsRequest,
+) -> Result<QueryResponse<RecentDecisionsResults>> {
+    let started = Instant::now();
+    let events = read_all_events(ledger)?;
+    let latest_offset = ledger.latest_offset()?;
+    let window = resolve_recent_decisions_window(&events, latest_offset, request);
+    let index = DecisionIndex::from_events(&events)?;
+    let filters = normalized_recent_decision_filters(&request.filters);
+    let limit = normalized_history_limit(request.limit);
+    let cursor = normalized_query(request.cursor.as_deref());
+    let offset = parse_history_cursor(cursor.as_deref())?;
+
+    let mut items = Vec::new();
+    if window.until_offset >= window.since_offset {
+        for event in &events {
+            let event_id = event_id(event)?;
+            if event_id <= window.since_offset || event_id > window.until_offset {
+                continue;
+            }
+
+            let payload = events::validate(event).map_err(query_validation_error)?;
+            let EventPayload::DecisionProposed(payload) = payload else {
+                continue;
+            };
+
+            let decision_id = payload.decision_id.clone();
+            let entry = index.decisions.get(&decision_id);
+            let status = index
+                .status(&decision_id)
+                .unwrap_or(DecisionStatus::Proposed);
+            let topic_keys = entry
+                .map(|entry| entry.topic_keys.clone())
+                .unwrap_or_else(|| normalized_string_values(payload.topic_keys.clone()));
+            let actor_ids = entry
+                .map(|entry| entry.actor_ids.iter().cloned().collect::<Vec<_>>())
+                .unwrap_or_else(|| vec![event.actor_id.clone()]);
+
+            if !decision_matches_recent_filters(
+                &topic_keys,
+                status,
+                &actor_ids,
+                event.source,
+                &filters,
+            ) {
+                continue;
+            }
+
+            let option_ids = entry
+                .map(|entry| entry.option_ids.iter().cloned().collect::<Vec<_>>())
+                .unwrap_or(payload.option_ids.clone());
+            let evidence_ids = entry
+                .map(|entry| entry.evidence_ids.iter().cloned().collect::<Vec<_>>())
+                .unwrap_or(payload.evidence_ids.clone());
+            let hypothesis_ids = entry
+                .map(|entry| entry.hypothesis_ids.iter().cloned().collect::<Vec<_>>())
+                .unwrap_or(payload.hypothesis_ids.clone());
+
+            items.push(RecentDecisionEntry {
+                decision_id,
+                title: payload.title,
+                rationale: payload.rationale,
+                status,
+                topic_keys,
+                actor_ids,
+                creation: decision_event_provenance(event)?,
+                chosen_option_id: payload.chosen_option_id,
+                option_ids,
+                evidence_ids,
+                hypothesis_ids,
+            });
+        }
+    }
+    items.sort_by_key(|item| Reverse(item.creation.event_origin));
+
+    let total_matches = items.len();
+    let page: Vec<RecentDecisionEntry> = items.into_iter().skip(offset).take(limit).collect();
+    let next_offset = offset.saturating_add(page.len());
+    let next_cursor = (next_offset < total_matches).then(|| next_offset.to_string());
+
+    Ok(QueryResponse {
+        result_count: page.len(),
+        truncated: next_cursor.is_some(),
+        latency_ms: started.elapsed().as_millis(),
+        data: RecentDecisionsResults {
+            resolved_since: ChangeBoundary {
+                offset: window.since_offset,
+                timestamp: Some(request.since_timestamp),
+            },
+            resolved_until: ChangeBoundary {
+                offset: window.until_offset,
+                timestamp: request.until_timestamp,
+            },
+            boundary_event_offsets: window.boundary_event_offsets,
+            filters: filters.into_view(),
+            limit,
+            cursor,
+            next_cursor,
+            total_matches,
+            ledger_range: LedgerRange {
+                from_offset_exclusive: window.since_offset,
+                to_offset_inclusive: window.until_offset,
+            },
+            items: page,
         },
     })
 }
@@ -628,6 +791,115 @@ fn changed_primary_origin(changes: &[DecisionChange]) -> EventId {
         .map(|change| change.provenance.event_origin)
         .min()
         .unwrap_or_default()
+}
+
+#[derive(Clone, Debug, Default)]
+struct NormalizedRecentDecisionFilters {
+    actor_patterns: Vec<String>,
+    sources: Vec<String>,
+    topic_keys: Vec<String>,
+    statuses: Vec<DecisionStatus>,
+}
+
+impl NormalizedRecentDecisionFilters {
+    fn into_view(self) -> RecentDecisionFilters {
+        RecentDecisionFilters {
+            actor_patterns: self.actor_patterns,
+            sources: self.sources,
+            topic_keys: self.topic_keys,
+            statuses: self.statuses,
+        }
+    }
+}
+
+fn normalized_recent_decision_filters(
+    request: &RecentDecisionFilterRequest,
+) -> NormalizedRecentDecisionFilters {
+    NormalizedRecentDecisionFilters {
+        actor_patterns: normalized_string_values(request.actor_patterns.clone()),
+        sources: normalized_string_values(request.sources.clone()),
+        topic_keys: normalized_string_values(request.topic_keys.clone()),
+        statuses: request
+            .statuses
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+    }
+}
+
+fn decision_matches_recent_filters(
+    topic_keys: &[String],
+    status: DecisionStatus,
+    actor_ids: &[String],
+    source: EventSource,
+    filters: &NormalizedRecentDecisionFilters,
+) -> bool {
+    if !filters.statuses.is_empty() && !filters.statuses.contains(&status) {
+        return false;
+    }
+    if !filters.topic_keys.is_empty()
+        && !filters
+            .topic_keys
+            .iter()
+            .all(|topic| topic_keys.iter().any(|candidate| candidate == topic))
+    {
+        return false;
+    }
+    if !filters.actor_patterns.is_empty()
+        && !filters.actor_patterns.iter().any(|pattern| {
+            actor_ids
+                .iter()
+                .any(|actor_id| glob_matches(pattern, actor_id))
+        })
+    {
+        return false;
+    }
+    if !filters.sources.is_empty()
+        && !filters
+            .sources
+            .iter()
+            .any(|expected| source.as_str().eq_ignore_ascii_case(expected))
+    {
+        return false;
+    }
+
+    true
+}
+
+fn glob_matches(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    if !pattern.contains('*') {
+        return pattern == value;
+    }
+
+    let parts: Vec<&str> = pattern.split('*').filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() {
+        return true;
+    }
+
+    let mut position = 0;
+    let mut part_index = 0;
+    if !pattern.starts_with('*') {
+        let first = parts[0];
+        if !value.starts_with(first) {
+            return false;
+        }
+        position = first.len();
+        part_index = 1;
+    }
+
+    for part in &parts[part_index..] {
+        let Some(found_at) = value[position..].find(part) else {
+            return false;
+        };
+        position += found_at + part.len();
+    }
+
+    pattern.ends_with('*') || value.ends_with(parts.last().copied().unwrap_or_default())
 }
 
 #[derive(Clone, Debug, Default)]
@@ -917,6 +1189,39 @@ fn read_all_events(ledger: &impl EventLedger) -> Result<Vec<Event>> {
 }
 
 #[derive(Debug)]
+struct ResolvedRecentDecisionsWindow {
+    since_offset: EventId,
+    until_offset: EventId,
+    boundary_event_offsets: BoundaryEventOffsets,
+}
+
+fn resolve_recent_decisions_window(
+    events: &[Event],
+    latest_offset: EventId,
+    request: &RecentDecisionsRequest,
+) -> ResolvedRecentDecisionsWindow {
+    let since_timestamp_offset = timestamp_boundary_offset(events, request.since_timestamp);
+    let until_timestamp_offset = request
+        .until_timestamp
+        .map(|timestamp| timestamp_boundary_offset(events, timestamp));
+
+    let since_offset = since_timestamp_offset;
+    let mut until_offset = latest_offset;
+    if let Some(offset) = until_timestamp_offset {
+        until_offset = until_offset.min(offset);
+    }
+
+    ResolvedRecentDecisionsWindow {
+        since_offset,
+        until_offset,
+        boundary_event_offsets: BoundaryEventOffsets {
+            since_timestamp_offset: Some(since_timestamp_offset),
+            until_timestamp_offset,
+        },
+    }
+}
+
+#[derive(Debug)]
 struct ResolvedChangeWindow {
     since_offset: EventId,
     until_offset: EventId,
@@ -973,6 +1278,7 @@ struct DecisionIndex {
 #[derive(Clone, Debug, Default)]
 struct DecisionIndexEntry {
     topic_keys: Vec<String>,
+    actor_ids: BTreeSet<String>,
     accepted: bool,
     rejected: bool,
     superseded_by: BTreeSet<String>,
@@ -992,6 +1298,7 @@ impl DecisionIndex {
                         .entry(payload.decision_id.clone())
                         .or_default();
                     entry.topic_keys = normalized_string_values(payload.topic_keys);
+                    entry.actor_ids.insert(event.actor_id.clone());
                     entry.option_ids.extend(payload.option_ids);
                     entry.evidence_ids.extend(payload.evidence_ids);
                     entry
@@ -1018,18 +1325,14 @@ impl DecisionIndex {
                     }
                 }
                 EventPayload::DecisionAccepted(payload) => {
-                    index
-                        .decisions
-                        .entry(payload.decision_id)
-                        .or_default()
-                        .accepted = true;
+                    let entry = index.decisions.entry(payload.decision_id).or_default();
+                    entry.accepted = true;
+                    entry.actor_ids.insert(event.actor_id.clone());
                 }
                 EventPayload::DecisionRejected(payload) => {
-                    index
-                        .decisions
-                        .entry(payload.decision_id)
-                        .or_default()
-                        .rejected = true;
+                    let entry = index.decisions.entry(payload.decision_id).or_default();
+                    entry.rejected = true;
+                    entry.actor_ids.insert(event.actor_id.clone());
                 }
                 EventPayload::DecisionSuperseded(payload) => {
                     index
