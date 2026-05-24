@@ -87,6 +87,31 @@ This is the principle most likely to be tested when HiveMind starts to scale.
 Smart behavior wants to creep down. The principle is what keeps it where it
 belongs.
 
+## 8. Quality is continuous, not retrospective
+
+Code quality is a property of every change, not a milestone to recover. Agents
+produce code cheaply, which means low-quality code can land cheaply too. The
+cost of preventing a quality regression at write time is much lower than the
+cost of cleaning it up later — and every regression that lands erodes the
+trust of every future contributor, human or agent.
+
+Every bead closes only when its changes are:
+
+- `cargo fmt --check` clean
+- `cargo clippy --all-targets -- -D warnings` clean
+- `cargo test` clean
+- Free of new UBS criticals
+- Within the UBS warning baseline (no growth)
+- Documented to the same standard as the surrounding file
+
+A bead that ships green-on-the-feature but red-on-quality has not closed.
+Quality fixes are not a P3 follow-up — they are part of the work that made
+the bead claimable in the first place.
+
+Refinery merge contract: gates are verified on the **rebased** state before
+merging to master, not just on the polecat branch before it was rebased.
+Defense in depth: polecats verify locally, refinery re-verifies after rebase.
+
 ---
 
 ## How to use this document
