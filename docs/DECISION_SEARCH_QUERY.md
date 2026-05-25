@@ -1,6 +1,6 @@
-# Decision Search Query Slice
+# Decision Search Query
 
-This slice adds a read-layer search API for decision exploration:
+This document specifies a read-layer search API for decision exploration:
 `search_decisions_fts(SearchDecisionRequest)` and the CLI command
 `hivemind query search`. The legacy `hivemind query search_decisions` command
 is retained as a compatibility alias over the same surface.
@@ -14,7 +14,8 @@ because `--actor` is already the global emitting actor flag.
 - `query` is optional text. When present, every whitespace-delimited term must
   match somewhere in the decision row or its one-hop graph context.
 - Matching uses a derived SQLite FTS5 index rebuilt from the replayed ledger
-  graph. There is no fuzzy, semantic, or LLM ranking in this slice.
+  graph. There is no fuzzy, semantic, or LLM ranking in this deterministic
+  read-layer API.
 - `topic_keys`, `statuses`, `actor_ids`, and `sources` are filters. Filter
   dimensions are ANDed together. Multiple values inside `statuses`,
   `actor_ids`, and `sources` are ORed; multiple `topic_keys` must all be

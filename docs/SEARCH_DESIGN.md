@@ -108,9 +108,9 @@ hivemind query search \
 ```
 
 Minimum current flags are `--q`, `--topic`, `--status`, `--actor-id`,
-`--source`, `--limit`, and `--cursor`; they already cover the first stable
-slice. The remaining flags are part of the storage-agnostic contract and should
-be added without changing the operation name or result envelope.
+`--source`, `--limit`, and `--cursor`; they already cover the initial stable
+search contract. The remaining flags are part of the storage-agnostic contract
+and should be added without changing the operation name or result envelope.
 
 CLI examples:
 

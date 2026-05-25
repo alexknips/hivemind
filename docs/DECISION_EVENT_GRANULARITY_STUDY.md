@@ -108,13 +108,13 @@ Input scenario:
 
 ```bash
 cargo run -- --actor alice emit evidence.recorded \
-  --content "SQLite WAL is sufficient for slice-1 local writes"
+  --content "SQLite WAL is sufficient for local prototype writes"
 
 cargo run -- --actor alice emit hypothesis.recorded \
   --statement "Embedded storage keeps onboarding under five minutes"
 
 cargo run -- --actor alice emit decision.proposed \
-  --title "Use embedded storage for slice 1" \
+  --title "Use embedded storage for the local prototype" \
   --rationale "It keeps the prototype single-process and easy to replay" \
   --topic-keys architecture,storage \
   --options sqlite,postgres \
@@ -177,13 +177,13 @@ Client-facing command:
   "actor_id": "alice",
   "client_request_id": "req-123",
   "decision": {
-    "title": "Use embedded storage for slice 1",
+    "title": "Use embedded storage for the local prototype",
     "rationale": "It keeps the prototype single-process and easy to replay",
     "topic_keys": ["architecture", "storage"]
   },
   "evidence": [
     {
-      "content": "SQLite WAL is sufficient for slice-1 local writes",
+      "content": "SQLite WAL is sufficient for local prototype writes",
       "source": "cli"
     }
   ],

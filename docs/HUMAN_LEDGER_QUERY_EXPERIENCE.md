@@ -133,9 +133,9 @@ When asked to decide, the agent should answer with history only: "I cannot make
 or recommend a decision. Here are the prior decisions, blockers, evidence, and
 actors relevant to that question."
 
-## First Slice
+## Initial Explorer Scope
 
-The smallest useful non-developer slice is a read-only explorer over existing
+The smallest useful non-developer workflow is a read-only explorer over existing
 and near-term query APIs:
 
 1. Search decisions by text, topic, status, actor, and source.
@@ -145,7 +145,7 @@ and near-term query APIs:
 4. Show recent activity and changed-since results with bounded pagination.
 5. Export a cited read-only summary with query parameters and truncation state.
 
-This slice helps teams unblock work because a human can inspect what changed,
+This workflow helps teams unblock work because a human can inspect what changed,
 why it changed, who was involved, and which decisions are stale or contested.
 Agents can use the same exports as cited context without receiving decision
 authority.

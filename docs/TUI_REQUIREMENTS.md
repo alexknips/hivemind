@@ -79,7 +79,7 @@ Minimum result row:
 
 - Decision id, title, status, topic keys, short rationale snippet, matched field,
   and stale/refuted-assumption indicator when present.
-- Deterministic sort for slice 1: exact id/title matches first, then title,
+- Deterministic sort for initial search: exact id/title matches first, then title,
   rationale, graph-neighbor matches, and stable id order as final tiebreaker.
 - Ranking or semantic search is later layer-3 work unless the score basis is
   explicit and returned with the result.
@@ -163,7 +163,7 @@ they should not block the query work.
 - DTO fields for stale assumptions, branched supersession chains, source
   provenance, and imported document references where applicable.
 
-The slice-1 `search_decisions` DTO, ranking contract, pagination behavior, and
+The initial `search_decisions` DTO, ranking contract, pagination behavior, and
 backend tradeoffs are specified in `docs/DECISION_SEARCH_QUERY.md`.
 
 ## Out Of Scope
@@ -173,7 +173,7 @@ backend tradeoffs are specified in `docs/DECISION_SEARCH_QUERY.md`.
 - Whole-graph terminal canvas for large organizations.
 - LLM summarization, semantic ranking, or deduplication inside the read/query
   layer.
-- Write actions from the first TUI slice.
+- Write actions from the initial TUI workflow.
 - Hosted/SaaS ingestion or collaboration UX for these local workflows.
 - Direct database access from the TUI; it should call the same CLI/query API or
   hosted service API as other clients.

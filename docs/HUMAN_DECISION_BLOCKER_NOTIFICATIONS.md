@@ -197,8 +197,10 @@ notification events with `event_origin`, `actor_id`, `correlation_id`, and
 
 - Exact priority vocabulary: reuse external work priority, add a HiveMind
   blocker severity, or derive both from policy.
-- Whether `decision.requested` is distinct from `blocker.reported` in slice 2 or
-  a convenience command that decomposes to blocker plus relation events.
+- Whether `decision.requested` is distinct from `blocker.reported` as the
+  blocker workflow expands under [Governance UX](../STRATEGY.md#governance-ux),
+  or remains a convenience command that decomposes to blocker plus relation
+  events.
 - How owner policy is administered for topic patterns and authority classes.
 - Which direct channel ships first: Slack, email, in-product notification, or
   the existing Gas City mail/runtime path for agent-only deployments.

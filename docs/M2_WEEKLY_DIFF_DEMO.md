@@ -107,8 +107,9 @@ target/debug/hivemind \
 The response includes `data.resolved_since.timestamp` reflecting the start
 of the previous ISO week (Monday 00:00:00 UTC) and
 `data.resolved_until.timestamp` either `--now` or, when omitted, command-start.
-Supported relative phrases in slice 1 are `last week`, `this week`, `today`,
-`yesterday`, and `now`. Non-UTC timezones return an error in this slice.
+Supported relative phrases in the current implementation are `last week`, `this
+week`, `today`, `yesterday`, and `now`. Non-UTC timezones currently return an
+error.
 
 ## Running the test
 

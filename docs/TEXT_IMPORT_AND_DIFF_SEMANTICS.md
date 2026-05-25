@@ -7,19 +7,19 @@ graph since a time boundary such as "last week".
 The scope is local-first. It does not define a hosted ingestion service, a
 general document knowledge graph, or an LLM extraction pipeline.
 
-## First Slice
+## Initial Import Scope
 
-The first import slice accepts UTF-8 local files in these forms:
+The initial importer accepts UTF-8 local files in these forms:
 
 - Markdown files (`.md`, `.markdown`).
 - Plain text files (`.txt`).
 - Markdown or plain text files containing explicit HiveMind decision blocks.
 - Prepared PDF/OCR text emitted by `hivemind import prepare-documents`.
 
-Only explicit decision blocks create decision events in the first slice. An
-unmarked document is reported as `skipped_unmarked`; it is not heuristically
-converted into decisions. This keeps extraction deterministic and prevents a
-local importer from inventing organizational memory.
+Only explicit decision blocks create decision events in the initial
+implementation. An unmarked document is reported as `skipped_unmarked`; it is
+not heuristically converted into decisions. This keeps extraction deterministic
+and prevents a local importer from inventing organizational memory.
 
 A decision block is a structured section inside a text file. The exact parser
 can evolve, but the first implementation should support a compact YAML-like
@@ -40,7 +40,7 @@ Decision:
   evidence:
     - Local replay tests complete in under one second.
   hypotheses:
-    - Embedded storage is enough for single-user slice 1.
+    - Embedded storage is enough for single-user local writes.
   supersedes:
     - decision-old-storage-plan
 ```
@@ -86,7 +86,7 @@ snippet rather than paraphrasing imported text without attribution.
 
 ## Extraction Mode
 
-Slice 1 extraction is deterministic structured-marker extraction:
+Initial extraction is deterministic structured-marker extraction:
 
 1. Scan each accepted local file for explicit decision blocks.
 2. Validate required fields and supported statuses.
