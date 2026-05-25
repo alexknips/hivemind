@@ -213,6 +213,50 @@ fn parses_recent_decisions_command_with_composable_filters(
 }
 
 #[test]
+fn parses_review_command_with_actor_window_and_unreviewed_filter(
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:senior",
+        "review",
+        "--actor",
+        "agent:*",
+        "--since",
+        "7d",
+        "--until",
+        "2026-05-19",
+        "--now",
+        "2026-05-19T12:00:00Z",
+        "--unreviewed-only",
+        "--limit",
+        "10",
+    ]);
+    assert_eq!(cli.actor, "human:senior");
+    let Command::Review(args) = cli.command else {
+        return Err("expected review command".into());
+    };
+    assert_eq!(args.actor_patterns, vec!["agent:*"]);
+    assert_eq!(args.since, "7d");
+    assert_eq!(args.until.as_deref(), Some("2026-05-19"));
+    assert!(args.unreviewed_only);
+    assert_eq!(args.limit, 10);
+
+    let request = review_recent_decisions_request(&args).expect("request built");
+    use chrono::TimeZone;
+    assert_eq!(
+        request.since_timestamp,
+        Utc.with_ymd_and_hms(2026, 5, 12, 12, 0, 0).unwrap()
+    );
+    assert_eq!(
+        request.until_timestamp,
+        Some(Utc.with_ymd_and_hms(2026, 5, 19, 0, 0, 0).unwrap())
+    );
+    assert_eq!(request.filters.actor_patterns, vec!["agent:*"]);
+    Ok(())
+}
+
+#[test]
 fn parses_global_flags_and_emit_subcommand() {
     let cli = Cli::parse_from([
         "hivemind",
@@ -683,6 +727,201 @@ fn supersede_cli_proposes_replacement_marks_old_and_is_idempotent() {
         ledger.latest_offset().expect("latest offset unchanged"),
         latest_after_first
     );
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn review_cli_walkthrough_accepts_disagrees_and_filters_reviewed_decisions() {
+    let hivemind_dir = unique_test_dir("review-cli");
+    let disagree_decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent:codex:one",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Use permissive deploys",
+        "--rationale",
+        "It speeds up agent delivery",
+        "--topic-keys",
+        "deploy",
+        "--options",
+        "permissive,guarded",
+        "--chose",
+        "permissive",
+    ]))
+    .expect("decision proposed");
+    let approve_decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent:codex:two",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Keep guardrail tests",
+        "--rationale",
+        "They preserve governance invariants",
+        "--topic-keys",
+        "testing",
+        "--options",
+        "keep,drop",
+        "--chose",
+        "keep",
+    ]))
+    .expect("decision proposed");
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:architect",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.accepted",
+        "--decision-id",
+        &disagree_decision_id,
+    ]))
+    .expect("seed acceptance succeeds");
+
+    let review_cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:senior",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "review",
+        "--actor",
+        "agent:codex:*",
+        "--since",
+        "2000-01-01",
+    ]);
+    let Command::Review(review_args) = &review_cli.command else {
+        panic!("expected review command");
+    };
+    let mut input = std::io::Cursor::new("a\nd\nmisses rollout risk\n".as_bytes());
+    let mut prompts = Vec::new();
+    let output = run_review_session(&review_cli, review_args, &mut input, &mut prompts)
+        .expect("review walkthrough succeeds");
+    let output: serde_json::Value = serde_json::from_str(&output).expect("valid review json");
+    let prompts = String::from_utf8(prompts).expect("prompts are utf-8");
+
+    assert!(prompts.contains("Keep guardrail tests"));
+    assert!(prompts.contains("Use permissive deploys"));
+    assert_eq!(output["matched_count"], serde_json::json!(2));
+    assert_eq!(output["reviewed_count"], serde_json::json!(2));
+    assert_eq!(output["skipped_count"], serde_json::json!(0));
+    assert_eq!(output["quit"], serde_json::json!(false));
+    assert_eq!(
+        output["reviewed_semantics"],
+        serde_json::json!(
+            "derived from reviewer-authored decision.accepted, decision.rejected, or decision.superseded events"
+        )
+    );
+    assert_eq!(
+        output["actions"][0]["decision_id"],
+        serde_json::json!(approve_decision_id)
+    );
+    assert_eq!(
+        output["actions"][0]["action"],
+        serde_json::json!("approved")
+    );
+    assert_eq!(
+        output["actions"][0]["old_decision_status"],
+        serde_json::json!("accepted")
+    );
+    assert_eq!(
+        output["actions"][1]["decision_id"],
+        serde_json::json!(disagree_decision_id)
+    );
+    assert_eq!(
+        output["actions"][1]["action"],
+        serde_json::json!("disagreed")
+    );
+    assert_eq!(
+        output["actions"][1]["old_decision_status"],
+        serde_json::json!("contested")
+    );
+
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let graph = MemoryGraph::default();
+    rebuild_graph(&ledger, &graph).expect("projection rebuilds");
+    assert_eq!(
+        derive_decision_status(&graph, &approve_decision_id).expect("approved status"),
+        DecisionStatus::Accepted
+    );
+    assert_eq!(
+        derive_decision_status(&graph, &disagree_decision_id).expect("contested status"),
+        DecisionStatus::Contested
+    );
+
+    let events = ledger.read(0, 50).expect("events read");
+    let accepted = events
+        .iter()
+        .find(|event| {
+            event.actor_id == "human:senior"
+                && event.event_type == crate::events::EventType::DecisionAccepted
+                && event
+                    .payload
+                    .get("decision_id")
+                    .and_then(|value| value.as_str())
+                    == Some(approve_decision_id.as_str())
+        })
+        .expect("review acceptance event");
+    assert_eq!(accepted.source, crate::events::EventSource::Human);
+    let rejected = events
+        .iter()
+        .find(|event| {
+            event.actor_id == "human:senior"
+                && event.event_type == crate::events::EventType::DecisionRejected
+                && event
+                    .payload
+                    .get("decision_id")
+                    .and_then(|value| value.as_str())
+                    == Some(disagree_decision_id.as_str())
+        })
+        .expect("review disagreement event");
+    assert_eq!(rejected.source, crate::events::EventSource::Human);
+    assert_eq!(
+        rejected
+            .payload
+            .get("reason")
+            .and_then(|value| value.as_str()),
+        Some("misses rollout risk")
+    );
+
+    let unreviewed_cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:senior",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "review",
+        "--actor",
+        "agent:codex:*",
+        "--since",
+        "2000-01-01",
+        "--unreviewed-only",
+    ]);
+    let Command::Review(unreviewed_args) = &unreviewed_cli.command else {
+        panic!("expected review command");
+    };
+    let mut input = std::io::Cursor::new(Vec::<u8>::new());
+    let mut prompts = Vec::new();
+    let unreviewed_output =
+        run_review_session(&unreviewed_cli, unreviewed_args, &mut input, &mut prompts)
+            .expect("unreviewed query succeeds");
+    let unreviewed_output: serde_json::Value =
+        serde_json::from_str(&unreviewed_output).expect("valid unreviewed json");
+    assert_eq!(unreviewed_output["matched_count"], serde_json::json!(0));
+    assert!(String::from_utf8(prompts)
+        .expect("prompts are utf-8")
+        .contains("No matching decisions"));
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);
 }

@@ -205,6 +205,23 @@ hivemind --hivemind-dir ./hivemind/ emit decision.capture \
   --chose direct-cli
 ```
 
+Humans can review recent agent decisions in a guided terminal flow:
+
+```bash
+hivemind --actor human:lead --hivemind-dir ./hivemind review \
+  --actor 'agent:*' \
+  --since 7d \
+  --unreviewed-only
+```
+
+The review flow reads candidates through the deterministic `query recent`
+path, then records explicit write-layer events: approve appends
+`decision.accepted`, disagree appends `decision.rejected` with the reason, and
+supersede proposes a replacement decision plus `decision.superseded`.
+HiveMind does not create a separate review event. Reviewed/unreviewed state is
+derived from reviewer-authored accept, reject, or supersede events, so replaying
+the ledger reproduces the same reviewed state.
+
 ### Agent Capture Plugins
 
 The repository ships installable capture bundles for Claude Code and Codex. Both
