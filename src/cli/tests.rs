@@ -167,7 +167,7 @@ fn parses_recent_decisions_command_with_composable_filters(
     let cli = Cli::parse_from([
         "hivemind",
         "query",
-        "recent",
+        "recent_decisions",
         "--since",
         "7d",
         "--until",
@@ -209,6 +209,19 @@ fn parses_recent_decisions_command_with_composable_filters(
         Some(Utc.with_ymd_and_hms(2026, 5, 19, 0, 0, 0).unwrap())
     );
     assert_eq!(request.filters.actor_patterns, vec!["agent:claude:*"]);
+    Ok(())
+}
+
+#[test]
+fn parses_legacy_recent_alias() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse_from(["hivemind", "query", "recent", "--since", "7d"]);
+    let Command::Query(args) = cli.command else {
+        return Err("expected query command".into());
+    };
+    assert!(
+        matches!(args.command, QueryCommand::RecentDecisions(_)),
+        "expected legacy recent alias to parse as RecentDecisions"
+    ); // ubs:ignore: test-only CLI parser assertion.
     Ok(())
 }
 
@@ -899,7 +912,7 @@ fn ledger_history_cli_queries_and_exports_read_only_summary() {
         "--hivemind-dir",
         hivemind_dir.to_str().expect("utf-8 temp path"),
         "query",
-        "recent",
+        "recent_decisions",
         "--since",
         "7d",
         "--actor",
@@ -931,7 +944,7 @@ fn ledger_history_cli_queries_and_exports_read_only_summary() {
         "--hivemind-dir",
         hivemind_dir.to_str().expect("utf-8 temp path"),
         "query",
-        "recent",
+        "recent_decisions",
         "--since",
         "9999-01-01",
     ]))
@@ -949,7 +962,7 @@ fn ledger_history_cli_queries_and_exports_read_only_summary() {
         "--hivemind-dir",
         hivemind_dir.to_str().expect("utf-8 temp path"),
         "query",
-        "recent",
+        "recent_decisions",
         "--since",
         "7d",
         "--summary",
