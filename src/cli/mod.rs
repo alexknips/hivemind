@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
+use std::io::{self, BufRead, Write as IoWrite};
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
@@ -10,8 +11,8 @@ use uuid::Uuid;
 use crate::commands::{CommandContext, Commands};
 use crate::error::{CliError, CommandError};
 use crate::events::{
-    BlockerPriority, EventId, EventProvenance, EventType, RelationKind as EventRelationKind,
-    TenantId,
+    BlockerPriority, Event, EventId, EventPayload, EventProvenance, EventType,
+    RelationKind as EventRelationKind, TenantId,
 };
 use crate::identity::{
     agent_actor_id, default_actor, default_agent_session, default_agent_tool,
@@ -42,8 +43,8 @@ use crate::queries::{
     HistoryFilterRequest, HypothesisStatus, NeighborhoodRequest, NeighborhoodView, QueryContext,
     QueryResponse, ReadOnlyExport, ReadOnlyExportFormat as QueryReadOnlyExportFormat,
     ReadOnlyExportQuery, ReadOnlyExportQueryKind, ReadOnlyExportRequest, RecentActivityRequest,
-    RecentActivityResults, RecentDecisionFilterRequest, RecentDecisionsRequest,
-    RecentDecisionsResults, SearchDecisionRequest, SupersessionChain,
+    RecentActivityResults, RecentDecisionEntry, RecentDecisionFilterRequest,
+    RecentDecisionsRequest, RecentDecisionsResults, SearchDecisionRequest, SupersessionChain,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -104,6 +105,7 @@ pub enum Command {
     Emit(Box<EmitArgs>),
     Disagree(DisagreeArgs),
     Supersede(SupersedeArgs),
+    Review(ReviewArgs),
     Import(ImportArgs),
     Suggest(SuggestArgs),
     /// Run deterministic read queries. JSON is the default; pass --summary for compact text.
@@ -167,6 +169,34 @@ pub struct SupersedeArgs {
 
     #[arg(long = "evidence", value_delimiter = ',')]
     pub evidence_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ReviewArgs {
+    /// Glob pattern for decision actor ids to review, for example agent:*.
+    #[arg(long = "actor", value_delimiter = ',')]
+    pub actor_patterns: Vec<String>,
+
+    #[arg(long = "since", default_value = "7d")]
+    pub since: String,
+
+    #[arg(long = "until")]
+    pub until: Option<String>,
+
+    #[arg(long = "timezone", default_value = "UTC")]
+    pub timezone: String,
+
+    #[arg(long = "now", hide = true)]
+    pub now: Option<String>,
+
+    #[arg(long = "unreviewed-only")]
+    pub unreviewed_only: bool,
+
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1112,6 +1142,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Emit(command) => run_emit(cli, command),
         Command::Disagree(args) => run_disagree(cli, args),
         Command::Supersede(args) => run_supersede(cli, args),
+        Command::Review(args) => run_review(cli, args),
         Command::Import(import) => run_import(cli, import),
         Command::Suggest(suggest) => run_suggest(cli, suggest),
         Command::Query(query) => run_query(cli, query),
@@ -1471,6 +1502,237 @@ fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
     )
 }
 
+fn run_review(cli: &Cli, args: &ReviewArgs) -> Result<String> {
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+    let stderr = io::stderr();
+    let mut prompt_output = stderr.lock();
+    run_review_session(cli, args, &mut input, &mut prompt_output)
+}
+
+fn run_review_session<R: BufRead, W: IoWrite>(
+    cli: &Cli,
+    args: &ReviewArgs,
+    input: &mut R,
+    prompt_output: &mut W,
+) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let scoped_ledger = TenantScopedLedger::new(&ledger, tenant_id.clone());
+    let request = review_recent_decisions_request(args)?;
+    let response = get_recent_decisions(&scoped_ledger, &request)?;
+    let events = read_ledger_events(&scoped_ledger)?;
+    let context = ReviewLedgerContext::from_events(&events)?;
+    let reviewed_decision_ids = reviewed_decision_ids_by_actor(&events, &cli.actor)?;
+    let mut items = response.data.items;
+
+    if args.unreviewed_only {
+        items.retain(|item| !reviewed_decision_ids.contains(&item.decision_id));
+    }
+
+    if items.is_empty() {
+        writeln!(prompt_output, "No matching decisions to review.").map_err(cli_io_error)?;
+        return format_review_output(
+            cli.json,
+            &ReviewCommandOutput {
+                reviewer_actor_id: cli.actor.clone(),
+                matched_count: 0,
+                reviewed_count: 0,
+                skipped_count: 0,
+                quit: false,
+                truncated: response.truncated,
+                next_cursor: response.data.next_cursor,
+                unreviewed_only: args.unreviewed_only,
+                reviewed_semantics: REVIEWED_SEMANTICS,
+                actions: Vec::new(),
+            },
+        );
+    }
+
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(tenant_id.clone(), EventProvenance::human(cli.actor.clone())),
+    );
+    let mut actions = Vec::new();
+    let mut quit = false;
+    let matched_count = items.len();
+
+    for (index, item) in items.into_iter().enumerate() {
+        render_review_item(prompt_output, index + 1, matched_count, &item, &context)?;
+
+        loop {
+            let Some(action) = prompt_line(
+                input,
+                prompt_output,
+                "Action [a approve, d disagree, s supersede, n next, q quit]: ",
+            )?
+            else {
+                quit = true;
+                break;
+            };
+            match action.trim().to_ascii_lowercase().as_str() {
+                "a" | "approve" => {
+                    let event_id = commands.accept_decision(&item.decision_id, &cli.actor)?;
+                    let status =
+                        decision_status_after_write(&ledger, &tenant_id, &item.decision_id)?;
+                    actions.push(ReviewActionOutput {
+                        decision_id: item.decision_id,
+                        action: "approved",
+                        event_id: Some(event_id),
+                        proposal_event_id: None,
+                        superseded_event_id: None,
+                        new_decision_id: None,
+                        old_decision_status: Some(status),
+                        new_decision_status: None,
+                    });
+                    break;
+                }
+                "d" | "disagree" => {
+                    let Some(reason) = prompt_required_line(
+                        input,
+                        prompt_output,
+                        "Disagreement reason: ",
+                        "reason must not be empty",
+                    )?
+                    else {
+                        quit = true;
+                        break;
+                    };
+                    let event_id = commands.disagree(&cli.actor, &item.decision_id, &reason)?;
+                    let status =
+                        decision_status_after_write(&ledger, &tenant_id, &item.decision_id)?;
+                    actions.push(ReviewActionOutput {
+                        decision_id: item.decision_id,
+                        action: "disagreed",
+                        event_id: Some(event_id),
+                        proposal_event_id: None,
+                        superseded_event_id: None,
+                        new_decision_id: None,
+                        old_decision_status: Some(status),
+                        new_decision_status: None,
+                    });
+                    break;
+                }
+                "s" | "supersede" => {
+                    let Some(title) = prompt_required_line(
+                        input,
+                        prompt_output,
+                        "New decision title: ",
+                        "title must not be empty",
+                    )?
+                    else {
+                        quit = true;
+                        break;
+                    };
+                    let Some(rationale) = prompt_required_line(
+                        input,
+                        prompt_output,
+                        "New decision rationale: ",
+                        "rationale must not be empty",
+                    )?
+                    else {
+                        quit = true;
+                        break;
+                    };
+                    let option_labels = prompt_line(
+                        input,
+                        prompt_output,
+                        "New option labels, comma-separated (blank for default): ",
+                    )?
+                    .map(|line| split_review_list(&line))
+                    .unwrap_or_default();
+                    let chosen_option_label = prompt_line(
+                        input,
+                        prompt_output,
+                        "Chosen option label (blank for none): ",
+                    )?
+                    .and_then(|line| non_empty_owned(&line));
+
+                    let outcome = commands.supersede(
+                        &cli.actor,
+                        &item.decision_id,
+                        &title,
+                        &rationale,
+                        &item.topic_keys,
+                        &option_labels,
+                        chosen_option_label.as_deref(),
+                        &item.hypothesis_ids,
+                        &item.evidence_ids,
+                    )?;
+                    let old_status =
+                        decision_status_after_write(&ledger, &tenant_id, &item.decision_id)?;
+                    let new_status =
+                        decision_status_after_write(&ledger, &tenant_id, &outcome.new_decision_id)?;
+                    actions.push(ReviewActionOutput {
+                        decision_id: item.decision_id,
+                        action: "superseded",
+                        event_id: None,
+                        proposal_event_id: Some(outcome.proposal_event_id),
+                        superseded_event_id: Some(outcome.superseded_event_id),
+                        new_decision_id: Some(outcome.new_decision_id),
+                        old_decision_status: Some(old_status),
+                        new_decision_status: Some(new_status),
+                    });
+                    break;
+                }
+                "" | "n" | "next" | "skip" => {
+                    actions.push(ReviewActionOutput {
+                        decision_id: item.decision_id,
+                        action: "skipped",
+                        event_id: None,
+                        proposal_event_id: None,
+                        superseded_event_id: None,
+                        new_decision_id: None,
+                        old_decision_status: Some(item.status),
+                        new_decision_status: None,
+                    });
+                    break;
+                }
+                "q" | "quit" => {
+                    quit = true;
+                    break;
+                }
+                other => {
+                    writeln!(
+                        prompt_output,
+                        "Unknown action '{other}'. Use a, d, s, n, or q."
+                    )
+                    .map_err(cli_io_error)?;
+                }
+            }
+        }
+
+        if quit {
+            break;
+        }
+    }
+
+    let reviewed_count = actions
+        .iter()
+        .filter(|action| action.action != "skipped")
+        .count();
+    let skipped_count = actions
+        .iter()
+        .filter(|action| action.action == "skipped")
+        .count();
+
+    format_review_output(
+        cli.json,
+        &ReviewCommandOutput {
+            reviewer_actor_id: cli.actor.clone(),
+            matched_count,
+            reviewed_count,
+            skipped_count,
+            quit,
+            truncated: response.truncated,
+            next_cursor: response.data.next_cursor,
+            unreviewed_only: args.unreviewed_only,
+            reviewed_semantics: REVIEWED_SEMANTICS,
+            actions,
+        },
+    )
+}
+
 fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
     match &import.command {
         ImportCommand::Documents(args) => {
@@ -1759,6 +2021,231 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
     };
 
     Ok(output)
+}
+
+const REVIEWED_SEMANTICS: &str =
+    "derived from reviewer-authored decision.accepted, decision.rejected, or decision.superseded events";
+
+fn review_recent_decisions_request(args: &ReviewArgs) -> Result<RecentDecisionsRequest> {
+    let now = parse_utc_timestamp("--now", &args.now)?;
+    let timezone = TimeZoneSpec::parse(&args.timezone)?;
+    let since_timestamp =
+        resolve_diff_bound("--since", Some(args.since.as_str()), None, now, timezone)?
+            .ok_or_else(|| CliError::InvalidInput("--since must not be empty".to_owned()))?;
+    let until_timestamp =
+        resolve_diff_bound("--until", args.until.as_deref(), None, now, timezone)?;
+
+    Ok(RecentDecisionsRequest {
+        since_timestamp,
+        until_timestamp,
+        filters: RecentDecisionFilterRequest {
+            actor_patterns: args.actor_patterns.clone(),
+            sources: Vec::new(),
+            topic_keys: Vec::new(),
+            statuses: Vec::new(),
+        },
+        limit: args.limit,
+        cursor: args.cursor.clone(),
+    })
+}
+
+fn read_ledger_events(ledger: &impl EventLedger) -> Result<Vec<Event>> {
+    let mut events = Vec::new();
+    ledger.replay_from(0, &mut |event| {
+        events.push(event.clone());
+        Ok(())
+    })?;
+    Ok(events)
+}
+
+fn reviewed_decision_ids_by_actor(
+    events: &[Event],
+    reviewer_actor_id: &str,
+) -> Result<BTreeSet<String>> {
+    let mut reviewed = BTreeSet::new();
+    for event in events
+        .iter()
+        .filter(|event| event.actor_id == reviewer_actor_id)
+    {
+        match validated_payload(event)? {
+            EventPayload::DecisionAccepted(payload) => {
+                reviewed.insert(payload.decision_id);
+            }
+            EventPayload::DecisionRejected(payload) => {
+                reviewed.insert(payload.decision_id);
+            }
+            EventPayload::DecisionSuperseded(payload) => {
+                reviewed.insert(payload.old_decision_id);
+            }
+            EventPayload::DecisionProposed(_)
+            | EventPayload::DecisionRequested(_)
+            | EventPayload::EvidenceRecorded(_)
+            | EventPayload::HypothesisRecorded(_)
+            | EventPayload::RelationAdded(_)
+            | EventPayload::BlockerReported(_)
+            | EventPayload::BlockerResolved(_)
+            | EventPayload::NotificationSent(_)
+            | EventPayload::NotificationAcknowledged(_) => {}
+        }
+    }
+    Ok(reviewed)
+}
+
+#[derive(Debug, Default)]
+struct ReviewLedgerContext {
+    evidence: BTreeMap<String, String>,
+    hypotheses: BTreeMap<String, String>,
+}
+
+impl ReviewLedgerContext {
+    fn from_events(events: &[Event]) -> Result<Self> {
+        let mut context = Self::default();
+        for event in events {
+            match validated_payload(event)? {
+                EventPayload::EvidenceRecorded(payload) => {
+                    context
+                        .evidence
+                        .insert(payload.evidence_id, payload.content);
+                }
+                EventPayload::HypothesisRecorded(payload) => {
+                    context
+                        .hypotheses
+                        .insert(payload.hypothesis_id, payload.statement);
+                }
+                EventPayload::DecisionProposed(_)
+                | EventPayload::DecisionRequested(_)
+                | EventPayload::DecisionAccepted(_)
+                | EventPayload::DecisionRejected(_)
+                | EventPayload::DecisionSuperseded(_)
+                | EventPayload::RelationAdded(_)
+                | EventPayload::BlockerReported(_)
+                | EventPayload::BlockerResolved(_)
+                | EventPayload::NotificationSent(_)
+                | EventPayload::NotificationAcknowledged(_) => {}
+            }
+        }
+        Ok(context)
+    }
+}
+
+fn render_review_item<W: IoWrite>(
+    output: &mut W,
+    index: usize,
+    total: usize,
+    item: &RecentDecisionEntry,
+    context: &ReviewLedgerContext,
+) -> Result<()> {
+    writeln!(output, "\n[{index}/{total}] {}", item.decision_id).map_err(cli_io_error)?;
+    writeln!(output, "Title: {}", item.title).map_err(cli_io_error)?;
+    writeln!(output, "Status: {}", decision_status_label(item.status)).map_err(cli_io_error)?;
+    writeln!(output, "Actors: {}", display_review_list(&item.actor_ids)).map_err(cli_io_error)?;
+    writeln!(output, "Topics: {}", display_review_list(&item.topic_keys)).map_err(cli_io_error)?;
+    writeln!(output, "Rationale: {}", item.rationale).map_err(cli_io_error)?;
+    writeln!(output, "Options:").map_err(cli_io_error)?;
+    if item.option_ids.is_empty() {
+        writeln!(output, "  - <none>").map_err(cli_io_error)?;
+    } else {
+        for option_id in &item.option_ids {
+            if item.chosen_option_id.as_deref() == Some(option_id.as_str()) {
+                writeln!(output, "  - {option_id} (chosen)").map_err(cli_io_error)?;
+            } else {
+                writeln!(output, "  - {option_id}").map_err(cli_io_error)?;
+            }
+        }
+    }
+    writeln!(output, "Evidence:").map_err(cli_io_error)?;
+    if item.evidence_ids.is_empty() {
+        writeln!(output, "  - <none>").map_err(cli_io_error)?;
+    } else {
+        for evidence_id in &item.evidence_ids {
+            match context.evidence.get(evidence_id) {
+                Some(content) => {
+                    writeln!(output, "  - {evidence_id}: {content}").map_err(cli_io_error)?
+                }
+                None => writeln!(output, "  - {evidence_id}").map_err(cli_io_error)?,
+            }
+        }
+    }
+    writeln!(output, "Hypotheses:").map_err(cli_io_error)?;
+    if item.hypothesis_ids.is_empty() {
+        writeln!(output, "  - <none>").map_err(cli_io_error)?;
+    } else {
+        for hypothesis_id in &item.hypothesis_ids {
+            match context.hypotheses.get(hypothesis_id) {
+                Some(statement) => {
+                    writeln!(output, "  - {hypothesis_id}: {statement}").map_err(cli_io_error)?
+                }
+                None => writeln!(output, "  - {hypothesis_id}").map_err(cli_io_error)?,
+            }
+        }
+    }
+    Ok(())
+}
+
+fn prompt_line<R: BufRead, W: IoWrite>(
+    input: &mut R,
+    output: &mut W,
+    prompt: &str,
+) -> Result<Option<String>> {
+    write!(output, "{prompt}").map_err(cli_io_error)?;
+    output.flush().map_err(cli_io_error)?;
+    let mut line = String::new();
+    let bytes_read = input.read_line(&mut line).map_err(cli_io_error)?;
+    if bytes_read == 0 {
+        return Ok(None);
+    }
+    Ok(Some(line.trim().to_owned()))
+}
+
+fn prompt_required_line<R: BufRead, W: IoWrite>(
+    input: &mut R,
+    output: &mut W,
+    prompt: &str,
+    empty_message: &str,
+) -> Result<Option<String>> {
+    loop {
+        let Some(value) = prompt_line(input, output, prompt)? else {
+            return Ok(None);
+        };
+        if let Some(value) = non_empty_owned(&value) {
+            return Ok(Some(value));
+        }
+        writeln!(output, "{empty_message}").map_err(cli_io_error)?;
+    }
+}
+
+fn split_review_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .filter_map(non_empty_owned)
+        .collect::<Vec<_>>()
+}
+
+fn non_empty_owned(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+fn display_review_list(values: &[String]) -> String {
+    if values.is_empty() {
+        "<none>".to_owned()
+    } else {
+        values.join(",")
+    }
+}
+
+fn validated_payload(event: &Event) -> Result<EventPayload> {
+    crate::events::validate(event).map_err(|error| {
+        CliError::InvalidInput(format!(
+            "ledger event {} failed validation during review: {error}",
+            event.event_id.unwrap_or_default()
+        ))
+        .into()
+    })
+}
+
+fn cli_io_error(error: io::Error) -> HivemindError {
+    CliError::InvalidInput(format!("interactive review I/O failed: {error}")).into()
 }
 
 fn added_since_request(args: &QueryAddedSinceArgs) -> Result<DecisionsAddedSinceRequest> {
@@ -2755,6 +3242,62 @@ fn format_supersede_output(as_json: bool, output: &SupersedeCommandOutput) -> Re
     ))
 }
 
+fn format_review_output(as_json: bool, output: &ReviewCommandOutput) -> Result<String> {
+    if as_json {
+        return format_json_value(true, output);
+    }
+
+    let mut rendered = String::new();
+    let _ = writeln!(
+        rendered,
+        "reviewer={} matched={} reviewed={} skipped={} quit={} truncated={}",
+        output.reviewer_actor_id,
+        output.matched_count,
+        output.reviewed_count,
+        output.skipped_count,
+        output.quit,
+        output.truncated
+    );
+    if let Some(next_cursor) = &output.next_cursor {
+        let _ = writeln!(rendered, "next_cursor={next_cursor}");
+    }
+    for action in &output.actions {
+        let _ = write!(
+            rendered,
+            "{} decision_id={}",
+            action.action, action.decision_id
+        );
+        if let Some(event_id) = action.event_id {
+            let _ = write!(rendered, " event_id={event_id}");
+        }
+        if let Some(proposal_event_id) = action.proposal_event_id {
+            let _ = write!(rendered, " proposal_event_id={proposal_event_id}");
+        }
+        if let Some(superseded_event_id) = action.superseded_event_id {
+            let _ = write!(rendered, " superseded_event_id={superseded_event_id}");
+        }
+        if let Some(new_decision_id) = &action.new_decision_id {
+            let _ = write!(rendered, " new_decision_id={new_decision_id}");
+        }
+        if let Some(old_status) = action.old_decision_status {
+            let _ = write!(
+                rendered,
+                " old_status={}",
+                decision_status_label(old_status)
+            );
+        }
+        if let Some(new_status) = action.new_decision_status {
+            let _ = write!(
+                rendered,
+                " new_status={}",
+                decision_status_label(new_status)
+            );
+        }
+        rendered.push('\n');
+    }
+    Ok(rendered.trim_end().to_owned())
+}
+
 fn format_json_value<T: Serialize>(compact: bool, value: &T) -> Result<String> {
     if compact {
         serde_json::to_string(value).map_err(|error| {
@@ -3218,6 +3761,32 @@ struct SupersedeCommandOutput {
     superseded_event_id: EventId,
     old_decision_status: DecisionStatus,
     new_decision_status: DecisionStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewCommandOutput {
+    reviewer_actor_id: String,
+    matched_count: usize,
+    reviewed_count: usize,
+    skipped_count: usize,
+    quit: bool,
+    truncated: bool,
+    next_cursor: Option<String>,
+    unreviewed_only: bool,
+    reviewed_semantics: &'static str,
+    actions: Vec<ReviewActionOutput>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReviewActionOutput {
+    decision_id: String,
+    action: &'static str,
+    event_id: Option<EventId>,
+    proposal_event_id: Option<EventId>,
+    superseded_event_id: Option<EventId>,
+    new_decision_id: Option<String>,
+    old_decision_status: Option<DecisionStatus>,
+    new_decision_status: Option<DecisionStatus>,
 }
 
 #[cfg(test)]

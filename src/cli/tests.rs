@@ -3,6 +3,48 @@
 use super::*;
 use clap::CommandFactory;
 
+type CliTestResult = std::result::Result<(), Box<dyn std::error::Error>>;
+
+fn ensure(condition: bool, context: &str) -> CliTestResult {
+    if condition {
+        Ok(())
+    } else {
+        Err(context.to_owned().into())
+    }
+}
+
+fn ensure_eq<T>(actual: T, expected: T, context: &str) -> CliTestResult
+where
+    T: std::fmt::Debug + PartialEq,
+{
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!("{context}: expected {expected:?}, got {actual:?}").into())
+    }
+}
+
+fn json_at<'a>(
+    value: &'a serde_json::Value,
+    pointer: &str,
+) -> std::result::Result<&'a serde_json::Value, Box<dyn std::error::Error>> {
+    value
+        .pointer(pointer)
+        .ok_or_else(|| format!("missing json pointer {pointer}").into())
+}
+
+fn ensure_json_eq(
+    actual: &serde_json::Value,
+    expected: serde_json::Value,
+    context: &str,
+) -> CliTestResult {
+    if actual == &expected {
+        Ok(())
+    } else {
+        Err(format!("{context}: expected {expected}, got {actual}").into())
+    }
+}
+
 #[test]
 fn resolves_since_last_week_against_frozen_now_in_utc() {
     use chrono::TimeZone;
@@ -242,6 +284,73 @@ fn query_help_documents_json_default_and_summary_mode(
 
     assert!(help.contains("JSON is the default output")); // ubs:ignore: test-only CLI help assertion.
     assert!(help.contains("--summary")); // ubs:ignore: test-only CLI help assertion.
+    Ok(())
+}
+
+#[test]
+fn parses_review_command_with_actor_window_and_unreviewed_filter() -> CliTestResult {
+    let cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:senior",
+        "review",
+        "--actor",
+        "agent:*",
+        "--since",
+        "7d",
+        "--until",
+        "2026-05-19",
+        "--now",
+        "2026-05-19T12:00:00Z",
+        "--unreviewed-only",
+        "--limit",
+        "10",
+    ]);
+    ensure_eq(cli.actor.as_str(), "human:senior", "reviewer actor")?;
+    let Command::Review(args) = cli.command else {
+        return Err("expected review command".into());
+    };
+    ensure_eq(args.actor_patterns.len(), 1, "review actor filter count")?;
+    ensure_eq(
+        args.actor_patterns.first().map(String::as_str),
+        Some("agent:*"),
+        "review actor filter",
+    )?;
+    ensure_eq(args.since.as_str(), "7d", "review since")?;
+    ensure_eq(args.until.as_deref(), Some("2026-05-19"), "review until")?;
+    ensure(args.unreviewed_only, "review unreviewed-only flag")?;
+    ensure_eq(args.limit, 10, "review limit")?;
+
+    let request = review_recent_decisions_request(&args)?;
+    use chrono::TimeZone;
+    let expected_since = Utc
+        .with_ymd_and_hms(2026, 5, 12, 12, 0, 0)
+        .single()
+        .ok_or("valid expected timestamp")?;
+    let expected_until = Utc
+        .with_ymd_and_hms(2026, 5, 19, 0, 0, 0)
+        .single()
+        .ok_or("valid expected timestamp")?;
+    ensure_eq(
+        request.since_timestamp,
+        expected_since,
+        "review since timestamp",
+    )?;
+    ensure_eq(
+        request.until_timestamp,
+        Some(expected_until),
+        "review until timestamp",
+    )?;
+    ensure_eq(
+        request.filters.actor_patterns.len(),
+        1,
+        "review request actor filter count",
+    )?;
+    ensure_eq(
+        request.filters.actor_patterns.first().map(String::as_str),
+        Some("agent:*"),
+        "review request actor filter",
+    )?;
     Ok(())
 }
 
@@ -601,6 +710,7 @@ fn disagree_cli_records_reason_contests_and_is_idempotent() {
     let events = ledger.read(0, 20).expect("events read");
     let rejected = events
         .iter()
+        // ubs:ignore: public ledger event IDs are not secrets.
         .find(|event| event.event_id == Some(first_event_id))
         .expect("rejected event");
     assert_eq!(
@@ -718,6 +828,244 @@ fn supersede_cli_proposes_replacement_marks_old_and_is_idempotent() {
     );
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn review_cli_walkthrough_accepts_disagrees_and_filters_reviewed_decisions() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("review-cli");
+    let hivemind_dir_arg = hivemind_dir.to_string_lossy().into_owned();
+    let disagree_decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent:codex:one",
+        "--hivemind-dir",
+        hivemind_dir_arg.as_str(),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Use permissive deploys",
+        "--rationale",
+        "It speeds up agent delivery",
+        "--topic-keys",
+        "deploy",
+        "--options",
+        "permissive,guarded",
+        "--chose",
+        "permissive",
+    ]))?;
+    let approve_decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent:codex:two",
+        "--hivemind-dir",
+        hivemind_dir_arg.as_str(),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Keep guardrail tests",
+        "--rationale",
+        "They preserve governance invariants",
+        "--topic-keys",
+        "testing",
+        "--options",
+        "keep,drop",
+        "--chose",
+        "keep",
+    ]))?;
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:architect",
+        "--hivemind-dir",
+        hivemind_dir_arg.as_str(),
+        "emit",
+        "decision.accepted",
+        "--decision-id",
+        &disagree_decision_id,
+    ]))?;
+
+    let review_cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:senior",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir_arg.as_str(),
+        "review",
+        "--actor",
+        "agent:codex:*",
+        "--since",
+        "2000-01-01",
+    ]);
+    let Command::Review(review_args) = &review_cli.command else {
+        return Err("expected review command".into());
+    };
+    let mut input = std::io::Cursor::new("a\nd\nmisses rollout risk\n".as_bytes());
+    let mut prompts = Vec::new();
+    let output = run_review_session(&review_cli, review_args, &mut input, &mut prompts)?;
+    let output: serde_json::Value = serde_json::from_str(&output)?;
+    let prompts = String::from_utf8(prompts)?;
+
+    ensure(
+        prompts.contains("Keep guardrail tests"),
+        "approval candidate prompt",
+    )?;
+    ensure(
+        prompts.contains("Use permissive deploys"),
+        "disagreement candidate prompt",
+    )?;
+    ensure_json_eq(
+        json_at(&output, "/matched_count")?,
+        serde_json::json!(2),
+        "matched count",
+    )?;
+    ensure_json_eq(
+        json_at(&output, "/reviewed_count")?,
+        serde_json::json!(2),
+        "reviewed count",
+    )?;
+    ensure_json_eq(
+        json_at(&output, "/skipped_count")?,
+        serde_json::json!(0),
+        "skipped count",
+    )?;
+    ensure_json_eq(
+        json_at(&output, "/quit")?,
+        serde_json::json!(false),
+        "quit flag",
+    )?;
+    ensure_json_eq(
+        json_at(&output, "/reviewed_semantics")?,
+        serde_json::json!(
+            "derived from reviewer-authored decision.accepted, decision.rejected, or decision.superseded events"
+        ),
+        "reviewed semantics",
+    )?;
+    ensure_json_eq(
+        json_at(&output, "/actions/0/decision_id")?,
+        serde_json::json!(approve_decision_id.as_str()),
+        "approved action decision",
+    )?;
+    ensure_json_eq(
+        json_at(&output, "/actions/0/action")?,
+        serde_json::json!("approved"),
+        "approved action kind",
+    )?;
+    ensure_json_eq(
+        json_at(&output, "/actions/0/old_decision_status")?,
+        serde_json::json!("accepted"),
+        "approved old status",
+    )?;
+    ensure_json_eq(
+        json_at(&output, "/actions/1/decision_id")?,
+        serde_json::json!(disagree_decision_id.as_str()),
+        "disagreed action decision",
+    )?;
+    ensure_json_eq(
+        json_at(&output, "/actions/1/action")?,
+        serde_json::json!("disagreed"),
+        "disagreed action kind",
+    )?;
+    ensure_json_eq(
+        json_at(&output, "/actions/1/old_decision_status")?,
+        serde_json::json!("contested"),
+        "disagreed old status",
+    )?;
+
+    let ledger = SqliteEventLedger::open(&hivemind_dir)?;
+    let graph = MemoryGraph::default();
+    let tenant_id = cli_tenant(&review_cli)?;
+    rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
+    ensure_eq(
+        derive_decision_status(&graph, &approve_decision_id)?,
+        DecisionStatus::Accepted,
+        "approved derived status",
+    )?;
+    ensure_eq(
+        derive_decision_status(&graph, &disagree_decision_id)?,
+        DecisionStatus::Contested,
+        "disagreed derived status",
+    )?;
+
+    let events = ledger.read(0, 50)?;
+    let accepted = events
+        .iter()
+        .find(|event| {
+            event.actor_id == "human:senior" // ubs:ignore: public actor ID is not secret material.
+                && event.event_type == crate::events::EventType::DecisionAccepted // ubs:ignore: public event type is not secret material.
+                && event
+                    .payload
+                    .get("decision_id")
+                    .and_then(|value| value.as_str())
+                    == Some(approve_decision_id.as_str())
+        })
+        .ok_or("review acceptance event")?;
+    ensure_eq(
+        &accepted.source,
+        &crate::events::EventSource::Human,
+        "accepted provenance",
+    )?;
+    let rejected = events
+        .iter()
+        .find(|event| {
+            event.actor_id == "human:senior" // ubs:ignore: public actor ID is not secret material.
+                && event.event_type == crate::events::EventType::DecisionRejected // ubs:ignore: public event type is not secret material.
+                && event
+                    .payload
+                    .get("decision_id")
+                    .and_then(|value| value.as_str())
+                    == Some(disagree_decision_id.as_str())
+        })
+        .ok_or("review disagreement event")?;
+    ensure_eq(
+        &rejected.source,
+        &crate::events::EventSource::Human,
+        "rejected provenance",
+    )?;
+    ensure_eq(
+        rejected
+            .payload
+            .get("reason")
+            .and_then(|value| value.as_str()),
+        Some("misses rollout risk"),
+        "rejection reason",
+    )?;
+
+    let unreviewed_cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:senior",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir_arg.as_str(),
+        "review",
+        "--actor",
+        "agent:codex:*",
+        "--since",
+        "2000-01-01",
+        "--unreviewed-only",
+    ]);
+    let Command::Review(unreviewed_args) = &unreviewed_cli.command else {
+        return Err("expected review command".into());
+    };
+    let mut input = std::io::Cursor::new(Vec::<u8>::new());
+    let mut prompts = Vec::new();
+    let unreviewed_output =
+        run_review_session(&unreviewed_cli, unreviewed_args, &mut input, &mut prompts)?;
+    let unreviewed_output: serde_json::Value = serde_json::from_str(&unreviewed_output)?;
+    ensure_json_eq(
+        json_at(&unreviewed_output, "/matched_count")?,
+        serde_json::json!(0),
+        "unreviewed matched count",
+    )?;
+    let unreviewed_prompts = String::from_utf8(prompts)?;
+    ensure(
+        unreviewed_prompts.contains("No matching decisions"),
+        "unreviewed empty prompt",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
 }
 
 #[test]
@@ -1188,6 +1536,7 @@ fn import_documents_cli_imports_queryable_document_decisions_and_reimport_noops(
     let storage_proposal = events
         .iter()
         .find(|event| {
+            // ubs:ignore: public event types and decision titles are not secrets.
             event.event_type == crate::events::EventType::DecisionProposed
                 && event.payload.get("title").and_then(|value| value.as_str())
                     == Some("Use SQLite for the local prototype")
@@ -1222,6 +1571,7 @@ fn import_documents_cli_imports_queryable_document_decisions_and_reimport_noops(
     let report_proposal = events
         .iter()
         .find(|event| {
+            // ubs:ignore: public event types and decision titles are not secrets.
             event.event_type == crate::events::EventType::DecisionProposed
                 && event.payload.get("title").and_then(|value| value.as_str())
                     == Some("Import weekly decision notes locally")
@@ -1360,6 +1710,7 @@ fn prepare_documents_cli_extracts_pdf_text_for_reviewed_import() {
     let proposal = events
         .iter()
         .find(|event| {
+            // ubs:ignore: public event types and decision titles are not secrets.
             event.event_type == crate::events::EventType::DecisionProposed
                 && event.payload.get("title").and_then(|value| value.as_str())
                     == Some("Preserve PDF decisions")
@@ -1460,6 +1811,7 @@ fn prepare_documents_cli_surfaces_ocr_uncertainty_before_import() {
     let proposal = events
         .iter()
         .find(|event| {
+            // ubs:ignore: public event types and decision titles are not secrets.
             event.event_type == crate::events::EventType::DecisionProposed
                 && event.payload.get("title").and_then(|value| value.as_str())
                     == Some("Review scanned decisions")
@@ -2192,6 +2544,7 @@ fn emit_decision_capture_records_codex_and_claude_agent_provenance() {
         let event = events
             .iter()
             .find(|event| {
+                // ubs:ignore: public event types and decision graph IDs are not secrets.
                 event.event_type == crate::events::EventType::DecisionProposed
                     && event
                         .payload
@@ -2208,6 +2561,7 @@ fn emit_decision_capture_records_codex_and_claude_agent_provenance() {
         let proposal_id = event.event_id.expect("proposal has ledger origin");
         let relation_events = events
             .iter()
+            // ubs:ignore: public ledger causation IDs are not secrets.
             .filter(|event| event.causation_event_id == Some(proposal_id))
             .collect::<Vec<_>>();
         assert!(!relation_events.is_empty());
@@ -2257,6 +2611,7 @@ fn emit_decision_capture_records_human_provenance_when_requested() {
     let event = events
         .iter()
         .find(|event| {
+            // ubs:ignore: public event types and decision graph IDs are not secrets.
             event.event_type == crate::events::EventType::DecisionProposed
                 && event
                     .payload
@@ -2273,6 +2628,7 @@ fn emit_decision_capture_records_human_provenance_when_requested() {
     let proposal_id = event.event_id.expect("proposal has ledger origin");
     let relation_events = events
         .iter()
+        // ubs:ignore: public ledger causation IDs are not secrets.
         .filter(|event| event.causation_event_id == Some(proposal_id))
         .collect::<Vec<_>>();
     assert!(!relation_events.is_empty());
@@ -2315,6 +2671,7 @@ fn ingest_slack_thread_creates_queryable_decision_with_slack_provenance() {
     let proposal = events
         .iter()
         .find(|event| {
+            // ubs:ignore: public event types and decision graph IDs are not secrets.
             event.event_type == crate::events::EventType::DecisionProposed
                 && event
                     .payload
@@ -2333,6 +2690,7 @@ fn ingest_slack_thread_creates_queryable_decision_with_slack_provenance() {
     let proposal_id = proposal.event_id.expect("proposal event id");
     let related: Vec<_> = events
         .iter()
+        // ubs:ignore: public ledger causation IDs are not secrets.
         .filter(|event| event.causation_event_id == Some(proposal_id))
         .collect();
     assert!(!related.is_empty(), "proposal must fan out relations");
@@ -2347,8 +2705,8 @@ fn ingest_slack_thread_creates_queryable_decision_with_slack_provenance() {
     let evidence_count = events
         .iter()
         .filter(|event| {
-            event.event_type == crate::events::EventType::EvidenceRecorded
-                && event.source == crate::events::EventSource::Slack
+            event.event_type == crate::events::EventType::EvidenceRecorded // ubs:ignore: public event type is not secret material.
+                && event.source == crate::events::EventSource::Slack // ubs:ignore: public source classification is not secret material.
         })
         .count();
     assert_eq!(evidence_count, 1);
