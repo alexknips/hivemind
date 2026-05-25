@@ -32,9 +32,10 @@ From a fresh clone before installing the binary:
 cargo run -- --actor human:alice quickstart
 ```
 
-The `--actor` value is mandatory provenance. Use a stable human id such as
-`human:alice` or an agent id such as `agent:codex:<session>`. If `--actor` is
-omitted, the CLI falls back to `HIVEMIND_ACTOR`, then `USER`.
+Every write carries actor provenance. Use `--actor` to override the actor with
+a stable human id such as `human:alice` or an agent id such as
+`agent:codex:<session>`. If `--actor` is omitted, the CLI falls back to
+`HIVEMIND_ACTOR`, then `human:<git config user.email>`, then a local user name.
 
 To capture and query the first real decision in the current directory:
 
@@ -404,6 +405,8 @@ Per-feature docs:
 
 - [`docs/AGENT_DECISION_CAPTURE.md`](docs/AGENT_DECISION_CAPTURE.md) — the
   Claude/Codex capture path.
+- [`docs/DOGFOOD.md`](docs/DOGFOOD.md) — operating contract for the repo-local
+  shared dogfood ledger and agent capture loop.
 - [`docs/LOCAL_CAPTURE_DEMO.md`](docs/LOCAL_CAPTURE_DEMO.md) — local Slack plus
   agent capture demo.
 - [`docs/SLACK_APP.md`](docs/SLACK_APP.md) — local-first Slack app install,
