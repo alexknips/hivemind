@@ -56,3 +56,12 @@ Run it with:
 ```bash
 cargo test --test sqlite_wal_multiprocess shared_sqlite_ledger_accepts_concurrent_process_writes -- --nocapture
 ```
+
+`tests/mcp_stdio_e2e.rs` also covers the dogfood path through two real
+`hivemind mcp` subprocesses sharing one ledger. It synchronizes both servers at
+the write call, captures one decision from each, and verifies the shared log is
+monotonic and replayable:
+
+```bash
+cargo test --test mcp_stdio_e2e mcp_stdio_servers_share_sqlite_wal_ledger_under_concurrent_writes -- --nocapture
+```
