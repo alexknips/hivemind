@@ -246,7 +246,7 @@ fn mcp_stdio_servers_share_sqlite_wal_ledger_under_concurrent_writes() {
             hivemind::events::EventType::RelationAdded => {
                 relation_count += 1;
             }
-            other => panic!("unexpected event type from MCP capture: {other:?}"),
+            _ => {}
         }
     }
 

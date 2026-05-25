@@ -90,17 +90,28 @@ that depends on the current behavior.
 
 ## Storage Backend (current direction, may change)
 
-SQLite is the storage backend for the current local prototype. It is a
-temporary choice. The long-term storage backend is open and will be decided
-under [STRATEGY.md → Shared backend](../STRATEGY.md#shared-backend). Any future
-backend must preserve [auditability](../PRINCIPLES.md#2-every-state-change-is-auditable)
-in full; the SQLite implementation simply happens to do so via event-sourcing
-today.
+SQLite is the storage backend for the current local prototype. It remains the
+zero-service default for onboarding, tests, and local agent workflows.
 
-Code paths that depend on SQLite specifics (FTS5 search, SQLite pragmas,
-file-on-disk semantics) should be reachable only through the internal commands
-and queries layer, never from CLI, MCP, or API surfaces — so that swapping
-storage replaces only one layer.
+The long-term shared backend is a HiveMind service backed by Postgres, per
+[`REMOTE_DB.md`](REMOTE_DB.md). Postgres is the canonical remote event ledger
+and also holds the first shared graph projection in tenant-scoped typed node
+and edge tables. The service, not direct database clients, owns command
+validation, auth, tenancy, ledger append, projection, and deterministic query
+APIs.
+
+Any storage backend must preserve
+[auditability](../PRINCIPLES.md#2-every-state-change-is-auditable) in full:
+events remain authoritative, projections remain rebuildable, and every
+projected node or edge traces back to ledger provenance. The SQLite
+implementation satisfies that contract locally; the Postgres service satisfies
+it for shared multi-user and multi-agent deployments.
+
+Code paths that depend on storage-specific behavior (SQLite FTS5 search,
+SQLite pragmas, file-on-disk semantics, Postgres JSONB/index/RLS behavior,
+service migration mechanics) should be reachable only through the internal
+commands and queries layer, never from CLI, MCP, or API surfaces — so storage
+changes replace only the backend/service layer.
 
 ## Graph Projection Backend
 
@@ -178,9 +189,9 @@ These are open architectural questions tracked under
 capabilities*). They are not committed direction; specific beads will narrow
 each one when picked up.
 
-- The shared remote database/service architecture and rollout.
-- Whether the first remote projection is Postgres tables, Neo4j, another graph
-  service, or a parity-tested combination.
+- The shared Postgres service schema, migration path, and rollout.
+- Whether Neo4j, another graph service, or a parity-tested combination becomes
+  a later non-canonical `GraphView` projection.
 - Multi-organization identity, auth, and signing.
 - Pagination and response continuation beyond the current defensive limits.
 - Compactification, similarity, ranking, and other layer-3 behavior.
