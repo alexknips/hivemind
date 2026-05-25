@@ -69,6 +69,26 @@ jobs:
       - name: Run TUI tests
         run: cargo test --locked --features tui
 
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run cargo audit
+        run: cargo audit
+
   # The graph-kuzu CI job is disabled until the native link issue (tracked in
   # bead hivemind-oj7qr) is resolved. With the current bundled C++ build, the
   # job exceeds the 20-minute timeout on GitHub-hosted runners, and a timeout

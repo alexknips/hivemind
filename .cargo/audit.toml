@@ -1,0 +1,7 @@
+[advisories]
+informational_warnings = ["unmaintained", "unsound", "notice"]
+severity_threshold = "high"
+
+[output]
+deny = []
+quiet = false
