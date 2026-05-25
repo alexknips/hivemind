@@ -98,8 +98,8 @@ trust of every future contributor, human or agent.
 Every bead closes only when its changes are:
 
 - `cargo fmt --check` clean
-- `cargo clippy --all-targets -- -D warnings` clean
-- `cargo test` clean
+- `cargo clippy --locked --all-targets -- -D warnings` clean
+- `cargo test --locked` clean
 - Free of new UBS criticals
 - Within the UBS warning baseline (no growth)
 - Documented to the same standard as the surrounding file
@@ -111,6 +111,8 @@ the bead claimable in the first place.
 Refinery merge contract: gates are verified on the **rebased** state before
 merging to master, not just on the polecat branch before it was rebased.
 Defense in depth: polecats verify locally, refinery re-verifies after rebase.
+The mandatory gate set, proof-line format, and reject-back behavior are
+documented in [`docs/QUALITY_GATES.md`](docs/QUALITY_GATES.md).
 
 ---
 
