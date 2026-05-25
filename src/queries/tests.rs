@@ -387,6 +387,7 @@ fn test_event(
     timestamp: &str,
 ) -> Event {
     Event {
+        tenant_id: Default::default(),
         event_id: None,
         event_uuid: Uuid::from_u128(sequence),
         correlation_id: Some("blocker-query-test".to_owned()),

@@ -118,6 +118,7 @@ fn rust_validation_rejects_empty_actor() {
 #[test]
 fn rust_validation_rejects_payload_type_mismatch() {
     let event = Event {
+        tenant_id: Default::default(),
         event_id: Some(1),
         event_uuid: Uuid::parse_str("018f5d8a-03fb-7df0-8e36-64d7410cfe00").unwrap(),
         correlation_id: Some("session-1".to_owned()),
@@ -139,6 +140,7 @@ fn rust_validation_rejects_payload_type_mismatch() {
 #[test]
 fn blocker_report_requires_decision_or_topic_anchor() {
     let event = Event {
+        tenant_id: Default::default(),
         event_id: Some(9),
         event_uuid: Uuid::parse_str("018f5d8a-03fb-7df0-8e36-64d7410cfe09").unwrap(),
         correlation_id: Some("session-1".to_owned()),

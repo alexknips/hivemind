@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 
 use crate::error::LedgerError;
-use crate::events::{Event, EventId};
+use crate::events::{Event, EventId, TenantId};
 use crate::Result;
 
 use super::backend_error::storage_error;
@@ -44,12 +44,14 @@ impl SqliteEventLedger {
 }
 
 impl EventLedger for SqliteEventLedger {
-    fn append(&self, event: Event) -> Result<EventId> {
+    fn append_for_tenant(&self, tenant_id: &TenantId, mut event: Event) -> Result<EventId> {
+        event.tenant_id = tenant_id.clone();
         let stored = row::StoredEvent::from_event(event)?;
 
         let inserted = retry_sqlite_lock(|| {
             self.connection.execute(
                 "INSERT OR IGNORE INTO events (
+                    tenant_id,
                     event_uuid,
                     type,
                     actor_id,
@@ -59,8 +61,9 @@ impl EventLedger for SqliteEventLedger {
                     causation_event_id,
                     payload,
                     ts
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
+                    stored.tenant_id.as_str(),
                     stored.event_uuid.as_str(),
                     stored.event_type,
                     stored.actor_id.as_str(),
@@ -82,8 +85,8 @@ impl EventLedger for SqliteEventLedger {
         let existing: Option<i64> = retry_sqlite_lock(|| {
             self.connection
                 .query_row(
-                    "SELECT event_id FROM events WHERE event_uuid = ?1",
-                    params![stored.event_uuid.as_str()],
+                    "SELECT event_id FROM events WHERE tenant_id = ?1 AND event_uuid = ?2",
+                    params![stored.tenant_id.as_str(), stored.event_uuid.as_str()],
                     |row| row.get(0),
                 )
                 .optional()
@@ -99,7 +102,12 @@ impl EventLedger for SqliteEventLedger {
         rowid_to_event_id(existing, "event_id")
     }
 
-    fn read(&self, offset: EventId, limit: usize) -> Result<Vec<Event>> {
+    fn read_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -115,7 +123,7 @@ impl EventLedger for SqliteEventLedger {
             .map_err(storage_error)?;
 
         let mut rows = statement
-            .query(params![offset, limit])
+            .query(params![tenant_id.as_str(), offset, limit])
             .map_err(storage_error)?;
         let mut events = Vec::new();
         while let Some(row) = rows.next().map_err(storage_error)? {
@@ -125,8 +133,9 @@ impl EventLedger for SqliteEventLedger {
         Ok(events)
     }
 
-    fn replay_from(
+    fn replay_from_for_tenant(
         &self,
+        tenant_id: &TenantId,
         offset: EventId,
         callback: &mut dyn FnMut(&Event) -> Result<()>,
     ) -> Result<()> {
@@ -138,7 +147,9 @@ impl EventLedger for SqliteEventLedger {
             .prepare(&replay_events_sql())
             .map_err(storage_error)?;
 
-        let mut rows = statement.query(params![offset]).map_err(storage_error)?;
+        let mut rows = statement
+            .query(params![tenant_id.as_str(), offset])
+            .map_err(storage_error)?;
         while let Some(row) = rows.next().map_err(storage_error)? {
             let event = row::event_from_row(row)?;
             callback(&event)?;
@@ -147,12 +158,14 @@ impl EventLedger for SqliteEventLedger {
         Ok(())
     }
 
-    fn latest_offset(&self) -> Result<EventId> {
+    fn latest_offset_for_tenant(&self, tenant_id: &TenantId) -> Result<EventId> {
         let offset: i64 = self
             .connection
-            .query_row("SELECT COALESCE(MAX(event_id), 0) FROM events", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT COALESCE(MAX(event_id), 0) FROM events WHERE tenant_id = ?1",
+                params![tenant_id.as_str()],
+                |row| row.get(0),
+            )
             .map_err(storage_error)?;
 
         rowid_to_event_id(offset, "latest_offset")
@@ -166,7 +179,8 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
              PRAGMA synchronous=NORMAL;
              CREATE TABLE IF NOT EXISTS events (
                  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 event_uuid TEXT NOT NULL UNIQUE,
+                 tenant_id TEXT NOT NULL DEFAULT 'local',
+                 event_uuid TEXT NOT NULL,
                  type TEXT NOT NULL,
                  actor_id TEXT NOT NULL,
                  source TEXT NOT NULL DEFAULT 'cli',
@@ -174,8 +188,14 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
                  correlation_id TEXT,
                  causation_event_id INTEGER,
                  payload TEXT NOT NULL,
-                 ts TEXT NOT NULL
+                 ts TEXT NOT NULL,
+                 UNIQUE(tenant_id, event_uuid)
              );",
+        )?;
+        ensure_column(
+            connection,
+            "tenant_id",
+            "ALTER TABLE events ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'local'",
         )?;
         ensure_column(
             connection,
@@ -187,10 +207,75 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             "source_ref",
             "ALTER TABLE events ADD COLUMN source_ref TEXT",
         )?;
+        ensure_tenant_scoped_event_uuid(connection)?;
         Ok(())
     })
     .map_err(storage_error)?;
 
+    Ok(())
+}
+
+fn ensure_tenant_scoped_event_uuid(connection: &Connection) -> rusqlite::Result<()> {
+    let create_sql: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'events'",
+            [],
+            |row| row.get(0),
+        )?;
+
+    if create_sql.contains("UNIQUE(tenant_id, event_uuid)")
+        && !create_sql.contains("event_uuid TEXT NOT NULL UNIQUE")
+    {
+        return Ok(());
+    }
+
+    connection
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE events RENAME TO events_pre_tenant_scope;
+             CREATE TABLE events (
+                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 tenant_id TEXT NOT NULL DEFAULT 'local',
+                 event_uuid TEXT NOT NULL,
+                 type TEXT NOT NULL,
+                 actor_id TEXT NOT NULL,
+                 source TEXT NOT NULL DEFAULT 'cli',
+                 source_ref TEXT,
+                 correlation_id TEXT,
+                 causation_event_id INTEGER,
+                 payload TEXT NOT NULL,
+                 ts TEXT NOT NULL,
+                 UNIQUE(tenant_id, event_uuid)
+             );
+             INSERT INTO events (
+                 event_id,
+                 tenant_id,
+                 event_uuid,
+                 type,
+                 actor_id,
+                 source,
+                 source_ref,
+                 correlation_id,
+                 causation_event_id,
+                 payload,
+                 ts
+             )
+             SELECT
+                 event_id,
+                 COALESCE(NULLIF(tenant_id, ''), 'local'),
+                 event_uuid,
+                 type,
+                 actor_id,
+                 source,
+                 source_ref,
+                 correlation_id,
+                 causation_event_id,
+                 payload,
+                 ts
+             FROM events_pre_tenant_scope;
+             DROP TABLE events_pre_tenant_scope;
+             COMMIT;",
+        )?;
     Ok(())
 }
 
@@ -236,7 +321,8 @@ fn rowid_to_event_id(rowid: i64, label: &str) -> Result<EventId> {
 }
 
 fn event_columns_sql() -> &'static str {
-    "event_id,
+    "tenant_id,
+     event_id,
      event_uuid,
      type,
      actor_id,
@@ -250,14 +336,14 @@ fn event_columns_sql() -> &'static str {
 
 fn read_events_sql() -> String {
     format!(
-        "SELECT {} FROM events WHERE event_id > ?1 ORDER BY event_id ASC LIMIT ?2",
+        "SELECT {} FROM events WHERE tenant_id = ?1 AND event_id > ?2 ORDER BY event_id ASC LIMIT ?3",
         event_columns_sql()
     )
 }
 
 fn replay_events_sql() -> String {
     format!(
-        "SELECT {} FROM events WHERE event_id > ?1 ORDER BY event_id ASC",
+        "SELECT {} FROM events WHERE tenant_id = ?1 AND event_id > ?2 ORDER BY event_id ASC",
         event_columns_sql()
     )
 }

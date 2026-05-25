@@ -9,11 +9,15 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::OptionalExtension;
 use uuid::Uuid;
 
+use crate::commands::{CommandContext, Commands, DecisionProposalEventUuids};
+use crate::events::{EventProvenance, TenantId};
 use crate::ledger::contract_tests::{
     assert_dedup_by_event_uuid, assert_monotonic_append, assert_read_offset_and_limit,
     assert_replay_from_zero_in_order, make_event,
 };
 use crate::ledger::EventLedger;
+use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
+use crate::queries::get_decision;
 use crate::Result;
 
 use super::super::backend_error::storage_error;
@@ -40,6 +44,44 @@ fn replay_from_zero_is_ordered() -> Result<()> {
 fn read_applies_offset_and_limit() -> Result<()> {
     with_sqlite_ledger("read-offset-limit", |ledger| {
         assert_read_offset_and_limit(ledger)
+    })
+}
+
+#[test]
+fn tenant_scoped_sqlite_ledger_isolates_commands_and_queries() -> Result<()> {
+    with_sqlite_ledger("tenant-isolation", |ledger| {
+        let tenant_a = TenantId::new("tenant:a").expect("tenant a is valid");
+        let tenant_b = TenantId::new("tenant:b").expect("tenant b is valid");
+
+        write_shared_decision(ledger, tenant_a.clone(), "Tenant A decision")?;
+        write_shared_decision(ledger, tenant_b.clone(), "Tenant B decision")?;
+
+        let tenant_a_events = ledger.read_for_tenant(&tenant_a, 0, 10)?;
+        let tenant_b_events = ledger.read_for_tenant(&tenant_b, 0, 10)?;
+        assert_eq!(tenant_a_events.len(), 2);
+        assert_eq!(tenant_b_events.len(), 2);
+        assert!(tenant_a_events
+            .iter()
+            .all(|event| event.tenant_id == tenant_a));
+        assert!(tenant_b_events
+            .iter()
+            .all(|event| event.tenant_id == tenant_b));
+
+        let graph_a = MemoryGraph::default();
+        rebuild_graph_for_tenant(ledger, &tenant_a, &graph_a)?;
+        let decision_a = get_decision(&graph_a, "decision-shared")?
+            .data
+            .expect("tenant a decision exists");
+        assert_eq!(decision_a.title, "Tenant A decision");
+
+        let graph_b = MemoryGraph::default();
+        rebuild_graph_for_tenant(ledger, &tenant_b, &graph_b)?;
+        let decision_b = get_decision(&graph_b, "decision-shared")?
+            .data
+            .expect("tenant b decision exists");
+        assert_eq!(decision_b.title, "Tenant B decision");
+
+        Ok(())
     })
 }
 
@@ -156,4 +198,43 @@ fn temp_hivemind_dir(prefix: &str) -> PathBuf {
         .expect("clock before unix epoch")
         .as_nanos();
     std::env::temp_dir().join(format!("hivemind-{prefix}-{nanos}-{}", std::process::id()))
+}
+
+fn write_shared_decision(
+    ledger: &SqliteEventLedger,
+    tenant_id: TenantId,
+    title: &str,
+) -> Result<()> {
+    let commands = Commands::new_with_context(
+        ledger,
+        CommandContext::new(
+            tenant_id,
+            EventProvenance::api(Some("tenant-test".to_owned())),
+        ),
+    );
+    commands.record_option_with_id(
+        "actor:test",
+        "option-shared",
+        "Shared",
+        "Shared option label across tenants",
+    )?;
+    commands.propose_decision_with_id(
+        "actor:test",
+        "decision-shared",
+        title,
+        "Tenant-specific rationale",
+        &["tenant-isolation".to_owned()],
+        &["option-shared".to_owned()],
+        None,
+        &[],
+        &[],
+        DecisionProposalEventUuids {
+            proposal: Uuid::from_u128(1),
+            has_option: vec![Uuid::from_u128(2)],
+            chose: None,
+            assumes: Vec::new(),
+            based_on: Vec::new(),
+        },
+    )?;
+    Ok(())
 }

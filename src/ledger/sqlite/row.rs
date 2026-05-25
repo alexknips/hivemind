@@ -2,12 +2,13 @@ use chrono::{DateTime, Utc};
 use rusqlite::Row;
 use uuid::Uuid;
 
-use crate::events::{Event, EventSource, EventType};
+use crate::events::{Event, EventSource, EventType, TenantId};
 use crate::Result;
 
 use super::super::backend_error::storage_error;
 
 pub(super) struct StoredEvent {
+    pub tenant_id: String,
     pub event_uuid: String,
     pub event_type: &'static str,
     pub actor_id: String,
@@ -26,6 +27,7 @@ impl StoredEvent {
         let causation_event_id = event.causation_event_id.map(|id| id as i64);
 
         Ok(Self {
+            tenant_id: event.tenant_id.as_str().to_owned(),
             event_uuid: event.event_uuid.to_string(),
             event_type: event_type_as_str(event.event_type),
             actor_id: event.actor_id,
@@ -40,6 +42,7 @@ impl StoredEvent {
 }
 
 pub(super) fn event_from_row(row: &Row<'_>) -> Result<Event> {
+    let tenant_id_raw: String = row.get("tenant_id").map_err(storage_error)?;
     let event_id_raw: i64 = row.get("event_id").map_err(storage_error)?;
     let event_uuid_raw: String = row.get("event_uuid").map_err(storage_error)?;
     let event_type_raw: String = row.get("type").map_err(storage_error)?;
@@ -54,6 +57,8 @@ pub(super) fn event_from_row(row: &Row<'_>) -> Result<Event> {
 
     let event_id = u64::try_from(event_id_raw)
         .map_err(|error| storage_error(format!("invalid event_id in row: {error}")))?;
+    let tenant_id = TenantId::new(tenant_id_raw)
+        .map_err(|error| storage_error(format!("invalid tenant_id in row: {error}")))?;
     let event_uuid = Uuid::parse_str(&event_uuid_raw)
         .map_err(|error| storage_error(format!("invalid event_uuid in row: {error}")))?;
     let event_type = parse_event_type(&event_type_raw)?;
@@ -71,6 +76,7 @@ pub(super) fn event_from_row(row: &Row<'_>) -> Result<Event> {
         .with_timezone(&Utc);
 
     Ok(Event {
+        tenant_id,
         event_id: Some(event_id),
         event_uuid,
         correlation_id,

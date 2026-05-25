@@ -17,110 +17,110 @@ const GRAPH_DB_NAME: &str = "graph.kuzu";
 const NODE_DDL: &[(NodeKind, &str)] = &[
     (
         NodeKind::Decision,
-        "CREATE NODE TABLE IF NOT EXISTS `Decision` (id STRING, title STRING, rationale STRING, topic_keys STRING[], event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Decision` (id STRING, title STRING, rationale STRING, topic_keys STRING[], tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::DecisionRequest,
-        "CREATE NODE TABLE IF NOT EXISTS `DecisionRequest` (id STRING, decision_id STRING, topic_keys STRING[], reason STRING, priority STRING, required_owner_id STRING, authority_class STRING, requested_by STRING, client_request_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `DecisionRequest` (id STRING, decision_id STRING, topic_keys STRING[], reason STRING, priority STRING, required_owner_id STRING, authority_class STRING, requested_by STRING, client_request_id STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Actor,
-        "CREATE NODE TABLE IF NOT EXISTS `Actor` (id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Actor` (id STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Evidence,
-        "CREATE NODE TABLE IF NOT EXISTS `Evidence` (id STRING, content STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Evidence` (id STRING, content STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Option,
-        "CREATE NODE TABLE IF NOT EXISTS `Option` (id STRING, label STRING, description STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Option` (id STRING, label STRING, description STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Hypothesis,
-        "CREATE NODE TABLE IF NOT EXISTS `Hypothesis` (id STRING, statement STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Hypothesis` (id STRING, statement STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Blocker,
-        "CREATE NODE TABLE IF NOT EXISTS `Blocker` (id STRING, blocked_actor_id STRING, decision_id STRING, topic_keys STRING[], blocked_ref STRING, blocked_ref_type STRING, reason STRING, priority STRING, last_progress_at STRING, required_owner_id STRING, reported_at STRING, reported_event_origin INT64, resolved_at STRING, resolution_event_id INT64, resolution_reason STRING, resolved_event_origin INT64, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Blocker` (id STRING, blocked_actor_id STRING, decision_id STRING, topic_keys STRING[], blocked_ref STRING, blocked_ref_type STRING, reason STRING, priority STRING, last_progress_at STRING, required_owner_id STRING, reported_at STRING, reported_event_origin INT64, resolved_at STRING, resolution_event_id INT64, resolution_reason STRING, resolved_event_origin INT64, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Notification,
-        "CREATE NODE TABLE IF NOT EXISTS `Notification` (id STRING, blocker_id STRING, recipient_actor_id STRING, channel STRING, threshold_rule STRING, source_event_ids STRING[], dedupe_key STRING, sent_at STRING, ack_at STRING, snooze_until STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Notification` (id STRING, blocker_id STRING, recipient_actor_id STRING, channel STRING, threshold_rule STRING, source_event_ids STRING[], dedupe_key STRING, sent_at STRING, ack_at STRING, snooze_until STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
 ];
 
 const RELATION_DDL: &[(RelationKind, &str)] = &[
     (
         RelationKind::ProposedBy,
-        "CREATE REL TABLE IF NOT EXISTS `PROPOSED_BY` (FROM `Decision` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `PROPOSED_BY` (FROM `Decision` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::DecisionRequestedBy,
-        "CREATE REL TABLE IF NOT EXISTS `DECISION_REQUESTED_BY` (FROM `DecisionRequest` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `DECISION_REQUESTED_BY` (FROM `DecisionRequest` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::DecisionRequestForDecision,
-        "CREATE REL TABLE IF NOT EXISTS `DECISION_REQUEST_FOR_DECISION` (FROM `DecisionRequest` TO `Decision`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `DECISION_REQUEST_FOR_DECISION` (FROM `DecisionRequest` TO `Decision`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::DecisionRequestRequiredOwner,
-        "CREATE REL TABLE IF NOT EXISTS `DECISION_REQUEST_REQUIRED_OWNER` (FROM `DecisionRequest` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `DECISION_REQUEST_REQUIRED_OWNER` (FROM `DecisionRequest` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::AcceptedBy,
-        "CREATE REL TABLE IF NOT EXISTS `ACCEPTED_BY` (FROM `Decision` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `ACCEPTED_BY` (FROM `Decision` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::RejectedBy,
-        "CREATE REL TABLE IF NOT EXISTS `REJECTED_BY` (FROM `Decision` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `REJECTED_BY` (FROM `Decision` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::Supersedes,
-        "CREATE REL TABLE IF NOT EXISTS `SUPERSEDES` (FROM `Decision` TO `Decision`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `SUPERSEDES` (FROM `Decision` TO `Decision`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::BlockedActor,
-        "CREATE REL TABLE IF NOT EXISTS `BLOCKED_ACTOR` (FROM `Blocker` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `BLOCKED_ACTOR` (FROM `Blocker` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::BlockerForDecision,
-        "CREATE REL TABLE IF NOT EXISTS `BLOCKER_FOR_DECISION` (FROM `Blocker` TO `Decision`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `BLOCKER_FOR_DECISION` (FROM `Blocker` TO `Decision`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::BlockerRequiredOwner,
-        "CREATE REL TABLE IF NOT EXISTS `BLOCKER_REQUIRED_OWNER` (FROM `Blocker` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `BLOCKER_REQUIRED_OWNER` (FROM `Blocker` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::NotificationForBlocker,
-        "CREATE REL TABLE IF NOT EXISTS `NOTIFICATION_FOR_BLOCKER` (FROM `Notification` TO `Blocker`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `NOTIFICATION_FOR_BLOCKER` (FROM `Notification` TO `Blocker`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::NotificationRecipient,
-        "CREATE REL TABLE IF NOT EXISTS `NOTIFICATION_RECIPIENT` (FROM `Notification` TO `Actor`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `NOTIFICATION_RECIPIENT` (FROM `Notification` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::BasedOn,
-        "CREATE REL TABLE IF NOT EXISTS `BASED_ON` (FROM `Decision` TO `Evidence`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `BASED_ON` (FROM `Decision` TO `Evidence`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::HasOption,
-        "CREATE REL TABLE IF NOT EXISTS `HAS_OPTION` (FROM `Decision` TO `Option`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `HAS_OPTION` (FROM `Decision` TO `Option`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::Chose,
-        "CREATE REL TABLE IF NOT EXISTS `CHOSE` (FROM `Decision` TO `Option`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `CHOSE` (FROM `Decision` TO `Option`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::Assumes,
-        "CREATE REL TABLE IF NOT EXISTS `ASSUMES` (FROM `Decision` TO `Hypothesis`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `ASSUMES` (FROM `Decision` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::Supports,
-        "CREATE REL TABLE IF NOT EXISTS `SUPPORTS` (FROM `Evidence` TO `Hypothesis`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `SUPPORTS` (FROM `Evidence` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::Refutes,
-        "CREATE REL TABLE IF NOT EXISTS `REFUTES` (FROM `Evidence` TO `Hypothesis`, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `REFUTES` (FROM `Evidence` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
 ];
 
