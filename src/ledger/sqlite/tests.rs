@@ -2,6 +2,8 @@
 #[cfg(test)]
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Barrier};
+use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::OptionalExtension;
@@ -68,6 +70,53 @@ fn configures_busy_timeout_for_write_contention() -> Result<()> {
         assert_eq!(busy_timeout_ms, 30_000);
         Ok(())
     })
+}
+
+#[test]
+fn concurrent_first_open_initializes_schema_once() -> Result<()> {
+    let dir = temp_hivemind_dir("concurrent-first-open");
+    fs::create_dir_all(&dir).map_err(storage_error)?;
+
+    const EVENT_IDS: [&str; 8] = [
+        "concurrent-first-open-0",
+        "concurrent-first-open-1",
+        "concurrent-first-open-2",
+        "concurrent-first-open-3",
+        "concurrent-first-open-4",
+        "concurrent-first-open-5",
+        "concurrent-first-open-6",
+        "concurrent-first-open-7",
+    ];
+    let worker_count = EVENT_IDS.len();
+    let dir = Arc::new(dir);
+    let barrier = Arc::new(Barrier::new(worker_count));
+    let mut handles = Vec::new();
+    for event_id in EVENT_IDS {
+        let dir = Arc::clone(&dir);
+        let barrier = Arc::clone(&barrier);
+        handles.push(thread::spawn(move || -> Result<()> {
+            barrier.wait();
+            let ledger = SqliteEventLedger::open(dir.as_ref())?;
+            ledger.append(make_event(event_id, Uuid::new_v4()))?;
+            Ok(())
+        }));
+    }
+
+    for handle in handles {
+        handle
+            .join()
+            .map_err(|_| storage_error("concurrent open worker panicked"))??;
+    }
+
+    let ledger = SqliteEventLedger::open(dir.as_ref())?;
+    let expected_events =
+        u64::try_from(worker_count).map_err(|_| storage_error("worker count out of range"))?;
+    if ledger.latest_offset()? != expected_events {
+        return Err(storage_error("concurrent first open event count mismatch").into());
+    }
+
+    let _ = fs::remove_dir_all(dir.as_ref());
+    Ok(())
 }
 
 #[test]

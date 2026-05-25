@@ -2,9 +2,10 @@ mod row;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 
 use crate::error::LedgerError;
 use crate::events::{Event, EventId};
@@ -15,6 +16,7 @@ use super::EventLedger;
 
 const LEDGER_DB_NAME: &str = "ledger.sqlite";
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 30_000;
+const SQLITE_LOCK_RETRY_SLEEP_MS: u64 = 10;
 
 #[derive(Debug)]
 pub struct SqliteEventLedger {
@@ -44,11 +46,9 @@ impl SqliteEventLedger {
 impl EventLedger for SqliteEventLedger {
     fn append(&self, event: Event) -> Result<EventId> {
         let stored = row::StoredEvent::from_event(event)?;
-        let event_uuid = stored.event_uuid.clone();
 
-        let inserted = self
-            .connection
-            .execute(
+        let inserted = retry_sqlite_lock(|| {
+            self.connection.execute(
                 "INSERT OR IGNORE INTO events (
                     event_uuid,
                     type,
@@ -61,38 +61,39 @@ impl EventLedger for SqliteEventLedger {
                     ts
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
-                    stored.event_uuid,
+                    stored.event_uuid.as_str(),
                     stored.event_type,
-                    stored.actor_id,
+                    stored.actor_id.as_str(),
                     stored.source,
-                    stored.source_ref,
-                    stored.correlation_id,
+                    stored.source_ref.as_deref(),
+                    stored.correlation_id.as_deref(),
                     stored.causation_event_id,
-                    stored.payload,
-                    stored.ts,
+                    stored.payload.as_str(),
+                    stored.ts.as_str(),
                 ],
             )
-            .map_err(storage_error)?;
+        })
+        .map_err(storage_error)?;
 
         if inserted == 1 {
             return rowid_to_event_id(self.connection.last_insert_rowid(), "sqlite rowid");
         }
 
-        let existing: Option<i64> = self
-            .connection
-            .query_row(
-                "SELECT event_id FROM events WHERE event_uuid = ?1",
-                params![event_uuid],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(storage_error)?;
+        let existing: Option<i64> = retry_sqlite_lock(|| {
+            self.connection
+                .query_row(
+                    "SELECT event_id FROM events WHERE event_uuid = ?1",
+                    params![stored.event_uuid.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()
+        })
+        .map_err(storage_error)?;
 
         let existing = existing.ok_or_else(|| {
-            LedgerError::Storage(
-                "event dedup failed: duplicate event_uuid not found after INSERT OR IGNORE"
-                    .to_owned(),
-            )
+            LedgerError::Storage(String::from(
+                "event dedup failed: duplicate event_uuid not found after INSERT OR IGNORE",
+            ))
         })?;
 
         rowid_to_event_id(existing, "event_id")
@@ -159,8 +160,8 @@ impl EventLedger for SqliteEventLedger {
 }
 
 fn initialize_schema(connection: &Connection) -> Result<()> {
-    connection
-        .execute_batch(
+    retry_sqlite_lock(|| {
+        connection.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
              CREATE TABLE IF NOT EXISTS events (
@@ -175,37 +176,59 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
                  payload TEXT NOT NULL,
                  ts TEXT NOT NULL
              );",
-        )
-        .map_err(storage_error)?;
-    ensure_column(
-        connection,
-        "source",
-        "ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'cli'",
-    )?;
-    ensure_column(
-        connection,
-        "source_ref",
-        "ALTER TABLE events ADD COLUMN source_ref TEXT",
-    )?;
+        )?;
+        ensure_column(
+            connection,
+            "source",
+            "ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'cli'",
+        )?;
+        ensure_column(
+            connection,
+            "source_ref",
+            "ALTER TABLE events ADD COLUMN source_ref TEXT",
+        )?;
+        Ok(())
+    })
+    .map_err(storage_error)?;
 
     Ok(())
 }
 
-fn ensure_column(connection: &Connection, column_name: &str, alter_sql: &str) -> Result<()> {
-    let mut statement = connection
-        .prepare("PRAGMA table_info(events)")
-        .map_err(storage_error)?;
+fn ensure_column(
+    connection: &Connection,
+    column_name: &str,
+    alter_sql: &str,
+) -> rusqlite::Result<()> {
+    let mut statement = connection.prepare("PRAGMA table_info(events)")?;
     let column_names = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(storage_error)?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(storage_error)?;
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
 
     if !column_names.iter().any(|name| name == column_name) {
-        connection.execute(alter_sql, []).map_err(storage_error)?;
+        connection.execute(alter_sql, [])?;
     }
 
     Ok(())
+}
+
+fn retry_sqlite_lock<T>(mut operation: impl FnMut() -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+    let deadline = Instant::now() + Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS);
+    loop {
+        match operation() {
+            Ok(value) => return Ok(value),
+            Err(error) if is_retryable_sqlite_lock(&error) && Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(SQLITE_LOCK_RETRY_SLEEP_MS));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn is_retryable_sqlite_lock(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    )
 }
 
 fn rowid_to_event_id(rowid: i64, label: &str) -> Result<EventId> {
