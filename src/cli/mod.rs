@@ -9,7 +9,9 @@ use uuid::Uuid;
 
 use crate::commands::Commands;
 use crate::error::{CliError, CommandError};
-use crate::events::{BlockerPriority, EventId, EventProvenance, RelationKind as EventRelationKind};
+use crate::events::{
+    BlockerPriority, EventId, EventProvenance, EventType, RelationKind as EventRelationKind,
+};
 use crate::identity::{
     agent_actor_id, default_actor, default_agent_session, default_agent_tool,
     default_human_actor_id,
@@ -32,12 +34,15 @@ use crate::queries::{
     get_decision_neighborhood, get_decisions_added_since, get_decisions_changed_since,
     get_recent_activity, get_recent_decisions, get_relevant_decisions, get_supersession_chain,
     search_decisions, search_decisions_fts, ActiveDecisionBlockersRequest,
-    BlockerNotificationCandidatesRequest, ChangedSinceRequest, DecisionBlockerFilters,
-    DecisionStatus, DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
-    HistoryFilterRequest, HypothesisStatus, NeighborhoodRequest,
-    ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQuery, ReadOnlyExportRequest,
-    RecentActivityRequest, RecentDecisionFilterRequest, RecentDecisionsRequest,
-    RecentDecisionsResults, SearchDecisionRequest,
+    BlockerNotificationCandidates, BlockerNotificationCandidatesRequest, ChangedSinceRequest,
+    DecisionBlockerFilters, DecisionBlockerResults, DecisionSearchResults, DecisionStatus,
+    DecisionView, DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
+    DecisionsAddedSinceResults, DecisionsChangedSinceResults, HistoryChangeKind,
+    HistoryFilterRequest, HypothesisStatus, NeighborhoodRequest, NeighborhoodView, QueryResponse,
+    ReadOnlyExport, ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQuery,
+    ReadOnlyExportQueryKind, ReadOnlyExportRequest, RecentActivityRequest, RecentActivityResults,
+    RecentDecisionFilterRequest, RecentDecisionsRequest, RecentDecisionsResults,
+    SearchDecisionRequest, SupersessionChain,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -97,6 +102,7 @@ pub enum Command {
     Supersede(SupersedeArgs),
     Import(ImportArgs),
     Suggest(SuggestArgs),
+    /// Run deterministic read queries. JSON is the default; pass --summary for compact text.
     Query(Box<QueryArgs>),
     Dump(DumpArgs),
     Tui(TuiArgs),
@@ -635,7 +641,17 @@ pub enum DocumentExtractorCommandArg {
 }
 
 #[derive(Debug, Clone, Args)]
+#[command(
+    about = "Run deterministic read queries. JSON is the default output; use --summary for compact text."
+)]
 pub struct QueryArgs {
+    #[arg(
+        long = "summary",
+        global = true,
+        help = "Render compact human-readable text instead of JSON; JSON is the default output"
+    )]
+    pub summary: bool,
+
     #[command(subcommand)]
     pub command: QueryCommand,
 }
@@ -833,9 +849,6 @@ pub struct QueryRecentDecisionsArgs {
 
     #[arg(long = "cursor")]
     pub cursor: Option<String>,
-
-    #[arg(long = "summary")]
-    pub summary: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1656,33 +1669,51 @@ impl QueryCommand {
 }
 
 fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result<String> {
-    let json = match &query.command {
+    let output = match &query.command {
         QueryCommand::RecentDecisions(args) => {
             let response = get_recent_decisions(ledger, &recent_decisions_request(args)?)?;
-            if args.summary {
-                return Ok(render_recent_decisions_summary(&response.data));
-            }
-            serde_json::to_string(&response).map_err(|error| {
-                CliError::InvalidInput(format!("json serialization failed: {error}"))
-            })?
+            format_query_response(
+                query.summary,
+                &response,
+                render_recent_decisions_summary,
+                response.data.next_cursor.as_deref(),
+            )?
         }
-        QueryCommand::GetRecentActivity(args) => serde_json::to_string(&get_recent_activity(
-            ledger,
-            &recent_activity_request(args)?,
-        )?)
-        .map_err(|error| CliError::InvalidInput(format!("json serialization failed: {error}")))?,
-        QueryCommand::GetDecisionsChangedSince(args) => serde_json::to_string(
-            &get_decisions_changed_since(ledger, &changed_since_request(args)?)?,
-        )
-        .map_err(|error| CliError::InvalidInput(format!("json serialization failed: {error}")))?,
-        QueryCommand::GetDecisionsAddedSince(args) => serde_json::to_string(
-            &get_decisions_added_since(ledger, &added_since_request(args)?)?,
-        )
-        .map_err(|error| CliError::InvalidInput(format!("json serialization failed: {error}")))?,
+        QueryCommand::GetRecentActivity(args) => {
+            let response = get_recent_activity(ledger, &recent_activity_request(args)?)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_recent_activity_summary,
+                response.data.next_cursor.as_deref(),
+            )?
+        }
+        QueryCommand::GetDecisionsChangedSince(args) => {
+            let response = get_decisions_changed_since(ledger, &changed_since_request(args)?)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_changed_since_summary,
+                response.data.next_cursor.as_deref(),
+            )?
+        }
+        QueryCommand::GetDecisionsAddedSince(args) => {
+            let response = get_decisions_added_since(ledger, &added_since_request(args)?)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_added_since_summary,
+                response.data.next_cursor.as_deref(),
+            )?
+        }
         QueryCommand::ExportReadOnlySummary(args) => {
             let request = export_read_only_summary_request(args)?;
-            serde_json::to_string(&export_read_only_summary(ledger, &request)?).map_err(
-                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
+            let response = export_read_only_summary(ledger, &request)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_read_only_export_summary,
+                response.data.continuation_cursor.as_deref(),
             )?
         }
         QueryCommand::GetDecision(_)
@@ -1699,7 +1730,7 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
         }
     };
 
-    Ok(json)
+    Ok(output)
 }
 
 fn added_since_request(args: &QueryAddedSinceArgs) -> Result<DecisionsAddedSinceRequest> {
@@ -1790,16 +1821,318 @@ fn render_recent_decisions_summary(results: &RecentDecisionsResults) -> String {
             timestamp,
             decision_status_label(item.status),
             item.decision_id,
-            item.title,
+            summary_cell(&item.title),
             item.actor_ids.join(","),
             item.creation.source.as_str(),
             item.creation.citation_id
         );
     }
-    if let Some(next_cursor) = &results.next_cursor {
-        let _ = writeln!(output, "truncated=true next_cursor={next_cursor}");
+    output.trim_end().to_owned()
+}
+
+fn render_recent_activity_summary(results: &RecentActivityResults) -> String {
+    if results.items.is_empty() {
+        return "No recent activity found".to_owned();
+    }
+
+    let mut output = String::new();
+    for item in &results.items {
+        let _ = writeln!(
+            output,
+            "{}\t{}\t{}\tactor={}\tsource={}\tdecisions={}\tcitation={}",
+            item.event_origin,
+            change_kind_label(item.change_kind),
+            event_type_label(item.event_type),
+            item.actor_id,
+            item.source.as_str(),
+            item.decision_ids.join(","),
+            item.citation_id
+        );
     }
     output.trim_end().to_owned()
+}
+
+fn render_changed_since_summary(results: &DecisionsChangedSinceResults) -> String {
+    if results.items.is_empty() {
+        return "No changed decisions found".to_owned();
+    }
+
+    let mut output = String::new();
+    for item in &results.items {
+        let _ = writeln!(
+            output,
+            "{}\t{}\t{}\tactor={}\tsource={}\tdecisions={}\tcitation={}",
+            item.event_origin,
+            change_kind_label(item.change_kind),
+            event_type_label(item.event_type),
+            item.actor_id,
+            item.source.as_str(),
+            item.decision_ids.join(","),
+            item.citation_id
+        );
+    }
+    output.trim_end().to_owned()
+}
+
+fn render_added_since_summary(results: &DecisionsAddedSinceResults) -> String {
+    if results.added_decisions.is_empty() && results.changed_existing_decisions.is_empty() {
+        return "No added or changed decisions found".to_owned();
+    }
+
+    let mut output = String::new();
+    for item in &results.added_decisions {
+        let _ = writeln!(
+            output,
+            "added\t{}\t{}\ttopics={}\tcitation={}\tchanges={}",
+            decision_status_label(item.status),
+            item.decision_id,
+            item.topic_keys.join(","),
+            item.creation.citation_id,
+            item.changes_in_window.len()
+        );
+    }
+    for item in &results.changed_existing_decisions {
+        let _ = writeln!(
+            output,
+            "changed\t{}\t{}\ttopics={}\tchanges={}",
+            decision_status_label(item.status),
+            item.decision_id,
+            item.topic_keys.join(","),
+            item.changes_in_window.len()
+        );
+    }
+    output.trim_end().to_owned()
+}
+
+fn render_read_only_export_summary(export: &ReadOnlyExport) -> String {
+    if let Some(markdown) = &export.markdown {
+        return markdown.trim_end().to_owned();
+    }
+
+    format!(
+        "read_only_export\tquery={}\tformat={}\tresult_count={}\ttruncated={}\tcitations={}",
+        read_only_query_label(export.query),
+        read_only_format_label(export.format),
+        export.result_count,
+        export.truncated,
+        export.citation_map.len()
+    )
+}
+
+fn format_query_response<T: Serialize>(
+    summary: bool,
+    response: &QueryResponse<T>,
+    render_summary: impl FnOnce(&T) -> String,
+    next_cursor: Option<&str>,
+) -> Result<String> {
+    if !summary {
+        return format_json_value(true, response);
+    }
+
+    let mut output = render_summary(&response.data);
+    append_truncation_notice(&mut output, response.truncated, next_cursor);
+    Ok(output.trim_end().to_owned())
+}
+
+fn append_truncation_notice(output: &mut String, truncated: bool, next_cursor: Option<&str>) {
+    if !truncated {
+        return;
+    }
+    if !output.is_empty() {
+        output.push('\n');
+    }
+    match next_cursor {
+        Some(cursor) => {
+            let _ = write!(
+                output,
+                "truncated=true next_cursor={}",
+                summary_cell(cursor)
+            );
+        }
+        None => output.push_str("truncated=true"),
+    }
+}
+
+fn render_decision_summary(decision: &Option<DecisionView>) -> String {
+    let Some(decision) = decision else {
+        return "No decision found".to_owned();
+    };
+
+    let mut output = String::new();
+    write_decision_summary_row(&mut output, "decision", decision);
+    output.trim_end().to_owned()
+}
+
+fn render_decision_list_summary(decisions: &[DecisionView]) -> String {
+    if decisions.is_empty() {
+        return "No decisions found".to_owned();
+    }
+
+    let mut output = String::new();
+    for decision in decisions {
+        write_decision_summary_row(&mut output, "decision", decision);
+    }
+    output.trim_end().to_owned()
+}
+
+fn render_search_summary(results: &DecisionSearchResults) -> String {
+    if results.items.is_empty() {
+        return "No matching decisions found".to_owned();
+    }
+
+    let mut output = String::new();
+    for item in &results.items {
+        let _ = writeln!(
+            output,
+            "match\trank={}\t{}\t{}\t{}\ttopics={}\tmatched={}",
+            item.rank,
+            decision_status_label(item.decision.status),
+            item.decision.id,
+            summary_cell(&item.decision.title),
+            item.decision.topic_keys.join(","),
+            item.matched_fields.join(",")
+        );
+    }
+    output.trim_end().to_owned()
+}
+
+fn render_supersession_summary(chain: &SupersessionChain) -> String {
+    if chain.decision_ids.is_empty() {
+        return "No supersession chain found".to_owned();
+    }
+
+    let mut output = String::new();
+    for (index, decision_id) in chain.decision_ids.iter().enumerate() {
+        let marker = if index == chain.input_index {
+            "input"
+        } else {
+            "chain"
+        };
+        let _ = writeln!(output, "{marker}\t{index}\t{decision_id}");
+    }
+    output.trim_end().to_owned()
+}
+
+fn render_neighborhood_summary(neighborhood: &NeighborhoodView) -> String {
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "root\t{}\t{}\tpresent={}\tnodes={}\tedges={}",
+        neighborhood.root.kind.table_name(),
+        neighborhood.root.id,
+        neighborhood.root.present,
+        neighborhood.nodes.len(),
+        neighborhood.edges.len()
+    );
+    for node in &neighborhood.nodes {
+        let status = match (node.decision_status, node.hypothesis_status) {
+            (Some(status), _) => decision_status_label(status),
+            (None, Some(status)) => hypothesis_status_label(status),
+            (None, None) => "",
+        };
+        let _ = writeln!(
+            output,
+            "node\t{}\t{}\tstatus={}",
+            node.kind.table_name(),
+            node.id,
+            status
+        );
+    }
+    for edge in &neighborhood.edges {
+        match edge.event_origin {
+            Some(event_origin) => {
+                let _ = writeln!(
+                    output,
+                    "edge\t{}\t{}\t{}\tevent_origin={}",
+                    edge.relation.table_name(),
+                    edge.from,
+                    edge.to,
+                    event_origin
+                );
+            }
+            None => {
+                let _ = writeln!(
+                    output,
+                    "edge\t{}\t{}\t{}\tevent_origin=unknown",
+                    edge.relation.table_name(),
+                    edge.from,
+                    edge.to
+                );
+            }
+        }
+    }
+    output.trim_end().to_owned()
+}
+
+fn render_active_blockers_summary(results: &DecisionBlockerResults) -> String {
+    if results.items.is_empty() {
+        return "No active decision blockers found".to_owned();
+    }
+
+    let mut output = String::new();
+    for blocker in &results.items {
+        let decision_id = match &blocker.decision_id {
+            Some(decision_id) => decision_id.as_str(),
+            None => "",
+        };
+        let _ = writeln!(
+            output,
+            "blocker\t{}\tdecision={}\tpriority={}\tstale={}\tblocked_actor={}\t{}",
+            blocker.id,
+            decision_id,
+            blocker.priority.as_str(),
+            blocker.stale,
+            blocker.blocked_actor_id,
+            summary_cell(&blocker.reason)
+        );
+    }
+    output.trim_end().to_owned()
+}
+
+fn render_blocker_notifications_summary(candidates: &BlockerNotificationCandidates) -> String {
+    if candidates.items.is_empty() {
+        return "No blocker notification candidates found".to_owned();
+    }
+
+    let mut output = String::new();
+    for candidate in &candidates.items {
+        let decision_id = match &candidate.decision_id {
+            Some(decision_id) => decision_id.as_str(),
+            None => "",
+        };
+        let _ = writeln!(
+            output,
+            "notification\tblocker={}\tdecision={}\tpriority={}\trecipient={}\tchannel={}",
+            candidate.blocker_id,
+            decision_id,
+            candidate.priority.as_str(),
+            candidate.recipient_actor_id,
+            candidate.channel
+        );
+    }
+    output.trim_end().to_owned()
+}
+
+fn write_decision_summary_row(output: &mut String, prefix: &str, decision: &DecisionView) {
+    let _ = writeln!(
+        output,
+        "{}\t{}\t{}\t{}\ttopics={}",
+        prefix,
+        decision_status_label(decision.status),
+        decision.id,
+        summary_cell(&decision.title),
+        decision.topic_keys.join(",")
+    );
+}
+
+fn summary_cell(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '\t' | '\n' | '\r' => ' ',
+            other => other,
+        })
+        .collect()
 }
 
 fn decision_status_label(status: DecisionStatus) -> &'static str {
@@ -1809,6 +2142,56 @@ fn decision_status_label(status: DecisionStatus) -> &'static str {
         DecisionStatus::Rejected => "rejected",
         DecisionStatus::Contested => "contested",
         DecisionStatus::Superseded => "superseded",
+    }
+}
+
+fn hypothesis_status_label(status: HypothesisStatus) -> &'static str {
+    match status {
+        HypothesisStatus::Open => "open",
+        HypothesisStatus::Supported => "supported",
+        HypothesisStatus::Refuted => "refuted",
+    }
+}
+
+fn event_type_label(event_type: EventType) -> &'static str {
+    match event_type {
+        EventType::DecisionProposed => "decision.proposed",
+        EventType::DecisionRequested => "decision.requested",
+        EventType::DecisionAccepted => "decision.accepted",
+        EventType::DecisionRejected => "decision.rejected",
+        EventType::DecisionSuperseded => "decision.superseded",
+        EventType::EvidenceRecorded => "evidence.recorded",
+        EventType::HypothesisRecorded => "hypothesis.recorded",
+        EventType::RelationAdded => "relation.added",
+        EventType::BlockerReported => "blocker.reported",
+        EventType::BlockerResolved => "blocker.resolved",
+        EventType::NotificationSent => "notification.sent",
+        EventType::NotificationAcknowledged => "notification.acknowledged",
+    }
+}
+
+fn change_kind_label(kind: HistoryChangeKind) -> &'static str {
+    match kind {
+        HistoryChangeKind::NewDecision => "new_decision",
+        HistoryChangeKind::StatusChange => "status_change",
+        HistoryChangeKind::NewEvidence => "new_evidence",
+        HistoryChangeKind::RefutedAssumption => "refuted_assumption",
+        HistoryChangeKind::Supersession => "supersession",
+        HistoryChangeKind::ContextChange => "context_change",
+    }
+}
+
+fn read_only_query_label(query: ReadOnlyExportQueryKind) -> &'static str {
+    match query {
+        ReadOnlyExportQueryKind::RecentActivity => "recent_activity",
+        ReadOnlyExportQueryKind::DecisionsChangedSince => "decisions_changed_since",
+    }
+}
+
+fn read_only_format_label(format: QueryReadOnlyExportFormat) -> &'static str {
+    match format {
+        QueryReadOnlyExportFormat::Json => "json",
+        QueryReadOnlyExportFormat::Markdown => "markdown",
     }
 }
 
@@ -2011,22 +2394,27 @@ fn run_query_with_graph(
     graph: &impl GraphView,
     query: &QueryArgs,
 ) -> Result<String> {
-    let json = match &query.command {
+    let output = match &query.command {
         QueryCommand::GetDecision(args) => {
-            serde_json::to_string(&get_decision(graph, &args.decision_id)?).map_err(|error| {
-                CliError::InvalidInput(format!("json serialization failed: {error}"))
-            })?
+            let response = get_decision(graph, &args.decision_id)?;
+            format_query_response(query.summary, &response, render_decision_summary, None)?
         }
-        QueryCommand::GetRelevantDecisions(args) => serde_json::to_string(&get_relevant_decisions(
-            graph,
-            &args.topic,
-            args.status.map(QueryDecisionStatus::as_decision_status),
-        )?)
-        .map_err(|error| CliError::InvalidInput(format!("json serialization failed: {error}")))?,
-        QueryCommand::GetSupersessionChain(args) => {
-            serde_json::to_string(&get_supersession_chain(graph, &args.decision_id)?).map_err(
-                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
+        QueryCommand::GetRelevantDecisions(args) => {
+            let response = get_relevant_decisions(
+                graph,
+                &args.topic,
+                args.status.map(QueryDecisionStatus::as_decision_status),
+            )?;
+            format_query_response(
+                query.summary,
+                &response,
+                |decisions| render_decision_list_summary(decisions),
+                None,
             )?
+        }
+        QueryCommand::GetSupersessionChain(args) => {
+            let response = get_supersession_chain(graph, &args.decision_id)?;
+            format_query_response(query.summary, &response, render_supersession_summary, None)?
         }
         QueryCommand::GetDecisionNeighborhood(args) => {
             if args.depth != 1 {
@@ -2046,25 +2434,27 @@ fn run_query_with_graph(
                         .map(QueryRelationKind::as_graph_relation),
                 )
             };
-            serde_json::to_string(&get_decision_neighborhood(
-                graph,
-                &args.decision_id,
-                &request,
-            )?)
-            .map_err(|error| {
-                CliError::InvalidInput(format!("json serialization failed: {error}"))
-            })?
+            let response = get_decision_neighborhood(graph, &args.decision_id, &request)?;
+            format_query_response(query.summary, &response, render_neighborhood_summary, None)?
         }
         QueryCommand::Search(args) => {
             let request = search_decision_request(args)?;
-            serde_json::to_string(&search_decisions_fts(ledger, graph, &request)?).map_err(
-                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
+            let response = search_decisions_fts(ledger, graph, &request)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_search_summary,
+                response.data.next_cursor.as_deref(),
             )?
         }
         QueryCommand::SearchDecisions(args) => {
             let request = search_decision_request(args)?;
-            serde_json::to_string(&search_decisions_fts(ledger, graph, &request)?).map_err(
-                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
+            let response = search_decisions_fts(ledger, graph, &request)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_search_summary,
+                response.data.next_cursor.as_deref(),
             )?
         }
         QueryCommand::GetActiveDecisionBlockers(args) => {
@@ -2086,8 +2476,12 @@ fn run_query_with_graph(
                 limit: args.limit,
                 cursor: args.cursor.clone(),
             };
-            serde_json::to_string(&get_active_decision_blockers(graph, &request)?).map_err(
-                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
+            let response = get_active_decision_blockers(graph, &request)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_active_blockers_summary,
+                response.data.next_cursor.as_deref(),
             )?
         }
         QueryCommand::GetBlockerNotificationCandidates(args) => {
@@ -2097,8 +2491,12 @@ fn run_query_with_graph(
                 limit: args.limit,
                 cursor: args.cursor.clone(),
             };
-            serde_json::to_string(&get_blocker_notification_candidates(graph, &request)?).map_err(
-                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
+            let response = get_blocker_notification_candidates(graph, &request)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_blocker_notifications_summary,
+                response.data.next_cursor.as_deref(),
             )?
         }
         QueryCommand::RecentDecisions(_)
@@ -2112,7 +2510,7 @@ fn run_query_with_graph(
         }
     };
 
-    Ok(json)
+    Ok(output)
 }
 
 fn parse_query_datetime(value: Option<&str>, flag: &str) -> Result<Option<DateTime<Utc>>> {

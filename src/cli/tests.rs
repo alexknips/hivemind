@@ -184,10 +184,11 @@ fn parses_recent_decisions_command_with_composable_filters(
         "agent",
         "--summary",
     ]);
-    let Command::Query(args) = cli.command else {
+    let Command::Query(query_args) = cli.command else {
         return Err("expected query command".into());
     };
-    let QueryCommand::RecentDecisions(args) = args.command else {
+    assert!(query_args.summary); // ubs:ignore: test-only CLI parser assertion.
+    let QueryCommand::RecentDecisions(args) = query_args.command else {
         return Err("expected RecentDecisions".into());
     };
     assert_eq!(args.since, "7d");
@@ -196,7 +197,6 @@ fn parses_recent_decisions_command_with_composable_filters(
     assert_eq!(args.topic_keys, vec!["architecture"]);
     assert_eq!(args.statuses, vec![QueryDecisionStatus::Accepted]);
     assert_eq!(args.sources, vec!["agent"]);
-    assert!(args.summary);
 
     let request = recent_decisions_request(&args).expect("request built");
     use chrono::TimeZone;
@@ -209,6 +209,39 @@ fn parses_recent_decisions_command_with_composable_filters(
         Some(Utc.with_ymd_and_hms(2026, 5, 19, 0, 0, 0).unwrap())
     );
     assert_eq!(request.filters.actor_patterns, vec!["agent:claude:*"]);
+    Ok(())
+}
+
+#[test]
+fn query_summary_flag_is_global_for_graph_queries(
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse_from([
+        "hivemind",
+        "query",
+        "search_decisions",
+        "--q",
+        "queue",
+        "--summary",
+    ]);
+    let Command::Query(args) = cli.command else {
+        return Err("expected query command".into());
+    };
+    assert!(args.summary); // ubs:ignore: test-only CLI parser assertion.
+    assert!(matches!(args.command, QueryCommand::SearchDecisions(_))); // ubs:ignore: test-only CLI parser assertion.
+    Ok(())
+}
+
+#[test]
+fn query_help_documents_json_default_and_summary_mode(
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut command = Cli::command();
+    let Some(query) = command.find_subcommand_mut("query") else {
+        return Err("query subcommand exists".into());
+    };
+    let help = query.render_help().to_string();
+
+    assert!(help.contains("JSON is the default output")); // ubs:ignore: test-only CLI help assertion.
+    assert!(help.contains("--summary")); // ubs:ignore: test-only CLI help assertion.
     Ok(())
 }
 
@@ -688,14 +721,16 @@ fn supersede_cli_proposes_replacement_marks_old_and_is_idempotent() {
 }
 
 #[test]
-fn search_decisions_cli_returns_query_response() {
+fn search_decisions_cli_returns_query_response(
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let hivemind_dir = unique_test_dir("query-search-decisions");
+    let hivemind_dir_arg = hivemind_dir.to_string_lossy().into_owned();
     let decision_id = run(&Cli::parse_from([
         "hivemind",
         "--actor",
         "agent-1",
         "--hivemind-dir",
-        hivemind_dir.to_str().expect("utf-8 temp path"),
+        hivemind_dir_arg.as_str(),
         "emit",
         "decision.proposed",
         "--title",
@@ -708,13 +743,12 @@ fn search_decisions_cli_returns_query_response() {
         "sync,async",
         "--chose",
         "async",
-    ]))
-    .expect("emit decision succeeds");
+    ]))?;
 
     let query = run(&Cli::parse_from([
         "hivemind",
         "--hivemind-dir",
-        hivemind_dir.to_str().expect("utf-8 temp path"),
+        hivemind_dir_arg.as_str(),
         "query",
         "search_decisions",
         "--q",
@@ -729,16 +763,30 @@ fn search_decisions_cli_returns_query_response() {
         "cli",
         "--limit",
         "5",
-    ]))
-    .expect("search query succeeds");
-    let query: serde_json::Value = serde_json::from_str(&query).expect("valid query json");
+    ]))?;
+    let query: serde_json::Value = serde_json::from_str(&query)?;
 
     assert_eq!(query["result_count"], serde_json::json!(1));
     assert_eq!(query["data"]["items"][0]["decision"]["id"], decision_id);
     assert_eq!(query["data"]["items"][0]["rank"], serde_json::json!(1));
     assert_eq!(query["data"]["next_cursor"], serde_json::Value::Null);
 
+    let summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir_arg.as_str(),
+        "query",
+        "search_decisions",
+        "--q",
+        "queue",
+        "--summary",
+    ]))?;
+    assert!(summary.contains(&decision_id)); // ubs:ignore: test-only CLI summary assertion.
+    assert!(summary.contains("rank=1")); // ubs:ignore: test-only CLI summary assertion.
+    assert!(summary.contains("Pick queue")); // ubs:ignore: test-only CLI summary assertion.
+
     let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
 }
 
 #[test]
