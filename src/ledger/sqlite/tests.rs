@@ -8,7 +8,8 @@ use rusqlite::OptionalExtension;
 use uuid::Uuid;
 
 use crate::commands::{CommandContext, Commands, DecisionProposalEventUuids};
-use crate::events::{EventProvenance, TenantId};
+use crate::error::CommandError;
+use crate::events::{Event, EventProvenance, TenantId};
 use crate::ledger::contract_tests::{
     assert_dedup_by_event_uuid, assert_monotonic_append, assert_read_offset_and_limit,
     assert_replay_from_zero_in_order, make_event,
@@ -48,36 +49,32 @@ fn read_applies_offset_and_limit() -> Result<()> {
 #[test]
 fn tenant_scoped_sqlite_ledger_isolates_commands_and_queries() -> Result<()> {
     with_sqlite_ledger("tenant-isolation", |ledger| {
-        let tenant_a = TenantId::new("tenant:a").expect("tenant a is valid");
-        let tenant_b = TenantId::new("tenant:b").expect("tenant b is valid");
+        let tenant_a = test_tenant_id("tenant:a")?;
+        let tenant_b = test_tenant_id("tenant:b")?;
 
-        write_shared_decision(ledger, tenant_a.clone(), "Tenant A decision")?;
-        write_shared_decision(ledger, tenant_b.clone(), "Tenant B decision")?;
+        write_shared_decision(ledger, &tenant_a, "Tenant A decision")?;
+        write_shared_decision(ledger, &tenant_b, "Tenant B decision")?;
 
         let tenant_a_events = ledger.read_for_tenant(&tenant_a, 0, 10)?;
         let tenant_b_events = ledger.read_for_tenant(&tenant_b, 0, 10)?;
-        assert_eq!(tenant_a_events.len(), 2);
-        assert_eq!(tenant_b_events.len(), 2);
-        assert!(tenant_a_events
-            .iter()
-            .all(|event| event.tenant_id == tenant_a));
-        assert!(tenant_b_events
-            .iter()
-            .all(|event| event.tenant_id == tenant_b));
+        require_event_count("tenant a event count", &tenant_a_events, 2)?;
+        require_event_count("tenant b event count", &tenant_b_events, 2)?;
+        require_all_events_for_tenant("tenant a events", &tenant_a_events, &tenant_a)?;
+        require_all_events_for_tenant("tenant b events", &tenant_b_events, &tenant_b)?;
 
         let graph_a = MemoryGraph::default();
         rebuild_graph_for_tenant(ledger, &tenant_a, &graph_a)?;
         let decision_a = get_decision(&graph_a, "decision-shared")?
             .data
-            .expect("tenant a decision exists");
-        assert_eq!(decision_a.title, "Tenant A decision");
+            .ok_or_else(|| test_failure("tenant a decision exists"))?;
+        require_title("tenant a decision", &decision_a.title, "Tenant A decision")?;
 
         let graph_b = MemoryGraph::default();
         rebuild_graph_for_tenant(ledger, &tenant_b, &graph_b)?;
         let decision_b = get_decision(&graph_b, "decision-shared")?
             .data
-            .expect("tenant b decision exists");
-        assert_eq!(decision_b.title, "Tenant B decision");
+            .ok_or_else(|| test_failure("tenant b decision exists"))?;
+        require_title("tenant b decision", &decision_b.title, "Tenant B decision")?;
 
         Ok(())
     })
@@ -153,13 +150,13 @@ fn temp_hivemind_dir(prefix: &str) -> PathBuf {
 
 fn write_shared_decision(
     ledger: &SqliteEventLedger,
-    tenant_id: TenantId,
+    tenant_id: &TenantId,
     title: &str,
 ) -> Result<()> {
     let commands = Commands::new_with_context(
         ledger,
         CommandContext::new(
-            tenant_id,
+            tenant_id.clone(),
             EventProvenance::api(Some("tenant-test".to_owned())),
         ),
     );
@@ -188,4 +185,48 @@ fn write_shared_decision(
         },
     )?;
     Ok(())
+}
+
+fn test_tenant_id(value: &str) -> Result<TenantId> {
+    TenantId::new(value)
+        .map_err(|error| test_failure(format!("invalid test tenant id {value}: {error}")))
+}
+
+fn require_event_count(label: &str, events: &[Event], expected: usize) -> Result<()> {
+    if events.len() == expected {
+        Ok(())
+    } else {
+        Err(test_failure(format!(
+            "{label}: expected {expected}, got {}",
+            events.len()
+        )))
+    }
+}
+
+fn require_all_events_for_tenant(
+    label: &str,
+    events: &[Event],
+    tenant_id: &TenantId,
+) -> Result<()> {
+    if events.iter().all(|event| event.tenant_id == *tenant_id) {
+        Ok(())
+    } else {
+        Err(test_failure(format!(
+            "{label}: expected only tenant {tenant_id}"
+        )))
+    }
+}
+
+fn require_title(label: &str, actual: &str, expected: &str) -> Result<()> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(test_failure(format!(
+            "{label}: expected title {expected:?}, got {actual:?}"
+        )))
+    }
+}
+
+fn test_failure(message: impl Into<String>) -> crate::HivemindError {
+    CommandError::Invariant(message.into()).into()
 }

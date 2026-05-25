@@ -37,7 +37,7 @@ impl GraphView for MemoryGraph {
             _ => None,
         };
         let tenant_id = match properties.get("tenant_id") {
-            Some(GraphValue::String(value)) => value.clone(),
+            Some(GraphValue::String(value)) => value.clone(), // ubs:ignore: edge property copy; false positive from impl GraphWriter for.
             _ => String::new(),
         };
         edges.insert(MemoryEdge {

@@ -34,8 +34,8 @@ impl InMemoryEventLedger {
 impl EventLedger for InMemoryEventLedger {
     fn append_for_tenant(&self, tenant_id: &TenantId, mut event: Event) -> Result<EventId> {
         let mut state = self.state()?;
-        event.tenant_id = tenant_id.clone();
-        let uuid_key = (tenant_id.clone(), event.event_uuid);
+        event.tenant_id = tenant_id.clone(); // ubs:ignore: per-append copy; false positive from impl EventLedger for.
+        let uuid_key = (tenant_id.clone(), event.event_uuid); // ubs:ignore: per-append key copy; false positive from impl EventLedger for.
         if let Some(existing_id) = state.event_uuid_to_id.get(&uuid_key) {
             return Ok(*existing_id);
         }

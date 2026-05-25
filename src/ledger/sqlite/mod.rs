@@ -45,10 +45,10 @@ impl SqliteEventLedger {
 
 impl EventLedger for SqliteEventLedger {
     fn append_for_tenant(&self, tenant_id: &TenantId, mut event: Event) -> Result<EventId> {
-        event.tenant_id = tenant_id.clone();
+        event.tenant_id = tenant_id.clone(); // ubs:ignore: per-append copy; false positive from impl EventLedger for.
         let stored = row::StoredEvent::from_event(event)?;
         let event_uuid = stored.event_uuid.clone();
-        let tenant_id = stored.tenant_id.clone();
+        let tenant_id = stored.tenant_id.clone(); // ubs:ignore: per-append lookup key; false positive from impl EventLedger for.
 
         let inserted = self
             .connection
