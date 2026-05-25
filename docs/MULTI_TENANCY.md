@@ -171,17 +171,24 @@ not a different data model.
 
 ## Auth Model
 
+The accepted credential and token decision is recorded in
+[`AUTH_MODEL.md`](AUTH_MODEL.md). This section summarizes how that auth model
+feeds tenant resolution.
+
 The shared service owns auth and tenancy. Database credentials are never exposed
-to agents, CLIs, Slack apps, MCP clients, or UI clients.
+to agents, CLIs, Slack apps, MCP clients, or UI clients. Authentication resolves
+a principal; authorization resolves the tuple
+`(principal_id, tenant_id, actor_id, capability)` before any command or query
+runs.
 
 Authentication by surface:
 
 | Surface | Auth shape | Tenant resolution |
 | --- | --- | --- |
 | Local CLI | No service auth; filesystem access to the local ledger. | Implicit local tenant. |
-| Remote CLI | Bearer token or login session stored in config. | Token default, `HIVEMIND_TENANT`, or `--tenant` only when the principal has more than one tenant. |
-| MCP stdio | Token or server config supplied when the MCP server starts. | Session-bound tenant; tools should not accept arbitrary per-call tenant ids. |
-| HTTP/API | OIDC/session for humans; scoped API tokens for agents/services. | Tenant claim or request header validated against principal membership. |
+| Remote CLI | Scoped opaque bearer token for agents/services or OIDC-backed login session for humans. | Token/session default, `HIVEMIND_TENANT`, or `--tenant` only when the principal has more than one tenant. |
+| MCP stdio | Scoped bearer token and server config supplied when the MCP server starts. | Session-bound tenant; tools should not accept arbitrary per-call tenant ids. |
+| HTTP/API | OIDC/session for humans; scoped opaque bearer tokens for agents/services; Ed25519 signatures for remote multi-org writes. | Tenant claim or `X-HiveMind-Tenant` header validated against principal membership. |
 | Slack app | Slack workspace/team install mapped to one tenant. | Install record resolves tenant before queue drain calls commands. |
 
 Authorization checks are deterministic commands-layer inputs. A caller may write

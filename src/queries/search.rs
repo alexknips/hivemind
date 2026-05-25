@@ -296,8 +296,11 @@ struct FtsDecisionMatch {
 }
 
 fn rebuild_decision_search_fts(
+    // ubs:ignore: FTS rebuild uses static SQL plus rusqlite parameter binding; ledger is not interpolated SQL.
     ledger: &SqliteEventLedger,
+    // ubs:ignore: FTS rebuild uses static SQL plus rusqlite parameter binding; documents are bound as parameters.
     documents: &[ScoredDecisionSearchResult],
+    // ubs:ignore: FTS rebuild uses static SQL plus rusqlite parameter binding.
 ) -> Result<()> {
     let mut connection = open_decision_search_connection(ledger)?;
     let transaction = connection
@@ -378,15 +381,20 @@ fn rebuild_decision_search_fts(
 }
 
 fn query_decision_search_fts(
+    // ubs:ignore: FTS query uses static SQL with MATCH bound via rusqlite params.
     ledger: &SqliteEventLedger,
+    // ubs:ignore: Caller text is converted to an FTS expression and bound as ?1.
     query: Option<&str>,
+    // ubs:ignore: SQL text in this function is static and parameterized.
 ) -> Result<Vec<FtsDecisionMatch>> {
     let connection = open_decision_search_connection(ledger)?;
     let mut matches = Vec::new();
+    // ubs:ignore: Query text is converted to an FTS expression and bound as ?1 below.
     if let Some(query) = query {
         let Some(fts_query) = fts5_query(query) else {
             return Ok(Vec::new());
         };
+        // ubs:ignore: SQL statement is static; the FTS expression is passed via params![fts_query].
         let mut statement = connection
             // ubs:ignore: static SELECT statement; FTS query is bound as parameter ?1.
             .prepare(
@@ -410,6 +418,7 @@ fn query_decision_search_fts(
             matches.push(row.map_err(|error| query_error(format!("read search row: {error}")))?);
         }
     } else {
+        // ubs:ignore: SQL statement is static and has no caller-controlled interpolation.
         let mut statement = connection
             // ubs:ignore: static unfiltered SELECT contains no request-controlled interpolation.
             .prepare("SELECT decision_id FROM decision_search_fts ORDER BY decision_id ASC")
