@@ -4,7 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::events::{Event, EventId};
+use crate::events::{Event, EventId, TenantId};
 use crate::Result;
 
 use super::backend_error::storage_error;
@@ -18,7 +18,7 @@ pub struct InMemoryEventLedger {
 #[derive(Debug, Default)]
 struct InMemoryState {
     events: Vec<Event>,
-    event_uuid_to_id: HashMap<Uuid, EventId>,
+    event_uuid_to_id: HashMap<(TenantId, Uuid), EventId>,
 }
 
 impl InMemoryEventLedger {
@@ -32,9 +32,11 @@ impl InMemoryEventLedger {
 }
 
 impl EventLedger for InMemoryEventLedger {
-    fn append(&self, mut event: Event) -> Result<EventId> {
+    fn append_for_tenant(&self, tenant_id: &TenantId, mut event: Event) -> Result<EventId> {
         let mut state = self.state()?;
-        if let Some(existing_id) = state.event_uuid_to_id.get(&event.event_uuid) {
+        event.tenant_id = tenant_id.clone();
+        let uuid_key = (tenant_id.clone(), event.event_uuid);
+        if let Some(existing_id) = state.event_uuid_to_id.get(&uuid_key) {
             return Ok(*existing_id);
         }
 
@@ -45,12 +47,17 @@ impl EventLedger for InMemoryEventLedger {
         }
 
         state.events.push(event.clone());
-        state.event_uuid_to_id.insert(event.event_uuid, next_id);
+        state.event_uuid_to_id.insert(uuid_key, next_id);
 
         Ok(next_id)
     }
 
-    fn read(&self, offset: EventId, limit: usize) -> Result<Vec<Event>> {
+    fn read_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -59,14 +66,17 @@ impl EventLedger for InMemoryEventLedger {
         Ok(state
             .events
             .iter()
-            .filter(|event| event.event_id.unwrap_or_default() > offset)
+            .filter(|event| {
+                &event.tenant_id == tenant_id && event.event_id.unwrap_or_default() > offset
+            })
             .take(limit)
             .cloned()
             .collect())
     }
 
-    fn replay_from(
+    fn replay_from_for_tenant(
         &self,
+        tenant_id: &TenantId,
         offset: EventId,
         callback: &mut dyn FnMut(&Event) -> Result<()>,
     ) -> Result<()> {
@@ -75,7 +85,9 @@ impl EventLedger for InMemoryEventLedger {
             state
                 .events
                 .iter()
-                .filter(|event| event.event_id.unwrap_or_default() > offset)
+                .filter(|event| {
+                    &event.tenant_id == tenant_id && event.event_id.unwrap_or_default() > offset
+                })
                 .cloned()
                 .collect::<Vec<_>>()
         };
@@ -87,11 +99,12 @@ impl EventLedger for InMemoryEventLedger {
         Ok(())
     }
 
-    fn latest_offset(&self) -> Result<EventId> {
+    fn latest_offset_for_tenant(&self, tenant_id: &TenantId) -> Result<EventId> {
         let state = self.state()?;
         Ok(state
             .events
-            .last()
+            .iter()
+            .rfind(|event| &event.tenant_id == tenant_id)
             .and_then(|event| event.event_id)
             .unwrap_or_default())
     }

@@ -436,6 +436,7 @@ fn fixture_ledger() -> Result<InMemoryEventLedger> {
 
 fn event(event_type: EventType, actor_id: &str, payload: serde_json::Value) -> Event {
     Event {
+        tenant_id: Default::default(),
         event_id: None,
         event_uuid: Uuid::new_v4(),
         correlation_id: Some("projection-test".to_owned()),

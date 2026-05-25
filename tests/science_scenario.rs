@@ -522,6 +522,7 @@ impl ScienceScenario {
         project_event(
             graph,
             &Event {
+                tenant_id: Default::default(),
                 event_id: Some(self.next_event_id),
                 event_uuid: Uuid::from_u128(u128::from(self.next_event_id)),
                 correlation_id: Some("science-scenario:gw150914".to_owned()),

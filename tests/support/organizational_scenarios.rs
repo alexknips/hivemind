@@ -703,6 +703,7 @@ impl ScenarioBuilder {
         let sequence = self.events.len() + 1;
         let sequence_u128 = u128::try_from(sequence).unwrap_or(u128::MAX);
         self.events.push(Event {
+            tenant_id: Default::default(),
             event_id: None,
             event_uuid: Uuid::from_u128((self.scenario_index << 96) | sequence_u128),
             correlation_id: Some(format!("org-scenario:{}", self.name)),

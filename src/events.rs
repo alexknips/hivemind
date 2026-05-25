@@ -5,6 +5,48 @@ use uuid::Uuid;
 
 pub type EventId = u64;
 
+#[derive(Debug, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TenantId(String);
+
+impl TenantId {
+    pub const LOCAL_VALUE: &'static str = "local";
+
+    pub fn new(value: impl Into<String>) -> std::result::Result<Self, TenantIdError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(TenantIdError::Empty);
+        }
+        Ok(Self(value))
+    }
+
+    pub fn local() -> Self {
+        Self(Self::LOCAL_VALUE.to_owned())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for TenantId {
+    fn default() -> Self {
+        Self::local()
+    }
+}
+
+impl std::fmt::Display for TenantId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TenantIdError {
+    #[error("tenant_id must not be empty")]
+    Empty,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventType {
     #[serde(rename = "decision.proposed")]
@@ -97,6 +139,8 @@ impl EventProvenance {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Event {
+    #[serde(default = "TenantId::local")]
+    pub tenant_id: TenantId,
     pub event_id: Option<EventId>,
     pub event_uuid: Uuid,
     pub correlation_id: Option<String>,
@@ -383,6 +427,7 @@ pub enum EventBuildError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventBuilder {
+    tenant_id: TenantId,
     event_id: Option<EventId>,
     event_uuid: Uuid,
     correlation_id: Option<String>,
@@ -401,6 +446,7 @@ impl EventBuilder {
         payload: impl Into<EventEnvelope>,
     ) -> Self {
         Self {
+            tenant_id: TenantId::local(),
             event_id: None,
             event_uuid,
             correlation_id: None,
@@ -415,6 +461,11 @@ impl EventBuilder {
 
     pub fn event_id(mut self, event_id: Option<EventId>) -> Self {
         self.event_id = event_id;
+        self
+    }
+
+    pub fn tenant_id(mut self, tenant_id: TenantId) -> Self {
+        self.tenant_id = tenant_id;
         self
     }
 
@@ -448,6 +499,7 @@ impl EventBuilder {
             .map_err(|source| EventBuildError::PayloadSerialization { event_type, source })?;
 
         Ok(Event {
+            tenant_id: self.tenant_id,
             event_id: self.event_id,
             event_uuid: self.event_uuid,
             correlation_id: self.correlation_id,
@@ -627,6 +679,7 @@ fn validate_common(event: &Event) -> std::result::Result<(), EventValidationErro
     }
 
     require_non_empty("actor_id", &event.actor_id)?;
+    require_non_empty("tenant_id", event.tenant_id.as_str())?;
     require_optional_non_empty("source_ref", event.source_ref.as_deref())?;
     require_optional_non_empty("correlation_id", event.correlation_id.as_deref())
 }

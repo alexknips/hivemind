@@ -272,6 +272,7 @@ impl SeedBuilder {
     ) {
         let sequence = self.events.len() + 1;
         self.events.push(Event {
+            tenant_id: Default::default(),
             event_id: None,
             event_uuid: Uuid::from_u128(u128::try_from(sequence).unwrap_or(u128::MAX)),
             correlation_id: Some("seed-dataset-v1".to_owned()),

@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::error::ProjectorError;
-use crate::events::{self, Event, EventId, EventPayload, RelationKind as EventRelationKind};
+use crate::events::{
+    self, Event, EventId, EventPayload, RelationKind as EventRelationKind, TenantId,
+};
 use crate::ledger::EventLedger;
 use crate::Result;
 
@@ -549,9 +551,27 @@ pub fn project_from_ledger(
     ledger.replay_from(offset, &mut |event| project_event(graph, event))
 }
 
+pub fn project_from_ledger_for_tenant(
+    ledger: &impl EventLedger,
+    tenant_id: &TenantId,
+    graph: &impl GraphView,
+    offset: EventId,
+) -> Result<()> {
+    ledger.replay_from_for_tenant(tenant_id, offset, &mut |event| project_event(graph, event))
+}
+
 pub fn rebuild_graph(ledger: &impl EventLedger, graph: &impl GraphView) -> Result<()> {
     graph.wipe()?;
     project_from_ledger(ledger, graph, 0)
+}
+
+pub fn rebuild_graph_for_tenant(
+    ledger: &impl EventLedger,
+    tenant_id: &TenantId,
+    graph: &impl GraphView,
+) -> Result<()> {
+    graph.wipe()?;
+    project_from_ledger_for_tenant(ledger, tenant_id, graph, 0)
 }
 
 fn upsert_actor(
@@ -587,6 +607,10 @@ fn optional_string_value(value: Option<&str>) -> GraphValue {
 
 fn origin_properties(event: &Event, event_origin: i64) -> GraphProperties {
     let mut properties = GraphProperties::from([
+        (
+            "tenant_id".to_owned(),
+            GraphValue::String(event.tenant_id.as_str().to_owned()),
+        ),
         ("event_origin".to_owned(), GraphValue::Int(event_origin)),
         (
             "source".to_owned(),

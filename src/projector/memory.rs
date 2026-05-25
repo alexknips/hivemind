@@ -29,13 +29,23 @@ impl GraphView for MemoryGraph {
         kind: RelationKind,
         from_id: &str,
         to_id: &str,
-        _properties: &GraphProperties,
+        properties: &GraphProperties,
     ) -> Result<()> {
         let mut edges = self.edges_lock()?;
+        let event_origin = match properties.get("event_origin") {
+            Some(GraphValue::Int(value)) => Some(*value),
+            _ => None,
+        };
+        let tenant_id = match properties.get("tenant_id") {
+            Some(GraphValue::String(value)) => value.clone(),
+            _ => String::new(),
+        };
         edges.insert(MemoryEdge {
             relation: kind,
             from_id: from_id.to_owned(),
             to_id: to_id.to_owned(),
+            _tenant_id: tenant_id,
+            _event_origin: event_origin,
         });
         Ok(())
     }
@@ -330,6 +340,8 @@ struct MemoryEdge {
     relation: RelationKind,
     from_id: String,
     to_id: String,
+    _tenant_id: String,
+    _event_origin: Option<i64>,
 }
 
 fn query_relation(cypher: &str) -> Result<RelationKind> {
