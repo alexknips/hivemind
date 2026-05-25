@@ -63,8 +63,9 @@ hivemind --hivemind-dir ./hivemind query search_decisions \
   graph edges, not stored.
 - **Read.** Query code derives status, walks supersession chains, and surfaces
   contested decisions through deterministic graph reads. Search includes
-  topic/status filters and FTS-backed full-text search; `recent`, `disagree`,
-  and `supersede` are first-class verbs on both CLI and MCP.
+  topic/status filters and FTS-backed full-text search; `recent_decisions`
+  exposes bounded recent decision reads, and `disagree`/`supersede` are
+  first-class CLI verbs mirrored by MCP tools.
 - **Capture from agents.** Installable plugins for Claude Code and Codex,
   plus the bundled MCP stdio server, let agents capture decisions in-flow
   with auto-populated actor and provenance defaults.
@@ -270,16 +271,20 @@ on macOS):
 }
 ```
 
-Cursor uses the same shape under `mcp.servers`. The server exposes seven tools:
+Cursor uses the same shape under `mcp.servers`. The server exposes these tools:
 
 | Tool | Layer | Wraps |
 | --- | --- | --- |
 | `capture_decision` | write | `emit decision.proposed` |
 | `capture_evidence` | write | `emit evidence.recorded` |
 | `capture_hypothesis` | write | `emit hypothesis.recorded` |
+| `disagree_decision` | write | `disagree` |
+| `supersede_decision` | write | `supersede` |
 | `get_decision` | read | `query get_decision` |
 | `get_relevant_decisions` | read | `query get_relevant_decisions` |
 | `get_supersession_chain` | read | `query get_supersession_chain` |
+| `search_decisions` | read | `query search_decisions` |
+| `recent_decisions` | read | `query recent_decisions` |
 | `dump_graph` | read | `dump --format dot` |
 
 Every capture requires an explicit `actor_id`. Prefix it with the originating
@@ -350,6 +355,7 @@ hivemind query get_decision --id decision-001
 hivemind query get_relevant_decisions --topic architecture
 hivemind query get_relevant_decisions --topic architecture --status accepted
 hivemind query get_supersession_chain --id decision-001
+hivemind query recent_decisions --since 1h --limit 5
 ```
 
 With a binary installed using `--features graph-kuzu`, use the persistent local

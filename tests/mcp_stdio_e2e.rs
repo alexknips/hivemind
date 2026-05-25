@@ -68,6 +68,7 @@ fn mcp_stdio_server_handles_initialize_list_and_capture() {
         "get_decision",
         "get_relevant_decisions",
         "get_supersession_chain",
+        "recent_decisions",
         "dump_graph",
     ] {
         assert!(

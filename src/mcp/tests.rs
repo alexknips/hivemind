@@ -42,7 +42,7 @@ fn initialize_reports_server_metadata() {
 }
 
 #[test]
-fn tools_list_includes_all_ten_tools() {
+fn tools_list_includes_all_eleven_tools() {
     let dir = unique_dir("list");
     let config = McpConfig::new(&dir).with_session_id("test-session");
     let responses = drive(
@@ -65,6 +65,7 @@ fn tools_list_includes_all_ten_tools() {
         "get_relevant_decisions",
         "get_supersession_chain",
         "search_decisions",
+        "recent_decisions",
         "dump_graph",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
@@ -243,6 +244,61 @@ fn search_decisions_tool_returns_fts_query_response() {
     assert_eq!(
         structured["data"]["items"][0]["matched_fields"],
         serde_json::json!(["option.id"])
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn recent_decisions_tool_returns_recent_query_response() {
+    let dir = unique_dir("recent-decisions");
+    let config = McpConfig::new(&dir).with_session_id("recent-session");
+
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "actor_id": "agent:test:recent",
+                "title": "Keep recent decisions discoverable",
+                "rationale": "Agents need a bounded recent decisions query",
+                "topic_keys": ["query"],
+                "options": [{"label": "recent_decisions"}],
+                "chosen_option_label": "recent_decisions"
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[capture.as_str()]);
+    let decision_id = responses[0]["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("decision_id")
+        .to_owned();
+
+    let recent = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "recent_decisions",
+            "arguments": {
+                "since": "1970-01-01T00:00:00Z",
+                "topic": ["query"],
+                "actor": ["agent:test:recent"],
+                "status": ["proposed"],
+                "limit": 5
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[recent.as_str()]);
+    let structured = &responses[0]["result"]["structuredContent"];
+    assert_eq!(structured["result_count"], serde_json::json!(1));
+    assert_eq!(
+        structured["data"]["items"][0]["decision_id"],
+        serde_json::json!(decision_id)
     );
 
     let _ = std::fs::remove_dir_all(&dir);

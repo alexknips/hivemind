@@ -658,7 +658,7 @@ pub enum QueryCommand {
     GetActiveDecisionBlockers(QueryActiveDecisionBlockersArgs),
     #[command(name = "get_blocker_notification_candidates")]
     GetBlockerNotificationCandidates(QueryBlockerNotificationCandidatesArgs),
-    #[command(name = "recent")]
+    #[command(name = "recent_decisions", alias = "recent")]
     RecentDecisions(QueryRecentDecisionsArgs),
     #[command(name = "get_recent_activity")]
     GetRecentActivity(QueryRecentActivityArgs),
