@@ -1366,6 +1366,7 @@ fn import_document_file<L: EventLedger>(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn import_document_decision_block<L: EventLedger>(
     ledger: &L,
     draft: &DocumentDecisionDraft,
@@ -1821,6 +1822,7 @@ fn resolve_document_import_conflict<L: EventLedger>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn conflict_block_report(
     draft: &DocumentDecisionDraft,
     existing_decision_id: &str,

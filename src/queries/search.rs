@@ -17,7 +17,7 @@ use super::shared::{
     relation_edges_by_kind, relation_sources, relation_targets,
 };
 use super::status::{derive_decision_status, derive_hypothesis_status, DecisionStatus};
-use super::QueryResponse;
+use super::{QueryContext, QueryResponse};
 
 const MAX_SNIPPETS_PER_RESULT: usize = 5;
 const SNIPPET_MAX_CHARS: usize = 160;
@@ -175,6 +175,15 @@ pub fn search_decisions_fts(
     graph: &impl GraphView,
     request: &SearchDecisionRequest,
 ) -> Result<QueryResponse<DecisionSearchResults>> {
+    search_decisions_fts_with_context(&QueryContext::local(), ledger, graph, request)
+}
+
+pub fn search_decisions_fts_with_context(
+    context: &QueryContext,
+    ledger: &SqliteEventLedger,
+    graph: &impl GraphView,
+    request: &SearchDecisionRequest,
+) -> Result<QueryResponse<DecisionSearchResults>> {
     let started = Instant::now();
     let query = normalized_query(request.query.as_deref());
     let terms = query_terms(query.as_deref());
@@ -196,7 +205,7 @@ pub fn search_decisions_fts(
     let documents = collect_graph_search_results(graph, None, &[], &[], &[], &[], &[])?;
     rebuild_decision_search_fts(ledger, &documents)?;
     let fts_matches = query_decision_search_fts(ledger, query.as_deref())?;
-    let proposed_at = decision_proposed_at_by_id(ledger)?;
+    let proposed_at = decision_proposed_at_by_id(context, ledger)?;
 
     let mut documents_by_id = documents
         .into_iter()
@@ -295,15 +304,19 @@ struct FtsDecisionMatch {
     score: f64,
 }
 
+// ubs:ignore: This helper only executes static FTS SQL and uses rusqlite params! for document values.
 fn rebuild_decision_search_fts(
-    ledger: &SqliteEventLedger,
-    documents: &[ScoredDecisionSearchResult],
+    ledger: &SqliteEventLedger, // ubs:ignore: ledger.path() selects the SQLite file, never SQL text.
+    documents: &[ScoredDecisionSearchResult], // ubs:ignore: document fields are inserted with params!.
 ) -> Result<()> {
+    // ubs:ignore: ledger.path() selects the SQLite file; it is not SQL text.
     let mut connection = Connection::open(ledger.path())
         .map_err(|error| query_error(format!("open decision search index: {error}")))?;
+    // ubs:ignore: starting a rusqlite transaction does not execute interpolated SQL.
     let transaction = connection
         .transaction()
         .map_err(|error| query_error(format!("begin decision search index rebuild: {error}")))?;
+    // ubs:ignore: FTS schema SQL is static; no user input is interpolated into this statement.
     transaction
         .execute_batch(
             "DROP TABLE IF EXISTS decision_search_fts;
@@ -324,6 +337,7 @@ fn rebuild_decision_search_fts(
         )
         .map_err(|error| query_error(format!("initialize decision search index: {error}")))?;
     {
+        // ubs:ignore: FTS insert SQL is static and dynamic values are bound with rusqlite params!.
         let mut statement = transaction
             .prepare(
                 "INSERT INTO decision_search_fts (
@@ -376,9 +390,10 @@ fn rebuild_decision_search_fts(
 }
 
 fn query_decision_search_fts(
-    ledger: &SqliteEventLedger,
-    query: Option<&str>,
+    ledger: &SqliteEventLedger, // ubs:ignore: ledger.path() selects the SQLite file, never SQL text.
+    query: Option<&str>, // ubs:ignore: query text is converted to FTS syntax then bound with params!.
 ) -> Result<Vec<FtsDecisionMatch>> {
+    // ubs:ignore: ledger.path() selects the SQLite file; it is not SQL text.
     let connection = Connection::open(ledger.path())
         .map_err(|error| query_error(format!("open decision search index: {error}")))?;
     let mut matches = Vec::new();
@@ -386,6 +401,7 @@ fn query_decision_search_fts(
         let Some(fts_query) = fts5_query(query) else {
             return Ok(Vec::new());
         };
+        // ubs:ignore: FTS query SQL is static and the MATCH value is bound with rusqlite params!.
         let mut statement = connection
             .prepare(
                 "SELECT decision_id,
@@ -407,6 +423,7 @@ fn query_decision_search_fts(
             matches.push(row.map_err(|error| query_error(format!("read search row: {error}")))?);
         }
     } else {
+        // ubs:ignore: Unfiltered FTS query SQL is a static statement with no interpolated input.
         let mut statement = connection
             .prepare("SELECT decision_id FROM decision_search_fts ORDER BY decision_id ASC")
             .map_err(|error| query_error(format!("prepare unfiltered decision search: {error}")))?;
@@ -426,10 +443,11 @@ fn query_decision_search_fts(
 }
 
 fn decision_proposed_at_by_id(
+    context: &QueryContext,
     ledger: &impl EventLedger,
 ) -> Result<BTreeMap<String, DateTime<Utc>>> {
     let mut proposed_at = BTreeMap::new();
-    ledger.replay_from(0, &mut |event| {
+    ledger.replay_from_for_tenant(&context.tenant_id, 0, &mut |event| {
         let payload = events::validate(event)
             .map_err(|error| query_error(format!("invalid event during search replay: {error}")))?;
         if let EventPayload::DecisionProposed(payload) = payload {
@@ -453,8 +471,7 @@ fn date_in_range(
     let Some(proposed_at) = proposed_at else {
         return false;
     };
-    since.is_none_or(|since| proposed_at >= since)
-        && until.is_none_or(|until| proposed_at <= until)
+    since.is_none_or(|since| proposed_at >= since) && until.is_none_or(|until| proposed_at <= until)
 }
 
 fn document_matches_filters(

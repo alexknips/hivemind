@@ -7,9 +7,11 @@ use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::commands::Commands;
+use crate::commands::{CommandContext, Commands};
 use crate::error::{CliError, CommandError};
-use crate::events::{BlockerPriority, EventId, EventProvenance, RelationKind as EventRelationKind};
+use crate::events::{
+    BlockerPriority, EventId, EventProvenance, RelationKind as EventRelationKind, TenantId,
+};
 use crate::identity::{
     agent_actor_id, default_actor, default_agent_session, default_agent_tool,
     default_human_actor_id,
@@ -21,20 +23,20 @@ use crate::ingest::{
     DocumentPreparationReport, DocumentPreparationRequest, SlackIngestOutcome,
     DEFAULT_SLACK_MENTION,
 };
-use crate::ledger::{EventLedger, SqliteEventLedger};
+use crate::ledger::{EventLedger, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::{
-    memory::MemoryGraph, rebuild_graph, GraphParams, GraphProperties, GraphRow, GraphValue,
-    GraphView, NodeKind, RelationKind as GraphRelationKind,
+    memory::MemoryGraph, rebuild_graph_for_tenant, GraphParams, GraphProperties, GraphRow,
+    GraphValue, GraphView, NodeKind, RelationKind as GraphRelationKind,
 };
 use crate::queries::{
     derive_decision_status, derive_hypothesis_status, export_read_only_summary,
     get_active_decision_blockers, get_blocker_notification_candidates, get_decision,
     get_decision_neighborhood, get_decisions_added_since, get_decisions_changed_since,
     get_recent_activity, get_recent_decisions, get_relevant_decisions, get_supersession_chain,
-    search_decisions, search_decisions_fts, ActiveDecisionBlockersRequest,
+    search_decisions, search_decisions_fts_with_context, ActiveDecisionBlockersRequest,
     BlockerNotificationCandidatesRequest, ChangedSinceRequest, DecisionBlockerFilters,
     DecisionStatus, DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
-    HistoryFilterRequest, HypothesisStatus, NeighborhoodRequest,
+    HistoryFilterRequest, HypothesisStatus, NeighborhoodRequest, QueryContext,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQuery, ReadOnlyExportRequest,
     RecentActivityRequest, RecentDecisionFilterRequest, RecentDecisionsRequest,
     RecentDecisionsResults, SearchDecisionRequest,
@@ -60,6 +62,9 @@ use crate::{HivemindError, Result};
 pub struct Cli {
     #[arg(long, default_value_t = default_actor())]
     pub actor: String,
+
+    #[arg(long, global = true, env = "HIVEMIND_TENANT", default_value = "local")]
+    pub tenant: String,
 
     #[arg(long, global = true)]
     pub json: bool,
@@ -1108,8 +1113,12 @@ pub fn run(cli: &Cli) -> Result<String> {
 
 fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
     let ledger_dir = std::env::temp_dir().join(format!("hivemind-quickstart-{}", Uuid::new_v4()));
+    let tenant_id = cli_tenant(cli)?;
     let ledger = SqliteEventLedger::open(&ledger_dir)?;
-    let commands = Commands::new(&ledger);
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(tenant_id.clone(), EventProvenance::cli()),
+    );
     let decision_args = EmitDecisionProposedArgs {
         title: "Try HiveMind quickstart".to_owned(),
         rationale: "A first decision should be captured with actor provenance and queried back immediately.".to_owned(),
@@ -1122,7 +1131,7 @@ fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
     let decision_id = propose_decision_from_option_labels(&commands, &cli.actor, &decision_args)?;
 
     let graph = MemoryGraph::default();
-    rebuild_graph(&ledger, &graph)?;
+    rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
     let query = search_decisions(
         &graph,
         &SearchDecisionRequest {
@@ -1192,7 +1201,8 @@ fn format_quickstart_report(report: &QuickstartReport) -> String {
 }
 
 fn run_mcp(cli: &Cli, args: &McpArgs) -> Result<String> {
-    let mut config = crate::mcp::McpConfig::new(cli.hivemind_dir.clone());
+    let mut config =
+        crate::mcp::McpConfig::new(cli.hivemind_dir.clone()).with_tenant(cli_tenant(cli)?);
     if let Some(agent_tool) = args.agent_tool.as_deref().map(str::trim) {
         if !agent_tool.is_empty() {
             config = config.with_agent_tool(agent_tool);
@@ -1225,7 +1235,8 @@ fn run_ingest_slack_thread(cli: &Cli, args: &IngestSlackThreadArgs) -> Result<St
     let draft = extract_slack_decision_draft(&thread, &args.mention)?;
 
     let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
-    let outcome = import_slack_thread(&ledger, &draft)?;
+    let scoped_ledger = TenantScopedLedger::new(&ledger, cli_tenant(cli)?);
+    let outcome = import_slack_thread(&scoped_ledger, &draft)?;
 
     let kind = match outcome {
         SlackIngestOutcome::Imported { .. } => "decision_id",
@@ -1285,15 +1296,18 @@ fn run_slack_app(cli: &Cli, args: &SlackAppArgs) -> Result<String> {
         }
         SlackAppCommand::Drain(_) => {
             let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
-            let report = store.drain_queue(&ledger)?;
+            let scoped_ledger = TenantScopedLedger::new(&ledger, cli_tenant(cli)?);
+            let report = store.drain_queue(&scoped_ledger)?;
             format_json_value(cli.json, &report)
         }
         SlackAppCommand::Command(args) => {
+            let tenant_id = cli_tenant(cli)?;
             let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+            let scoped_ledger = TenantScopedLedger::new(&ledger, tenant_id.clone());
             let graph = MemoryGraph::default();
-            rebuild_graph(&ledger, &graph)?;
+            rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
             let response = handle_slack_command(
-                &ledger,
+                &scoped_ledger,
                 &graph,
                 &store,
                 &SlackCommandRequest {
@@ -1310,13 +1324,17 @@ fn run_slack_app(cli: &Cli, args: &SlackAppArgs) -> Result<String> {
 
 fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
     let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
-    let commands = Commands::new_with_provenance(&ledger, cli_emit_provenance(&cli.actor));
+    let commands = Commands::new_with_context(
+        &ledger,
+        cli_command_context(cli, cli_emit_provenance(&cli.actor))?,
+    );
 
     let output = match &emit.command {
         EmitCommand::DecisionCapture(args) => {
             let actor_id = capture_actor_id(args)?;
             let provenance = capture_provenance(args, &actor_id)?;
-            let commands = Commands::new_with_provenance(&ledger, provenance);
+            let commands =
+                Commands::new_with_context(&ledger, cli_command_context(cli, provenance)?);
             let decision_id =
                 propose_decision_from_option_labels(&commands, &actor_id, &args.decision)?;
             OutputEnvelope::new("emit", "decision_id", decision_id)
@@ -1385,11 +1403,14 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
 }
 
 fn run_disagree(cli: &Cli, args: &DisagreeArgs) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
     let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
-    let commands =
-        Commands::new_with_provenance(&ledger, EventProvenance::human(cli.actor.clone()));
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(tenant_id.clone(), EventProvenance::human(cli.actor.clone())),
+    );
     let event_id = commands.disagree(&cli.actor, &args.decision_id, &args.reason)?;
-    let decision_status = decision_status_after_write(&ledger, &args.decision_id)?;
+    let decision_status = decision_status_after_write(&ledger, &tenant_id, &args.decision_id)?;
 
     format_disagree_output(
         cli.json,
@@ -1402,9 +1423,12 @@ fn run_disagree(cli: &Cli, args: &DisagreeArgs) -> Result<String> {
 }
 
 fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
     let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
-    let commands =
-        Commands::new_with_provenance(&ledger, EventProvenance::human(cli.actor.clone()));
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(tenant_id.clone(), EventProvenance::human(cli.actor.clone())),
+    );
     let outcome = commands.supersede(
         &cli.actor,
         &args.old_decision_id,
@@ -1416,8 +1440,10 @@ fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
         &args.hypothesis_ids,
         &args.evidence_ids,
     )?;
-    let old_decision_status = decision_status_after_write(&ledger, &args.old_decision_id)?;
-    let new_decision_status = decision_status_after_write(&ledger, &outcome.new_decision_id)?;
+    let old_decision_status =
+        decision_status_after_write(&ledger, &tenant_id, &args.old_decision_id)?;
+    let new_decision_status =
+        decision_status_after_write(&ledger, &tenant_id, &outcome.new_decision_id)?;
 
     format_supersede_output(
         cli.json,
@@ -1437,10 +1463,11 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
     match &import.command {
         ImportCommand::Documents(args) => {
             let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+            let scoped_ledger = TenantScopedLedger::new(&ledger, cli_tenant(cli)?);
             let mut paths = args.files.clone();
             paths.extend(args.paths.clone());
             let report = import_documents(
-                &ledger,
+                &scoped_ledger,
                 &DocumentImportRequest {
                     paths,
                     importer_actor_id: cli.actor.clone(),
@@ -1626,19 +1653,21 @@ fn trimmed_optional<'a>(field: &'static str, value: &'a Option<String>) -> Resul
 }
 
 fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {
+    let context = cli_query_context(cli)?;
     let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
 
     if query.command.is_ledger_history_query() {
-        return run_query_with_ledger(&ledger, query);
+        let scoped_ledger = TenantScopedLedger::new(&ledger, context.tenant_id.clone());
+        return run_query_with_ledger(&scoped_ledger, query);
     }
 
     match selected_graph_backend(cli)? {
         GraphBackend::Memory => {
             let graph = MemoryGraph::default();
-            rebuild_graph(&ledger, &graph)?;
-            run_query_with_graph(&ledger, &graph, query)
+            rebuild_graph_for_tenant(&ledger, &context.tenant_id, &graph)?;
+            run_query_with_graph(&context, &ledger, &graph, query)
         }
-        GraphBackend::Kuzu => run_query_with_kuzu(&ledger, &cli.hivemind_dir, query),
+        GraphBackend::Kuzu => run_query_with_kuzu(&context, &ledger, &cli.hivemind_dir, query),
     }
 }
 
@@ -2007,6 +2036,7 @@ fn parse_utc_timestamp(
 }
 
 fn run_query_with_graph(
+    context: &QueryContext,
     ledger: &SqliteEventLedger,
     graph: &impl GraphView,
     query: &QueryArgs,
@@ -2057,15 +2087,21 @@ fn run_query_with_graph(
         }
         QueryCommand::Search(args) => {
             let request = search_decision_request(args)?;
-            serde_json::to_string(&search_decisions_fts(ledger, graph, &request)?).map_err(
-                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
-            )?
+            serde_json::to_string(&search_decisions_fts_with_context(
+                context, ledger, graph, &request,
+            )?)
+            .map_err(|error| {
+                CliError::InvalidInput(format!("json serialization failed: {error}"))
+            })?
         }
         QueryCommand::SearchDecisions(args) => {
             let request = search_decision_request(args)?;
-            serde_json::to_string(&search_decisions_fts(ledger, graph, &request)?).map_err(
-                |error| CliError::InvalidInput(format!("json serialization failed: {error}")),
-            )?
+            serde_json::to_string(&search_decisions_fts_with_context(
+                context, ledger, graph, &request,
+            )?)
+            .map_err(|error| {
+                CliError::InvalidInput(format!("json serialization failed: {error}"))
+            })?
         }
         QueryCommand::GetActiveDecisionBlockers(args) => {
             let request = ActiveDecisionBlockersRequest {
@@ -2149,15 +2185,16 @@ fn parse_required_query_datetime(value: &str, flag: &str) -> Result<DateTime<Utc
 }
 
 fn run_dump(cli: &Cli, dump: &DumpArgs) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
     let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
 
     match selected_graph_backend(cli)? {
         GraphBackend::Memory => {
             let graph = MemoryGraph::default();
-            rebuild_graph(&ledger, &graph)?;
+            rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
             run_dump_with_graph(&graph, dump)
         }
-        GraphBackend::Kuzu => run_dump_with_kuzu(&ledger, &cli.hivemind_dir, dump),
+        GraphBackend::Kuzu => run_dump_with_kuzu(&tenant_id, &ledger, &cli.hivemind_dir, dump),
     }
 }
 
@@ -2170,6 +2207,7 @@ fn run_tui(cli: &Cli, args: &TuiArgs) -> Result<String> {
         .into());
     }
 
+    let tenant_id = cli_tenant(cli)?;
     let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
     let config = crate::tui::TuiConfig {
         query: args.query.clone(),
@@ -2189,10 +2227,10 @@ fn run_tui(cli: &Cli, args: &TuiArgs) -> Result<String> {
     match selected_graph_backend(cli)? {
         GraphBackend::Memory => {
             let graph = MemoryGraph::default();
-            rebuild_graph(&ledger, &graph)?;
+            rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
             crate::tui::run(&graph, config)?;
         }
-        GraphBackend::Kuzu => run_tui_with_kuzu(&ledger, &cli.hivemind_dir, config)?,
+        GraphBackend::Kuzu => run_tui_with_kuzu(&tenant_id, &ledger, &cli.hivemind_dir, config)?,
     }
 
     Ok("tui exited".to_owned())
@@ -2208,17 +2246,19 @@ fn run_tui(_cli: &Cli, _args: &TuiArgs) -> Result<String> {
 
 #[cfg(all(feature = "tui", feature = "graph-kuzu"))]
 fn run_tui_with_kuzu(
+    tenant_id: &TenantId,
     ledger: &impl EventLedger,
     hivemind_dir: &std::path::Path,
     config: crate::tui::TuiConfig,
 ) -> Result<()> {
     let graph = crate::projector::kuzu::KuzuGraph::open(hivemind_dir)?;
-    rebuild_graph(ledger, &graph)?;
+    rebuild_graph_for_tenant(ledger, tenant_id, &graph)?;
     crate::tui::run(&graph, config)
 }
 
 #[cfg(all(feature = "tui", not(feature = "graph-kuzu")))]
 fn run_tui_with_kuzu(
+    _tenant_id: &TenantId,
     _ledger: &impl EventLedger,
     _hivemind_dir: &std::path::Path,
     _config: crate::tui::TuiConfig,
@@ -2237,17 +2277,19 @@ fn run_dump_with_graph(graph: &impl GraphView, dump: &DumpArgs) -> Result<String
 
 #[cfg(feature = "graph-kuzu")]
 fn run_query_with_kuzu(
+    context: &QueryContext,
     ledger: &SqliteEventLedger,
     hivemind_dir: &std::path::Path,
     query: &QueryArgs,
 ) -> Result<String> {
     let graph = crate::projector::kuzu::KuzuGraph::open(hivemind_dir)?;
-    rebuild_graph(ledger, &graph)?;
-    run_query_with_graph(ledger, &graph, query)
+    rebuild_graph_for_tenant(ledger, &context.tenant_id, &graph)?;
+    run_query_with_graph(context, ledger, &graph, query)
 }
 
 #[cfg(not(feature = "graph-kuzu"))]
 fn run_query_with_kuzu(
+    _context: &QueryContext,
     _ledger: &SqliteEventLedger,
     _hivemind_dir: &std::path::Path,
     _query: &QueryArgs,
@@ -2260,17 +2302,19 @@ fn run_query_with_kuzu(
 
 #[cfg(feature = "graph-kuzu")]
 fn run_dump_with_kuzu(
+    tenant_id: &TenantId,
     ledger: &impl EventLedger,
     hivemind_dir: &std::path::Path,
     dump: &DumpArgs,
 ) -> Result<String> {
     let graph = crate::projector::kuzu::KuzuGraph::open(hivemind_dir)?;
-    rebuild_graph(ledger, &graph)?;
+    rebuild_graph_for_tenant(ledger, tenant_id, &graph)?;
     run_dump_with_graph(&graph, dump)
 }
 
 #[cfg(not(feature = "graph-kuzu"))]
 fn run_dump_with_kuzu(
+    _tenant_id: &TenantId,
     _ledger: &impl EventLedger,
     _hivemind_dir: &std::path::Path,
     _dump: &DumpArgs,
@@ -2334,10 +2378,11 @@ fn format_json_value<T: Serialize>(compact: bool, value: &T) -> Result<String> {
 
 fn decision_status_after_write(
     ledger: &impl EventLedger,
+    tenant_id: &TenantId,
     decision_id: &str,
 ) -> Result<DecisionStatus> {
     let graph = MemoryGraph::default();
-    rebuild_graph(ledger, &graph)?;
+    rebuild_graph_for_tenant(ledger, tenant_id, &graph)?;
     derive_decision_status(&graph, decision_id)
 }
 
@@ -2428,8 +2473,22 @@ fn validate_global_flags(cli: &Cli) -> Result<()> {
     if cli.actor.trim().is_empty() {
         return Err(CliError::InvalidInput("--actor must not be empty".to_owned()).into());
     }
+    cli_tenant(cli)?;
 
     Ok(())
+}
+
+fn cli_tenant(cli: &Cli) -> Result<TenantId> {
+    TenantId::new(cli.tenant.trim().to_owned())
+        .map_err(|error| CliError::InvalidInput(format!("--tenant is invalid: {error}")).into())
+}
+
+fn cli_command_context(cli: &Cli, provenance: EventProvenance) -> Result<CommandContext> {
+    Ok(CommandContext::new(cli_tenant(cli)?, provenance))
+}
+
+fn cli_query_context(cli: &Cli) -> Result<QueryContext> {
+    Ok(QueryContext::new(cli_tenant(cli)?))
 }
 
 fn selected_graph_backend(cli: &Cli) -> Result<GraphBackend> {

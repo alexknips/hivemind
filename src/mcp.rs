@@ -15,22 +15,22 @@
 
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tracing::{debug, warn};
 
-use crate::commands::Commands;
+use crate::commands::{CommandContext, Commands};
 use crate::error::{CliError, CommandError, HivemindError};
-use crate::events::EventProvenance;
+use crate::events::{EventProvenance, TenantId};
 use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool};
 use crate::ledger::SqliteEventLedger;
-use crate::projector::{memory::MemoryGraph, rebuild_graph};
+use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
     derive_decision_status, get_decision, get_relevant_decisions, get_supersession_chain,
-    search_decisions_fts, DecisionStatus, SearchDecisionRequest,
+    search_decisions_fts_with_context, DecisionStatus, QueryContext, SearchDecisionRequest,
 };
 use crate::Result;
 
@@ -53,6 +53,7 @@ const JSONRPC_INTERNAL_ERROR: i32 = -32603;
 #[derive(Debug, Clone)]
 pub struct McpConfig {
     pub hivemind_dir: PathBuf,
+    pub tenant_id: TenantId,
     /// Tool name embedded in default actor ids for write tools.
     pub agent_tool: String,
     /// Session identifier used to build the default actor id for write tools.
@@ -67,6 +68,7 @@ impl McpConfig {
         let session_id = agent_session_from_env(&agent_tool).unwrap_or_else(default_session_id);
         Self {
             hivemind_dir: hivemind_dir.into(),
+            tenant_id: TenantId::local(),
             agent_tool,
             session_id,
         }
@@ -80,6 +82,19 @@ impl McpConfig {
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = session_id.into();
         self
+    }
+
+    pub fn with_tenant(mut self, tenant_id: TenantId) -> Self {
+        self.tenant_id = tenant_id;
+        self
+    }
+
+    fn command_context(&self, provenance: EventProvenance) -> CommandContext {
+        CommandContext::new(self.tenant_id.clone(), provenance)
+    }
+
+    fn query_context(&self) -> QueryContext {
+        QueryContext::new(self.tenant_id.clone())
     }
 }
 
@@ -490,7 +505,10 @@ fn tool_capture_decision(args: Value, config: &McpConfig) -> std::result::Result
     let evidence_ids = optional_string_array(&args, "evidence_ids")?;
 
     let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
-    let commands = Commands::new_with_provenance(&ledger, EventProvenance::agent(actor_id.clone()));
+    let commands = Commands::new_with_context(
+        &ledger,
+        config.command_context(EventProvenance::agent(actor_id.clone())),
+    );
 
     let mut option_ids: Vec<String> = Vec::with_capacity(options.len());
     let mut chosen_option_id: Option<String> = None;
@@ -563,7 +581,10 @@ fn tool_capture_evidence(args: Value, config: &McpConfig) -> std::result::Result
     let content = require_string(&args, "content")?;
 
     let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
-    let commands = Commands::new_with_provenance(&ledger, EventProvenance::agent(actor_id.clone()));
+    let commands = Commands::new_with_context(
+        &ledger,
+        config.command_context(EventProvenance::agent(actor_id.clone())),
+    );
     let evidence_id = commands.record_evidence(&actor_id, &content)?;
     Ok(json!({ "evidence_id": evidence_id }))
 }
@@ -577,7 +598,10 @@ fn tool_capture_hypothesis(
     let statement = require_string(&args, "statement")?;
 
     let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
-    let commands = Commands::new_with_provenance(&ledger, EventProvenance::agent(actor_id.clone()));
+    let commands = Commands::new_with_context(
+        &ledger,
+        config.command_context(EventProvenance::agent(actor_id.clone())),
+    );
     let hypothesis_id = commands.record_hypothesis(&actor_id, &statement)?;
     Ok(json!({ "hypothesis_id": hypothesis_id }))
 }
@@ -589,10 +613,12 @@ fn tool_disagree_decision(args: Value, config: &McpConfig) -> std::result::Resul
     let reason = require_string(&args, "reason")?;
 
     let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
-    let commands =
-        Commands::new_with_provenance(&ledger, EventProvenance::agent(config.session_id.clone()));
+    let commands = Commands::new_with_context(
+        &ledger,
+        config.command_context(EventProvenance::agent(config.session_id.clone())),
+    );
     let event_id = commands.disagree(&actor_id, &decision_id, &reason)?;
-    let graph = open_memory_graph(&config.hivemind_dir)?;
+    let graph = open_memory_graph(config)?;
     let decision_status = derive_decision_status(&graph, &decision_id)?;
 
     Ok(json!({
@@ -618,8 +644,10 @@ fn tool_supersede_decision(
     let evidence_ids = optional_string_array(&args, "evidence_ids")?;
 
     let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
-    let commands =
-        Commands::new_with_provenance(&ledger, EventProvenance::agent(config.session_id.clone()));
+    let commands = Commands::new_with_context(
+        &ledger,
+        config.command_context(EventProvenance::agent(config.session_id.clone())),
+    );
     let outcome = commands.supersede(
         &actor_id,
         &old_decision_id,
@@ -631,7 +659,7 @@ fn tool_supersede_decision(
         &hypothesis_ids,
         &evidence_ids,
     )?;
-    let graph = open_memory_graph(&config.hivemind_dir)?;
+    let graph = open_memory_graph(config)?;
     let old_decision_status = derive_decision_status(&graph, &old_decision_id)?;
     let new_decision_status = derive_decision_status(&graph, &outcome.new_decision_id)?;
 
@@ -649,7 +677,7 @@ fn tool_supersede_decision(
 fn tool_get_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
     let decision_id = require_string(&args, "decision_id")?;
-    let graph = open_memory_graph(&config.hivemind_dir)?;
+    let graph = open_memory_graph(config)?;
     let response = get_decision(&graph, &decision_id)?;
     Ok(serde_json::to_value(QueryEnvelope::from(response))?)
 }
@@ -674,7 +702,7 @@ fn tool_get_relevant_decisions(
             )))
         }
     };
-    let graph = open_memory_graph(&config.hivemind_dir)?;
+    let graph = open_memory_graph(config)?;
     let response = get_relevant_decisions(&graph, &topic, status_filter)?;
     Ok(serde_json::to_value(QueryEnvelope::from(response))?)
 }
@@ -685,7 +713,7 @@ fn tool_get_supersession_chain(
 ) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
     let decision_id = require_string(&args, "decision_id")?;
-    let graph = open_memory_graph(&config.hivemind_dir)?;
+    let graph = open_memory_graph(config)?;
     let response = get_supersession_chain(&graph, &decision_id)?;
     Ok(serde_json::to_value(QueryEnvelope::from(response))?)
 }
@@ -711,21 +739,22 @@ fn tool_search_decisions(args: Value, config: &McpConfig) -> std::result::Result
     };
     let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
     let graph = MemoryGraph::default();
-    rebuild_graph(&ledger, &graph)?;
-    let response = search_decisions_fts(&ledger, &graph, &request)?;
+    rebuild_graph_for_tenant(&ledger, &config.tenant_id, &graph)?;
+    let response =
+        search_decisions_fts_with_context(&config.query_context(), &ledger, &graph, &request)?;
     Ok(serde_json::to_value(QueryEnvelope::from(response))?)
 }
 
 fn tool_dump_graph(_args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
-    let graph = open_memory_graph(&config.hivemind_dir)?;
+    let graph = open_memory_graph(config)?;
     let dot = crate::cli::render_decision_dot(&graph)?;
     Ok(json!({ "format": "dot", "content": dot }))
 }
 
-fn open_memory_graph(hivemind_dir: &Path) -> Result<MemoryGraph> {
-    let ledger = SqliteEventLedger::open(hivemind_dir)?;
+fn open_memory_graph(config: &McpConfig) -> Result<MemoryGraph> {
+    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
     let graph = MemoryGraph::default();
-    rebuild_graph(&ledger, &graph)?;
+    rebuild_graph_for_tenant(&ledger, &config.tenant_id, &graph)?;
     Ok(graph)
 }
 

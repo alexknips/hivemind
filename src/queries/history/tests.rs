@@ -405,6 +405,7 @@ fn fixture_ledger() -> Result<InMemoryEventLedger> {
 
 fn event(sequence: u64, event_type: EventType, actor_id: &str, payload: Value) -> Event {
     Event {
+        tenant_id: Default::default(),
         event_id: None,
         event_uuid: Uuid::from_u128(u128::from(sequence)),
         correlation_id: Some("history-test".to_owned()),

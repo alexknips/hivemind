@@ -10,6 +10,8 @@ mod supersession;
 
 use serde::Serialize;
 
+use crate::events::TenantId;
+
 #[cfg(test)]
 pub(crate) use shared::query_error;
 pub(crate) use shared::MAX_QUERY_RESULTS;
@@ -28,9 +30,9 @@ pub use neighborhood::{
 };
 pub use relevant::get_relevant_decisions;
 pub use search::{
-    search_decisions, search_decisions_fts, DecisionSearchResult, DecisionSearchResults,
-    SearchDecisionFilters, SearchDecisionRequest, SearchGraphContext, SearchMatchedNode,
-    SearchSnippet,
+    search_decisions, search_decisions_fts, search_decisions_fts_with_context,
+    DecisionSearchResult, DecisionSearchResults, SearchDecisionFilters, SearchDecisionRequest,
+    SearchGraphContext, SearchMatchedNode, SearchSnippet,
 };
 pub use status::{
     derive_decision_status, derive_hypothesis_status, DecisionStatus, HypothesisStatus,
@@ -43,6 +45,21 @@ pub struct QueryResponse<T> {
     pub truncated: bool,
     pub latency_ms: u128,
     pub data: T,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryContext {
+    pub tenant_id: TenantId,
+}
+
+impl QueryContext {
+    pub fn new(tenant_id: TenantId) -> Self {
+        Self { tenant_id }
+    }
+
+    pub fn local() -> Self {
+        Self::new(TenantId::local())
+    }
 }
 
 #[cfg(test)]

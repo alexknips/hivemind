@@ -70,6 +70,7 @@ pub fn assert_read_offset_and_limit<L: EventLedger>(ledger: &L) -> Result<()> {
 
 pub fn make_event(evidence_id: &str, event_uuid: Uuid) -> Event {
     Event {
+        tenant_id: Default::default(),
         event_id: None,
         event_uuid,
         correlation_id: None,

@@ -537,6 +537,7 @@ fn payload_json(payload: &EventPayload) -> Value {
 
 fn event_with_payload(event_type: EventType, payload: Value) -> Event {
     Event {
+        tenant_id: Default::default(),
         event_id: Some(1),
         event_uuid: Uuid::nil(),
         correlation_id: Some("contract-test".to_owned()),

@@ -10,6 +10,7 @@ use crate::events::{
     DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload, DecisionSupersededPayload,
     Event, EventBuilder, EventId, EventPayload, EventProvenance, EventType,
     EvidenceRecordedPayload, HypothesisRecordedPayload, RelationAddedPayload, RelationKind,
+    TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -46,8 +47,27 @@ pub struct SupersedeOutcome {
 
 pub struct Commands<'a, L: EventLedger> {
     ledger: &'a L,
-    provenance: EventProvenance,
+    context: CommandContext,
     state: Mutex<CommandState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandContext {
+    pub tenant_id: TenantId,
+    pub provenance: EventProvenance,
+}
+
+impl CommandContext {
+    pub fn new(tenant_id: TenantId, provenance: EventProvenance) -> Self {
+        Self {
+            tenant_id,
+            provenance,
+        }
+    }
+
+    pub fn local(provenance: EventProvenance) -> Self {
+        Self::new(TenantId::local(), provenance)
+    }
 }
 
 #[derive(Default)]
@@ -75,9 +95,13 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     }
 
     pub fn new_with_provenance(ledger: &'a L, provenance: EventProvenance) -> Self {
+        Self::new_with_context(ledger, CommandContext::local(provenance))
+    }
+
+    pub fn new_with_context(ledger: &'a L, context: CommandContext) -> Self {
         Self {
             ledger,
-            provenance,
+            context,
             state: Mutex::new(CommandState::default()),
         }
     }
@@ -115,7 +139,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             event_uuid,
         )?;
 
-        self.ledger.append(event)
+        self.append_event(event)
     }
 
     pub fn record_hypothesis(&self, actor_id: &str, statement: &str) -> Result<HypothesisId> {
@@ -148,7 +172,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             event_uuid,
         )?;
 
-        self.ledger.append(event)
+        self.append_event(event)
     }
 
     pub fn record_option(
@@ -408,7 +432,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             event_uuids.proposal,
         )?;
 
-        let root_event_id = self.ledger.append(root_event)?;
+        let root_event_id = self.append_event(root_event)?;
         let mut relation_event_ids = Vec::new();
 
         for (option_id, event_uuid) in option_ids.iter().zip(event_uuids.has_option) {
@@ -496,7 +520,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             event_uuid,
         )?;
 
-        self.ledger.append(event)
+        self.append_event(event)
     }
 
     pub fn reject_decision(&self, decision_id: &str, actor_id: &str) -> Result<EventId> {
@@ -547,7 +571,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             event_uuid,
         )?;
 
-        self.ledger.append(event)
+        self.append_event(event)
     }
 
     pub fn reject_decision_with_uuid(
@@ -582,7 +606,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             event_uuid,
         )?;
 
-        self.ledger.append(event)
+        self.append_event(event)
     }
 
     pub fn supersede_decision(
@@ -641,7 +665,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             event_uuid,
         )?;
 
-        self.ledger.append(event)
+        self.append_event(event)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -910,7 +934,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             event_uuid,
         )?;
 
-        self.ledger.append(event)
+        self.append_event(event)
     }
 
     fn event_with_uuid(
@@ -921,7 +945,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         event_uuid: Uuid,
     ) -> Result<Event> {
         EventBuilder::new(event_uuid, actor_id, payload)
-            .provenance(self.provenance.clone())
+            .tenant_id(self.context.tenant_id.clone())
+            .provenance(self.context.provenance.clone())
             .causation_event_id(causation_event_id)
             .timestamp(Some(Utc::now()))
             .build()
@@ -935,6 +960,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         self.state.lock().map_err(|error| {
             CommandError::Invariant(format!("commands state lock poisoned: {error}")).into()
         })
+    }
+
+    fn append_event(&self, event: Event) -> Result<EventId> {
+        self.ledger
+            .append_for_tenant(&self.context.tenant_id, event)
     }
 
     fn evidence_exists(&self, evidence_id: &str) -> Result<bool> {
@@ -983,7 +1013,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         const PAGE_SIZE: usize = 1024;
 
         loop {
-            let events = self.ledger.read(offset, PAGE_SIZE)?;
+            let events = self
+                .ledger
+                .read_for_tenant(&self.context.tenant_id, offset, PAGE_SIZE)?;
             if events.is_empty() {
                 return Ok(None);
             }
@@ -1015,7 +1047,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         const PAGE_SIZE: usize = 1024;
 
         loop {
-            let events = self.ledger.read(offset, PAGE_SIZE)?;
+            let events = self
+                .ledger
+                .read_for_tenant(&self.context.tenant_id, offset, PAGE_SIZE)?;
             if events.is_empty() {
                 return Ok(None);
             }
@@ -1060,7 +1094,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         const PAGE_SIZE: usize = 1024;
 
         loop {
-            let events = self.ledger.read(offset, PAGE_SIZE)?;
+            let events = self
+                .ledger
+                .read_for_tenant(&self.context.tenant_id, offset, PAGE_SIZE)?;
             if events.is_empty() {
                 break;
             }
@@ -1153,7 +1189,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         let relation_name = relation_kind_name(relation_kind);
 
         loop {
-            let events = self.ledger.read(offset, PAGE_SIZE)?;
+            let events = self
+                .ledger
+                .read_for_tenant(&self.context.tenant_id, offset, PAGE_SIZE)?;
             if events.is_empty() {
                 return Ok(None);
             }
@@ -1184,7 +1222,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         const PAGE_SIZE: usize = 1024;
 
         loop {
-            let events = self.ledger.read(offset, PAGE_SIZE)?;
+            let events = self
+                .ledger
+                .read_for_tenant(&self.context.tenant_id, offset, PAGE_SIZE)?;
             if events.is_empty() {
                 return Ok(false);
             }
