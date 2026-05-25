@@ -189,7 +189,8 @@ fn mcp_capture_evidence_persists_across_invocations() {
 }
 
 #[test]
-fn mcp_stdio_servers_share_sqlite_wal_ledger_under_concurrent_writes() {
+fn mcp_stdio_servers_share_sqlite_wal_ledger_under_concurrent_writes(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let hivemind_dir = unique_dir("concurrent");
     let _ = std::fs::create_dir_all(&hivemind_dir);
 
@@ -230,6 +231,7 @@ fn mcp_stdio_servers_share_sqlite_wal_ledger_under_concurrent_writes() {
     let mut decision_event_ids = BTreeSet::new();
     let mut decision_count = 0;
     let mut relation_count = 0;
+    let mut unexpected_event_type = None;
     for (index, event) in events.iter().enumerate() {
         let event_id = event.event_id.expect("stored event has event_id");
         assert!(
@@ -246,10 +248,16 @@ fn mcp_stdio_servers_share_sqlite_wal_ledger_under_concurrent_writes() {
             hivemind::events::EventType::RelationAdded => {
                 relation_count += 1;
             }
-            other => panic!("unexpected event type from MCP capture: {other:?}"),
+            other => {
+                unexpected_event_type = Some(other);
+                break;
+            }
         }
     }
 
+    if let Some(other) = unexpected_event_type {
+        return Err(format!("unexpected event type from MCP capture: {other:?}").into());
+    }
     assert_eq!(decision_count, 2);
     assert_eq!(relation_count, 2);
 
@@ -280,6 +288,7 @@ fn mcp_stdio_servers_share_sqlite_wal_ledger_under_concurrent_writes() {
     assert_eq!(replayed_event_ids, vec![1, 2, 3, 4]);
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
 }
 
 fn capture_decision_through_mcp_server(

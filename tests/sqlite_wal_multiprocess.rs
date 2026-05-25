@@ -81,6 +81,7 @@ fn run_shared_sqlite_ledger_test(
     let mut decision_event_ids = BTreeSet::new();
     let mut decision_count = 0;
     let mut relation_count = 0;
+    let mut unexpected_event_type = None;
 
     for (index, event) in events.iter().enumerate() {
         let event_id = event.event_id.expect("stored event has event_id");
@@ -99,11 +100,13 @@ fn run_shared_sqlite_ledger_test(
                 relation_count += 1;
             }
             other => {
-                return Err(
-                    format!("unexpected event type in reproduction ledger: {other:?}").into(),
-                )
+                unexpected_event_type = Some(other);
+                break;
             }
         }
+    }
+    if let Some(other) = unexpected_event_type {
+        return Err(format!("unexpected event type in reproduction ledger: {other:?}").into());
     }
 
     assert_eq!(decision_count, WORKER_COUNT * DECISIONS_PER_WORKER);
