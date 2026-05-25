@@ -57,7 +57,7 @@ fn run_shared_sqlite_ledger_test(
         "workers to reach the start barrier",
         Duration::from_secs(10),
         || (0..WORKER_COUNT).all(|index| ready_dir.join(format!("{index}.ready")).exists()),
-    );
+    )?;
     fs::write(&start_file, "start")?;
 
     for (worker_index, worker) in workers {
@@ -98,7 +98,11 @@ fn run_shared_sqlite_ledger_test(
             EventType::RelationAdded => {
                 relation_count += 1;
             }
-            other => panic!("unexpected event type in reproduction ledger: {other:?}"),
+            other => {
+                return Err(
+                    format!("unexpected event type in reproduction ledger: {other:?}").into(),
+                )
+            }
         }
     }
 
@@ -166,7 +170,7 @@ fn run_worker() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     fs::write(ready_dir.join(format!("{worker_index}.ready")), "ready")?;
     wait_for("parent start signal", Duration::from_secs(10), || {
         start_file.exists()
-    });
+    })?;
 
     let actor_id = format!("agent:test-wal:{worker_index}");
     let ledger = SqliteEventLedger::open(&ledger_dir)?;
@@ -194,16 +198,20 @@ fn run_worker() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-fn wait_for(description: &str, timeout: Duration, mut predicate: impl FnMut() -> bool) {
+fn wait_for(
+    description: &str,
+    timeout: Duration,
+    mut predicate: impl FnMut() -> bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if predicate() {
-            return;
+            return Ok(());
         }
         thread::sleep(Duration::from_millis(10));
     }
 
-    panic!("timed out waiting for {description}");
+    Err(format!("timed out waiting for {description}").into())
 }
 
 fn temp_hivemind_dir(prefix: &str) -> PathBuf {

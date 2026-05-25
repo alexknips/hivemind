@@ -304,6 +304,7 @@ fn disagree_decision_tool_contests_and_defaults_actor() {
     let events = ledger.read(0, 20).expect("events read");
     let rejected = events
         .iter()
+        // ubs:ignore: event IDs are public ledger offsets, not secrets.
         .find(|event| event.event_id == Some(event_id))
         .expect("rejected event");
     assert_eq!(rejected.actor_id, "agent:codex:disagree-session");

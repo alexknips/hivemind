@@ -304,6 +304,7 @@ fn rebuild_decision_search_fts(
         .transaction()
         .map_err(|error| query_error(format!("begin decision search index rebuild: {error}")))?;
     transaction
+        // ubs:ignore: static FTS schema SQL contains no request-controlled interpolation.
         .execute_batch(
             "DROP TABLE IF EXISTS decision_search_fts;
              CREATE VIRTUAL TABLE decision_search_fts USING fts5(
@@ -324,6 +325,7 @@ fn rebuild_decision_search_fts(
         .map_err(|error| query_error(format!("initialize decision search index: {error}")))?;
     {
         let mut statement = transaction
+            // ubs:ignore: static INSERT statement; values are bound via rusqlite params.
             .prepare(
                 "INSERT INTO decision_search_fts (
                     decision_id,
@@ -344,6 +346,7 @@ fn rebuild_decision_search_fts(
             })?;
         for document in documents {
             statement
+                // ubs:ignore: document fields are bound parameters, not interpolated SQL.
                 .execute(params![
                     field_text(&document.fields, &["decision.id"]),
                     field_text(&document.fields, &["decision.title"]),
@@ -385,6 +388,7 @@ fn query_decision_search_fts(
             return Ok(Vec::new());
         };
         let mut statement = connection
+            // ubs:ignore: static SELECT statement; FTS query is bound as parameter ?1.
             .prepare(
                 "SELECT decision_id,
                         bm25(decision_search_fts, 8.0, 5.0, 3.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0) AS score
@@ -394,6 +398,7 @@ fn query_decision_search_fts(
             )
             .map_err(|error| query_error(format!("prepare decision search query: {error}")))?;
         let rows = statement
+            // ubs:ignore: FTS query value is bound through rusqlite params.
             .query_map(params![fts_query], |row| {
                 Ok(FtsDecisionMatch {
                     decision_id: row.get(0)?,
@@ -406,9 +411,11 @@ fn query_decision_search_fts(
         }
     } else {
         let mut statement = connection
+            // ubs:ignore: static unfiltered SELECT contains no request-controlled interpolation.
             .prepare("SELECT decision_id FROM decision_search_fts ORDER BY decision_id ASC")
             .map_err(|error| query_error(format!("prepare unfiltered decision search: {error}")))?;
         let rows = statement
+            // ubs:ignore: static unfiltered SELECT has no user-supplied SQL fragments.
             .query_map([], |row| {
                 Ok(FtsDecisionMatch {
                     decision_id: row.get(0)?,

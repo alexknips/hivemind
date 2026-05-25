@@ -3,7 +3,6 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use hivemind::ledger::{EventLedger, SqliteEventLedger};
 use serde_json::Value;
@@ -88,10 +87,7 @@ fn claude_code_capture_command_writes_human_decision() -> TestResult<()> {
     assert!(command.contains("--source agent"));
 
     let script = root.join(".claude/scripts/capture-decision.sh");
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_nanos()
-        .to_string();
+    let unique = uuid::Uuid::new_v4().to_string();
     let hivemind_dir = std::env::temp_dir().join(format!("hivemind-claude-capture-{unique}"));
 
     let output = Command::new(&script)
@@ -236,10 +232,7 @@ fn claude_code_plugin_bundle_is_installable_and_wires_cli_mcp() -> TestResult<()
 #[test]
 fn claude_code_plugin_capture_and_query_scripts_write_agent_decision() -> TestResult<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_nanos()
-        .to_string();
+    let unique = uuid::Uuid::new_v4().to_string();
     let hivemind_dir = std::env::temp_dir().join(format!("hivemind-claude-plugin-{unique}"));
     let actor_id = "agent:claude:plugin-test-session";
 
@@ -353,10 +346,7 @@ fn codex_capture_defaults_actor_from_session_environment() -> TestResult<()> {
 #[test]
 fn capture_plugin_scripts_derive_codex_session_context() -> TestResult<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_nanos()
-        .to_string();
+    let unique = uuid::Uuid::new_v4().to_string();
     let hivemind_dir = std::env::temp_dir().join(format!("hivemind-codex-plugin-{unique}"));
     let actor_id = "agent:codex:codex-thread-test";
 
@@ -507,10 +497,7 @@ fn read_json(path: impl AsRef<Path>) -> TestResult<Value> {
 }
 
 fn unique_temp_dir(label: &str) -> TestResult<std::path::PathBuf> {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_nanos()
-        .to_string();
+    let unique = uuid::Uuid::new_v4().to_string();
     let path = std::env::temp_dir().join(format!("{label}-{unique}"));
     fs::create_dir_all(&path)?;
     Ok(path)

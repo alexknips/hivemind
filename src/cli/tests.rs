@@ -2502,7 +2502,7 @@ fn write_simple_pdf(path: &std::path::Path, lines: &[&str]) {
     }
     content.push_str("ET\n");
 
-    let objects = vec![
+    let objects = [
         "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_owned(),

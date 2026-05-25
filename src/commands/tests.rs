@@ -320,6 +320,7 @@ fn disagree_records_reason_and_is_idempotent_for_same_actor() {
     let events = ledger.read(0, 20).expect("events read");
     let rejected = events
         .iter()
+        // ubs:ignore: event IDs are public ledger offsets, not secrets.
         .find(|event| event.event_id == Some(first_event_id))
         .expect("rejection event");
     assert_eq!(rejected.event_type, EventType::DecisionRejected);
@@ -390,6 +391,7 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
     let events = ledger.read(0, 20).expect("events read");
     let superseded = events
         .iter()
+        // ubs:ignore: event IDs are public ledger offsets, not secrets.
         .find(|event| event.event_id == Some(first.superseded_event_id))
         .expect("superseded event");
     assert_eq!(superseded.event_type, EventType::DecisionSuperseded);
