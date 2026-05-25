@@ -299,8 +299,7 @@ fn rebuild_decision_search_fts(
     ledger: &SqliteEventLedger,
     documents: &[ScoredDecisionSearchResult],
 ) -> Result<()> {
-    let mut connection = Connection::open(ledger.path())
-        .map_err(|error| query_error(format!("open decision search index: {error}")))?;
+    let mut connection = open_decision_search_connection(ledger)?;
     let transaction = connection
         .transaction()
         .map_err(|error| query_error(format!("begin decision search index rebuild: {error}")))?;
@@ -379,8 +378,7 @@ fn query_decision_search_fts(
     ledger: &SqliteEventLedger,
     query: Option<&str>,
 ) -> Result<Vec<FtsDecisionMatch>> {
-    let connection = Connection::open(ledger.path())
-        .map_err(|error| query_error(format!("open decision search index: {error}")))?;
+    let connection = open_decision_search_connection(ledger)?;
     let mut matches = Vec::new();
     if let Some(query) = query {
         let Some(fts_query) = fts5_query(query) else {
@@ -425,6 +423,12 @@ fn query_decision_search_fts(
     Ok(matches)
 }
 
+fn open_decision_search_connection(ledger: &SqliteEventLedger) -> Result<Connection> {
+    // ubs:ignore: ledger.path() is a trusted local SQLite path, not request input.
+    Ok(Connection::open(ledger.path())
+        .map_err(|error| query_error(format!("open decision search index: {error}")))?)
+}
+
 fn decision_proposed_at_by_id(
     ledger: &impl EventLedger,
 ) -> Result<BTreeMap<String, DateTime<Utc>>> {
@@ -453,8 +457,7 @@ fn date_in_range(
     let Some(proposed_at) = proposed_at else {
         return false;
     };
-    since.is_none_or(|since| proposed_at >= since)
-        && until.is_none_or(|until| proposed_at <= until)
+    since.is_none_or(|since| proposed_at >= since) && until.is_none_or(|until| proposed_at <= until)
 }
 
 fn document_matches_filters(
