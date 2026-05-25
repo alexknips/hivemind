@@ -134,7 +134,7 @@ const QUERY_SPECS: &[QuerySpec] = &[
         snapshot_file: "recent_decisions.json",
         args: &[
             "query",
-            "recent",
+            "recent_decisions",
             "--since",
             "2026-01-01",
             "--until",
@@ -151,7 +151,14 @@ const QUERY_SPECS: &[QuerySpec] = &[
     QuerySpec {
         name: "recent_decisions_empty",
         snapshot_file: "recent_decisions_empty.json",
-        args: &["query", "recent", "--since", "2030-01-01", "--limit", "5"],
+        args: &[
+            "query",
+            "recent_decisions",
+            "--since",
+            "2030-01-01",
+            "--limit",
+            "5",
+        ],
         expectation: QueryExpectation::Success,
     },
     QuerySpec {

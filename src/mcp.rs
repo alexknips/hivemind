@@ -30,8 +30,9 @@ use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool
 use crate::ledger::SqliteEventLedger;
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
-    derive_decision_status, get_compact_view, get_decision, get_relevant_decisions,
-    get_supersession_chain, search_decisions_fts_with_context, DecisionStatus, QueryContext,
+    derive_decision_status, get_compact_view, get_decision, get_recent_decisions,
+    get_relevant_decisions, get_supersession_chain, search_decisions_fts_with_context,
+    DecisionStatus, QueryContext, RecentDecisionFilterRequest, RecentDecisionsRequest,
     SearchDecisionRequest,
 };
 use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
@@ -296,6 +297,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "get_relevant_decisions" => tool_get_relevant_decisions(arguments, config),
         "get_supersession_chain" => tool_get_supersession_chain(arguments, config),
         "search_decisions" => tool_search_decisions(arguments, config),
+        "recent_decisions" => tool_recent_decisions(arguments, config),
         "dump_graph" => tool_dump_graph(arguments, config),
         "hivemind_compact_view" => tool_compact_view(arguments, config),
         "summarize_decisions" => tool_summarize_decisions(arguments, config),
@@ -463,6 +465,27 @@ fn tool_definitions() -> Vec<Value> {
                     "source": { "type": "array", "items": { "type": "string" } },
                     "since": { "type": "string", "description": "RFC3339 lower bound for decision proposal time." },
                     "until": { "type": "string", "description": "RFC3339 upper bound for decision proposal time." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                    "cursor": { "type": "string" }
+                }
+            }
+        }),
+        json!({
+            "name": "recent_decisions",
+            "description": "List recently proposed decisions. Equivalent to `hivemind query recent_decisions`.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["since"],
+                "properties": {
+                    "since": { "type": "string", "description": "RFC3339 lower bound for decision proposal time." },
+                    "until": { "type": "string", "description": "RFC3339 upper bound for decision proposal time." },
+                    "actor": { "type": "array", "items": { "type": "string" }, "description": "Actor id patterns, matching the CLI --actor filter." },
+                    "topic": { "type": "array", "items": { "type": "string" } },
+                    "status": {
+                        "type": "array",
+                        "items": { "type": "string", "enum": ["proposed", "accepted", "rejected", "contested", "superseded"] }
+                    },
+                    "source": { "type": "array", "items": { "type": "string" } },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
                     "cursor": { "type": "string" }
                 }
@@ -818,6 +841,31 @@ fn tool_summarize_decisions(
     let graph = open_memory_graph(config)?;
     let request = SummarizeRequest { decision_ids, mode };
     let response = summarize_decisions(&graph, &request).map_err(RpcError::from)?;
+    Ok(serde_json::to_value(QueryEnvelope::from(response))?)
+}
+
+fn tool_recent_decisions(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let since_timestamp = optional_datetime(&args, "since")?
+        .ok_or_else(|| RpcError::invalid_params("missing `since`"))?;
+    let statuses = optional_string_array(&args, "status")?
+        .into_iter()
+        .map(|status| parse_decision_status(&status))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let request = RecentDecisionsRequest {
+        since_timestamp,
+        until_timestamp: optional_datetime(&args, "until")?,
+        filters: RecentDecisionFilterRequest {
+            actor_patterns: optional_string_array(&args, "actor")?,
+            sources: optional_string_array(&args, "source")?,
+            topic_keys: optional_string_array(&args, "topic")?,
+            statuses,
+        },
+        limit: optional_usize(&args, "limit")?.unwrap_or(25),
+        cursor: optional_string(&args, "cursor")?,
+    };
+    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let response = get_recent_decisions(&ledger, &request)?;
     Ok(serde_json::to_value(QueryEnvelope::from(response))?)
 }
 
