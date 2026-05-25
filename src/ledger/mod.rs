@@ -1,5 +1,7 @@
 mod backend_error;
 mod memory;
+#[cfg(feature = "shared-backend-postgres")]
+mod postgres;
 mod sqlite;
 
 #[cfg(test)]
@@ -9,6 +11,8 @@ use crate::events::{Event, EventId};
 use crate::Result;
 
 pub use memory::InMemoryEventLedger;
+#[cfg(feature = "shared-backend-postgres")]
+pub use postgres::PostgresEventLedger;
 pub use sqlite::SqliteEventLedger;
 
 pub trait EventLedger {
