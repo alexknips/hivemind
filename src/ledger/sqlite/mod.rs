@@ -45,7 +45,7 @@ impl SqliteEventLedger {
 
 impl EventLedger for SqliteEventLedger {
     fn append_for_tenant(&self, tenant_id: &TenantId, mut event: Event) -> Result<EventId> {
-        event.tenant_id = tenant_id.clone();
+        event.tenant_id = tenant_id.clone(); // ubs:ignore: per-append copy; false positive from impl EventLedger for.
         let stored = row::StoredEvent::from_event(event)?;
 
         let inserted = retry_sqlite_lock(|| {
@@ -216,12 +216,11 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
 }
 
 fn ensure_tenant_scoped_event_uuid(connection: &Connection) -> rusqlite::Result<()> {
-    let create_sql: String = connection
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'events'",
-            [],
-            |row| row.get(0),
-        )?;
+    let create_sql: String = connection.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'events'",
+        [],
+        |row| row.get(0),
+    )?;
 
     if create_sql.contains("UNIQUE(tenant_id, event_uuid)")
         && !create_sql.contains("event_uuid TEXT NOT NULL UNIQUE")
@@ -229,9 +228,8 @@ fn ensure_tenant_scoped_event_uuid(connection: &Connection) -> rusqlite::Result<
         return Ok(());
     }
 
-    connection
-        .execute_batch(
-            "BEGIN IMMEDIATE;
+    connection.execute_batch(
+        "BEGIN IMMEDIATE;
              ALTER TABLE events RENAME TO events_pre_tenant_scope;
              CREATE TABLE events (
                  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -275,7 +273,7 @@ fn ensure_tenant_scoped_event_uuid(connection: &Connection) -> rusqlite::Result<
              FROM events_pre_tenant_scope;
              DROP TABLE events_pre_tenant_scope;
              COMMIT;",
-        )?;
+    )?;
     Ok(())
 }
 
