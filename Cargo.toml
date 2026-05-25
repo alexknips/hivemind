@@ -23,6 +23,7 @@ path = "src/main.rs"
 [features]
 default = []
 graph-kuzu = ["dep:kuzu", "dep:cxx-build"]
+shared-backend-postgres = ["dep:postgres", "dep:r2d2", "dep:r2d2_postgres"]
 tui = ["dep:crossterm", "dep:ratatui"]
 
 [dependencies]
@@ -31,10 +32,13 @@ chrono = { version = "0.4.42", features = ["serde"] }
 crossterm = { version = "0.28.1", optional = true }
 deunicode = "1.6.2"
 pdf-extract = "0.10.0"
+postgres = { version = "0.19.13", optional = true, features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 # kuzu 0.11.3 depends on cxx 1.0.138 but allows newer cxx-build generators.
 # Keep the generated bridge symbols aligned with kuzu's runtime cxx crate.
 cxx-build = { version = "=1.0.138", optional = true }
 kuzu = { version = "0.11.3", optional = true }
+r2d2 = { version = "0.8.10", optional = true }
+r2d2_postgres = { version = "0.18.2", optional = true }
 ratatui = { version = "0.29.0", optional = true }
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
