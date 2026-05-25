@@ -102,6 +102,8 @@ Whether you're a human engineer or an AI agent contributing to HiveMind, you com
 - Cut speculative features rather than add them.
 - Make every change traceable to a decision (eventually recorded *in HiveMind itself*).
 - Surface disagreement and staleness, never suppress them.
+- Run the mandatory [quality gate contract](docs/QUALITY_GATES.md) before
+  submitting work, with explicit proof for each gate.
 - Build the smallest correct thing that meets the bar, then extend.
 
 This is the standard. Anything less and we are not building organizational memory — we are building yet another note-taking app.
