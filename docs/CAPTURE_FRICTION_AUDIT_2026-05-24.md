@@ -40,10 +40,9 @@ on 2026-05-24.
 
 Evidence used:
 
-- Codex transcripts under `/home/ubuntu/.codex/sessions/2026/05/24/`.
-- Repo/worktree ledgers under
-  `/home/ubuntu/gc/.gc/worktrees/hivemind/**/hivemind/ledger.sqlite`.
-- BR state from `/data/projects/hivemind`.
+- Local Codex session transcripts from the audit window.
+- Per-worktree HiveMind ledgers across the agent's working trees.
+- Current bead state in the HiveMind repo.
 
 ## Results
 
@@ -62,8 +61,7 @@ Evidence used:
 
 Ledger proof for the single captured decision:
 
-- Path:
-  `/home/ubuntu/gc/.gc/worktrees/hivemind/polecats/gastown.furiosa/hivemind/ledger.sqlite`
+- Stored in the agent's per-worktree HiveMind ledger.
 - Event: `decision.proposed` event 1
 - Timestamp: `2026-05-24T06:18:57.110789146+00:00`
 - Actor: `agent:codex:019e5899-41e8-7e11-aa39-636512f31857`

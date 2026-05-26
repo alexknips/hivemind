@@ -1,4 +1,8 @@
-# Beads Project Configuration
-# issue_prefix: hivemind
-# default_priority: 2
-# default_type: task
+issue_prefix: hivemind
+issue-prefix: hivemind
+dolt.auto-start: false
+export.auto: false
+gc.endpoint_origin: inherited_city
+gc.endpoint_status: verified
+types:
+  custom: molecule,convoy,message,event,gate,merge-request,agent,role,rig,session,spec,convergence,step

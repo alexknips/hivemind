@@ -19,3 +19,9 @@
 /initial.md
 /plan_*.diff
 /plan_*.md
+
+# Beads local runtime / per-machine state (issues.jsonl stays tracked)
+/.beads/dolt
+/.beads/dolt-server.port
+/.beads/dolt-wal
+/.beads/routes.jsonl
