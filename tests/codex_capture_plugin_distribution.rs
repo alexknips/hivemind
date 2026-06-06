@@ -409,6 +409,154 @@ fn capture_plugin_scripts_derive_codex_session_context() -> TestResult<()> {
 }
 
 #[test]
+fn capture_plugin_defaults_to_rig_ledger_from_linked_worktree() -> TestResult<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let scratch = unique_temp_dir("hivemind-plugin-linked-worktree")?;
+    let rig = scratch.join("rig");
+    let worktree = scratch.join("worktree");
+    fs::create_dir_all(&rig)?;
+    fs::write(rig.join("README.md"), "fixture repository\n")?;
+    run_git(&rig, ["init"])?;
+    run_git(&rig, ["add", "README.md"])?;
+    run_git(
+        &rig,
+        [
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test User",
+            "commit",
+            "-m",
+            "init",
+        ],
+    )?;
+    let worktree_arg = worktree.to_str().ok_or("worktree path should be UTF-8")?;
+    run_git(&rig, ["worktree", "add", "--detach", worktree_arg])?;
+
+    let capture_script = root.join("plugins/hivemind-capture/scripts/capture-decision.sh");
+    let output = Command::new(&capture_script)
+        .current_dir(&worktree)
+        .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+        .env("CODEX_THREAD_ID", "linked-worktree-test")
+        .env_remove("HIVEMIND_DIR")
+        .env_remove("CLAUDE_PLUGIN_OPTION_HIVEMIND_DIR")
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .env_remove("CLAUDE_SESSION_ID")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .args([
+            "--title",
+            "Capture from linked worktree to rig ledger",
+            "--rationale",
+            "The plugin default should use the original repository root, not the transient worktree root",
+            "--topic-keys",
+            "codex,plugin,worktree",
+            "--options",
+            "rig-ledger,worktree-ledger",
+            "--chose",
+            "rig-ledger",
+        ])
+        .output()?;
+    ensure(
+        output.status.success(),
+        format!(
+            "linked worktree capture failed: {}\nstdout: {}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        ),
+    )?;
+
+    let rig_hivemind_dir = rig.join("hivemind");
+    let worktree_hivemind_dir = worktree.join("hivemind");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let rig_hivemind_dir_text = rig_hivemind_dir.to_string_lossy();
+    let rig_text = rig.to_string_lossy();
+    let worktree_text = worktree.to_string_lossy();
+    ensure_contains(&stderr, "hivemind-dir resolved to", "capture stderr")?;
+    ensure_contains(&stderr, rig_hivemind_dir_text.as_ref(), "capture stderr")?;
+    ensure_contains(&stderr, rig_text.as_ref(), "capture stderr")?;
+    ensure_contains(&stderr, worktree_text.as_ref(), "capture stderr")?;
+    ensure(
+        !worktree_hivemind_dir.join("ledger.sqlite").exists(),
+        format!(
+            "capture should not create a worktree-local ledger at {}",
+            worktree_hivemind_dir.display()
+        ),
+    )?;
+
+    let ledger = SqliteEventLedger::open(&rig_hivemind_dir)?;
+    let events = ledger.read(0, 100)?;
+    let captured_event = events
+        .iter()
+        .find(|event| {
+            event.event_type == hivemind::events::EventType::DecisionProposed
+                && event.payload.get("title").and_then(Value::as_str)
+                    == Some("Capture from linked worktree to rig ledger")
+        })
+        .ok_or("rig ledger should contain the linked-worktree capture event")?;
+    ensure_str_eq(
+        captured_event.actor_id.as_str(),
+        "agent:codex:linked-worktree-test",
+        "rig ledger actor",
+    )?;
+
+    let query_script = root.join("plugins/hivemind-capture/scripts/query-decisions.sh");
+    let query = Command::new(&query_script)
+        .current_dir(&worktree)
+        .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+        .env("CODEX_THREAD_ID", "linked-worktree-test")
+        .env_remove("HIVEMIND_DIR")
+        .env_remove("CLAUDE_PLUGIN_OPTION_HIVEMIND_DIR")
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .env_remove("CLAUDE_SESSION_ID")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .args(["--q", "linked worktree", "--limit", "5"])
+        .output()?;
+    ensure(
+        query.status.success(),
+        format!(
+            "linked worktree query failed: {}\nstdout: {}",
+            String::from_utf8_lossy(&query.stderr),
+            String::from_utf8_lossy(&query.stdout)
+        ),
+    )?;
+    let query_stderr = String::from_utf8_lossy(&query.stderr);
+    ensure_contains(&query_stderr, "hivemind-dir resolved to", "query stderr")?;
+    ensure_contains(
+        &query_stderr,
+        rig_hivemind_dir_text.as_ref(),
+        "query stderr",
+    )?;
+    let query: Value = serde_json::from_slice(&query.stdout)?;
+    let result_count = query
+        .get("result_count")
+        .and_then(Value::as_u64)
+        .ok_or("query result_count should be an integer")?;
+    ensure(
+        result_count == 1,
+        format!("query result_count should be 1, got {result_count}"),
+    )?;
+    let query_actor = query
+        .get("data")
+        .and_then(|data| data.get("items"))
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("graph_context"))
+        .and_then(|graph_context| graph_context.get("actor_ids"))
+        .and_then(Value::as_array)
+        .and_then(|actor_ids| actor_ids.first())
+        .and_then(Value::as_str)
+        .ok_or("query actor id should exist")?;
+    ensure_str_eq(
+        query_actor,
+        "agent:codex:linked-worktree-test",
+        "query actor",
+    )?;
+
+    let _ = fs::remove_dir_all(scratch);
+    Ok(())
+}
+
+#[test]
 fn human_cli_emit_defaults_actor_and_source_from_git_email() -> TestResult<()> {
     let scratch = unique_temp_dir("hivemind-human-cli-default")?;
     let repo = scratch.join("repo");
@@ -523,6 +671,29 @@ fn proposal_event(hivemind_dir: &Path, decision_id: &str) -> TestResult<hivemind
                 && event.payload.get("decision_id").and_then(Value::as_str) == Some(decision_id)
         })
         .ok_or_else(|| format!("proposal event for {decision_id} should exist").into())
+}
+
+fn ensure(condition: bool, message: impl Into<String>) -> TestResult<()> {
+    if condition {
+        Ok(())
+    } else {
+        Err(message.into().into())
+    }
+}
+
+fn ensure_contains(haystack: &str, needle: &str, context: &str) -> TestResult<()> {
+    ensure(
+        haystack.contains(needle),
+        format!("{context} should contain {needle:?}"),
+    )
+}
+
+fn ensure_str_eq(actual: &str, expected: &str, context: &str) -> TestResult<()> {
+    if actual.eq(expected) {
+        Ok(())
+    } else {
+        Err(format!("{context} should be {expected:?}, got {actual:?}").into())
+    }
 }
 
 fn assert_no_todos(name: &str, body: &str) {
