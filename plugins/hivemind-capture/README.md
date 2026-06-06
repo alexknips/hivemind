@@ -3,7 +3,10 @@
 This directory is both the Codex capture plugin and the Claude Code
 `hivemind-capture` plugin. The Claude package installs:
 
-- `/hivemind-capture:capture-decision` for explicit writes through
+- `/hivemind-capture:capture` for explicit writes through the deterministic
+  capture helper. Use `--kind decision`, `--kind evidence`, or
+  `--kind hypothesis` when the kind is known.
+- `/hivemind-capture:capture-decision` as the legacy decision-only wrapper for
   `emit decision.capture`.
 - `/hivemind-capture:query-decisions` for bounded `query search_decisions`
   reads.
@@ -79,7 +82,13 @@ not supplied.
 Capture one decision:
 
 ```text
-/hivemind-capture:capture-decision --title "Use the Claude plugin for local capture" --rationale "The plugin installs commands, skill guidance, and MCP without project-local setup" --topic-keys agents,claude,distribution --options plugin,manual-mcp --chose plugin
+/hivemind-capture:capture "Use the Claude plugin for local capture" --kind decision --title "Use the Claude plugin for local capture" --rationale "The plugin installs commands, skill guidance, and MCP without project-local setup" --topic-keys agents,claude,distribution --options plugin,manual-mcp --chose plugin
+```
+
+Capture one evidence item:
+
+```text
+/hivemind-capture:capture "The plugin smoke test wrote a decision and queried it back" --kind evidence
 ```
 
 The command prints a one-line confirmation and a query suggestion. Run the

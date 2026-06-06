@@ -62,7 +62,9 @@ ledger write must stay explicit and deterministic.
    `source_ref` values:
 
    ```bash
-   plugins/hivemind-capture/scripts/capture-decision.sh \
+   plugins/hivemind-capture/scripts/capture.sh \
+     "Prefer direct CLI capture before MCP" \
+     --kind decision \
      --title "Prefer direct CLI capture before MCP" \
      --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" \
      --topic-keys agents,capture \
@@ -104,7 +106,7 @@ ledger write must stay explicit and deterministic.
    From the Claude Code plugin, prefer the installed slash command:
 
    ```text
-   /hivemind-capture:capture-decision --title "Prefer direct CLI capture before MCP" --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" --topic-keys agents,capture --options direct-cli,mcp,hook --chose direct-cli
+   /hivemind-capture:capture "Prefer direct CLI capture before MCP" --kind decision --title "Prefer direct CLI capture before MCP" --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" --topic-keys agents,capture --options direct-cli,mcp,hook --chose direct-cli
    ```
 
 4. Attach existing evidence or hypotheses only when their ids are already known:
@@ -153,6 +155,7 @@ ledger write must stay explicit and deterministic.
 
 ## Quality Rules
 
+- Use the helper or HiveMind CLI commands; do not write directly to the ledger from this skill.
 - Preserve disagreement and staleness. Do not hide contested, rejected, refuted,
   or superseded context just because it complicates the answer.
 - Write the rationale in durable organizational language. Avoid "because we

@@ -405,8 +405,17 @@ pub enum DecisionCaptureSource {
 
 #[derive(Debug, Clone, Args)]
 pub struct EmitDecisionCaptureArgs {
-    #[arg(long = "source", value_enum, default_value_t = DecisionCaptureSource::Agent)]
-    pub source: DecisionCaptureSource,
+    #[command(flatten)]
+    pub provenance: EmitCaptureProvenanceArgs,
+
+    #[command(flatten)]
+    pub decision: EmitDecisionProposedArgs,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct EmitCaptureProvenanceArgs {
+    #[arg(long = "source", value_enum)]
+    pub source: Option<DecisionCaptureSource>,
 
     #[arg(long = "agent-tool")]
     pub agent_tool: Option<String>,
@@ -419,9 +428,16 @@ pub struct EmitDecisionCaptureArgs {
 
     #[arg(long = "source-ref")]
     pub source_ref: Option<String>,
+}
 
-    #[command(flatten)]
-    pub decision: EmitDecisionProposedArgs,
+impl EmitCaptureProvenanceArgs {
+    fn has_override(&self) -> bool {
+        self.source.is_some()
+            || self.agent_tool.is_some()
+            || self.agent_session.is_some()
+            || self.actor_id.is_some()
+            || self.source_ref.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Args)]
@@ -465,12 +481,18 @@ pub struct EmitDecisionSupersededArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct EmitEvidenceRecordedArgs {
+    #[command(flatten)]
+    pub provenance: EmitCaptureProvenanceArgs,
+
     #[arg(long)]
     pub content: String,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct EmitHypothesisRecordedArgs {
+    #[command(flatten)]
+    pub provenance: EmitCaptureProvenanceArgs,
+
     #[arg(long)]
     pub statement: String,
 }
@@ -1374,8 +1396,7 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
 
     let output = match &emit.command {
         EmitCommand::DecisionCapture(args) => {
-            let actor_id = capture_actor_id(args)?;
-            let provenance = capture_provenance(args, &actor_id)?;
+            let (actor_id, provenance) = capture_actor_and_provenance(&args.provenance)?;
             let commands =
                 Commands::new_with_context(&ledger, cli_command_context(cli, provenance)?);
             let decision_id =
@@ -1403,11 +1424,13 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
             OutputEnvelope::new("emit", "event_id", event_id.to_string())
         }
         EmitCommand::EvidenceRecorded(args) => {
-            let evidence_id = commands.record_evidence(&cli.actor, &args.content)?;
+            let (actor_id, commands) = emit_actor_and_commands(cli, &ledger, &args.provenance)?;
+            let evidence_id = commands.record_evidence(&actor_id, &args.content)?;
             OutputEnvelope::new("emit", "evidence_id", evidence_id)
         }
         EmitCommand::HypothesisRecorded(args) => {
-            let hypothesis_id = commands.record_hypothesis(&cli.actor, &args.statement)?;
+            let (actor_id, commands) = emit_actor_and_commands(cli, &ledger, &args.provenance)?;
+            let hypothesis_id = commands.record_hypothesis(&actor_id, &args.statement)?;
             OutputEnvelope::new("emit", "hypothesis_id", hypothesis_id)
         }
         EmitCommand::OptionRecorded(args) => {
@@ -1857,12 +1880,38 @@ fn propose_decision_from_option_labels<L: EventLedger>(
     )
 }
 
-fn capture_actor_id(args: &EmitDecisionCaptureArgs) -> Result<String> {
+fn emit_actor_and_commands<'a>(
+    cli: &Cli,
+    ledger: &'a SqliteEventLedger,
+    provenance_args: &EmitCaptureProvenanceArgs,
+) -> Result<(String, Commands<'a, SqliteEventLedger>)> {
+    if !provenance_args.has_override() {
+        let commands = Commands::new_with_context(
+            ledger,
+            cli_command_context(cli, cli_emit_provenance(&cli.actor))?,
+        );
+        return Ok((cli.actor.clone(), commands));
+    }
+
+    let (actor_id, provenance) = capture_actor_and_provenance(provenance_args)?;
+    let commands = Commands::new_with_context(ledger, cli_command_context(cli, provenance)?);
+    Ok((actor_id, commands))
+}
+
+fn capture_actor_and_provenance(
+    args: &EmitCaptureProvenanceArgs,
+) -> Result<(String, EventProvenance)> {
+    let actor_id = capture_actor_id(args)?;
+    let provenance = capture_provenance(args, &actor_id)?;
+    Ok((actor_id, provenance))
+}
+
+fn capture_actor_id(args: &EmitCaptureProvenanceArgs) -> Result<String> {
     if let Some(actor_id) = trimmed_optional("--actor-id", &args.actor_id)? {
         return Ok(actor_id.to_owned());
     }
 
-    match args.source {
+    match args.source.unwrap_or(DecisionCaptureSource::Agent) {
         DecisionCaptureSource::Agent => {
             let tool = capture_agent_tool(args)?;
             let session = capture_agent_session(args, &tool)?;
@@ -1872,7 +1921,7 @@ fn capture_actor_id(args: &EmitDecisionCaptureArgs) -> Result<String> {
     }
 }
 
-fn capture_agent_tool(args: &EmitDecisionCaptureArgs) -> Result<String> {
+fn capture_agent_tool(args: &EmitCaptureProvenanceArgs) -> Result<String> {
     trimmed_optional("--agent-tool", &args.agent_tool).map(|value| {
         value
             .map(ToOwned::to_owned)
@@ -1880,7 +1929,7 @@ fn capture_agent_tool(args: &EmitDecisionCaptureArgs) -> Result<String> {
     })
 }
 
-fn capture_agent_session(args: &EmitDecisionCaptureArgs, tool: &str) -> Result<String> {
+fn capture_agent_session(args: &EmitCaptureProvenanceArgs, tool: &str) -> Result<String> {
     trimmed_optional("--agent-session", &args.agent_session).map(|value| {
         value
             .map(ToOwned::to_owned)
@@ -1888,15 +1937,16 @@ fn capture_agent_session(args: &EmitDecisionCaptureArgs, tool: &str) -> Result<S
     })
 }
 
-fn capture_provenance(args: &EmitDecisionCaptureArgs, actor_id: &str) -> Result<EventProvenance> {
+fn capture_provenance(args: &EmitCaptureProvenanceArgs, actor_id: &str) -> Result<EventProvenance> {
+    let source = args.source.unwrap_or(DecisionCaptureSource::Agent);
     if let Some(source_ref) = trimmed_optional("--source-ref", &args.source_ref)? {
-        return Ok(match args.source {
+        return Ok(match source {
             DecisionCaptureSource::Agent => EventProvenance::agent(source_ref),
             DecisionCaptureSource::Human => EventProvenance::human(source_ref),
         });
     }
 
-    Ok(match args.source {
+    Ok(match source {
         DecisionCaptureSource::Agent => EventProvenance::agent(actor_id),
         DecisionCaptureSource::Human => EventProvenance::human(actor_id),
     })
