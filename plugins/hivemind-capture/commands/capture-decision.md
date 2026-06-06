@@ -1,10 +1,14 @@
 ---
 name: capture-decision
-description: Capture one HiveMind decision in the configured ledger
+description: Capture one HiveMind decision in the configured ledger using the legacy kind-locked path
 argument-hint: '--title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option] [--source agent|human]'
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/capture-decision.sh:*)
 disable-model-invocation: true
 ---
+
+`/hivemind-capture:capture` is the primary capture command. This legacy command
+keeps existing decision-only usages working and always dispatches with
+`--kind decision`.
 
 Capture exactly one HiveMind decision from the supplied arguments:
 

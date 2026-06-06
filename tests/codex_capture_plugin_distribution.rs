@@ -206,11 +206,47 @@ fn claude_code_plugin_bundle_is_installable_and_wires_cli_mcp() -> TestResult<()
     assert_mcp_pins_shared_ledger(&mcp);
 
     let capture_command =
+        fs::read_to_string(root.join("plugins/hivemind-capture/commands/capture.md"))?;
+    assert_no_todos("Claude unified capture command", &capture_command);
+    require_contains(
+        &capture_command,
+        "${CLAUDE_PLUGIN_ROOT}/scripts/capture.sh",
+        "unified capture command invokes capture.sh",
+    )?;
+    require_contains(
+        &capture_command,
+        "--kind evidence",
+        "unified capture command documents evidence kind",
+    )?;
+    require_contains(
+        &capture_command,
+        "hivemind-classifier",
+        "unified capture command documents classifier delegation",
+    )?;
+
+    let capture_decision_command =
         fs::read_to_string(root.join("plugins/hivemind-capture/commands/capture-decision.md"))?;
-    assert_no_todos("Claude capture command", &capture_command);
-    assert!(capture_command.contains("/hivemind-capture:query-decisions"));
-    assert!(capture_command.contains("agent:claude:<session>"));
-    assert!(capture_command.contains("${CLAUDE_PLUGIN_ROOT}/scripts/capture-decision.sh"));
+    assert_no_todos("Claude capture decision command", &capture_decision_command);
+    require_contains(
+        &capture_decision_command,
+        "/hivemind-capture:capture",
+        "decision command points to primary capture command",
+    )?;
+    require_contains(
+        &capture_decision_command,
+        "/hivemind-capture:query-decisions",
+        "decision command prints query follow-up",
+    )?;
+    require_contains(
+        &capture_decision_command,
+        "agent:claude:<session>",
+        "decision command documents Claude actor provenance",
+    )?;
+    require_contains(
+        &capture_decision_command,
+        "${CLAUDE_PLUGIN_ROOT}/scripts/capture-decision.sh",
+        "decision command invokes compatibility wrapper",
+    )?;
 
     let query_command =
         fs::read_to_string(root.join("plugins/hivemind-capture/commands/query-decisions.md"))?;
@@ -222,8 +258,18 @@ fn claude_code_plugin_bundle_is_installable_and_wires_cli_mcp() -> TestResult<()
     assert_no_todos("Claude plugin README", &readme);
     assert!(readme.contains("/plugin install hivemind-capture@hivemind"));
     assert!(readme.contains("/plugin uninstall hivemind-capture@hivemind"));
-    assert!(readme.contains("/hivemind-capture:capture-decision"));
+    require_contains(
+        &readme,
+        "/hivemind-capture:capture",
+        "README documents primary capture command",
+    )?;
+    require_contains(
+        &readme,
+        "/hivemind-capture:capture-decision",
+        "README documents compatibility decision command",
+    )?;
 
+    assert_executable(root.join("plugins/hivemind-capture/scripts/capture.sh"))?;
     assert_executable(root.join("plugins/hivemind-capture/scripts/capture-decision.sh"))?;
     assert_executable(root.join("plugins/hivemind-capture/scripts/query-decisions.sh"))?;
     Ok(())
@@ -409,6 +455,112 @@ fn capture_plugin_scripts_derive_codex_session_context() -> TestResult<()> {
 }
 
 #[test]
+fn unified_capture_script_records_evidence_with_agent_provenance() -> TestResult<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let unique = uuid::Uuid::new_v4().to_string();
+    let hivemind_dir = std::env::temp_dir().join(format!("hivemind-evidence-capture-{unique}"));
+    let actor_id = "agent:claude:evidence-test-session";
+
+    let capture_script = root.join("plugins/hivemind-capture/scripts/capture.sh");
+    let output = Command::new(&capture_script)
+        .current_dir(root)
+        .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+        .env("HIVEMIND_DIR", &hivemind_dir)
+        .env("CLAUDE_PROJECT_DIR", root)
+        .env("CLAUDE_SESSION_ID", "evidence-test-session")
+        .args([
+            "The plugin smoke test wrote a decision and queried it back",
+            "--kind",
+            "evidence",
+        ])
+        .output()?;
+    require(
+        output.status.success(),
+        format!(
+            "unified evidence capture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    require_contains(
+        stdout.as_ref(),
+        "Captured HiveMind evidence evidence-",
+        "unified evidence capture prints evidence id",
+    )?;
+    require_contains(
+        stdout.as_ref(),
+        actor_id,
+        "unified evidence capture prints actor id",
+    )?;
+
+    let event = event_with_type(&hivemind_dir, hivemind::events::EventType::EvidenceRecorded)?;
+    require_eq(event.actor_id.as_str(), actor_id, "evidence actor id")?;
+    require_eq(event.source.as_str(), "agent", "evidence source")?;
+    require_eq(
+        event.source_ref.as_deref(),
+        Some(actor_id),
+        "evidence source_ref",
+    )?;
+    require_eq(
+        event.payload.get("content").and_then(Value::as_str),
+        Some("The plugin smoke test wrote a decision and queried it back"),
+        "evidence content",
+    )?;
+
+    let _ = fs::remove_dir_all(hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn unified_capture_script_uses_classifier_when_kind_is_omitted() -> TestResult<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let unique = uuid::Uuid::new_v4().to_string();
+    let hivemind_dir = std::env::temp_dir().join(format!("hivemind-classified-capture-{unique}"));
+
+    let capture_script = root.join("plugins/hivemind-capture/scripts/capture.sh");
+    let output = Command::new(&capture_script)
+        .current_dir(root)
+        .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+        .env("HIVEMIND_DIR", &hivemind_dir)
+        .env("CODEX_THREAD_ID", "classifier-thread-test")
+        .env("HIVEMIND_CAPTURE_CLASSIFIER_JSON", r#"{"kind":"evidence"}"#)
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .env_remove("CLAUDE_SESSION_ID")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .arg("The test failed with error E")
+        .output()?;
+    require(
+        output.status.success(),
+        format!(
+            "classified capture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    require_contains(
+        stdout.as_ref(),
+        "Captured HiveMind evidence evidence-",
+        "classified capture prints evidence id",
+    )?;
+
+    let event = event_with_type(&hivemind_dir, hivemind::events::EventType::EvidenceRecorded)?;
+    require_eq(
+        event.actor_id.as_str(),
+        "agent:codex:classifier-thread-test",
+        "classified actor id",
+    )?;
+    require_eq(event.source.as_str(), "agent", "classified source")?;
+    require_eq(
+        event.payload.get("content").and_then(Value::as_str),
+        Some("The test failed with error E"),
+        "classified content",
+    )?;
+
+    let _ = fs::remove_dir_all(hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn human_cli_emit_defaults_actor_and_source_from_git_email() -> TestResult<()> {
     let scratch = unique_temp_dir("hivemind-human-cli-default")?;
     let repo = scratch.join("repo");
@@ -523,6 +675,44 @@ fn proposal_event(hivemind_dir: &Path, decision_id: &str) -> TestResult<hivemind
                 && event.payload.get("decision_id").and_then(Value::as_str) == Some(decision_id)
         })
         .ok_or_else(|| format!("proposal event for {decision_id} should exist").into())
+}
+
+fn event_with_type(
+    hivemind_dir: &Path,
+    event_type: hivemind::events::EventType,
+) -> TestResult<hivemind::events::Event> {
+    let ledger = SqliteEventLedger::open(hivemind_dir)?;
+    let events = ledger.read(0, 100)?;
+    events
+        .into_iter()
+        .find(|event| event.event_type == event_type)
+        .ok_or_else(|| format!("{event_type:?} event should exist").into())
+}
+
+fn require(condition: bool, message: impl Into<String>) -> TestResult<()> {
+    if condition {
+        Ok(())
+    } else {
+        Err(message.into().into())
+    }
+}
+
+fn require_contains(haystack: &str, needle: &str, message: &str) -> TestResult<()> {
+    require(
+        haystack.contains(needle),
+        format!("{message}: missing {needle:?}"),
+    )
+}
+
+fn require_eq<T>(actual: T, expected: T, message: &str) -> TestResult<()>
+where
+    T: PartialEq + std::fmt::Debug,
+{
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!("{message}: expected {expected:?}, got {actual:?}").into())
+    }
 }
 
 fn assert_no_todos(name: &str, body: &str) {
