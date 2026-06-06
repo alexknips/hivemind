@@ -15,12 +15,27 @@ agent:<tool>:<session>.
 USAGE
 }
 
-project_root() {
+worktree_root() {
   if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
     printf '%s\n' "$CLAUDE_PROJECT_DIR"
   else
-    git rev-parse --show-toplevel 2>/dev/null || pwd
+    git rev-parse --path-format=absolute --show-toplevel 2>/dev/null || pwd
   fi
+}
+
+project_root() {
+  local common_dir
+  common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ -n "$common_dir" ]]; then
+    dirname "$common_dir"
+  else
+    worktree_root
+  fi
+}
+
+log_hivemind_resolution() {
+  printf 'hivemind-dir resolved to %s (rig-root=%s worktree=%s)\n' \
+    "$HIVEMIND_DIR" "$PROJECT_ROOT" "$WORKTREE_ROOT" >&2
 }
 
 install_hint() {
@@ -83,6 +98,7 @@ detect_agent_session() {
   esac
 }
 
+WORKTREE_ROOT="$(worktree_root)"
 PROJECT_ROOT="$(project_root)"
 HIVEMIND_DIR="${HIVEMIND_DIR:-${CLAUDE_PLUGIN_OPTION_HIVEMIND_DIR:-$PROJECT_ROOT/hivemind}}"
 AGENT_TOOL=""
@@ -158,6 +174,8 @@ fi
 if [[ "$HAS_LIMIT" -eq 0 ]]; then
   FORWARDED+=(--limit 10)
 fi
+
+log_hivemind_resolution
 
 if [[ -n "${HIVEMIND_CAPTURE_BIN:-}" ]]; then
   BASE_CMD=("$HIVEMIND_CAPTURE_BIN")
