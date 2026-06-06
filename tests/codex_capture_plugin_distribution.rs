@@ -223,9 +223,59 @@ fn claude_code_plugin_bundle_is_installable_and_wires_cli_mcp() -> TestResult<()
     assert!(readme.contains("/plugin install hivemind-capture@hivemind"));
     assert!(readme.contains("/plugin uninstall hivemind-capture@hivemind"));
     assert!(readme.contains("/hivemind-capture:capture-decision"));
+    require_contains(
+        "Claude plugin README",
+        &readme,
+        "install-active-capture-skill.sh",
+    )?;
+
+    let active_skill = fs::read_to_string(
+        root.join("plugins/hivemind-capture/.claude-plugin/skills/active-capture.md"),
+    )?;
+    verify_active_capture_skill("Claude active capture skill", &active_skill)?;
+
+    let rig_skill = fs::read_to_string(root.join(".claude/skills/active-capture.md"))?;
+    if rig_skill != active_skill {
+        return Err("rig-local active capture skill differs from plugin source".into());
+    }
 
     assert_executable(root.join("plugins/hivemind-capture/scripts/capture-decision.sh"))?;
     assert_executable(root.join("plugins/hivemind-capture/scripts/query-decisions.sh"))?;
+    assert_executable(
+        root.join("plugins/hivemind-capture/scripts/install-active-capture-skill.sh"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn claude_active_capture_skill_installer_copies_to_project_skills() -> TestResult<()> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let project_dir = unique_temp_dir("hivemind-active-capture-project")?;
+    let installer = root.join("plugins/hivemind-capture/scripts/install-active-capture-skill.sh");
+
+    let output = Command::new(&installer)
+        .current_dir(root)
+        .arg("--project-dir")
+        .arg(&project_dir)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "active capture skill installer failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+
+    let source = fs::read_to_string(
+        root.join("plugins/hivemind-capture/.claude-plugin/skills/active-capture.md"),
+    )?;
+    let installed = fs::read_to_string(project_dir.join(".claude/skills/active-capture.md"))?;
+    if installed != source {
+        return Err("installed active capture skill differs from plugin source".into());
+    }
+    verify_active_capture_skill("installed active capture skill", &installed)?;
+
+    let _ = fs::remove_dir_all(project_dir);
     Ok(())
 }
 
@@ -530,6 +580,39 @@ fn assert_no_todos(name: &str, body: &str) {
         !body.contains("[TODO"),
         "{name} should not contain scaffold TODO placeholders"
     );
+}
+
+fn verify_active_capture_skill(name: &str, body: &str) -> TestResult<()> {
+    assert_no_todos(name, body);
+    require_contains(name, body, "name: active-capture")?;
+    require_contains(name, body, "comparing alternatives")?;
+    require_contains(
+        name,
+        body,
+        "/capture <text> [--kind decision|evidence|hypothesis|blocker]",
+    )?;
+    require_contains(name, body, "`decision`")?;
+    require_contains(name, body, "`evidence`")?;
+    require_contains(name, body, "`hypothesis`")?;
+    require_contains(name, body, "`blocker`")?;
+    require_contains(
+        name,
+        body,
+        "Do NOT call this for synthetic test data or routing chatter",
+    )?;
+    require_contains(name, body, "gc sling")?;
+    require_contains(name, body, "br update")?;
+    require_contains(name, body, "do not write")?;
+    require_contains(name, body, "directly to the ledger from this skill")?;
+    Ok(())
+}
+
+fn require_contains(name: &str, body: &str, needle: &str) -> TestResult<()> {
+    if body.contains(needle) {
+        Ok(())
+    } else {
+        Err(format!("{name} should contain {needle:?}").into())
+    }
 }
 
 fn assert_executable(path: impl AsRef<Path>) -> TestResult<()> {

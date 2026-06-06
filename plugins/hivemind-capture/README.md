@@ -9,6 +9,9 @@ This directory is both the Codex capture plugin and the Claude Code
   reads.
 - A `hivemind` MCP stdio server wired to `hivemind mcp`.
 - The `hivemind-capture` skill for capture boundaries and provenance rules.
+- The Claude `active-capture` skill, which nudges `/capture <text>
+  [--kind decision|evidence|hypothesis|blocker]` during live durable-decision
+  moments while avoiding synthetic test data and routing chatter.
 
 The shared helper defaults to `source=agent` and derives
 `actor_id=agent:<tool>:<session>` from the active session. Under Codex it uses
@@ -40,6 +43,13 @@ Claude Code can also test the plugin directory directly:
 
 ```bash
 claude --plugin-dir ./plugins/hivemind-capture
+```
+
+For rig-local dogfooding, copy the active capture skill into the checkout's
+project skills directory:
+
+```bash
+plugins/hivemind-capture/scripts/install-active-capture-skill.sh --project-dir .
 ```
 
 The default ledger is the project-local `./hivemind/` directory. The bundled MCP
