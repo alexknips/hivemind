@@ -12,7 +12,7 @@ use r2d2_postgres::PostgresConnectionManager;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::events::{Event, EventId, EventSource, EventType};
+use crate::events::{Event, EventId, EventSource, EventType, TenantId};
 use crate::Result;
 
 use super::backend_error::storage_error;
@@ -259,6 +259,32 @@ impl PostgresEventLedger {
 }
 
 impl EventLedger for PostgresEventLedger {
+    fn append_for_tenant(&self, tenant_id: &TenantId, event: Event) -> Result<EventId> {
+        PostgresEventLedger::append_for_tenant(self, tenant_id.as_str(), event)
+    }
+
+    fn read_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
+        PostgresEventLedger::read_for_tenant(self, tenant_id.as_str(), offset, limit)
+    }
+
+    fn replay_from_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: EventId,
+        callback: &mut dyn FnMut(&Event) -> Result<()>,
+    ) -> Result<()> {
+        PostgresEventLedger::replay_from_for_tenant(self, tenant_id.as_str(), offset, callback)
+    }
+
+    fn latest_offset_for_tenant(&self, tenant_id: &TenantId) -> Result<EventId> {
+        PostgresEventLedger::latest_offset_for_tenant(self, tenant_id.as_str())
+    }
+
     fn append(&self, event: Event) -> Result<EventId> {
         self.append_for_tenant(&self.tenant_id, event)
     }
@@ -354,6 +380,7 @@ fn event_from_row(row: &Row) -> Result<Event> {
     let causation_event_id_raw: Option<i64> = row.get("causation_event_id");
 
     Ok(Event {
+        tenant_id: TenantId::new(row.get::<_, String>("tenant_id")).map_err(storage_error)?,
         event_id: Some(i64_to_event_id(event_id_raw, "event_id")?),
         event_uuid: row.get("event_uuid"),
         correlation_id: row.get("correlation_id"),
@@ -460,7 +487,8 @@ fn is_transient_postgres_error(error: &postgres::Error) -> bool {
 }
 
 fn event_columns_sql() -> &'static str {
-    "event_id,
+    "tenant_id,
+     event_id,
      event_uuid,
      event_type,
      actor_id,

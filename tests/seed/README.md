@@ -39,3 +39,25 @@ with:
 ```bash
 cargo test --test golden -- --bless
 ```
+
+## Multi-Tenant Fixtures
+
+Reusable multi-tenant test helpers live in `tests/support/multi_tenant.rs`.
+Include them from an integration test with:
+
+```rust
+#[path = "support/multi_tenant.rs"]
+mod multi_tenant;
+```
+
+Use `SqliteMultiTenantFixture::create("label")` for an isolated temporary
+SQLite ledger, then call `fixture.seed()` to populate three tenants with ten
+overlapping decision IDs each. The helper functions
+`assert_ledger_tenant_isolation` and `assert_projected_tenant_isolation`
+validate that reads and per-tenant projections do not leak another tenant's
+decision titles.
+
+Postgres shared-backend tests can use
+`multi_tenant::postgres::PostgresMultiTenantFixture` when the
+`shared-backend-postgres` feature is enabled and `HIVEMIND_TEST_POSTGRES_URL`
+points at a disposable test database.
