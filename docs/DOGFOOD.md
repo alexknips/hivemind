@@ -284,6 +284,21 @@ plugins/hivemind-capture/scripts/query-decisions.sh --source agent --limit 10
 The query response is bounded. If `truncated` is true, pass `next_cursor` back
 with `--cursor` rather than increasing the query until it dumps the whole graph.
 
+## Verification Log
+
+### 2026-06-07T01:47:51Z
+
+- Actors: `agent:claude:8b360208-e03d-44c1-a360-54b725147a62`,
+  `agent:codex:gc-81837`
+- Evidence event: `evidence-e033d69b-701d-41ee-8ee3-4af5dbed9a40`
+- Decision events: gate test
+  `decision-84ff6d35-909e-4df2-b838-3242205daab6`, meta-decision
+  `decision-3225697e-7898-4ae6-813d-e8651179448f`
+- Verification result: the original attempt-2 plugin capture resolved via
+  `query get_decision`; the corrected re-run recorded the loop outcome as
+  `evidence.recorded` in the canonical rig ledger; the accepted
+  `M1 dogfood loop operational` meta-decision references the new evidence id.
+
 ## Troubleshooting
 
 ### The decision did not show up
