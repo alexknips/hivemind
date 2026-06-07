@@ -532,6 +532,42 @@ fn parses_graph_backend_from_env_aliases() {
 }
 
 #[test]
+fn parses_migrate_command_with_destination_tenant() -> CliTestResult {
+    let cli = Cli::parse_from([
+        "hivemind",
+        "migrate",
+        "--from",
+        "sqlite://./hivemind/",
+        "--to",
+        "postgres://localhost/hivemind",
+        "--tenant",
+        "tenant:acme",
+        "--dry-run",
+    ]);
+
+    ensure_eq(
+        cli.tenant.as_str(),
+        "tenant:acme",
+        "destination tenant parses",
+    )?;
+    let Command::Migrate(args) = cli.command else {
+        return Err("expected migrate command".into());
+    };
+    ensure_eq(
+        args.from.as_str(),
+        "sqlite://./hivemind/",
+        "from uri parses",
+    )?;
+    ensure_eq(
+        args.to.as_str(),
+        "postgres://localhost/hivemind",
+        "to uri parses",
+    )?;
+    ensure(args.dry_run, "dry-run flag parses")?;
+    Ok(())
+}
+
+#[test]
 fn maps_exit_codes_by_error_kind() {
     assert_eq!(
         exit_code_for_error(&HivemindError::Cli(CliError::InvalidInput("x".into()))).code(),

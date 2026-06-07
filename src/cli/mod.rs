@@ -56,6 +56,8 @@ use crate::suggest::{
 };
 use crate::{HivemindError, Result};
 
+mod migrate;
+
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "hivemind",
@@ -115,6 +117,8 @@ pub enum Command {
     Ingest(IngestArgs),
     #[command(name = "slack-app")]
     SlackApp(SlackAppArgs),
+    /// Replay a local SQLite ledger into a remote Postgres tenant.
+    Migrate(migrate::MigrateArgs),
     /// Run an MCP (Model Context Protocol) stdio server that exposes
     /// HiveMind's capture/query surface to MCP-aware clients.
     Mcp(McpArgs),
@@ -1172,6 +1176,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Tui(args) => run_tui(cli, args),
         Command::Ingest(args) => run_ingest(cli, args),
         Command::SlackApp(args) => run_slack_app(cli, args),
+        Command::Migrate(args) => migrate::run_migrate(cli, args),
         Command::Mcp(args) => run_mcp(cli, args),
     }
 }
