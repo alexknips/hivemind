@@ -12,7 +12,7 @@ use r2d2_postgres::PostgresConnectionManager;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::events::{Event, EventId, EventSource, EventType};
+use crate::events::{Event, EventId, EventSource, EventType, TenantId};
 use crate::Result;
 
 use super::backend_error::storage_error;
@@ -32,7 +32,7 @@ type PgPool = Pool<PgManager>;
 #[derive(Clone)]
 pub struct PostgresEventLedger {
     pool: PgPool,
-    tenant_id: String,
+    tenant_id: TenantId,
 }
 
 impl std::fmt::Debug for PostgresEventLedger {
@@ -71,7 +71,7 @@ impl PostgresEventLedger {
     }
 
     fn from_pool(pool: PgPool, tenant_id: impl Into<String>) -> Result<Self> {
-        let tenant_id = validate_tenant_id(tenant_id.into())?;
+        let tenant_id = TenantId::new(tenant_id.into()).map_err(storage_error)?;
         let ledger = Self { pool, tenant_id };
         ledger.initialize_schema()?;
         Ok(ledger)
@@ -80,28 +80,31 @@ impl PostgresEventLedger {
     pub fn for_tenant(&self, tenant_id: impl Into<String>) -> Result<Self> {
         Ok(Self {
             pool: self.pool.clone(),
-            tenant_id: validate_tenant_id(tenant_id.into())?,
+            tenant_id: TenantId::new(tenant_id.into()).map_err(storage_error)?,
         })
     }
 
     pub fn tenant_id(&self) -> &str {
-        &self.tenant_id
+        self.tenant_id.as_str()
     }
 
-    pub fn append_for_tenant(&self, tenant_id: &str, event: Event) -> Result<EventId> {
-        validate_tenant_id_ref(tenant_id)?;
+    pub fn append_for_tenant_id(&self, tenant_id: &TenantId, mut event: Event) -> Result<EventId> {
+        event.tenant_id = tenant_id.clone();
         let stored = StoredEvent::from_event(event)?;
 
         self.with_retrying_transaction(|transaction| {
-            transaction.query_one("SELECT pg_advisory_xact_lock(hashtext($1))", &[&tenant_id])?;
+            transaction.query_one(
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                &[&tenant_id.as_str()],
+            )?;
 
             if let Some(existing_id) =
-                existing_event_id(transaction, tenant_id, &stored.event_uuid)?
+                existing_event_id(transaction, tenant_id.as_str(), &stored.event_uuid)?
             {
                 return Ok(existing_id);
             }
 
-            let next_id = next_event_id(transaction, tenant_id)?;
+            let next_id = next_event_id(transaction, tenant_id.as_str())?;
             let inserted = transaction.execute(
                 "INSERT INTO events (
                     tenant_id,
@@ -118,7 +121,7 @@ impl PostgresEventLedger {
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 ON CONFLICT (tenant_id, event_uuid) DO NOTHING",
                 &[
-                    &tenant_id,
+                    &tenant_id.as_str(),
                     &event_id_to_i64(next_id, "event_id")?,
                     &stored.event_uuid,
                     &stored.correlation_id,
@@ -136,24 +139,25 @@ impl PostgresEventLedger {
                 return Ok(next_id);
             }
 
-            existing_event_id(transaction, tenant_id, &stored.event_uuid)?.ok_or_else(|| {
-                PgOperationError::Storage(
-                    storage_error(
-                        "event dedup failed: duplicate event_uuid not found after INSERT",
+            existing_event_id(transaction, tenant_id.as_str(), &stored.event_uuid)?.ok_or_else(
+                || {
+                    PgOperationError::Storage(
+                        storage_error(
+                            "event dedup failed: duplicate event_uuid not found after INSERT",
+                        )
+                        .into(),
                     )
-                    .into(),
-                )
-            })
+                },
+            )
         })
     }
 
-    pub fn read_for_tenant(
+    pub fn read_for_tenant_id(
         &self,
-        tenant_id: &str,
+        tenant_id: &TenantId,
         offset: EventId,
         limit: usize,
     ) -> Result<Vec<Event>> {
-        validate_tenant_id_ref(tenant_id)?;
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -163,23 +167,22 @@ impl PostgresEventLedger {
             .map_err(|error| storage_error(format!("limit out of range: {error}")))?;
         let mut client = self.pool.get().map_err(storage_error)?;
         let rows = client
-            .query(&read_events_sql(), &[&tenant_id, &offset, &limit])
+            .query(&read_events_sql(), &[&tenant_id.as_str(), &offset, &limit])
             .map_err(storage_error)?;
 
         rows.iter().map(event_from_row).collect()
     }
 
-    pub fn replay_from_for_tenant(
+    pub fn replay_from_for_tenant_id(
         &self,
-        tenant_id: &str,
+        tenant_id: &TenantId,
         offset: EventId,
         callback: &mut dyn FnMut(&Event) -> Result<()>,
     ) -> Result<()> {
-        validate_tenant_id_ref(tenant_id)?;
         let offset = event_id_to_i64(offset, "offset")?;
         let mut client = self.pool.get().map_err(storage_error)?;
         let rows = client
-            .query(&replay_events_sql(), &[&tenant_id, &offset])
+            .query(&replay_events_sql(), &[&tenant_id.as_str(), &offset])
             .map_err(storage_error)?;
 
         for row in &rows {
@@ -190,13 +193,12 @@ impl PostgresEventLedger {
         Ok(())
     }
 
-    pub fn latest_offset_for_tenant(&self, tenant_id: &str) -> Result<EventId> {
-        validate_tenant_id_ref(tenant_id)?;
+    pub fn latest_offset_for_tenant_id(&self, tenant_id: &TenantId) -> Result<EventId> {
         let mut client = self.pool.get().map_err(storage_error)?;
         let offset: Option<i64> = client
             .query_one(
                 "SELECT MAX(event_id) FROM events WHERE tenant_id = $1",
-                &[&tenant_id],
+                &[&tenant_id.as_str()],
             )
             .map_err(storage_error)?
             .get(0);
@@ -259,12 +261,38 @@ impl PostgresEventLedger {
 }
 
 impl EventLedger for PostgresEventLedger {
+    fn append_for_tenant(&self, tenant_id: &TenantId, event: Event) -> Result<EventId> {
+        self.append_for_tenant_id(tenant_id, event)
+    }
+
+    fn read_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
+        self.read_for_tenant_id(tenant_id, offset, limit)
+    }
+
+    fn replay_from_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: EventId,
+        callback: &mut dyn FnMut(&Event) -> Result<()>,
+    ) -> Result<()> {
+        self.replay_from_for_tenant_id(tenant_id, offset, callback)
+    }
+
+    fn latest_offset_for_tenant(&self, tenant_id: &TenantId) -> Result<EventId> {
+        self.latest_offset_for_tenant_id(tenant_id)
+    }
+
     fn append(&self, event: Event) -> Result<EventId> {
-        self.append_for_tenant(&self.tenant_id, event)
+        self.append_for_tenant_id(&self.tenant_id, event)
     }
 
     fn read(&self, offset: EventId, limit: usize) -> Result<Vec<Event>> {
-        self.read_for_tenant(&self.tenant_id, offset, limit)
+        self.read_for_tenant_id(&self.tenant_id, offset, limit)
     }
 
     fn replay_from(
@@ -272,11 +300,11 @@ impl EventLedger for PostgresEventLedger {
         offset: EventId,
         callback: &mut dyn FnMut(&Event) -> Result<()>,
     ) -> Result<()> {
-        self.replay_from_for_tenant(&self.tenant_id, offset, callback)
+        self.replay_from_for_tenant_id(&self.tenant_id, offset, callback)
     }
 
     fn latest_offset(&self) -> Result<EventId> {
-        self.latest_offset_for_tenant(&self.tenant_id)
+        self.latest_offset_for_tenant_id(&self.tenant_id)
     }
 }
 
@@ -354,6 +382,8 @@ fn event_from_row(row: &Row) -> Result<Event> {
     let causation_event_id_raw: Option<i64> = row.get("causation_event_id");
 
     Ok(Event {
+        tenant_id: TenantId::new(row.get::<_, String>("tenant_id"))
+            .map_err(|error| storage_error(format!("invalid tenant_id in row: {error}")))?,
         event_id: Some(i64_to_event_id(event_id_raw, "event_id")?),
         event_uuid: row.get("event_uuid"),
         correlation_id: row.get("correlation_id"),
@@ -377,18 +407,6 @@ fn event_id_to_i64(event_id: EventId, label: &str) -> Result<i64> {
 fn i64_to_event_id(event_id: i64, label: &str) -> Result<EventId> {
     u64::try_from(event_id)
         .map_err(|error| storage_error(format!("invalid {label}: {error}")).into())
-}
-
-fn validate_tenant_id(tenant_id: String) -> Result<String> {
-    validate_tenant_id_ref(&tenant_id)?;
-    Ok(tenant_id)
-}
-
-fn validate_tenant_id_ref(tenant_id: &str) -> Result<()> {
-    if tenant_id.trim().is_empty() {
-        return Err(storage_error("tenant_id is required").into());
-    }
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -460,7 +478,8 @@ fn is_transient_postgres_error(error: &postgres::Error) -> bool {
 }
 
 fn event_columns_sql() -> &'static str {
-    "event_id,
+    "tenant_id,
+     event_id,
      event_uuid,
      event_type,
      actor_id,

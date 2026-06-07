@@ -12,6 +12,8 @@ use crate::Result;
 #[cfg(feature = "graph-kuzu")]
 pub mod kuzu;
 pub mod memory;
+#[cfg(feature = "shared-backend-postgres")]
+pub mod postgres;
 
 pub type GraphProperties = BTreeMap<String, GraphValue>;
 pub type GraphParams = BTreeMap<String, GraphValue>;
