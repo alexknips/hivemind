@@ -255,9 +255,13 @@ consider a separate bead to revisit the model tier.
 
 ## Dogfood Recording
 
-This design choice should be captured as a `decision.proposed` event in the rig
-ledger after the fragmentation fix writes agent captures to
-`/data/projects/hivemind/hivemind/ledger.sqlite` and the unified `/capture`
-command exists. The current checkout still has only `/capture-decision`, so
-this design bead records the choice in stable docs and leaves the ledger
-dogfood step to the first bead where the intended capture path exists.
+This design choice is captured as `decision.proposed` in the rig ledger:
+
+- Event id: `decision-74dfd81b-7c84-4591-89e7-20732b449fe7`
+- Captured at: `2026-06-07T03:19:23Z`
+- Actor: `agent:codex:019e9fcd-566f-7851-9932-8ba41f5a5c30`
+- Ledger: `/data/projects/hivemind/hivemind/ledger.sqlite`
+- Verification: `query get_decision --id
+  decision-74dfd81b-7c84-4591-89e7-20732b449fe7 --summary` returned
+  `proposed` with title `Use Haiku 4.5 for capture classification` and topics
+  `capture,classifier,agents`.
