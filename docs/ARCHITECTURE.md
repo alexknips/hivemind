@@ -129,12 +129,17 @@ to change too.
 
 MCP is one transport HiveMind exposes for agents (and for any MCP-aware client).
 It is not the only one. The CLI is equally valid for agents that prefer to
-shell out, future HTTP and library bindings will be valid for embedded use, and
-all of them go through the same internal functions per the *Surface Uniformity*
-commitment above.
+shell out, and the HTTP JSON-RPC API is available for embedded or service-style
+use. All of them go through the same internal functions per the *Surface
+Uniformity* commitment above.
 
 This is an architectural decision so future agent integrations don't assume MCP
 is mandatory.
+
+The HTTP API uses `POST /v1/rpc` with operation names that mirror CLI and MCP
+verbs. Tenant and actor context come from headers before the transport calls
+the commands or queries layer; payload fields are not allowed to override that
+context. See [`HTTP_API.md`](HTTP_API.md).
 
 ## Current Storage Layout
 

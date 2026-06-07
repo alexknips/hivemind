@@ -2,6 +2,7 @@ pub mod cli;
 pub mod commands;
 pub mod error;
 pub mod events;
+pub mod http;
 pub mod identity;
 pub mod ingest;
 pub mod ledger;

@@ -311,6 +311,28 @@ rejected because the underlying `Commands` API requires a non-empty actor.
 shared `kuzu` projection works under MCP when the `graph-kuzu` feature is
 compiled in.
 
+### HTTP API
+
+HiveMind can also serve the same command/query surface over HTTP JSON-RPC:
+
+```bash
+hivemind --hivemind-dir ./hivemind/ serve --port 8080
+```
+
+Requests go to `POST /v1/rpc` and must carry `X-HiveMind-Tenant` plus
+`X-HiveMind-Actor` headers. For example:
+
+```bash
+curl -sS http://127.0.0.1:8080/v1/rpc \
+  -H 'Content-Type: application/json' \
+  -H 'X-HiveMind-Tenant: tenant:local' \
+  -H 'X-HiveMind-Actor: agent:codex:session-123' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"query.search_decisions","params":{"topic":["api"],"limit":5}}'
+```
+
+See [`docs/HTTP_API.md`](docs/HTTP_API.md) for the method list, context header
+contract, and the JSON-RPC-over-REST choice.
+
 Local markdown or text decision notes can be imported without network access.
 Only explicit `Decision:` blocks are imported, and re-importing identical input
 is reported as a no-op. Changed same-id re-imports report conflicts by default;

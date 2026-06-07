@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io::{self, BufRead, Write as IoWrite};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
@@ -118,6 +119,8 @@ pub enum Command {
     /// Run an MCP (Model Context Protocol) stdio server that exposes
     /// HiveMind's capture/query surface to MCP-aware clients.
     Mcp(McpArgs),
+    /// Run the HTTP JSON-RPC API transport.
+    Serve(ServeArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -133,6 +136,17 @@ pub struct McpArgs {
     /// Agent tool name used when MCP write calls omit actor_id.
     #[arg(long = "agent-tool")]
     pub agent_tool: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ServeArgs {
+    /// Interface to bind the HTTP API to.
+    #[arg(long, default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
+    pub host: IpAddr,
+
+    /// Port to bind the HTTP API to.
+    #[arg(long, default_value_t = 8080)]
+    pub port: u16,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1173,6 +1187,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Ingest(args) => run_ingest(cli, args),
         Command::SlackApp(args) => run_slack_app(cli, args),
         Command::Mcp(args) => run_mcp(cli, args),
+        Command::Serve(args) => run_serve(cli, args),
     }
 }
 
@@ -1280,6 +1295,13 @@ fn run_mcp(cli: &Cli, args: &McpArgs) -> Result<String> {
     }
     crate::mcp::serve_stdio(&config)?;
     // The stdio loop only returns once stdin closes — no payload to print.
+    Ok(String::new())
+}
+
+fn run_serve(cli: &Cli, args: &ServeArgs) -> Result<String> {
+    let addr = SocketAddr::new(args.host, args.port);
+    let config = crate::http::HttpConfig::new(cli.hivemind_dir.clone(), addr);
+    crate::http::serve_blocking(config)?;
     Ok(String::new())
 }
 
