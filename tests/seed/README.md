@@ -33,7 +33,7 @@ Golden query snapshots run with:
 cargo test --test golden
 ```
 
-Regenerate `snapshots/golden/*.json` after intentional query output changes
+Regenerate `tests/snapshots/golden/*.json` after intentional query output changes
 with:
 
 ```bash

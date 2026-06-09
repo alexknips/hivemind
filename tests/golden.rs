@@ -11,7 +11,7 @@ mod seed_data;
 
 use seed_data::{seed_to_dir, unique_temp_dir, TestResult};
 
-const SNAPSHOT_DIR: &str = "snapshots/golden";
+const SNAPSHOT_DIR: &str = "tests/snapshots/golden";
 
 const QUERY_SPECS: &[QuerySpec] = &[
     QuerySpec {
