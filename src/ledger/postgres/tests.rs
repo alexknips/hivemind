@@ -196,7 +196,7 @@ fn payload_evidence_id(event: &crate::events::Event) -> &str {
 
 fn make_parity_event(evidence_id: &str, index: usize) -> crate::events::Event {
     let mut event = make_event(evidence_id, Uuid::new_v4());
-    let seconds = i64::try_from(index).map_or(0, |value| value);
+    let seconds = i64::try_from(index).unwrap_or(0);
     event.ts = DateTime::from_timestamp(1_769_385_600 + seconds, 123_456_000);
     event
 }

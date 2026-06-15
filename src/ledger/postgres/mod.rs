@@ -12,7 +12,7 @@ use r2d2_postgres::PostgresConnectionManager;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::events::{Event, EventId, EventSource, EventType};
+use crate::events::{Event, EventId, EventSource, EventType, TenantId};
 use crate::Result;
 
 use super::backend_error::storage_error;
@@ -259,6 +259,33 @@ impl PostgresEventLedger {
 }
 
 impl EventLedger for PostgresEventLedger {
+    fn append_for_tenant(&self, tenant_id: &TenantId, event: Event) -> Result<EventId> {
+        self.append_for_tenant(tenant_id.as_str(), event)
+    }
+
+    fn read_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
+        self.read_for_tenant(tenant_id.as_str(), offset, limit)
+    }
+
+    fn replay_from_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: EventId,
+        callback: &mut dyn FnMut(&Event) -> Result<()>,
+    ) -> Result<()> {
+        self.replay_from_for_tenant(tenant_id.as_str(), offset, callback)
+    }
+
+    fn latest_offset_for_tenant(&self, tenant_id: &TenantId) -> Result<EventId> {
+        self.latest_offset_for_tenant(tenant_id.as_str())
+    }
+
+    // Override defaults: self.tenant_id may differ from TenantId::local().
     fn append(&self, event: Event) -> Result<EventId> {
         self.append_for_tenant(&self.tenant_id, event)
     }
@@ -348,12 +375,16 @@ fn next_event_id(
 }
 
 fn event_from_row(row: &Row) -> Result<Event> {
+    let tenant_id_raw: String = row.get("tenant_id");
+    let tenant_id = TenantId::new(tenant_id_raw)
+        .map_err(|error| storage_error(format!("invalid tenant_id in row: {error}")))?;
     let event_id_raw: i64 = row.get("event_id");
     let event_type_raw: String = row.get("event_type");
     let source_raw: String = row.get("source");
     let causation_event_id_raw: Option<i64> = row.get("causation_event_id");
 
     Ok(Event {
+        tenant_id,
         event_id: Some(i64_to_event_id(event_id_raw, "event_id")?),
         event_uuid: row.get("event_uuid"),
         correlation_id: row.get("correlation_id"),
@@ -460,7 +491,8 @@ fn is_transient_postgres_error(error: &postgres::Error) -> bool {
 }
 
 fn event_columns_sql() -> &'static str {
-    "event_id,
+    "tenant_id,
+     event_id,
      event_uuid,
      event_type,
      actor_id,
