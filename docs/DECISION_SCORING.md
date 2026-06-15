@@ -148,15 +148,15 @@ and *not* the primary validation.
 ## Reconciliation with the literature doc
 
 [`DECISION_QUALITY_LITERATURE.md`](DECISION_QUALITY_LITERATURE.md)'s model
-section must be brought into line with the locked model above:
+section has been brought into line with the locked model above:
 
 - **Reversibility moves to Importance** (it is no longer a quality dimension).
 - **Calibration is split out from Bias** (two separate quality dimensions).
 
-> This reconciliation is **pending**: the literature doc is being landed to
-> master by the refinery concurrently and is not yet present in this branch. It
-> must be edited **after pulling master** to avoid conflicts, and is tracked as a
-> follow-up to this design capture.
+> **Done in this PR.** The literature doc was folded into this branch from an
+> operator-staged backup (the refinery's separate landing was blocked on a
+> permission prompt). Its model section now matches: reversibility under
+> Importance, calibration split out from bias, and the axis named Importance.
 
 ## Open questions (for the implementation bead)
 
