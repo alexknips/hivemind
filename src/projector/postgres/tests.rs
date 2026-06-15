@@ -155,7 +155,9 @@ fn two_tenants_decisions_are_isolated_in_projection() -> Result<()> {
         // tenant_b shares the DB but its tenant scope is empty.
         let in_b = get_decision(&tenant_b, "decision:1")?.data;
         if in_b.is_some() {
-            return Err(test_error("decision:1 should not be visible in tenant_b view"));
+            return Err(test_error(
+                "decision:1 should not be visible in tenant_b view",
+            ));
         }
 
         Ok(())
@@ -243,9 +245,7 @@ fn with_postgres_graph<T>(
 }
 
 fn node_ids(rows: &[crate::projector::GraphRow]) -> Vec<GraphValue> {
-    rows.iter()
-        .filter_map(|r| r.get("id").cloned())
-        .collect()
+    rows.iter().filter_map(|r| r.get("id").cloned()).collect()
 }
 
 fn unique_tenant(prefix: &str) -> String {
