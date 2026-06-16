@@ -373,8 +373,25 @@ async fn shutdown_signal() {
 // Handlers
 // ---------------------------------------------------------------------------
 
-async fn health_handler() -> impl IntoResponse {
-    Json(serde_json::json!({ "status": "ok" }))
+async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let dir = Arc::clone(&state.hivemind_dir);
+    let result =
+        tokio::task::spawn_blocking(move || SqliteEventLedger::open(dir.as_ref()).map(|_| ()))
+            .await;
+
+    match result {
+        Ok(Ok(())) => (StatusCode::OK, Json(serde_json::json!({ "status": "ok" }))).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "status": "error", "message": e.to_string() })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "status": "error", "message": e.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 async fn post_decisions_handler(

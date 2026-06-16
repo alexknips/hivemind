@@ -130,7 +130,7 @@ pub struct QuickstartArgs {}
 #[derive(Debug, Clone, Args)]
 pub struct ServeArgs {
     /// Port to listen on.
-    #[arg(long, short = 'p', default_value_t = 8080)]
+    #[arg(long, short = 'p', env = "HIVEMIND_PORT", default_value_t = 8080)]
     pub port: u16,
 }
 
