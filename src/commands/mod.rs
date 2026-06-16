@@ -9,8 +9,8 @@ use crate::error::CommandError;
 use crate::events::{
     DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload, DecisionSupersededPayload,
     Event, EventBuilder, EventId, EventPayload, EventProvenance, EventType,
-    EvidenceRecordedPayload, HypothesisRecordedPayload, RelationAddedPayload, RelationKind,
-    TenantId,
+    EvidenceRecordedPayload, HypothesisRecordedPayload, IngestBatchReceivedPayload, IngestTurn,
+    RelationAddedPayload, RelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -170,6 +170,34 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }),
             None,
             event_uuid,
+        )?;
+
+        self.append_event(event)
+    }
+
+    pub fn record_ingest_batch(
+        &self,
+        actor_id: &str,
+        batch_id: &str,
+        agent_tool: &str,
+        session_id: &str,
+        turns: Vec<IngestTurn>,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("batch_id", batch_id)?;
+        require_non_empty("agent_tool", agent_tool)?;
+        require_non_empty("session_id", session_id)?;
+
+        let event = self.event_with_uuid(
+            actor_id,
+            EventPayload::IngestBatchReceived(IngestBatchReceivedPayload {
+                batch_id: batch_id.to_owned(),
+                agent_tool: agent_tool.to_owned(),
+                session_id: session_id.to_owned(),
+                turns,
+            }),
+            None,
+            Uuid::new_v4(),
         )?;
 
         self.append_event(event)

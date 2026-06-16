@@ -73,6 +73,8 @@ pub enum EventType {
     NotificationSent,
     #[serde(rename = "notification.acknowledged")]
     NotificationAcknowledged,
+    #[serde(rename = "ingest.batch_received")]
+    IngestBatchReceived,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -323,6 +325,24 @@ pub enum RelationKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct IngestTurn {
+    pub turn_id: String,
+    pub role: String,
+    pub text: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IngestBatchReceivedPayload {
+    pub batch_id: String,
+    pub agent_tool: String,
+    pub session_id: String,
+    pub turns: Vec<IngestTurn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RelationAddedPayload {
     pub relation: RelationKind,
     pub from_id: String,
@@ -343,6 +363,7 @@ pub enum EventPayload {
     BlockerResolved(BlockerResolvedPayload),
     NotificationSent(NotificationSentPayload),
     NotificationAcknowledged(NotificationAcknowledgedPayload),
+    IngestBatchReceived(IngestBatchReceivedPayload),
 }
 
 impl EventPayload {
@@ -360,6 +381,7 @@ impl EventPayload {
             Self::BlockerResolved(_) => EventType::BlockerResolved,
             Self::NotificationSent(_) => EventType::NotificationSent,
             Self::NotificationAcknowledged(_) => EventType::NotificationAcknowledged,
+            Self::IngestBatchReceived(_) => EventType::IngestBatchReceived,
         }
     }
 
@@ -377,6 +399,7 @@ impl EventPayload {
             Self::BlockerResolved(payload) => serde_json::to_value(payload),
             Self::NotificationSent(payload) => serde_json::to_value(payload),
             Self::NotificationAcknowledged(payload) => serde_json::to_value(payload),
+            Self::IngestBatchReceived(payload) => serde_json::to_value(payload),
         }
     }
 }
@@ -665,6 +688,13 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             let payload: NotificationAcknowledgedPayload = parse_payload(event)?;
             require_non_empty("payload.notification_id", &payload.notification_id)?;
             Ok(EventPayload::NotificationAcknowledged(payload))
+        }
+        EventType::IngestBatchReceived => {
+            let payload: IngestBatchReceivedPayload = parse_payload(event)?;
+            require_non_empty("payload.batch_id", &payload.batch_id)?;
+            require_non_empty("payload.agent_tool", &payload.agent_tool)?;
+            require_non_empty("payload.session_id", &payload.session_id)?;
+            Ok(EventPayload::IngestBatchReceived(payload))
         }
     }
 }

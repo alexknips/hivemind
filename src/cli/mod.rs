@@ -2155,7 +2155,8 @@ fn reviewed_decision_ids_by_actor(
             | EventPayload::BlockerReported(_)
             | EventPayload::BlockerResolved(_)
             | EventPayload::NotificationSent(_)
-            | EventPayload::NotificationAcknowledged(_) => {}
+            | EventPayload::NotificationAcknowledged(_)
+            | EventPayload::IngestBatchReceived(_) => {}
         }
     }
     Ok(reviewed)
@@ -2191,7 +2192,8 @@ impl ReviewLedgerContext {
                 | EventPayload::BlockerReported(_)
                 | EventPayload::BlockerResolved(_)
                 | EventPayload::NotificationSent(_)
-                | EventPayload::NotificationAcknowledged(_) => {}
+                | EventPayload::NotificationAcknowledged(_)
+                | EventPayload::IngestBatchReceived(_) => {}
             }
         }
         Ok(context)
@@ -2752,6 +2754,7 @@ fn event_type_label(event_type: EventType) -> &'static str {
         EventType::BlockerResolved => "blocker.resolved",
         EventType::NotificationSent => "notification.sent",
         EventType::NotificationAcknowledged => "notification.acknowledged",
+        EventType::IngestBatchReceived => "ingest.batch_received",
     }
 }
 

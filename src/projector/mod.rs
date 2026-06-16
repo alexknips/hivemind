@@ -540,6 +540,10 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
                 &notification_properties,
             )?;
         }
+        EventPayload::IngestBatchReceived(_) => {
+            // Raw transcript batches are ledger-only; they do not project to the graph.
+            // The classifier (a future Layer-3 bead) will read these and write captures.
+        }
     }
 
     Ok(())

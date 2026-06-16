@@ -1,0 +1,30 @@
+{
+  "event_id": 1,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe20",
+  "correlation_id": null,
+  "causation_event_id": null,
+  "type": "ingest.batch_received",
+  "actor_id": "service:api",
+  "source": "api",
+  "source_ref": null,
+  "payload": {
+    "batch_id": "session-abc:0-512",
+    "agent_tool": "claude",
+    "session_id": "session-abc",
+    "turns": [
+      {
+        "turn_id": "turn-1",
+        "role": "user",
+        "text": "Should we use REST or JSON-RPC for the HTTP API?",
+        "truncated": false
+      },
+      {
+        "turn_id": "turn-2",
+        "role": "assistant",
+        "text": "REST is better here because HTTP clients are most ergonomic with it.",
+        "truncated": false
+      }
+    ]
+  },
+  "ts": "2026-06-16T07:00:00Z"
+}

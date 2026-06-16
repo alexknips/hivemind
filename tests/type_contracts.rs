@@ -7,8 +7,8 @@ use hivemind::events::{
     DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload, DecisionRequestedPayload,
     DecisionSupersededPayload, Event, EventBuilder, EventEnvelope, EventPayload, EventSource,
     EventType, EventValidationError, EvidenceRecordedPayload, HypothesisRecordedPayload,
-    NotificationAcknowledgedPayload, NotificationSentPayload, RelationAddedPayload,
-    RelationKind as EventRelationKind,
+    IngestBatchReceivedPayload, IngestTurn, NotificationAcknowledgedPayload,
+    NotificationSentPayload, RelationAddedPayload, RelationKind as EventRelationKind,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};
@@ -16,7 +16,7 @@ use hivemind::{CliError, CommandError, HivemindError, LedgerError, ProjectorErro
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const EVENT_TYPES: [EventType; 12] = [
+const EVENT_TYPES: [EventType; 13] = [
     EventType::DecisionProposed,
     EventType::DecisionRequested,
     EventType::DecisionAccepted,
@@ -29,6 +29,7 @@ const EVENT_TYPES: [EventType; 12] = [
     EventType::BlockerResolved,
     EventType::NotificationSent,
     EventType::NotificationAcknowledged,
+    EventType::IngestBatchReceived,
 ];
 
 const EVENT_RELATION_KINDS: [EventRelationKind; 6] = [
@@ -335,6 +336,7 @@ fn event_type_name(event_type: EventType) -> &'static str {
         EventType::BlockerResolved => "blocker.resolved",
         EventType::NotificationSent => "notification.sent",
         EventType::NotificationAcknowledged => "notification.acknowledged",
+        EventType::IngestBatchReceived => "ingest.batch_received",
     }
 }
 
@@ -352,6 +354,7 @@ fn payload_variant_type(payload: &EventPayload) -> EventType {
         EventPayload::BlockerResolved(_) => EventType::BlockerResolved,
         EventPayload::NotificationSent(_) => EventType::NotificationSent,
         EventPayload::NotificationAcknowledged(_) => EventType::NotificationAcknowledged,
+        EventPayload::IngestBatchReceived(_) => EventType::IngestBatchReceived,
     }
 }
 
@@ -393,6 +396,9 @@ fn typed_payload_from_value(
         }
         EventType::NotificationAcknowledged => {
             EventPayload::NotificationAcknowledged(serde_json::from_value(payload)?)
+        }
+        EventType::IngestBatchReceived => {
+            EventPayload::IngestBatchReceived(serde_json::from_value(payload)?)
         }
     })
 }
@@ -515,6 +521,20 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 snooze_until: None,
             }),
         ),
+        (
+            EventType::IngestBatchReceived,
+            EventPayload::IngestBatchReceived(IngestBatchReceivedPayload {
+                batch_id: "session-abc:0-512".to_owned(),
+                agent_tool: "claude".to_owned(),
+                session_id: "session-abc".to_owned(),
+                turns: vec![IngestTurn {
+                    turn_id: "turn-1".to_owned(),
+                    role: "user".to_owned(),
+                    text: "Should we use REST?".to_owned(),
+                    truncated: false,
+                }],
+            }),
+        ),
     ]
 }
 
@@ -532,6 +552,7 @@ fn payload_json(payload: &EventPayload) -> Value {
         EventPayload::BlockerResolved(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::NotificationSent(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::NotificationAcknowledged(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::IngestBatchReceived(payload) => serde_json::to_value(payload).unwrap(),
     }
 }
 

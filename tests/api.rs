@@ -363,3 +363,121 @@ async fn capture_evidence_validates_content() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["code"], "validation_error");
 }
+
+// ---------------------------------------------------------------------------
+// Ingest batch
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn ingest_batch_accepted_and_stored() {
+    let dir = test_ledger_dir();
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/ingest",
+            serde_json::json!({
+                "batch_id": "session-abc:0-1024",
+                "agent_tool": "claude",
+                "session_id": "session-abc",
+                "turns": [
+                    {
+                        "turn_id": "turn-1",
+                        "role": "user",
+                        "text": "Should we use REST or JSON-RPC for the API?",
+                        "truncated": false
+                    },
+                    {
+                        "turn_id": "turn-2",
+                        "role": "assistant",
+                        "text": "REST is the better choice here because HTTP clients are most ergonomic with it.",
+                        "truncated": false
+                    }
+                ]
+            }),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::ACCEPTED, "ingest: {body}");
+    assert_eq!(body["batch_id"], "session-abc:0-1024");
+    assert_eq!(body["queued"], true);
+    assert!(body["event_id"].as_u64().is_some(), "event_id missing: {body}");
+}
+
+#[tokio::test]
+async fn ingest_batch_empty_turns_accepted() {
+    let dir = test_ledger_dir();
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/ingest",
+            serde_json::json!({
+                "batch_id": "session-xyz:100-100",
+                "agent_tool": "codex",
+                "session_id": "session-xyz",
+                "turns": []
+            }),
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::ACCEPTED, "ingest empty turns: {body}");
+    assert_eq!(body["queued"], true);
+}
+
+#[tokio::test]
+async fn ingest_batch_rejects_missing_fields() {
+    let dir = test_ledger_dir();
+
+    // Missing session_id
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/ingest",
+            serde_json::json!({
+                "batch_id": "b1",
+                "agent_tool": "claude"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "missing session_id: {body}");
+
+    // Empty batch_id
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/ingest",
+            serde_json::json!({
+                "batch_id": "",
+                "agent_tool": "claude",
+                "session_id": "s1"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "empty batch_id: {body}");
+    assert_eq!(body["error"]["code"], "validation_error");
+}
+
+#[tokio::test]
+async fn ingest_batch_enforces_auth() {
+    let dir = test_ledger_dir();
+    let app = app_with_key(dir, "secret-key");
+
+    let (status, body) = call(
+        app,
+        post_json(
+            "/v1/ingest",
+            serde_json::json!({
+                "batch_id": "b1",
+                "agent_tool": "claude",
+                "session_id": "s1"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+}

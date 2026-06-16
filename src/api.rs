@@ -59,7 +59,7 @@ use tracing::warn;
 
 use crate::commands::{CommandContext, Commands};
 use crate::error::{CliError, CommandError, HivemindError};
-use crate::events::{EventProvenance, TenantId};
+use crate::events::{EventProvenance, IngestTurn, TenantId};
 use crate::ledger::SqliteEventLedger;
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
@@ -274,6 +274,24 @@ struct SupersedeRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct IngestTurnRequest {
+    turn_id: String,
+    role: String,
+    text: String,
+    #[serde(default)]
+    truncated: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct IngestBatchRequest {
+    batch_id: String,
+    agent_tool: String,
+    session_id: String,
+    #[serde(default)]
+    turns: Vec<IngestTurnRequest>,
+}
+
+#[derive(Debug, Deserialize)]
 struct SearchParams {
     q: Option<String>,
     topic: Option<String>,
@@ -315,6 +333,8 @@ pub fn create_router(config: &ApiConfig) -> Router {
         // Evidence and hypotheses
         .route("/v1/evidence", post(post_evidence_handler))
         .route("/v1/hypotheses", post(post_hypotheses_handler))
+        // Transcript ingest (capture client → server)
+        .route("/v1/ingest", post(post_ingest_handler))
         .with_state(state)
 }
 
@@ -836,6 +856,90 @@ async fn relevant_handler(
         Ok(Err(e)) => e.into_response(),
         Err(e) => ApiError::internal(e.to_string()).into_response(),
     }
+}
+
+async fn post_ingest_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    payload: std::result::Result<Json<IngestBatchRequest>, JsonRejection>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers) {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    let req = match payload {
+        Ok(Json(r)) => r,
+        Err(e) => return ApiError::validation(e.to_string()).into_response(),
+    };
+
+    let dir = Arc::clone(&state.hivemind_dir);
+    let result = tokio::task::spawn_blocking(move || ingest_batch_blocking(&dir, &ctx, req)).await;
+
+    match result {
+        Ok(Ok(body)) => (StatusCode::ACCEPTED, Json(body)).into_response(),
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => ApiError::internal(e.to_string()).into_response(),
+    }
+}
+
+const MAX_INGEST_TURNS: usize = 20;
+
+fn ingest_batch_blocking(
+    hivemind_dir: &PathBuf,
+    ctx: &ApiRequestCtx,
+    req: IngestBatchRequest,
+) -> ApiResult<serde_json::Value> {
+    if req.batch_id.trim().is_empty() {
+        return Err(ApiError::validation("batch_id must not be empty"));
+    }
+    if req.agent_tool.trim().is_empty() {
+        return Err(ApiError::validation("agent_tool must not be empty"));
+    }
+    if req.session_id.trim().is_empty() {
+        return Err(ApiError::validation("session_id must not be empty"));
+    }
+    if req.turns.len() > MAX_INGEST_TURNS {
+        return Err(ApiError::validation(format!(
+            "turns exceeds maximum of {MAX_INGEST_TURNS}"
+        )));
+    }
+
+    let turns: Vec<IngestTurn> = req
+        .turns
+        .into_iter()
+        .map(|t| IngestTurn {
+            turn_id: t.turn_id,
+            role: t.role,
+            text: t.text,
+            truncated: t.truncated,
+        })
+        .collect();
+
+    let ledger =
+        SqliteEventLedger::open(hivemind_dir).map_err(|e| ApiError::internal(e.to_string()))?;
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(
+            ctx.tenant_id.clone(),
+            EventProvenance::api(Some(ctx.actor_id.clone())),
+        ),
+    );
+
+    let event_id = commands
+        .record_ingest_batch(
+            &ctx.actor_id,
+            &req.batch_id,
+            &req.agent_tool,
+            &req.session_id,
+            turns,
+        )
+        .map_err(map_err)?;
+
+    Ok(serde_json::json!({
+        "batch_id": req.batch_id,
+        "event_id": event_id,
+        "queued": true,
+    }))
 }
 
 // ---------------------------------------------------------------------------
