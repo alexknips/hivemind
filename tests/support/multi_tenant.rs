@@ -37,17 +37,18 @@ pub fn seed_tenant<L: EventLedger>(ledger: &L, name: &'static str) -> TestResult
 
     let topics = ["architecture", "operations", "security", "product"];
     let mut decision_ids = Vec::with_capacity(10);
+    let planner = format!("human:{name}-planner");
 
     for i in 1..=10usize {
         let topic = topics[(i - 1) % topics.len()];
 
         let opt_a = commands.record_option(
-            &format!("human:{name}-planner"),
+            &planner,
             &format!("Conservative {name} {i}"),
             &format!("{name} decision {i}: conservative option — minimal change"),
         )?;
         let opt_b = commands.record_option(
-            &format!("human:{name}-planner"),
+            &planner,
             &format!("Progressive {name} {i}"),
             &format!("{name} decision {i}: progressive option — full refactor"),
         )?;
@@ -59,7 +60,7 @@ pub fn seed_tenant<L: EventLedger>(ledger: &L, name: &'static str) -> TestResult
         };
 
         let decision_id = commands.propose_decision(
-            &format!("human:{name}-planner"),
+            &planner,
             &format!("{name}: choice #{i:02} — {topic}"),
             &format!("Rationale for {name} decision {i}: {topic} tradeoff evaluated"),
             &[topic.to_owned()],
@@ -91,9 +92,12 @@ pub fn assert_tenant_isolation<L: EventLedger>(
 
     for event in &events {
         assert_eq!(
-            event.tenant_id, scope.tenant_id,
+            // ubs:ignore
+            event.tenant_id,
+            scope.tenant_id,
             "event with wrong tenant_id found when reading for '{}': got '{}'",
-            scope.name, event.tenant_id,
+            scope.name,
+            event.tenant_id,
         );
     }
 
@@ -104,6 +108,7 @@ pub fn assert_tenant_isolation<L: EventLedger>(
 
     for other_id in &other.decision_ids {
         assert!(
+            // ubs:ignore
             !payload_decision_ids.contains(other_id.as_str()),
             "decision '{}' from tenant '{}' leaked into event stream for tenant '{}'",
             other_id,
@@ -115,12 +120,14 @@ pub fn assert_tenant_isolation<L: EventLedger>(
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(ledger, &scope.tenant_id, &graph)?;
 
+    let id_key = "id".to_owned();
     for other_id in &other.decision_ids {
         let rows = graph.query(
             "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id LIMIT 1;",
-            &GraphParams::from([("id".to_owned(), GraphValue::String(other_id.clone()))]),
+            &GraphParams::from([(id_key.clone(), GraphValue::String(other_id.clone()))]),
         )?;
         assert!(
+            // ubs:ignore
             rows.is_empty(),
             "decision '{}' from tenant '{}' appeared in graph rebuilt for tenant '{}'",
             other_id,
@@ -145,6 +152,7 @@ pub fn assert_tenant_completeness<L: EventLedger>(
 
     for decision_id in &dataset.decision_ids {
         assert!(
+            // ubs:ignore
             payload_decision_ids.contains(decision_id.as_str()),
             "decision '{}' for tenant '{}' not found in event stream",
             decision_id,
@@ -163,12 +171,14 @@ pub fn assert_graph_completeness<L: EventLedger>(
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(ledger, &dataset.tenant_id, &graph)?;
 
+    let id_key = "id".to_owned();
     for decision_id in &dataset.decision_ids {
         let rows = graph.query(
             "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id LIMIT 1;",
-            &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.clone()))]),
+            &GraphParams::from([(id_key.clone(), GraphValue::String(decision_id.clone()))]),
         )?;
         assert!(
+            // ubs:ignore
             !rows.is_empty(),
             "decision '{}' for tenant '{}' missing from rebuilt graph",
             decision_id,

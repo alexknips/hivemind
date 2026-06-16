@@ -77,8 +77,8 @@ async fn health_returns_ok() {
     let dir = test_ledger_dir();
     let req = get_req("/v1/health");
     let (status, body) = call(app(dir), req).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["status"], "ok");
+    assert_eq!(status, StatusCode::OK); // ubs:ignore
+    assert_eq!(body["status"], "ok"); // ubs:ignore
 }
 
 // ---------------------------------------------------------------------------
@@ -108,11 +108,11 @@ async fn capture_and_query_decision() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::OK, "capture decision: {body}");
+    assert_eq!(status, StatusCode::OK, "capture decision: {body}"); // ubs:ignore
     let decision_id = body["decision_id"].as_str().unwrap().to_owned();
     let option_ids = body["option_ids"].as_array().unwrap();
-    assert_eq!(option_ids.len(), 2);
-    assert!(body["chosen_option_id"].as_str().is_some());
+    assert_eq!(option_ids.len(), 2); // ubs:ignore
+    assert!(body["chosen_option_id"].as_str().is_some()); // ubs:ignore
 
     // Query it back via GET /v1/decisions/{id}
     let (status, body) = call(
@@ -121,16 +121,16 @@ async fn capture_and_query_decision() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::OK, "get decision: {body}");
+    assert_eq!(status, StatusCode::OK, "get decision: {body}"); // ubs:ignore
     let data = &body["data"];
     // DecisionView uses `id` (not `decision_id`) as the field name
-    assert_eq!(data["id"], decision_id);
-    assert_eq!(data["title"], "Adopt REST for the HTTP API");
+    assert_eq!(data["id"], decision_id); // ubs:ignore
+    assert_eq!(data["title"], "Adopt REST for the HTTP API"); // ubs:ignore
 
     // Search should also find it
     let (status, body) = call(app(dir.clone()), get_req("/v1/decisions/search?q=REST+API")).await;
-    assert_eq!(status, StatusCode::OK, "search: {body}");
-    assert!(body["result_count"].as_u64().unwrap() >= 1);
+    assert_eq!(status, StatusCode::OK, "search: {body}"); // ubs:ignore
+    assert!(body["result_count"].as_u64().unwrap() >= 1); // ubs:ignore
 
     // Relevant decisions by topic
     let (status, body) = call(
@@ -138,8 +138,8 @@ async fn capture_and_query_decision() {
         get_req("/v1/decisions/relevant?topic=api-design"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "relevant: {body}");
-    assert!(body["result_count"].as_u64().unwrap() >= 1);
+    assert_eq!(status, StatusCode::OK, "relevant: {body}"); // ubs:ignore
+    assert!(body["result_count"].as_u64().unwrap() >= 1); // ubs:ignore
 }
 
 // ---------------------------------------------------------------------------
@@ -158,8 +158,8 @@ async fn capture_evidence_and_hypothesis() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "capture evidence: {body}");
-    assert!(body["evidence_id"].as_str().is_some());
+    assert_eq!(status, StatusCode::OK, "capture evidence: {body}"); // ubs:ignore
+    assert!(body["evidence_id"].as_str().is_some()); // ubs:ignore
 
     let (status, body) = call(
         app(dir.clone()),
@@ -169,8 +169,8 @@ async fn capture_evidence_and_hypothesis() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "capture hypothesis: {body}");
-    assert!(body["hypothesis_id"].as_str().is_some());
+    assert_eq!(status, StatusCode::OK, "capture hypothesis: {body}"); // ubs:ignore
+    assert!(body["hypothesis_id"].as_str().is_some()); // ubs:ignore
 }
 
 // ---------------------------------------------------------------------------
@@ -206,14 +206,15 @@ async fn disagree_updates_decision_status() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "disagree: {body}");
-    assert_eq!(body["decision_id"], decision_id);
-    assert!(body["event_id"].as_u64().is_some());
-    // After a disagreement the status changes — exact value depends on
-    // whether the disagreeing actor is the proposer (→ rejected) or
-    // a different actor (→ contested).
+    assert_eq!(status, StatusCode::OK, "disagree: {body}"); // ubs:ignore
+    assert_eq!(body["decision_id"], decision_id); // ubs:ignore
+    assert!(body["event_id"].as_u64().is_some()); // ubs:ignore
+                                                  // After a disagreement the status changes — exact value depends on
+                                                  // whether the disagreeing actor is the proposer (→ rejected) or
+                                                  // a different actor (→ contested).
     let decision_status = body["decision_status"].as_str().unwrap();
     assert!(
+        // ubs:ignore
         matches!(decision_status, "proposed" | "contested" | "rejected"),
         "unexpected status: {decision_status}"
     );
@@ -259,10 +260,10 @@ async fn supersede_links_old_to_new_decision() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "supersede: {body}");
-    assert_eq!(body["old_decision_id"], old_id);
-    assert!(body["new_decision_id"].as_str().is_some());
-    assert_eq!(body["old_decision_status"], "superseded");
+    assert_eq!(status, StatusCode::OK, "supersede: {body}"); // ubs:ignore
+    assert_eq!(body["old_decision_id"], old_id); // ubs:ignore
+    assert!(body["new_decision_id"].as_str().is_some()); // ubs:ignore
+    assert_eq!(body["old_decision_status"], "superseded"); // ubs:ignore
 
     // Supersession chain should include both decisions
     let new_id = body["new_decision_id"].as_str().unwrap().to_owned();
@@ -271,8 +272,8 @@ async fn supersede_links_old_to_new_decision() {
         get_req(&format!("/v1/decisions/{old_id}/supersession-chain")),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "chain: {body}");
-    // SupersessionChain.decision_ids is a flat array of id strings
+    assert_eq!(status, StatusCode::OK, "chain: {body}"); // ubs:ignore
+                                                         // SupersessionChain.decision_ids is a flat array of id strings
     let chain_ids: Vec<&str> = body["data"]["decision_ids"]
         .as_array()
         .expect("data.decision_ids must be an array")
@@ -280,10 +281,12 @@ async fn supersede_links_old_to_new_decision() {
         .filter_map(|v| v.as_str())
         .collect();
     assert!(
+        // ubs:ignore
         chain_ids.contains(&old_id.as_str()),
         "chain missing old_id: {chain_ids:?}"
     );
     assert!(
+        // ubs:ignore
         chain_ids.contains(&new_id.as_str()),
         "chain missing new_id: {chain_ids:?}"
     );
@@ -306,8 +309,8 @@ async fn auth_rejects_missing_token() {
         .unwrap();
 
     let (status, body) = call(app, req).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
-    assert_eq!(body["error"]["code"], "unauthorized");
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "unauthorized"); // ubs:ignore
 }
 
 #[tokio::test]
@@ -323,7 +326,7 @@ async fn auth_accepts_correct_token() {
         .unwrap();
 
     let (status, _) = call(app, req).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK); // ubs:ignore
 }
 
 // ---------------------------------------------------------------------------
@@ -347,8 +350,8 @@ async fn capture_decision_validates_required_fields() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["error"]["code"], "validation_error");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "validation_error"); // ubs:ignore
 }
 
 #[tokio::test]
@@ -360,8 +363,8 @@ async fn capture_evidence_validates_content() {
         post_json("/v1/evidence", serde_json::json!({ "content": "  " })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["error"]["code"], "validation_error");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "validation_error"); // ubs:ignore
 }
 
 // ---------------------------------------------------------------------------
@@ -399,10 +402,11 @@ async fn ingest_batch_accepted_and_stored() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::ACCEPTED, "ingest: {body}");
-    assert_eq!(body["batch_id"], "session-abc:0-1024");
-    assert_eq!(body["queued"], true);
+    assert_eq!(status, StatusCode::ACCEPTED, "ingest: {body}"); // ubs:ignore
+    assert_eq!(body["batch_id"], "session-abc:0-1024"); // ubs:ignore
+    assert_eq!(body["queued"], true); // ubs:ignore
     assert!(
+        // ubs:ignore
         body["event_id"].as_u64().is_some(),
         "event_id missing: {body}"
     );
@@ -426,8 +430,8 @@ async fn ingest_batch_empty_turns_accepted() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::ACCEPTED, "ingest empty turns: {body}");
-    assert_eq!(body["queued"], true);
+    assert_eq!(status, StatusCode::ACCEPTED, "ingest empty turns: {body}"); // ubs:ignore
+    assert_eq!(body["queued"], true); // ubs:ignore
 }
 
 #[tokio::test]
@@ -447,6 +451,7 @@ async fn ingest_batch_rejects_missing_fields() {
     )
     .await;
     assert_eq!(
+        // ubs:ignore
         status,
         StatusCode::BAD_REQUEST,
         "missing session_id: {body}"
@@ -465,8 +470,8 @@ async fn ingest_batch_rejects_missing_fields() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "empty batch_id: {body}");
-    assert_eq!(body["error"]["code"], "validation_error");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "empty batch_id: {body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "validation_error"); // ubs:ignore
 }
 
 #[tokio::test]
@@ -486,7 +491,7 @@ async fn ingest_batch_enforces_auth() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}"); // ubs:ignore
 }
 
 // ---------------------------------------------------------------------------
@@ -505,6 +510,7 @@ async fn classifier_try_spawn_without_api_key_is_noop() {
         hivemind::events::TenantId::local(),
     );
     assert!(
+        // ubs:ignore
         result.is_none(),
         "try_spawn must return None without API key"
     );
@@ -554,6 +560,7 @@ async fn classifier_batch_classified_event_round_trips() {
         .unwrap();
 
     assert!(
+        // ubs:ignore
         classified_event_id > batch_event_id,
         "classified event written after batch event"
     );
@@ -566,6 +573,7 @@ async fn classifier_batch_classified_event_round_trips() {
         .expect("classified event in ledger");
 
     assert_eq!(
+        // ubs:ignore
         classified_event
             .payload
             .get("batch_id")
@@ -573,6 +581,7 @@ async fn classifier_batch_classified_event_round_trips() {
         Some("session-x:0-4")
     );
     assert_eq!(
+        // ubs:ignore
         classified_event
             .payload
             .get("classifier_model")
@@ -580,6 +589,7 @@ async fn classifier_batch_classified_event_round_trips() {
         Some("claude-haiku-4-5-20251001")
     );
     assert_eq!(
+        // ubs:ignore
         classified_event
             .payload
             .get("schema_version")
@@ -591,10 +601,11 @@ async fn classifier_batch_classified_event_round_trips() {
         .get("captures")
         .and_then(|v| v.as_array())
         .unwrap();
-    assert_eq!(captures_arr.len(), 1);
-    assert_eq!(captures_arr[0]["kind"], "decision");
-    assert_eq!(captures_arr[0]["title"], "Use tokio for async");
+    assert_eq!(captures_arr.len(), 1); // ubs:ignore
+    assert_eq!(captures_arr[0]["kind"], "decision"); // ubs:ignore
+    assert_eq!(captures_arr[0]["title"], "Use tokio for async"); // ubs:ignore
     assert_eq!(
+        // ubs:ignore
         captures_arr[0]["extraction_confidence"].as_f64().unwrap(),
         0.85
     );

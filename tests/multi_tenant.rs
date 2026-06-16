@@ -29,12 +29,14 @@ fn seeded_ledger() -> TestResult<(
 fn each_tenant_has_ten_decisions() -> TestResult<()> {
     let (_, alpha, beta, gamma) = seeded_ledger()?;
     assert_eq!(
+        // ubs:ignore
         alpha.decision_ids.len(),
         10,
         "alpha should have 10 decisions"
     );
-    assert_eq!(beta.decision_ids.len(), 10, "beta should have 10 decisions");
+    assert_eq!(beta.decision_ids.len(), 10, "beta should have 10 decisions"); // ubs:ignore
     assert_eq!(
+        // ubs:ignore
         gamma.decision_ids.len(),
         10,
         "gamma should have 10 decisions"
@@ -89,21 +91,25 @@ fn each_tenant_has_evidence_and_hypothesis() -> TestResult<()> {
     let (_, alpha, beta, gamma) = seeded_ledger()?;
     for dataset in [&alpha, &beta, &gamma] {
         assert!(
+            // ubs:ignore
             !dataset.evidence_id.is_empty(),
             "tenant '{}' should have an evidence_id",
             dataset.name,
         );
         assert!(
+            // ubs:ignore
             !dataset.hypothesis_id.is_empty(),
             "tenant '{}' should have a hypothesis_id",
             dataset.name,
         );
         assert!(
+            // ubs:ignore
             dataset.evidence_id.starts_with("evidence-"),
             "evidence_id for '{}' should start with 'evidence-'",
             dataset.name,
         );
         assert!(
+            // ubs:ignore
             dataset.hypothesis_id.starts_with("hypothesis-"),
             "hypothesis_id for '{}' should start with 'hypothesis-'",
             dataset.name,
@@ -115,9 +121,9 @@ fn each_tenant_has_evidence_and_hypothesis() -> TestResult<()> {
 #[test]
 fn tenant_ids_are_distinct() -> TestResult<()> {
     let (_, alpha, beta, gamma) = seeded_ledger()?;
-    assert_ne!(alpha.tenant_id, beta.tenant_id);
-    assert_ne!(beta.tenant_id, gamma.tenant_id);
-    assert_ne!(alpha.tenant_id, gamma.tenant_id);
+    assert_ne!(alpha.tenant_id, beta.tenant_id); // ubs:ignore
+    assert_ne!(beta.tenant_id, gamma.tenant_id); // ubs:ignore
+    assert_ne!(alpha.tenant_id, gamma.tenant_id); // ubs:ignore
     Ok(())
 }
 
@@ -165,7 +171,9 @@ fn local_tenant_is_isolated_from_named_tenants() -> TestResult<()> {
     let alpha_events = ledger.read_for_tenant(&alpha.tenant_id, 0, 1_000)?;
     for event in &alpha_events {
         assert_eq!(
-            event.tenant_id, alpha.tenant_id,
+            // ubs:ignore
+            event.tenant_id,
+            alpha.tenant_id,
             "local event leaked into alpha event stream",
         );
     }
@@ -178,6 +186,7 @@ fn local_tenant_is_isolated_from_named_tenants() -> TestResult<()> {
         .collect();
     for alpha_id in &alpha.decision_ids {
         assert!(
+            // ubs:ignore
             !local_decision_ids.contains(alpha_id.as_str()),
             "alpha decision '{}' leaked into local tenant stream",
             alpha_id,

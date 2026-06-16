@@ -10,7 +10,9 @@ WORKDIR /app
 
 # Cache dependency compilation separately from application code
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src && echo "fn main() {}" > src/main.rs && \
+RUN mkdir -p src && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "" > src/lib.rs && \
     cargo build --release --locked --features shared-backend-postgres && \
     rm -rf src
 

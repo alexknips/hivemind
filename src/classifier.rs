@@ -4,6 +4,7 @@
 //! The worker is entirely optional: if ANTHROPIC_API_KEY is absent it exits
 //! immediately and the rest of the system stays fully correct without it.
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -176,10 +177,13 @@ pub fn spawn_classifier(hivemind_dir: Arc<PathBuf>, tenant_id: TenantId, api_key
 
 async fn run_classifier_loop(hivemind_dir: Arc<PathBuf>, tenant_id: TenantId, api_key: String) {
     info!(target: "hivemind::classifier", "classifier worker started");
-    let client = reqwest::Client::builder()
-        .timeout(HAIKU_TIMEOUT)
-        .build()
-        .expect("reqwest client");
+    let client = match reqwest::Client::builder().timeout(HAIKU_TIMEOUT).build() {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(target: "hivemind::classifier", "failed to build http client: {e}");
+            return;
+        }
+    };
 
     loop {
         classify_pending_batches(&client, &hivemind_dir, &tenant_id, &api_key).await;
@@ -311,9 +315,9 @@ fn render_batch_text(event: &crate::events::Event) -> String {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         if truncated {
-            out.push_str(&format!("[{role}] {text} [TRUNCATED]\n"));
+            let _ = writeln!(out, "[{role}] {text} [TRUNCATED]");
         } else {
-            out.push_str(&format!("[{role}] {text}\n"));
+            let _ = writeln!(out, "[{role}] {text}");
         }
     }
     out

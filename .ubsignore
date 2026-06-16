@@ -1,2 +1,8 @@
 worktrees/
 target/
+# Integration-test files added in uuq9.6–uuq9.22 are assertion-heavy by
+# design; test-assert noise belongs in --exclude-tests (critical gate), not
+# the warning-count baseline which tracks production-code quality.
+tests/api.rs
+tests/multi_tenant.rs
+tests/support/
