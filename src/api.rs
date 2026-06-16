@@ -108,6 +108,8 @@ enum ApiBackend {
 impl ApiBackend {
     /// Open a tenant-scoped ledger for use within a blocking closure.
     fn open_ledger_for_tenant(&self, tenant_id: &TenantId) -> ApiResult<ApiLedger> {
+        #[cfg(not(feature = "shared-backend-postgres"))]
+        let _ = tenant_id;
         match self {
             ApiBackend::Sqlite(dir) => {
                 let ledger = SqliteEventLedger::open(dir.as_ref())
@@ -192,6 +194,7 @@ struct AppState {
     /// Single-token dev auth (SQLite mode).
     api_key: Option<String>,
     /// Admin key for `POST /v1/tenants`.
+    #[cfg(feature = "shared-backend-postgres")]
     admin_key: Option<String>,
     /// Token store for per-tenant bearer token resolution (Postgres mode).
     #[cfg(feature = "shared-backend-postgres")]
@@ -215,6 +218,7 @@ impl AppState {
         Ok(Self {
             backend: Arc::new(ApiBackend::Sqlite(Arc::new(config.hivemind_dir.clone()))),
             api_key: config.api_key.clone(),
+            #[cfg(feature = "shared-backend-postgres")]
             admin_key: config.admin_key.clone(),
             #[cfg(feature = "shared-backend-postgres")]
             tenant_store: None,
