@@ -488,3 +488,114 @@ async fn ingest_batch_enforces_auth() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
 }
+
+// ---------------------------------------------------------------------------
+// Layer-3 classifier: annotation event round-trip
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn classifier_try_spawn_without_api_key_is_noop() {
+    // When ANTHROPIC_API_KEY is absent, try_spawn must return None without panicking.
+    // We remove the key from the test process environment temporarily.
+    let saved = std::env::var("ANTHROPIC_API_KEY").ok();
+    unsafe { std::env::remove_var("ANTHROPIC_API_KEY") };
+
+    let result = hivemind::classifier::try_spawn(
+        std::sync::Arc::new(test_ledger_dir()),
+        hivemind::events::TenantId::local(),
+    );
+    assert!(result.is_none(), "try_spawn must return None without API key");
+
+    if let Some(key) = saved {
+        unsafe { std::env::set_var("ANTHROPIC_API_KEY", key) };
+    }
+}
+
+#[tokio::test]
+async fn classifier_batch_classified_event_round_trips() {
+    use hivemind::commands::{CommandContext, Commands};
+    use hivemind::events::{CaptureItem, EventProvenance, TenantId};
+    use hivemind::ledger::{EventLedger, SqliteEventLedger};
+
+    let dir = test_ledger_dir();
+    let ledger = SqliteEventLedger::open(&dir).unwrap();
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(TenantId::local(), EventProvenance::agent("agent:test")),
+    );
+
+    let batch_event_id = commands
+        .record_ingest_batch(
+            "agent:test",
+            "session-x:0-4",
+            "claude",
+            "session-x",
+            vec![],
+        )
+        .unwrap();
+
+    let captures = vec![CaptureItem {
+        kind: "decision".to_owned(),
+        title: "Use tokio for async".to_owned(),
+        rationale: "Project already depends on tokio".to_owned(),
+        topic_keys: vec!["async".to_owned()],
+        evidence_ids: vec![],
+        options: Some(vec!["tokio".to_owned(), "async-std".to_owned()]),
+        chosen_option: Some("tokio".to_owned()),
+        confidence: 0.85,
+    }];
+
+    let classified_event_id = commands
+        .record_ingest_batch_classified(
+            "agent:hivemind:classifier",
+            "session-x:0-4",
+            "claude-haiku-4-5-20251001",
+            "1",
+            captures,
+            Some(batch_event_id),
+        )
+        .unwrap();
+
+    assert!(classified_event_id > batch_event_id, "classified event written after batch event");
+
+    // Read back and verify the payload round-trips
+    let events = ledger.read_for_tenant(&TenantId::local(), 0, 100).unwrap();
+    let classified_event = events
+        .iter()
+        .find(|e| e.event_id == Some(classified_event_id))
+        .expect("classified event in ledger");
+
+    assert_eq!(
+        classified_event
+            .payload
+            .get("batch_id")
+            .and_then(|v| v.as_str()),
+        Some("session-x:0-4")
+    );
+    assert_eq!(
+        classified_event
+            .payload
+            .get("classifier_model")
+            .and_then(|v| v.as_str()),
+        Some("claude-haiku-4-5-20251001")
+    );
+    assert_eq!(
+        classified_event
+            .payload
+            .get("schema_version")
+            .and_then(|v| v.as_str()),
+        Some("1")
+    );
+    let captures_arr = classified_event
+        .payload
+        .get("captures")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    assert_eq!(captures_arr.len(), 1);
+    assert_eq!(captures_arr[0]["kind"], "decision");
+    assert_eq!(captures_arr[0]["title"], "Use tokio for async");
+    assert_eq!(
+        captures_arr[0]["confidence"].as_f64().unwrap(),
+        0.85
+    );
+}

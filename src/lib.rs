@@ -1,4 +1,5 @@
 pub mod api;
+pub mod classifier;
 pub mod cli;
 pub mod commands;
 pub mod error;

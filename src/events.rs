@@ -75,6 +75,8 @@ pub enum EventType {
     NotificationAcknowledged,
     #[serde(rename = "ingest.batch_received")]
     IngestBatchReceived,
+    #[serde(rename = "ingest.batch_classified")]
+    IngestBatchClassified,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +343,28 @@ pub struct IngestBatchReceivedPayload {
     pub turns: Vec<IngestTurn>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureItem {
+    pub kind: String,
+    pub title: String,
+    pub rationale: String,
+    pub topic_keys: Vec<String>,
+    pub evidence_ids: Vec<String>,
+    pub options: Option<Vec<String>>,
+    pub chosen_option: Option<String>,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IngestBatchClassifiedPayload {
+    pub batch_id: String,
+    pub classifier_model: String,
+    pub schema_version: String,
+    pub captures: Vec<CaptureItem>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RelationAddedPayload {
@@ -349,7 +373,7 @@ pub struct RelationAddedPayload {
     pub to_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EventPayload {
     DecisionProposed(DecisionProposedPayload),
     DecisionRequested(DecisionRequestedPayload),
@@ -364,6 +388,7 @@ pub enum EventPayload {
     NotificationSent(NotificationSentPayload),
     NotificationAcknowledged(NotificationAcknowledgedPayload),
     IngestBatchReceived(IngestBatchReceivedPayload),
+    IngestBatchClassified(IngestBatchClassifiedPayload),
 }
 
 impl EventPayload {
@@ -382,6 +407,7 @@ impl EventPayload {
             Self::NotificationSent(_) => EventType::NotificationSent,
             Self::NotificationAcknowledged(_) => EventType::NotificationAcknowledged,
             Self::IngestBatchReceived(_) => EventType::IngestBatchReceived,
+            Self::IngestBatchClassified(_) => EventType::IngestBatchClassified,
         }
     }
 
@@ -400,11 +426,12 @@ impl EventPayload {
             Self::NotificationSent(payload) => serde_json::to_value(payload),
             Self::NotificationAcknowledged(payload) => serde_json::to_value(payload),
             Self::IngestBatchReceived(payload) => serde_json::to_value(payload),
+            Self::IngestBatchClassified(payload) => serde_json::to_value(payload),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EventEnvelope {
     event_type: EventType,
     payload: EventPayload,
@@ -448,7 +475,7 @@ pub enum EventBuildError {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EventBuilder {
     tenant_id: TenantId,
     event_id: Option<EventId>,
@@ -695,6 +722,13 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty("payload.agent_tool", &payload.agent_tool)?;
             require_non_empty("payload.session_id", &payload.session_id)?;
             Ok(EventPayload::IngestBatchReceived(payload))
+        }
+        EventType::IngestBatchClassified => {
+            let payload: IngestBatchClassifiedPayload = parse_payload(event)?;
+            require_non_empty("payload.batch_id", &payload.batch_id)?;
+            require_non_empty("payload.classifier_model", &payload.classifier_model)?;
+            require_non_empty("payload.schema_version", &payload.schema_version)?;
+            Ok(EventPayload::IngestBatchClassified(payload))
         }
     }
 }

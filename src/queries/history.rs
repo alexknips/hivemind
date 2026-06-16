@@ -1379,7 +1379,8 @@ impl DecisionIndex {
                 | EventPayload::BlockerResolved(_)
                 | EventPayload::NotificationSent(_)
                 | EventPayload::NotificationAcknowledged(_)
-                | EventPayload::IngestBatchReceived(_) => {}
+                | EventPayload::IngestBatchReceived(_)
+                | EventPayload::IngestBatchClassified(_) => {}
             }
         }
         Ok(index)
@@ -1492,7 +1493,8 @@ fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
         | EventPayload::BlockerResolved(_)
         | EventPayload::NotificationSent(_)
         | EventPayload::NotificationAcknowledged(_)
-        | EventPayload::IngestBatchReceived(_) => HistoryChangeKind::ContextChange,
+        | EventPayload::IngestBatchReceived(_)
+        | EventPayload::IngestBatchClassified(_) => HistoryChangeKind::ContextChange,
     }
 }
 
@@ -1544,7 +1546,8 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
         | EventPayload::BlockerResolved(_)
         | EventPayload::NotificationSent(_)
         | EventPayload::NotificationAcknowledged(_)
-        | EventPayload::IngestBatchReceived(_) => {}
+        | EventPayload::IngestBatchReceived(_)
+        | EventPayload::IngestBatchClassified(_) => {}
     }
     ids.into_iter().collect()
 }
@@ -1634,7 +1637,7 @@ fn affected_nodes_for_event(event: &Event, payload: &EventPayload) -> Vec<Affect
                 NodeKind::Notification,
             ));
         }
-        EventPayload::IngestBatchReceived(_) => {}
+        EventPayload::IngestBatchReceived(_) | EventPayload::IngestBatchClassified(_) => {}
     }
     nodes.into_iter().collect()
 }
