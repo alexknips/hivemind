@@ -402,7 +402,10 @@ async fn ingest_batch_accepted_and_stored() {
     assert_eq!(status, StatusCode::ACCEPTED, "ingest: {body}");
     assert_eq!(body["batch_id"], "session-abc:0-1024");
     assert_eq!(body["queued"], true);
-    assert!(body["event_id"].as_u64().is_some(), "event_id missing: {body}");
+    assert!(
+        body["event_id"].as_u64().is_some(),
+        "event_id missing: {body}"
+    );
 }
 
 #[tokio::test]
@@ -443,7 +446,11 @@ async fn ingest_batch_rejects_missing_fields() {
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "missing session_id: {body}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "missing session_id: {body}"
+    );
 
     // Empty batch_id
     let (status, body) = call(
