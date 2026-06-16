@@ -27,6 +27,7 @@ shared-backend-postgres = ["dep:postgres", "dep:r2d2", "dep:r2d2_postgres"]
 tui = ["dep:crossterm", "dep:ratatui"]
 
 [dependencies]
+axum = "0.8"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 chrono = { version = "0.4.42", features = ["serde"] }
 crossterm = { version = "0.28.1", optional = true }
@@ -45,15 +46,22 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
 thiserror = "2.0.17"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 uuid = { version = "1.23.1", features = ["serde", "v4", "v5"] }
 
 [dev-dependencies]
+http-body-util = "0.1"
 jsonschema = { version = "0.46.5", default-features = false }
 proptest = { version = "1.9.0", default-features = false, features = ["std"] }
+tower = { version = "0.5", features = ["util"] }
 
 [[test]]
 name = "golden"
 path = "tests/golden.rs"
 harness = false
+
+[[test]]
+name = "api"
+path = "tests/api.rs"

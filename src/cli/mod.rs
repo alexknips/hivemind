@@ -118,10 +118,21 @@ pub enum Command {
     /// Run an MCP (Model Context Protocol) stdio server that exposes
     /// HiveMind's capture/query surface to MCP-aware clients.
     Mcp(McpArgs),
+    /// Start the HTTP REST API server. Auth token is read from
+    /// HIVEMIND_API_KEY; when unset the server starts in development mode
+    /// with no authentication.
+    Serve(ServeArgs),
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct QuickstartArgs {}
+
+#[derive(Debug, Clone, Args)]
+pub struct ServeArgs {
+    /// Port to listen on.
+    #[arg(long, short = 'p', default_value_t = 8080)]
+    pub port: u16,
+}
 
 #[derive(Debug, Clone, Args)]
 pub struct McpArgs {
@@ -1173,6 +1184,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Ingest(args) => run_ingest(cli, args),
         Command::SlackApp(args) => run_slack_app(cli, args),
         Command::Mcp(args) => run_mcp(cli, args),
+        Command::Serve(args) => run_serve(cli, args),
     }
 }
 
@@ -1280,6 +1292,14 @@ fn run_mcp(cli: &Cli, args: &McpArgs) -> Result<String> {
     }
     crate::mcp::serve_stdio(&config)?;
     // The stdio loop only returns once stdin closes — no payload to print.
+    Ok(String::new())
+}
+
+fn run_serve(cli: &Cli, args: &ServeArgs) -> Result<String> {
+    let config = crate::api::ApiConfig::new(cli.hivemind_dir.clone()).with_port(args.port);
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| CliError::InvalidInput(format!("failed to create tokio runtime: {e}")))?;
+    runtime.block_on(crate::api::serve_http(&config))?;
     Ok(String::new())
 }
 
