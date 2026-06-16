@@ -3,12 +3,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hivemind::events::{
-    self, BlockerReportedPayload, BlockerResolvedPayload, DecisionBlockerPriority,
+    self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionBlockerPriority,
     DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload, DecisionRequestedPayload,
     DecisionSupersededPayload, Event, EventBuilder, EventEnvelope, EventPayload, EventSource,
     EventType, EventValidationError, EvidenceRecordedPayload, HypothesisRecordedPayload,
-    IngestBatchReceivedPayload, IngestTurn, NotificationAcknowledgedPayload,
-    NotificationSentPayload, RelationAddedPayload, RelationKind as EventRelationKind,
+    IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn,
+    NotificationAcknowledgedPayload, NotificationSentPayload, RelationAddedPayload,
+    RelationKind as EventRelationKind,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};
@@ -16,7 +17,7 @@ use hivemind::{CliError, CommandError, HivemindError, LedgerError, ProjectorErro
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const EVENT_TYPES: [EventType; 13] = [
+const EVENT_TYPES: [EventType; 14] = [
     EventType::DecisionProposed,
     EventType::DecisionRequested,
     EventType::DecisionAccepted,
@@ -30,6 +31,7 @@ const EVENT_TYPES: [EventType; 13] = [
     EventType::NotificationSent,
     EventType::NotificationAcknowledged,
     EventType::IngestBatchReceived,
+    EventType::IngestBatchClassified,
 ];
 
 const EVENT_RELATION_KINDS: [EventRelationKind; 6] = [
@@ -337,6 +339,7 @@ fn event_type_name(event_type: EventType) -> &'static str {
         EventType::NotificationSent => "notification.sent",
         EventType::NotificationAcknowledged => "notification.acknowledged",
         EventType::IngestBatchReceived => "ingest.batch_received",
+        EventType::IngestBatchClassified => "ingest.batch_classified",
     }
 }
 
@@ -355,6 +358,7 @@ fn payload_variant_type(payload: &EventPayload) -> EventType {
         EventPayload::NotificationSent(_) => EventType::NotificationSent,
         EventPayload::NotificationAcknowledged(_) => EventType::NotificationAcknowledged,
         EventPayload::IngestBatchReceived(_) => EventType::IngestBatchReceived,
+        EventPayload::IngestBatchClassified(_) => EventType::IngestBatchClassified,
     }
 }
 
@@ -399,6 +403,9 @@ fn typed_payload_from_value(
         }
         EventType::IngestBatchReceived => {
             EventPayload::IngestBatchReceived(serde_json::from_value(payload)?)
+        }
+        EventType::IngestBatchClassified => {
+            EventPayload::IngestBatchClassified(serde_json::from_value(payload)?)
         }
     })
 }
@@ -535,6 +542,24 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 }],
             }),
         ),
+        (
+            EventType::IngestBatchClassified,
+            EventPayload::IngestBatchClassified(IngestBatchClassifiedPayload {
+                batch_id: "session-abc:0-512".to_owned(),
+                classifier_model: "claude-haiku-4-5-20251001".to_owned(),
+                schema_version: "1".to_owned(),
+                captures: vec![CaptureItem {
+                    kind: "decision".to_owned(),
+                    title: "Use REST".to_owned(),
+                    rationale: "REST is curl-friendly".to_owned(),
+                    topic_keys: vec!["api-design".to_owned()],
+                    evidence_ids: vec![],
+                    options: Some(vec!["REST".to_owned(), "gRPC".to_owned()]),
+                    chosen_option: Some("REST".to_owned()),
+                    confidence: 0.9,
+                }],
+            }),
+        ),
     ]
 }
 
@@ -553,6 +578,7 @@ fn payload_json(payload: &EventPayload) -> Value {
         EventPayload::NotificationSent(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::NotificationAcknowledged(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::IngestBatchReceived(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::IngestBatchClassified(payload) => serde_json::to_value(payload).unwrap(),
     }
 }
 

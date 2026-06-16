@@ -1,0 +1,28 @@
+{
+  "event_id": 2,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe21",
+  "correlation_id": null,
+  "causation_event_id": 1,
+  "type": "ingest.batch_classified",
+  "actor_id": "agent:hivemind:classifier",
+  "source": "agent",
+  "source_ref": "agent:hivemind:classifier",
+  "payload": {
+    "batch_id": "session-abc:0-512",
+    "classifier_model": "claude-haiku-4-5-20251001",
+    "schema_version": "1",
+    "captures": [
+      {
+        "kind": "decision",
+        "title": "Use REST for HTTP API",
+        "rationale": "REST maps naturally to resources and is ergonomic with curl clients.",
+        "topic_keys": ["api-design"],
+        "evidence_ids": [],
+        "options": ["REST", "JSON-RPC"],
+        "chosen_option": "REST",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "ts": "2026-06-16T07:01:00Z"
+}

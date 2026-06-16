@@ -542,7 +542,9 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
         }
         EventPayload::IngestBatchReceived(_) => {
             // Raw transcript batches are ledger-only; they do not project to the graph.
-            // The classifier (a future Layer-3 bead) will read these and write captures.
+        }
+        EventPayload::IngestBatchClassified(_) => {
+            // Classifier annotations are ledger-only; they do not project to the graph.
         }
     }
 

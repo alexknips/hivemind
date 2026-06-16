@@ -347,6 +347,11 @@ pub async fn serve_http(config: &ApiConfig) -> crate::Result<()> {
         );
     }
 
+    crate::classifier::try_spawn(
+        Arc::new(config.hivemind_dir.clone()),
+        crate::events::TenantId::local(),
+    );
+
     let app = create_router(config);
     let addr = format!("0.0.0.0:{}", config.port);
     let listener = tokio::net::TcpListener::bind(&addr)
