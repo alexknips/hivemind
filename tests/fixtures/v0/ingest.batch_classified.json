@@ -20,7 +20,7 @@
         "evidence_ids": [],
         "options": ["REST", "JSON-RPC"],
         "chosen_option": "REST",
-        "confidence": 0.9
+        "extraction_confidence": 0.9
       }
     ]
   },

@@ -556,7 +556,7 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                     evidence_ids: vec![],
                     options: Some(vec!["REST".to_owned(), "gRPC".to_owned()]),
                     chosen_option: Some("REST".to_owned()),
-                    confidence: 0.9,
+                    extraction_confidence: 0.9,
                 }],
             }),
         ),

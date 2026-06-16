@@ -353,7 +353,8 @@ pub struct CaptureItem {
     pub evidence_ids: Vec<String>,
     pub options: Option<Vec<String>>,
     pub chosen_option: Option<String>,
-    pub confidence: f64,
+    /// Haiku extractor's self-estimate that this capture was correctly extracted; not the decision Quality score.
+    pub extraction_confidence: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
