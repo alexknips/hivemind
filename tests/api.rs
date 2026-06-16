@@ -504,7 +504,10 @@ async fn classifier_try_spawn_without_api_key_is_noop() {
         std::sync::Arc::new(test_ledger_dir()),
         hivemind::events::TenantId::local(),
     );
-    assert!(result.is_none(), "try_spawn must return None without API key");
+    assert!(
+        result.is_none(),
+        "try_spawn must return None without API key"
+    );
 
     if let Some(key) = saved {
         unsafe { std::env::set_var("ANTHROPIC_API_KEY", key) };
@@ -525,13 +528,7 @@ async fn classifier_batch_classified_event_round_trips() {
     );
 
     let batch_event_id = commands
-        .record_ingest_batch(
-            "agent:test",
-            "session-x:0-4",
-            "claude",
-            "session-x",
-            vec![],
-        )
+        .record_ingest_batch("agent:test", "session-x:0-4", "claude", "session-x", vec![])
         .unwrap();
 
     let captures = vec![CaptureItem {
@@ -556,7 +553,10 @@ async fn classifier_batch_classified_event_round_trips() {
         )
         .unwrap();
 
-    assert!(classified_event_id > batch_event_id, "classified event written after batch event");
+    assert!(
+        classified_event_id > batch_event_id,
+        "classified event written after batch event"
+    );
 
     // Read back and verify the payload round-trips
     let events = ledger.read_for_tenant(&TenantId::local(), 0, 100).unwrap();
@@ -594,8 +594,5 @@ async fn classifier_batch_classified_event_round_trips() {
     assert_eq!(captures_arr.len(), 1);
     assert_eq!(captures_arr[0]["kind"], "decision");
     assert_eq!(captures_arr[0]["title"], "Use tokio for async");
-    assert_eq!(
-        captures_arr[0]["confidence"].as_f64().unwrap(),
-        0.85
-    );
+    assert_eq!(captures_arr[0]["confidence"].as_f64().unwrap(), 0.85);
 }
