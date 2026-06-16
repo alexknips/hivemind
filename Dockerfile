@@ -20,8 +20,8 @@ COPY src ./src
 COPY tests ./tests
 COPY schemas ./schemas
 
-# Force rebuild of application code
-RUN touch src/main.rs && \
+# Force rebuild of application code (touch all .rs so lib.rs isn't stale vs stub)
+RUN find src -name "*.rs" -exec touch {} + && \
     cargo build --release --locked --features shared-backend-postgres
 
 # Stage 2: Runtime
