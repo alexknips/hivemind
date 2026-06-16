@@ -174,11 +174,7 @@ pub fn spawn_classifier(hivemind_dir: Arc<PathBuf>, tenant_id: TenantId, api_key
     });
 }
 
-async fn run_classifier_loop(
-    hivemind_dir: Arc<PathBuf>,
-    tenant_id: TenantId,
-    api_key: String,
-) {
+async fn run_classifier_loop(hivemind_dir: Arc<PathBuf>, tenant_id: TenantId, api_key: String) {
     info!(target: "hivemind::classifier", "classifier worker started");
     let client = reqwest::Client::builder()
         .timeout(HAIKU_TIMEOUT)
@@ -250,7 +246,8 @@ fn find_unclassified_batches(
     const PAGE: usize = 256;
 
     let mut received: Vec<(u64, String, String)> = Vec::new();
-    let mut classified_batch_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut classified_batch_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     loop {
         let events = ledger.read_for_tenant(tenant_id, offset, PAGE)?;
@@ -271,9 +268,7 @@ fn find_unclassified_batches(
                     }
                 }
                 EventType::IngestBatchClassified => {
-                    if let Some(batch_id) =
-                        event.payload.get("batch_id").and_then(|v| v.as_str())
-                    {
+                    if let Some(batch_id) = event.payload.get("batch_id").and_then(|v| v.as_str()) {
                         classified_batch_ids.insert(batch_id.to_owned());
                     }
                 }
@@ -306,9 +301,15 @@ fn render_batch_text(event: &crate::events::Event) -> String {
 
     let mut out = String::new();
     for turn in &turns {
-        let role = turn.get("role").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let role = turn
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         let text = turn.get("text").and_then(|v| v.as_str()).unwrap_or("");
-        let truncated = turn.get("truncated").and_then(|v| v.as_bool()).unwrap_or(false);
+        let truncated = turn
+            .get("truncated")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if truncated {
             out.push_str(&format!("[{role}] {text} [TRUNCATED]\n"));
         } else {
@@ -379,10 +380,7 @@ fn write_classification(
     let ledger = SqliteEventLedger::open(hivemind_dir)?;
     let commands = Commands::new_with_context(
         &ledger,
-        CommandContext::new(
-            tenant_id.clone(),
-            EventProvenance::agent(ACTOR_ID),
-        ),
+        CommandContext::new(tenant_id.clone(), EventProvenance::agent(ACTOR_ID)),
     );
     commands.record_ingest_batch_classified(
         ACTOR_ID,
