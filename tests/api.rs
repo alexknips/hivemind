@@ -22,7 +22,9 @@ fn app(hivemind_dir: PathBuf) -> axum::Router {
     let config = hivemind::api::ApiConfig {
         hivemind_dir,
         port: 0,
-        api_key: None, // dev mode — no auth for tests
+        api_key: None,
+        database_url: None,
+        admin_key: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -32,6 +34,8 @@ fn app_with_key(hivemind_dir: PathBuf, key: &str) -> axum::Router {
         hivemind_dir,
         port: 0,
         api_key: Some(key.to_owned()),
+        database_url: None,
+        admin_key: None,
     };
     hivemind::api::create_router(&config)
 }

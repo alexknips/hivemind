@@ -18,6 +18,9 @@ use crate::Result;
 use super::backend_error::storage_error;
 use super::EventLedger;
 
+mod tenant_store;
+pub use tenant_store::TenantStore;
+
 const DEFAULT_POOL_SIZE: u32 = 16;
 const MAX_TRANSIENT_RETRIES: usize = 3;
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(25);
@@ -77,6 +80,17 @@ impl PostgresEventLedger {
         Ok(ledger)
     }
 
+    /// Create a ledger scoped to `tenant_id` sharing an existing pool (no schema init).
+    pub fn from_shared_pool(pool: PgPool, tenant_id: impl Into<String>) -> Result<Self> {
+        let tenant_id = validate_tenant_id(tenant_id.into())?;
+        Ok(Self { pool, tenant_id })
+    }
+
+    /// Expose the underlying pool so callers can share it with a `TenantStore`.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     pub fn for_tenant(&self, tenant_id: impl Into<String>) -> Result<Self> {
         Ok(Self {
             pool: self.pool.clone(),
@@ -93,6 +107,7 @@ impl PostgresEventLedger {
         let stored = StoredEvent::from_event(event)?;
 
         self.with_retrying_transaction(|transaction| {
+            set_tenant_local_pg(transaction, tenant_id)?;
             transaction.query_one("SELECT pg_advisory_xact_lock(hashtext($1))", &[&tenant_id])?;
 
             if let Some(existing_id) =
@@ -162,9 +177,12 @@ impl PostgresEventLedger {
         let limit = i64::try_from(limit)
             .map_err(|error| storage_error(format!("limit out of range: {error}")))?;
         let mut client = self.pool.get().map_err(storage_error)?;
-        let rows = client
+        let mut tx = client.transaction().map_err(storage_error)?;
+        set_tenant_local_pg(&mut tx, tenant_id).map_err(pg_op_to_result)?;
+        let rows = tx
             .query(&read_events_sql(), &[&tenant_id, &offset, &limit])
             .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
 
         rows.iter().map(event_from_row).collect()
     }
@@ -178,9 +196,12 @@ impl PostgresEventLedger {
         validate_tenant_id_ref(tenant_id)?;
         let offset = event_id_to_i64(offset, "offset")?;
         let mut client = self.pool.get().map_err(storage_error)?;
-        let rows = client
+        let mut tx = client.transaction().map_err(storage_error)?;
+        set_tenant_local_pg(&mut tx, tenant_id).map_err(pg_op_to_result)?;
+        let rows = tx
             .query(&replay_events_sql(), &[&tenant_id, &offset])
             .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
 
         for row in &rows {
             let event = event_from_row(row)?;
@@ -193,13 +214,16 @@ impl PostgresEventLedger {
     pub fn latest_offset_for_tenant(&self, tenant_id: &str) -> Result<EventId> {
         validate_tenant_id_ref(tenant_id)?;
         let mut client = self.pool.get().map_err(storage_error)?;
-        let offset: Option<i64> = client
+        let mut tx = client.transaction().map_err(storage_error)?;
+        set_tenant_local_pg(&mut tx, tenant_id).map_err(pg_op_to_result)?;
+        let offset: Option<i64> = tx
             .query_one(
                 "SELECT MAX(event_id) FROM events WHERE tenant_id = $1",
                 &[&tenant_id],
             )
             .map_err(storage_error)?
             .get(0);
+        tx.commit().map_err(storage_error)?;
 
         i64_to_event_id(offset.unwrap_or_default(), "latest_offset")
     }
@@ -420,6 +444,27 @@ fn validate_tenant_id_ref(tenant_id: &str) -> Result<()> {
         return Err(storage_error("tenant_id is required").into());
     }
     Ok(())
+}
+
+/// Set `app.tenant_id` as a transaction-local GUC for RLS policy evaluation.
+///
+/// Called at the start of every read and write transaction so the RLS policy
+/// `tenant_id = current_setting('app.tenant_id', true)` matches only that
+/// tenant's rows. Resets automatically on transaction end (safe with pools).
+fn set_tenant_local_pg(
+    tx: &mut Transaction<'_>,
+    tenant_id: &str,
+) -> std::result::Result<(), PgOperationError> {
+    tx.execute(
+        "SELECT set_config('app.tenant_id', $1, true)",
+        &[&tenant_id],
+    )
+    .map(|_| ())
+    .map_err(PgOperationError::Postgres)
+}
+
+fn pg_op_to_result(error: PgOperationError) -> crate::HivemindError {
+    storage_error(format!("{error:?}")).into()
 }
 
 #[derive(Debug)]

@@ -9,6 +9,7 @@ use chrono::DateTime;
 use uuid::Uuid;
 
 use crate::error::LedgerError;
+use crate::events::TenantId;
 use crate::ledger::contract_tests::{
     assert_dedup_by_event_uuid, assert_monotonic_append, assert_read_offset_and_limit,
     assert_replay_from_zero_in_order, make_event,
@@ -83,6 +84,9 @@ fn replay_matches_sqlite_event_stream() -> Result<()> {
     with_postgres_ledger("sqlite-parity", |postgres| {
         let sqlite_dir = temp_hivemind_dir("sqlite-parity");
         let sqlite = SqliteEventLedger::open(&sqlite_dir)?;
+        // Use the same tenant for SQLite so the read-back tenant_id field matches.
+        let pg_tenant = TenantId::new(postgres.tenant_id())
+            .map_err(|e| test_error(format!("invalid postgres tenant_id: {e}")))?;
 
         const EVIDENCE_IDS: [&str; 5] = [
             "evidence-0",
@@ -93,12 +97,11 @@ fn replay_matches_sqlite_event_stream() -> Result<()> {
         ];
         for (index, evidence_id) in EVIDENCE_IDS.into_iter().enumerate() {
             let event = make_parity_event(evidence_id, index);
-            sqlite.append(event)?;
+            sqlite.append_for_tenant(&pg_tenant, event)?;
         }
 
-        let expected_events = sqlite.read(0, 16)?;
-        let events_to_replay = expected_events.clone();
-        for event in events_to_replay {
+        let expected_events = sqlite.read_for_tenant(&pg_tenant, 0, 16)?;
+        for event in expected_events.clone() {
             postgres.append(event)?;
         }
 
@@ -217,4 +220,141 @@ fn temp_hivemind_dir(prefix: &str) -> PathBuf {
 
 fn test_error(message: impl Into<String>) -> crate::HivemindError {
     LedgerError::Storage(message.into()).into()
+}
+
+// ---------------------------------------------------------------------------
+// TenantStore + RLS isolation tests (uuq9.22)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "shared-backend-postgres")]
+mod tenant_store_tests {
+    use super::*;
+    use crate::ledger::TenantStore;
+
+    #[test]
+    fn provision_creates_tenant_and_resolves_token() -> Result<()> {
+        with_tenant_store(|store| {
+            let tid = unique_tenant("provision-resolve");
+            let provisioned = store
+                .provision_tenant(&tid, "Test Org")
+                .map_err(|e| test_error(e.to_string()))?;
+
+            if provisioned.tenant_id != tid {
+                return Err(test_error("tenant_id mismatch after provision"));
+            }
+            if !provisioned.token_secret.starts_with("hm_tk_") {
+                return Err(test_error("token_secret missing prefix"));
+            }
+
+            let resolved = store
+                .resolve_token(&provisioned.token_secret)
+                .map_err(|e| test_error(e.to_string()))?;
+
+            if resolved.as_deref() != Some(tid.as_str()) {
+                return Err(test_error("resolved tenant_id does not match"));
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn unknown_token_resolves_to_none() -> Result<()> {
+        with_tenant_store(|store| {
+            let resolved = store
+                .resolve_token(
+                    "hm_tk_000000000000000000000000000000000000000000000000000000000000abcd",
+                )
+                .map_err(|e| test_error(e.to_string()))?;
+            if resolved.is_some() {
+                return Err(test_error("unknown token should resolve to None"));
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn rls_prevents_cross_tenant_reads() -> Result<()> {
+        let Some(database_url) = std::env::var(TEST_DATABASE_URL_ENV)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+        else {
+            eprintln!("skipping RLS isolation test; set {TEST_DATABASE_URL_ENV}");
+            return Ok(());
+        };
+
+        let store = TenantStore::connect(&database_url).map_err(|e| test_error(e.to_string()))?;
+
+        // Provision two tenants.
+        let tid_a = unique_tenant("rls-alice");
+        let tid_b = unique_tenant("rls-bob");
+        let _ = store
+            .provision_tenant(&tid_a, "Alice Org")
+            .map_err(|e| test_error(e.to_string()))?;
+        let _ = store
+            .provision_tenant(&tid_b, "Bob Org")
+            .map_err(|e| test_error(e.to_string()))?;
+
+        // Write one event per tenant through the ledger.
+        let ledger_a = PostgresEventLedger::connect_with_pool_size(&database_url, &tid_a, 2)
+            .map_err(|e| test_error(e.to_string()))?;
+        let ledger_b = ledger_a
+            .for_tenant(&tid_b)
+            .map_err(|e| test_error(e.to_string()))?;
+
+        ledger_a.append(make_event("alice-secret", Uuid::new_v4()))?;
+        ledger_b.append(make_event("bob-secret", Uuid::new_v4()))?;
+
+        // Alice's ledger should see only Alice's event.
+        let alice_events = ledger_a.read(0, 10)?;
+        if alice_events.len() != 1 {
+            return Err(test_error(format!(
+                "Alice expected 1 event, got {}",
+                alice_events.len()
+            )));
+        }
+        let alice_payload = alice_events[0]
+            .payload
+            .get("evidence_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if alice_payload != "alice-secret" {
+            return Err(test_error(format!(
+                "Alice event payload mismatch: {alice_payload}"
+            )));
+        }
+
+        // Bob's ledger should see only Bob's event.
+        let bob_events = ledger_b.read(0, 10)?;
+        if bob_events.len() != 1 {
+            return Err(test_error(format!(
+                "Bob expected 1 event, got {}",
+                bob_events.len()
+            )));
+        }
+        let bob_payload = bob_events[0]
+            .payload
+            .get("evidence_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if bob_payload != "bob-secret" {
+            return Err(test_error(format!(
+                "Bob event payload mismatch: {bob_payload}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn with_tenant_store<T>(f: impl FnOnce(&TenantStore) -> Result<T>) -> Result<()> {
+        let Some(database_url) = std::env::var(TEST_DATABASE_URL_ENV)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+        else {
+            eprintln!("skipping TenantStore test; set {TEST_DATABASE_URL_ENV}");
+            return Ok(());
+        };
+        let store = TenantStore::connect(&database_url).map_err(|e| test_error(e.to_string()))?;
+        f(&store)?;
+        Ok(())
+    }
 }

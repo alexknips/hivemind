@@ -4,29 +4,16 @@
 //! the same [`crate::commands::Commands`] and [`crate::queries`] layers that
 //! CLI and MCP use. No layer-3 "smart" behaviour happens here.
 //!
-//! ## Design choice: REST over JSON-RPC
+//! ## Auth
 //!
-//! REST was chosen because HTTP clients (curl, scripts, browsers) are most
-//! ergonomic with it, the decision domain maps naturally to resources
-//! (decisions, evidence, hypotheses), and JSON-RPC is already covered by the
-//! MCP transport. REST GET endpoints also admit future caching.
+//! **SQLite dev mode** (`HIVEMIND_DATABASE_URL` unset): bearer token compared
+//! in constant time against `HIVEMIND_API_KEY`. Tenant identity comes from
+//! `X-HiveMind-Tenant` header.
 //!
-//! ## Auth (MVP)
-//!
-//! Bearer token from `Authorization: Bearer <token>` is compared in constant
-//! time against `HIVEMIND_API_KEY`. When `HIVEMIND_API_KEY` is unset the
-//! server starts in development mode (no auth check, warning logged).
-//!
-//! Tenant and actor identity come from request headers:
-//!
-//! | Header | Default |
-//! |--------|---------|
-//! | `X-HiveMind-Tenant` | `local` |
-//! | `X-HiveMind-Actor` | `service:api` |
-//!
-//! See `docs/AUTH_MODEL.md` for the full multi-tenant token design. Token
-//! database, revocation, and Ed25519 signing are deferred until real usage
-//! justifies them.
+//! **Postgres multi-tenant mode** (`HIVEMIND_DATABASE_URL` set): bearer token
+//! is resolved to a `tenant_id` via `TenantStore::resolve_token`. The token
+//! encodes which tenant the client belongs to — clients send no tenant header.
+//! Admin operations (e.g. provisioning) are guarded by `HIVEMIND_ADMIN_KEY`.
 //!
 //! ## Endpoints
 //!
@@ -36,11 +23,12 @@
 //! - `POST /v1/hypotheses`                         — capture hypothesis
 //! - `POST /v1/decisions/{id}/disagreements`        — disagree
 //! - `POST /v1/decisions/{id}/supersessions`        — supersede
+//! - `POST /v1/tenants`                            — provision tenant (Postgres, admin only)
 //!
 //! Read:
 //! - `GET  /v1/decisions/{id}`                     — get single decision
 //! - `GET  /v1/decisions/{id}/supersession-chain`  — supersession chain
-//! - `GET  /v1/decisions/search`                   — full-text search
+//! - `GET  /v1/decisions/search`                   — full-text search (SQLite only)
 //! - `GET  /v1/decisions/relevant`                 — decisions by topic
 //! - `GET  /v1/health`                             — liveness probe
 
@@ -60,7 +48,9 @@ use tracing::warn;
 use crate::commands::{CommandContext, Commands};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, IngestTurn, TenantId};
-use crate::ledger::SqliteEventLedger;
+use crate::ledger::{EventLedger, SqliteEventLedger};
+#[cfg(feature = "shared-backend-postgres")]
+use crate::ledger::{PostgresEventLedger, TenantStore};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
     derive_decision_status, get_decision, get_relevant_decisions, get_supersession_chain,
@@ -78,8 +68,13 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
 pub struct ApiConfig {
     pub hivemind_dir: PathBuf,
     pub port: u16,
-    /// Expected bearer token. `None` = development mode (no auth check).
+    /// Expected bearer token for SQLite dev mode. `None` = no auth check.
     pub api_key: Option<String>,
+    /// Postgres database URL. When set, enables the multi-tenant Postgres
+    /// backend with per-tenant bearer tokens and RLS enforcement.
+    pub database_url: Option<String>,
+    /// Admin token for the `POST /v1/tenants` provisioning endpoint.
+    pub admin_key: Option<String>,
 }
 
 impl ApiConfig {
@@ -88,6 +83,8 @@ impl ApiConfig {
             hivemind_dir: hivemind_dir.into(),
             port: 8080,
             api_key: std::env::var("HIVEMIND_API_KEY").ok(),
+            database_url: std::env::var("HIVEMIND_DATABASE_URL").ok(),
+            admin_key: std::env::var("HIVEMIND_ADMIN_KEY").ok(),
         }
     }
 
@@ -101,18 +98,127 @@ impl ApiConfig {
 // App state (shared across handlers via axum State)
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
-struct AppState {
-    hivemind_dir: Arc<PathBuf>,
-    api_key: Option<String>,
+/// Ledger backend — SQLite for local dev, Postgres for the shared service.
+enum ApiBackend {
+    Sqlite(Arc<PathBuf>),
+    #[cfg(feature = "shared-backend-postgres")]
+    Postgres(Arc<PostgresEventLedger>),
 }
 
-impl From<&ApiConfig> for AppState {
-    fn from(config: &ApiConfig) -> Self {
-        Self {
-            hivemind_dir: Arc::new(config.hivemind_dir.clone()),
-            api_key: config.api_key.clone(),
+impl ApiBackend {
+    /// Open a tenant-scoped ledger for use within a blocking closure.
+    fn open_ledger_for_tenant(&self, tenant_id: &TenantId) -> ApiResult<ApiLedger> {
+        match self {
+            ApiBackend::Sqlite(dir) => {
+                let ledger = SqliteEventLedger::open(dir.as_ref())
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+                Ok(ApiLedger::Sqlite(ledger))
+            }
+            #[cfg(feature = "shared-backend-postgres")]
+            ApiBackend::Postgres(base) => {
+                let ledger = base
+                    .for_tenant(tenant_id.as_str())
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+                Ok(ApiLedger::Postgres(ledger))
+            }
         }
+    }
+}
+
+/// Enum wrapper so handlers dispatch to either backend without monomorphisation.
+enum ApiLedger {
+    Sqlite(SqliteEventLedger),
+    #[cfg(feature = "shared-backend-postgres")]
+    Postgres(PostgresEventLedger),
+}
+
+impl EventLedger for ApiLedger {
+    fn append_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        event: crate::events::Event,
+    ) -> crate::Result<crate::events::EventId> {
+        match self {
+            ApiLedger::Sqlite(l) => l.append_for_tenant(tenant_id, event),
+            // Use explicit trait dispatch to avoid the inherent &str overload.
+            #[cfg(feature = "shared-backend-postgres")]
+            ApiLedger::Postgres(l) => EventLedger::append_for_tenant(l, tenant_id, event),
+        }
+    }
+
+    fn read_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: crate::events::EventId,
+        limit: usize,
+    ) -> crate::Result<Vec<crate::events::Event>> {
+        match self {
+            ApiLedger::Sqlite(l) => l.read_for_tenant(tenant_id, offset, limit),
+            #[cfg(feature = "shared-backend-postgres")]
+            ApiLedger::Postgres(l) => EventLedger::read_for_tenant(l, tenant_id, offset, limit),
+        }
+    }
+
+    fn replay_from_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: crate::events::EventId,
+        callback: &mut dyn FnMut(&crate::events::Event) -> crate::Result<()>,
+    ) -> crate::Result<()> {
+        match self {
+            ApiLedger::Sqlite(l) => l.replay_from_for_tenant(tenant_id, offset, callback),
+            #[cfg(feature = "shared-backend-postgres")]
+            ApiLedger::Postgres(l) => {
+                EventLedger::replay_from_for_tenant(l, tenant_id, offset, callback)
+            }
+        }
+    }
+
+    fn latest_offset_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+    ) -> crate::Result<crate::events::EventId> {
+        match self {
+            ApiLedger::Sqlite(l) => l.latest_offset_for_tenant(tenant_id),
+            #[cfg(feature = "shared-backend-postgres")]
+            ApiLedger::Postgres(l) => EventLedger::latest_offset_for_tenant(l, tenant_id),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct AppState {
+    backend: Arc<ApiBackend>,
+    /// Single-token dev auth (SQLite mode).
+    api_key: Option<String>,
+    /// Admin key for `POST /v1/tenants`.
+    admin_key: Option<String>,
+    /// Token store for per-tenant bearer token resolution (Postgres mode).
+    #[cfg(feature = "shared-backend-postgres")]
+    tenant_store: Option<Arc<TenantStore>>,
+}
+
+impl AppState {
+    fn from_config(config: &ApiConfig) -> crate::Result<Self> {
+        #[cfg(feature = "shared-backend-postgres")]
+        if let Some(ref url) = config.database_url {
+            let ledger = PostgresEventLedger::connect(url, "provisioning")?;
+            let store = TenantStore::connect(url)?;
+            return Ok(Self {
+                backend: Arc::new(ApiBackend::Postgres(Arc::new(ledger))),
+                api_key: None,
+                admin_key: config.admin_key.clone(),
+                tenant_store: Some(Arc::new(store)),
+            });
+        }
+
+        Ok(Self {
+            backend: Arc::new(ApiBackend::Sqlite(Arc::new(config.hivemind_dir.clone()))),
+            api_key: config.api_key.clone(),
+            admin_key: config.admin_key.clone(),
+            #[cfg(feature = "shared-backend-postgres")]
+            tenant_store: None,
+        })
     }
 }
 
@@ -176,19 +282,43 @@ struct ApiRequestCtx {
 }
 
 fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequestCtx> {
-    // Auth check (constant-time comparison)
-    if let Some(expected) = &state.api_key {
-        let provided = headers
-            .get("authorization")
+    let bearer = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+
+    // Postgres multi-tenant mode: resolve token → tenant_id from the DB.
+    #[cfg(feature = "shared-backend-postgres")]
+    if let Some(ref store) = state.tenant_store {
+        if bearer.is_empty() {
+            return Err(ApiError::unauthorized("bearer token required"));
+        }
+        let tenant_id_str = store
+            .resolve_token(bearer)
+            .map_err(|e| ApiError::internal(e.to_string()))?
+            .ok_or_else(|| ApiError::unauthorized("invalid or missing bearer token"))?;
+        let tenant_id = TenantId::new(&tenant_id_str)
+            .map_err(|_| ApiError::internal("invalid tenant_id from token store"))?;
+        let actor_id = headers
+            .get(HEADER_ACTOR)
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .unwrap_or("");
-        if !constant_time_eq(provided, expected) {
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(DEFAULT_ACTOR)
+            .to_owned();
+        return Ok(ApiRequestCtx {
+            tenant_id,
+            actor_id,
+        });
+    }
+
+    // SQLite dev mode: single-key constant-time comparison.
+    if let Some(expected) = &state.api_key {
+        if !constant_time_eq(bearer, expected) {
             return Err(ApiError::unauthorized("invalid or missing bearer token"));
         }
     }
 
-    // Tenant
     let tenant_str = headers
         .get(HEADER_TENANT)
         .and_then(|v| v.to_str().ok())
@@ -196,7 +326,6 @@ fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequestCtx
     let tenant_id = TenantId::new(tenant_str)
         .map_err(|_| ApiError::validation("X-HiveMind-Tenant must not be empty"))?;
 
-    // Actor
     let actor_id = headers
         .get(HEADER_ACTOR)
         .and_then(|v| v.to_str().ok())
@@ -309,14 +438,25 @@ struct RelevantParams {
     status: Option<String>,
 }
 
+#[cfg(feature = "shared-backend-postgres")]
+#[derive(Debug, Deserialize)]
+struct ProvisionTenantRequest {
+    tenant_id: String,
+    display_name: String,
+}
+
 // ---------------------------------------------------------------------------
 // Router — public so tests can call create_router without binding a port
 // ---------------------------------------------------------------------------
 
 pub fn create_router(config: &ApiConfig) -> Router {
-    let state = AppState::from(config);
+    let state = AppState::from_config(config)
+        .expect("failed to initialize API backend; check database URL");
+    build_router(state)
+}
 
-    Router::new()
+fn build_router(state: AppState) -> Router {
+    let router = Router::new()
         .route("/v1/health", get(health_handler))
         // Static routes before dynamic /:id to avoid ambiguity
         .route("/v1/decisions/search", get(search_handler))
@@ -334,16 +474,20 @@ pub fn create_router(config: &ApiConfig) -> Router {
         .route("/v1/evidence", post(post_evidence_handler))
         .route("/v1/hypotheses", post(post_hypotheses_handler))
         // Transcript ingest (capture client → server)
-        .route("/v1/ingest", post(post_ingest_handler))
-        .with_state(state)
+        .route("/v1/ingest", post(post_ingest_handler));
+
+    #[cfg(feature = "shared-backend-postgres")]
+    let router = router.route("/v1/tenants", post(provision_tenant_handler));
+
+    router.with_state(state)
 }
 
 /// Bind to `config.port` and serve until SIGINT/SIGTERM.
 pub async fn serve_http(config: &ApiConfig) -> crate::Result<()> {
-    if config.api_key.is_none() {
+    if config.api_key.is_none() && config.database_url.is_none() {
         warn!(
             target: "hivemind::api",
-            "HIVEMIND_API_KEY not set — running in development mode (no auth)"
+            "HIVEMIND_API_KEY and HIVEMIND_DATABASE_URL not set — running in development mode (no auth)"
         );
     }
 
@@ -352,7 +496,8 @@ pub async fn serve_http(config: &ApiConfig) -> crate::Result<()> {
         crate::events::TenantId::local(),
     );
 
-    let app = create_router(config);
+    let state = AppState::from_config(config)?;
+    let app = build_router(state);
     let addr = format!("0.0.0.0:{}", config.port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -399,23 +544,24 @@ async fn shutdown_signal() {
 // ---------------------------------------------------------------------------
 
 async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let dir = Arc::clone(&state.hivemind_dir);
-    let result =
-        tokio::task::spawn_blocking(move || SqliteEventLedger::open(dir.as_ref()).map(|_| ()))
-            .await;
+    let backend = Arc::clone(&state.backend);
+    let healthy = tokio::task::spawn_blocking(move || backend_healthy(&backend)).await;
 
-    match result {
-        Ok(Ok(())) => (StatusCode::OK, Json(serde_json::json!({ "status": "ok" }))).into_response(),
-        Ok(Err(e)) => (
+    match healthy {
+        Ok(true) => (StatusCode::OK, Json(serde_json::json!({ "status": "ok" }))).into_response(),
+        _ => (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({ "status": "error", "message": e.to_string() })),
+            Json(serde_json::json!({ "status": "error" })),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({ "status": "error", "message": e.to_string() })),
-        )
-            .into_response(),
+    }
+}
+
+fn backend_healthy(backend: &ApiBackend) -> bool {
+    match backend {
+        ApiBackend::Sqlite(dir) => SqliteEventLedger::open(dir.as_ref()).is_ok(),
+        #[cfg(feature = "shared-backend-postgres")]
+        ApiBackend::Postgres(ledger) => ledger.pool().get().is_ok(),
     }
 }
 
@@ -433,15 +579,15 @@ async fn post_decisions_handler(
         Err(e) => return ApiError::validation(e.to_string()).into_response(),
     };
 
-    let dir = Arc::clone(&state.hivemind_dir);
+    let backend = Arc::clone(&state.backend);
     let result =
-        tokio::task::spawn_blocking(move || capture_decision_blocking(&dir, &ctx, req)).await;
+        tokio::task::spawn_blocking(move || capture_decision_blocking(&backend, &ctx, req)).await;
 
     unpack_blocking(result)
 }
 
 fn capture_decision_blocking(
-    hivemind_dir: &PathBuf,
+    backend: &ApiBackend,
     ctx: &ApiRequestCtx,
     req: CaptureDecisionRequest,
 ) -> ApiResult<serde_json::Value> {
@@ -458,8 +604,7 @@ fn capture_decision_blocking(
         return Err(ApiError::validation("options must not be empty"));
     }
 
-    let ledger =
-        SqliteEventLedger::open(hivemind_dir).map_err(|e| ApiError::internal(e.to_string()))?;
+    let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
     let commands = Commands::new_with_context(
         &ledger,
         CommandContext::new(
@@ -532,13 +677,12 @@ async fn post_evidence_handler(
         Err(e) => return ApiError::validation(e.to_string()).into_response(),
     };
 
-    let dir = Arc::clone(&state.hivemind_dir);
+    let backend = Arc::clone(&state.backend);
     let result = tokio::task::spawn_blocking(move || {
         if req.content.trim().is_empty() {
             return Err(ApiError::validation("content must not be empty"));
         }
-        let ledger =
-            SqliteEventLedger::open(dir.as_ref()).map_err(|e| ApiError::internal(e.to_string()))?;
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
         let commands = Commands::new_with_context(
             &ledger,
             CommandContext::new(
@@ -570,13 +714,12 @@ async fn post_hypotheses_handler(
         Err(e) => return ApiError::validation(e.to_string()).into_response(),
     };
 
-    let dir = Arc::clone(&state.hivemind_dir);
+    let backend = Arc::clone(&state.backend);
     let result = tokio::task::spawn_blocking(move || {
         if req.statement.trim().is_empty() {
             return Err(ApiError::validation("statement must not be empty"));
         }
-        let ledger =
-            SqliteEventLedger::open(dir.as_ref()).map_err(|e| ApiError::internal(e.to_string()))?;
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
         let commands = Commands::new_with_context(
             &ledger,
             CommandContext::new(
@@ -609,13 +752,12 @@ async fn disagree_handler(
         Err(e) => return ApiError::validation(e.to_string()).into_response(),
     };
 
-    let dir = Arc::clone(&state.hivemind_dir);
+    let backend = Arc::clone(&state.backend);
     let result = tokio::task::spawn_blocking(move || {
         if req.reason.trim().is_empty() {
             return Err(ApiError::validation("reason must not be empty"));
         }
-        let ledger =
-            SqliteEventLedger::open(dir.as_ref()).map_err(|e| ApiError::internal(e.to_string()))?;
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
         let commands = Commands::new_with_context(
             &ledger,
             CommandContext::new(
@@ -627,7 +769,7 @@ async fn disagree_handler(
             .disagree(&ctx.actor_id, &decision_id, &req.reason)
             .map_err(map_err)?;
 
-        let graph = open_graph(dir.as_ref(), &ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
         let decision_status = derive_decision_status(&graph, &decision_id).map_err(map_err)?;
 
         Ok(serde_json::json!({
@@ -656,7 +798,7 @@ async fn supersede_handler(
         Err(e) => return ApiError::validation(e.to_string()).into_response(),
     };
 
-    let dir = Arc::clone(&state.hivemind_dir);
+    let backend = Arc::clone(&state.backend);
     let result = tokio::task::spawn_blocking(move || {
         if req.title.trim().is_empty() {
             return Err(ApiError::validation("title must not be empty"));
@@ -664,8 +806,7 @@ async fn supersede_handler(
         if req.rationale.trim().is_empty() {
             return Err(ApiError::validation("rationale must not be empty"));
         }
-        let ledger =
-            SqliteEventLedger::open(dir.as_ref()).map_err(|e| ApiError::internal(e.to_string()))?;
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
         let commands = Commands::new_with_context(
             &ledger,
             CommandContext::new(
@@ -687,7 +828,7 @@ async fn supersede_handler(
             )
             .map_err(map_err)?;
 
-        let graph = open_graph(dir.as_ref(), &ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
         let old_status = derive_decision_status(&graph, &old_decision_id).map_err(map_err)?;
         let new_status =
             derive_decision_status(&graph, &outcome.new_decision_id).map_err(map_err)?;
@@ -717,9 +858,10 @@ async fn get_decision_handler(
         Err(e) => return e.into_response(),
     };
 
-    let dir = Arc::clone(&state.hivemind_dir);
+    let backend = Arc::clone(&state.backend);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
-        let graph = open_graph(&dir, &ctx.tenant_id)?;
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
         let response = get_decision(&graph, &decision_id).map_err(map_err)?;
         Ok(response)
     })
@@ -742,9 +884,10 @@ async fn supersession_chain_handler(
         Err(e) => return e.into_response(),
     };
 
-    let dir = Arc::clone(&state.hivemind_dir);
+    let backend = Arc::clone(&state.backend);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
-        let graph = open_graph(&dir, &ctx.tenant_id)?;
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
         let response = get_supersession_chain(&graph, &decision_id).map_err(map_err)?;
         Ok(response)
     })
@@ -767,7 +910,7 @@ async fn search_handler(
         Err(e) => return e.into_response(),
     };
 
-    let dir = Arc::clone(&state.hivemind_dir);
+    let backend = Arc::clone(&state.backend);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let statuses = match params.status.as_deref() {
             None => Vec::new(),
@@ -817,15 +960,25 @@ async fn search_handler(
             cursor: params.cursor,
         };
 
-        let ledger =
-            SqliteEventLedger::open(dir.as_ref()).map_err(|e| ApiError::internal(e.to_string()))?;
-        let graph = MemoryGraph::default();
-        rebuild_graph_for_tenant(&ledger, &ctx.tenant_id, &graph)
-            .map_err(|e| ApiError::internal(e.to_string()))?;
-        let query_ctx = QueryContext::new(ctx.tenant_id);
-        let response = search_decisions_fts_with_context(&query_ctx, &ledger, &graph, &request)
-            .map_err(map_err)?;
-        Ok(response)
+        match backend.as_ref() {
+            ApiBackend::Sqlite(dir) => {
+                let ledger = SqliteEventLedger::open(dir.as_ref())
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+                let graph = MemoryGraph::default();
+                rebuild_graph_for_tenant(&ledger, &ctx.tenant_id, &graph)
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+                let query_ctx = QueryContext::new(ctx.tenant_id);
+                let response =
+                    search_decisions_fts_with_context(&query_ctx, &ledger, &graph, &request)
+                        .map_err(map_err)?;
+                Ok(response)
+            }
+            #[cfg(feature = "shared-backend-postgres")]
+            ApiBackend::Postgres(_) => Err(ApiError::validation(
+                "full-text search is not available in shared-backend mode; \
+                 use GET /v1/decisions/relevant for topic-based queries",
+            )),
+        }
     })
     .await;
 
@@ -846,10 +999,11 @@ async fn relevant_handler(
         Err(e) => return e.into_response(),
     };
 
-    let dir = Arc::clone(&state.hivemind_dir);
+    let backend = Arc::clone(&state.backend);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let status_filter = params.status.as_deref().map(parse_status).transpose()?;
-        let graph = open_graph(&dir, &ctx.tenant_id)?;
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
         let response =
             get_relevant_decisions(&graph, &params.topic, status_filter).map_err(map_err)?;
         Ok(response)
@@ -877,8 +1031,9 @@ async fn post_ingest_handler(
         Err(e) => return ApiError::validation(e.to_string()).into_response(),
     };
 
-    let dir = Arc::clone(&state.hivemind_dir);
-    let result = tokio::task::spawn_blocking(move || ingest_batch_blocking(&dir, &ctx, req)).await;
+    let backend = Arc::clone(&state.backend);
+    let result =
+        tokio::task::spawn_blocking(move || ingest_batch_blocking(&backend, &ctx, req)).await;
 
     match result {
         Ok(Ok(body)) => (StatusCode::ACCEPTED, Json(body)).into_response(),
@@ -890,7 +1045,7 @@ async fn post_ingest_handler(
 const MAX_INGEST_TURNS: usize = 20;
 
 fn ingest_batch_blocking(
-    hivemind_dir: &PathBuf,
+    backend: &ApiBackend,
     ctx: &ApiRequestCtx,
     req: IngestBatchRequest,
 ) -> ApiResult<serde_json::Value> {
@@ -920,8 +1075,7 @@ fn ingest_batch_blocking(
         })
         .collect();
 
-    let ledger =
-        SqliteEventLedger::open(hivemind_dir).map_err(|e| ApiError::internal(e.to_string()))?;
+    let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
     let commands = Commands::new_with_context(
         &ledger,
         CommandContext::new(
@@ -947,15 +1101,68 @@ fn ingest_batch_blocking(
     }))
 }
 
+/// Provision a new tenant and issue its initial bearer token.
+/// Requires the `Authorization: Bearer <HIVEMIND_ADMIN_KEY>` header.
+/// Only available when the `shared-backend-postgres` feature is enabled.
+#[cfg(feature = "shared-backend-postgres")]
+async fn provision_tenant_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    payload: std::result::Result<Json<ProvisionTenantRequest>, JsonRejection>,
+) -> Response {
+    // Admin key gate (separate from per-tenant bearer tokens).
+    let provided = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    match &state.admin_key {
+        None => {
+            return ApiError::internal("HIVEMIND_ADMIN_KEY not configured").into_response();
+        }
+        Some(expected) => {
+            if !constant_time_eq(provided, expected) {
+                return ApiError::unauthorized("invalid admin key").into_response();
+            }
+        }
+    }
+
+    let req = match payload {
+        Ok(Json(r)) => r,
+        Err(e) => return ApiError::validation(e.to_string()).into_response(),
+    };
+
+    let store = match &state.tenant_store {
+        Some(s) => Arc::clone(s),
+        None => return ApiError::internal("tenant store not initialized").into_response(),
+    };
+
+    let result = tokio::task::spawn_blocking(move || {
+        let provisioned = store
+            .provision_tenant(&req.tenant_id, &req.display_name)
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        Ok::<_, ApiError>(serde_json::json!({
+            "tenant_id": provisioned.tenant_id,
+            "token_id": provisioned.token_id,
+            "token_secret": provisioned.token_secret,
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(body)) => (StatusCode::CREATED, Json(body)).into_response(),
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => ApiError::internal(e.to_string()).into_response(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers shared across blocking closures
 // ---------------------------------------------------------------------------
 
-fn open_graph(hivemind_dir: &PathBuf, tenant_id: &TenantId) -> ApiResult<MemoryGraph> {
-    let ledger =
-        SqliteEventLedger::open(hivemind_dir).map_err(|e| ApiError::internal(e.to_string()))?;
+fn open_graph_from_ledger(ledger: &ApiLedger, tenant_id: &TenantId) -> ApiResult<MemoryGraph> {
     let graph = MemoryGraph::default();
-    rebuild_graph_for_tenant(&ledger, tenant_id, &graph)
+    rebuild_graph_for_tenant(ledger, tenant_id, &graph)
         .map_err(|e| ApiError::internal(e.to_string()))?;
     Ok(graph)
 }

@@ -12,7 +12,7 @@ use crate::Result;
 
 pub use memory::InMemoryEventLedger;
 #[cfg(feature = "shared-backend-postgres")]
-pub use postgres::PostgresEventLedger;
+pub use postgres::{PostgresEventLedger, TenantStore};
 pub use sqlite::SqliteEventLedger;
 
 pub trait EventLedger {
