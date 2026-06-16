@@ -99,9 +99,9 @@ fn capture_schema() -> serde_json::Value {
                                 { "type": "null" }
                             ]
                         },
-                        "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                        "extraction_confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
                     },
-                    "required": ["kind", "title", "rationale", "topic_keys", "evidence_ids", "options", "chosen_option", "confidence"],
+                    "required": ["kind", "title", "rationale", "topic_keys", "evidence_ids", "options", "chosen_option", "extraction_confidence"],
                     "additionalProperties": false
                 }
             }
@@ -163,7 +163,7 @@ struct CaptureItemRaw {
     evidence_ids: Vec<String>,
     options: Option<Vec<String>>,
     chosen_option: Option<String>,
-    confidence: f64,
+    extraction_confidence: f64,
 }
 
 /// Spawn the background classifier task. Returns immediately; the worker runs
@@ -216,7 +216,7 @@ async fn classify_pending_batches(
                         evidence_ids: r.evidence_ids,
                         options: r.options,
                         chosen_option: r.chosen_option,
-                        confidence: r.confidence,
+                        extraction_confidence: r.extraction_confidence,
                     })
                     .collect();
 

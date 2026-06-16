@@ -539,7 +539,7 @@ async fn classifier_batch_classified_event_round_trips() {
         evidence_ids: vec![],
         options: Some(vec!["tokio".to_owned(), "async-std".to_owned()]),
         chosen_option: Some("tokio".to_owned()),
-        confidence: 0.85,
+        extraction_confidence: 0.85,
     }];
 
     let classified_event_id = commands
@@ -594,5 +594,5 @@ async fn classifier_batch_classified_event_round_trips() {
     assert_eq!(captures_arr.len(), 1);
     assert_eq!(captures_arr[0]["kind"], "decision");
     assert_eq!(captures_arr[0]["title"], "Use tokio for async");
-    assert_eq!(captures_arr[0]["confidence"].as_f64().unwrap(), 0.85);
+    assert_eq!(captures_arr[0]["extraction_confidence"].as_f64().unwrap(), 0.85);
 }
