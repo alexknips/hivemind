@@ -39,3 +39,46 @@ with:
 ```bash
 cargo test --test golden -- --bless
 ```
+
+## Multi-tenant test fixtures
+
+`tests/support/multi_tenant.rs` provides reusable helpers for multi-tenant code paths.
+
+### Helpers
+
+| Symbol | Purpose |
+|---|---|
+| `TenantDataset` | Named tenant with its generated IDs (decisions, evidence, hypothesis) |
+| `seed_tenant(ledger, name)` | Seed 10 decisions + evidence + hypothesis for a named tenant on any `EventLedger` |
+| `assert_tenant_isolation(ledger, scope, other)` | Assert events and graph for `scope` contain no data from `other` |
+| `assert_tenant_completeness(ledger, dataset)` | Assert all of a tenant's decisions appear in its event stream |
+| `assert_graph_completeness(ledger, dataset)` | Assert all of a tenant's decisions appear in its rebuilt graph |
+
+### Usage
+
+```rust
+#[path = "support/multi_tenant.rs"]
+mod multi_tenant;
+
+use multi_tenant::{seed_tenant, assert_tenant_isolation, TenantDataset};
+use hivemind::ledger::InMemoryEventLedger;
+
+#[test]
+fn my_multi_tenant_test() -> multi_tenant::TestResult<()> {
+    let ledger = InMemoryEventLedger::new();
+    let alpha = seed_tenant(&ledger, "alpha-corp")?;
+    let beta  = seed_tenant(&ledger, "beta-startup")?;
+
+    assert_tenant_isolation(&ledger, &alpha, &beta)?;
+    Ok(())
+}
+```
+
+The helpers work with any `EventLedger` implementation — `InMemoryEventLedger` for unit speed,
+`SqliteEventLedger` for persistence, or `PostgresEventLedger` for the shared backend.
+
+Run the multi-tenant integration suite with:
+
+```bash
+cargo test --locked --test multi_tenant
+```
