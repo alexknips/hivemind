@@ -28,3 +28,7 @@
 
 # Ignore legacy test-generated artifacts
 snapshots/golden/
+
+# MCP gateway build artifacts
+/clients/mcp-gateway/node_modules/
+/clients/mcp-gateway/dist/

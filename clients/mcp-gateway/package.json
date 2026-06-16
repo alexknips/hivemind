@@ -1,0 +1,30 @@
+{
+  "name": "@hivemind/mcp-gateway",
+  "version": "0.1.0",
+  "description": "Thin MCP gateway over the HiveMind HTTP service API (read path only)",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "hivemind-mcp-gateway": "dist/index.js"
+  },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --banner:js='#!/usr/bin/env node'",
+    "dev": "node --import tsx/esm src/index.ts",
+    "test": "node --test --experimental-test-snapshots test/*.test.js",
+    "test:ts": "node --import tsx/esm --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "esbuild": "^0.28.1",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
