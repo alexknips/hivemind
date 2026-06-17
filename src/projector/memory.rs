@@ -219,13 +219,15 @@ impl GraphView for MemoryGraph {
 
         if cypher.contains("RETURN n.id AS") {
             let relation = query_relation(cypher)?;
-            let decision_id = required_param_string(params, "id")?;
+            let from_id = required_param_string(params, "id")?;
             let alias = if cypher.contains("AS option_id") {
                 "option_id"
             } else if cypher.contains("AS evidence_id") {
                 "evidence_id"
             } else if cypher.contains("AS hypothesis_id") {
                 "hypothesis_id"
+            } else if cypher.contains("AS actor_id") {
+                "actor_id"
             } else {
                 return Err(
                     memory_error(format!("unknown neighbor alias in query: {cypher}")).into(),
@@ -234,13 +236,44 @@ impl GraphView for MemoryGraph {
             let mut ids = self
                 .edges_snapshot()?
                 .into_iter()
-                .filter(|edge| edge.relation == relation && edge.from_id == decision_id)
+                .filter(|edge| edge.relation == relation && edge.from_id == from_id)
                 .map(|edge| edge.to_id)
                 .collect::<Vec<_>>();
             ids.sort();
             return Ok(ids
                 .into_iter()
                 .map(|id| GraphRow::from([(alias.to_owned(), GraphValue::String(id))]))
+                .collect());
+        }
+
+        // hypothesis_statement: MATCH (h:`Hypothesis` {id: $id}) RETURN h.statement AS statement LIMIT 1;
+        if cypher.contains("RETURN h.statement AS statement LIMIT 1;") {
+            let hypothesis_id = required_param_string(params, "id")?;
+            let nodes = self.nodes_snapshot()?;
+            if let Some(properties) = nodes.get(&(NodeKind::Hypothesis, hypothesis_id.to_owned())) {
+                return Ok(vec![GraphRow::from([(
+                    "statement".to_owned(),
+                    graph_property_or_default(properties, "statement"),
+                )])]);
+            }
+            return Ok(Vec::new());
+        }
+
+        // hypothesis_evidence_ids: MATCH (e:`Evidence`)-[:`RELATION`]->(h:`Hypothesis` {id: $id})
+        //                          RETURN e.id AS evidence_id ORDER BY e.id;
+        if cypher.contains("RETURN e.id AS evidence_id ORDER BY e.id;") {
+            let relation = query_relation(cypher)?;
+            let hypothesis_id = required_param_string(params, "id")?;
+            let mut ids: Vec<String> = self
+                .edges_snapshot()?
+                .into_iter()
+                .filter(|edge| edge.relation == relation && edge.to_id == hypothesis_id)
+                .map(|edge| edge.from_id)
+                .collect();
+            ids.sort();
+            return Ok(ids
+                .into_iter()
+                .map(|id| GraphRow::from([("evidence_id".to_owned(), GraphValue::String(id))]))
                 .collect());
         }
 

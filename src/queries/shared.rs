@@ -339,3 +339,40 @@ pub(crate) fn query_timer_start() -> Instant {
     // ubs:ignore: Instant measures query latency only; it does not generate secrets.
     Instant::now()
 }
+
+pub(crate) fn hypothesis_statement(graph: &impl GraphView, hypothesis_id: &str) -> Result<String> {
+    let rows = graph.query(
+        "MATCH (h:`Hypothesis` {id: $id}) RETURN h.statement AS statement LIMIT 1;",
+        &GraphParams::from([(
+            "id".to_owned(),
+            GraphValue::String(hypothesis_id.to_owned()),
+        )]),
+    )?;
+    Ok(rows
+        .first()
+        .and_then(|row| optional_string(row, "statement"))
+        .unwrap_or_default())
+}
+
+pub(crate) fn hypothesis_evidence_ids(
+    graph: &impl GraphView,
+    hypothesis_id: &str,
+    relation: RelationKind,
+) -> Result<Vec<String>> {
+    let relation_table = relation.table_name();
+    let cypher = format!(
+        "MATCH (e:`Evidence`)-[:`{relation_table}`]->(h:`Hypothesis` {{id: $id}}) RETURN e.id AS evidence_id ORDER BY e.id;"
+    );
+    let rows = graph.query(
+        &cypher,
+        &GraphParams::from([(
+            "id".to_owned(),
+            GraphValue::String(hypothesis_id.to_owned()),
+        )]),
+    )?;
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(required_string(&row, "evidence_id")?);
+    }
+    Ok(ids)
+}

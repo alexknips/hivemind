@@ -32,19 +32,20 @@ use crate::projector::{
 };
 use crate::queries::{
     derive_decision_status, derive_hypothesis_status, export_read_only_summary,
-    get_active_decision_blockers, get_blocker_notification_candidates, get_decision,
-    get_decision_neighborhood, get_decisions_added_since, get_decisions_changed_since,
-    get_recent_activity, get_recent_decisions, get_relevant_decisions, get_supersession_chain,
-    search_decisions, search_decisions_fts_with_context, ActiveDecisionBlockersRequest,
-    BlockerNotificationCandidates, BlockerNotificationCandidatesRequest, ChangedSinceRequest,
-    DecisionBlockerFilters, DecisionBlockerResults, DecisionSearchResults, DecisionStatus,
-    DecisionView, DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
-    DecisionsAddedSinceResults, DecisionsChangedSinceResults, HistoryChangeKind,
-    HistoryFilterRequest, HypothesisStatus, NeighborhoodRequest, NeighborhoodView, QueryContext,
-    QueryResponse, ReadOnlyExport, ReadOnlyExportFormat as QueryReadOnlyExportFormat,
-    ReadOnlyExportQuery, ReadOnlyExportQueryKind, ReadOnlyExportRequest, RecentActivityRequest,
-    RecentActivityResults, RecentDecisionEntry, RecentDecisionFilterRequest,
-    RecentDecisionsRequest, RecentDecisionsResults, SearchDecisionRequest, SupersessionChain,
+    get_active_decision_blockers, get_blocker_notification_candidates, get_compact_view,
+    get_decision, get_decision_neighborhood, get_decisions_added_since,
+    get_decisions_changed_since, get_recent_activity, get_recent_decisions, get_relevant_decisions,
+    get_supersession_chain, search_decisions, search_decisions_fts_with_context,
+    ActiveDecisionBlockersRequest, BlockerNotificationCandidates,
+    BlockerNotificationCandidatesRequest, ChangedSinceRequest, CompactView, DecisionBlockerFilters,
+    DecisionBlockerResults, DecisionSearchResults, DecisionStatus, DecisionView,
+    DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest, DecisionsAddedSinceResults,
+    DecisionsChangedSinceResults, HistoryChangeKind, HistoryFilterRequest, HypothesisStatus,
+    NeighborhoodRequest, NeighborhoodView, QueryContext, QueryResponse, ReadOnlyExport,
+    ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQuery,
+    ReadOnlyExportQueryKind, ReadOnlyExportRequest, RecentActivityRequest, RecentActivityResults,
+    RecentDecisionEntry, RecentDecisionFilterRequest, RecentDecisionsRequest,
+    RecentDecisionsResults, SearchDecisionRequest, SupersessionChain,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -778,6 +779,13 @@ pub struct QueryDecisionNeighborhoodArgs {
 
     #[arg(long = "relations", value_delimiter = ',')]
     pub relations: Vec<QueryRelationKind>,
+
+    /// Return a compact signal-only view instead of the full neighborhood.
+    /// Resolves the focal decision to its terminal node, elides noise
+    /// (superseded decisions, unchosen options, resolved blockers, notifications),
+    /// and reports what was elided in `elided`. Contested decisions are never compacted.
+    #[arg(long = "compact")]
+    pub compact: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -2653,6 +2661,64 @@ fn render_neighborhood_summary(neighborhood: &NeighborhoodView) -> String {
     output.trim_end().to_owned()
 }
 
+fn render_compact_view_summary(view: &CompactView) -> String {
+    let mut output = String::new();
+    let d = &view.decision;
+    let _ = writeln!(
+        output,
+        "decision\t{}\tstatus={}\ttopics={}",
+        d.id,
+        decision_status_label(d.status),
+        d.topic_keys.join(",")
+    );
+    let _ = writeln!(output, "title\t{}", d.title);
+    let _ = writeln!(output, "rationale\t{}", d.rationale);
+    if let Some(chain) = &view.supersession_chain {
+        let _ = writeln!(
+            output,
+            "supersession_chain\tchain_length={}\toldest={}",
+            chain.chain_length, chain.oldest_id
+        );
+    }
+    if let Some(contest) = &view.contest {
+        let _ = writeln!(
+            output,
+            "contest\taccepted_by={}\trejected_by={}",
+            contest.accepted_by.join(","),
+            contest.rejected_by.join(",")
+        );
+    }
+    for hyp in &view.hypotheses {
+        let _ = writeln!(
+            output,
+            "hypothesis\t{}\tstatus={}\t{}",
+            hyp.id,
+            hypothesis_status_label(hyp.status),
+            hyp.statement
+        );
+    }
+    for blocker in &view.active_blockers {
+        let _ = writeln!(
+            output,
+            "active_blocker\t{}\tpriority={}\tblocked_actor={}\t{}",
+            blocker.id,
+            blocker.priority.as_str(),
+            blocker.blocked_actor_id,
+            blocker.reason
+        );
+    }
+    let elided = &view.elided;
+    let _ = writeln!(
+        output,
+        "elided\tsuperseded={}\tunchosen_options={}\tresolved_blockers={}\tnotifications={}",
+        elided.superseded_decision_count,
+        elided.unchosen_option_count,
+        elided.resolved_blocker_count,
+        elided.notification_count
+    );
+    output.trim_end().to_owned()
+}
+
 fn render_active_blockers_summary(results: &DecisionBlockerResults) -> String {
     if results.items.is_empty() {
         return "No active decision blockers found".to_owned();
@@ -3009,25 +3075,36 @@ fn run_query_with_graph(
             format_query_response(query.summary, &response, render_supersession_summary, None)?
         }
         QueryCommand::GetDecisionNeighborhood(args) => {
-            if args.depth != 1 {
-                return Err(CliError::InvalidInput(format!(
-                    "--depth {} is not supported yet; slice-1 only supports depth=1 with hypothesis SUPPORTS/REFUTES auto-expanded",
-                    args.depth
-                ))
-                .into());
-            }
-            let request = if args.relations.is_empty() {
-                NeighborhoodRequest::all()
+            if args.compact {
+                if !args.relations.is_empty() {
+                    return Err(CliError::InvalidInput(
+                        "--relations cannot be combined with --compact".to_owned(),
+                    )
+                    .into());
+                }
+                let response = get_compact_view(graph, &args.decision_id)?;
+                format_query_response(query.summary, &response, render_compact_view_summary, None)?
             } else {
-                NeighborhoodRequest::with_relations(
-                    args.relations
-                        .iter()
-                        .copied()
-                        .map(QueryRelationKind::as_graph_relation),
-                )
-            };
-            let response = get_decision_neighborhood(graph, &args.decision_id, &request)?;
-            format_query_response(query.summary, &response, render_neighborhood_summary, None)?
+                if args.depth != 1 {
+                    return Err(CliError::InvalidInput(format!(
+                        "--depth {} is not supported yet; slice-1 only supports depth=1 with hypothesis SUPPORTS/REFUTES auto-expanded",
+                        args.depth
+                    ))
+                    .into());
+                }
+                let request = if args.relations.is_empty() {
+                    NeighborhoodRequest::all()
+                } else {
+                    NeighborhoodRequest::with_relations(
+                        args.relations
+                            .iter()
+                            .copied()
+                            .map(QueryRelationKind::as_graph_relation),
+                    )
+                };
+                let response = get_decision_neighborhood(graph, &args.decision_id, &request)?;
+                format_query_response(query.summary, &response, render_neighborhood_summary, None)?
+            }
         }
         QueryCommand::Search(args) => {
             let request = search_decision_request(args)?;

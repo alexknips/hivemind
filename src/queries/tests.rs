@@ -1169,3 +1169,247 @@ fn get_supersession_chain_detects_cycle() {
     let error = get_supersession_chain(&graph, "d1").expect_err("cycle should fail");
     assert!(format!("{error}").contains("cycle detected"));
 }
+
+// ---------------------------------------------------------------------------
+// compact_view tests
+// ---------------------------------------------------------------------------
+
+fn compact_decision_event(
+    seq: u128,
+    decision_id: &str,
+    title: &str,
+    option_ids: &[&str],
+    chosen_option_id: Option<&str>,
+    hypothesis_ids: &[&str],
+    evidence_ids: &[&str],
+) -> Event {
+    test_event(
+        seq,
+        EventType::DecisionProposed,
+        "actor:a",
+        json!({
+            "decision_id": decision_id,
+            "title": title,
+            "rationale": format!("Rationale for {title}"),
+            "topic_keys": ["infra"],
+            "option_ids": option_ids,
+            "chosen_option_id": chosen_option_id,
+            "hypothesis_ids": hypothesis_ids,
+            "evidence_ids": evidence_ids,
+        }),
+        "2026-01-01T00:00:00Z",
+    )
+}
+
+#[test]
+fn compact_view_simple_accepted_decision() -> Result<()> {
+    let graph = graph_from_events([
+        test_event(
+            1,
+            EventType::HypothesisRecorded,
+            "actor:a",
+            json!({ "hypothesis_id": "hyp:1", "statement": "Queue improves p95" }),
+            "2026-01-01T00:00:00Z",
+        ),
+        test_event(
+            2,
+            EventType::EvidenceRecorded,
+            "actor:a",
+            json!({ "evidence_id": "ev:1", "content": "Load test showed 2× improvement" }),
+            "2026-01-01T00:00:01Z",
+        ),
+        compact_decision_event(
+            3,
+            "dec:1",
+            "Use async queue",
+            &["opt:async", "opt:sync"],
+            Some("opt:async"),
+            &["hyp:1"],
+            &["ev:1"],
+        ),
+        test_event(
+            4,
+            EventType::DecisionAccepted,
+            "actor:b",
+            json!({ "decision_id": "dec:1" }),
+            "2026-01-01T00:00:02Z",
+        ),
+        test_event(
+            5,
+            EventType::RelationAdded,
+            "actor:a",
+            json!({ "relation": "SUPPORTS", "from_id": "ev:1", "to_id": "hyp:1" }),
+            "2026-01-01T00:00:03Z",
+        ),
+    ])?;
+
+    let response = get_compact_view(&graph, "dec:1")?;
+    assert_eq!(response.result_count, 1);
+    assert!(!response.truncated);
+
+    let view = &response.data;
+    assert_eq!(view.decision.id, "dec:1");
+    assert_eq!(view.decision.status, DecisionStatus::Accepted);
+    assert_eq!(view.decision.chosen_option_id.as_deref(), Some("opt:async"));
+
+    // No supersession chain for a standalone decision
+    assert!(view.supersession_chain.is_none());
+    // Not contested
+    assert!(view.contest.is_none());
+    // No active blockers
+    assert!(view.active_blockers.is_empty());
+
+    // Hypothesis is supported → supporting_evidence_ids present (mayor Q2)
+    assert_eq!(view.hypotheses.len(), 1);
+    let hyp = &view.hypotheses[0];
+    assert_eq!(hyp.id, "hyp:1");
+    assert_eq!(hyp.status, HypothesisStatus::Supported);
+    assert_eq!(hyp.statement, "Queue improves p95");
+    assert!(hyp.supporting_evidence_ids.is_some());
+    assert_eq!(
+        hyp.supporting_evidence_ids.as_ref().unwrap(),
+        &["ev:1".to_owned()]
+    );
+    assert!(hyp.refuting_evidence_ids.is_none());
+
+    // Unchosen option is elided
+    assert_eq!(view.elided.unchosen_option_count, 1);
+    assert_eq!(view.elided.superseded_decision_count, 0);
+    assert_eq!(view.elided.resolved_blocker_count, 0);
+
+    Ok(())
+}
+
+#[test]
+fn compact_view_resolves_terminal_in_chain() -> Result<()> {
+    let graph = graph_from_events([
+        compact_decision_event(1, "dec:old", "Use sync path", &[], None, &[], &[]),
+        compact_decision_event(2, "dec:new", "Use async queue", &[], None, &[], &[]),
+        test_event(
+            3,
+            EventType::DecisionSuperseded,
+            "actor:a",
+            json!({ "old_decision_id": "dec:old", "new_decision_id": "dec:new" }),
+            "2026-01-01T00:00:01Z",
+        ),
+        test_event(
+            4,
+            EventType::DecisionAccepted,
+            "actor:b",
+            json!({ "decision_id": "dec:new" }),
+            "2026-01-01T00:00:02Z",
+        ),
+    ])?;
+
+    // Querying from the OLD decision resolves to the NEW terminal
+    let response = get_compact_view(&graph, "dec:old")?;
+    let view = &response.data;
+    assert_eq!(view.decision.id, "dec:new");
+    assert_eq!(view.decision.status, DecisionStatus::Accepted);
+
+    // Supersession chain metadata
+    let chain = view.supersession_chain.as_ref().expect("chain present");
+    assert_eq!(chain.chain_length, 2);
+    assert_eq!(chain.oldest_id, "dec:old");
+
+    // Elided: 1 superseded decision
+    assert_eq!(view.elided.superseded_decision_count, 1);
+    assert_eq!(view.elided.chain_decision_ids, vec!["dec:old".to_owned()]);
+
+    Ok(())
+}
+
+#[test]
+fn compact_view_contested_decision_never_compacted() -> Result<()> {
+    let graph = graph_from_events([
+        compact_decision_event(1, "dec:1", "Contested choice", &[], None, &[], &[]),
+        test_event(
+            2,
+            EventType::DecisionAccepted,
+            "actor:b",
+            json!({ "decision_id": "dec:1" }),
+            "2026-01-01T00:00:01Z",
+        ),
+        test_event(
+            3,
+            EventType::DecisionRejected,
+            "actor:c",
+            json!({ "decision_id": "dec:1" }),
+            "2026-01-01T00:00:02Z",
+        ),
+    ])?;
+
+    let response = get_compact_view(&graph, "dec:1")?;
+    let view = &response.data;
+    assert_eq!(view.decision.status, DecisionStatus::Contested);
+
+    // Both sides must be present
+    let contest = view
+        .contest
+        .as_ref()
+        .expect("contest present for contested decision");
+    assert!(contest.accepted_by.contains(&"actor:b".to_owned()));
+    assert!(contest.rejected_by.contains(&"actor:c".to_owned()));
+
+    Ok(())
+}
+
+#[test]
+fn compact_view_refuted_hypothesis_surfaces_refuting_evidence() -> Result<()> {
+    let graph = graph_from_events([
+        test_event(
+            1,
+            EventType::HypothesisRecorded,
+            "actor:a",
+            json!({ "hypothesis_id": "hyp:1", "statement": "Queue is fast" }),
+            "2026-01-01T00:00:00Z",
+        ),
+        test_event(
+            2,
+            EventType::EvidenceRecorded,
+            "actor:a",
+            json!({ "evidence_id": "ev:refute", "content": "Actually queue was slow under load" }),
+            "2026-01-01T00:00:01Z",
+        ),
+        compact_decision_event(3, "dec:1", "Use queue", &[], None, &["hyp:1"], &[]),
+        test_event(
+            4,
+            EventType::RelationAdded,
+            "actor:a",
+            json!({ "relation": "REFUTES", "from_id": "ev:refute", "to_id": "hyp:1" }),
+            "2026-01-01T00:00:02Z",
+        ),
+    ])?;
+
+    let response = get_compact_view(&graph, "dec:1")?;
+    let view = &response.data;
+    let hyp = view
+        .hypotheses
+        .iter()
+        .find(|h| h.id == "hyp:1")
+        .expect("hypothesis present");
+    assert_eq!(hyp.status, HypothesisStatus::Refuted);
+    let refuting = hyp
+        .refuting_evidence_ids
+        .as_ref()
+        .expect("refuting evidence present");
+    assert!(refuting.contains(&"ev:refute".to_owned()));
+    assert!(hyp.supporting_evidence_ids.is_none());
+
+    Ok(())
+}
+
+#[test]
+fn compact_view_rejects_empty_id() {
+    let graph = FixtureGraph::sample();
+    let error = get_compact_view(&graph, "  ").expect_err("empty id rejected");
+    assert!(format!("{error}").contains("decision_id"));
+}
+
+#[test]
+fn compact_view_rejects_missing_decision() {
+    let graph = FixtureGraph::sample();
+    let error =
+        get_compact_view(&graph, "no-such-decision").expect_err("missing decision rejected");
+    assert!(format!("{error}").contains("not found"));
+}
