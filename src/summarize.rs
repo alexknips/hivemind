@@ -317,7 +317,7 @@ mod tests {
 
     fn make_graph<L: crate::ledger::EventLedger>(ledger: &L) -> MemoryGraph {
         let graph = MemoryGraph::default();
-        rebuild_graph_for_tenant(ledger, &TenantId::local(), &graph).unwrap();
+        rebuild_graph_for_tenant(ledger, &TenantId::local(), &graph).unwrap(); // ubs:ignore: test-only; panicking is correct behavior in tests
         graph
     }
 
@@ -333,7 +333,7 @@ mod tests {
         let topic_keys: Vec<String> = topic_keys.iter().map(|s| s.to_string()).collect();
         let option_ids: Vec<String> = option_labels
             .iter()
-            .map(|label| commands.record_option(actor, label, label).unwrap())
+            .map(|label| commands.record_option(actor, label, label).unwrap()) // ubs:ignore: test-only helper; panicking is correct in tests
             .collect();
         let chosen_id = chosen.and_then(|c| {
             option_labels
@@ -352,7 +352,7 @@ mod tests {
                 &[],
                 &[],
             )
-            .unwrap()
+            .unwrap() // ubs:ignore: test-only helper; panicking is correct in tests
     }
 
     #[test]
@@ -373,13 +373,13 @@ mod tests {
             decision_ids: vec![decision_id.clone()],
             mode: SummarizeMode::Single,
         };
-        let response = summarize_decisions(&graph, &request).unwrap();
+        let response = summarize_decisions(&graph, &request).unwrap(); // ubs:ignore: test-only; panicking is correct in tests
         let summary = &response.data.summary;
-        assert!(summary.contains(&decision_id), "must cite decision id");
-        assert!(summary.contains("SQLite"), "must include chosen option");
-        assert!(summary.contains("Simpler ops"), "must include rationale");
-        assert_eq!(response.data.cited_decision_ids, vec![decision_id]);
-        assert_eq!(response.data.unit, SummarizeMode::Single);
+        assert!(summary.contains(&decision_id), "must cite decision id"); // ubs:ignore: test-only assertion
+        assert!(summary.contains("SQLite"), "must include chosen option"); // ubs:ignore: test-only assertion
+        assert!(summary.contains("Simpler ops"), "must include rationale"); // ubs:ignore: test-only assertion
+        assert_eq!(response.data.cited_decision_ids, vec![decision_id]); // ubs:ignore: test-only assertion
+        assert_eq!(response.data.unit, SummarizeMode::Single); // ubs:ignore: test-only assertion
     }
 
     #[test]
@@ -390,7 +390,7 @@ mod tests {
             decision_ids: vec!["nonexistent-decision-id".to_owned()],
             mode: SummarizeMode::Single,
         };
-        assert!(summarize_decisions(&graph, &request).is_err());
+        assert!(summarize_decisions(&graph, &request).is_err()); // ubs:ignore: test-only assertion
     }
 
     #[test]
@@ -420,13 +420,13 @@ mod tests {
             decision_ids: vec![id1.clone(), id2.clone()],
             mode: SummarizeMode::Cluster,
         };
-        let response = summarize_decisions(&graph, &request).unwrap();
+        let response = summarize_decisions(&graph, &request).unwrap(); // ubs:ignore: test-only; panicking is correct in tests
         let summary = &response.data.summary;
-        assert!(summary.contains(&id1));
-        assert!(summary.contains(&id2));
-        assert!(summary.contains("infra"), "shared topic must appear");
-        assert_eq!(response.data.cited_decision_ids, vec![id1, id2]);
-        assert_eq!(response.data.unit, SummarizeMode::Cluster);
+        assert!(summary.contains(&id1)); // ubs:ignore: test-only assertion
+        assert!(summary.contains(&id2)); // ubs:ignore: test-only assertion
+        assert!(summary.contains("infra"), "shared topic must appear"); // ubs:ignore: test-only assertion
+        assert_eq!(response.data.cited_decision_ids, vec![id1, id2]); // ubs:ignore: test-only assertion
+        assert_eq!(response.data.unit, SummarizeMode::Cluster); // ubs:ignore: test-only assertion
     }
 
     #[test]
@@ -454,22 +454,22 @@ mod tests {
                 &[],
                 &[],
             )
-            .unwrap();
+            .unwrap(); // ubs:ignore: test-only; panicking is correct in tests
         let new_id = outcome.new_decision_id;
         let graph = make_graph(&ledger);
         let request = SummarizeRequest {
             decision_ids: vec![old_id.clone()],
             mode: SummarizeMode::Chain,
         };
-        let response = summarize_decisions(&graph, &request).unwrap();
+        let response = summarize_decisions(&graph, &request).unwrap(); // ubs:ignore: test-only; panicking is correct in tests
         let summary = &response.data.summary;
-        assert!(summary.contains(&old_id), "old decision in chain");
-        assert!(summary.contains(&new_id), "new decision in chain");
+        assert!(summary.contains(&old_id), "old decision in chain"); // ubs:ignore: test-only assertion
+        assert!(summary.contains(&new_id), "new decision in chain"); // ubs:ignore: test-only assertion
         assert!(
             summary.contains("Supersession chain"),
-            "chain header present"
+            "chain header present" // ubs:ignore: test-only assertion
         );
-        assert_eq!(response.data.unit, SummarizeMode::Chain);
+        assert_eq!(response.data.unit, SummarizeMode::Chain); // ubs:ignore: test-only assertion
     }
 
     #[test]
@@ -481,7 +481,7 @@ mod tests {
             decision_ids: ids,
             mode: SummarizeMode::Cluster,
         };
-        assert!(summarize_decisions(&graph, &request).is_err());
+        assert!(summarize_decisions(&graph, &request).is_err()); // ubs:ignore: test-only assertion
     }
 
     #[test]
@@ -492,6 +492,6 @@ mod tests {
             decision_ids: vec![],
             mode: SummarizeMode::Single,
         };
-        assert!(summarize_decisions(&graph, &request).is_err());
+        assert!(summarize_decisions(&graph, &request).is_err()); // ubs:ignore: test-only assertion
     }
 }
