@@ -441,6 +441,7 @@ struct SearchParams {
     topic: Option<String>,
     status: Option<String>,
     actor_id: Option<String>,
+    source: Option<String>,
     since: Option<String>,
     until: Option<String>,
     limit: Option<usize>,
@@ -972,9 +973,25 @@ async fn search_handler(
             actor_ids: params
                 .actor_id
                 .as_deref()
-                .map(|a| vec![a.to_owned()])
+                .map(|a| {
+                    a.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
                 .unwrap_or_default(),
-            sources: Vec::new(),
+            sources: params
+                .source
+                .as_deref()
+                .map(|s| {
+                    s.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
             since,
             until,
             limit: params.limit.unwrap_or(25).min(1000),

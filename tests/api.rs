@@ -168,6 +168,90 @@ async fn capture_and_query_decision() {
 }
 
 // ---------------------------------------------------------------------------
+// Search filter coverage: source and comma-separated actor_id
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn search_source_filter_matches_api_source() {
+    let dir = test_ledger_dir();
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            serde_json::json!({
+                "actor_id": "agent:test:src-filter",
+                "title": "Source filter test decision",
+                "rationale": "Verifies source param is wired into search",
+                "topic_keys": ["source-test"],
+                "options": [{"label": "opt"}]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "capture: {body}"); // ubs:ignore
+
+    // source=api must match (HTTP API decisions get source=api)
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req("/v1/decisions/search?q=source+filter&source=api"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "search source=api: {body}"); // ubs:ignore
+    assert!(body["result_count"].as_u64().unwrap() >= 1); // ubs:ignore
+
+    // source=agent must not match
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req("/v1/decisions/search?q=source+filter&source=agent"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "search source=agent: {body}"); // ubs:ignore
+    assert_eq!(body["result_count"].as_u64().unwrap(), 0); // ubs:ignore
+}
+
+#[tokio::test]
+async fn search_actor_id_accepts_comma_separated_list() {
+    let dir = test_ledger_dir();
+
+    // post_json sends X-Hivemind-Actor: agent:test:session-1 — that becomes the stored actor_id
+    let (status, _) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            serde_json::json!({
+                "title": "Actor list filter decision",
+                "rationale": "Verifies comma-separated actor_id is wired",
+                "topic_keys": ["actor-test"],
+                "options": [{"label": "choice"}]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK); // ubs:ignore
+
+    // Matching actor in a comma-separated list must find the decision
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req(
+            "/v1/decisions/search?q=actor+list&actor_id=agent:test:nobody,agent:test:session-1",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "search actor list: {body}"); // ubs:ignore
+    assert!(body["result_count"].as_u64().unwrap() >= 1); // ubs:ignore
+
+    // Non-matching actor must return zero
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req("/v1/decisions/search?q=actor+list&actor_id=agent:test:nobody"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "search no match: {body}"); // ubs:ignore
+    assert_eq!(body["result_count"].as_u64().unwrap(), 0); // ubs:ignore
+}
+
+// ---------------------------------------------------------------------------
 // Capture evidence and hypothesis
 // ---------------------------------------------------------------------------
 
