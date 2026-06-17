@@ -3,6 +3,65 @@
 All notable changes to HiveMind are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.2.0 — 2026-06-17 — M2: Shared multi-tenant backend
+
+HiveMind now runs as a hosted multi-tenant service. A single Postgres-backed
+process serves multiple tenants with cryptographic token auth and row-level
+isolation, reachable over a REST API from CLI, MCP, or any HTTP client.
+
+### Added
+- **Postgres ledger + projection.** `PostgresEventLedger` and
+  `PostgresGraphView` back the write and read layers in Postgres. Schema
+  migrations run at startup. Projection is still rebuildable from the ledger.
+  Enabled via the `shared-backend-postgres` feature flag.
+- **HTTP REST API** (`/v1/`). A third transport over the same internal commands
+  and query functions: `POST /v1/decisions`, `GET /v1/decisions/{id}`,
+  `GET /v1/decisions/search`, `GET /v1/decisions/relevant`,
+  `POST /v1/ingest`, `POST /v1/tenants`, `GET /v1/health`.
+  Bearer token auth is enforced when an API key is configured.
+- **Tenant provisioning + Postgres RLS isolation.** `POST /v1/tenants`
+  creates a tenant and issues a `hm_tk_<64-hex>` bearer token. Token
+  resolution uses a SHA-256 hash stored in `hm_tokens`. Row-level security
+  in Postgres prevents cross-tenant event reads at the database layer.
+  SQLite dev mode provides header-based tenant scoping for local development.
+- **Capture clients: hook + sidecar.** Two autonomous capture surfaces built
+  over a shared `ingest-client` core: a commit-hook shipper and a sidecar
+  daemon. Both carry actor provenance and route to the same `/v1/ingest`
+  endpoint.
+- **Haiku classifier for ingest batches.** `POST /v1/ingest` with the
+  `shared-backend-postgres` feature routes accepted batches through a
+  Claude Haiku call that extracts decision candidates, topic, and confidence
+  from conversation turns. Classifier output is stored per-batch.
+- **MCP read gateway.** A thin MCP server that wraps the HiveMind HTTP API,
+  exposing `search_decisions` and `get_decision` tools to MCP clients
+  (Claude Code, Codex, IDE plugins) without a local SQLite dependency.
+- **Docker deploy.** `Dockerfile` and `docker-compose.yml` for production
+  deployment. `/v1/health` endpoint and Docker healthcheck. Deployment guide
+  in `docs/DEPLOYMENT.md`.
+- **Multi-tenant test fixtures and integration tests.** Dedicated
+  `tests/multi_tenant.rs` suite covering three isolated tenants. HTTP
+  integration tests in `tests/api.rs` covering auth, RLS, ingest,
+  capture+query round-trip, and supersession.
+- **Decision-scoring model locked** (design only; not yet implemented).
+  Layer-3, post-PoC 2-axis scoring design recorded in
+  `docs/DECISION_SCORING.md` with research basis in
+  `docs/DECISION_QUALITY_LITERATURE.md`.
+
+### Architecture docs updated
+- `docs/ARCHITECTURE.md` — updated to reflect M2 transport surface and
+  Postgres state model.
+- `docs/REMOTE_DB.md` — updated to M2 shipped state.
+- `docs/AGENT_DECISION_CAPTURE.md` — updated capture flow for HTTP service.
+- `docs/MCP_SERVICE_SPLIT.md` — documents MCP gateway over HTTP API.
+- `docs/M2_VERIFICATION.md` — e2e verification matrix, all steps passed.
+
+### Deferred to follow-up
+- **uuq9.8**: `hivemind migrate` CLI for local-to-remote ledger migration.
+  Step 5 of M2 verification is explicitly out of scope for this release.
+- **uuq9.19**: Full 2-axis decision scorer (Layer-3, post-PoC). Design is
+  locked and documented; implementation is not authorized until after the
+  hosted MVP.
+
 ## v0.1.0 — 2026-06-15 — M1: Dogfood loop ships
 
 First milestone release. HiveMind — an event-sourced, graph-projected decision
