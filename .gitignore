@@ -32,3 +32,6 @@ snapshots/golden/
 # MCP gateway build artifacts
 /clients/mcp-gateway/node_modules/
 /clients/mcp-gateway/dist/
+
+# br doctor per-run artifacts
+.doctor/
