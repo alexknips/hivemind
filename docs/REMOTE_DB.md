@@ -1,7 +1,9 @@
 # Remote Database Architecture
 
-This document records the accepted short-run recommendation for shared HiveMind
-persistence.
+Status: shipped as of M2. This document records the architecture decision and
+what was implemented. The short-run recommendation below was accepted and the
+core of it has landed: HTTP REST API, Postgres backend with RLS, bearer-auth,
+and multi-tenant provisioning.
 
 The tenant model is defined in [`MULTI_TENANCY.md`](MULTI_TENANCY.md). References
 to `org_id` below are storage-level tenant keys, not a separate identity model.
@@ -70,8 +72,14 @@ The service owns writes, reads, auth, tenancy, and schema migration.
 
 Expose:
 
-- HTTP/JSON commands and queries for UIs and non-coding clients.
-- MCP or stdio wrappers as thin clients over the same service API.
+- HTTP/JSON commands and queries (`/v1/*`) for UIs and non-coding clients.
+  Shipped in `src/api.rs`.
+- MCP or stdio wrappers as thin clients over the same service API. Shipped as
+  `clients/mcp-gateway/` (TypeScript stdio gateway). See
+  [`MCP_SERVICE_SPLIT.md`](MCP_SERVICE_SPLIT.md).
+- Transcript ingest from agents via `POST /v1/ingest`. Shipped capture clients:
+  `capture/hook_ship.py` (Claude Code hook) and `capture/sidecar.py` (poll
+  daemon for hook-less harnesses).
 - CLI remote mode that calls the service instead of opening local files.
 
 Keep private:

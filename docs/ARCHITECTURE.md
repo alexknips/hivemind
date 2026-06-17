@@ -24,11 +24,11 @@ for the active investment direction.
 
 ## Surface Uniformity
 
-All external surfaces — CLI, MCP, future API or client library — are thin
-wrappers over the same internal functions in the `commands` and `queries`
-modules. There is no behavior that exists in one surface but not another. When
-a new operation is added, it is added once in the internal layer and exposed
-identically through every surface.
+All external surfaces — CLI, MCP, HTTP REST API, and any future library
+binding — are thin wrappers over the same internal functions in the `commands`
+and `queries` modules. There is no behavior that exists in one surface but not
+another. When a new operation is added, it is added once in the internal layer
+and exposed identically through every surface.
 
 This commitment prevents surfaces from drifting apart. It also makes the
 internal layer the only place where business invariants are enforced —
@@ -36,10 +36,10 @@ validation, provenance, supersession rules, multi-tenant scoping (see
 [`MULTI_TENANCY.md`](MULTI_TENANCY.md)) — so adding a new transport cannot
 accidentally bypass a rule.
 
-The choice of transport (CLI for humans at terminals, MCP for agents, future
-HTTP/library for embedded use) is independent of what HiveMind does. The
-choice does not change the rules. The principles (`PRINCIPLES.md`) constrain
-what HiveMind does; this section names how surfaces relate to that.
+The choice of transport (CLI for humans at terminals, MCP for agents, HTTP/JSON
+for UIs and embedded clients) is independent of what HiveMind does. The choice
+does not change the rules. The principles (`PRINCIPLES.md`) constrain what
+HiveMind does; this section names how surfaces relate to that.
 
 The `suggest` CLI namespace is the local layer-3 surface. For example,
 `suggest document-candidates` can call an external document extractor or consume
@@ -129,12 +129,19 @@ to change too.
 
 MCP is one transport HiveMind exposes for agents (and for any MCP-aware client).
 It is not the only one. The CLI is equally valid for agents that prefer to
-shell out, future HTTP and library bindings will be valid for embedded use, and
-all of them go through the same internal functions per the *Surface Uniformity*
-commitment above.
+shell out. The HTTP REST API (`/v1/*`) is the shared-service transport for
+multi-tenant deployments, and the TypeScript MCP gateway
+(`clients/mcp-gateway/`) is a thin stdio adapter over that API. All transports
+go through the same internal functions per the *Surface Uniformity* commitment
+above.
 
-This is an architectural decision so future agent integrations don't assume MCP
-is mandatory.
+The `/v1/ingest` endpoint accepts transcript batches from the Python hook
+shipper (`capture/hook_ship.py`) or sidecar daemon (`capture/sidecar.py`); the
+server-side classifier (see [`CAPTURE_CLASSIFIER.md`](CAPTURE_CLASSIFIER.md))
+runs as an optional background worker over those batches.
+
+This is an architectural decision so agent integrations don't assume MCP or
+the CLI is mandatory.
 
 ## Current Storage Layout
 
@@ -189,10 +196,20 @@ These are open architectural questions tracked under
 capabilities*). They are not committed direction; specific beads will narrow
 each one when picked up.
 
-- The shared Postgres service schema, migration path, and rollout.
+Resolved as of M2:
+- The HTTP REST API as the third transport is shipped (`src/api.rs`, `/v1/*`).
+- Multi-tenant Postgres backend with RLS isolation is shipped (bearer-auth
+  `hm_sk_live_…` tokens, `tenant_id`-scoped Postgres RLS, `/v1/tenants`
+  provisioning endpoint).
+- The TypeScript MCP gateway over the service API is shipped
+  (`clients/mcp-gateway/`). See [`MCP_SERVICE_SPLIT.md`](MCP_SERVICE_SPLIT.md).
+- Transcript ingest path + Haiku classifier is shipped (`/v1/ingest`,
+  `src/classifier.rs`, `capture/hook_ship.py`, `capture/sidecar.py`).
+
+Still open:
 - Whether Neo4j, another graph service, or a parity-tested combination becomes
   a later non-canonical `GraphView` projection.
-- Multi-organization identity, auth, and signing.
+- Token signing, rotation, and revocation beyond the initial bearer-token model.
 - Pagination and response continuation beyond the current defensive limits.
 - Compactification, similarity, ranking, and other layer-3 behavior.
 - How to represent concurrent supersessions and richer decision dependencies.

@@ -1,6 +1,8 @@
 # Agent Decision Capture
 
 Status: shipped. Originally landed under bead `hivemind-claude-codex-agent-capture-tco7`.
+Extended in M2 with HTTP API transcript capture (`/v1/ingest`) and a
+server-side classifier. See the *HTTP API Capture* section below.
 
 HiveMind exposes a noninteractive CLI path for Claude, Codex, and similar coding
 agents to record a decision directly into the local ledger:
@@ -144,11 +146,61 @@ The skill is backend agnostic. Use the default local ledger with
 `HIVEMIND_DIR=./hivemind`, or set `HIVEMIND_DIR`/`--hivemind-dir` to a shared
 ledger path. The capture verb and query behavior stay the same.
 
+## HTTP API Capture
+
+Status: shipped in M2 as a second, parallel capture path alongside the
+explicit CLI.
+
+The HiveMind HTTP API exposes `POST /v1/ingest` to accept batches of agent
+transcript turns. Two Python clients ship in `capture/`:
+
+**Hook shipper** (`capture/hook_ship.py`): invoked by Claude Code
+`PostToolUse` and `Stop` hooks. Reads the session JSONL transcript at the
+cursor, ships new turns to `/v1/ingest`, and exits 0. Never blocks or raises
+— hook failures must not affect the agent.
+
+Example `.claude/settings.json` configuration:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": "python3 /path/to/capture/hook_ship.py"}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "python3 /path/to/capture/hook_ship.py"}]}]
+  }
+}
+```
+
+**Sidecar daemon** (`capture/sidecar.py`): polls `~/.claude/projects/` for
+JSONL mtime changes and ships new turns. Intended for hook-less harnesses
+(Codex) and as a durability backup. Run as a background process:
+
+```bash
+python3 capture/sidecar.py &
+```
+
+Both clients configure the server URL and auth token via environment:
+
+```
+HIVEMIND_API_URL    Base URL of the HiveMind server (default: http://localhost:8080)
+HIVEMIND_API_KEY    Bearer token hm_sk_live_... (optional in dev mode)
+HIVEMIND_AGENT_TOOL Override agent_tool field (default: claude)
+```
+
+**Server-side classifier**: the server runs an optional background Layer-3
+worker (`src/classifier.rs`) that reads `ingest.batch_received` events and
+annotates them with `ingest.batch_classified` events via Haiku 4.5. The
+worker exits immediately when `ANTHROPIC_API_KEY` is absent — the rest of
+the system stays correct without it. See
+[`CAPTURE_CLASSIFIER.md`](CAPTURE_CLASSIFIER.md) for the classifier design.
+
 ## Reliability Tradeoffs
 
-Direct CLI/API capture is the critical path because it is explicit, testable,
-and writes to the ledger in one local process. Skills and instructions improve
-discoverability, but they do not guarantee that an agent will call a tool.
-Hooks are supplemental because they can be skipped, disabled, or misinstalled.
-MCP is a good follow-up interface once the service boundary and auth model are
-clear, but the ledger should not require MCP for local capture.
+Direct CLI capture is the explicit, testable, write-once path for named
+decisions. HTTP API ingest (`/v1/ingest`) is the passive background path for
+capturing activity transcripts. Skills and instructions improve discoverability,
+but they do not guarantee that an agent will call a tool. Hooks are supplemental
+because they can be skipped, disabled, or misinstalled. The sidecar daemon is a
+durability backstop for hook-less harnesses.
+
+MCP via the TypeScript gateway (`clients/mcp-gateway/`) is a read path over
+the HTTP API; see [`MCP_SERVICE_SPLIT.md`](MCP_SERVICE_SPLIT.md).
