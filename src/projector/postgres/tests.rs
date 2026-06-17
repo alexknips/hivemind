@@ -11,7 +11,7 @@ use crate::projector::memory::MemoryGraph;
 use crate::projector::{
     project_from_ledger, GraphParams, GraphValue, GraphView, NodeKind, RelationKind,
 };
-use crate::queries::{get_decision, get_supersession_chain, search_decisions, QueryContext};
+use crate::queries::{get_decision, get_supersession_chain, search_decisions};
 use crate::Result;
 
 use super::PostgresGraphView;
@@ -340,13 +340,4 @@ fn fixture_ledger() -> Result<InMemoryEventLedger> {
 
 fn test_error(message: impl Into<String>) -> crate::HivemindError {
     crate::error::ProjectorError::Projection(message.into()).into()
-}
-
-// Tests that check QueryContext-scoped queries are in the non-postgres query
-// test module; the Postgres projection tests verify parity with the memory
-// graph which already exercises those code paths.
-#[allow(dead_code)]
-fn _uses_query_context() {
-    // Silence unused import warning for QueryContext imported above.
-    let _ = QueryContext::local();
 }
