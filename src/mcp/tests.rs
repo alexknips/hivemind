@@ -42,7 +42,7 @@ fn initialize_reports_server_metadata() {
 }
 
 #[test]
-fn tools_list_includes_all_ten_tools() {
+fn tools_list_includes_all_eleven_tools() {
     let dir = unique_dir("list");
     let config = McpConfig::new(&dir).with_session_id("test-session");
     let responses = drive(
@@ -66,6 +66,7 @@ fn tools_list_includes_all_ten_tools() {
         "get_supersession_chain",
         "search_decisions",
         "dump_graph",
+        "summarize_decisions",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}");
     }
@@ -426,4 +427,108 @@ fn unknown_method_returns_minus_32601() {
         &[r#"{"jsonrpc":"2.0","id":1,"method":"bogus/method"}"#],
     );
     assert_eq!(responses[0]["error"]["code"], JSONRPC_METHOD_NOT_FOUND);
+}
+
+#[test]
+fn summarize_single_decision_via_mcp() {
+    let dir = unique_dir("summarize-single");
+    let config = McpConfig::new(&dir).with_session_id("summarize-session");
+
+    // Capture a decision first.
+    let capture_req = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "actor_id": "agent:test:summarize",
+                "title": "Adopt event sourcing",
+                "rationale": "Immutable log enables full audit trail",
+                "topic_keys": ["architecture"],
+                "options": [
+                    { "label": "event-sourcing", "description": "Use append-only event log" },
+                    { "label": "mutable-db", "description": "Use standard CRUD" }
+                ],
+                "chosen_option_label": "event-sourcing"
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[capture_req.as_str()]);
+    let decision_id = responses[0]["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("decision_id")
+        .to_owned();
+
+    // Summarize it.
+    let summarize_req = json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {
+            "name": "summarize_decisions",
+            "arguments": { "decision_ids": [decision_id] }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[summarize_req.as_str()]);
+    let result = &responses[0]["result"];
+    assert!(
+        !result["isError"].as_bool().unwrap_or(true),
+        "should not be error: {:?}",
+        result
+    );
+    let structured = &result["structuredContent"]["data"];
+    let summary = structured["summary"].as_str().expect("summary text");
+    assert!(
+        summary.contains("event sourcing"),
+        "summary must reference decision title: {summary}"
+    );
+    let cited = structured["cited_decision_ids"].as_array().expect("array");
+    assert_eq!(cited.len(), 1);
+    assert_eq!(structured["unit"], "single");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn summarize_missing_decision_returns_error() {
+    let dir = unique_dir("summarize-missing");
+    let config = McpConfig::new(&dir).with_session_id("summarize-missing-session");
+
+    let req = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {
+            "name": "summarize_decisions",
+            "arguments": { "decision_ids": ["nonexistent-id-12345"] }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[req.as_str()]);
+    let result = &responses[0]["result"];
+    assert!(
+        result["isError"].as_bool().unwrap_or(false),
+        "missing decision should surface as tool error: {:?}",
+        result
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn summarize_mode_single_with_multiple_ids_returns_tool_error() {
+    let dir = unique_dir("summarize-mode-err");
+    let config = McpConfig::new(&dir).with_session_id("summarize-mode-err-session");
+
+    let req = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {
+            "name": "summarize_decisions",
+            "arguments": { "decision_ids": ["id-a", "id-b"], "mode": "single" }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[req.as_str()]);
+    let result = &responses[0]["result"];
+    assert!(
+        result["isError"].as_bool().unwrap_or(false),
+        "mode=single with multiple ids should return tool error: {:?}",
+        responses[0]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -11,7 +11,8 @@
 //! Layer discipline:
 //!  * Capture tools delegate to [`crate::commands::Commands`] (layer 1, write).
 //!  * Query tools delegate to [`crate::queries`] (layer 2, read).
-//!  * No layer-3 "smart" behavior happens here — the server is a thin transport.
+//!  * Summarization tools delegate to [`crate::summarize`] (layer 3, swappable).
+//!  * No additional inference happens here — the server is a thin transport.
 
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write};
@@ -33,6 +34,7 @@ use crate::queries::{
     get_supersession_chain, search_decisions_fts_with_context, DecisionStatus, QueryContext,
     SearchDecisionRequest,
 };
+use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -296,6 +298,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "search_decisions" => tool_search_decisions(arguments, config),
         "dump_graph" => tool_dump_graph(arguments, config),
         "hivemind_compact_view" => tool_compact_view(arguments, config),
+        "summarize_decisions" => tool_summarize_decisions(arguments, config),
         other => return Err(RpcError::invalid_params(format!("unknown tool: {other}"))),
     };
 
@@ -481,6 +484,28 @@ fn tool_definitions() -> Vec<Value> {
                 "required": ["decision_id"],
                 "properties": {
                     "decision_id": { "type": "string", "description": "The decision to compact. If mid-chain, the terminal (newest) decision in the supersession chain is used as the focal node." }
+                }
+            }
+        }),
+        json!({
+            "name": "summarize_decisions",
+            "description": "Layer-3: produce a concise text summary of one or more decisions. All content is sourced from decision record fields — no invented content. Every decision that contributed to the summary is listed in cited_decision_ids. Modes: single (one decision), cluster (multi-decision synthesis), chain (follows the supersession chain from the given decision_id).",
+            "inputSchema": {
+                "type": "object",
+                "required": ["decision_ids"],
+                "properties": {
+                    "decision_ids": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                        "maxItems": 10,
+                        "description": "IDs of decisions to summarize (1–10)."
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["single", "cluster", "chain"],
+                        "description": "single = one decision digest; cluster = multi-decision synthesis; chain = supersession chain evolution. Defaults to single when one ID is given, cluster when multiple."
+                    }
                 }
             }
         }),
@@ -755,6 +780,44 @@ fn tool_search_decisions(args: Value, config: &McpConfig) -> std::result::Result
     rebuild_graph_for_tenant(&ledger, &config.tenant_id, &graph)?;
     let response =
         search_decisions_fts_with_context(&config.query_context(), &ledger, &graph, &request)?;
+    Ok(serde_json::to_value(QueryEnvelope::from(response))?)
+}
+
+fn tool_summarize_decisions(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let decision_ids = require_string_array(&args, "decision_ids")?;
+    if decision_ids.is_empty() {
+        return Err(RpcError::invalid_params("decision_ids must not be empty"));
+    }
+    let mode_str = optional_string(&args, "mode")?;
+    let mode = match mode_str.as_deref() {
+        None if decision_ids.len() == 1 => SummarizeMode::Single,
+        None => SummarizeMode::Cluster,
+        Some("single") if decision_ids.len() != 1 => {
+            return Err(RpcError::invalid_params(
+                "mode=single requires exactly one decision_id",
+            ))
+        }
+        Some("single") => SummarizeMode::Single,
+        Some("cluster") => SummarizeMode::Cluster,
+        Some("chain") if decision_ids.len() != 1 => {
+            return Err(RpcError::invalid_params(
+                "mode=chain requires exactly one decision_id",
+            ))
+        }
+        Some("chain") => SummarizeMode::Chain,
+        Some(other) => {
+            return Err(RpcError::invalid_params(format!(
+                "unknown mode `{other}`; must be single, cluster, or chain"
+            )))
+        }
+    };
+    let graph = open_memory_graph(config)?;
+    let request = SummarizeRequest { decision_ids, mode };
+    let response = summarize_decisions(&graph, &request).map_err(RpcError::from)?;
     Ok(serde_json::to_value(QueryEnvelope::from(response))?)
 }
 
