@@ -63,11 +63,32 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
+fn post_json_as_tenant(uri: &str, body: Value, tenant: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("x-hivemind-actor", "agent:test:session-1")
+        .header("x-hivemind-tenant", tenant)
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap()
+}
+
 fn get_req(uri: &str) -> Request<Body> {
     Request::builder()
         .method("GET")
         .uri(uri)
         .header("x-hivemind-actor", "agent:test:session-1")
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn get_req_as_tenant(uri: &str, tenant: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("x-hivemind-actor", "agent:test:session-1")
+        .header("x-hivemind-tenant", tenant)
         .body(Body::empty())
         .unwrap()
 }
@@ -333,6 +354,24 @@ async fn auth_accepts_correct_token() {
     assert_eq!(status, StatusCode::OK); // ubs:ignore
 }
 
+#[tokio::test]
+async fn auth_rejects_wrong_token() {
+    let dir = test_ledger_dir();
+    let app = app_with_key(dir, "secret-key-42");
+
+    // Non-empty bearer token that doesn't match the configured key.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/decisions/search?q=test")
+        .header("authorization", "Bearer not-the-right-key")
+        .body(Body::empty())
+        .unwrap();
+
+    let (status, body) = call(app, req).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "unauthorized"); // ubs:ignore
+}
+
 // ---------------------------------------------------------------------------
 // Validation errors
 // ---------------------------------------------------------------------------
@@ -496,6 +535,62 @@ async fn ingest_batch_enforces_auth() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}"); // ubs:ignore
+}
+
+// ---------------------------------------------------------------------------
+// RLS cross-tenant isolation via HTTP
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn rls_cross_tenant_decision_not_visible() {
+    // In SQLite dev mode the X-HiveMind-Tenant header controls which tenant's
+    // ledger is opened. A decision captured as tenant "alpha" must not appear
+    // in a GET /v1/decisions/{id} request scoped to tenant "beta".
+    let dir = test_ledger_dir();
+
+    // Capture a decision as tenant "alpha".
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json_as_tenant(
+            "/v1/decisions",
+            serde_json::json!({
+                "title": "Alpha-only architecture decision",
+                "rationale": "Belongs to alpha only — must not cross tenant boundary",
+                "topic_keys": ["isolation"],
+                "options": [{ "label": "opt-a" }]
+            }),
+            "alpha",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "alpha capture: {body}"); // ubs:ignore
+    let decision_id = body["decision_id"].as_str().unwrap().to_owned();
+
+    // Tenant "alpha" can retrieve its own decision.
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req_as_tenant(&format!("/v1/decisions/{decision_id}"), "alpha"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "alpha get own decision: {body}"); // ubs:ignore
+    assert!(
+        // ubs:ignore
+        body["data"].is_object(),
+        "alpha must see its own decision, got: {body}"
+    );
+
+    // Tenant "beta" cannot see alpha's decision — data must be null.
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req_as_tenant(&format!("/v1/decisions/{decision_id}"), "beta"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "beta get alpha's decision: {body}"); // ubs:ignore
+    assert!(
+        // ubs:ignore
+        body["data"].is_null(),
+        "beta must not see alpha's decision; got non-null data: {body}"
+    );
 }
 
 // ---------------------------------------------------------------------------

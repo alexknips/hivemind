@@ -216,6 +216,40 @@ class TestCursorFlow(unittest.TestCase):
         finally:
             core_module._post = orig_post
 
+    def test_batch_truncates_to_last_max_batch_turns(self):
+        """When more new turns exist than _MAX_BATCH_TURNS, ship only the last N."""
+        import core as core_module
+        posted = []
+        orig_post = core_module._post
+        core_module._post = lambda url, key, env: posted.append(env)
+
+        try:
+            # Write some existing content, then init cursor to EOF.
+            self._write_jsonl(
+                self.jsonl_path,
+                [{"type": "user", "uuid": "old0", "message": {"role": "user", "content": [{"type": "text", "text": "old"}]}}],
+            )
+            ship(self.session_id, self.jsonl_path, "http://localhost:8080", "")
+            self.assertEqual(posted, [])
+
+            # Append 5 new turns (exceeds _MAX_BATCH_TURNS=4).
+            new_turns = [
+                {"type": "user", "uuid": f"new{i}", "message": {"role": "user", "content": [{"type": "text", "text": f"new turn {i}"}]}}
+                for i in range(5)
+            ]
+            self._append_jsonl(self.jsonl_path, new_turns)
+
+            # Second run: must ship exactly _MAX_BATCH_TURNS=4, the last four.
+            ship(self.session_id, self.jsonl_path, "http://localhost:8080", "")
+            self.assertEqual(len(posted), 1)
+            batch_turns = posted[0]["turns"]
+            self.assertEqual(len(batch_turns), 4, f"expected 4 turns (max batch), got {len(batch_turns)}")
+            turn_ids = [t["turn_id"] for t in batch_turns]
+            self.assertNotIn("new0", turn_ids, "oldest turn must be dropped")
+            self.assertIn("new4", turn_ids, "newest turn must be included")
+        finally:
+            core_module._post = orig_post
+
     def test_cursor_advances_even_when_post_fails(self):
         self._write_jsonl(
             self.jsonl_path,
