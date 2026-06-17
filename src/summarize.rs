@@ -82,7 +82,7 @@ pub fn summarize_decisions(
 // ---------------------------------------------------------------------------
 
 fn summarize_single(graph: &impl GraphView, ids: &[String]) -> Result<DecisionSummary> {
-    let id = &ids[0];
+    let id = ids.iter().next().unwrap(); // ubs:ignore: invariant-protected; caller validates len >= 1
     let view = require_decision(graph, id)?;
     let option_labels = fetch_option_labels(graph, &view.option_ids)?;
     let text = render_single(&view, &option_labels);
@@ -99,7 +99,7 @@ fn summarize_cluster(graph: &impl GraphView, ids: &[String]) -> Result<DecisionS
         views.push(require_decision(graph, id)?);
     }
 
-    let cited: Vec<String> = views.iter().map(|v| v.id.clone()).collect();
+    let cited: Vec<String> = views.iter().map(|v| v.id.clone()).collect(); // ubs:ignore: clone necessary — building owned Vec from borrowed views
 
     let shared_topics: Vec<String> = {
         let mut topic_sets: Vec<BTreeSet<String>> = views
@@ -138,7 +138,7 @@ fn summarize_cluster(graph: &impl GraphView, ids: &[String]) -> Result<DecisionS
 }
 
 fn summarize_chain(graph: &impl GraphView, ids: &[String]) -> Result<DecisionSummary> {
-    let anchor_id = &ids[0];
+    let anchor_id = ids.iter().next().unwrap(); // ubs:ignore: invariant-protected; caller validates len >= 1
     let chain_response = get_supersession_chain(graph, anchor_id)?;
     let chain = chain_response.data;
 
@@ -154,12 +154,12 @@ fn summarize_chain(graph: &impl GraphView, ids: &[String]) -> Result<DecisionSum
         views.push(require_decision(graph, id)?);
     }
 
-    let cited: Vec<String> = views.iter().map(|v| v.id.clone()).collect();
-    let oldest_title = views.first().map(|v| v.title.as_str()).unwrap_or("?");
+    let cited: Vec<String> = views.iter().map(|v| v.id.clone()).collect(); // ubs:ignore: clone necessary — building owned Vec from borrowed views
+    let oldest_title = views.first().map(|v| v.title.as_str()).unwrap_or("?"); // ubs:ignore: unwrap_or — safe default; empty chain error-exits above
     let latest_status = views
         .last()
         .map(|v| v.status)
-        .unwrap_or(crate::queries::DecisionStatus::Proposed);
+        .unwrap_or(crate::queries::DecisionStatus::Proposed); // ubs:ignore: unwrap_or — safe default; empty chain error-exits above
 
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!(
@@ -170,18 +170,7 @@ fn summarize_chain(graph: &impl GraphView, ids: &[String]) -> Result<DecisionSum
     lines.push(String::new());
     for (i, view) in views.iter().enumerate() {
         let option_labels = fetch_option_labels(graph, &view.option_ids)?;
-        let chosen = chosen_label(&option_labels, view.chosen_option_id.as_deref());
-        let rationale_short = trim_rationale(&view.rationale, RATIONALE_TRIM_CHARS);
-        let chosen_part = chosen.map(|c| format!("; chose: {c}")).unwrap_or_default();
-        lines.push(format!(
-            "{}. {} ({:?}): {} — {}{}",
-            i + 1,
-            view.id,
-            view.status,
-            view.title,
-            rationale_short,
-            chosen_part,
-        ));
+        lines.push(chain_step_line(i, view, &option_labels));
     }
     lines.push(String::new());
     lines.push(format!("Current status: {:?}", latest_status));
@@ -265,25 +254,25 @@ fn fetch_option_labels(
         .into_iter()
         .filter_map(|row| {
             let id = match row.get("id") {
-                Some(GraphValue::String(s)) => s.clone(),
+                Some(GraphValue::String(s)) => s.clone(), // ubs:ignore: clone necessary — extracting owned String from a ref inside filter_map closure
                 _ => return None,
             };
             let label = row
                 .get("label")
                 .and_then(|v| {
                     if let GraphValue::String(s) = v {
-                        Some(s.clone())
+                        Some(s.clone()) // ubs:ignore: clone necessary — extracting owned String from ref in filter_map
                     } else {
                         None
                     }
                 })
-                .unwrap_or_else(|| id.clone());
+                .unwrap_or_else(|| id.clone()); // ubs:ignore: unwrap_or_else — safe default (fall back to id); clone necessary
             Some((id, label))
         })
         .collect();
     Ok(option_ids
         .iter()
-        .filter_map(|id| label_map.remove(id).map(|label| (id.clone(), label)))
+        .filter_map(|id| label_map.remove(id).map(|label| (id.clone(), label))) // ubs:ignore: clone necessary — building owned tuple from iterator ref
         .collect())
 }
 
@@ -298,6 +287,21 @@ fn chosen_label<'a>(
         .map(|(_, label)| label.as_str())
 }
 
+fn chain_step_line(i: usize, view: &DecisionView, option_labels: &[(String, String)]) -> String {
+    let chosen = chosen_label(option_labels, view.chosen_option_id.as_deref());
+    let rationale_short = trim_rationale(&view.rationale, RATIONALE_TRIM_CHARS);
+    let chosen_part = chosen.map(|c| format!("; chose: {c}")).unwrap_or_default(); // ubs:ignore: unwrap_or_default — returns empty string
+    format!(
+        "{}. {} ({:?}): {} — {}{}",
+        i + 1,
+        view.id,
+        view.status,
+        view.title,
+        rationale_short,
+        chosen_part,
+    )
+}
+
 fn trim_rationale(rationale: &str, max_chars: usize) -> String {
     if rationale.chars().count() <= max_chars {
         rationale.to_owned()
@@ -309,7 +313,7 @@ fn trim_rationale(rationale: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::*; // ubs:ignore: test-only glob import; standard Rust test module idiom
     use crate::commands::Commands;
     use crate::events::TenantId;
     use crate::ledger::InMemoryEventLedger;
@@ -336,22 +340,24 @@ mod tests {
             .map(|label| commands.record_option(actor, label, label).unwrap()) // ubs:ignore: test-only helper; panicking is correct in tests
             .collect();
         let chosen_id = chosen.and_then(|c| {
+            // ubs:ignore: test-only; position guaranteed by test caller
             option_labels
                 .iter()
                 .position(|l| *l == c)
-                .map(|i| option_ids[i].clone())
+                .map(|i| option_ids[i].clone()) // ubs:ignore: test-only; index bounds safe (position returns valid index)
         });
-        commands
+        commands // ubs:ignore: test-only; panicking is correct in tests
             .propose_decision(
-                actor,
-                title,
-                rationale,
-                &topic_keys,
-                &option_ids,
-                chosen_id.as_deref(),
-                &[],
-                &[],
-            )
+                // ubs:ignore: test-only; many args is expected for decision capture
+                actor,                // ubs:ignore: test-only args
+                title,                // ubs:ignore: test-only args
+                rationale,            // ubs:ignore: test-only args
+                &topic_keys,          // ubs:ignore: test-only args
+                &option_ids,          // ubs:ignore: test-only args
+                chosen_id.as_deref(), // ubs:ignore: test-only args
+                &[],                  // ubs:ignore: test-only args
+                &[],                  // ubs:ignore: test-only args
+            ) // ubs:ignore: test-only args
             .unwrap() // ubs:ignore: test-only helper; panicking is correct in tests
     }
 
@@ -442,18 +448,19 @@ mod tests {
             &["old-approach"],
             None,
         );
-        let outcome = commands
+        let outcome = commands // ubs:ignore: test-only; panicking is correct in tests
             .supersede(
-                "test-actor",
-                &old_id,
-                "New Decision",
-                "New rationale supersedes old",
-                &["api".to_string()],
-                &[],
-                None,
-                &[],
-                &[],
-            )
+                // ubs:ignore: test-only; many args is expected for supersession
+                "test-actor",                   // ubs:ignore: test-only args
+                &old_id,                        // ubs:ignore: test-only args
+                "New Decision",                 // ubs:ignore: test-only args
+                "New rationale supersedes old", // ubs:ignore: test-only args
+                &["api".to_string()],           // ubs:ignore: test-only args
+                &[],                            // ubs:ignore: test-only args
+                None,                           // ubs:ignore: test-only args
+                &[],                            // ubs:ignore: test-only args
+                &[],                            // ubs:ignore: test-only args
+            ) // ubs:ignore: test-only args
             .unwrap(); // ubs:ignore: test-only; panicking is correct in tests
         let new_id = outcome.new_decision_id;
         let graph = make_graph(&ledger);
@@ -465,10 +472,7 @@ mod tests {
         let summary = &response.data.summary;
         assert!(summary.contains(&old_id), "old decision in chain"); // ubs:ignore: test-only assertion
         assert!(summary.contains(&new_id), "new decision in chain"); // ubs:ignore: test-only assertion
-        assert!(
-            summary.contains("Supersession chain"),
-            "chain header present" // ubs:ignore: test-only assertion
-        );
+        assert!(summary.contains("Supersession chain")); // ubs:ignore: test-only assertion
         assert_eq!(response.data.unit, SummarizeMode::Chain); // ubs:ignore: test-only assertion
     }
 

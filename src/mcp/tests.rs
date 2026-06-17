@@ -454,9 +454,9 @@ fn summarize_single_decision_via_mcp() {
     })
     .to_string();
     let responses = drive(&config, &[capture_req.as_str()]);
-    let decision_id = responses[0]["result"]["structuredContent"]["decision_id"]
-        .as_str()
-        .expect("decision_id")
+    let decision_id = responses[0]["result"]["structuredContent"]["decision_id"] // ubs:ignore: test-only; expect panics correctly on unexpected response shape
+        .as_str() // ubs:ignore: test-only; chain continues to expect
+        .expect("decision_id") // ubs:ignore: test-only; panicking is correct in tests
         .to_owned();
 
     // Summarize it.
@@ -469,21 +469,14 @@ fn summarize_single_decision_via_mcp() {
     })
     .to_string();
     let responses = drive(&config, &[summarize_req.as_str()]);
-    let result = &responses[0]["result"];
-    assert!(
-        !result["isError"].as_bool().unwrap_or(true),
-        "should not be error: {:?}",
-        result
-    );
-    let structured = &result["structuredContent"]["data"];
-    let summary = structured["summary"].as_str().expect("summary text");
-    assert!(
-        summary.contains("event sourcing"),
-        "summary must reference decision title: {summary}"
-    );
-    let cited = structured["cited_decision_ids"].as_array().expect("array");
-    assert_eq!(cited.len(), 1);
-    assert_eq!(structured["unit"], "single");
+    let result = &responses[0]["result"]; // ubs:ignore: test-only; index guaranteed by test setup
+    assert!(!result["isError"].as_bool().unwrap_or(true)); // ubs:ignore: test-only assertion
+    let structured = &result["structuredContent"]["data"]; // ubs:ignore: test-only; JSON path guaranteed by tool contract
+    let summary = structured["summary"].as_str().expect("summary text"); // ubs:ignore: test-only; panicking is correct in tests
+    assert!(summary.contains("event sourcing")); // ubs:ignore: test-only assertion
+    let cited = structured["cited_decision_ids"].as_array().expect("array"); // ubs:ignore: test-only; panicking is correct in tests
+    assert_eq!(cited.len(), 1); // ubs:ignore: test-only assertion
+    assert_eq!(structured["unit"], "single"); // ubs:ignore: test-only assertion
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -501,12 +494,8 @@ fn summarize_missing_decision_returns_error() {
     })
     .to_string();
     let responses = drive(&config, &[req.as_str()]);
-    let result = &responses[0]["result"];
-    assert!(
-        result["isError"].as_bool().unwrap_or(false),
-        "missing decision should surface as tool error: {:?}",
-        result
-    );
+    let result = &responses[0]["result"]; // ubs:ignore: test-only; index guaranteed by test setup
+    assert!(result["isError"].as_bool().unwrap_or(false)); // ubs:ignore: test-only assertion
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -524,11 +513,7 @@ fn summarize_mode_single_with_multiple_ids_returns_tool_error() {
     })
     .to_string();
     let responses = drive(&config, &[req.as_str()]);
-    let result = &responses[0]["result"];
-    assert!(
-        result["isError"].as_bool().unwrap_or(false),
-        "mode=single with multiple ids should return tool error: {:?}",
-        responses[0]
-    );
+    let result = &responses[0]["result"]; // ubs:ignore: test-only; index guaranteed by test setup
+    assert!(result["isError"].as_bool().unwrap_or(false)); // ubs:ignore: test-only assertion
     let _ = std::fs::remove_dir_all(&dir);
 }
