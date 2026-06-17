@@ -289,5 +289,39 @@ class TestCursorFlow(unittest.TestCase):
         core_module._post = orig_post
 
 
+class TestPostHttpError(unittest.TestCase):
+    """_post should surface HTTP error status and response body in the exception."""
+
+    def test_http_error_message_includes_status_and_body(self):
+        import io
+        import urllib.error
+        import urllib.request
+
+        import core as core_module
+
+        fake_response_body = b'{"error":{"code":"validation_error","message":"batch_id must not be empty"}}'
+
+        original_urlopen = urllib.request.urlopen
+
+        def mock_urlopen(req, timeout=None):
+            raise urllib.error.HTTPError(
+                req.full_url,
+                400,
+                "Bad Request",
+                {},
+                io.BytesIO(fake_response_body),
+            )
+
+        urllib.request.urlopen = mock_urlopen
+        try:
+            with self.assertRaises(RuntimeError) as cm:
+                core_module._post("http://localhost:8080", "", {"batch_id": ""})
+            msg = str(cm.exception)
+            self.assertIn("400", msg)
+            self.assertIn("validation_error", msg)
+        finally:
+            urllib.request.urlopen = original_urlopen
+
+
 if __name__ == "__main__":
     unittest.main()

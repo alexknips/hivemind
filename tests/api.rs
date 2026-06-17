@@ -594,6 +594,57 @@ async fn rls_cross_tenant_decision_not_visible() {
 }
 
 // ---------------------------------------------------------------------------
+// Not-found responses for mutation and supersession-chain endpoints
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn disagree_with_nonexistent_decision_returns_404() {
+    let dir = test_ledger_dir();
+    let (status, body) = call(
+        app(dir),
+        post_json(
+            "/v1/decisions/nonexistent-id/disagreements",
+            serde_json::json!({ "reason": "I disagree" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "not_found"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn supersede_nonexistent_decision_returns_404() {
+    let dir = test_ledger_dir();
+    let (status, body) = call(
+        app(dir),
+        post_json(
+            "/v1/decisions/nonexistent-id/supersessions",
+            serde_json::json!({
+                "title": "New decision",
+                "rationale": "Better approach",
+                "topic_keys": ["test"],
+                "options": ["opt-a"]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "not_found"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn supersession_chain_for_nonexistent_decision_returns_404() {
+    let dir = test_ledger_dir();
+    let (status, body) = call(
+        app(dir),
+        get_req("/v1/decisions/nonexistent-id/supersession-chain"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "not_found"); // ubs:ignore
+}
+
+// ---------------------------------------------------------------------------
 // Layer-3 classifier: annotation event round-trip
 // ---------------------------------------------------------------------------
 

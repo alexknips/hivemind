@@ -200,8 +200,17 @@ def _post(api_url: str, api_key: str, envelope: dict) -> None:
         headers["Authorization"] = f"Bearer {api_key}"
 
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=_POST_TIMEOUT) as resp:
-        _ = resp.read()
+    try:
+        with urllib.request.urlopen(req, timeout=_POST_TIMEOUT) as resp:
+            _ = resp.read()
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read(200).decode("utf-8", errors="replace").strip()
+        except Exception:
+            detail = ""
+        raise RuntimeError(
+            f"HTTP {exc.code} {exc.reason}" + (f": {detail}" if detail else "")
+        ) from exc
 
 
 def _init_cursor(cursor_file: str, jsonl_path: str) -> None:

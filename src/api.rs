@@ -233,6 +233,7 @@ impl AppState {
 #[derive(Debug)]
 enum ApiError {
     Unauthorized(String),
+    NotFound(String),
     Validation(String),
     Internal(String),
 }
@@ -240,6 +241,9 @@ enum ApiError {
 impl ApiError {
     fn unauthorized(msg: impl Into<String>) -> Self {
         Self::Unauthorized(msg.into())
+    }
+    fn not_found(msg: impl Into<String>) -> Self {
+        Self::NotFound(msg.into())
     }
     fn validation(msg: impl Into<String>) -> Self {
         Self::Validation(msg.into())
@@ -253,8 +257,12 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message) = match self {
             ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "unauthorized", msg),
+            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, "not_found", msg),
             ApiError::Validation(msg) => (StatusCode::BAD_REQUEST, "validation_error", msg),
-            ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, "internal_error", msg),
+            ApiError::Internal(msg) => {
+                tracing::error!(target: "hivemind::api", error = %msg, "internal server error");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal_error", msg)
+            }
         };
         (
             status,
@@ -267,6 +275,9 @@ impl IntoResponse for ApiError {
 fn map_err(error: HivemindError) -> ApiError {
     match error {
         HivemindError::Command(CommandError::Validation(msg)) => ApiError::Validation(msg),
+        HivemindError::Command(CommandError::Invariant(msg)) if msg.contains("does not exist") => {
+            ApiError::not_found(msg)
+        }
         HivemindError::Cli(CliError::InvalidInput(msg)) => ApiError::Validation(msg),
         other => ApiError::Internal(other.to_string()),
     }
@@ -866,8 +877,8 @@ async fn get_decision_handler(
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
         let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
-        let response = get_decision(&graph, &decision_id).map_err(map_err)?;
-        Ok(response)
+        let view = get_decision(&graph, &decision_id).map_err(map_err)?;
+        Ok(view)
     })
     .await;
 
@@ -892,6 +903,12 @@ async fn supersession_chain_handler(
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
         let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
+        let exists = get_decision(&graph, &decision_id).map_err(map_err)?;
+        if exists.data.is_none() {
+            return Err(ApiError::not_found(format!(
+                "decision not found: {decision_id}"
+            )));
+        }
         let response = get_supersession_chain(&graph, &decision_id).map_err(map_err)?;
         Ok(response)
     })
