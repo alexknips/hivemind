@@ -825,7 +825,9 @@ fn get_decision_returns_neighbors_and_derived_status() -> Result<()> {
     let response = get_decision(&graph, "d1")?;
     assert_eq!(response.result_count, 1);
     assert!(!response.truncated);
-    let decision = response.data.expect("decision exists");
+    let decision = response
+        .data
+        .ok_or_else(|| query_error("decision exists"))?;
     assert_eq!(decision.id, "d1");
     assert_eq!(decision.status, DecisionStatus::Accepted);
     assert_eq!(decision.chosen_option_id.as_deref(), Some("o2"));
@@ -1020,7 +1022,7 @@ fn get_decision_neighborhood_returns_full_one_hop() -> Result<()> {
         .nodes
         .iter()
         .find(|n| n.id == "d1")
-        .expect("root node present");
+        .ok_or_else(|| query_error("root node present"))?;
     assert_eq!(root_node.decision_status, Some(DecisionStatus::Accepted));
 
     let hypothesis_node = response
@@ -1028,7 +1030,7 @@ fn get_decision_neighborhood_returns_full_one_hop() -> Result<()> {
         .nodes
         .iter()
         .find(|n| n.id == "h1")
-        .expect("hypothesis node present");
+        .ok_or_else(|| query_error("hypothesis node present"))?;
     assert_eq!(
         hypothesis_node.hypothesis_status,
         Some(HypothesisStatus::Supported)
@@ -1140,7 +1142,7 @@ fn get_decision_neighborhood_includes_refuting_evidence_via_hypothesis() -> Resu
         .nodes
         .iter()
         .find(|n| n.id == "h1")
-        .expect("hypothesis node present");
+        .ok_or_else(|| query_error("hypothesis node present"))?;
     assert_eq!(
         hypothesis_node.hypothesis_status,
         Some(HypothesisStatus::Refuted)
@@ -1210,7 +1212,7 @@ fn compact_view_simple_proposed_decision() -> Result<()> {
     )])?;
 
     let response = get_compact_view(&graph, "d:simple")?;
-    let view = response.data.expect("decision found");
+    let view = response.data.ok_or_else(|| query_error("decision found"))?;
 
     assert_eq!(view.decision.id, "d:simple");
     assert_eq!(view.decision.status, DecisionStatus::Proposed);
@@ -1274,18 +1276,25 @@ fn compact_view_resolves_to_terminal_in_supersession_chain() -> Result<()> {
 
     // Query via the old (superseded) decision: should resolve to terminal
     let response = get_compact_view(&graph, "d:old")?;
-    let view = response.data.expect("found via superseded id");
+    let view = response
+        .data
+        .ok_or_else(|| query_error("found via superseded id"))?;
 
     assert_eq!(view.decision.id, "d:new", "terminal decision is returned");
     assert!(view.supersession_chain.is_some());
-    let chain = view.supersession_chain.unwrap();
+    let chain = view
+        .supersession_chain
+        .ok_or_else(|| query_error("supersession chain present"))?;
     assert_eq!(chain.chain_length, 2);
     assert_eq!(chain.oldest_id, "d:old");
     assert_eq!(view.elided.superseded_decision_count, 1);
 
     // Query via terminal directly: same result
     let via_terminal = get_compact_view(&graph, "d:new")?;
-    assert_eq!(via_terminal.data.as_ref().unwrap().decision.id, "d:new");
+    let terminal_view = via_terminal
+        .data
+        .ok_or_else(|| query_error("terminal view found"))?;
+    assert_eq!(terminal_view.decision.id, "d:new");
     Ok(())
 }
 
@@ -1326,12 +1335,12 @@ fn compact_view_contested_includes_both_actor_lists() -> Result<()> {
 
     let view = get_compact_view(&graph, "d:contested")?
         .data
-        .expect("found");
+        .ok_or_else(|| query_error("contested view found"))?;
 
     assert_eq!(view.decision.status, DecisionStatus::Contested);
     let contest = view
         .contest
-        .expect("contest present for contested decision");
+        .ok_or_else(|| query_error("contest present for contested decision"))?;
     assert!(contest.accepted_by.contains(&"actor:approver".to_owned()));
     assert!(contest.rejected_by.contains(&"actor:objector".to_owned()));
     Ok(())
@@ -1390,7 +1399,9 @@ fn compact_view_refuted_hypothesis_exposes_refuting_evidence() -> Result<()> {
         ),
     ])?;
 
-    let view = get_compact_view(&graph, "d:with-hyp")?.data.expect("found");
+    let view = get_compact_view(&graph, "d:with-hyp")?
+        .data
+        .ok_or_else(|| query_error("refuted-hyp view found"))?;
 
     assert_eq!(view.hypotheses.len(), 1);
     let hyp = &view.hypotheses[0];
@@ -1400,7 +1411,7 @@ fn compact_view_refuted_hypothesis_exposes_refuting_evidence() -> Result<()> {
     let refuting = hyp
         .refuting_evidence_ids
         .as_ref()
-        .expect("refuting_evidence_ids present");
+        .ok_or_else(|| query_error("refuting_evidence_ids present"))?;
     assert!(refuting.contains(&"ev:incident".to_owned()));
     assert!(hyp.supporting_evidence_ids.is_none());
     Ok(())
@@ -1459,7 +1470,9 @@ fn compact_view_supported_hypothesis_exposes_supporting_evidence_ids() -> Result
         ),
     ])?;
 
-    let view = get_compact_view(&graph, "d:cache")?.data.expect("found");
+    let view = get_compact_view(&graph, "d:cache")?
+        .data
+        .ok_or_else(|| query_error("supported-hyp view found"))?;
 
     let hyp = &view.hypotheses[0];
     assert_eq!(hyp.status, HypothesisStatus::Supported);
@@ -1468,7 +1481,7 @@ fn compact_view_supported_hypothesis_exposes_supporting_evidence_ids() -> Result
     let supporting = hyp
         .supporting_evidence_ids
         .as_ref()
-        .expect("supporting_evidence_ids present");
+        .ok_or_else(|| query_error("supporting_evidence_ids present"))?;
     assert!(supporting.contains(&"ev:metrics".to_owned()));
     Ok(())
 }

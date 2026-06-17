@@ -109,12 +109,9 @@ pub fn get_compact_view(
     let terminal_decision = if terminal_id == decision_id {
         focal_decision
     } else {
-        get_decision(graph, &terminal_id)?.data.unwrap_or_else(|| {
-            get_decision(graph, decision_id)
-                .ok()
-                .and_then(|r| r.data)
-                .unwrap()
-        })
+        get_decision(graph, &terminal_id)?
+            .data
+            .unwrap_or(focal_decision)
     };
 
     // 4. Neighborhood of the terminal decision
@@ -143,13 +140,13 @@ pub fn get_compact_view(
             .edges
             .iter()
             .filter(|e| e.relation == RelationKind::AcceptedBy && e.from == terminal_id)
-            .map(|e| e.to.clone())
+            .map(|e| e.to.to_owned())
             .collect();
         let rejected_by: Vec<String> = neighborhood
             .edges
             .iter()
             .filter(|e| e.relation == RelationKind::RejectedBy && e.from == terminal_id)
-            .map(|e| e.to.clone())
+            .map(|e| e.to.to_owned())
             .collect();
         Some(ContestView {
             accepted_by,
@@ -179,7 +176,7 @@ pub fn get_compact_view(
         .edges
         .iter()
         .filter(|e| e.relation == RelationKind::Chose && e.from == terminal_id)
-        .map(|e| e.to.clone())
+        .map(|e| e.to.to_owned())
         .collect();
     let unchosen_option_count = neighborhood
         .edges
@@ -200,13 +197,13 @@ pub fn get_compact_view(
             .edges
             .iter()
             .filter(|e| e.relation == RelationKind::Refutes && e.to == hyp.id)
-            .map(|e| e.from.clone())
+            .map(|e| e.from.to_owned())
             .collect();
         let supporting_ids: Vec<String> = neighborhood
             .edges
             .iter()
             .filter(|e| e.relation == RelationKind::Supports && e.to == hyp.id)
-            .map(|e| e.from.clone())
+            .map(|e| e.from.to_owned())
             .collect();
 
         let statement = get_hypothesis_statement(graph, &hyp.id)?.unwrap_or_default();
@@ -225,7 +222,7 @@ pub fn get_compact_view(
         };
 
         hypotheses.push(HypothesisSummaryView {
-            id: hyp.id.clone(),
+            id: hyp.id.to_owned(),
             status: hyp.status,
             statement,
             refuting_evidence_ids,
