@@ -152,6 +152,20 @@ impl GraphView for MemoryGraph {
             return Ok(Vec::new());
         }
 
+        if cypher
+            .contains("MATCH (h:`Hypothesis` {id: $id}) RETURN h.statement AS statement LIMIT 1;")
+        {
+            let id = required_param_string(params, "id")?;
+            let nodes = self.nodes_snapshot()?;
+            if let Some(properties) = nodes.get(&(NodeKind::Hypothesis, id.to_owned())) {
+                return Ok(vec![GraphRow::from([(
+                    "statement".to_owned(),
+                    graph_property_or_default(properties, "statement"),
+                )])]);
+            }
+            return Ok(Vec::new());
+        }
+
         if cypher.contains("MATCH (d:`Decision` {id: $id}) RETURN d.id AS id LIMIT 1;") {
             let decision_id = required_param_string(params, "id")?;
             let nodes = self.nodes_snapshot()?;

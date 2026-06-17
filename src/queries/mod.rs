@@ -1,4 +1,5 @@
 mod active_blockers;
+mod compact_view;
 mod decision;
 mod history;
 mod neighborhood;
@@ -22,7 +23,11 @@ pub use active_blockers::{
     BlockerNotificationCandidatesRequest, BlockerNotificationState, BlockerNotificationStateKind,
     DecisionBlockerFilters, DecisionBlockerResults, DecisionBlockerView,
 };
-pub use decision::{get_decision, DecisionView, HypothesisContext};
+pub use compact_view::{
+    get_compact_view, BlockerSummary, CompactView, ContestView, ElidedSummary,
+    HypothesisSummaryView, SupersessionSummary,
+};
+pub use decision::{get_decision, get_hypothesis_statement, DecisionView, HypothesisContext};
 pub use history::*;
 pub use neighborhood::{
     get_decision_neighborhood, NeighborEdge, NeighborNode, NeighborhoodRequest, NeighborhoodRoot,

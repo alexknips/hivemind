@@ -53,8 +53,9 @@ use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::ledger::{PostgresEventLedger, TenantStore};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
-    derive_decision_status, get_decision, get_relevant_decisions, get_supersession_chain,
-    search_decisions_fts_with_context, DecisionStatus, QueryContext, SearchDecisionRequest,
+    derive_decision_status, get_compact_view, get_decision, get_relevant_decisions,
+    get_supersession_chain, search_decisions_fts_with_context, DecisionStatus, QueryContext,
+    SearchDecisionRequest,
 };
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
@@ -484,6 +485,7 @@ fn build_router(state: AppState) -> Router {
             "/v1/decisions/{id}/supersession-chain",
             get(supersession_chain_handler),
         )
+        .route("/v1/decisions/{id}/compact-view", get(compact_view_handler))
         .route("/v1/decisions/{id}/disagreements", post(disagree_handler))
         .route("/v1/decisions/{id}/supersessions", post(supersede_handler))
         // Evidence and hypotheses
@@ -911,6 +913,32 @@ async fn supersession_chain_handler(
             )));
         }
         let response = get_supersession_chain(&graph, &decision_id).map_err(map_err)?;
+        Ok(response)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(view)) => (StatusCode::OK, Json(query_envelope(view))).into_response(),
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => ApiError::internal(e.to_string()).into_response(),
+    }
+}
+
+async fn compact_view_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(decision_id): Path<String>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers) {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
+        let response = get_compact_view(&graph, &decision_id).map_err(map_err)?;
         Ok(response)
     })
     .await;

@@ -1169,3 +1169,306 @@ fn get_supersession_chain_detects_cycle() {
     let error = get_supersession_chain(&graph, "d1").expect_err("cycle should fail");
     assert!(format!("{error}").contains("cycle detected"));
 }
+
+// ---------------------------------------------------------------------------
+// get_compact_view tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compact_view_empty_id_is_rejected() {
+    let graph = graph_from_events([]).expect("empty graph");
+    let error = get_compact_view(&graph, "").expect_err("empty id rejected");
+    assert!(format!("{error}").contains("decision_id"));
+}
+
+#[test]
+fn compact_view_returns_none_for_missing_decision() -> Result<()> {
+    let graph = graph_from_events([])?;
+    let response = get_compact_view(&graph, "does-not-exist")?;
+    assert!(response.data.is_none());
+    assert_eq!(response.result_count, 0);
+    Ok(())
+}
+
+#[test]
+fn compact_view_simple_proposed_decision() -> Result<()> {
+    let graph = graph_from_events([test_event(
+        1,
+        EventType::DecisionProposed,
+        "actor:a",
+        json!({
+            "decision_id": "d:simple",
+            "title": "Simple decision",
+            "rationale": "Because",
+            "topic_keys": ["test"],
+            "option_ids": ["opt:yes", "opt:no"],
+            "chosen_option_id": "opt:yes",
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+        "2026-01-01T00:00:00Z",
+    )])?;
+
+    let response = get_compact_view(&graph, "d:simple")?;
+    let view = response.data.expect("decision found");
+
+    assert_eq!(view.decision.id, "d:simple");
+    assert_eq!(view.decision.status, DecisionStatus::Proposed);
+    assert!(view.supersession_chain.is_none());
+    assert!(view.contest.is_none());
+    assert!(view.hypotheses.is_empty());
+    assert!(view.evidence_ids.is_empty());
+    assert!(view.active_blockers.is_empty());
+
+    assert_eq!(view.elided.superseded_decision_count, 0);
+    assert_eq!(view.elided.unchosen_option_count, 1); // opt:no is unchosen
+    Ok(())
+}
+
+#[test]
+fn compact_view_resolves_to_terminal_in_supersession_chain() -> Result<()> {
+    let graph = graph_from_events([
+        test_event(
+            1,
+            EventType::DecisionProposed,
+            "actor:a",
+            json!({
+                "decision_id": "d:old",
+                "title": "Old decision",
+                "rationale": "Old rationale",
+                "topic_keys": ["arch"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:00:00Z",
+        ),
+        test_event(
+            2,
+            EventType::DecisionProposed,
+            "actor:a",
+            json!({
+                "decision_id": "d:new",
+                "title": "New decision",
+                "rationale": "New rationale",
+                "topic_keys": ["arch"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-01T01:00:00Z",
+        ),
+        test_event(
+            3,
+            EventType::DecisionSuperseded,
+            "actor:a",
+            json!({
+                "old_decision_id": "d:old",
+                "new_decision_id": "d:new"
+            }),
+            "2026-01-01T01:01:00Z",
+        ),
+    ])?;
+
+    // Query via the old (superseded) decision: should resolve to terminal
+    let response = get_compact_view(&graph, "d:old")?;
+    let view = response.data.expect("found via superseded id");
+
+    assert_eq!(view.decision.id, "d:new", "terminal decision is returned");
+    assert!(view.supersession_chain.is_some());
+    let chain = view.supersession_chain.unwrap();
+    assert_eq!(chain.chain_length, 2);
+    assert_eq!(chain.oldest_id, "d:old");
+    assert_eq!(view.elided.superseded_decision_count, 1);
+
+    // Query via terminal directly: same result
+    let via_terminal = get_compact_view(&graph, "d:new")?;
+    assert_eq!(via_terminal.data.as_ref().unwrap().decision.id, "d:new");
+    Ok(())
+}
+
+#[test]
+fn compact_view_contested_includes_both_actor_lists() -> Result<()> {
+    let graph = graph_from_events([
+        test_event(
+            1,
+            EventType::DecisionProposed,
+            "actor:proposer",
+            json!({
+                "decision_id": "d:contested",
+                "title": "Contested call",
+                "rationale": "Some rationale",
+                "topic_keys": ["policy"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:00:00Z",
+        ),
+        test_event(
+            2,
+            EventType::DecisionAccepted,
+            "actor:approver",
+            json!({ "decision_id": "d:contested" }),
+            "2026-01-01T01:00:00Z",
+        ),
+        test_event(
+            3,
+            EventType::DecisionRejected,
+            "actor:objector",
+            json!({ "decision_id": "d:contested" }),
+            "2026-01-01T02:00:00Z",
+        ),
+    ])?;
+
+    let view = get_compact_view(&graph, "d:contested")?
+        .data
+        .expect("found");
+
+    assert_eq!(view.decision.status, DecisionStatus::Contested);
+    let contest = view
+        .contest
+        .expect("contest present for contested decision");
+    assert!(contest.accepted_by.contains(&"actor:approver".to_owned()));
+    assert!(contest.rejected_by.contains(&"actor:objector".to_owned()));
+    Ok(())
+}
+
+#[test]
+fn compact_view_refuted_hypothesis_exposes_refuting_evidence() -> Result<()> {
+    let graph = graph_from_events([
+        test_event(
+            1,
+            EventType::HypothesisRecorded,
+            "actor:analyst",
+            json!({
+                "hypothesis_id": "hyp:assumption",
+                "statement": "System is safe under load"
+            }),
+            "2026-01-01T00:00:00Z",
+        ),
+        test_event(
+            2,
+            EventType::EvidenceRecorded,
+            "actor:analyst",
+            json!({
+                "evidence_id": "ev:incident",
+                "content": "Incident report: data loss under load",
+                "source": "test"
+            }),
+            "2026-01-01T00:01:00Z",
+        ),
+        test_event(
+            3,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "d:with-hyp",
+                "title": "Deploy at scale",
+                "rationale": "Assuming the system is safe",
+                "topic_keys": ["infra"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": ["hyp:assumption"],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:02:00Z",
+        ),
+        test_event(
+            4,
+            EventType::RelationAdded,
+            "actor:analyst",
+            json!({
+                "relation": EventRelationKind::Refutes,
+                "from_id": "ev:incident",
+                "to_id": "hyp:assumption"
+            }),
+            "2026-01-01T00:03:00Z",
+        ),
+    ])?;
+
+    let view = get_compact_view(&graph, "d:with-hyp")?.data.expect("found");
+
+    assert_eq!(view.hypotheses.len(), 1);
+    let hyp = &view.hypotheses[0];
+    assert_eq!(hyp.id, "hyp:assumption");
+    assert_eq!(hyp.status, HypothesisStatus::Refuted);
+    assert_eq!(hyp.statement, "System is safe under load");
+    let refuting = hyp
+        .refuting_evidence_ids
+        .as_ref()
+        .expect("refuting_evidence_ids present");
+    assert!(refuting.contains(&"ev:incident".to_owned()));
+    assert!(hyp.supporting_evidence_ids.is_none());
+    Ok(())
+}
+
+#[test]
+fn compact_view_supported_hypothesis_exposes_supporting_evidence_ids() -> Result<()> {
+    let graph = graph_from_events([
+        test_event(
+            1,
+            EventType::HypothesisRecorded,
+            "actor:analyst",
+            json!({
+                "hypothesis_id": "hyp:valid",
+                "statement": "Cache hit rate is acceptable"
+            }),
+            "2026-01-01T00:00:00Z",
+        ),
+        test_event(
+            2,
+            EventType::EvidenceRecorded,
+            "actor:analyst",
+            json!({
+                "evidence_id": "ev:metrics",
+                "content": "p95 cache hit = 99%",
+                "source": "test"
+            }),
+            "2026-01-01T00:01:00Z",
+        ),
+        test_event(
+            3,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "d:cache",
+                "title": "Use cache",
+                "rationale": "Cache is valid",
+                "topic_keys": ["perf"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": ["hyp:valid"],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:02:00Z",
+        ),
+        test_event(
+            4,
+            EventType::RelationAdded,
+            "actor:analyst",
+            json!({
+                "relation": EventRelationKind::Supports,
+                "from_id": "ev:metrics",
+                "to_id": "hyp:valid"
+            }),
+            "2026-01-01T00:03:00Z",
+        ),
+    ])?;
+
+    let view = get_compact_view(&graph, "d:cache")?.data.expect("found");
+
+    let hyp = &view.hypotheses[0];
+    assert_eq!(hyp.status, HypothesisStatus::Supported);
+    assert_eq!(hyp.statement, "Cache hit rate is acceptable");
+    assert!(hyp.refuting_evidence_ids.is_none());
+    let supporting = hyp
+        .supporting_evidence_ids
+        .as_ref()
+        .expect("supporting_evidence_ids present");
+    assert!(supporting.contains(&"ev:metrics".to_owned()));
+    Ok(())
+}

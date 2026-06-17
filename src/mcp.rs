@@ -29,8 +29,9 @@ use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool
 use crate::ledger::SqliteEventLedger;
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
-    derive_decision_status, get_decision, get_relevant_decisions, get_supersession_chain,
-    search_decisions_fts_with_context, DecisionStatus, QueryContext, SearchDecisionRequest,
+    derive_decision_status, get_compact_view, get_decision, get_relevant_decisions,
+    get_supersession_chain, search_decisions_fts_with_context, DecisionStatus, QueryContext,
+    SearchDecisionRequest,
 };
 use crate::Result;
 
@@ -294,6 +295,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "get_supersession_chain" => tool_get_supersession_chain(arguments, config),
         "search_decisions" => tool_search_decisions(arguments, config),
         "dump_graph" => tool_dump_graph(arguments, config),
+        "hivemind_compact_view" => tool_compact_view(arguments, config),
         other => return Err(RpcError::invalid_params(format!("unknown tool: {other}"))),
     };
 
@@ -469,6 +471,17 @@ fn tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {}
+            }
+        }),
+        json!({
+            "name": "hivemind_compact_view",
+            "description": "Layer-3 compact view of a decision subgraph. Applies signal/noise semantics: terminal decision is fully preserved; superseded predecessors, unchosen options, and resolved blockers are elided and counted. Contested decisions are never compacted. Returns null when the decision_id is not found.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["decision_id"],
+                "properties": {
+                    "decision_id": { "type": "string", "description": "The decision to compact. If mid-chain, the terminal (newest) decision in the supersession chain is used as the focal node." }
+                }
             }
         }),
     ]
@@ -749,6 +762,14 @@ fn tool_dump_graph(_args: Value, config: &McpConfig) -> std::result::Result<Valu
     let graph = open_memory_graph(config)?;
     let dot = crate::cli::render_decision_dot(&graph)?;
     Ok(json!({ "format": "dot", "content": dot }))
+}
+
+fn tool_compact_view(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let decision_id = require_string(&args, "decision_id")?;
+    let graph = open_memory_graph(config)?;
+    let response = get_compact_view(&graph, &decision_id)?;
+    serde_json::to_value(&response).map_err(|e| RpcError::internal(e.to_string()))
 }
 
 fn open_memory_graph(config: &McpConfig) -> Result<MemoryGraph> {

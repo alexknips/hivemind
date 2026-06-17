@@ -106,3 +106,19 @@ pub fn get_decision(
         data,
     })
 }
+
+pub fn get_hypothesis_statement(
+    graph: &impl GraphView,
+    hypothesis_id: &str,
+) -> crate::Result<Option<String>> {
+    let rows = graph.query(
+        "MATCH (h:`Hypothesis` {id: $id}) RETURN h.statement AS statement LIMIT 1;",
+        &GraphParams::from([(
+            "id".to_owned(),
+            GraphValue::String(hypothesis_id.to_owned()),
+        )]),
+    )?;
+    Ok(rows
+        .first()
+        .and_then(|row| optional_string(row, "statement")))
+}
