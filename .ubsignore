@@ -4,5 +4,6 @@ target/
 # design; test-assert noise belongs in --exclude-tests (critical gate), not
 # the warning-count baseline which tracks production-code quality.
 tests/api.rs
+tests/mcp_stdio_e2e.rs
 tests/multi_tenant.rs
 tests/support/
