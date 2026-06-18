@@ -367,3 +367,573 @@ fn read_mcp_response(
     stdout.read_line(&mut line)?;
     Ok(serde_json::from_str(line.trim())?)
 }
+
+// ---------------------------------------------------------------------------
+// M3 read tool e2e tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mcp_search_decisions_e2e() {
+    let hivemind_dir = unique_dir("search");
+    let _ = std::fs::create_dir_all(&hivemind_dir);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hivemind"))
+        .arg("--hivemind-dir")
+        .arg(&hivemind_dir)
+        .arg("mcp")
+        .arg("--session-id")
+        .arg("search-e2e")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn hivemind mcp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+
+    // handshake
+    send_mcp_request(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
+    )
+    .expect("send initialize");
+    let init = read_mcp_response(&mut stdout).expect("read initialize");
+    assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
+
+    // capture a decision with a distinctive keyword
+    send_mcp_request(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {
+                "name": "capture_decision",
+                "arguments": {
+                    "actor_id": "agent:test:search-e2e",
+                    "title": "Use quorum-consensus for distributed writes",
+                    "rationale": "Quorum-consensus ensures durability across nodes",
+                    "topic_keys": ["distributed-systems"],
+                    "options": [
+                        {"label": "quorum-consensus"},
+                        {"label": "single-leader"}
+                    ],
+                    "chosen_option_label": "quorum-consensus"
+                }
+            }
+        }),
+    )
+    .expect("send capture");
+    let captured = read_mcp_response(&mut stdout).expect("read capture");
+    assert_eq!(captured["result"]["isError"], Value::Bool(false));
+    let decision_id = captured["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("decision_id")
+        .to_owned();
+
+    // search with a keyword unique to this title
+    send_mcp_request(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {
+                "name": "search_decisions",
+                "arguments": {
+                    "q": "quorum-consensus",
+                    "limit": 10
+                }
+            }
+        }),
+    )
+    .expect("send search");
+    let searched = read_mcp_response(&mut stdout).expect("read search");
+    assert_eq!(searched["result"]["isError"], Value::Bool(false));
+    let sc = &searched["result"]["structuredContent"];
+    assert_eq!(sc["result_count"], Value::from(1u64), "expected 1 hit");
+    assert_eq!(
+        sc["data"]["items"][0]["decision"]["id"].as_str(),
+        Some(decision_id.as_str()),
+        "search result id mismatch"
+    );
+
+    drop(stdin);
+    let status = child.wait().expect("wait child");
+    assert!(status.success(), "server exited non-zero: {status:?}");
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn mcp_summarize_decisions_e2e() {
+    let hivemind_dir = unique_dir("summarize");
+    let _ = std::fs::create_dir_all(&hivemind_dir);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hivemind"))
+        .arg("--hivemind-dir")
+        .arg(&hivemind_dir)
+        .arg("mcp")
+        .arg("--session-id")
+        .arg("summarize-e2e")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn hivemind mcp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+
+    send_mcp_request(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
+    )
+    .expect("send initialize");
+    read_mcp_response(&mut stdout).expect("read initialize");
+
+    // capture a decision
+    send_mcp_request(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {
+                "name": "capture_decision",
+                "arguments": {
+                    "actor_id": "agent:test:summarize-e2e",
+                    "title": "Adopt event-driven architecture",
+                    "rationale": "Loose coupling via event streams reduces blast radius of failures",
+                    "topic_keys": ["architecture"],
+                    "options": [
+                        {"label": "event-driven", "description": "Publish domain events"},
+                        {"label": "synchronous-rpc", "description": "Direct service calls"}
+                    ],
+                    "chosen_option_label": "event-driven"
+                }
+            }
+        }),
+    )
+    .expect("send capture");
+    let captured = read_mcp_response(&mut stdout).expect("read capture");
+    assert_eq!(captured["result"]["isError"], Value::Bool(false));
+    let decision_id = captured["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("decision_id")
+        .to_owned();
+
+    // summarize (single mode — default for one id)
+    send_mcp_request(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {
+                "name": "summarize_decisions",
+                "arguments": { "decision_ids": [decision_id] }
+            }
+        }),
+    )
+    .expect("send summarize");
+    let summarized = read_mcp_response(&mut stdout).expect("read summarize");
+    assert_eq!(summarized["result"]["isError"], Value::Bool(false));
+    let data = &summarized["result"]["structuredContent"]["data"];
+    let summary = data["summary"].as_str().expect("summary text");
+    assert!(!summary.is_empty(), "summary must not be empty");
+    let cited = data["cited_decision_ids"]
+        .as_array()
+        .expect("cited_decision_ids array");
+    assert!(
+        cited.iter().any(|id| id.as_str() == Some(&decision_id)),
+        "captured decision must appear in cited_decision_ids"
+    );
+    assert_eq!(data["unit"], Value::from("single"), "mode must be single");
+
+    // supersede and test chain mode
+    send_mcp_request(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {
+                "name": "supersede_decision",
+                "arguments": {
+                    "old_decision_id": decision_id,
+                    "title": "Adopt event-driven architecture v2",
+                    "rationale": "Adding schema registry for event contracts",
+                    "options": [{"label": "event-driven-v2"}],
+                    "chosen_option_label": "event-driven-v2"
+                }
+            }
+        }),
+    )
+    .expect("send supersede");
+    let superseded = read_mcp_response(&mut stdout).expect("read supersede");
+    assert_eq!(superseded["result"]["isError"], Value::Bool(false));
+
+    // chain mode: walk the supersession chain from the original id
+    send_mcp_request(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+            "params": {
+                "name": "summarize_decisions",
+                "arguments": { "decision_ids": [decision_id], "mode": "chain" }
+            }
+        }),
+    )
+    .expect("send summarize chain");
+    let chain_summary = read_mcp_response(&mut stdout).expect("read summarize chain");
+    assert_eq!(chain_summary["result"]["isError"], Value::Bool(false));
+    let chain_data = &chain_summary["result"]["structuredContent"]["data"];
+    assert_eq!(
+        chain_data["unit"],
+        Value::from("chain"),
+        "mode must be chain"
+    );
+    let chain_cited = chain_data["cited_decision_ids"]
+        .as_array()
+        .expect("cited array");
+    assert!(
+        chain_cited.len() >= 2,
+        "chain mode must cite at least both decisions in the chain"
+    );
+
+    drop(stdin);
+    let status = child.wait().expect("wait child");
+    assert!(status.success(), "server exited non-zero: {status:?}");
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn mcp_compact_view_e2e() {
+    let hivemind_dir = unique_dir("compact");
+    let _ = std::fs::create_dir_all(&hivemind_dir);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hivemind"))
+        .arg("--hivemind-dir")
+        .arg(&hivemind_dir)
+        .arg("mcp")
+        .arg("--session-id")
+        .arg("compact-e2e")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn hivemind mcp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+
+    send_mcp_request(
+        &mut stdin,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
+    )
+    .expect("send initialize");
+    read_mcp_response(&mut stdout).expect("read initialize");
+
+    // capture decision
+    send_mcp_request(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {
+                "name": "capture_decision",
+                "arguments": {
+                    "actor_id": "agent:test:compact-e2e",
+                    "title": "Deploy on bare-metal servers",
+                    "rationale": "Lower operational cost at current scale",
+                    "topic_keys": ["infra"],
+                    "options": [
+                        {"label": "bare-metal"},
+                        {"label": "kubernetes"}
+                    ],
+                    "chosen_option_label": "bare-metal"
+                }
+            }
+        }),
+    )
+    .expect("send capture");
+    let captured = read_mcp_response(&mut stdout).expect("read capture");
+    assert_eq!(captured["result"]["isError"], Value::Bool(false));
+    let original_id = captured["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("decision_id")
+        .to_owned();
+
+    // supersede it — the compact view on the original id should walk to the terminal
+    send_mcp_request(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {
+                "name": "supersede_decision",
+                "arguments": {
+                    "old_decision_id": original_id,
+                    "title": "Deploy on managed Kubernetes",
+                    "rationale": "Scale requirements exceeded bare-metal maintenance budget",
+                    "options": [{"label": "kubernetes"}],
+                    "chosen_option_label": "kubernetes"
+                }
+            }
+        }),
+    )
+    .expect("send supersede");
+    let superseded = read_mcp_response(&mut stdout).expect("read supersede");
+    assert_eq!(superseded["result"]["isError"], Value::Bool(false));
+    let new_id = superseded["result"]["structuredContent"]["new_decision_id"]
+        .as_str()
+        .expect("new_decision_id")
+        .to_owned();
+
+    // compact view on the original id — should return the terminal (new_id) as focal decision
+    send_mcp_request(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {
+                "name": "hivemind_compact_view",
+                "arguments": { "decision_id": original_id }
+            }
+        }),
+    )
+    .expect("send compact_view");
+    let compacted = read_mcp_response(&mut stdout).expect("read compact_view");
+    assert_eq!(compacted["result"]["isError"], Value::Bool(false));
+    let sc = &compacted["result"]["structuredContent"];
+    // result_count == 1 when found
+    assert_eq!(sc["result_count"], Value::from(1u64), "expected 1 result");
+    let data = &sc["data"];
+    // focal decision is the terminal (new) decision
+    assert_eq!(
+        data["decision"]["id"].as_str(),
+        Some(new_id.as_str()),
+        "compact view focal node must be the terminal decision"
+    );
+    // supersession_chain is present with chain_length == 2 and oldest_id == original_id
+    let chain = &data["supersession_chain"];
+    assert_eq!(
+        chain["chain_length"],
+        Value::from(2u64),
+        "chain_length must be 2"
+    );
+    assert_eq!(
+        chain["oldest_id"].as_str(),
+        Some(original_id.as_str()),
+        "oldest_id must be the original decision"
+    );
+
+    drop(stdin);
+    let status = child.wait().expect("wait child");
+    assert!(status.success(), "server exited non-zero: {status:?}");
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn mcp_m3_tools_are_tenant_isolated() {
+    let hivemind_dir = unique_dir("tenant-iso");
+    let _ = std::fs::create_dir_all(&hivemind_dir);
+
+    // Spawn tenant-a process, capture a decision with a unique keyword.
+    let decision_id_a = {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_hivemind"))
+            .arg("--hivemind-dir")
+            .arg(&hivemind_dir)
+            .arg("--tenant")
+            .arg("tenant-a")
+            .arg("mcp")
+            .arg("--session-id")
+            .arg("tenant-a-session")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn tenant-a");
+
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+
+        send_mcp_request(
+            &mut stdin,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
+        )
+        .expect("send init a");
+        read_mcp_response(&mut stdout).expect("read init a");
+
+        send_mcp_request(
+            &mut stdin,
+            json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {
+                    "name": "capture_decision",
+                    "arguments": {
+                        "actor_id": "agent:test:tenant-a",
+                        "title": "TenantA uses columnstore indexes",
+                        "rationale": "Analytical workloads benefit from columnar layout",
+                        "topic_keys": ["tenantA-database"],
+                        "options": [{"label": "columnstore"}]
+                    }
+                }
+            }),
+        )
+        .expect("send capture a");
+        let resp = read_mcp_response(&mut stdout).expect("read capture a");
+        assert_eq!(resp["result"]["isError"], Value::Bool(false));
+        let id = resp["result"]["structuredContent"]["decision_id"]
+            .as_str()
+            .expect("decision_id")
+            .to_owned();
+        drop(stdin);
+        child.wait().expect("wait tenant-a");
+        id
+    };
+
+    // Spawn tenant-b process, capture a different decision.
+    let decision_id_b = {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_hivemind"))
+            .arg("--hivemind-dir")
+            .arg(&hivemind_dir)
+            .arg("--tenant")
+            .arg("tenant-b")
+            .arg("mcp")
+            .arg("--session-id")
+            .arg("tenant-b-session")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn tenant-b");
+
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+
+        send_mcp_request(
+            &mut stdin,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
+        )
+        .expect("send init b");
+        read_mcp_response(&mut stdout).expect("read init b");
+
+        send_mcp_request(
+            &mut stdin,
+            json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {
+                    "name": "capture_decision",
+                    "arguments": {
+                        "actor_id": "agent:test:tenant-b",
+                        "title": "TenantB uses row-oriented storage",
+                        "rationale": "OLTP workloads are row-access dominant",
+                        "topic_keys": ["tenantB-database"],
+                        "options": [{"label": "rowstore"}]
+                    }
+                }
+            }),
+        )
+        .expect("send capture b");
+        let resp = read_mcp_response(&mut stdout).expect("read capture b");
+        assert_eq!(resp["result"]["isError"], Value::Bool(false));
+        let id = resp["result"]["structuredContent"]["decision_id"]
+            .as_str()
+            .expect("decision_id")
+            .to_owned();
+        drop(stdin);
+        child.wait().expect("wait tenant-b");
+        id
+    };
+
+    // Confirm the two decisions have distinct IDs.
+    assert_ne!(
+        decision_id_a, decision_id_b,
+        "decisions from different tenants must not collide"
+    );
+
+    // Query tenant-a: search for tenant-a's keyword — must NOT see tenant-b's data.
+    {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_hivemind"))
+            .arg("--hivemind-dir")
+            .arg(&hivemind_dir)
+            .arg("--tenant")
+            .arg("tenant-a")
+            .arg("mcp")
+            .arg("--session-id")
+            .arg("tenant-a-query")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn tenant-a query");
+
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+
+        send_mcp_request(
+            &mut stdin,
+            json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"}),
+        )
+        .expect("send init");
+        read_mcp_response(&mut stdout).expect("read init");
+
+        // Broad search — tenant-a should only see its own decision.
+        send_mcp_request(
+            &mut stdin,
+            json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {
+                    "name": "search_decisions",
+                    "arguments": { "limit": 100 }
+                }
+            }),
+        )
+        .expect("send search a");
+        let resp = read_mcp_response(&mut stdout).expect("read search a");
+        assert_eq!(resp["result"]["isError"], Value::Bool(false));
+        let sc = &resp["result"]["structuredContent"];
+        assert_eq!(
+            sc["result_count"],
+            Value::from(1u64),
+            "tenant-a must see exactly 1 decision, not tenant-b's data"
+        );
+        assert_eq!(
+            sc["data"]["items"][0]["decision"]["id"].as_str(),
+            Some(decision_id_a.as_str()),
+            "tenant-a search must return only tenant-a's decision"
+        );
+
+        // Summarize tenant-a's decision — must succeed.
+        send_mcp_request(
+            &mut stdin,
+            json!({
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": {
+                    "name": "summarize_decisions",
+                    "arguments": { "decision_ids": [decision_id_a] }
+                }
+            }),
+        )
+        .expect("send summarize a");
+        let sum_resp = read_mcp_response(&mut stdout).expect("read summarize a");
+        assert_eq!(
+            sum_resp["result"]["isError"],
+            Value::Bool(false),
+            "tenant-a can summarize its own decision"
+        );
+
+        // Summarize tenant-b's decision from tenant-a's session — must return isError.
+        send_mcp_request(
+            &mut stdin,
+            json!({
+                "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                "params": {
+                    "name": "summarize_decisions",
+                    "arguments": { "decision_ids": [decision_id_b] }
+                }
+            }),
+        )
+        .expect("send summarize cross-tenant");
+        let cross_resp = read_mcp_response(&mut stdout).expect("read summarize cross-tenant");
+        assert_eq!(
+            cross_resp["result"]["isError"],
+            Value::Bool(true),
+            "tenant-a must not summarize tenant-b's decision"
+        );
+
+        drop(stdin);
+        child.wait().expect("wait tenant-a query");
+    }
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}

@@ -42,18 +42,19 @@ fn initialize_reports_server_metadata() {
 }
 
 #[test]
-fn tools_list_includes_all_eleven_tools() {
+fn tools_list_includes_all_twelve_tools() {
     let dir = unique_dir("list");
     let config = McpConfig::new(&dir).with_session_id("test-session");
     let responses = drive(
         &config,
         &[r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#],
     );
-    assert_eq!(responses.len(), 1);
-    let tools = responses[0]["result"]["tools"].as_array().expect("array");
+    assert_eq!(responses.len(), 1); // ubs:ignore: test-only; index guaranteed by test setup
+    let tools = responses[0]["result"]["tools"].as_array().expect("array"); // ubs:ignore: test-only; panicking is correct in tests
+    assert_eq!(tools.len(), 12, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
     let names: Vec<&str> = tools
         .iter()
-        .map(|tool| tool["name"].as_str().expect("string name"))
+        .map(|tool| tool["name"].as_str().expect("string name")) // ubs:ignore: test-only; panicking is correct in tests
         .collect();
     for expected in [
         "capture_decision",
@@ -66,9 +67,10 @@ fn tools_list_includes_all_eleven_tools() {
         "get_supersession_chain",
         "search_decisions",
         "dump_graph",
+        "hivemind_compact_view",
         "summarize_decisions",
     ] {
-        assert!(names.contains(&expected), "missing tool {expected}");
+        assert!(names.contains(&expected), "missing tool {expected}"); // ubs:ignore: test-only assertion
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
