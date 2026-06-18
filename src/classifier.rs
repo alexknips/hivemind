@@ -397,6 +397,32 @@ fn write_classification(
     Ok(())
 }
 
+/// Classify a single free-text input and return the raw capture items without
+/// touching the ledger. Used by the fidelity evaluator to test the classifier
+/// against the hand-authored gold corpus.
+pub async fn classify_text(
+    client: &reqwest::Client,
+    api_key: &str,
+    input: &str,
+) -> Result<Vec<crate::events::CaptureItem>, Box<dyn std::error::Error + Send + Sync>> {
+    let output = call_haiku(client, api_key, input).await?;
+    let captures = output
+        .captures
+        .into_iter()
+        .map(|r| crate::events::CaptureItem {
+            kind: r.kind,
+            title: r.title,
+            rationale: r.rationale,
+            topic_keys: r.topic_keys,
+            evidence_ids: r.evidence_ids,
+            options: r.options,
+            chosen_option: r.chosen_option,
+            extraction_confidence: r.extraction_confidence,
+        })
+        .collect();
+    Ok(captures)
+}
+
 /// Try to read the API key and spawn the worker. Logs a warning and returns
 /// `None` if the key is absent.
 pub fn try_spawn(hivemind_dir: Arc<PathBuf>, tenant_id: TenantId) -> Option<()> {

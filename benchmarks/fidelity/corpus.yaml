@@ -1,0 +1,386 @@
+# HiveMind capture-fidelity benchmark — Phase 1 (artificial corpus)
+# ---------------------------------------------------------------------------
+# Goal: measure how well the system CAPTURES what was actually there, PER TYPE.
+# This is SYSTEM quality (fidelity), NOT thought quality and NOT recall-uplift.
+#
+# Method (Phase 1, artificial): each case is a synthetic decision episode
+# (`input`) plus a hand-authored EXPECTED typed capture (`expected`, the gold).
+# Run capture on `input` -> project to the typed graph -> diff actual vs expected
+# per node-kind and per edge-kind -> precision / recall / F1 each, macro-F1 headline.
+# Phase 2 (later): same harness, scored against real production decisions.
+#
+# LOCKED CAPTURE CONTRACT (alex, 2026-06-18):
+#  - NO status-update operation: events are appended only for a real decision, a real
+#    change to one (accept/reject/supersede/firm-up), or a genuine request/evidence/
+#    hypothesis. Never for re-assertions/non-decisions. Keeps the append-only log lean.
+#  - `status` (proposed/accepted/contested/superseded) is a DERIVED Layer-2 projection,
+#    NOT a captured field. So gold scores the captured EVENTS + nodes + edges; any
+#    `status:` shown is a downstream consequence check, not a capture target.
+#  - Decisions carry EXPRESSED `confidence` {low|medium|high} — taken from the decider's
+#    words (probably/leaning=low ... decided=high), never system-computed.
+#  - A LEAN is a real low-confidence Decision (capture it; see E3). A genuine open ask
+#    with no position = DecisionRequest (see F3). CONTESTED is emergent (proposed +
+#    rejected, no accept; see D2), never a stored status.
+#  (Unlabelled decisions = firm/high; E3 = low per locked contract.)
+#
+# Node kinds (src/projector/mod.rs): Decision, DecisionRequest, Actor, Blocker,
+#   Evidence, Option, Hypothesis.  (Notification is system-internal; not scored.)
+#   "artifacts" == Evidence (per alex).
+# Edge kinds: semantic (src/events.rs): BASED_ON, HAS_OPTION, CHOSE, ASSUMES,
+#   SUPPORTS, REFUTES, SUPERSEDES;  projected (src/projector/mod.rs): ProposedBy,
+#   AcceptedBy, RejectedBy, Supersedes, BlockerForDecision, BlockedActor,
+#   DecisionRequestForDecision.
+#
+# Matching: edges + structural fields (kind, chosen, status, endpoints) = exact;
+#   free-text fields (decision/option/evidence text) = normalized now, LLM-judge
+#   added only in Phase 2 where phrasing varies. `key` = stable id for edge refs
+#   within a case (not part of scoring).
+#
+# Diversity axes covered: structure (clean / superseded / hypothesis-driven /
+#   blocked / implicit / sparse / negative / request-only), domain (infra, eng,
+#   product, finance, architecture, auth, research, data, security, legal, org),
+#   difficulty (clean -> messy -> adversarial). Negative & sparse cases exist
+#   specifically to penalize FABRICATION (precision), per the honesty rails.
+# ---------------------------------------------------------------------------
+
+cases:
+
+# ===== Archetype A: clean multi-option decision (Decision/Option/CHOSE/BASED_ON/Evidence)
+  - id: A1-ledger-store
+    archetype: clean-multi-option
+    domain: infrastructure
+    difficulty: clean
+    input: >
+      Decision: use Postgres for the ledger store. We weighed Postgres vs SQLite.
+      Chose Postgres — we need concurrent multi-tenant writes with row-level
+      security; SQLite is single-writer, so rejected. Backed by a load test
+      showing 200 concurrent tenants sustained.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "use Postgres for the ledger store", status: accepted, confidence: high}
+        - {kind: Option, key: pg, text: "Postgres", chosen: true}
+        - {kind: Option, key: sqlite, text: "SQLite", chosen: false}
+        - {kind: Evidence, key: ev, text: "load test: 200 concurrent tenants sustained"}
+      edges:
+        - {kind: HAS_OPTION, from: d, to: pg}
+        - {kind: HAS_OPTION, from: d, to: sqlite}
+        - {kind: CHOSE, from: d, to: pg}
+        - {kind: BASED_ON, from: d, to: ev}
+
+  - id: A2-frontend-framework
+    archetype: clean-multi-option
+    domain: frontend-eng
+    difficulty: clean
+    input: >
+      We picked React for the console over Svelte and SolidJS. React won mainly
+      on hiring pool and ecosystem; Svelte was the runner-up on bundle size.
+      No hard data, just team experience.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "use React for the console", status: accepted, confidence: high}
+        - {kind: Option, key: react, text: "React", chosen: true}
+        - {kind: Option, key: svelte, text: "Svelte", chosen: false}
+        - {kind: Option, key: solid, text: "SolidJS", chosen: false}
+      edges:
+        - {kind: HAS_OPTION, from: d, to: react}
+        - {kind: HAS_OPTION, from: d, to: svelte}
+        - {kind: HAS_OPTION, from: d, to: solid}
+        - {kind: CHOSE, from: d, to: react}
+      # note: NO Evidence node — rationale was experience, not data. Capturing an
+      # Evidence here would be a fabrication (precision penalty).
+
+  - id: A3-cloud-region
+    archetype: clean-multi-option
+    domain: infra-compliance
+    difficulty: moderate
+    input: >
+      For EU customer data we will host in eu-central-1 rather than us-east-1.
+      Driver is GDPR data residency. We considered eu-west-1 too but central had
+      lower latency to our main EU cohort per the RUM dashboard.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "host EU customer data in eu-central-1", status: accepted, confidence: high}
+        - {kind: Option, key: euc, text: "eu-central-1", chosen: true}
+        - {kind: Option, key: euw, text: "eu-west-1", chosen: false}
+        - {kind: Option, key: use, text: "us-east-1", chosen: false}
+        - {kind: Evidence, key: gdpr, text: "GDPR data residency requirement"}
+        - {kind: Evidence, key: rum, text: "RUM dashboard: lower latency to EU cohort from central"}
+      edges:
+        - {kind: HAS_OPTION, from: d, to: euc}
+        - {kind: HAS_OPTION, from: d, to: euw}
+        - {kind: HAS_OPTION, from: d, to: use}
+        - {kind: CHOSE, from: d, to: euc}
+        - {kind: BASED_ON, from: d, to: gdpr}
+        - {kind: BASED_ON, from: d, to: rum}
+
+# ===== Archetype B: superseded / reversed decisions (SUPERSEDES)
+  - id: B1-pricing-reversal
+    archetype: superseded
+    domain: finance-product
+    difficulty: moderate
+    input: >
+      We are reversing the March decision to use usage-based pricing; moving to
+      flat per-seat. Usage-based created bill shock and churn (Q2 churn up 4pts).
+    expected:
+      nodes:
+        - {kind: Decision, key: old, text: "usage-based pricing", status: superseded, confidence: high}
+        - {kind: Decision, key: new, text: "flat per-seat pricing", status: accepted, confidence: high}
+        - {kind: Evidence, key: churn, text: "Q2 churn up 4 points (bill shock)"}
+      edges:
+        - {kind: SUPERSEDES, from: new, to: old}
+        - {kind: BASED_ON, from: new, to: churn}
+
+  - id: B2-repo-topology-double
+    archetype: superseded
+    domain: architecture
+    difficulty: hard
+    input: >
+      Going back to a monorepo. We started monorepo, split to polyrepo last year
+      for team autonomy, but cross-repo change coordination got too painful.
+      So this supersedes the polyrepo decision, which had superseded the original
+      monorepo one.
+    expected:
+      nodes:
+        - {kind: Decision, key: mono1, text: "original monorepo", status: superseded, confidence: high}
+        - {kind: Decision, key: poly, text: "split to polyrepo", status: superseded, confidence: high}
+        - {kind: Decision, key: mono2, text: "return to monorepo", status: accepted, confidence: high}
+        - {kind: Evidence, key: coord, text: "cross-repo change coordination too painful"}
+      edges:
+        - {kind: SUPERSEDES, from: poly, to: mono1}
+        - {kind: SUPERSEDES, from: mono2, to: poly}
+        - {kind: BASED_ON, from: mono2, to: coord}
+
+  - id: B3-auth-vendor-switch
+    archetype: superseded
+    domain: auth
+    difficulty: moderate
+    input: >
+      Switching from Auth0 to our own OIDC on Keycloak. The Auth0 choice no longer
+      fits — per-MAU cost crossed $40k/mo at current growth. Keycloak self-host
+      chosen over Ory mainly for the admin UI maturity.
+    expected:
+      nodes:
+        - {kind: Decision, key: old, text: "use Auth0", status: superseded, confidence: high}
+        - {kind: Decision, key: new, text: "self-host OIDC on Keycloak", status: accepted, confidence: high}
+        - {kind: Option, key: kc, text: "Keycloak", chosen: true}
+        - {kind: Option, key: ory, text: "Ory", chosen: false}
+        - {kind: Evidence, key: cost, text: "Auth0 per-MAU cost crossed $40k/mo"}
+      edges:
+        - {kind: SUPERSEDES, from: new, to: old}
+        - {kind: HAS_OPTION, from: new, to: kc}
+        - {kind: HAS_OPTION, from: new, to: ory}
+        - {kind: CHOSE, from: new, to: kc}
+        - {kind: BASED_ON, from: new, to: cost}
+
+# ===== Archetype C: hypothesis-driven (Hypothesis/ASSUMES/SUPPORTS/REFUTES/Evidence)
+  - id: C1-perf-hypothesis-refuted
+    archetype: hypothesis-driven
+    domain: research-perf
+    difficulty: moderate
+    input: >
+      We assumed batching writes would cut p99 latency. The benchmark refuted it:
+      batching cut throughput cost but p99 was unchanged because the bottleneck is
+      fsync. Decision: do not add batching; revisit fsync strategy instead.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "do not add write batching", status: accepted, confidence: high}
+        - {kind: Hypothesis, key: h, text: "batching writes will cut p99 latency"}
+        - {kind: Evidence, key: bench, text: "benchmark: p99 unchanged, bottleneck is fsync"}
+      edges:
+        - {kind: ASSUMES, from: d, to: h}
+        - {kind: REFUTES, from: bench, to: h}
+        - {kind: BASED_ON, from: d, to: bench}
+
+  - id: C2-growth-assumption-supported
+    archetype: hypothesis-driven
+    domain: product-data
+    difficulty: moderate
+    input: >
+      Hypothesis: teams that import existing decisions in week 1 retain better.
+      Cohort analysis supports it — importers retained at 68% vs 41%. So we'll make
+      import a first-run step.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "make decision-import a first-run step", status: accepted, confidence: high}
+        - {kind: Hypothesis, key: h, text: "week-1 importers retain better"}
+        - {kind: Evidence, key: cohort, text: "cohort: importers 68% vs 41% retention"}
+      edges:
+        - {kind: ASSUMES, from: d, to: h}
+        - {kind: SUPPORTS, from: cohort, to: h}
+        - {kind: BASED_ON, from: d, to: cohort}
+
+  - id: C3-threat-model-mixed
+    archetype: hypothesis-driven
+    domain: security
+    difficulty: hard
+    input: >
+      Threat hypothesis: tenant isolation could leak via the shared FTS index.
+      Pen-test partially supported it (cross-tenant rows were rankable) but the
+      row-level filter refuted actual readability. We will still add an index-scope
+      guard as defense in depth.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "add FTS index-scope guard (defense in depth)", status: accepted, confidence: high}
+        - {kind: Hypothesis, key: h, text: "tenant isolation could leak via shared FTS index"}
+        - {kind: Evidence, key: rank, text: "pen-test: cross-tenant rows were rankable"}
+        - {kind: Evidence, key: filter, text: "pen-test: row-level filter blocked actual readability"}
+      edges:
+        - {kind: ASSUMES, from: d, to: h}
+        - {kind: SUPPORTS, from: rank, to: h}
+        - {kind: REFUTES, from: filter, to: h}
+        - {kind: BASED_ON, from: d, to: rank}
+
+# ===== Archetype D: contested / blocked decision (Blocker/Actor/DecisionRequest)
+  - id: D1-launch-blocked-legal
+    archetype: blocked
+    domain: legal
+    difficulty: moderate
+    input: >
+      Request to launch the EU beta. Blocked: legal has not signed off on the DPA
+      template. Owner Priya raised the request; Sam (legal) is the blocker owner.
+      No decision yet.
+    expected:
+      nodes:
+        - {kind: DecisionRequest, key: req, text: "launch the EU beta", status: open}
+        - {kind: Blocker, key: blk, text: "legal sign-off on DPA template pending"}
+        - {kind: Actor, key: priya, text: "Priya"}
+        - {kind: Actor, key: sam, text: "Sam (legal)"}
+      edges:
+        - {kind: DecisionRequestedBy, from: req, to: priya}
+        - {kind: BlockerForDecision, from: blk, to: req}
+        - {kind: BlockerRequiredOwner, from: blk, to: sam}
+      # note: NO Decision node — it is requested+blocked, not decided. Emitting an
+      # accepted Decision here is a fabrication.
+
+  - id: D2-hiring-contested
+    archetype: blocked
+    domain: org-people
+    difficulty: hard
+    input: >
+      Should we extend an offer to candidate K for staff eng? Dana (hiring mgr)
+      proposed yes; Ravi (bar raiser) rejected on system-design signal. Unresolved —
+      escalated to VP. Two opposing positions on the record.
+    expected:
+      nodes:
+        - {kind: DecisionRequest, key: req, text: "extend staff-eng offer to candidate K", status: contested}
+        - {kind: Actor, key: dana, text: "Dana (hiring manager)"}
+        - {kind: Actor, key: ravi, text: "Ravi (bar raiser)"}
+      edges:
+        - {kind: ProposedBy, from: req, to: dana}
+        - {kind: RejectedBy, from: req, to: ravi}
+      # contested = both positions preserved, no CHOSE, no accepted Decision.
+
+  - id: D3-deploy-gate-blocked
+    archetype: blocked
+    domain: security
+    difficulty: moderate
+    input: >
+      Decision request: ship v0.3 to prod. Blocked by a failing dependency CVE scan
+      (RUSTSEC on postgres-protocol). Release owner is Mia. Will proceed once the
+      bump lands.
+    expected:
+      nodes:
+        - {kind: DecisionRequest, key: req, text: "ship v0.3 to prod", status: open}
+        - {kind: Blocker, key: blk, text: "failing dependency CVE scan (RUSTSEC postgres-protocol)"}
+        - {kind: Actor, key: mia, text: "Mia"}
+      edges:
+        - {kind: DecisionRequestedBy, from: req, to: mia}
+        - {kind: BlockerForDecision, from: blk, to: req}
+
+# ===== Archetype E: implicit / messy capture (recall + ambiguity stress)
+  - id: E1-slack-implicit-option
+    archetype: implicit
+    domain: eng
+    difficulty: hard
+    input: >
+      "ok so we're just gonna go with the queue approach for retries. yeah cron
+      would technically work but nobody wants to babysit cron windows again lol.
+      queue it is."
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "use a queue for retries", status: accepted, confidence: high}
+        - {kind: Option, key: queue, text: "queue", chosen: true}
+        - {kind: Option, key: cron, text: "cron", chosen: false}
+      edges:
+        - {kind: HAS_OPTION, from: d, to: queue}
+        - {kind: HAS_OPTION, from: d, to: cron}
+        - {kind: CHOSE, from: d, to: queue}
+      # the rejected alternative (cron) is implicit in casual prose — tests recall.
+
+  - id: E2-meeting-decision-plus-tangent
+    archetype: implicit
+    domain: product
+    difficulty: hard
+    input: >
+      Standup notes: "Discussed the roadmap. Lots of back-and-forth on naming.
+      Decided: cut the CSV export from v1 to save two weeks. Also someone's coffee
+      machine broke. Marco will tell support about the export change."
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "cut CSV export from v1 (save two weeks)", status: accepted, confidence: high}
+        - {kind: Actor, key: marco, text: "Marco"}
+      edges:
+        - {kind: AcceptedBy, from: d, to: marco}
+      # exactly ONE decision; the naming chatter and coffee machine are noise that
+      # must NOT become nodes (precision under distraction).
+
+  - id: E3-tentative-low-confidence-decision
+    archetype: implicit
+    domain: eng
+    difficulty: hard
+    input: >
+      "We'll probably go with gRPC for the internal API but I want to sanity-check
+      latency first before we commit."
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "use gRPC for the internal API", confidence: low}
+        - {kind: Hypothesis, key: h, text: "gRPC latency will be acceptable for the internal API"}
+      edges:
+        - {kind: ASSUMES, from: d, to: h}
+      # LOCKED CONTRACT (2026-06-18): "probably" = a LEAN = a real but LOW-confidence
+      # decision -> CAPTURE it as a Decision(confidence: low), NOT a no-decision
+      # DecisionRequest. The "sanity-check latency first" = the assumption it ASSUMES
+      # (why confidence is low). Firming up later = a NEW event (re-affirm at higher
+      # confidence), never a status mutation. Confidence is EXPRESSED {low|medium|high},
+      # not system-computed. (A genuine open ask with no position -> DecisionRequest; see F3.)
+
+# ===== Archetype F: sparse / negative (anti-fabrication, precision)
+  - id: F1-unilateral-no-alternatives
+    archetype: sparse
+    domain: ops
+    difficulty: clean
+    input: >
+      Decision: rotate the signing key today. Non-negotiable, security incident.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "rotate the signing key today", status: accepted, confidence: high}
+      edges: []
+      # genuinely no alternatives and no cited evidence — the correct capture is a
+      # bare Decision. Inventing Options/Evidence here is the classic fabrication.
+
+  - id: F2-status-update-non-decision
+    archetype: negative
+    domain: general
+    difficulty: moderate
+    input: >
+      "Update: the migration is 60% done, on track for Friday. No blockers right
+      now. I'll post again tomorrow."
+    expected:
+      nodes: []
+      edges: []
+      # NOT a decision at all. Correct capture is empty. Any Decision/Blocker node
+      # here is a false positive — this case purely measures precision.
+
+  - id: F3-request-only-no-decision
+    archetype: negative
+    domain: finance
+    difficulty: clean
+    input: >
+      "Requesting approval to increase the data-egress budget by $5k/mo. Routing to
+      Finance for a call."
+    expected:
+      nodes:
+        - {kind: DecisionRequest, key: req, text: "increase data-egress budget by $5k/mo", status: open}
+      edges: []
+      # a request with no resolution: DecisionRequest only — no Decision, no CHOSE,
+      # no AcceptedBy. Tests the request/decision boundary.

@@ -20,6 +20,10 @@ path = "src/lib.rs"
 name = "hivemind"
 path = "src/main.rs"
 
+[[bin]]
+name = "fidelity-eval"
+path = "benchmarks/fidelity/main.rs"
+
 [features]
 default = []
 graph-kuzu = ["dep:kuzu", "dep:cxx-build"]
@@ -45,6 +49,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+serde_yaml = "0.9"
 sha2 = "0.10.9"
 thiserror = "2.0.17"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
