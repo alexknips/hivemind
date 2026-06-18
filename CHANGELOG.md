@@ -3,6 +3,38 @@
 All notable changes to HiveMind are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.3.0 — 2026-06-18 — M3: Layer-3 recall tools over the MCP gateway
+
+HiveMind gains its first Layer-3 read tools for on-demand recall: decision
+summarization and graph compactification, alongside richer search. All are
+exposed as read-only tools over the authenticated, tenant-isolated MCP gateway,
+so agents can recall and condense organizational decision memory on demand
+without a local ledger. Layer-3 stays swappable — the write and query layers
+remain fully functional without it.
+
+### Added
+- **Decision summarization** (`summarize_decisions` MCP tool, Layer-3). Produces
+  a text summary of the decisions matching a query/filter, built purely from the
+  read layer — no writes, no inference beyond explicit status derivation.
+  (`src/summarize.rs`)
+- **Graph compactification** (`hivemind_compact_view` MCP tool, Layer-3). A
+  `CompactView` query that collapses safely-redundant detail while preserving
+  main decisions and their rationale, per the signal/noise semantics in the
+  spec. (`src/queries/compact_view.rs`)
+- **Compactification specification.** `docs/COMPACTIFICATION_SPEC.md` defines the
+  signal/noise rules for graph compaction — what detail is safely droppable
+  versus what must always be preserved.
+- **Search filter improvements.** HTTP decision search now honors the `source`
+  filter and comma-separated `actor_id` values. (`src/api.rs`)
+- **MCP gateway end-to-end tests.** `tests/mcp_stdio_e2e.rs` exercises the stdio
+  MCP gateway across search, summarize, compact-view, and tenant isolation.
+
+### Deferred to follow-up
+- **hivemind-yfbq** (P3): tighten the UBS warning baseline now that
+  assertion-heavy integration-test files under `tests/` are exempted via
+  `.ubsignore`. Criticals remain gated everywhere; only the warning-count
+  baseline is affected.
+
 ## v0.2.0 — 2026-06-17 — M2: Shared multi-tenant backend
 
 HiveMind now runs as a hosted multi-tenant service. A single Postgres-backed
