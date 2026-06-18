@@ -156,6 +156,9 @@ jobs:
       # tightened by hivemind-41n8s on 2026-05-22 with `ubs --ci --only=rust .`.
       # Bumped from 1900 -> 3164 on 2026-05-25 to unblock master after recent
       # backend work landed without paying the warning count down per PRINCIPLES §8.
+      # Tightened from 3164 -> 3039 on 2026-06-18 (hivemind-yfbq) after adding
+      # tests/mcp_stdio_e2e.rs to .ubsignore (d27b80c) — test assertions are excluded
+      # from the warning baseline, consistent with tests/api.rs and tests/multi_tenant.rs.
       # Paydown back toward 1900 is tracked in hivemind-ubs-warning-paydown-3164-lkfp.
       # Top categories still tracked: unwrap/expect panic inventory (hivemind-dfc5e),
       # runtime panic surfaces (hivemind-gofiy), loop allocation inventory (hivemind-41n8s).
@@ -164,7 +167,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          baseline_warnings=3164
+          baseline_warnings=3039
           ~/.local/bin/ubs --ci --only=rust --report-json=/tmp/ubs-warning-summary.json .
           warnings="$(jq -r '.totals.warning' /tmp/ubs-warning-summary.json)"
           if [ "${warnings}" -gt "${baseline_warnings}" ]; then
