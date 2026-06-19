@@ -790,6 +790,8 @@ async fn classifier_batch_classified_event_round_trips() {
         rejected_by: None,
         blocked_actor_id: None,
         decision_id: None,
+        participants: vec![],
+        session_initiator: None,
     }];
 
     let classified_event_id = commands

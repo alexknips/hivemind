@@ -54,7 +54,7 @@ const NODE_KINDS: [NodeKind; 8] = [
     NodeKind::Hypothesis,
 ];
 
-const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 18] = [
+const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 20] = [
     ProjectorRelationKind::ProposedBy,
     ProjectorRelationKind::DecisionRequestedBy,
     ProjectorRelationKind::DecisionRequestForDecision,
@@ -73,6 +73,8 @@ const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 18] = [
     ProjectorRelationKind::Assumes,
     ProjectorRelationKind::Supports,
     ProjectorRelationKind::Refutes,
+    ProjectorRelationKind::ParticipatedBy,
+    ProjectorRelationKind::InitiatedBy,
 ];
 
 const DECISION_STATUSES: [DecisionStatus; 5] = [
@@ -568,6 +570,8 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                     rejected_by: None,
                     blocked_actor_id: None,
                     decision_id: None,
+                    participants: vec![],
+                    session_initiator: None,
                 }],
             }),
         ),
@@ -720,6 +724,10 @@ fn projector_relation_contract(kind: ProjectorRelationKind) -> (&'static str, No
         ProjectorRelationKind::Assumes => ("ASSUMES", NodeKind::Decision, NodeKind::Hypothesis),
         ProjectorRelationKind::Supports => ("SUPPORTS", NodeKind::Evidence, NodeKind::Hypothesis),
         ProjectorRelationKind::Refutes => ("REFUTES", NodeKind::Evidence, NodeKind::Hypothesis),
+        ProjectorRelationKind::ParticipatedBy => {
+            ("PARTICIPATED_BY", NodeKind::Decision, NodeKind::Actor)
+        }
+        ProjectorRelationKind::InitiatedBy => ("INITIATED_BY", NodeKind::Decision, NodeKind::Actor),
     }
 }
 

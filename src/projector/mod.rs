@@ -89,10 +89,14 @@ pub enum RelationKind {
     Assumes,
     Supports,
     Refutes,
+    /// Actor that participated in the session that produced this decision.
+    ParticipatedBy,
+    /// Actor that initiated the session that produced this decision.
+    InitiatedBy,
 }
 
 impl RelationKind {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 20] = [
         Self::ProposedBy,
         Self::DecisionRequestedBy,
         Self::DecisionRequestForDecision,
@@ -111,6 +115,8 @@ impl RelationKind {
         Self::Assumes,
         Self::Supports,
         Self::Refutes,
+        Self::ParticipatedBy,
+        Self::InitiatedBy,
     ];
 
     pub const fn table_name(self) -> &'static str {
@@ -133,6 +139,8 @@ impl RelationKind {
             Self::Assumes => "ASSUMES",
             Self::Supports => "SUPPORTS",
             Self::Refutes => "REFUTES",
+            Self::ParticipatedBy => "PARTICIPATED_BY",
+            Self::InitiatedBy => "INITIATED_BY",
         }
     }
 
@@ -154,6 +162,7 @@ impl RelationKind {
             Self::HasOption | Self::Chose => (NodeKind::Decision, NodeKind::Option),
             Self::Assumes => (NodeKind::Decision, NodeKind::Hypothesis),
             Self::Supports | Self::Refutes => (NodeKind::Evidence, NodeKind::Hypothesis),
+            Self::ParticipatedBy | Self::InitiatedBy => (NodeKind::Decision, NodeKind::Actor),
         }
     }
 }
@@ -597,7 +606,22 @@ fn upsert_actor(
     actor_id: &str,
     properties: &GraphProperties,
 ) -> Result<()> {
-    graph.upsert_node(NodeKind::Actor, actor_id, properties)
+    let mut props = properties.clone();
+    props.insert(
+        "kind".to_owned(),
+        GraphValue::String(actor_kind(actor_id).to_owned()),
+    );
+    graph.upsert_node(NodeKind::Actor, actor_id, &props)
+}
+
+fn actor_kind(actor_id: &str) -> &'static str {
+    if actor_id.starts_with("human:") {
+        "human"
+    } else if actor_id.starts_with("agent:") {
+        "agent"
+    } else {
+        "unknown"
+    }
 }
 
 fn ensure_node_reference(
@@ -759,6 +783,24 @@ fn project_capture(
                     RelationKind::BasedOn,
                     node_id,
                     evidence_id,
+                    origin_properties,
+                )?;
+            }
+            for participant_id in &capture.participants {
+                upsert_actor(graph, participant_id, origin_properties)?;
+                graph.upsert_edge(
+                    RelationKind::ParticipatedBy,
+                    node_id,
+                    participant_id,
+                    origin_properties,
+                )?;
+            }
+            if let Some(initiator_id) = &capture.session_initiator {
+                upsert_actor(graph, initiator_id, origin_properties)?;
+                graph.upsert_edge(
+                    RelationKind::InitiatedBy,
+                    node_id,
+                    initiator_id,
                     origin_properties,
                 )?;
             }

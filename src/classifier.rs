@@ -249,6 +249,16 @@ async fn run_classifier_loop(hivemind_dir: Arc<PathBuf>, tenant_id: TenantId, ap
     }
 }
 
+struct BatchInfo {
+    event_id: u64,
+    batch_id: String,
+    batch_text: String,
+    /// actor_id from the IngestBatchReceived event (the batch submitter).
+    actor_id: String,
+    agent_tool: String,
+    session_id: String,
+}
+
 async fn classify_pending_batches(
     client: &reqwest::Client,
     hivemind_dir: &PathBuf,
@@ -263,47 +273,74 @@ async fn classify_pending_batches(
         }
     };
 
-    for (event_id, batch_id, batch_text) in batches {
-        debug!(target: "hivemind::classifier", batch_id = %batch_id, "classifying batch");
-        match call_haiku(client, api_key, &batch_text).await {
+    for batch in batches {
+        debug!(target: "hivemind::classifier", batch_id = %batch.batch_id, "classifying batch");
+
+        let session_initiator: Option<String> = if batch.actor_id.is_empty() {
+            None
+        } else {
+            Some(batch.actor_id.clone())
+        };
+
+        // Build the agent actor ID from the session; empty session_id means no agent session.
+        let agent_actor_id: Option<String> = if batch.session_id.is_empty() {
+            None
+        } else {
+            Some(format!("agent:{}:{}", batch.agent_tool, batch.session_id))
+        };
+
+        match call_haiku(client, api_key, &batch.batch_text).await {
             Ok(output) => {
                 let captures: Vec<CaptureItem> = output
                     .captures
                     .into_iter()
-                    .map(|r| CaptureItem {
-                        kind: r.kind,
-                        title: r.title,
-                        rationale: r.rationale,
-                        topic_keys: r.topic_keys,
-                        evidence_ids: r.evidence_ids,
-                        options: r.options,
-                        chosen_option: r.chosen_option,
-                        extraction_confidence: r.extraction_confidence,
-                        expressed_confidence: r.expressed_confidence,
-                        supersedes_id: r.supersedes_id,
-                        assumes_ids: r.assumes_ids,
-                        supports_ids: r.supports_ids,
-                        refutes_ids: r.refutes_ids,
-                        actor_id: r.actor_id,
-                        accepted_by: r.accepted_by,
-                        rejected_by: r.rejected_by,
-                        blocked_actor_id: r.blocked_actor_id,
-                        decision_id: r.decision_id,
+                    .map(|r| {
+                        let mut participants: Vec<String> = Vec::new();
+                        if let Some(ref initiator) = session_initiator {
+                            participants.push(initiator.clone());
+                        }
+                        if let Some(ref agent) = agent_actor_id {
+                            if !participants.contains(agent) {
+                                participants.push(agent.clone());
+                            }
+                        }
+                        CaptureItem {
+                            kind: r.kind,
+                            title: r.title,
+                            rationale: r.rationale,
+                            topic_keys: r.topic_keys,
+                            evidence_ids: r.evidence_ids,
+                            options: r.options,
+                            chosen_option: r.chosen_option,
+                            extraction_confidence: r.extraction_confidence,
+                            expressed_confidence: r.expressed_confidence,
+                            supersedes_id: r.supersedes_id,
+                            assumes_ids: r.assumes_ids,
+                            supports_ids: r.supports_ids,
+                            refutes_ids: r.refutes_ids,
+                            actor_id: r.actor_id,
+                            accepted_by: r.accepted_by,
+                            rejected_by: r.rejected_by,
+                            blocked_actor_id: r.blocked_actor_id,
+                            decision_id: r.decision_id,
+                            participants,
+                            session_initiator: session_initiator.clone(),
+                        }
                     })
                     .collect();
 
                 if let Err(e) = write_classification(
                     hivemind_dir,
                     tenant_id,
-                    &batch_id,
+                    &batch.batch_id,
                     captures,
-                    Some(event_id),
+                    Some(batch.event_id),
                 ) {
-                    warn!(target: "hivemind::classifier", batch_id = %batch_id, "write failed: {e}");
+                    warn!(target: "hivemind::classifier", batch_id = %batch.batch_id, "write failed: {e}");
                 }
             }
             Err(e) => {
-                warn!(target: "hivemind::classifier", batch_id = %batch_id, "haiku call failed: {}", e);
+                warn!(target: "hivemind::classifier", batch_id = %batch.batch_id, "haiku call failed: {}", e);
             }
         }
     }
@@ -312,12 +349,12 @@ async fn classify_pending_batches(
 fn find_unclassified_batches(
     hivemind_dir: &PathBuf,
     tenant_id: &TenantId,
-) -> crate::Result<Vec<(u64, String, String)>> {
+) -> crate::Result<Vec<BatchInfo>> {
     let ledger = SqliteEventLedger::open(hivemind_dir)?;
     let mut offset = 0u64;
     const PAGE: usize = 256;
 
-    let mut received: Vec<(u64, String, String)> = Vec::new();
+    let mut received: Vec<BatchInfo> = Vec::new();
     let mut classified_batch_ids: std::collections::HashSet<String> =
         std::collections::HashSet::new();
 
@@ -335,7 +372,26 @@ fn find_unclassified_batches(
                             event.payload.get("batch_id").and_then(|v| v.as_str())
                         {
                             let batch_text = render_batch_text(event);
-                            received.push((event_id, batch_id.to_owned(), batch_text));
+                            let agent_tool = event
+                                .payload
+                                .get("agent_tool")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned();
+                            let session_id = event
+                                .payload
+                                .get("session_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_owned();
+                            received.push(BatchInfo {
+                                event_id,
+                                batch_id: batch_id.to_owned(),
+                                batch_text,
+                                actor_id: event.actor_id.clone(),
+                                agent_tool,
+                                session_id,
+                            });
                         }
                     }
                 }
@@ -357,7 +413,7 @@ fn find_unclassified_batches(
 
     let pending: Vec<_> = received
         .into_iter()
-        .filter(|(_, batch_id, _)| !classified_batch_ids.contains(batch_id))
+        .filter(|b| !classified_batch_ids.contains(&b.batch_id))
         .collect();
 
     Ok(pending)
@@ -496,6 +552,8 @@ pub async fn classify_text(
             rejected_by: None,
             blocked_actor_id: None,
             decision_id: None,
+            participants: vec![],
+            session_initiator: None,
         })
         .collect();
     Ok(captures)

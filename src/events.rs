@@ -388,6 +388,14 @@ pub struct CaptureItem {
     /// For blocker captures: the decision ID being blocked; only if present in the input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision_id: Option<String>,
+    /// All actor IDs that participated in the session producing this capture (human + agent).
+    /// Auto-populated from batch metadata; not LLM-extracted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participants: Vec<String>,
+    /// Actor ID of whoever initiated the session (the batch submitter).
+    /// Auto-populated from batch metadata; not LLM-extracted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_initiator: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

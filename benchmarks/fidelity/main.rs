@@ -693,6 +693,8 @@ mod tests {
             rejected_by: None,
             blocked_actor_id: None,
             decision_id: None,
+            participants: vec![],
+            session_initiator: None,
         }];
         let (nodes, edges) = produced_graph(&captures);
         assert_eq!(nodes.len(), 3); // Decision + 2 Options
