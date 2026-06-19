@@ -486,6 +486,16 @@ pub async fn classify_text(
             options: r.options,
             chosen_option: r.chosen_option,
             extraction_confidence: r.extraction_confidence,
+            expressed_confidence: None,
+            supersedes_id: None,
+            assumes_ids: vec![],
+            supports_ids: vec![],
+            refutes_ids: vec![],
+            actor_id: None,
+            accepted_by: None,
+            rejected_by: None,
+            blocked_actor_id: None,
+            decision_id: None,
         })
         .collect();
     Ok(captures)
