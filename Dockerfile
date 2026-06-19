@@ -13,7 +13,7 @@ COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src && \
     echo "fn main() {}" > src/main.rs && \
     echo "" > src/lib.rs && \
-    cargo build --release --locked --features shared-backend-postgres && \
+    cargo build --release --locked --bin hivemind --features shared-backend-postgres && \
     rm -rf src
 
 COPY src ./src
@@ -22,7 +22,7 @@ COPY schemas ./schemas
 
 # Force rebuild of application code (touch all .rs so lib.rs isn't stale vs stub)
 RUN find src -name "*.rs" -exec touch {} + && \
-    cargo build --release --locked --features shared-backend-postgres
+    cargo build --release --locked --bin hivemind --features shared-backend-postgres
 
 # Stage 2: Runtime
 FROM debian:bookworm-slim
