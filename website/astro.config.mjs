@@ -3,6 +3,8 @@ import starlight from '@astrojs/starlight';
 import tailwind from '@astrojs/tailwind';
 
 export default defineConfig({
+  site: 'https://alexknips.github.io',
+  base: '/hivemind/',
   integrations: [
     starlight({
       title: 'HiveMind',

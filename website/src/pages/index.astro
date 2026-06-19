@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css';
+const base = import.meta.env.BASE_URL;
 ---
 <!DOCTYPE html>
 <html lang="en">
@@ -8,14 +9,14 @@ import '../styles/global.css';
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>HiveMind — Organizational Decision Memory</title>
   <meta name="description" content="HiveMind records what was decided, why, and by whom — for every human and agent on your team. Queryable, contestable, auditable." />
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="icon" type="image/svg+xml" href={`${base}favicon.svg`} />
 </head>
 <body class="bg-gray-950 text-gray-100 antialiased">
 
   <!-- Nav -->
   <header class="border-b border-gray-800 sticky top-0 z-50 bg-gray-950/90 backdrop-blur">
     <nav class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-      <a href="/" class="flex items-center gap-2 font-bold text-lg text-white">
+      <a href={base} class="flex items-center gap-2 font-bold text-lg text-white">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <circle cx="12" cy="12" r="3" fill="#818cf8"/>
           <circle cx="4" cy="6" r="2" fill="#6366f1"/>
@@ -30,9 +31,9 @@ import '../styles/global.css';
         HiveMind
       </a>
       <div class="flex items-center gap-6">
-        <a href="/getting-started/install/" class="text-sm text-gray-400 hover:text-white transition-colors">Docs</a>
+        <a href={`${base}getting-started/install/`} class="text-sm text-gray-400 hover:text-white transition-colors">Docs</a>
         <a href="https://github.com/alexknips/hivemind" class="text-sm text-gray-400 hover:text-white transition-colors">GitHub</a>
-        <a href="/getting-started/install/" class="text-sm bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded-md transition-colors font-medium">
+        <a href={`${base}getting-started/install/`} class="text-sm bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded-md transition-colors font-medium">
           Get Started
         </a>
       </div>
@@ -57,7 +58,7 @@ import '../styles/global.css';
         captured, queryable, and contestable. No more reconstructing decisions from chat logs.
       </p>
       <div class="flex flex-col sm:flex-row gap-4 justify-center">
-        <a href="/getting-started/install/" class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-lg font-semibold text-base transition-colors">
+        <a href={`${base}getting-started/install/`} class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-lg font-semibold text-base transition-colors">
           Read the docs &rarr;
         </a>
         <div class="bg-gray-900 border border-gray-700 text-gray-300 px-6 py-3 rounded-lg font-mono text-sm flex items-center gap-3">
@@ -307,7 +308,7 @@ import '../styles/global.css';
         </div>
       </div>
       <div class="mt-8">
-        <a href="/getting-started/install/" class="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-3 rounded-lg font-semibold text-base transition-colors inline-block">
+        <a href={`${base}getting-started/install/`} class="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-3 rounded-lg font-semibold text-base transition-colors inline-block">
           Read the docs &rarr;
         </a>
       </div>
@@ -322,9 +323,9 @@ import '../styles/global.css';
         HiveMind &mdash; organizational decision memory
       </div>
       <div class="flex items-center gap-6 text-sm text-gray-500">
-        <a href="/getting-started/install/" class="hover:text-gray-300 transition-colors">Docs</a>
+        <a href={`${base}getting-started/install/`} class="hover:text-gray-300 transition-colors">Docs</a>
         <a href="https://github.com/alexknips/hivemind" class="hover:text-gray-300 transition-colors">GitHub</a>
-        <a href="/getting-started/quickstart/" class="hover:text-gray-300 transition-colors">Quickstart</a>
+        <a href={`${base}getting-started/quickstart/`} class="hover:text-gray-300 transition-colors">Quickstart</a>
       </div>
     </div>
   </footer>
