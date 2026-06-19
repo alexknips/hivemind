@@ -1,0 +1,333 @@
+---
+import '../styles/global.css';
+---
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HiveMind — Organizational Decision Memory</title>
+  <meta name="description" content="HiveMind records what was decided, why, and by whom — for every human and agent on your team. Queryable, contestable, auditable." />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+</head>
+<body class="bg-gray-950 text-gray-100 antialiased">
+
+  <!-- Nav -->
+  <header class="border-b border-gray-800 sticky top-0 z-50 bg-gray-950/90 backdrop-blur">
+    <nav class="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2 font-bold text-lg text-white">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="12" cy="12" r="3" fill="#818cf8"/>
+          <circle cx="4" cy="6" r="2" fill="#6366f1"/>
+          <circle cx="20" cy="6" r="2" fill="#6366f1"/>
+          <circle cx="4" cy="18" r="2" fill="#6366f1"/>
+          <circle cx="20" cy="18" r="2" fill="#6366f1"/>
+          <line x1="12" y1="12" x2="4" y2="6" stroke="#4f46e5" stroke-width="1.5"/>
+          <line x1="12" y1="12" x2="20" y2="6" stroke="#4f46e5" stroke-width="1.5"/>
+          <line x1="12" y1="12" x2="4" y2="18" stroke="#4f46e5" stroke-width="1.5"/>
+          <line x1="12" y1="12" x2="20" y2="18" stroke="#4f46e5" stroke-width="1.5"/>
+        </svg>
+        HiveMind
+      </a>
+      <div class="flex items-center gap-6">
+        <a href="/getting-started/install/" class="text-sm text-gray-400 hover:text-white transition-colors">Docs</a>
+        <a href="https://github.com/alexknips/hivemind" class="text-sm text-gray-400 hover:text-white transition-colors">GitHub</a>
+        <a href="/getting-started/install/" class="text-sm bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded-md transition-colors font-medium">
+          Get Started
+        </a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+
+    <!-- Hero -->
+    <section class="max-w-6xl mx-auto px-6 pt-24 pb-20 text-center">
+      <div class="inline-flex items-center gap-2 bg-indigo-950 border border-indigo-800 text-indigo-300 text-xs px-3 py-1.5 rounded-full mb-8">
+        <span class="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+        92% noise rejected &middot; 2000:1 compression in production dogfood
+      </div>
+      <h1 class="text-5xl sm:text-6xl font-bold text-white leading-tight mb-6">
+        Your decisions.<br/>
+        <span class="text-indigo-400">Remembered. Contested. Queryable.</span>
+      </h1>
+      <p class="text-xl text-gray-400 max-w-2xl mx-auto mb-10 leading-relaxed">
+        HiveMind is the decision ledger for teams where humans and agents work side by side.
+        Every choice &mdash; who made it, why, what options were weighed, what it supersedes &mdash; is
+        captured, queryable, and contestable. No more reconstructing decisions from chat logs.
+      </p>
+      <div class="flex flex-col sm:flex-row gap-4 justify-center">
+        <a href="/getting-started/install/" class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-lg font-semibold text-base transition-colors">
+          Read the docs &rarr;
+        </a>
+        <div class="bg-gray-900 border border-gray-700 text-gray-300 px-6 py-3 rounded-lg font-mono text-sm flex items-center gap-3">
+          <span class="text-gray-500 select-none">$</span>
+          <span>cargo install --git https://github.com/alexknips/hivemind</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Problem -->
+    <section class="border-t border-gray-800 bg-gray-900/30">
+      <div class="max-w-6xl mx-auto px-6 py-20">
+        <h2 class="text-3xl font-bold text-white text-center mb-4">The problem with how decisions live today</h2>
+        <p class="text-gray-400 text-center max-w-xl mx-auto mb-16">
+          Knowledge work produces decisions constantly. None of them have a home.
+        </p>
+        <div class="grid md:grid-cols-3 gap-8">
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <div class="text-2xl mb-3">&#x1F4AC;</div>
+            <h3 class="font-semibold text-white mb-2">Lost in chat</h3>
+            <p class="text-gray-400 text-sm leading-relaxed">
+              A senior engineer reviews a junior&rsquo;s work by reading a Claude chat URL.
+              The reasoning disappears when the thread scrolls out of view.
+            </p>
+          </div>
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <div class="text-2xl mb-3">&#x1F916;</div>
+            <h3 class="font-semibold text-white mb-2">Agents can&rsquo;t learn from each other</h3>
+            <p class="text-gray-400 text-sm leading-relaxed">
+              An agent making a follow-up choice has no structured place to learn what
+              the previous agent decided or why. Reasoning gets regenerated from scratch.
+            </p>
+          </div>
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <div class="text-2xl mb-3">&#x1F4CB;</div>
+            <h3 class="font-semibold text-white mb-2">Wikis capture artifacts, not choices</h3>
+            <p class="text-gray-400 text-sm leading-relaxed">
+              Documents have no actor model. They can&rsquo;t represent &ldquo;this superseded that
+              on Tuesday because new evidence came in.&rdquo; Disagreement is invisible.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- How it works / Three layers -->
+    <section class="max-w-6xl mx-auto px-6 py-20">
+      <h2 class="text-3xl font-bold text-white text-center mb-4">How HiveMind works</h2>
+      <p class="text-gray-400 text-center max-w-xl mx-auto mb-16">
+        Three layers. Each does exactly one job. None of them bleed into each other.
+      </p>
+      <div class="grid md:grid-cols-3 gap-6">
+        <div class="bg-indigo-950/50 border border-indigo-900 rounded-xl p-6">
+          <div class="text-xs font-mono text-indigo-400 mb-3">LAYER 1</div>
+          <h3 class="text-lg font-semibold text-white mb-3">Write</h3>
+          <p class="text-gray-400 text-sm leading-relaxed mb-4">
+            An append-only event ledger. Every event carries actor, provenance, and
+            a UUID. Anonymous writes are rejected. Smart behavior never touches the
+            write path &mdash; the ledger stays unconditionally trustworthy.
+          </p>
+          <div class="bg-gray-900 rounded-lg p-3 font-mono text-xs text-gray-400">
+            <span class="text-indigo-400">hivemind</span> emit decision.proposed<br/>
+            &nbsp;&nbsp;--title &quot;Use SQLite for MVP&quot;<br/>
+            &nbsp;&nbsp;--chose sqlite<br/>
+            &nbsp;&nbsp;--actor human:alice
+          </div>
+        </div>
+        <div class="bg-purple-950/50 border border-purple-900 rounded-xl p-6">
+          <div class="text-xs font-mono text-purple-400 mb-3">LAYER 2</div>
+          <h3 class="text-lg font-semibold text-white mb-3">Query</h3>
+          <p class="text-gray-400 text-sm leading-relaxed mb-4">
+            Pure deterministic reads. Status (<code class="text-purple-300">proposed</code>, <code class="text-purple-300">accepted</code>, <code class="text-purple-300">contested</code>, <code class="text-purple-300">superseded</code>)
+            is derived from graph edges &mdash; never stored and never overwritten silently.
+            No LLMs, no ranking, no inference.
+          </p>
+          <div class="bg-gray-900 rounded-lg p-3 font-mono text-xs text-gray-400">
+            <span class="text-purple-400">hivemind</span> query search_decisions<br/>
+            &nbsp;&nbsp;--topic architecture<br/>
+            &nbsp;&nbsp;--status contested
+          </div>
+        </div>
+        <div class="bg-emerald-950/50 border border-emerald-900 rounded-xl p-6">
+          <div class="text-xs font-mono text-emerald-400 mb-3">LAYER 3</div>
+          <h3 class="text-lg font-semibold text-white mb-3">Agentic</h3>
+          <p class="text-gray-400 text-sm leading-relaxed mb-4">
+            All intelligence lives here and only here &mdash; compactification,
+            similarity, ranking, capture classification. Swappable without
+            touching ingest or queries.
+          </p>
+          <div class="bg-gray-900 rounded-lg p-3 font-mono text-xs text-gray-400">
+            <span class="text-emerald-400">hivemind</span> suggest<br/>
+            &nbsp;&nbsp;document-candidates<br/>
+            &nbsp;&nbsp;--file ./notes/memo.txt
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section class="border-t border-gray-800 bg-gray-900/30">
+      <div class="max-w-6xl mx-auto px-6 py-20">
+        <h2 class="text-3xl font-bold text-white text-center mb-4">Built on honesty rails</h2>
+        <p class="text-gray-400 text-center max-w-xl mx-auto mb-16">
+          The properties that make HiveMind trustworthy are non-negotiable.
+        </p>
+        <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div class="flex gap-4">
+            <div class="mt-1 flex-shrink-0 w-8 h-8 rounded-lg bg-indigo-900 flex items-center justify-center">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8l4 4 8-8" stroke="#818cf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div>
+              <h3 class="font-semibold text-white mb-1">Humans and agents as peers</h3>
+              <p class="text-gray-400 text-sm">Every event carries an actor. Human decisions and agent decisions have the same shape and the same review surface.</p>
+            </div>
+          </div>
+          <div class="flex gap-4">
+            <div class="mt-1 flex-shrink-0 w-8 h-8 rounded-lg bg-indigo-900 flex items-center justify-center">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8l4 4 8-8" stroke="#818cf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div>
+              <h3 class="font-semibold text-white mb-1">Disagreement is preserved</h3>
+              <p class="text-gray-400 text-sm"><code class="text-indigo-300">contested</code> is a first-class status, not an error. Two actors disagreeing is the signal, not noise to discard.</p>
+            </div>
+          </div>
+          <div class="flex gap-4">
+            <div class="mt-1 flex-shrink-0 w-8 h-8 rounded-lg bg-indigo-900 flex items-center justify-center">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8l4 4 8-8" stroke="#818cf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div>
+              <h3 class="font-semibold text-white mb-1">Supersession without deletion</h3>
+              <p class="text-gray-400 text-sm">Old decisions are never deleted or mutated. A <code class="text-indigo-300">SUPERSEDES</code> edge preserves the full history of &ldquo;we changed our mind.&rdquo;</p>
+            </div>
+          </div>
+          <div class="flex gap-4">
+            <div class="mt-1 flex-shrink-0 w-8 h-8 rounded-lg bg-indigo-900 flex items-center justify-center">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8l4 4 8-8" stroke="#818cf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div>
+              <h3 class="font-semibold text-white mb-1">No silent truncation</h3>
+              <p class="text-gray-400 text-sm">Queries that hit limits return <code class="text-indigo-300">truncated: true</code>. A partial result that looks complete is a lie.</p>
+            </div>
+          </div>
+          <div class="flex gap-4">
+            <div class="mt-1 flex-shrink-0 w-8 h-8 rounded-lg bg-indigo-900 flex items-center justify-center">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8l4 4 8-8" stroke="#818cf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div>
+              <h3 class="font-semibold text-white mb-1">No invented confidence</h3>
+              <p class="text-gray-400 text-sm">Agentic layer scores are traceable. &ldquo;Because the model said so&rdquo; is not acceptable provenance.</p>
+            </div>
+          </div>
+          <div class="flex gap-4">
+            <div class="mt-1 flex-shrink-0 w-8 h-8 rounded-lg bg-indigo-900 flex items-center justify-center">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8l4 4 8-8" stroke="#818cf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
+            <div>
+              <h3 class="font-semibold text-white mb-1">MCP + CLI, same API</h3>
+              <p class="text-gray-400 text-sm">All surfaces are thin wrappers over the same internal functions. No behavior exists in one surface but not another.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Proof point / Dogfood -->
+    <section class="max-w-6xl mx-auto px-6 py-20">
+      <div class="bg-gradient-to-br from-indigo-950 to-purple-950 border border-indigo-800 rounded-2xl p-10 text-center">
+        <div class="text-sm font-mono text-indigo-400 mb-4">SIGNAL FROM NOISE &mdash; PRODUCTION DOGFOOD RESULT</div>
+        <div class="flex flex-col sm:flex-row justify-center gap-12 mb-8">
+          <div>
+            <div class="text-5xl font-bold text-white mb-2">~92%</div>
+            <div class="text-gray-400 text-sm">of agent activity correctly<br/>identified as noise and skipped</div>
+          </div>
+          <div class="hidden sm:block w-px bg-indigo-800"></div>
+          <div>
+            <div class="text-5xl font-bold text-white mb-2">2000:1</div>
+            <div class="text-gray-400 text-sm">compression ratio &mdash; decisions<br/>extracted from raw activity</div>
+          </div>
+        </div>
+        <p class="text-gray-400 max-w-lg mx-auto text-sm leading-relaxed">
+          HiveMind&rsquo;s capture classifier runs on the real HiveMind development process itself.
+          Out of thousands of agent activity events, fewer than 1 in 2000 becomes a
+          captured decision &mdash; and those are the ones that matter six months from now.
+        </p>
+      </div>
+    </section>
+
+    <!-- Who it's for -->
+    <section class="border-t border-gray-800 bg-gray-900/30">
+      <div class="max-w-6xl mx-auto px-6 py-20">
+        <h2 class="text-3xl font-bold text-white text-center mb-4">Who it&rsquo;s for</h2>
+        <p class="text-gray-400 text-center max-w-xl mx-auto mb-16">
+          Anyone whose work produces decisions worth remembering &mdash; and who increasingly works alongside agents.
+        </p>
+        <div class="grid md:grid-cols-2 gap-8">
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <h3 class="font-semibold text-white mb-3">Operators of agents</h3>
+            <p class="text-gray-400 text-sm leading-relaxed">
+              See what your agents decided the same way you see your own choices.
+              Disagree with them when warranted &mdash; at the speed of a query, not the
+              speed of reading a transcript. This is the defining use case.
+            </p>
+          </div>
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <h3 class="font-semibold text-white mb-3">Technical leaders</h3>
+            <p class="text-gray-400 text-sm leading-relaxed">
+              Review reasoning as structured decisions, not as shared chat URLs.
+              Build a queryable record of architectural choices that survives
+              team changes and agent generations.
+            </p>
+          </div>
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <h3 class="font-semibold text-white mb-3">Large organizations</h3>
+            <p class="text-gray-400 text-sm leading-relaxed">
+              Cross-team decision visibility without crawling a wiki. Compliance
+              and audit teams get a reviewable trail of who chose what, when, and
+              on what evidence.
+            </p>
+          </div>
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+            <h3 class="font-semibold text-white mb-3">Small teams shipping fast</h3>
+            <p class="text-gray-400 text-sm leading-relaxed">
+              Keep decision history alive past the conversation that created it.
+              One agent&rsquo;s choice becomes the next agent&rsquo;s structured starting
+              context, instead of being regenerated from scratch.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="max-w-6xl mx-auto px-6 py-24 text-center">
+      <h2 class="text-3xl font-bold text-white mb-4">Start in under five minutes</h2>
+      <p class="text-gray-400 mb-10 max-w-lg mx-auto">
+        Install the CLI, point it at a directory, capture a decision, query it back.
+        If it takes longer than five minutes, the API is wrong.
+      </p>
+      <div class="max-w-2xl mx-auto space-y-3 text-left">
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 font-mono text-sm">
+          <div class="text-gray-500 text-xs mb-2"># Install</div>
+          <div class="text-gray-300 break-all">curl -fsSL https://raw.githubusercontent.com/alexknips/hivemind/master/scripts/install.sh | sh</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 font-mono text-sm">
+          <div class="text-gray-500 text-xs mb-2"># Run quickstart (isolated temp ledger)</div>
+          <div class="text-gray-300">hivemind --actor human:alice quickstart</div>
+        </div>
+      </div>
+      <div class="mt-8">
+        <a href="/getting-started/install/" class="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-3 rounded-lg font-semibold text-base transition-colors inline-block">
+          Read the docs &rarr;
+        </a>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t border-gray-800 py-12">
+    <div class="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div class="text-sm text-gray-500">
+        HiveMind &mdash; organizational decision memory
+      </div>
+      <div class="flex items-center gap-6 text-sm text-gray-500">
+        <a href="/getting-started/install/" class="hover:text-gray-300 transition-colors">Docs</a>
+        <a href="https://github.com/alexknips/hivemind" class="hover:text-gray-300 transition-colors">GitHub</a>
+        <a href="/getting-started/quickstart/" class="hover:text-gray-300 transition-colors">Quickstart</a>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>

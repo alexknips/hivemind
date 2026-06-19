@@ -1,0 +1,10 @@
+/* Tailwind utilities for Starlight pages — no base layer to avoid conflicts */
+@tailwind components;
+@tailwind utilities;
+
+/* Starlight theme overrides */
+:root {
+  --sl-color-accent: #6366f1;
+  --sl-color-accent-high: #818cf8;
+  --sl-color-accent-low: #312e81;
+}
