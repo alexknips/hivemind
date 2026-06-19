@@ -780,6 +780,16 @@ async fn classifier_batch_classified_event_round_trips() {
         options: Some(vec!["tokio".to_owned(), "async-std".to_owned()]),
         chosen_option: Some("tokio".to_owned()),
         extraction_confidence: 0.85,
+        expressed_confidence: None,
+        supersedes_id: None,
+        assumes_ids: vec![],
+        supports_ids: vec![],
+        refutes_ids: vec![],
+        actor_id: None,
+        accepted_by: None,
+        rejected_by: None,
+        blocked_actor_id: None,
+        decision_id: None,
     }];
 
     let classified_event_id = commands

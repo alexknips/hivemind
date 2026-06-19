@@ -137,3 +137,51 @@ Reference facts checked on 2026-05-18: Neo4j official docs list supported
 drivers and the HTTP Query API; FalkorDB docs list `falkordb-rs`; Kuzu docs
 describe an embedded in-process graph database; Postgres docs cover JSONB
 indexing, transaction isolation, and row-level security.
+
+## Reconsidered: Dolt for the Shared Graph
+
+Status: noted on 2026-06-06. Not adopted; revisit when the Postgres path hits
+specific scaling failure modes (see triggers below).
+
+Dolt — a SQL database with git-style branching, cell-level merge, and native
+sync — keeps surfacing as an attractive alternative for the shared graph:
+
+- Decision capture is increasingly moving toward batched, classifier-driven
+  emission (see beads for the auto-detect classifier subagent). Dolt's
+  branch-and-merge semantics would let batches of captured events from many
+  agents reconcile cleanly rather than serializing through a single writer.
+- The merge characteristics also fit a future world where agents capture
+  locally, push when network allows, and resolve conflicts at merge time
+  instead of holding a connection open.
+
+### Why we are not switching now
+
+The original commitment recorded against this question — "every decision done
+is captured" — pushed us toward an immediate-write model. Postgres serves that
+model directly: one canonical event log, immediately visible, no branch
+reconciliation step between capture and visibility.
+
+The current investment (Postgres event ledger landed under
+`hivemind-m2-shared-backend-lives-uuq9.3`, projection in flight under `.4`) is
+the path we are deepening. Switching backends mid-milestone destabilizes the
+M2 acceptance criteria and pushes the local-to-remote migration story (`.8`)
+into a less-defined shape.
+
+### Trigger points for revisiting
+
+Re-open this question if and only if one of these is observed:
+
+1. Postgres write contention measurably blocks the classifier-driven capture
+   throughput at the scale of N concurrent agents (N to be discovered through
+   load testing, not guessed up front).
+2. Offline / partition tolerance becomes a real user need — agents that must
+   capture during network loss and reconcile later — and the merge story under
+   Postgres requires custom application-layer logic Dolt would give for free.
+3. Cross-tenant or cross-org merge ("import this org's decision history into
+   ours, reconcile conflicts") becomes a roadmap item.
+
+### Posture
+
+Optimize the Postgres path for extreme scalability and see where it breaks.
+The breakage points define the next decision, with empirical inputs that a
+Dolt-vs-Postgres comparison made today would lack.

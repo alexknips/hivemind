@@ -17,7 +17,7 @@ use crate::events::{CaptureItem, EventProvenance, EventType, TenantId};
 use crate::ledger::{EventLedger, SqliteEventLedger};
 
 const CLASSIFIER_MODEL: &str = "claude-haiku-4-5-20251001";
-const SCHEMA_VERSION: &str = "1";
+const SCHEMA_VERSION: &str = "2";
 const ACTOR_ID: &str = "agent:hivemind:classifier";
 const POLL_INTERVAL: Duration = Duration::from_secs(10);
 const HAIKU_TIMEOUT: Duration = Duration::from_secs(5);
@@ -62,10 +62,44 @@ borderline, omit it.
 
 Never invent evidence ids. Use only ids present in the input. Keep titles short.
 Use 1 to 5 lowercase topic keys. Confidence is your self-estimate for offline
-tuning, not authoritative truth."#;
+tuning, not authoritative truth.
+
+RELATIONAL FIELDS — populate only from explicit text, never infer:
+
+expressed_confidence: For decisions only. Extract the decider's own words about
+confidence level: "low" (tentative, provisional, lean, unsure), "medium"
+(reasonably confident but caveated), "high" (firm, definite, committed). Use
+null if the decider expresses no explicit confidence level.
+
+actor_id: The specific actor who proposed/made/reported this item, IF named in
+the input. Use their ID if present, otherwise null. Never infer a proposer from
+context; only record them when explicitly stated.
+
+accepted_by / rejected_by: For decisions. The specific actor who accepted or
+rejected it, IF explicitly named. null otherwise.
+
+supersedes_id: For decisions that explicitly replace a prior decision. Only use
+an ID that appears verbatim in the input text. null if none.
+
+assumes_ids: For decisions. Hypothesis IDs this decision explicitly assumes,
+from the input text only. Empty array if none.
+
+supports_ids / refutes_ids: For evidence. Hypothesis IDs this evidence
+explicitly supports or refutes, from the input text only. Empty array if none.
+
+blocked_actor_id: For blockers. The actor being blocked, IF named in the input.
+decision_id: For blockers. The decision being blocked, IF its ID appears in
+the input. Both null if not explicitly stated."#;
 
 // JSON Schema for structured output
 fn capture_schema() -> serde_json::Value {
+    let nullable_string = serde_json::json!({
+        "oneOf": [{ "type": "string" }, { "type": "null" }]
+    });
+    let string_array = serde_json::json!({
+        "type": "array",
+        "items": { "type": "string" }
+    });
     serde_json::json!({
         "type": "object",
         "properties": {
@@ -80,29 +114,40 @@ fn capture_schema() -> serde_json::Value {
                         },
                         "title": { "type": "string" },
                         "rationale": { "type": "string" },
-                        "topic_keys": {
-                            "type": "array",
-                            "items": { "type": "string" }
-                        },
-                        "evidence_ids": {
-                            "type": "array",
-                            "items": { "type": "string" }
-                        },
+                        "topic_keys": string_array.clone(),
+                        "evidence_ids": string_array.clone(),
                         "options": {
                             "oneOf": [
                                 { "type": "array", "items": { "type": "string" } },
                                 { "type": "null" }
                             ]
                         },
-                        "chosen_option": {
+                        "chosen_option": nullable_string.clone(),
+                        "extraction_confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "expressed_confidence": {
                             "oneOf": [
-                                { "type": "string" },
+                                { "type": "string", "enum": ["low", "medium", "high"] },
                                 { "type": "null" }
                             ]
                         },
-                        "extraction_confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+                        "supersedes_id": nullable_string.clone(),
+                        "assumes_ids": string_array.clone(),
+                        "supports_ids": string_array.clone(),
+                        "refutes_ids": string_array.clone(),
+                        "actor_id": nullable_string.clone(),
+                        "accepted_by": nullable_string.clone(),
+                        "rejected_by": nullable_string.clone(),
+                        "blocked_actor_id": nullable_string.clone(),
+                        "decision_id": nullable_string.clone()
                     },
-                    "required": ["kind", "title", "rationale", "topic_keys", "evidence_ids", "options", "chosen_option", "extraction_confidence"],
+                    "required": [
+                        "kind", "title", "rationale", "topic_keys", "evidence_ids",
+                        "options", "chosen_option", "extraction_confidence",
+                        "expressed_confidence", "supersedes_id",
+                        "assumes_ids", "supports_ids", "refutes_ids",
+                        "actor_id", "accepted_by", "rejected_by",
+                        "blocked_actor_id", "decision_id"
+                    ],
                     "additionalProperties": false
                 }
             }
@@ -165,6 +210,19 @@ struct CaptureItemRaw {
     options: Option<Vec<String>>,
     chosen_option: Option<String>,
     extraction_confidence: f64,
+    expressed_confidence: Option<String>,
+    supersedes_id: Option<String>,
+    #[serde(default)]
+    assumes_ids: Vec<String>,
+    #[serde(default)]
+    supports_ids: Vec<String>,
+    #[serde(default)]
+    refutes_ids: Vec<String>,
+    actor_id: Option<String>,
+    accepted_by: Option<String>,
+    rejected_by: Option<String>,
+    blocked_actor_id: Option<String>,
+    decision_id: Option<String>,
 }
 
 /// Spawn the background classifier task. Returns immediately; the worker runs
@@ -221,6 +279,16 @@ async fn classify_pending_batches(
                         options: r.options,
                         chosen_option: r.chosen_option,
                         extraction_confidence: r.extraction_confidence,
+                        expressed_confidence: r.expressed_confidence,
+                        supersedes_id: r.supersedes_id,
+                        assumes_ids: r.assumes_ids,
+                        supports_ids: r.supports_ids,
+                        refutes_ids: r.refutes_ids,
+                        actor_id: r.actor_id,
+                        accepted_by: r.accepted_by,
+                        rejected_by: r.rejected_by,
+                        blocked_actor_id: r.blocked_actor_id,
+                        decision_id: r.decision_id,
                     })
                     .collect();
 

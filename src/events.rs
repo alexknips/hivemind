@@ -175,6 +175,9 @@ pub struct DecisionProposedPayload {
     pub hypothesis_ids: Vec<String>,
     #[serde(default)]
     pub evidence_ids: Vec<String>,
+    /// Expressed confidence from the decider's own words: low | medium | high. Never system-computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expressed_confidence: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -355,6 +358,36 @@ pub struct CaptureItem {
     pub chosen_option: Option<String>,
     /// Haiku extractor's self-estimate that this capture was correctly extracted; not the decision Quality score.
     pub extraction_confidence: f64,
+    /// Expressed confidence from the decider's own words: low | medium | high. Never system-computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expressed_confidence: Option<String>,
+    /// ID of the decision being superseded; only when present in the input text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes_id: Option<String>,
+    /// Hypothesis IDs this decision assumes; only IDs present in the input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assumes_ids: Vec<String>,
+    /// Hypothesis IDs this evidence supports; only IDs present in the input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supports_ids: Vec<String>,
+    /// Hypothesis IDs this evidence refutes; only IDs present in the input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refutes_ids: Vec<String>,
+    /// Actor who proposed/made/reported this item, named in the input text. Never infer from context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_id: Option<String>,
+    /// Actor who accepted this decision, named in the input text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_by: Option<String>,
+    /// Actor who rejected this decision, named in the input text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected_by: Option<String>,
+    /// For blocker captures: the actor being blocked, named in the input text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_actor_id: Option<String>,
+    /// For blocker captures: the decision ID being blocked; only if present in the input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

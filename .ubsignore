@@ -12,3 +12,7 @@ tests/support/
 # Exemption alex-approved for hivemind-21zi (mirrors the tests/ sign-off in
 # hivemind-yfbq). Keeps the warning baseline focused on production-code quality.
 benchmarks/
+# src/projector/tests.rs is an in-tree #[cfg(test)] module (test assertions,
+# not production runtime) — same rationale as the tests/ exemption above.
+# Exemption alex-approved for hivemind-07no.
+src/projector/tests.rs

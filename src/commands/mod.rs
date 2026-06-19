@@ -484,6 +484,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 chosen_option_id: chosen_option_id.map(ToOwned::to_owned),
                 hypothesis_ids: hypothesis_ids.to_vec(),
                 evidence_ids: evidence_ids.to_vec(),
+                expressed_confidence: None,
             }),
             None,
             event_uuids.proposal,

@@ -449,3 +449,438 @@ fn event(event_type: EventType, actor_id: &str, payload: serde_json::Value) -> E
         ts: Some(Utc::now()),
     }
 }
+
+#[test]
+fn decision_proposed_with_expressed_confidence_stores_it_on_node() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:conf",
+            "title": "Use gRPC for internal API",
+            "rationale": "Lower overhead, but we're not sure yet",
+            "topic_keys": ["api"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": [],
+            "expressed_confidence": "low"
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    assert_eq!(
+        // ubs:ignore
+        graph
+            .nodes()
+            .get(&(NodeKind::Decision, "decision:conf".to_owned()))
+            .and_then(|p| p.get("expressed_confidence")),
+        Some(&GraphValue::String("low".to_owned())),
+        "expressed_confidence must be stored on the Decision node"
+    );
+    Ok(())
+}
+
+#[test]
+fn decision_proposed_without_expressed_confidence_stores_null() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:noconf",
+            "title": "Use REST",
+            "rationale": "Standard practice",
+            "topic_keys": ["api"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    assert_eq!(
+        // ubs:ignore
+        graph
+            .nodes()
+            .get(&(NodeKind::Decision, "decision:noconf".to_owned()))
+            .and_then(|p| p.get("expressed_confidence")),
+        Some(&GraphValue::Null),
+    );
+    Ok(())
+}
+
+#[test]
+fn classified_batch_decision_projects_node_and_actor_edges() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:1",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [{
+                "kind": "decision",
+                "title": "Use Postgres for storage",
+                "rationale": "Scales well and team knows it",
+                "topic_keys": ["storage", "database"],
+                "evidence_ids": [],
+                "options": ["postgres", "mysql"],
+                "chosen_option": "postgres",
+                "extraction_confidence": 0.92,
+                "expressed_confidence": "high",
+                "supersedes_id": null,
+                "assumes_ids": [],
+                "supports_ids": [],
+                "refutes_ids": [],
+                "actor_id": "human:alice",
+                "accepted_by": "human:bob",
+                "rejected_by": null,
+                "blocked_actor_id": null,
+                "decision_id": null
+            }]
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    let decision_node = nodes
+        .iter()
+        .find(|((kind, _), _)| *kind == NodeKind::Decision)
+        .map(|((_, id), props)| (id.clone(), props.clone()))
+        .expect("decision node from capture"); // ubs:ignore
+
+    assert_eq!(
+        // ubs:ignore
+        decision_node.1.get("title"),
+        Some(&GraphValue::String("Use Postgres for storage".to_owned()))
+    );
+    assert_eq!(
+        // ubs:ignore
+        decision_node.1.get("expressed_confidence"),
+        Some(&GraphValue::String("high".to_owned()))
+    );
+    assert!(
+        // ubs:ignore
+        nodes.contains_key(&(NodeKind::Actor, "human:alice".to_owned())),
+        "proposer actor must be upserted"
+    );
+    assert!(
+        // ubs:ignore
+        nodes.contains_key(&(NodeKind::Actor, "human:bob".to_owned())),
+        "acceptor actor must be upserted"
+    );
+    drop(nodes);
+
+    let edges = graph.edges();
+    assert!(
+        // ubs:ignore
+        edges.contains_key(&(
+            RelationKind::ProposedBy,
+            decision_node.0.clone(),
+            "human:alice".to_owned()
+        )),
+        "ProposedBy edge required"
+    );
+    assert!(
+        // ubs:ignore
+        edges.contains_key(&(
+            RelationKind::AcceptedBy,
+            decision_node.0.clone(),
+            "human:bob".to_owned()
+        )),
+        "AcceptedBy edge required"
+    );
+    Ok(())
+}
+
+#[test]
+fn classified_batch_decision_supersedes_edge() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    // Seed the old decision so ensure_node_reference finds it.
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:old",
+            "title": "Old approach",
+            "rationale": "Original choice",
+            "topic_keys": ["arch"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:2",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [{
+                "kind": "decision",
+                "title": "New approach supersedes old",
+                "rationale": "Better fit",
+                "topic_keys": ["arch"],
+                "evidence_ids": [],
+                "options": null,
+                "chosen_option": null,
+                "extraction_confidence": 0.85,
+                "expressed_confidence": null,
+                "supersedes_id": "decision:old",
+                "assumes_ids": [],
+                "supports_ids": [],
+                "refutes_ids": [],
+                "actor_id": null,
+                "accepted_by": null,
+                "rejected_by": null,
+                "blocked_actor_id": null,
+                "decision_id": null
+            }]
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let edges = graph.edges();
+    let supersedes = edges
+        .keys()
+        .find(|(kind, _, to)| *kind == RelationKind::Supersedes && to == "decision:old");
+    assert!(
+        // ubs:ignore
+        supersedes.is_some(),
+        "Supersedes edge to decision:old required"
+    );
+    Ok(())
+}
+
+#[test]
+fn classified_batch_evidence_supports_and_refutes() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    // Seed hypothesis nodes.
+    ledger.append(event(
+        EventType::HypothesisRecorded,
+        "actor:alice",
+        json!({ "hypothesis_id": "hyp:1", "statement": "Caching helps latency" }),
+    ))?;
+    ledger.append(event(
+        EventType::HypothesisRecorded,
+        "actor:alice",
+        json!({ "hypothesis_id": "hyp:2", "statement": "Caching hurts write throughput" }),
+    ))?;
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:3",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [{
+                "kind": "evidence",
+                "title": "Cache hit rate 95% in load test",
+                "rationale": "Load test result",
+                "topic_keys": ["cache", "latency"],
+                "evidence_ids": [],
+                "options": null,
+                "chosen_option": null,
+                "extraction_confidence": 0.9,
+                "expressed_confidence": null,
+                "supersedes_id": null,
+                "assumes_ids": [],
+                "supports_ids": ["hyp:1"],
+                "refutes_ids": ["hyp:2"],
+                "actor_id": null,
+                "accepted_by": null,
+                "rejected_by": null,
+                "blocked_actor_id": null,
+                "decision_id": null
+            }]
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let edges = graph.edges();
+    let supports = edges
+        .keys()
+        .find(|(kind, _, to)| *kind == RelationKind::Supports && to == "hyp:1");
+    let refutes = edges
+        .keys()
+        .find(|(kind, _, to)| *kind == RelationKind::Refutes && to == "hyp:2");
+    assert!(supports.is_some(), "Supports edge to hyp:1 required"); // ubs:ignore
+    assert!(refutes.is_some(), "Refutes edge to hyp:2 required"); // ubs:ignore
+    Ok(())
+}
+
+#[test]
+fn classified_batch_blocker_actor_and_decision_edges() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:deploy",
+            "title": "Deploy now",
+            "rationale": "Tests passed",
+            "topic_keys": ["deploy"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:4",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [{
+                "kind": "blocker",
+                "title": "Waiting for security sign-off",
+                "rationale": "Cannot deploy without security approval",
+                "topic_keys": ["security", "deploy"],
+                "evidence_ids": [],
+                "options": null,
+                "chosen_option": null,
+                "extraction_confidence": 0.88,
+                "expressed_confidence": null,
+                "supersedes_id": null,
+                "assumes_ids": [],
+                "supports_ids": [],
+                "refutes_ids": [],
+                "actor_id": null,
+                "accepted_by": null,
+                "rejected_by": null,
+                "blocked_actor_id": "human:priya",
+                "decision_id": "decision:deploy"
+            }]
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    let blocker_node = nodes
+        .iter()
+        .find(|((kind, _), _)| *kind == NodeKind::Blocker)
+        .map(|((_, id), _)| id.clone())
+        .expect("blocker node required"); // ubs:ignore
+    drop(nodes);
+
+    let edges = graph.edges();
+    assert!(
+        // ubs:ignore
+        edges.contains_key(&(
+            RelationKind::BlockedActor,
+            blocker_node.clone(),
+            "human:priya".to_owned()
+        )),
+        "BlockedActor edge required"
+    );
+    assert!(
+        // ubs:ignore
+        edges.contains_key(&(
+            RelationKind::BlockerForDecision,
+            blocker_node,
+            "decision:deploy".to_owned()
+        )),
+        "BlockerForDecision edge required"
+    );
+    Ok(())
+}
+
+#[test]
+fn classified_batch_hypothesis_projects_node() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:5",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [{
+                "kind": "hypothesis",
+                "title": "Batching reduces API cost by 40%",
+                "rationale": "Unverified claim from team",
+                "topic_keys": ["cost", "batching"],
+                "evidence_ids": [],
+                "options": null,
+                "chosen_option": null,
+                "extraction_confidence": 0.75,
+                "expressed_confidence": null,
+                "supersedes_id": null,
+                "assumes_ids": [],
+                "supports_ids": [],
+                "refutes_ids": [],
+                "actor_id": null,
+                "accepted_by": null,
+                "rejected_by": null,
+                "blocked_actor_id": null,
+                "decision_id": null
+            }]
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    let hyp = nodes
+        .iter()
+        .find(|((kind, _), _)| *kind == NodeKind::Hypothesis)
+        .map(|((_, _), props)| props.clone())
+        .expect("hypothesis node required"); // ubs:ignore
+    assert_eq!(
+        // ubs:ignore
+        hyp.get("statement"),
+        Some(&GraphValue::String(
+            "Batching reduces API cost by 40%".to_owned()
+        ))
+    );
+    Ok(())
+}
+
+#[test]
+fn classified_batch_empty_captures_is_no_op() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:empty",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": []
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    // Only the classifier actor node; no decision/evidence/hypothesis nodes.
+    let nodes = graph.nodes();
+    assert_eq!(
+        // ubs:ignore
+        nodes.len(),
+        1,
+        "only the actor node from the event itself; no capture nodes"
+    );
+    Ok(())
+}
