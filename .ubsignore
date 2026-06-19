@@ -7,3 +7,8 @@ tests/api.rs
 tests/mcp_stdio_e2e.rs
 tests/multi_tenant.rs
 tests/support/
+# Fidelity/benchmark tooling (benchmarks/fidelity/main.rs et al.) is eval/bench
+# code, not production runtime — same rationale as the tests/ exemption above.
+# Exemption alex-approved for hivemind-21zi (mirrors the tests/ sign-off in
+# hivemind-yfbq). Keeps the warning baseline focused on production-code quality.
+benchmarks/
