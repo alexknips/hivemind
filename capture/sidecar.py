@@ -5,7 +5,7 @@ Polls ~/.claude/projects/ for JSONL transcript changes (by mtime) and ships
 new turns to /v1/ingest. Intended for hook-less harnesses (Codex, etc.) and
 as a durability comparison against the hook shipper.
 
-No external dependencies: stdlib only (os, time, signal, json, urllib).
+No external dependencies: stdlib only (os, time, json, urllib).
 
 Configuration via environment variables:
   HIVEMIND_API_URL            Base URL of the HiveMind server (default: http://localhost:8080)
@@ -23,7 +23,6 @@ Usage:
 """
 
 import os
-import signal
 import sys
 import time
 
@@ -45,23 +44,17 @@ def main() -> None:
     # mtime cache: jsonl_path → last observed mtime
     mtimes: dict[str, float] = {}
 
-    running = True
-
-    def _handle_signal(sig: int, _frame: object) -> None:
-        nonlocal running
-        running = False
-
-    signal.signal(signal.SIGTERM, _handle_signal)
-    signal.signal(signal.SIGINT, _handle_signal)
-
     print(f"hivemind-sidecar: watching {projects_dir}", file=sys.stderr)
 
-    while running:
-        try:
-            _scan(projects_dir, mtimes, api_url, api_key, agent_tool)
-        except Exception as exc:
-            print(f"hivemind-sidecar: scan error: {exc}", file=sys.stderr)
-        time.sleep(poll_interval)
+    try:
+        while True:
+            try:
+                _scan(projects_dir, mtimes, api_url, api_key, agent_tool)
+            except Exception as exc:
+                print(f"hivemind-sidecar: scan error: {exc}", file=sys.stderr)
+            time.sleep(poll_interval)
+    except KeyboardInterrupt:
+        pass
 
     print("hivemind-sidecar: stopped", file=sys.stderr)
 

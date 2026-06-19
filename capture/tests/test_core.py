@@ -278,12 +278,14 @@ class TestCursorFlow(unittest.TestCase):
         core_module._post = _fail
 
         cursor_file = os.path.join(self.cursor_dir, f"{self.session_id}.offset")
-        offset_before = int(open(cursor_file).read())
+        with open(cursor_file) as fh:
+            offset_before = int(fh.read())
 
         # ship() should not raise; it prints to stderr.
         ship(self.session_id, self.jsonl_path, "http://localhost:8080", "")
 
-        offset_after = int(open(cursor_file).read())
+        with open(cursor_file) as fh:
+            offset_after = int(fh.read())
         self.assertGreater(offset_after, offset_before, "cursor must advance despite POST failure")
 
         core_module._post = orig_post
