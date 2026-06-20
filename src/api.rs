@@ -2208,7 +2208,6 @@ fn mcp_collect_strings(
 }
 
 // ---------------------------------------------------------------------------
-// OAuth resource/authorization-server metadata stubs
 // OAuth resource/authorization server metadata (MCP auth spec, Nov-2025)
 // ---------------------------------------------------------------------------
 //
