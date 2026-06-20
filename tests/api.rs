@@ -25,6 +25,7 @@ fn app(hivemind_dir: PathBuf) -> axum::Router {
         api_key: None,
         database_url: None,
         admin_key: None,
+        base_url: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -36,6 +37,7 @@ fn app_with_key(hivemind_dir: PathBuf, key: &str) -> axum::Router {
         api_key: Some(key.to_owned()),
         database_url: None,
         admin_key: None,
+        base_url: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -885,7 +887,7 @@ async fn mcp_http_initialize_returns_session_id() {
     }));
     let response = app(dir).oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK); // ubs:ignore
-    // initialize must echo back a Mcp-Session-Id header
+                                                   // initialize must echo back a Mcp-Session-Id header
     assert!(response.headers().contains_key("mcp-session-id")); // ubs:ignore
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
@@ -908,10 +910,7 @@ async fn mcp_http_tools_list_returns_12_tools() {
     assert_eq!(status, StatusCode::OK); // ubs:ignore
     let tools = body["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 12); // ubs:ignore
-    let names: Vec<&str> = tools
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"capture_decision")); // ubs:ignore
     assert!(names.contains(&"get_decision")); // ubs:ignore
     assert!(names.contains(&"summarize_decisions")); // ubs:ignore
@@ -984,7 +983,7 @@ async fn mcp_http_unknown_tool_returns_tool_error() {
     )
     .await;
     assert_eq!(status, StatusCode::OK); // ubs:ignore
-    // Unknown tool is a protocol error → JSON-RPC error object
+                                        // Unknown tool is a protocol error → JSON-RPC error object
     assert!(body.get("error").is_some()); // ubs:ignore
 }
 
@@ -1001,11 +1000,7 @@ async fn mcp_http_oauth_metadata_stubs_respond() {
     assert_eq!(s1, StatusCode::OK); // ubs:ignore
     assert!(b1.get("resource").is_some()); // ubs:ignore
 
-    let (s2, b2) = call(
-        router,
-        get_req("/.well-known/oauth-authorization-server"),
-    )
-    .await;
+    let (s2, b2) = call(router, get_req("/.well-known/oauth-authorization-server")).await;
     assert_eq!(s2, StatusCode::OK); // ubs:ignore
     assert!(b2.get("issuer").is_some()); // ubs:ignore
     assert!(b2.get("authorization_endpoint").is_some()); // ubs:ignore

@@ -8,6 +8,8 @@ pub mod identity;
 pub mod ingest;
 pub mod ledger;
 pub mod mcp;
+#[cfg(feature = "shared-backend-postgres")]
+pub mod oauth;
 pub mod projector;
 pub mod queries;
 pub mod slack_app;

@@ -51,6 +51,8 @@ use crate::events::{EventProvenance, IngestTurn, TenantId};
 use crate::ledger::{EventLedger, SqliteEventLedger};
 #[cfg(feature = "shared-backend-postgres")]
 use crate::ledger::{PostgresEventLedger, TenantStore};
+#[cfg(feature = "shared-backend-postgres")]
+use crate::oauth::{exchange_github_code, exchange_google_code, OAuthConfig, OAuthStore};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
     derive_decision_status, get_compact_view, get_decision, get_relevant_decisions,
@@ -76,6 +78,9 @@ pub struct ApiConfig {
     pub database_url: Option<String>,
     /// Admin token for the `POST /v1/tenants` provisioning endpoint.
     pub admin_key: Option<String>,
+    /// Public base URL for OAuth metadata (e.g. "https://hivemind.fly.dev").
+    /// Falls back to `HIVEMIND_BASE_URL` env var when not set explicitly.
+    pub base_url: Option<String>,
 }
 
 impl ApiConfig {
@@ -86,6 +91,7 @@ impl ApiConfig {
             api_key: std::env::var("HIVEMIND_API_KEY").ok(),
             database_url: std::env::var("HIVEMIND_DATABASE_URL").ok(),
             admin_key: std::env::var("HIVEMIND_ADMIN_KEY").ok(),
+            base_url: std::env::var("HIVEMIND_BASE_URL").ok(),
         }
     }
 
@@ -200,6 +206,14 @@ pub struct AppState {
     /// Token store for per-tenant bearer token resolution (Postgres mode).
     #[cfg(feature = "shared-backend-postgres")]
     tenant_store: Option<Arc<TenantStore>>,
+    /// OAuth AS state store (Postgres mode + OAuth credentials configured).
+    #[cfg(feature = "shared-backend-postgres")]
+    oauth_store: Option<Arc<OAuthStore>>,
+    /// OAuth provider credentials and server base URL.
+    #[cfg(feature = "shared-backend-postgres")]
+    oauth_config: Option<Arc<OAuthConfig>>,
+    /// Public base URL for WWW-Authenticate resource_metadata header.
+    base_url: Option<String>,
 }
 
 impl AppState {
@@ -208,11 +222,35 @@ impl AppState {
         if let Some(ref url) = config.database_url {
             let ledger = PostgresEventLedger::connect(url, "provisioning")?;
             let store = TenantStore::connect(url)?;
+
+            // Initialize OAuth AS if provider credentials are available.
+            let (oauth_store, oauth_config) = {
+                let base = config
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| "http://localhost:8080".to_owned());
+                let oc = OAuthConfig::from_env(base);
+                let os = if oc.has_any_provider() {
+                    Some(Arc::new(OAuthStore::connect(url)?))
+                } else {
+                    None
+                };
+                let oc = if os.is_some() {
+                    Some(Arc::new(oc))
+                } else {
+                    None
+                };
+                (os, oc)
+            };
+
             return Ok(Self {
                 backend: Arc::new(ApiBackend::Postgres(Arc::new(ledger))),
                 api_key: None,
                 admin_key: config.admin_key.clone(),
                 tenant_store: Some(Arc::new(store)),
+                oauth_store,
+                oauth_config,
+                base_url: config.base_url.clone(),
             });
         }
 
@@ -223,6 +261,11 @@ impl AppState {
             admin_key: config.admin_key.clone(),
             #[cfg(feature = "shared-backend-postgres")]
             tenant_store: None,
+            #[cfg(feature = "shared-backend-postgres")]
+            oauth_store: None,
+            #[cfg(feature = "shared-backend-postgres")]
+            oauth_config: None,
+            base_url: config.base_url.clone(),
         })
     }
 }
@@ -317,27 +360,54 @@ fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequestCtx
         .unwrap_or("");
 
     // Postgres multi-tenant mode: resolve token → tenant_id from the DB.
+    // Check order: TenantStore tokens → OAuth-issued tokens.
     #[cfg(feature = "shared-backend-postgres")]
     if let Some(ref store) = state.tenant_store {
         if bearer.is_empty() {
             return Err(ApiError::unauthorized("bearer token required"));
         }
-        let tenant_id_str = store
+
+        // 1. Existing per-tenant API tokens (hm_tk_ prefix).
+        if let Some(tenant_id_str) = store
             .resolve_token(bearer)
             .map_err(|e| ApiError::internal(e.to_string()))?
-            .ok_or_else(|| ApiError::unauthorized("invalid or missing bearer token"))?;
-        let tenant_id = TenantId::new(&tenant_id_str)
-            .map_err(|_| ApiError::internal("invalid tenant_id from token store"))?;
-        let actor_id = headers
-            .get(HEADER_ACTOR)
-            .and_then(|v| v.to_str().ok())
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(DEFAULT_ACTOR)
-            .to_owned();
-        return Ok(ApiRequestCtx {
-            tenant_id,
-            actor_id,
-        });
+        {
+            let tenant_id = TenantId::new(&tenant_id_str)
+                .map_err(|_| ApiError::internal("invalid tenant_id from token store"))?;
+            let actor_id = headers
+                .get(HEADER_ACTOR)
+                .and_then(|v| v.to_str().ok())
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(DEFAULT_ACTOR)
+                .to_owned();
+            return Ok(ApiRequestCtx {
+                tenant_id,
+                actor_id,
+            });
+        }
+
+        // 2. OAuth-issued bearer tokens (hm_oa_ prefix).
+        if let Some(ref oauth) = state.oauth_store {
+            if let Some(tenant_id_str) = oauth
+                .resolve_token(bearer)
+                .map_err(|e| ApiError::internal(e.to_string()))?
+            {
+                let tenant_id = TenantId::new(&tenant_id_str)
+                    .map_err(|_| ApiError::internal("invalid tenant_id from OAuth store"))?;
+                let actor_id = headers
+                    .get(HEADER_ACTOR)
+                    .and_then(|v| v.to_str().ok())
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or(DEFAULT_ACTOR)
+                    .to_owned();
+                return Ok(ApiRequestCtx {
+                    tenant_id,
+                    actor_id,
+                });
+            }
+        }
+
+        return Err(ApiError::unauthorized("invalid or missing bearer token"));
     }
 
     // SQLite dev mode: single-key constant-time comparison.
@@ -515,7 +585,12 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/.well-known/oauth-authorization-server",
             get(oauth_authorization_server_handler),
-        );
+        )
+        // OAuth 2.1 AS endpoints (custom all-Rust broker)
+        .route("/oauth/register", post(oauth_register_handler))
+        .route("/oauth/authorize", get(oauth_authorize_handler))
+        .route("/oauth/callback", get(oauth_callback_handler))
+        .route("/oauth/token", post(oauth_token_handler));
 
     #[cfg(feature = "shared-backend-postgres")]
     let router = router.route("/v1/tenants", post(provision_tenant_handler));
@@ -1320,7 +1395,23 @@ async fn mcp_http_handler(
 ) -> Response {
     let ctx = match extract_ctx(&state, &headers) {
         Ok(c) => c,
-        Err(e) => return e.into_response(),
+        Err(e) => {
+            let mut resp = e.into_response();
+            // Per MCP OAuth spec, add WWW-Authenticate on 401 so clients can
+            // discover the authorization server via oauth-protected-resource metadata.
+            if resp.status() == StatusCode::UNAUTHORIZED {
+                if let Some(ref base) = state.base_url {
+                    let wwa = format!(
+                        "Bearer realm=\"HiveMind\", \
+                         resource_metadata=\"{base}/.well-known/oauth-protected-resource\""
+                    );
+                    if let Ok(v) = wwa.parse::<axum::http::HeaderValue>() {
+                        resp.headers_mut().insert("www-authenticate", v);
+                    }
+                }
+            }
+            return resp;
+        }
     };
 
     let session_id = headers
@@ -2014,33 +2105,436 @@ fn mcp_collect_strings(
 }
 
 // ---------------------------------------------------------------------------
-// OAuth resource/authorization-server metadata stubs
-// (Part 2 will populate these with real PKCE + GitHub/Google values)
+// OAuth resource/authorization-server metadata (RFC 8707 + RFC 8414)
 // ---------------------------------------------------------------------------
 
-async fn oauth_protected_resource_handler() -> impl IntoResponse {
+async fn oauth_protected_resource_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let base = state.base_url.as_deref().unwrap_or("");
+    let as_url = format!("{base}/.well-known/oauth-authorization-server");
     (
         StatusCode::OK,
         Json(serde_json::json!({
-            "resource": "/",
-            "authorization_servers": [],
+            "resource": base,
+            "authorization_servers": [as_url],
             "bearer_methods_supported": ["header"],
-            "scopes_supported": [],
+            "scopes_supported": ["read"],
         })),
     )
 }
 
-async fn oauth_authorization_server_handler() -> impl IntoResponse {
+async fn oauth_authorization_server_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let base = state.base_url.as_deref().unwrap_or("");
     (
         StatusCode::OK,
         Json(serde_json::json!({
-            "issuer": "/",
-            "authorization_endpoint": "/oauth/authorize",
-            "token_endpoint": "/oauth/token",
-            "registration_endpoint": "/oauth/register",
+            "issuer": base,
+            "authorization_endpoint": format!("{base}/oauth/authorize"),
+            "token_endpoint": format!("{base}/oauth/token"),
+            "registration_endpoint": format!("{base}/oauth/register"),
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code"],
             "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": ["none"],
         })),
     )
+}
+
+// ---------------------------------------------------------------------------
+// OAuth 2.1 AS handlers — custom all-Rust broker
+// ---------------------------------------------------------------------------
+
+/// RFC7591 Dynamic Client Registration.
+///
+/// Request:  `{"redirect_uris": [...], "scope": "read"}`
+/// Response: client metadata including the newly issued `client_id`.
+async fn oauth_register_handler(
+    State(state): State<AppState>,
+    payload: std::result::Result<Json<serde_json::Value>, JsonRejection>,
+) -> Response {
+    #[cfg(feature = "shared-backend-postgres")]
+    {
+        let oauth = match state.oauth_store.as_ref() {
+            Some(s) => Arc::clone(s),
+            None => {
+                return (
+                    StatusCode::NOT_IMPLEMENTED,
+                    Json(serde_json::json!({
+                        "error": "not_implemented",
+                        "error_description": "OAuth not configured — set GITHUB_CLIENT_ID or GOOGLE_CLIENT_ID"
+                    })),
+                )
+                    .into_response()
+            }
+        };
+
+        let body = match payload {
+            Ok(Json(v)) => v,
+            Err(e) => return ApiError::validation(e.to_string()).into_response(),
+        };
+
+        let redirect_uris: Vec<String> = body["redirect_uris"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if redirect_uris.is_empty() {
+            return ApiError::validation("redirect_uris must not be empty").into_response();
+        }
+
+        let scope = body["scope"].as_str().unwrap_or("read").to_owned();
+        let scope_clone = scope.clone();
+        let redirect_uris_display = body["redirect_uris"].clone();
+        let base = state
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "http://localhost:8080".to_owned());
+
+        let result = tokio::task::spawn_blocking(move || {
+            oauth.register_client(&redirect_uris, &scope_clone)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(client_id)) => (
+                StatusCode::CREATED,
+                Json(serde_json::json!({
+                    "client_id": client_id,
+                    "redirect_uris": redirect_uris_display,
+                    "grant_types": ["authorization_code"],
+                    "response_types": ["code"],
+                    "scope": scope,
+                    "token_endpoint_auth_method": "none",
+                    "registration_endpoint": format!("{base}/oauth/register"),
+                })),
+            )
+                .into_response(),
+            Ok(Err(e)) => ApiError::internal(e.to_string()).into_response(),
+            Err(e) => ApiError::internal(e.to_string()).into_response(),
+        }
+    }
+
+    #[cfg(not(feature = "shared-backend-postgres"))]
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({ "error": "not_implemented" })),
+    )
+        .into_response()
+}
+
+/// Query params for GET /oauth/authorize.
+#[derive(Debug, Deserialize)]
+struct AuthorizeParams {
+    client_id: String,
+    redirect_uri: String,
+    response_type: String,
+    code_challenge: String,
+    #[serde(default = "default_s256")]
+    code_challenge_method: String,
+    #[serde(default)]
+    state: String,
+    /// Extension: `github` or `google`. Defaults to `github` if only that is configured.
+    #[serde(default)]
+    provider: String,
+}
+
+fn default_s256() -> String {
+    "S256".to_owned()
+}
+
+/// Start an OAuth 2.1 authorization-code + PKCE flow.
+///
+/// Stores session state, then redirects the browser to the upstream provider
+/// (GitHub or Google). The `provider` query param selects which one.
+async fn oauth_authorize_handler(
+    State(state): State<AppState>,
+    Query(params): Query<AuthorizeParams>,
+) -> Response {
+    #[cfg(feature = "shared-backend-postgres")]
+    {
+        let (oauth, oauth_config) = match (state.oauth_store.as_ref(), state.oauth_config.as_ref())
+        {
+            (Some(s), Some(c)) => (Arc::clone(s), Arc::clone(c)),
+            _ => {
+                return (
+                    StatusCode::NOT_IMPLEMENTED,
+                    Json(serde_json::json!({ "error": "not_implemented" })),
+                )
+                    .into_response()
+            }
+        };
+
+        if !constant_time_eq(&params.response_type, "code") {
+            return ApiError::validation("response_type must be 'code'").into_response();
+        }
+        if !constant_time_eq(&params.code_challenge_method, "S256") {
+            return ApiError::validation("code_challenge_method must be 'S256'").into_response();
+        }
+
+        // Choose provider: explicit param, or fall back to whichever is configured.
+        let provider = if !params.provider.is_empty() {
+            params.provider.clone()
+        } else if oauth_config.github_client_id.is_some() {
+            "github".to_owned()
+        } else {
+            "google".to_owned()
+        };
+
+        let client_id = params.client_id.clone();
+        let redirect_uri = params.redirect_uri.clone();
+        let code_challenge = params.code_challenge.clone();
+        let code_challenge_method = params.code_challenge_method.clone();
+        let client_state = params.state.clone();
+        let provider_clone = provider.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            oauth.start_session(
+                &client_id,
+                &redirect_uri,
+                &code_challenge,
+                &code_challenge_method,
+                &client_state,
+                &provider_clone,
+            )
+        })
+        .await;
+
+        let (_session_id, provider_state) = match result {
+            Ok(Ok(pair)) => pair,
+            Ok(Err(e)) => return ApiError::internal(e.to_string()).into_response(),
+            Err(e) => return ApiError::internal(e.to_string()).into_response(),
+        };
+
+        let redirect_url = match provider.as_str() {
+            "github" => oauth_config.github_authorize_url(&provider_state),
+            "google" => oauth_config.google_authorize_url(&provider_state),
+            other => {
+                return ApiError::validation(format!("unknown provider: {other}")).into_response()
+            }
+        };
+
+        match redirect_url {
+            Some(url) => axum::response::Redirect::to(&url).into_response(),
+            None => ApiError::validation(format!("provider '{provider}' is not configured"))
+                .into_response(),
+        }
+    }
+
+    #[cfg(not(feature = "shared-backend-postgres"))]
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({ "error": "not_implemented" })),
+    )
+        .into_response()
+}
+
+/// Query params for GET /oauth/callback.
+#[derive(Debug, Deserialize)]
+struct CallbackParams {
+    code: String,
+    state: String,
+    #[serde(default)]
+    error: String,
+}
+
+/// Upstream provider callback. Exchanges the provider code for user identity,
+/// maps to a HiveMind tenant, issues an authorization code, and redirects back
+/// to the client's redirect_uri.
+async fn oauth_callback_handler(
+    State(state): State<AppState>,
+    Query(params): Query<CallbackParams>,
+) -> Response {
+    #[cfg(feature = "shared-backend-postgres")]
+    {
+        if !params.error.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": params.error,
+                    "error_description": "Provider returned an error"
+                })),
+            )
+                .into_response();
+        }
+
+        let (oauth, oauth_config) = match (state.oauth_store.as_ref(), state.oauth_config.as_ref())
+        {
+            (Some(s), Some(c)) => (Arc::clone(s), Arc::clone(c)),
+            _ => {
+                return (
+                    StatusCode::NOT_IMPLEMENTED,
+                    Json(serde_json::json!({ "error": "not_implemented" })),
+                )
+                    .into_response()
+            }
+        };
+
+        // 1. Look up session by provider_state (blocking Postgres).
+        let provider_state = params.state.clone();
+        let oauth_clone = Arc::clone(&oauth);
+        let session = match tokio::task::spawn_blocking(move || {
+            oauth_clone.get_session_by_provider_state(&provider_state)
+        })
+        .await
+        {
+            Ok(Ok(Some(s))) => s,
+            Ok(Ok(None)) => {
+                return ApiError::validation("unknown or expired state parameter").into_response()
+            }
+            Ok(Err(e)) => return ApiError::internal(e.to_string()).into_response(),
+            Err(e) => return ApiError::internal(e.to_string()).into_response(),
+        };
+
+        // 2. Exchange with upstream provider (async HTTP).
+        let exchange_result = match session.provider.as_str() {
+            "github" => exchange_github_code(&params.code, &oauth_config).await,
+            "google" => exchange_google_code(&params.code, &oauth_config).await,
+            other => {
+                return ApiError::internal(format!("unknown provider in session: {other}"))
+                    .into_response()
+            }
+        };
+
+        let (user_sub, email) = match exchange_result {
+            Ok(pair) => pair,
+            Err(e) => return ApiError::internal(e.to_string()).into_response(),
+        };
+
+        // 3. Ensure a HiveMind tenant exists for this user (blocking Postgres).
+        let oauth_clone2 = Arc::clone(&oauth);
+        let user_sub_clone = user_sub.clone();
+        let email_clone = email.clone();
+        let tenant_id = match tokio::task::spawn_blocking(move || {
+            oauth_clone2.ensure_tenant(&user_sub_clone, &email_clone)
+        })
+        .await
+        {
+            Ok(Ok(tid)) => tid,
+            Ok(Err(e)) => return ApiError::internal(e.to_string()).into_response(),
+            Err(e) => return ApiError::internal(e.to_string()).into_response(),
+        };
+
+        // 4. Issue an authorization code (blocking Postgres).
+        let session_id = session.session_id.clone();
+        let oauth_clone3 = Arc::clone(&oauth);
+        let code = match tokio::task::spawn_blocking(move || {
+            oauth_clone3.issue_code(&session_id, &user_sub, &tenant_id)
+        })
+        .await
+        {
+            Ok(Ok(c)) => c,
+            Ok(Err(e)) => return ApiError::internal(e.to_string()).into_response(),
+            Err(e) => return ApiError::internal(e.to_string()).into_response(),
+        };
+
+        // 5. Redirect back to client with code + state.
+        let redirect = format!(
+            "{}?code={}&state={}",
+            session.redirect_uri,
+            urlencoded(&code),
+            urlencoded(&session.client_state),
+        );
+        axum::response::Redirect::to(&redirect).into_response()
+    }
+
+    #[cfg(not(feature = "shared-backend-postgres"))]
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({ "error": "not_implemented" })),
+    )
+        .into_response()
+}
+
+/// Token endpoint request — accepts JSON body (form-encoded is not supported
+/// in this implementation; clients should use JSON).
+#[derive(Debug, Deserialize)]
+struct TokenRequest {
+    grant_type: String,
+    code: String,
+    code_verifier: String,
+    client_id: String,
+    #[allow(dead_code)]
+    redirect_uri: Option<String>,
+}
+
+/// POST /oauth/token — exchange authorization code for bearer token (PKCE validated).
+async fn oauth_token_handler(
+    State(state): State<AppState>,
+    payload: std::result::Result<Json<TokenRequest>, JsonRejection>,
+) -> Response {
+    #[cfg(feature = "shared-backend-postgres")]
+    {
+        let oauth = match state.oauth_store.as_ref() {
+            Some(s) => Arc::clone(s),
+            None => {
+                return (
+                    StatusCode::NOT_IMPLEMENTED,
+                    Json(serde_json::json!({ "error": "not_implemented" })),
+                )
+                    .into_response()
+            }
+        };
+
+        let req = match payload {
+            Ok(Json(r)) => r,
+            Err(e) => return ApiError::validation(e.to_string()).into_response(),
+        };
+
+        if req.grant_type != "authorization_code" {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "unsupported_grant_type",
+                    "error_description": "only authorization_code is supported"
+                })),
+            )
+                .into_response();
+        }
+
+        let code = req.code.clone();
+        let verifier = req.code_verifier.clone();
+        let client_id = req.client_id.clone();
+
+        let result =
+            tokio::task::spawn_blocking(move || oauth.exchange_code(&code, &verifier, &client_id))
+                .await;
+
+        match result {
+            Ok(Ok(Some(exchange))) => (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "access_token": exchange.access_token,
+                    "token_type": exchange.token_type,
+                    "scope": exchange.scope,
+                })),
+            )
+                .into_response(),
+            Ok(Ok(None)) => (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_grant",
+                    "error_description": "code not found, expired, or PKCE verification failed"
+                })),
+            )
+                .into_response(),
+            Ok(Err(e)) => ApiError::internal(e.to_string()).into_response(),
+            Err(e) => ApiError::internal(e.to_string()).into_response(),
+        }
+    }
+
+    #[cfg(not(feature = "shared-backend-postgres"))]
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(serde_json::json!({ "error": "not_implemented" })),
+    )
+        .into_response()
+}
+
+#[cfg(feature = "shared-backend-postgres")]
+fn urlencoded(s: &str) -> String {
+    crate::oauth::urlencoded(s)
 }
