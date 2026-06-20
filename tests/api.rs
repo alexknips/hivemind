@@ -856,3 +856,157 @@ async fn classifier_batch_classified_event_round_trips() {
         0.85
     );
 }
+
+// ---------------------------------------------------------------------------
+// MCP Streamable HTTP transport tests
+// ---------------------------------------------------------------------------
+
+fn mcp_post(body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("content-type", "application/json")
+        .header("x-hivemind-actor", "agent:test:mcp-session")
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn mcp_http_initialize_returns_session_id() {
+    let dir = test_ledger_dir();
+    let req = mcp_post(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "clientInfo": { "name": "test", "version": "0.1" }
+        }
+    }));
+    let response = app(dir).oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK); // ubs:ignore
+    // initialize must echo back a Mcp-Session-Id header
+    assert!(response.headers().contains_key("mcp-session-id")); // ubs:ignore
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["result"]["protocolVersion"], "2025-03-26"); // ubs:ignore
+    assert_eq!(body["result"]["serverInfo"]["name"], "hivemind"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn mcp_http_tools_list_returns_12_tools() {
+    let dir = test_ledger_dir();
+    let (status, body) = call(
+        app(dir),
+        mcp_post(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK); // ubs:ignore
+    let tools = body["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 12); // ubs:ignore
+    let names: Vec<&str> = tools
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"capture_decision")); // ubs:ignore
+    assert!(names.contains(&"get_decision")); // ubs:ignore
+    assert!(names.contains(&"summarize_decisions")); // ubs:ignore
+}
+
+#[tokio::test]
+async fn mcp_http_capture_and_get_decision_round_trip() {
+    let dir = test_ledger_dir();
+
+    // Capture a decision via MCP HTTP
+    let (status, body) = call(
+        app(dir.clone()),
+        mcp_post(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "capture_decision",
+                "arguments": {
+                    "title": "Use axum for HTTP",
+                    "rationale": "Good ergonomics and async support",
+                    "topic_keys": ["http", "framework"],
+                    "options": [
+                        { "label": "axum", "description": "The chosen framework" },
+                        { "label": "actix-web" }
+                    ],
+                    "chosen_option_label": "axum"
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK); // ubs:ignore
+    assert_eq!(body["result"]["isError"], false); // ubs:ignore
+    let decision_id = body["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!decision_id.is_empty()); // ubs:ignore
+
+    // Read it back via MCP HTTP
+    let (status2, body2) = call(
+        app(dir),
+        mcp_post(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "get_decision",
+                "arguments": { "decision_id": decision_id }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status2, StatusCode::OK); // ubs:ignore
+    assert_eq!(body2["result"]["isError"], false); // ubs:ignore
+}
+
+#[tokio::test]
+async fn mcp_http_unknown_tool_returns_tool_error() {
+    let dir = test_ledger_dir();
+    let (status, body) = call(
+        app(dir),
+        mcp_post(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": { "name": "does_not_exist", "arguments": {} }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK); // ubs:ignore
+    // Unknown tool is a protocol error → JSON-RPC error object
+    assert!(body.get("error").is_some()); // ubs:ignore
+}
+
+#[tokio::test]
+async fn mcp_http_oauth_metadata_stubs_respond() {
+    let dir = test_ledger_dir();
+    let router = app(dir);
+
+    let (s1, b1) = call(
+        router.clone(),
+        get_req("/.well-known/oauth-protected-resource"),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK); // ubs:ignore
+    assert!(b1.get("resource").is_some()); // ubs:ignore
+
+    let (s2, b2) = call(
+        router,
+        get_req("/.well-known/oauth-authorization-server"),
+    )
+    .await;
+    assert_eq!(s2, StatusCode::OK); // ubs:ignore
+    assert!(b2.get("issuer").is_some()); // ubs:ignore
+    assert!(b2.get("authorization_endpoint").is_some()); // ubs:ignore
+}
