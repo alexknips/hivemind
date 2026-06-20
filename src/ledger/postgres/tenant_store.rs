@@ -73,7 +73,13 @@ impl TenantStore {
                     label      text,
                     created_at timestamptz NOT NULL DEFAULT now()
                 );
-                CREATE INDEX IF NOT EXISTS hm_tokens_hash_idx ON hm_tokens (token_hash);",
+                CREATE INDEX IF NOT EXISTS hm_tokens_hash_idx ON hm_tokens (token_hash);
+                CREATE TABLE IF NOT EXISTS hm_oidc_users (
+                    sub        text PRIMARY KEY,
+                    tenant_id  text NOT NULL REFERENCES hm_tenants(tenant_id),
+                    email      text,
+                    created_at timestamptz NOT NULL DEFAULT now()
+                );",
             )
             .map_err(storage_error)?;
 
@@ -179,6 +185,48 @@ impl TenantStore {
             token_id,
             token_secret,
         })
+    }
+
+    /// Resolve an OIDC user (WorkOS `sub`) to a tenant_id, auto-provisioning
+    /// a tenant on first login. The tenant is keyed by `sub` so each WorkOS
+    /// user gets an isolated tenant in the existing multi-tenant model.
+    pub fn resolve_or_create_oidc_user(&self, sub: &str, email: &str) -> Result<String> {
+        let mut client = self.pool.get().map_err(storage_error)?;
+
+        // Fast path: already mapped.
+        if let Some(row) = client
+            .query_opt(
+                "SELECT tenant_id FROM hm_oidc_users WHERE sub = $1",
+                &[&sub],
+            )
+            .map_err(storage_error)?
+        {
+            return Ok(row.get::<_, String>(0));
+        }
+
+        // Auto-provision a tenant for this OIDC user. The tenant_id is stable
+        // across logins so the user's decision history persists.
+        let tenant_id = format!("oidc:{sub}");
+        let display_name = if email.is_empty() { sub } else { email };
+
+        let mut tx = client.transaction().map_err(storage_error)?;
+        tx.execute(
+            "INSERT INTO hm_tenants (tenant_id, display_name)
+             VALUES ($1, $2)
+             ON CONFLICT (tenant_id) DO NOTHING",
+            &[&tenant_id, &display_name],
+        )
+        .map_err(storage_error)?;
+        tx.execute(
+            "INSERT INTO hm_oidc_users (sub, tenant_id, email)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (sub) DO UPDATE SET email = EXCLUDED.email",
+            &[&sub, &tenant_id, &email],
+        )
+        .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
+
+        Ok(tenant_id)
     }
 
     /// Resolve a bearer token to a tenant_id, or `None` if not found.
