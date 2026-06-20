@@ -42,7 +42,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::{DateTime, Utc};
+#[cfg(feature = "shared-backend-postgres")]
 use jsonwebtoken::jwk::JwkSet;
+#[cfg(feature = "shared-backend-postgres")]
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -211,13 +213,16 @@ impl EventLedger for ApiLedger {
 struct WorkosConfig {
     /// AuthKit domain, e.g. `https://your-tenant.authkit.app`.
     domain: String,
-    /// OIDC issuer for JWT `iss` claim validation.
+    /// OIDC issuer for JWT `iss` claim validation (postgres/JWT-auth path only).
+    #[cfg(feature = "shared-backend-postgres")]
     issuer: String,
     /// Expected JWT `aud` claim. `None` disables audience validation (DCR mode).
+    #[cfg(feature = "shared-backend-postgres")]
     audience: Option<String>,
 }
 
 /// Claims extracted from a validated WorkOS access token.
+#[cfg(feature = "shared-backend-postgres")]
 #[derive(Debug, serde::Deserialize)]
 struct WorkosClaims {
     sub: String,
@@ -239,13 +244,17 @@ pub struct AppState {
     /// WorkOS OAuth resource-server config (set when WORKOS_DOMAIN is configured).
     workos_config: Option<WorkosConfig>,
     /// Cached WorkOS JWKS, fetched at startup. Empty if WorkOS not configured.
+    #[cfg(feature = "shared-backend-postgres")]
     workos_jwks: Arc<JwkSet>,
 }
 
 impl AppState {
     pub fn from_config(config: &ApiConfig) -> crate::Result<Self> {
-        // Fetch WorkOS JWKS once at startup (called before tokio runtime).
+        // Fetch WorkOS config and JWKS once at startup (blocking I/O, pre-tokio).
+        #[cfg(feature = "shared-backend-postgres")]
         let (workos_config, workos_jwks) = build_workos_state(config);
+        #[cfg(not(feature = "shared-backend-postgres"))]
+        let workos_config = build_workos_state(config);
 
         #[cfg(feature = "shared-backend-postgres")]
         if let Some(ref url) = config.database_url {
@@ -269,13 +278,15 @@ impl AppState {
             #[cfg(feature = "shared-backend-postgres")]
             tenant_store: None,
             workos_config,
+            #[cfg(feature = "shared-backend-postgres")]
             workos_jwks,
         })
     }
 }
 
-/// Build WorkOS resource-server config and pre-fetch JWKS.
+/// Build WorkOS resource-server config and pre-fetch JWKS (postgres+JWT path).
 /// Called before the tokio runtime starts, so blocking I/O is safe.
+#[cfg(feature = "shared-backend-postgres")]
 fn build_workos_state(config: &ApiConfig) -> (Option<WorkosConfig>, Arc<JwkSet>) {
     let (Some(domain), Some(issuer), Some(jwks_url)) = (
         config.workos_domain.as_deref(),
@@ -304,6 +315,14 @@ fn build_workos_state(config: &ApiConfig) -> (Option<WorkosConfig>, Arc<JwkSet>)
             (Some(workos_cfg), Arc::new(JwkSet { keys: vec![] }))
         }
     }
+}
+
+/// Build WorkOS resource-server config (SQLite/dev path — no JWKS fetch needed).
+#[cfg(not(feature = "shared-backend-postgres"))]
+fn build_workos_state(config: &ApiConfig) -> Option<WorkosConfig> {
+    config.workos_domain.as_deref().map(|domain| WorkosConfig {
+        domain: domain.to_owned(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +510,7 @@ fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequestCtx
     })
 }
 
+#[cfg(feature = "shared-backend-postgres")]
 /// Validate a WorkOS JWT access token against the cached JWKS.
 ///
 /// Validates signature (RS256/ES256), issuer, and expiry. When `audience` is
@@ -848,6 +868,7 @@ fn capture_decision_blocking(
             .record_option(&ctx.actor_id, &label, &description)
             .map_err(map_err)?;
 
+        // ubs:ignore: == compares option labels (user-visible strings), not secrets
         if req.chosen_option_label.as_deref() == Some(label.as_str()) {
             chosen_option_id = Some(option_id.clone());
         }
@@ -1741,6 +1762,7 @@ fn mcp_capture_decision(
         let oid = commands
             .record_option(actor_id, &label, &description)
             .map_err(|e| (-32603i32, e.to_string()))?;
+        // ubs:ignore: == compares option labels (user-visible strings), not secrets
         if chosen_label.as_deref() == Some(label.as_str()) {
             chosen_option_id = Some(oid.clone());
         }
