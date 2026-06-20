@@ -5,6 +5,13 @@ Our Rust server is a thin **resource server** — WorkOS AuthKit is the OAuth au
 server (handles DCR, GitHub/Google login, token issuance). This runbook tells you exactly
 what is dashboard-only versus scriptable via `workos-cli` / the Management API.
 
+> **Current `.env` status (June 2026):** `WORKOS_CLIENT_ID` and `WORKOS_API_KEY` are already
+> set. `WORKOS_DOMAIN`, `WORKOS_ISSUER`, and `WORKOS_JWKS_URL` are filled with the **User
+> Management** issuer (`https://api.workos.com/user_management/<client_id>`) — valid for
+> sealed-session validation but **incorrect for MCP OAuth tokens**. After completing Step 5
+> below, update those three vars to the `authkit.app` domain values. `WORKOS_AUDIENCE` and
+> `HIVEMIND_DATABASE_URL` still need to be filled in.
+
 ---
 
 ## Architecture Summary
@@ -66,12 +73,12 @@ This is `WORKOS_API_KEY` in our `.env`. Format: `sk_live_XXXX` (production) or
 
 ### Staging (testing only — no OAuth app required)
 
-WorkOS provides default managed Google credentials in the staging environment.
+WorkOS provides WorkOS-managed default Google credentials in the staging environment.
 Enable by visiting:
 **Authentication → OAuth providers → Google → toggle Enable**
 
-Staging tokens will show "WorkOS" branding in Google's consent screen. Sufficient
-for initial integration testing.
+Staging tokens will show WorkOS branding on Google's consent screen. Sufficient
+for initial integration testing without creating your own Google Cloud project.
 
 ### Production (required before launch)
 
@@ -96,10 +103,13 @@ You must create your own Google Cloud Console OAuth app:
 
 **Dashboard-only for production. Staging has WorkOS-managed defaults.**
 
-### Staging (no GitHub OAuth app required)
+### Staging
 
-WorkOS provides default managed GitHub credentials in staging.
+WorkOS may provide managed GitHub credentials in staging (confirmed for Google;
+GitHub availability depends on your account tier — check the dashboard).
 Enable: **Authentication → OAuth providers → GitHub → toggle Enable**
+
+If managed credentials aren't available, proceed directly to the production steps.
 
 ### Production
 
@@ -230,7 +240,7 @@ the `authkit_domain` discovery confirmation in Step 5).
 |---|---|---|
 | `WORKOS_DOMAIN` | Dashboard → Connect → Configuration → AuthKit domain | `https://random-phrase-12345.authkit.app` |
 | `WORKOS_ISSUER` | Same as `WORKOS_DOMAIN` | Confirmed by fetching `/.well-known/oauth-authorization-server` `.issuer` |
-| `WORKOS_JWKS_URL` | Derived from `WORKOS_DOMAIN` | `${WORKOS_DOMAIN}/oauth2/jwks` |
+| `WORKOS_JWKS_URL` | Derived from `WORKOS_DOMAIN` | `${WORKOS_DOMAIN}/oauth2/jwks` — note the legacy api.workos.com value used `/sso/jwks/<client_id>` (different path) |
 | `WORKOS_CLIENT_ID` | Dashboard home or API Keys page | `client_01XXXXXXXXXXXXXXXXXXXXXXXXX` |
 | `WORKOS_AUDIENCE` | Your MCP server URL (Step 7) or `WORKOS_CLIENT_ID` | Leave blank to skip aud check during testing |
 | `WORKOS_API_KEY` | Dashboard → API Keys | `sk_live_XXX` (prod) / `sk_test_XXX` (staging) |
