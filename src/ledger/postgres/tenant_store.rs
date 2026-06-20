@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
-use postgres::{Config, NoTls};
+use postgres::Config;
+use postgres_native_tls::MakeTlsConnector;
 use r2d2::Pool;
 use r2d2_postgres::PostgresConnectionManager;
 use sha2::{Digest, Sha256};
@@ -11,7 +12,7 @@ use crate::Result;
 
 use super::super::backend_error::storage_error;
 
-type PgPool = Pool<PostgresConnectionManager<NoTls>>;
+type PgPool = Pool<PostgresConnectionManager<MakeTlsConnector>>;
 
 /// Token prefix for all HiveMind bearer tokens.
 /// Uses `hm_tk_` (not `sk_live_`) to avoid false-positive matches with
@@ -42,7 +43,8 @@ impl TenantStore {
     /// have created their tables so that RLS can be enabled on them.
     pub fn connect(database_url: &str) -> Result<Self> {
         let config = Config::from_str(database_url).map_err(storage_error)?;
-        let manager = PostgresConnectionManager::new(config, NoTls);
+        let tls = MakeTlsConnector::new(native_tls::TlsConnector::new().map_err(storage_error)?);
+        let manager = PostgresConnectionManager::new(config, tls);
         let pool = Pool::builder()
             .max_size(4)
             .build(manager)

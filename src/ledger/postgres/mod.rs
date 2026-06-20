@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use postgres::error::SqlState;
-use postgres::{Config, NoTls, Row, Transaction};
+use postgres::{Config, Row, Transaction};
+use postgres_native_tls::MakeTlsConnector;
 use r2d2::Pool;
 use r2d2_postgres::PostgresConnectionManager;
 use serde_json::Value;
@@ -25,7 +26,7 @@ const DEFAULT_POOL_SIZE: u32 = 16;
 const MAX_TRANSIENT_RETRIES: usize = 3;
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(25);
 
-type PgManager = PostgresConnectionManager<NoTls>;
+type PgManager = PostgresConnectionManager<MakeTlsConnector>;
 type PgPool = Pool<PgManager>;
 
 /// Postgres-backed event ledger scoped to one tenant by default.
@@ -64,7 +65,8 @@ impl PostgresEventLedger {
         max_size: u32,
     ) -> Result<Self> {
         let config = Config::from_str(database_url).map_err(storage_error)?;
-        let manager = PostgresConnectionManager::new(config, NoTls);
+        let tls = MakeTlsConnector::new(native_tls::TlsConnector::new().map_err(storage_error)?);
+        let manager = PostgresConnectionManager::new(config, tls);
         let pool = Pool::builder()
             .max_size(max_size)
             .build(manager)

@@ -4,6 +4,7 @@ FROM rust:1.87-slim-bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libpq-dev \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -29,6 +30,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    libssl3 \
     ca-certificates \
     wget \
     && rm -rf /var/lib/apt/lists/*
