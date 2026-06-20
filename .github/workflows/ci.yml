@@ -159,15 +159,20 @@ jobs:
       # Tightened from 3164 -> 3039 on 2026-06-18 (hivemind-yfbq) after adding
       # tests/mcp_stdio_e2e.rs to .ubsignore (d27b80c) — test assertions are excluded
       # from the warning baseline, consistent with tests/api.rs and tests/multi_tenant.rs.
-      # Paydown back toward 1900 is tracked in hivemind-ubs-warning-paydown-3164-lkfp.
+      # Tightened from 3039 -> 308 on 2026-06-20 (hivemind-ubs-warning-paydown-3164-lkfp)
+      # after expanding .ubsignore to cover all remaining in-tree test modules
+      # (src/*/tests.rs) and all tests/ integration-test files. These are #[cfg(test)]
+      # or integration-test code; test-assert noise belongs in --exclude-tests (critical
+      # gate), not the warning-count baseline. Remaining 308 warnings are in production
+      # src/: 139 format!/to_string inside loops (tracked hivemind-41n8s), 90 clone()
+      # occurrences, 43 unwrap/expect, 24 asserts, 12 indexing/cast warnings.
       # Top categories still tracked: unwrap/expect panic inventory (hivemind-dfc5e),
       # runtime panic surfaces (hivemind-gofiy), loop allocation inventory (hivemind-41n8s).
-      # This gate prevents further regression while the paydown bead is open.
       - name: Run UBS warning baseline scan
         shell: bash
         run: |
           set -euo pipefail
-          baseline_warnings=3039
+          baseline_warnings=308
           ~/.local/bin/ubs --ci --only=rust --report-json=/tmp/ubs-warning-summary.json .
           warnings="$(jq -r '.totals.warning' /tmp/ubs-warning-summary.json)"
           if [ "${warnings}" -gt "${baseline_warnings}" ]; then
