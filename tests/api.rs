@@ -25,6 +25,10 @@ fn app(hivemind_dir: PathBuf) -> axum::Router {
         api_key: None,
         database_url: None,
         admin_key: None,
+        workos_domain: None,
+        workos_issuer: None,
+        workos_jwks_url: None,
+        workos_audience: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -36,6 +40,10 @@ fn app_with_key(hivemind_dir: PathBuf, key: &str) -> axum::Router {
         api_key: Some(key.to_owned()),
         database_url: None,
         admin_key: None,
+        workos_domain: None,
+        workos_issuer: None,
+        workos_jwks_url: None,
+        workos_audience: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -998,8 +1006,8 @@ async fn mcp_http_oauth_metadata_stubs_respond() {
     assert_eq!(s1, StatusCode::OK); // ubs:ignore
     assert!(b1.get("resource").is_some()); // ubs:ignore
 
-    let (s2, b2) = call(router, get_req("/.well-known/oauth-authorization-server")).await;
-    assert_eq!(s2, StatusCode::OK); // ubs:ignore
-    assert!(b2.get("issuer").is_some()); // ubs:ignore
-    assert!(b2.get("authorization_endpoint").is_some()); // ubs:ignore
+    // Without WorkOS configured, the authorization-server endpoint indicates
+    // no AS is set up (WorkOS is the AS in the WorkOS bake-off branch).
+    let (s2, _b2) = call(router, get_req("/.well-known/oauth-authorization-server")).await;
+    assert_eq!(s2, StatusCode::NOT_FOUND); // ubs:ignore
 }
