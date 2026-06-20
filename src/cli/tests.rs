@@ -260,10 +260,8 @@ fn parses_legacy_recent_alias() -> std::result::Result<(), Box<dyn std::error::E
     let Command::Query(args) = cli.command else {
         return Err("expected query command".into());
     };
-    assert!(
-        matches!(args.command, QueryCommand::RecentDecisions(_)),
-        "expected legacy recent alias to parse as RecentDecisions"
-    ); // ubs:ignore: test-only CLI parser assertion.
+    let is_recent = matches!(args.command, QueryCommand::RecentDecisions(_));
+    assert!(is_recent, "recent alias must map to RecentDecisions"); // ubs:ignore: test-only.
     Ok(())
 }
 

@@ -275,9 +275,9 @@ fn recent_decisions_tool_returns_recent_query_response() {
     })
     .to_string();
     let responses = drive(&config, &[capture.as_str()]);
-    let decision_id = responses[0]["result"]["structuredContent"]["decision_id"]
-        .as_str()
-        .expect("decision_id")
+    let decision_id = responses[0]["result"]["structuredContent"]["decision_id"] // ubs:ignore: test-only; panicking chain is correct in tests
+        .as_str() // ubs:ignore: test-only; chain continues to expect
+        .expect("decision_id") // ubs:ignore: test-only; panicking is correct in tests
         .to_owned();
 
     let recent = json!({
@@ -297,12 +297,10 @@ fn recent_decisions_tool_returns_recent_query_response() {
     })
     .to_string();
     let responses = drive(&config, &[recent.as_str()]);
-    let structured = &responses[0]["result"]["structuredContent"];
-    assert_eq!(structured["result_count"], serde_json::json!(1)); // ubs:ignore: test-only MCP response assertion.
-    assert_eq!(
-        structured["data"]["items"][0]["decision_id"],
-        serde_json::json!(decision_id)
-    ); // ubs:ignore: test-only MCP response assertion.
+    let structured = &responses[0]["result"]["structuredContent"]; // ubs:ignore: test-only; index guaranteed by test setup
+    assert_eq!(structured["result_count"], serde_json::json!(1)); // ubs:ignore: test-only.
+    let item_id = structured["data"]["items"][0]["decision_id"].clone(); // ubs:ignore: test-only; panicking is correct in tests
+    assert_eq!(item_id, serde_json::json!(decision_id)); // ubs:ignore: test-only.
 
     let _ = std::fs::remove_dir_all(&dir);
 }
