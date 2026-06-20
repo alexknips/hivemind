@@ -190,7 +190,7 @@ impl EventLedger for ApiLedger {
 }
 
 #[derive(Clone)]
-struct AppState {
+pub struct AppState {
     backend: Arc<ApiBackend>,
     /// Single-token dev auth (SQLite mode).
     api_key: Option<String>,
@@ -203,7 +203,7 @@ struct AppState {
 }
 
 impl AppState {
-    fn from_config(config: &ApiConfig) -> crate::Result<Self> {
+    pub fn from_config(config: &ApiConfig) -> crate::Result<Self> {
         #[cfg(feature = "shared-backend-postgres")]
         if let Some(ref url) = config.database_url {
             let ledger = PostgresEventLedger::connect(url, "provisioning")?;
@@ -501,7 +501,12 @@ fn build_router(state: AppState) -> Router {
 }
 
 /// Bind to `config.port` and serve until SIGINT/SIGTERM.
-pub async fn serve_http(config: &ApiConfig) -> crate::Result<()> {
+///
+/// `state` must be built before entering the tokio runtime (e.g. via
+/// `AppState::from_config`) to avoid the "cannot start a runtime from within
+/// a runtime" panic that r2d2/postgres triggers when pool construction runs
+/// inside an existing async context.
+pub async fn serve_http(state: AppState, config: &ApiConfig) -> crate::Result<()> {
     if config.api_key.is_none() && config.database_url.is_none() {
         warn!(
             target: "hivemind::api",
@@ -514,7 +519,6 @@ pub async fn serve_http(config: &ApiConfig) -> crate::Result<()> {
         crate::events::TenantId::local(),
     );
 
-    let state = AppState::from_config(config)?;
     let app = build_router(state);
     let addr = format!("0.0.0.0:{}", config.port);
     let listener = tokio::net::TcpListener::bind(&addr)
