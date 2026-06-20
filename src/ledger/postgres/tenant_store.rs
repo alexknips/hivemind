@@ -79,6 +79,11 @@ impl TenantStore {
                     tenant_id  text NOT NULL REFERENCES hm_tenants(tenant_id),
                     email      text,
                     created_at timestamptz NOT NULL DEFAULT now()
+                );
+                CREATE TABLE IF NOT EXISTS hm_revoked_subs (
+                    sub        text PRIMARY KEY,
+                    reason     text,
+                    revoked_at timestamptz NOT NULL DEFAULT now()
                 );",
             )
             .map_err(storage_error)?;
@@ -190,22 +195,13 @@ impl TenantStore {
     /// Resolve an OIDC user (WorkOS `sub`) to a tenant_id, auto-provisioning
     /// a tenant on first login. The tenant is keyed by `sub` so each WorkOS
     /// user gets an isolated tenant in the existing multi-tenant model.
+    ///
+    /// Race safety: both INSERTs use ON CONFLICT, making the transaction
+    /// idempotent under concurrent first-login races. The tenant_id is
+    /// deterministically derived from sub, so concurrent calls always
+    /// converge to the same result.
     pub fn resolve_or_create_oidc_user(&self, sub: &str, email: &str) -> Result<String> {
         let mut client = self.pool.get().map_err(storage_error)?;
-
-        // Fast path: already mapped.
-        if let Some(row) = client
-            .query_opt(
-                "SELECT tenant_id FROM hm_oidc_users WHERE sub = $1",
-                &[&sub],
-            )
-            .map_err(storage_error)?
-        {
-            return Ok(row.get::<_, String>(0));
-        }
-
-        // Auto-provision a tenant for this OIDC user. The tenant_id is stable
-        // across logins so the user's decision history persists.
         let tenant_id = format!("oidc:{sub}");
         let display_name = if email.is_empty() { sub } else { email };
 
@@ -227,6 +223,35 @@ impl TenantStore {
         tx.commit().map_err(storage_error)?;
 
         Ok(tenant_id)
+    }
+
+    /// Return `true` if the WorkOS `sub` has been explicitly revoked via
+    /// [`revoke_sub`]. Revoked sessions are rejected at the auth layer even
+    /// if the JWT is otherwise valid (sig/iss/exp all pass).
+    pub fn is_sub_revoked(&self, sub: &str) -> Result<bool> {
+        let mut client = self.pool.get().map_err(storage_error)?;
+        let row = client
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM hm_revoked_subs WHERE sub = $1)",
+                &[&sub],
+            )
+            .map_err(storage_error)?;
+        Ok(row.get::<_, bool>(0))
+    }
+
+    /// Revoke a WorkOS `sub`. All future requests carrying a JWT for this
+    /// user will be rejected with 401, even if the JWT has not expired.
+    pub fn revoke_sub(&self, sub: &str, reason: Option<&str>) -> Result<()> {
+        let mut client = self.pool.get().map_err(storage_error)?;
+        client
+            .execute(
+                "INSERT INTO hm_revoked_subs (sub, reason)
+                 VALUES ($1, $2)
+                 ON CONFLICT (sub) DO UPDATE SET reason = EXCLUDED.reason, revoked_at = now()",
+                &[&sub, &reason],
+            )
+            .map_err(storage_error)?;
+        Ok(())
     }
 
     /// Resolve a bearer token to a tenant_id, or `None` if not found.

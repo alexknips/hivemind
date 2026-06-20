@@ -24,6 +24,7 @@
 //! - `POST /v1/decisions/{id}/disagreements`        — disagree
 //! - `POST /v1/decisions/{id}/supersessions`        — supersede
 //! - `POST /v1/tenants`                            — provision tenant (Postgres, admin only)
+//! - `POST /auth/revoke`                           — revoke WorkOS sub (Postgres, admin only)
 //!
 //! Read:
 //! - `GET  /v1/decisions/{id}`                     — get single decision
@@ -33,7 +34,7 @@
 //! - `GET  /v1/health`                             — liveness probe
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, Path, Query, State};
@@ -43,6 +44,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use chrono::{DateTime, Utc};
 use jsonwebtoken::jwk::JwkSet;
+#[cfg(feature = "shared-backend-postgres")]
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -212,12 +214,17 @@ struct WorkosConfig {
     /// AuthKit domain, e.g. `https://your-tenant.authkit.app`.
     domain: String,
     /// OIDC issuer for JWT `iss` claim validation.
+    #[cfg_attr(not(feature = "shared-backend-postgres"), allow(dead_code))]
     issuer: String,
+    /// JWKS endpoint URL, stored for background refresh.
+    jwks_url: String,
     /// Expected JWT `aud` claim. `None` disables audience validation (DCR mode).
+    #[cfg_attr(not(feature = "shared-backend-postgres"), allow(dead_code))]
     audience: Option<String>,
 }
 
 /// Claims extracted from a validated WorkOS access token.
+#[cfg(feature = "shared-backend-postgres")]
 #[derive(Debug, serde::Deserialize)]
 struct WorkosClaims {
     sub: String,
@@ -238,8 +245,8 @@ pub struct AppState {
     tenant_store: Option<Arc<TenantStore>>,
     /// WorkOS OAuth resource-server config (set when WORKOS_DOMAIN is configured).
     workos_config: Option<WorkosConfig>,
-    /// Cached WorkOS JWKS, fetched at startup. Empty if WorkOS not configured.
-    workos_jwks: Arc<JwkSet>,
+    /// Cached WorkOS JWKS. Refreshed in the background every WORKOS_JWKS_REFRESH_SECS.
+    workos_jwks: Arc<RwLock<JwkSet>>,
 }
 
 impl AppState {
@@ -276,7 +283,7 @@ impl AppState {
 
 /// Build WorkOS resource-server config and pre-fetch JWKS.
 /// Called before the tokio runtime starts, so blocking I/O is safe.
-fn build_workos_state(config: &ApiConfig) -> (Option<WorkosConfig>, Arc<JwkSet>) {
+fn build_workos_state(config: &ApiConfig) -> (Option<WorkosConfig>, Arc<RwLock<JwkSet>>) {
     let (Some(domain), Some(issuer), Some(jwks_url)) = (
         config.workos_domain.as_deref(),
         config
@@ -285,23 +292,35 @@ fn build_workos_state(config: &ApiConfig) -> (Option<WorkosConfig>, Arc<JwkSet>)
             .or(config.workos_domain.as_deref()),
         config.workos_jwks_url.as_deref(),
     ) else {
-        return (None, Arc::new(JwkSet { keys: vec![] }));
+        return (None, Arc::new(RwLock::new(JwkSet { keys: vec![] })));
     };
 
     let workos_cfg = WorkosConfig {
         domain: domain.to_owned(),
         issuer: issuer.to_owned(),
+        jwks_url: jwks_url.to_owned(),
         audience: config.workos_audience.clone(),
     };
+
+    if workos_cfg.audience.is_none() {
+        tracing::warn!(
+            target: "hivemind::api",
+            "WORKOS_AUDIENCE not set — aud claim unchecked; \
+             set WORKOS_AUDIENCE to your WorkOS client_id to prevent cross-resource token reuse"
+        );
+    }
 
     match reqwest::blocking::get(jwks_url).and_then(|r| r.json::<JwkSet>()) {
         Ok(jwks) => {
             tracing::info!(target: "hivemind::api", keys = jwks.keys.len(), "WorkOS JWKS loaded");
-            (Some(workos_cfg), Arc::new(jwks))
+            (Some(workos_cfg), Arc::new(RwLock::new(jwks)))
         }
         Err(e) => {
             tracing::warn!(target: "hivemind::api", error = %e, "WorkOS JWKS fetch failed — JWT auth disabled");
-            (Some(workos_cfg), Arc::new(JwkSet { keys: vec![] }))
+            (
+                Some(workos_cfg),
+                Arc::new(RwLock::new(JwkSet { keys: vec![] })),
+            )
         }
     }
 }
@@ -400,18 +419,26 @@ fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequestCtx
     #[cfg(feature = "shared-backend-postgres")]
     if bearer.starts_with("ey") {
         if let (Some(ref workos), Some(ref store)) = (&state.workos_config, &state.tenant_store) {
-            if state.workos_jwks.keys.is_empty() {
+            let jwks_guard = state.workos_jwks.read().expect("JWKS lock poisoned");
+            if jwks_guard.keys.is_empty() {
                 return Err(ApiError::unauthorized(
                     "WorkOS JWKS not loaded — cannot validate JWT",
                 ));
             }
             let claims = validate_workos_jwt(
                 bearer,
-                &state.workos_jwks,
+                &jwks_guard,
                 &workos.issuer,
                 workos.audience.as_deref(),
             )
             .map_err(ApiError::unauthorized)?;
+            drop(jwks_guard);
+            if store
+                .is_sub_revoked(&claims.sub)
+                .map_err(|e| ApiError::internal(e.to_string()))?
+            {
+                return Err(ApiError::unauthorized("session revoked"));
+            }
 
             let tenant_id_str = store
                 .resolve_or_create_oidc_user(
@@ -496,6 +523,7 @@ fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequestCtx
 /// Validates signature (RS256/ES256), issuer, and expiry. When `audience` is
 /// `Some`, the JWT `aud` claim is also validated — set `WORKOS_AUDIENCE` to
 /// the WorkOS client_id for production to prevent cross-resource token reuse.
+#[cfg(feature = "shared-backend-postgres")]
 fn validate_workos_jwt(
     token: &str,
     jwks: &JwkSet,
@@ -646,6 +674,13 @@ struct ProvisionTenantRequest {
     display_name: String,
 }
 
+#[cfg(feature = "shared-backend-postgres")]
+#[derive(Debug, Deserialize)]
+struct RevokeUserRequest {
+    sub: String,
+    reason: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Router — public so tests can call create_router without binding a port
 // ---------------------------------------------------------------------------
@@ -692,6 +727,9 @@ fn build_router(state: AppState) -> Router {
     #[cfg(feature = "shared-backend-postgres")]
     let router = router.route("/v1/tenants", post(provision_tenant_handler));
 
+    #[cfg(feature = "shared-backend-postgres")]
+    let router = router.route("/auth/revoke", post(revoke_user_handler));
+
     router.with_state(state)
 }
 
@@ -709,12 +747,51 @@ pub async fn serve_http(state: AppState, config: &ApiConfig) -> crate::Result<()
         );
     }
 
+    // Extract JWKS refresh params before state is consumed by build_router.
+    let jwks_refresh = state
+        .workos_config
+        .as_ref()
+        .map(|cfg| (cfg.jwks_url.clone(), Arc::clone(&state.workos_jwks)));
+
     crate::classifier::try_spawn(
         Arc::new(config.hivemind_dir.clone()),
         crate::events::TenantId::local(),
     );
 
     let app = build_router(state);
+
+    // Spawn background JWKS refresh so WorkOS key rotation does not require restart.
+    if let Some((jwks_url, jwks_lock)) = jwks_refresh {
+        let refresh_secs: u64 = std::env::var("WORKOS_JWKS_REFRESH_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1800);
+        tokio::spawn(async move {
+            let interval = std::time::Duration::from_secs(refresh_secs);
+            loop {
+                tokio::time::sleep(interval).await;
+                match reqwest::get(&jwks_url).await {
+                    Ok(resp) => match resp.json::<JwkSet>().await {
+                        Ok(new_jwks) => {
+                            *jwks_lock.write().expect("JWKS lock poisoned") = new_jwks;
+                            tracing::info!(target: "hivemind::api", "WorkOS JWKS refreshed");
+                        }
+                        Err(e) => tracing::warn!(
+                            target: "hivemind::api",
+                            error = %e,
+                            "WorkOS JWKS refresh: JSON parse failed"
+                        ),
+                    },
+                    Err(e) => tracing::warn!(
+                        target: "hivemind::api",
+                        error = %e,
+                        "WorkOS JWKS refresh: fetch failed"
+                    ),
+                }
+            }
+        });
+    }
+
     let addr = format!("0.0.0.0:{}", config.port);
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -1416,6 +1493,56 @@ async fn provision_tenant_handler(
 
     match result {
         Ok(Ok(body)) => (StatusCode::CREATED, Json(body)).into_response(),
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => ApiError::internal(e.to_string()).into_response(),
+    }
+}
+
+/// Revoke a WorkOS user by `sub`. Future JWTs for this sub are rejected with
+/// 401 even if they have not expired. Requires `HIVEMIND_ADMIN_KEY`.
+#[cfg(feature = "shared-backend-postgres")]
+async fn revoke_user_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    payload: std::result::Result<Json<RevokeUserRequest>, JsonRejection>,
+) -> Response {
+    let provided = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    match &state.admin_key {
+        None => {
+            return ApiError::internal("HIVEMIND_ADMIN_KEY not configured").into_response();
+        }
+        Some(expected) => {
+            if !constant_time_eq(provided, expected) {
+                return ApiError::unauthorized("invalid admin key").into_response();
+            }
+        }
+    }
+
+    let req = match payload {
+        Ok(Json(r)) => r,
+        Err(e) => return ApiError::validation(e.to_string()).into_response(),
+    };
+
+    let store = match &state.tenant_store {
+        Some(s) => Arc::clone(s),
+        None => return ApiError::internal("tenant store not initialized").into_response(),
+    };
+
+    let result = tokio::task::spawn_blocking(move || {
+        store
+            .revoke_sub(&req.sub, req.reason.as_deref())
+            .map_err(|e| ApiError::internal(e.to_string()))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => {
+            (StatusCode::OK, Json(serde_json::json!({ "revoked": true }))).into_response()
+        }
         Ok(Err(e)) => e.into_response(),
         Err(e) => ApiError::internal(e.to_string()).into_response(),
     }
