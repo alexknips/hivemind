@@ -1,0 +1,244 @@
+HiveMind Capture-Fidelity Scorecard v0 — CEILING RUN
+Date: 2026-06-20
+Mode: ceiling (gold nodes → CaptureItems; no LLM calls)
+Corpus: benchmarks/fidelity/corpus.yaml (18 cases)
+Binary: fidelity-eval --ceiling
+
+NOTE: This is the schema-limited ceiling, not a live LLM run.
+ANTHROPIC_API_KEY was unavailable at run time. The ceiling shows the best
+score achievable given the current CaptureItem schema, assuming a perfect
+classifier. Real LLM run (Haiku) will score lower. See ANALYSIS below.
+
+KNOWN GOLD CAVEATS (pending 2nd-eyes fix for E2/D1/D3):
+  E2: gold AcceptedBy edge (Marco) → Actor kind absent from CaptureItem schema
+  D1: gold BlockerRequiredOwner + DecisionRequestedBy → schema gaps
+  D3: gold DecisionRequestedBy → schema gap
+These are structural deficits in CaptureItem, not gold authoring errors.
+
+-------------------------------------------------------------------------------
+PER-CASE RESULTS
+-------------------------------------------------------------------------------
+
+Running case A1-ledger-store ...
+  Case A1-ledger-store
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 0.83
+
+Running case A2-frontend-framework ...
+  Case A2-frontend-framework
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case A3-cloud-region ...
+  Case A3-cloud-region
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=2)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    macro-F1: 0.83
+
+Running case B1-pricing-reversal ...
+  Case B1-pricing-reversal
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:SUPERSEDES           P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    macro-F1: 0.50
+
+Running case B2-repo-topology-double ...
+  Case B2-repo-topology-double
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:SUPERSEDES           P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=2)
+    macro-F1: 0.50
+
+Running case B3-auth-vendor-switch ...
+  Case B3-auth-vendor-switch
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:SUPERSEDES           P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    macro-F1: 0.71
+
+Running case C1-perf-hypothesis-refuted ...
+  Case C1-perf-hypothesis-refuted
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:ASSUMES              P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:BASED_ON             P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:REFUTES              P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    macro-F1: 0.50
+
+Running case C2-growth-assumption-supported ...
+  Case C2-growth-assumption-supported
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:ASSUMES              P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:BASED_ON             P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:SUPPORTS             P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    macro-F1: 0.50
+
+Running case C3-threat-model-mixed ...
+  Case C3-threat-model-mixed
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:ASSUMES              P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:BASED_ON             P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:REFUTES              P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:SUPPORTS             P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    macro-F1: 0.43
+
+Running case D1-launch-blocked-legal ...
+  Case D1-launch-blocked-legal
+    node:Actor                P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=2)
+    node:Blocker              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BLOCKER_FOR_DECISION P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:BLOCKER_REQUIRED_OWNER P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:DECISION_REQUESTED_BY P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    macro-F1: 0.33
+
+Running case D2-hiring-contested ...
+  Case D2-hiring-contested
+    node:Actor                P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=2)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:PROPOSED_BY          P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:REJECTED_BY          P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    macro-F1: 0.25
+
+Running case D3-deploy-gate-blocked ...
+  Case D3-deploy-gate-blocked
+    node:Actor                P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    node:Blocker              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BLOCKER_FOR_DECISION P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:DECISION_REQUESTED_BY P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    macro-F1: 0.40
+
+Running case E1-slack-implicit-option ...
+  Case E1-slack-implicit-option
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case E2-meeting-decision-plus-tangent ...
+  Case E2-meeting-decision-plus-tangent
+    node:Actor                P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:ACCEPTED_BY          P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    macro-F1: 0.33
+
+Running case E3-tentative-low-confidence-decision ...
+  Case E3-tentative-low-confidence-decision
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:ASSUMES              P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    macro-F1: 0.67
+
+Running case F1-unilateral-no-alternatives ...
+  Case F1-unilateral-no-alternatives
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case F2-status-update-non-decision ...
+  Case F2-status-update-non-decision
+    macro-F1: 1.00
+
+Running case F3-request-only-no-decision ...
+  Case F3-request-only-no-decision
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+-------------------------------------------------------------------------------
+AGGREGATE SCORECARD (18 cases)
+-------------------------------------------------------------------------------
+
+Nodes:
+  Actor                  P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=6)
+  Blocker                P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+  Decision               P=1.00 R=1.00 F1=1.00  (tp=17 fp=0 fn=0)
+  DecisionRequest        P=1.00 R=1.00 F1=1.00  (tp=4 fp=0 fn=0)
+  Evidence               P=1.00 R=1.00 F1=1.00  (tp=10 fp=0 fn=0)
+  Hypothesis             P=1.00 R=1.00 F1=1.00  (tp=4 fp=0 fn=0)
+  Option                 P=1.00 R=1.00 F1=1.00  (tp=12 fp=0 fn=0)
+
+Edges:
+  ACCEPTED_BY            P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+  ASSUMES                P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=4)
+  BASED_ON               P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=9)
+  BLOCKER_FOR_DECISION   P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=2)
+  BLOCKER_REQUIRED_OWNER P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+  CHOSE                  P=1.00 R=1.00 F1=1.00  (tp=5 fp=0 fn=0)
+  DECISION_REQUESTED_BY  P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=2)
+  HAS_OPTION             P=1.00 R=1.00 F1=1.00  (tp=12 fp=0 fn=0)
+  PROPOSED_BY            P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+  REFUTES                P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=2)
+  REJECTED_BY            P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+  SUPERSEDES             P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=4)
+  SUPPORTS               P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=2)
+
+Macro-F1 (mean over cases): 0.66
+
+-------------------------------------------------------------------------------
+ANALYSIS
+-------------------------------------------------------------------------------
+
+Headline: ceiling macro-F1 = 0.66 (18 cases).
+Previous polecat (nux) reported 0.71 — that run excluded Actor from scoring;
+this run includes Actor honestly (6 FN, F1=0.00 in 4 cases).
+
+WHAT THE SCHEMA CAN CAPTURE (P=R=F1=1.00 at ceiling):
+  Nodes: Decision, DecisionRequest, Evidence, Hypothesis, Blocker, Option
+  Edges: HAS_OPTION, CHOSE
+
+SCHEMA GAPS (structural FN, ceiling F1=0.00):
+  Actor nodes (6 FN): no "actor" CaptureItem kind — actors referenced only
+    via actor_id/accepted_by/rejected_by/blocked_actor_id fields, never as
+    standalone nodes in produced_graph. Affects D1, D2, D3, E2.
+  BASED_ON (9 FN): biggest single gap — evidence-to-decision links not in
+    CaptureItem schema. All evidence-backed decisions lose this edge.
+  SUPERSEDES (4 FN): supersedes_id is in CaptureItem but NOT wired in
+    produced_graph (comment: "NOTE: BASED_ON, SUPERSEDES ... NOT in schema").
+    Affects B-archetype cases (B1, B2, B3).
+  ASSUMES (4 FN): assumes_ids in schema, not in produced_graph. Affects C, E3.
+  REFUTES (2 FN), SUPPORTS (2 FN): same gap.
+  Actor-linkage edges (8 FN total):
+    ACCEPTED_BY (1), PROPOSED_BY (1), REJECTED_BY (1),
+    BLOCKER_FOR_DECISION (2), BLOCKER_REQUIRED_OWNER (1),
+    DECISION_REQUESTED_BY (2) — all actor-relational edges require Actor
+    nodes that can't be produced.
+
+ANTI-NOISE CASES (precision check):
+  F1 (unilateral-no-alternatives): macro-F1=1.00 ✓ — bare Decision, no FP
+  F2 (status-update-non-decision): macro-F1=1.00 ✓ — correctly empty
+  F3 (request-only): macro-F1=1.00 ✓ — DecisionRequest only, no FP Decision
+
+PATH TO IMPROVE macro-F1 (schema changes, not LLM changes):
+  1. Add "actor" CaptureItem kind (closes Actor + actor-linkage gaps) → +~0.05
+  2. Wire supersedes_id → SUPERSEDES edge in produced_graph → +~0.03
+  3. Wire assumes_ids → ASSUMES edges in produced_graph → +~0.03
+  4. Wire supports_ids/refutes_ids → edges → +~0.02
+  5. Add evidence_id references to CaptureItem → BASED_ON edges → +~0.06
+  Combined: would raise ceiling from 0.66 to ~0.85+
+
+Note: the real LLM run (Haiku) will score below ceiling. This ceiling quantifies
+the schema-imposed limit before LLM quality enters the picture.

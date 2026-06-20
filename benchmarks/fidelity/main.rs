@@ -476,16 +476,100 @@ fn aggregate_scorecard(results: &[CaseResult]) {
 // Main
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// Ceiling mode: gold nodes → CaptureItems (no API call)
+// --------------------------------------------------------------------------
+
+// Converts gold expected data to CaptureItems using only the fields the
+// CaptureItem schema can express.  Actor nodes have no CaptureItem kind so
+// they are skipped — this is the honest schema-ceiling, not a perfect one.
+fn gold_as_captures(expected: &Expected) -> Vec<hivemind::events::CaptureItem> {
+    use hivemind::events::CaptureItem;
+    use std::collections::HashMap;
+
+    // key → text for edge resolution
+    let key_map: HashMap<&str, &str> = expected
+        .nodes
+        .iter()
+        .map(|n| (n.key.as_str(), n.text.as_str()))
+        .collect();
+
+    // For each Decision/DecisionRequest, gather its HAS_OPTION and CHOSE targets
+    let mut options_map: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut chosen_map: HashMap<&str, String> = HashMap::new();
+    for e in &expected.edges {
+        if e.kind == "HAS_OPTION" {
+            if let Some(&opt_text) = key_map.get(e.to.as_str()) {
+                options_map
+                    .entry(e.from.as_str())
+                    .or_default()
+                    .push(opt_text.to_owned());
+            }
+        } else if e.kind == "CHOSE" {
+            if let Some(&opt_text) = key_map.get(e.to.as_str()) {
+                chosen_map.insert(e.from.as_str(), opt_text.to_owned());
+            }
+        }
+    }
+
+    let mut captures: Vec<CaptureItem> = Vec::new();
+    for node in &expected.nodes {
+        let kind = match node.kind.as_str() {
+            "Decision" => "decision",
+            "DecisionRequest" => "decision-request",
+            "Evidence" => "evidence",
+            "Hypothesis" => "hypothesis",
+            "Blocker" => "blocker",
+            // Actor and Option have no CaptureItem kind; skip
+            _ => continue,
+        };
+        let key = node.key.as_str();
+        captures.push(CaptureItem {
+            kind: kind.to_owned(),
+            title: node.text.clone(),
+            rationale: String::new(),
+            topic_keys: vec![],
+            evidence_ids: vec![],
+            options: options_map.get(key).cloned(),
+            chosen_option: chosen_map.get(key).cloned(),
+            extraction_confidence: 1.0,
+            expressed_confidence: None,
+            supersedes_id: None,
+            assumes_ids: vec![],
+            supports_ids: vec![],
+            refutes_ids: vec![],
+            actor_id: None,
+            accepted_by: None,
+            rejected_by: None,
+            blocked_actor_id: None,
+            decision_id: None,
+            participants: vec![],
+            session_initiator: None,
+        });
+    }
+    captures
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let corpus_path = parse_corpus_arg(&args);
+    let ceiling_mode = args.iter().any(|a| a == "--ceiling");
 
-    let api_key = match std::env::var("ANTHROPIC_API_KEY") {
-        Ok(k) if !k.trim().is_empty() => k,
-        _ => {
-            eprintln!("error: ANTHROPIC_API_KEY is not set; the fidelity evaluator requires it");
-            std::process::exit(1);
+    let api_key = if ceiling_mode {
+        String::new()
+    } else {
+        match std::env::var("ANTHROPIC_API_KEY") {
+            Ok(k) if !k.trim().is_empty() => k,
+            _ => {
+                eprintln!(
+                    "error: ANTHROPIC_API_KEY is not set; the fidelity evaluator requires it"
+                );
+                eprintln!(
+                    "hint: pass --ceiling to run a schema-ceiling scorecard without API calls"
+                );
+                std::process::exit(1);
+            }
         }
     };
 
@@ -502,7 +586,12 @@ async fn main() {
         std::process::exit(1);
     });
 
-    println!("HiveMind capture-fidelity evaluator (Phase 1)");
+    if ceiling_mode {
+        println!("HiveMind capture-fidelity evaluator (Phase 1) — CEILING MODE");
+        println!("(Gold nodes → CaptureItems; no LLM calls. Schema-limited upper bound.)");
+    } else {
+        println!("HiveMind capture-fidelity evaluator (Phase 1)");
+    }
     println!("Corpus: {} cases", corpus.cases.len());
     println!();
 
@@ -516,7 +605,9 @@ async fn main() {
     for case in &corpus.cases {
         println!("Running case {} ...", case.id);
 
-        let captures =
+        let captures = if ceiling_mode {
+            gold_as_captures(&case.expected)
+        } else {
             match hivemind::classifier::classify_text(&client, &api_key, &case.input).await {
                 Ok(c) => c,
                 Err(e) => {
@@ -524,7 +615,8 @@ async fn main() {
                     // Score as empty produced — full recall penalty
                     Vec::new()
                 }
-            };
+            }
+        };
 
         let (gold_nodes, gold_edges) = gold_graph(&case.expected);
         let (prod_nodes, prod_edges) = produced_graph(&captures);
@@ -555,6 +647,7 @@ fn parse_corpus_arg(args: &[String]) -> PathBuf {
         }
     }
     // Default: benchmarks/fidelity/corpus.yaml relative to cwd
+    // Flags: --ceiling skips the LLM and uses gold nodes as produced output.
     PathBuf::from("benchmarks/fidelity/corpus.yaml")
 }
 
