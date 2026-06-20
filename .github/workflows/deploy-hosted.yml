@@ -1,16 +1,11 @@
 name: Deploy to Fly.io
 
 on:
+  # Manual-only until the Fly target is provisioned (app + Postgres + secrets)
+  # and fly.toml placeholders are replaced — see docs/DEPLOYMENT.md. Re-enable
+  # the push trigger (src/**, Dockerfile, fly.toml, Cargo.toml, Cargo.lock) for
+  # auto-deploy once `fly deploy` succeeds manually.
   workflow_dispatch:
-  push:
-    branches:
-      - master
-    paths:
-      - "src/**"
-      - "Dockerfile"
-      - "fly.toml"
-      - "Cargo.toml"
-      - "Cargo.lock"
 
 permissions:
   contents: read
