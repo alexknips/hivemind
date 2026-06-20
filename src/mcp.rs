@@ -263,7 +263,7 @@ fn dispatch(
     }
 }
 
-fn initialize_result() -> Value {
+pub(crate) fn initialize_result() -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": { "tools": { "listChanged": false } },
@@ -271,7 +271,7 @@ fn initialize_result() -> Value {
     })
 }
 
-fn tools_list_result() -> Value {
+pub(crate) fn tools_list_result() -> Value {
     json!({ "tools": tool_definitions() })
 }
 
