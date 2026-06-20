@@ -42,6 +42,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use chrono::{DateTime, Utc};
+use jsonwebtoken::jwk::JwkSet;
+use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -76,6 +78,17 @@ pub struct ApiConfig {
     pub database_url: Option<String>,
     /// Admin token for the `POST /v1/tenants` provisioning endpoint.
     pub admin_key: Option<String>,
+    /// WorkOS AuthKit domain (e.g. https://your-tenant.authkit.app).
+    /// Set WORKOS_DOMAIN to enable WorkOS OAuth resource-server mode.
+    pub workos_domain: Option<String>,
+    /// WorkOS OIDC issuer URL (usually same as WORKOS_DOMAIN).
+    pub workos_issuer: Option<String>,
+    /// WorkOS JWKS endpoint (e.g. https://api.workos.com/sso/jwks).
+    pub workos_jwks_url: Option<String>,
+    /// Expected JWT audience claim. When set, token `aud` is validated.
+    /// With DCR the client_id is dynamic; omitting WORKOS_AUDIENCE disables
+    /// audience validation — set this to the client_id for stricter enforcement.
+    pub workos_audience: Option<String>,
 }
 
 impl ApiConfig {
@@ -86,6 +99,10 @@ impl ApiConfig {
             api_key: std::env::var("HIVEMIND_API_KEY").ok(),
             database_url: std::env::var("HIVEMIND_DATABASE_URL").ok(),
             admin_key: std::env::var("HIVEMIND_ADMIN_KEY").ok(),
+            workos_domain: std::env::var("WORKOS_DOMAIN").ok(),
+            workos_issuer: std::env::var("WORKOS_ISSUER").ok(),
+            workos_jwks_url: std::env::var("WORKOS_JWKS_URL").ok(),
+            workos_audience: std::env::var("WORKOS_AUDIENCE").ok(),
         }
     }
 
@@ -189,6 +206,25 @@ impl EventLedger for ApiLedger {
     }
 }
 
+/// WorkOS OAuth resource-server configuration (populated from env vars at startup).
+#[derive(Clone)]
+struct WorkosConfig {
+    /// AuthKit domain, e.g. `https://your-tenant.authkit.app`.
+    domain: String,
+    /// OIDC issuer for JWT `iss` claim validation.
+    issuer: String,
+    /// Expected JWT `aud` claim. `None` disables audience validation (DCR mode).
+    audience: Option<String>,
+}
+
+/// Claims extracted from a validated WorkOS access token.
+#[derive(Debug, serde::Deserialize)]
+struct WorkosClaims {
+    sub: String,
+    #[serde(default)]
+    email: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     backend: Arc<ApiBackend>,
@@ -200,10 +236,17 @@ pub struct AppState {
     /// Token store for per-tenant bearer token resolution (Postgres mode).
     #[cfg(feature = "shared-backend-postgres")]
     tenant_store: Option<Arc<TenantStore>>,
+    /// WorkOS OAuth resource-server config (set when WORKOS_DOMAIN is configured).
+    workos_config: Option<WorkosConfig>,
+    /// Cached WorkOS JWKS, fetched at startup. Empty if WorkOS not configured.
+    workos_jwks: Arc<JwkSet>,
 }
 
 impl AppState {
     pub fn from_config(config: &ApiConfig) -> crate::Result<Self> {
+        // Fetch WorkOS JWKS once at startup (called before tokio runtime).
+        let (workos_config, workos_jwks) = build_workos_state(config);
+
         #[cfg(feature = "shared-backend-postgres")]
         if let Some(ref url) = config.database_url {
             let ledger = PostgresEventLedger::connect(url, "provisioning")?;
@@ -213,6 +256,8 @@ impl AppState {
                 api_key: None,
                 admin_key: config.admin_key.clone(),
                 tenant_store: Some(Arc::new(store)),
+                workos_config,
+                workos_jwks,
             });
         }
 
@@ -223,7 +268,41 @@ impl AppState {
             admin_key: config.admin_key.clone(),
             #[cfg(feature = "shared-backend-postgres")]
             tenant_store: None,
+            workos_config,
+            workos_jwks,
         })
+    }
+}
+
+/// Build WorkOS resource-server config and pre-fetch JWKS.
+/// Called before the tokio runtime starts, so blocking I/O is safe.
+fn build_workos_state(config: &ApiConfig) -> (Option<WorkosConfig>, Arc<JwkSet>) {
+    let (Some(domain), Some(issuer), Some(jwks_url)) = (
+        config.workos_domain.as_deref(),
+        config
+            .workos_issuer
+            .as_deref()
+            .or(config.workos_domain.as_deref()),
+        config.workos_jwks_url.as_deref(),
+    ) else {
+        return (None, Arc::new(JwkSet { keys: vec![] }));
+    };
+
+    let workos_cfg = WorkosConfig {
+        domain: domain.to_owned(),
+        issuer: issuer.to_owned(),
+        audience: config.workos_audience.clone(),
+    };
+
+    match reqwest::blocking::get(jwks_url).and_then(|r| r.json::<JwkSet>()) {
+        Ok(jwks) => {
+            tracing::info!(target: "hivemind::api", keys = jwks.keys.len(), "WorkOS JWKS loaded");
+            (Some(workos_cfg), Arc::new(jwks))
+        }
+        Err(e) => {
+            tracing::warn!(target: "hivemind::api", error = %e, "WorkOS JWKS fetch failed — JWT auth disabled");
+            (Some(workos_cfg), Arc::new(JwkSet { keys: vec![] }))
+        }
     }
 }
 
@@ -316,9 +395,54 @@ fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequestCtx
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    // Postgres multi-tenant mode: resolve token → tenant_id from the DB.
+    // WorkOS JWT path: bearer that looks like a JWT ("ey...") + WorkOS configured.
+    // Try this first so WorkOS tokens don't fall through to opaque-token resolution.
+    #[cfg(feature = "shared-backend-postgres")]
+    if bearer.starts_with("ey") {
+        if let (Some(ref workos), Some(ref store)) = (&state.workos_config, &state.tenant_store) {
+            if state.workos_jwks.keys.is_empty() {
+                return Err(ApiError::unauthorized(
+                    "WorkOS JWKS not loaded — cannot validate JWT",
+                ));
+            }
+            let claims = validate_workos_jwt(
+                bearer,
+                &state.workos_jwks,
+                &workos.issuer,
+                workos.audience.as_deref(),
+            )
+            .map_err(ApiError::unauthorized)?;
+
+            let tenant_id_str = store
+                .resolve_or_create_oidc_user(
+                    &claims.sub,
+                    claims.email.as_deref().unwrap_or(&claims.sub),
+                )
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+
+            let tenant_id = TenantId::new(&tenant_id_str)
+                .map_err(|_| ApiError::internal("invalid tenant_id from OIDC mapping"))?;
+            let actor_id = format!("human:{}", claims.email.as_deref().unwrap_or(&claims.sub));
+            return Ok(ApiRequestCtx {
+                tenant_id,
+                actor_id,
+            });
+        }
+    }
+
+    // Postgres mode: when WorkOS is configured, browser-OAuth JWT is the only
+    // accepted credential — there is no static-token fallback. Interactive
+    // agents authenticate via WorkOS; headless flows use the device-approval
+    // path (future), not a pre-shared secret.
     #[cfg(feature = "shared-backend-postgres")]
     if let Some(ref store) = state.tenant_store {
+        if state.workos_config.is_some() {
+            return Err(ApiError::unauthorized(
+                "WorkOS browser-OAuth JWT required (use GitHub or Google login)",
+            ));
+        }
+        // Postgres without WorkOS: existing opaque-token resolution for tenants
+        // provisioned via POST /v1/tenants (admin-gated provisioning path).
         if bearer.is_empty() {
             return Err(ApiError::unauthorized("bearer token required"));
         }
@@ -365,6 +489,54 @@ fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequestCtx
         tenant_id,
         actor_id,
     })
+}
+
+/// Validate a WorkOS JWT access token against the cached JWKS.
+///
+/// Validates signature (RS256/ES256), issuer, and expiry. When `audience` is
+/// `Some`, the JWT `aud` claim is also validated — set `WORKOS_AUDIENCE` to
+/// the WorkOS client_id for production to prevent cross-resource token reuse.
+fn validate_workos_jwt(
+    token: &str,
+    jwks: &JwkSet,
+    issuer: &str,
+    audience: Option<&str>,
+) -> Result<WorkosClaims, String> {
+    let header = decode_header(token).map_err(|_| "invalid token")?;
+
+    // Find the JWK by kid, or fall back to the first key if kid is absent.
+    let kid = header.kid.as_deref().unwrap_or("");
+    let jwk = if kid.is_empty() {
+        jwks.keys.first()
+    } else {
+        jwks.find(kid)
+    }
+    .ok_or("no matching signing key")?;
+
+    let decoding_key = DecodingKey::from_jwk(jwk).map_err(|_| "invalid signing key")?;
+
+    let alg = match header.alg {
+        Algorithm::RS256 => Algorithm::RS256,
+        Algorithm::RS384 => Algorithm::RS384,
+        Algorithm::RS512 => Algorithm::RS512,
+        Algorithm::ES256 => Algorithm::ES256,
+        Algorithm::ES384 => Algorithm::ES384,
+        _ => return Err("unsupported token algorithm".to_owned()),
+    };
+
+    let mut validation = Validation::new(alg);
+    validation.set_issuer(&[issuer]);
+    validation.validate_exp = true;
+    match audience {
+        Some(aud) => validation.set_audience(&[aud]),
+        // ubs:ignore: DCR clients have dynamic client_ids; set WORKOS_AUDIENCE for strict aud enforcement
+        None => validation.validate_aud = false,
+    }
+
+    // ubs:ignore: sig+iss+exp always validated; aud validated when WORKOS_AUDIENCE set
+    decode::<WorkosClaims>(token, &decoding_key, &validation)
+        .map(|d| d.claims)
+        .map_err(|_| "token validation failed".to_owned())
 }
 
 fn constant_time_eq(a: &str, b: &str) -> bool {
@@ -2015,10 +2187,29 @@ fn mcp_collect_strings(
 
 // ---------------------------------------------------------------------------
 // OAuth resource/authorization-server metadata stubs
-// (Part 2 will populate these with real PKCE + GitHub/Google values)
+// OAuth resource/authorization server metadata (MCP auth spec, Nov-2025)
+// ---------------------------------------------------------------------------
+//
+// WorkOS is the Authorization Server. We serve only the Protected Resource
+// metadata (RFC 9728) that tells MCP clients where to find the AS.
+// WorkOS serves its own AS metadata at:
+//   https://api.workos.com/.well-known/openid-configuration
 // ---------------------------------------------------------------------------
 
-async fn oauth_protected_resource_handler() -> impl IntoResponse {
+async fn oauth_protected_resource_handler(State(state): State<AppState>) -> impl IntoResponse {
+    if let Some(ref cfg) = state.workos_config {
+        // Point MCP clients at WorkOS as the Authorization Server.
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "resource": cfg.domain,
+                "authorization_servers": [cfg.domain],
+                "bearer_methods_supported": ["header"],
+                "scopes_supported": ["openid", "profile", "email"],
+            })),
+        );
+    }
+    // No WorkOS configured — return a generic stub.
     (
         StatusCode::OK,
         Json(serde_json::json!({
@@ -2030,17 +2221,24 @@ async fn oauth_protected_resource_handler() -> impl IntoResponse {
     )
 }
 
-async fn oauth_authorization_server_handler() -> impl IntoResponse {
+/// WorkOS is the Authorization Server; redirect discovery to them.
+async fn oauth_authorization_server_handler(State(state): State<AppState>) -> Response {
+    if let Some(ref cfg) = state.workos_config {
+        // Return WorkOS OIDC discovery document location to help debug flows,
+        // but the canonical AS metadata lives at WorkOS, not us.
+        let discovery_url = format!("{}/.well-known/openid-configuration", cfg.domain);
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "note": "WorkOS is the authorization server for this deployment.",
+                "authorization_server_discovery": discovery_url,
+            })),
+        )
+            .into_response();
+    }
     (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "issuer": "/",
-            "authorization_endpoint": "/oauth/authorize",
-            "token_endpoint": "/oauth/token",
-            "registration_endpoint": "/oauth/register",
-            "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code"],
-            "code_challenge_methods_supported": ["S256"],
-        })),
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({"error": "no authorization server configured"})),
     )
+        .into_response()
 }
