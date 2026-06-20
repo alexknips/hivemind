@@ -1,0 +1,16 @@
+{
+  "name": "hivemind-auth-service",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Better Auth OAuth AS sidecar for the HiveMind MCP resource server",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-auth": "^1.2.7",
+    "pg": "^8.12.0"
+  }
+}

@@ -196,6 +196,27 @@ impl TenantStore {
 
         Ok(row.map(|r| r.get::<_, String>(0)))
     }
+
+    /// Ensure a tenant exists for an OAuth user identified by their email address.
+    ///
+    /// Uses `user:<email>` as the stable tenant_id.  Creates the tenant row if
+    /// it does not yet exist (idempotent via `ON CONFLICT DO NOTHING`).  No
+    /// bearer token is issued — OAuth users authenticate via Better Auth.
+    ///
+    /// Returns the resolved `tenant_id` string.
+    pub fn ensure_oauth_tenant(&self, email: &str) -> Result<String> {
+        let tenant_id = format!("user:{email}");
+        let mut client = self.pool.get().map_err(storage_error)?;
+        client
+            .execute(
+                "INSERT INTO hm_tenants (tenant_id, display_name)
+                 VALUES ($1, $2)
+                 ON CONFLICT (tenant_id) DO NOTHING",
+                &[&tenant_id, &email],
+            )
+            .map_err(storage_error)?;
+        Ok(tenant_id)
+    }
 }
 
 fn sha256_hex(data: &[u8]) -> String {

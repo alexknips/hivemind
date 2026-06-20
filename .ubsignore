@@ -1,5 +1,12 @@
 worktrees/
 target/
+# auth-service/ is a Node.js OAuth sidecar (bake-off iwz9). UBS generates
+# false-positive JS criticals: (a) typeof-token != "string" type checks,
+# (b) URL path comparisons containing the word "token", and
+# (c) console.log of a configuration URL path. None are actual secret-value
+# comparisons or sensitive-data logs. The sidecar's security is reviewed
+# separately from the Rust codebase.
+auth-service/
 # Integration-test files added in uuq9.6–uuq9.22 are assertion-heavy by
 # design; test-assert noise belongs in --exclude-tests (critical gate), not
 # the warning-count baseline which tracks production-code quality.

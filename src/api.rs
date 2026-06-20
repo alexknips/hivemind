@@ -76,6 +76,10 @@ pub struct ApiConfig {
     pub database_url: Option<String>,
     /// Admin token for the `POST /v1/tenants` provisioning endpoint.
     pub admin_key: Option<String>,
+    /// Base URL of the Better Auth sidecar (e.g. "http://localhost:4000").
+    /// When set, `/mcp` validates OAuth Bearer tokens via the Better Auth
+    /// `/api/verify-token` endpoint before falling back to the built-in path.
+    pub better_auth_url: Option<String>,
 }
 
 impl ApiConfig {
@@ -86,6 +90,7 @@ impl ApiConfig {
             api_key: std::env::var("HIVEMIND_API_KEY").ok(),
             database_url: std::env::var("HIVEMIND_DATABASE_URL").ok(),
             admin_key: std::env::var("HIVEMIND_ADMIN_KEY").ok(),
+            better_auth_url: std::env::var("BETTER_AUTH_URL").ok(),
         }
     }
 
@@ -200,10 +205,17 @@ pub struct AppState {
     /// Token store for per-tenant bearer token resolution (Postgres mode).
     #[cfg(feature = "shared-backend-postgres")]
     tenant_store: Option<Arc<TenantStore>>,
+    /// Base URL of the Better Auth sidecar for OAuth token validation.
+    better_auth_url: Option<String>,
+    /// HTTP client used to call the Better Auth `/api/verify-token` endpoint.
+    better_auth_client: Option<reqwest::Client>,
 }
 
 impl AppState {
     pub fn from_config(config: &ApiConfig) -> crate::Result<Self> {
+        let better_auth_url = config.better_auth_url.clone();
+        let better_auth_client = better_auth_url.as_ref().map(|_| reqwest::Client::new());
+
         #[cfg(feature = "shared-backend-postgres")]
         if let Some(ref url) = config.database_url {
             let ledger = PostgresEventLedger::connect(url, "provisioning")?;
@@ -213,6 +225,8 @@ impl AppState {
                 api_key: None,
                 admin_key: config.admin_key.clone(),
                 tenant_store: Some(Arc::new(store)),
+                better_auth_url,
+                better_auth_client,
             });
         }
 
@@ -223,6 +237,8 @@ impl AppState {
             admin_key: config.admin_key.clone(),
             #[cfg(feature = "shared-backend-postgres")]
             tenant_store: None,
+            better_auth_url,
+            better_auth_client,
         })
     }
 }
@@ -1303,24 +1319,110 @@ fn unpack_blocking(
 }
 
 // ---------------------------------------------------------------------------
+// Better Auth OAuth token validation (Better-Auth-on-Neon bake-off, iwz9)
+// ---------------------------------------------------------------------------
+
+/// Call the Better Auth sidecar's /api/verify-token endpoint.
+/// Returns (email, user_id) on a valid token, None otherwise.
+async fn validate_better_auth_token(
+    client: &reqwest::Client,
+    better_auth_url: &str,
+    token: &str,
+) -> Option<(String, String)> {
+    let url = format!("{}/api/verify-token", better_auth_url.trim_end_matches('/'));
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({ "token": token }))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let data: serde_json::Value = resp.json().await.ok()?;
+    if !data.get("valid").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return None;
+    }
+    let email = data.get("email").and_then(|v| v.as_str())?.to_owned();
+    let user_id = data
+        .get("user_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&email)
+        .to_owned();
+    Some((email, user_id))
+}
+
+/// Resolve (or auto-provision) a HiveMind tenant_id for an OAuth user.
+///
+/// In Postgres multi-tenant mode: calls `TenantStore::ensure_oauth_tenant`
+/// which creates `user:<email>` in `hm_tenants` if not present.
+/// In SQLite dev mode: uses the email string directly as the tenant_id.
+async fn resolve_oauth_tenant(_state: &AppState, email: &str) -> Option<TenantId> {
+    #[cfg(feature = "shared-backend-postgres")]
+    if let Some(ref store) = _state.tenant_store {
+        let store = Arc::clone(store);
+        let email_owned = email.to_owned();
+        let tenant_id_str =
+            tokio::task::spawn_blocking(move || store.ensure_oauth_tenant(&email_owned))
+                .await
+                .ok()?
+                .ok()?;
+        return TenantId::new(tenant_id_str).ok();
+    }
+    // SQLite dev mode: use email directly.
+    TenantId::new(email.to_owned()).ok()
+}
+
+/// Attempt OAuth token validation via Better Auth.
+/// Returns `Some(ApiRequestCtx)` when a valid OAuth token is present;
+/// `None` when Better Auth is not configured or the token is not OAuth.
+async fn try_oauth_ctx(state: &AppState, headers: &HeaderMap) -> Option<ApiRequestCtx> {
+    let ba_url = state.better_auth_url.as_deref()?;
+    let ba_client = state.better_auth_client.as_ref()?;
+
+    let bearer = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))?;
+
+    // Don't intercept our own hm_tk_ bearer tokens — let extract_ctx handle them.
+    if bearer.starts_with("hm_tk_") {
+        return None;
+    }
+
+    let (email, _user_id) = validate_better_auth_token(ba_client, ba_url, bearer).await?;
+
+    let tenant_id = resolve_oauth_tenant(state, &email).await?;
+    Some(ApiRequestCtx {
+        tenant_id,
+        actor_id: format!("human:{email}"),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // MCP Streamable HTTP transport (POST /mcp, 2025-03-26 spec)
 // ---------------------------------------------------------------------------
 //
 // Each POST carries a single JSON-RPC 2.0 request and receives a single
 // JSON-RPC 2.0 response (no SSE in this implementation — MCP allows plain
 // JSON for non-streaming tools).  Auth uses the same bearer-token path as
-// the REST API.  The `Mcp-Session-Id` header is issued on `initialize` and
-// accepted (but not enforced) on subsequent requests; it seeds the default
-// actor_id for write operations.
+// the REST API, with OAuth (Better Auth) tokens tried first when configured.
+// The `Mcp-Session-Id` header is issued on `initialize` and accepted (but
+// not enforced) on subsequent requests; it seeds the default actor_id for
+// write operations.
 
 async fn mcp_http_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let ctx = match extract_ctx(&state, &headers) {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
+    // Try OAuth (Better Auth) token first; fall back to built-in key/DB auth.
+    let ctx = match try_oauth_ctx(&state, &headers).await {
+        Some(c) => c,
+        None => match extract_ctx(&state, &headers) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        },
     };
 
     let session_id = headers
@@ -2014,26 +2116,46 @@ fn mcp_collect_strings(
 }
 
 // ---------------------------------------------------------------------------
-// OAuth resource/authorization-server metadata stubs
-// (Part 2 will populate these with real PKCE + GitHub/Google values)
+// OAuth resource/authorization-server metadata
+// (Better-Auth-on-Neon bake-off: Rust server is a resource server only;
+//  the Better Auth sidecar is the authorization server)
 // ---------------------------------------------------------------------------
 
-async fn oauth_protected_resource_handler() -> impl IntoResponse {
+async fn oauth_protected_resource_handler(State(state): State<AppState>) -> impl IntoResponse {
+    // When Better Auth is configured, advertise it as the AS so MCP clients
+    // follow the correct discovery chain.
+    let authorization_servers: Vec<String> = state
+        .better_auth_url
+        .as_deref()
+        .map(|url| vec![url.to_owned()])
+        .unwrap_or_default();
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "resource": "/",
-            "authorization_servers": [],
+            "authorization_servers": authorization_servers,
             "bearer_methods_supported": ["header"],
-            "scopes_supported": [],
+            "scopes_supported": ["hivemind:read", "hivemind:write"],
         })),
     )
 }
 
-async fn oauth_authorization_server_handler() -> impl IntoResponse {
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
+async fn oauth_authorization_server_handler(State(state): State<AppState>) -> Response {
+    // When Better Auth is configured, delegate AS metadata to the sidecar.
+    // Otherwise serve the stub (no live endpoints) for backwards compat.
+    let metadata = if let Some(ref ba_url) = state.better_auth_url {
+        let base = ba_url.trim_end_matches('/');
+        serde_json::json!({
+            "issuer": base,
+            "authorization_endpoint": format!("{base}/oauth/authorize"),
+            "token_endpoint": format!("{base}/oauth/token"),
+            "registration_endpoint": format!("{base}/oauth/register"),
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "code_challenge_methods_supported": ["S256"],
+        })
+    } else {
+        serde_json::json!({
             "issuer": "/",
             "authorization_endpoint": "/oauth/authorize",
             "token_endpoint": "/oauth/token",
@@ -2041,6 +2163,7 @@ async fn oauth_authorization_server_handler() -> impl IntoResponse {
             "response_types_supported": ["code"],
             "grant_types_supported": ["authorization_code"],
             "code_challenge_methods_supported": ["S256"],
-        })),
-    )
+        })
+    };
+    (StatusCode::OK, Json(metadata)).into_response()
 }
