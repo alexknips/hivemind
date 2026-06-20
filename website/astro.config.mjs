@@ -16,8 +16,16 @@ export default defineConfig({
         {
           label: 'Getting Started',
           items: [
-            { label: 'Install', slug: 'getting-started/install' },
             { label: 'Quickstart', slug: 'getting-started/quickstart' },
+            { label: 'Self-host', slug: 'getting-started/install' },
+          ],
+        },
+        {
+          label: 'Guides',
+          items: [
+            { label: 'MCP Setup', slug: 'guides/mcp-setup' },
+            { label: 'Agent Capture', slug: 'guides/agent-capture' },
+            { label: 'Human Review', slug: 'guides/human-review' },
           ],
         },
         {
@@ -26,14 +34,6 @@ export default defineConfig({
             { label: 'Architecture', slug: 'concepts/architecture' },
             { label: 'Auth Model', slug: 'concepts/auth-model' },
             { label: 'Decision Graph', slug: 'concepts/decision-graph' },
-          ],
-        },
-        {
-          label: 'Guides',
-          items: [
-            { label: 'Agent Capture', slug: 'guides/agent-capture' },
-            { label: 'MCP Setup', slug: 'guides/mcp-setup' },
-            { label: 'Human Review', slug: 'guides/human-review' },
           ],
         },
         {

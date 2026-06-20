@@ -1,13 +1,90 @@
 ---
 title: MCP Setup
-description: Connect any MCP client — Claude Desktop, Claude Code, or Cursor.
+description: Connect Claude Code, Cursor, or any MCP client to HiveMind — remote or local.
 ---
 
-HiveMind ships a bundled MCP stdio server. Any MCP-aware client can capture and
-query decisions through it. The server is a thin transport over the same `commands`
-and `queries` APIs the CLI uses.
+HiveMind exposes its full decision-graph surface as an MCP server. You can connect via
+the **managed remote server** (no local install, GitHub/Google login) or run the
+**local stdio server** yourself as part of a self-hosted setup.
 
-## Start the server
+---
+
+## Remote MCP — managed server
+
+The managed HiveMind server is live at `hivemind-tti3sa.fly.dev`. Your agents
+connect via the remote MCP endpoint and write to a shared, team-wide decision graph.
+No local binary required. Bearer-token auth — contact for access. GitHub and Google
+login coming soon.
+
+### Get access
+
+[Contact alex.knips@gmail.com](mailto:alex.knips@gmail.com) to get a bearer token.
+Self-serve key issuance is coming soon.
+
+### Claude Code
+
+Add to `.mcp.json` in your project root (include your bearer token):
+
+```json
+{
+  "mcpServers": {
+    "hivemind": {
+      "url": "https://hivemind-tti3sa.fly.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-api-key>"
+      }
+    }
+  }
+}
+```
+
+All 12 HiveMind tools are available to your agents once connected.
+
+### Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or
+`%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "hivemind": {
+      "url": "https://hivemind-tti3sa.fly.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-api-key>"
+      }
+    }
+  }
+}
+```
+
+### Cursor
+
+Add to `~/.cursor/mcp.json` or the project-level `.cursor/mcp.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "hivemind": {
+        "url": "https://hivemind-tti3sa.fly.dev/mcp",
+        "headers": {
+          "Authorization": "Bearer <your-api-key>"
+        }
+      }
+    }
+  }
+}
+```
+
+---
+
+## Local stdio MCP — self-hosted
+
+If you are running your own HiveMind instance, use the local stdio server. The server
+is a thin transport over the same commands layer the CLI uses.
+
+### Start the server
 
 ```bash
 hivemind --hivemind-dir ./hivemind/ mcp
@@ -15,10 +92,7 @@ hivemind --hivemind-dir ./hivemind/ mcp
 
 The server reads from stdin and writes to stdout in the MCP protocol format.
 
-## Claude Desktop
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or
-`%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+### Claude Desktop (local)
 
 ```json
 {
@@ -34,7 +108,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 }
 ```
 
-## Claude Code
+### Claude Code (local)
 
 Add to `.mcp.json` in the project root:
 
@@ -63,10 +137,7 @@ Or set `HIVEMIND_DIR` and omit `--hivemind-dir`:
 }
 ```
 
-## Cursor
-
-Cursor uses the same shape under `mcp.servers` in `~/.cursor/mcp.json` or the
-project-level `.cursor/mcp.json`:
+### Cursor (local)
 
 ```json
 {
@@ -82,21 +153,31 @@ project-level `.cursor/mcp.json`:
 }
 ```
 
+---
+
 ## Available tools
 
-The server exposes seven tools:
+The HiveMind MCP server exposes 12 tools. See [MCP Tools reference](/reference/mcp-tools/)
+for full parameter documentation.
 
-| Tool | Layer | What it wraps |
-|------|-------|--------------|
-| `capture_decision` | write | `emit decision.proposed` |
-| `capture_evidence` | write | `emit evidence.recorded` |
-| `capture_hypothesis` | write | `emit hypothesis.recorded` |
-| `get_decision` | read | `query get_decision` |
-| `get_relevant_decisions` | read | `query get_relevant_decisions` |
-| `get_supersession_chain` | read | `query get_supersession_chain` |
-| `dump_graph` | read | `dump --format dot` |
+| Tool | Type | Description |
+|------|------|-------------|
+| `capture_decision` | write | Record a decision with rationale and options |
+| `capture_evidence` | write | Record supporting evidence for a decision |
+| `capture_hypothesis` | write | Record a hypothesis still in flight |
+| `disagree_decision` | write | Contest a decision as an actor |
+| `supersede_decision` | write | Supersede a prior decision with a new one |
+| `get_decision` | read | Retrieve a decision by ID with derived status |
+| `get_relevant_decisions` | read | Search by topic, status, actor, or time window |
+| `get_supersession_chain` | read | Walk the full supersession history backward |
+| `search_decisions` | read | Full-text search across the ledger |
+| `dump_graph` | read | Export the full projected graph (DOT or JSON) |
+| `hivemind_compact_view` | read | Compact summary of a decision and its context |
+| `summarize_decisions` | read | LLM-friendly summary of a decision set |
 
-## Actor requirement
+---
+
+## Actor requirement (local stdio)
 
 Every capture call requires an explicit `actor_id`. Use the originating tool as a prefix:
 
@@ -107,18 +188,11 @@ agent:codex:<session-id>
 ```
 
 The server records `source=agent` and a per-session `source_ref` for every write.
-Pass `--session-id` to override the auto-generated session identifier.
 
-## Kuzu backend
+---
 
-If the binary was built with `--features graph-kuzu`, set `HIVEMIND_GRAPH_BACKEND=kuzu`
-to use the persistent Kuzu projection instead of the in-memory default:
+## Next steps
 
-```json
-{
-  "env": {
-    "HIVEMIND_DIR": "./hivemind/",
-    "HIVEMIND_GRAPH_BACKEND": "kuzu"
-  }
-}
-```
+- [MCP Tools reference](/reference/mcp-tools/) — full parameter documentation for all 12 tools
+- [Agent Capture guide](/guides/agent-capture/) — how agents capture decisions automatically
+- [Self-host install](/getting-started/install/) — install the binary and run your own server

@@ -1,9 +1,9 @@
 ---
 title: MCP Tools
-description: Reference for all tools exposed by the HiveMind MCP server.
+description: Reference for all 12 tools exposed by the HiveMind MCP server.
 ---
 
-The HiveMind MCP server exposes seven tools. All write tools require an explicit
+The HiveMind MCP server exposes 12 tools. All write tools require an explicit
 `actor_id`. All read tools return JSON responses.
 
 See [MCP Setup](/guides/mcp-setup/) to configure your client.
@@ -68,6 +68,50 @@ Record a hypothesis still in flight. Equivalent to `emit hypothesis.recorded`.
 
 ---
 
+### `disagree_decision`
+
+Contest a decision as an actor. Records a disagreement edge on the decision.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `actor_id` | string | ✓ | Actor registering the disagreement |
+| `decision_id` | string | ✓ | ID of the decision to contest |
+| `rationale` | string | ✓ | Why the actor disagrees |
+
+**Returns:** The decision node with `status` updated to `contested`.
+
+---
+
+### `supersede_decision`
+
+Supersede a prior decision with a new one. Creates a `SUPERSEDES` edge between them.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `actor_id` | string | ✓ | Actor making the new decision |
+| `title` | string | ✓ | Title of the new decision |
+| `rationale` | string | ✓ | Why this supersedes the prior decision |
+| `supersedes_id` | string | ✓ | ID of the decision being superseded |
+| `topic_keys` | string[] | — | Topic labels for the new decision |
+| `options` | string[] | — | Alternatives that were considered |
+| `chosen` | string | — | The option that was chosen |
+
+**Returns:**
+
+```json
+{
+  "decision_id": "decision:new123",
+  "supersedes": "decision:old456",
+  "status": "proposed"
+}
+```
+
+---
+
 ## Read tools
 
 ### `get_decision`
@@ -128,6 +172,30 @@ Walk the full supersession chain backward from a given decision.
 
 ---
 
+### `search_decisions`
+
+Full-text search across the decision ledger.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | ✓ | Search terms |
+| `limit` | integer | — | Max results (default: 20) |
+| `offset` | integer | — | Pagination offset |
+
+**Returns:**
+
+```json
+{
+  "decisions": [...],
+  "truncated": false,
+  "total": 5
+}
+```
+
+---
+
 ### `dump_graph`
 
 Export the full projected graph in DOT or JSON format.
@@ -139,6 +207,41 @@ Export the full projected graph in DOT or JSON format.
 | `format` | string | — | `dot` (default) or `json` |
 
 **Returns:** DOT string or JSON graph object.
+
+---
+
+### `hivemind_compact_view`
+
+Return a compact, human-readable summary of a decision and its immediate context
+(evidence, hypotheses, supersession chain). Useful for agents that need a quick
+read on a specific decision without walking the full graph.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | ✓ | Decision ID to summarize |
+
+**Returns:** Compact JSON object with decision, linked evidence, hypotheses, and
+chain summary.
+
+---
+
+### `summarize_decisions`
+
+Return an LLM-friendly natural language summary of a set of decisions matching
+the given filter criteria. Useful for giving agents a high-level picture before
+they query specifics.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `topic` | string | — | Topic key to scope the summary |
+| `status` | string | — | Filter by status |
+| `limit` | integer | — | Max decisions to include (default: 20) |
+
+**Returns:** A structured summary string suitable for injection into agent context.
 
 ---
 
