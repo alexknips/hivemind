@@ -1,60 +1,33 @@
-# HiveMind — Fly.io deployment config (cheapest possible)
+# fly.toml app configuration file generated for hivemind-tti3sa on 2026-06-20T01:06:02Z
 #
-# Before first deploy:
-#   1. Create the app:
-#        fly launch --name <YOUR-APP-NAME> --region <YOUR-REGION> --no-deploy
-#      e.g. fly launch --name hivemind-api --region sea --no-deploy
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
-#   2. Provision a tiny Fly Postgres cluster (cheapest; stays running, ~$2/mo):
-#        fly postgres create \
-#          --name hivemind-pg \
-#          --region <YOUR-REGION> \
-#          --vm-size shared-cpu-1x \
-#          --volume-size 1
-#      Then attach it:
-#        fly postgres attach hivemind-pg --app <YOUR-APP-NAME>
-#      (This sets HIVEMIND_DATABASE_URL automatically via fly secrets.)
-#
-#   3. Set the remaining secrets:
-#        fly secrets set \
-#          HIVEMIND_API_KEY=<strong-random-secret> \
-#          --app <YOUR-APP-NAME>
-#      Optional (enables Layer-3 classifier on ingest):
-#        fly secrets set HIVEMIND_ANTHROPIC_API_KEY=<key> --app <YOUR-APP-NAME>
-#
-#   4. Deploy:
-#        fly deploy --app <YOUR-APP-NAME>
-#
-# Replace the placeholder values below with your real app name and region.
 
-app = "REPLACE-WITH-YOUR-APP-NAME"
-primary_region = "REPLACE-WITH-YOUR-REGION"
+app = 'hivemind-tti3sa'
+primary_region = 'lax'
 
 [build]
-dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
-# Runtime env — non-secret config only. Secrets go through `fly secrets set`.
 [env]
-HIVEMIND_PORT = "8080"
-# HIVEMIND_DATABASE_URL is injected by `fly postgres attach` — do NOT put it here.
+  HIVEMIND_PORT = '8080'
 
 [http_service]
-internal_port = 8080
-force_https = true
-# Scale to zero when idle — the app machine is ~$0 while stopped.
-# Fly starts it automatically on the first request (cold start ~1-3s).
-auto_stop_machines = "stop"
-auto_start_machines = true
-min_machines_running = 0
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
 
-[[http_service.checks]]
-grace_period = "10s"
-interval = "30s"
-method = "get"
-timeout = "5s"
-path = "/v1/health"
+  [[http_service.checks]]
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'get'
+    path = '/v1/health'
 
 [[vm]]
-memory = "256mb"
-cpu_kind = "shared"
-cpus = 1
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 256
