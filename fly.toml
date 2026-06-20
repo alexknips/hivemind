@@ -1,34 +1,27 @@
 # HiveMind — Fly.io deployment config (cheapest possible)
 #
 # Before first deploy:
-#   1. Create the app:
-#        fly launch --name <YOUR-APP-NAME> --region <YOUR-REGION> --no-deploy
-#      e.g. fly launch --name hivemind-api --region sea --no-deploy
+#   1. Create the app (already done — live as hivemind-tti3sa in lax):
+#        fly launch --name hivemind-tti3sa --region lax --no-deploy
 #
-#   2. Provision a tiny Fly Postgres cluster (cheapest; stays running, ~$2/mo):
-#        fly postgres create \
-#          --name hivemind-pg \
-#          --region <YOUR-REGION> \
-#          --vm-size shared-cpu-1x \
-#          --volume-size 1
-#      Then attach it:
-#        fly postgres attach hivemind-pg --app <YOUR-APP-NAME>
-#      (This sets HIVEMIND_DATABASE_URL automatically via fly secrets.)
+#   2. Database = Neon Postgres (free tier; SQLite is no longer used).
+#      Use the Neon DIRECT endpoint, NOT the -pooler one — PgBouncer txn-mode
+#      breaks rust-postgres prepared statements. Keep sslmode=require.
+#        fly secrets set HIVEMIND_DATABASE_URL='postgresql://USER:PW@ep-xxxx.REGION.aws.neon.tech/neondb?sslmode=require' --app hivemind-tti3sa
 #
 #   3. Set the remaining secrets:
-#        fly secrets set \
-#          HIVEMIND_API_KEY=<strong-random-secret> \
-#          --app <YOUR-APP-NAME>
+#        fly secrets set HIVEMIND_API_KEY=<strong-random-secret> --app hivemind-tti3sa
 #      Optional (enables Layer-3 classifier on ingest):
-#        fly secrets set HIVEMIND_ANTHROPIC_API_KEY=<key> --app <YOUR-APP-NAME>
+#        fly secrets set HIVEMIND_ANTHROPIC_API_KEY=<key> --app hivemind-tti3sa
 #
-#   4. Deploy:
-#        fly deploy --app <YOUR-APP-NAME>
-#
-# Replace the placeholder values below with your real app name and region.
+#   4. Deploy from a CLEAN clone of origin/master (the rig root may sit on a
+#      stale branch — do not deploy from it):
+#        git clone --depth 1 git@github.com:alexknips/hivemind /tmp/hmdeploy && cd /tmp/hmdeploy
+#        fly deploy --app hivemind-tti3sa --remote-only
+#      The image builds with --features shared-backend-postgres (Neon needs native-TLS).
 
-app = "REPLACE-WITH-YOUR-APP-NAME"
-primary_region = "REPLACE-WITH-YOUR-REGION"
+app = "hivemind-tti3sa"
+primary_region = "lax"
 
 [build]
 dockerfile = "Dockerfile"
@@ -36,7 +29,7 @@ dockerfile = "Dockerfile"
 # Runtime env — non-secret config only. Secrets go through `fly secrets set`.
 [env]
 HIVEMIND_PORT = "8080"
-# HIVEMIND_DATABASE_URL is injected by `fly postgres attach` — do NOT put it here.
+# HIVEMIND_DATABASE_URL is a Fly secret (Neon direct endpoint) — do NOT put it here.
 
 [http_service]
 internal_port = 8080
