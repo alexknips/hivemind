@@ -10,6 +10,7 @@ pub mod ledger;
 pub mod mcp;
 pub mod projector;
 pub mod queries;
+pub mod scorer;
 pub mod slack_app;
 pub mod suggest;
 pub mod summarize;

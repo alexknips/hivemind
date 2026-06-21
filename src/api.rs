@@ -978,6 +978,10 @@ pub async fn serve_http(state: AppState, config: &ApiConfig) -> crate::Result<()
         Arc::new(config.hivemind_dir.clone()),
         crate::events::TenantId::local(),
     );
+    crate::scorer::try_spawn(
+        Arc::new(config.hivemind_dir.clone()),
+        crate::events::TenantId::local(),
+    );
 
     let app = build_router(state);
     let addr = format!("0.0.0.0:{}", config.port);

@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use hivemind::events::{
     self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionBlockerPriority,
     DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload, DecisionRequestedPayload,
-    DecisionSupersededPayload, Event, EventBuilder, EventEnvelope, EventPayload, EventSource,
-    EventType, EventValidationError, EvidenceRecordedPayload, HypothesisRecordedPayload,
-    IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn,
-    NotificationAcknowledgedPayload, NotificationSentPayload, RelationAddedPayload,
+    DecisionScoredPayload, DecisionSupersededPayload, Event, EventBuilder, EventEnvelope,
+    EventPayload, EventSource, EventType, EventValidationError, EvidenceRecordedPayload,
+    HypothesisRecordedPayload, ImportanceFactors, IngestBatchClassifiedPayload,
+    IngestBatchReceivedPayload, IngestTurn, NotificationAcknowledgedPayload,
+    NotificationSentPayload, QualityDim, QualityDims, RelationAddedPayload,
     RelationKind as EventRelationKind,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
@@ -17,7 +18,7 @@ use hivemind::{CliError, CommandError, HivemindError, LedgerError, ProjectorErro
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const EVENT_TYPES: [EventType; 14] = [
+const EVENT_TYPES: [EventType; 15] = [
     EventType::DecisionProposed,
     EventType::DecisionRequested,
     EventType::DecisionAccepted,
@@ -32,6 +33,7 @@ const EVENT_TYPES: [EventType; 14] = [
     EventType::NotificationAcknowledged,
     EventType::IngestBatchReceived,
     EventType::IngestBatchClassified,
+    EventType::DecisionScored,
 ];
 
 const EVENT_RELATION_KINDS: [EventRelationKind; 6] = [
@@ -342,6 +344,7 @@ fn event_type_name(event_type: EventType) -> &'static str {
         EventType::NotificationAcknowledged => "notification.acknowledged",
         EventType::IngestBatchReceived => "ingest.batch_received",
         EventType::IngestBatchClassified => "ingest.batch_classified",
+        EventType::DecisionScored => "decision.scored",
     }
 }
 
@@ -361,6 +364,7 @@ fn payload_variant_type(payload: &EventPayload) -> EventType {
         EventPayload::NotificationAcknowledged(_) => EventType::NotificationAcknowledged,
         EventPayload::IngestBatchReceived(_) => EventType::IngestBatchReceived,
         EventPayload::IngestBatchClassified(_) => EventType::IngestBatchClassified,
+        EventPayload::DecisionScored(_) => EventType::DecisionScored,
     }
 }
 
@@ -409,6 +413,7 @@ fn typed_payload_from_value(
         EventType::IngestBatchClassified => {
             EventPayload::IngestBatchClassified(serde_json::from_value(payload)?)
         }
+        EventType::DecisionScored => EventPayload::DecisionScored(serde_json::from_value(payload)?),
     })
 }
 
@@ -575,6 +580,53 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 }],
             }),
         ),
+        (
+            EventType::DecisionScored,
+            EventPayload::DecisionScored(DecisionScoredPayload {
+                capture_node_id: "capture:1:0".to_owned(),
+                scorer_model: "claude-haiku-4-5-20251001".to_owned(),
+                weight_version: "v1".to_owned(),
+                supersedes_score_id: None,
+                quality_dims: QualityDims {
+                    framing: QualityDim {
+                        score: 0.8,
+                        explanation: "Problem framed clearly".to_owned(),
+                    },
+                    alternatives: QualityDim {
+                        score: 0.7,
+                        explanation: "Two options considered".to_owned(),
+                    },
+                    information: QualityDim {
+                        score: 0.6,
+                        explanation: "Limited evidence referenced".to_owned(),
+                    },
+                    reasoning: QualityDim {
+                        score: 0.9,
+                        explanation: "Logic is sound".to_owned(),
+                    },
+                    values_tradeoffs: QualityDim {
+                        score: 0.5,
+                        explanation: "Tradeoffs implicit".to_owned(),
+                    },
+                    bias_exposure: QualityDim {
+                        score: 0.8,
+                        explanation: "No obvious bias".to_owned(),
+                    },
+                    calibration: QualityDim {
+                        score: 0.7,
+                        explanation: "Confidence matches evidence".to_owned(),
+                    },
+                },
+                importance: ImportanceFactors {
+                    stakes: 10.0,
+                    stakes_explanation: "Department-level API choice".to_owned(),
+                    irreversibility: 0.6,
+                    irreversibility_explanation: "Migration possible but costly".to_owned(),
+                    actionability: 1.0,
+                    actionability_explanation: "Decision has a clear owner".to_owned(),
+                },
+            }),
+        ),
     ]
 }
 
@@ -594,6 +646,7 @@ fn payload_json(payload: &EventPayload) -> Value {
         EventPayload::NotificationAcknowledged(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::IngestBatchReceived(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::IngestBatchClassified(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::DecisionScored(payload) => serde_json::to_value(payload).unwrap(),
     }
 }
 

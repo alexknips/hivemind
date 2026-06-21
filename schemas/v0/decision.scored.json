@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivemind.local/schemas/v0/decision.scored.json",
+  "title": "decision.scored event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_uuid", "type", "actor_id", "source", "payload"],
+  "properties": {
+    "event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "event_uuid": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": ["string", "null"], "minLength": 1 },
+    "causation_event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "type": { "const": "decision.scored" },
+    "actor_id": { "type": "string", "minLength": 1 },
+    "source": { "enum": ["cli", "agent", "human", "slack", "api"] },
+    "source_ref": { "type": ["string", "null"], "minLength": 1 },
+    "ts": { "type": ["string", "null"], "format": "date-time" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capture_node_id",
+        "scorer_model",
+        "weight_version",
+        "quality_dims",
+        "importance"
+      ],
+      "properties": {
+        "capture_node_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The capture node ID (e.g. capture:42:0) from the classified batch"
+        },
+        "scorer_model": { "type": "string", "minLength": 1 },
+        "weight_version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Version string for the quality dimension weights (e.g. v1); stored so composites can recompute under any weight set"
+        },
+        "supersedes_score_id": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "event_uuid of a prior decision.scored event that this assessment supersedes"
+        },
+        "quality_dims": {
+          "type": "object",
+          "description": "Per-dimension Quality scores [0,1] with explanations. All 7 dimensions required.",
+          "additionalProperties": false,
+          "required": [
+            "framing",
+            "alternatives",
+            "information",
+            "reasoning",
+            "values_tradeoffs",
+            "bias_exposure",
+            "calibration"
+          ],
+          "properties": {
+            "framing":          { "$ref": "#/$defs/scoredDim" },
+            "alternatives":     { "$ref": "#/$defs/scoredDim" },
+            "information":      { "$ref": "#/$defs/scoredDim" },
+            "reasoning":        { "$ref": "#/$defs/scoredDim" },
+            "values_tradeoffs": { "$ref": "#/$defs/scoredDim" },
+            "bias_exposure":    { "$ref": "#/$defs/scoredDim" },
+            "calibration":      { "$ref": "#/$defs/scoredDim" }
+          }
+        },
+        "importance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stakes", "irreversibility", "actionability", "stakes_explanation", "irreversibility_explanation", "actionability_explanation"],
+          "properties": {
+            "stakes": {
+              "type": "number",
+              "description": "Unbounded positive magnitude; log-scaled (severity x reach)"
+            },
+            "stakes_explanation": { "type": "string", "minLength": 1 },
+            "irreversibility": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0,
+              "description": "Discount for reversibility: 0=fully reversible, 1=fully irreversible"
+            },
+            "irreversibility_explanation": { "type": "string", "minLength": 1 },
+            "actionability": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0,
+              "description": "Gate for actionability: 0=not actionable, 1=fully actionable"
+            },
+            "actionability_explanation": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "scoredDim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "explanation"],
+      "properties": {
+        "score": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "explanation": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

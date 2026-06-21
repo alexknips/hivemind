@@ -2275,7 +2275,8 @@ fn reviewed_decision_ids_by_actor(
             | EventPayload::NotificationSent(_)
             | EventPayload::NotificationAcknowledged(_)
             | EventPayload::IngestBatchReceived(_)
-            | EventPayload::IngestBatchClassified(_) => {}
+            | EventPayload::IngestBatchClassified(_)
+            | EventPayload::DecisionScored(_) => {}
         }
     }
     Ok(reviewed)
@@ -2313,7 +2314,8 @@ impl ReviewLedgerContext {
                 | EventPayload::NotificationSent(_)
                 | EventPayload::NotificationAcknowledged(_)
                 | EventPayload::IngestBatchReceived(_)
-                | EventPayload::IngestBatchClassified(_) => {}
+                | EventPayload::IngestBatchClassified(_)
+                | EventPayload::DecisionScored(_) => {}
             }
         }
         Ok(context)
@@ -2901,6 +2903,7 @@ fn event_type_label(event_type: EventType) -> &'static str {
         EventType::NotificationAcknowledged => "notification.acknowledged",
         EventType::IngestBatchReceived => "ingest.batch_received",
         EventType::IngestBatchClassified => "ingest.batch_classified",
+        EventType::DecisionScored => "decision.scored",
     }
 }
 
