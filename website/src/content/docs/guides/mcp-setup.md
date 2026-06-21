@@ -11,34 +11,34 @@ the **managed remote server** (no local install, GitHub/Google login) or run the
 
 ## Remote MCP — managed server
 
-The managed HiveMind server is live at `hivemind-tti3sa.fly.dev`. Your agents
-connect via the remote MCP endpoint and write to a shared, team-wide decision graph.
-No local binary required. Bearer-token auth — contact for access. GitHub and Google
-login coming soon.
-
-### Get access
-
-[Contact alex.knips@gmail.com](mailto:alex.knips@gmail.com) to get a bearer token.
-Self-serve key issuance is coming soon.
+The managed HiveMind server is live at `hivemind-tti3sa.fly.dev`. Your agents connect
+to the remote MCP endpoint and write to a shared, team-wide decision graph — no local
+binary required. **Authentication is browser-based:** on first connect your client opens
+a login page and you sign in with **GitHub or Google**. No API key or token to manage.
 
 ### Claude Code
 
-Add to `.mcp.json` in your project root (include your bearer token):
+Add to `.mcp.json` in your project root:
 
 ```json
 {
   "mcpServers": {
     "hivemind": {
-      "url": "https://hivemind-tti3sa.fly.dev/mcp",
-      "headers": {
-        "Authorization": "Bearer <your-api-key>"
-      }
+      "type": "http",
+      "url": "https://hivemind-tti3sa.fly.dev/mcp"
     }
   }
 }
 ```
 
-All 12 HiveMind tools are available to your agents once connected.
+Or from the CLI:
+
+```bash
+claude mcp add --transport http hivemind https://hivemind-tti3sa.fly.dev/mcp
+```
+
+On first use, Claude Code opens your browser to the HiveMind login — sign in with
+GitHub or Google and you're connected. All 12 HiveMind tools are then available.
 
 ### Claude Desktop
 
@@ -49,10 +49,8 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 {
   "mcpServers": {
     "hivemind": {
-      "url": "https://hivemind-tti3sa.fly.dev/mcp",
-      "headers": {
-        "Authorization": "Bearer <your-api-key>"
-      }
+      "type": "http",
+      "url": "https://hivemind-tti3sa.fly.dev/mcp"
     }
   }
 }
@@ -67,10 +65,7 @@ Add to `~/.cursor/mcp.json` or the project-level `.cursor/mcp.json`:
   "mcp": {
     "servers": {
       "hivemind": {
-        "url": "https://hivemind-tti3sa.fly.dev/mcp",
-        "headers": {
-          "Authorization": "Bearer <your-api-key>"
-        }
+        "url": "https://hivemind-tti3sa.fly.dev/mcp"
       }
     }
   }
