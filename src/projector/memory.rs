@@ -328,6 +328,22 @@ impl GraphView for MemoryGraph {
 }
 
 impl MemoryGraph {
+    /// Return all nodes and edges as plain tuples, for evaluation use.
+    pub fn nodes_and_edges(
+        &self,
+    ) -> Result<(
+        BTreeMap<(NodeKind, String), GraphProperties>,
+        Vec<(RelationKind, String, String)>,
+    )> {
+        let nodes = self.nodes_snapshot()?;
+        let edges = self
+            .edges_snapshot()?
+            .into_iter()
+            .map(|e| (e.relation, e.from_id, e.to_id))
+            .collect();
+        Ok((nodes, edges))
+    }
+
     fn nodes_lock(&self) -> Result<MutexGuard<'_, BTreeMap<(NodeKind, String), GraphProperties>>> {
         self.nodes
             .lock()
