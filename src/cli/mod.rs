@@ -1311,6 +1311,12 @@ fn run_serve(cli: &Cli, args: &ServeArgs) -> Result<String> {
     // the tokio runtime. r2d2 pool construction internally calls block_on,
     // which panics if already inside an existing runtime.
     let state = crate::api::AppState::from_config(&config)?;
+    // Hold a clone so the Arc<ApiBackend> (postgres pool) survives until AFTER
+    // the runtime is dropped. Rust drops locals in reverse declaration order:
+    // `runtime` (declared below) drops before `_pg_guard`, so the pool's Drop
+    // runs outside any runtime context — preventing the block_on-within-block_on
+    // SIGABRT on scale-to-zero autostop (hivemind-noc9).
+    let _pg_guard = state.clone();
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| CliError::InvalidInput(format!("failed to create tokio runtime: {e}")))?;
     runtime.block_on(crate::api::serve_http(state, &config))?;

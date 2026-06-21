@@ -449,3 +449,72 @@ mod async_safety_tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Regression tests for hivemind-noc9: AppState/pool drop on scale-to-zero
+// ---------------------------------------------------------------------------
+//
+// Root cause: on Fly autostop (scale-to-zero), SIGINT → graceful shutdown →
+// AppState (which owns the r2d2 postgres pool) is dropped while main is still
+// inside Runtime::block_on (the axum serve future). postgres::Client::drop
+// calls block_on internally; when that runs inside an existing block_on context
+// the tokio thread-local detects the nesting and panics with "Cannot start a
+// runtime from within a runtime" → SIGABRT.
+//
+// Fix (src/cli/mod.rs run_serve): hold `_pg_guard = state.clone()` before
+// creating the runtime. Rust drops locals in reverse declaration order, so
+// `runtime` (declared after `_pg_guard`) drops first — removing the runtime
+// context. Only then does `_pg_guard` drop, allowing the pool Drop to call
+// block_on safely.
+// ---------------------------------------------------------------------------
+
+mod shutdown_drop_safety_tests {
+    /// Simulates a pool whose Drop calls block_on internally (as postgres does).
+    struct PoolDropCallsBlockOn;
+    impl Drop for PoolDropCallsBlockOn {
+        fn drop(&mut self) {
+            // Mirrors postgres::Client::drop: create a separate runtime and
+            // drive it to completion. Panics with "Cannot start a runtime from
+            // within a runtime" when the current thread is inside an existing
+            // tokio runtime context.
+            let inner = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("inner rt build");
+            inner.block_on(std::future::ready(()));
+        }
+    }
+
+    /// FAIL-BEFORE (noc9 class): dropping the pool INSIDE block_on panics.
+    /// The future holds `_pool`; when block_on drives the future to completion
+    /// and drops it, `_pool` drops inside the tokio runtime context.
+    /// pool::Drop → inner block_on → "Cannot start a runtime from within a runtime".
+    #[test]
+    #[should_panic(expected = "Cannot start a runtime from within a runtime")]
+    fn fail_before_pool_drop_inside_block_on_panics() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("outer rt");
+        // _pool is moved into the future; it drops at the end of the async block,
+        // which executes inside block_on's runtime context.
+        runtime.block_on(async {
+            let _pool = PoolDropCallsBlockOn;
+            std::future::ready(()).await;
+        });
+    }
+
+    /// PASS-AFTER (noc9 fix): keeping a clone guard ensures the pool Drop runs
+    /// AFTER the runtime is gone. Rust's reverse-declaration drop order:
+    /// `runtime` (declared 2nd) drops first, then `_pg_guard` (declared 1st).
+    #[test]
+    fn pass_after_pool_drop_after_runtime_exits() {
+        // Guard declared before runtime → drops after runtime (reverse order).
+        let _pg_guard = PoolDropCallsBlockOn;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("outer rt");
+        // runtime's block_on completes; the serve future (which would have held
+        // the pool) is gone. runtime drops first, then _pg_guard drops.
+        runtime.block_on(std::future::ready(()));
+        // _pg_guard drops here: no runtime context → pool Drop → inner block_on → OK.
+    }
+}
