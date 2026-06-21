@@ -1,14 +1,16 @@
 //! Capture-fidelity evaluator (Phase 1).
 //!
 //! Reads benchmarks/fidelity/corpus.yaml, runs the real Haiku classifier on
-//! each case, projects CaptureItems to typed nodes+edges, diffs against the
-//! hand-authored gold, and prints per-kind P/R/F1 + a macro-F1 headline.
+//! each case, projects CaptureItems via the REAL production projector to typed
+//! nodes+edges, diffs against the hand-authored gold, and prints per-kind
+//! P/R/F1 + a macro-F1 headline.
 //!
 //! Requires ANTHROPIC_API_KEY. Exits 0 even when scores are low (run as a
 //! scorecard tool, not a pass/fail gate).
 //!
 //! Usage:
 //!   cargo run --bin fidelity-eval [-- --corpus path/to/corpus.yaml]
+//!   cargo run --bin fidelity-eval -- --ceiling   # schema-ceiling (no API)
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -171,72 +173,58 @@ fn gold_graph(expected: &Expected) -> (Vec<ScoredNode>, Vec<ScoredEdge>) {
 }
 
 // --------------------------------------------------------------------------
-// Produced graph from CaptureItems
+// Produced graph from CaptureItems via the REAL production projector
 // --------------------------------------------------------------------------
 
 fn produced_graph(
-    captures: &[hivemind::events::CaptureItem],
+    id_captures: &[(&str, &hivemind::events::CaptureItem)],
 ) -> (Vec<ScoredNode>, Vec<ScoredEdge>) {
-    let mut nodes: Vec<ScoredNode> = Vec::new();
-    let mut edges: Vec<ScoredEdge> = Vec::new();
-
-    for item in captures {
-        let kind = capture_kind_to_node_kind(&item.kind);
-        let decision_text = normalize(&item.title);
-        nodes.push(ScoredNode {
-            kind: kind.clone(),
-            text: decision_text.clone(),
-        });
-
-        if kind == "Decision" || kind == "DecisionRequest" {
-            // options → Option nodes + HAS_OPTION edges
-            if let Some(options) = &item.options {
-                for option_label in options {
-                    let option_text = normalize(option_label);
-                    nodes.push(ScoredNode {
-                        kind: "Option".to_owned(),
-                        text: option_text.clone(),
-                    });
-                    edges.push(ScoredEdge {
-                        kind: "HAS_OPTION".to_owned(),
-                        from_kind: kind.clone(),
-                        from_text: decision_text.clone(),
-                        to_kind: "Option".to_owned(),
-                        to_text: option_text,
-                    });
-                }
-            }
-            // chosen_option → CHOSE edge
-            if let Some(chosen) = &item.chosen_option {
-                let chosen_text = normalize(chosen);
-                edges.push(ScoredEdge {
-                    kind: "CHOSE".to_owned(),
-                    from_kind: kind.clone(),
-                    from_text: decision_text.clone(),
-                    to_kind: "Option".to_owned(),
-                    to_text: chosen_text,
-                });
-            }
+    match hivemind::projector::project_captures_in_memory(id_captures) {
+        Ok((nodes, edges)) => convert_to_scored(nodes, edges),
+        Err(e) => {
+            eprintln!("  projector error: {e}");
+            (Vec::new(), Vec::new())
         }
-        // NOTE: BASED_ON, SUPERSEDES, ASSUMES, SUPPORTS, REFUTES, and actor-linkage
-        // edges are NOT in the current CaptureItem schema. They appear as recall
-        // penalties — this is the honest baseline (Option A).
     }
-
-    (nodes, edges)
 }
 
-fn capture_kind_to_node_kind(kind: &str) -> String {
-    match kind {
-        "decision" => "Decision",
-        "evidence" => "Evidence",
-        "hypothesis" => "Hypothesis",
-        "blocker" => "Blocker",
-        "decision-request" => "DecisionRequest",
-        "notification" => "Notification",
-        _ => kind,
+fn convert_to_scored(
+    nodes: Vec<(hivemind::projector::NodeKind, String, String)>,
+    edges: Vec<(hivemind::projector::RelationKind, String, String)>,
+) -> (Vec<ScoredNode>, Vec<ScoredEdge>) {
+    // Build id → (kind_str, normalized_text) map for edge endpoint resolution.
+    let mut id_map: HashMap<String, (String, String)> = HashMap::new();
+    let mut scored_nodes: Vec<ScoredNode> = Vec::new();
+
+    for (kind, id, text) in &nodes {
+        let kind_str = kind.table_name().to_owned();
+        let norm = normalize(text);
+        id_map.insert(id.clone(), (kind_str.clone(), norm.clone()));
+        scored_nodes.push(ScoredNode {
+            kind: kind_str,
+            text: norm,
+        });
     }
-    .to_owned()
+
+    let mut scored_edges: Vec<ScoredEdge> = Vec::new();
+    for (rel, from_id, to_id) in &edges {
+        let kind_str = rel.table_name().to_owned();
+        let Some((from_kind, from_text)) = id_map.get(from_id) else {
+            continue;
+        };
+        let Some((to_kind, to_text)) = id_map.get(to_id) else {
+            continue;
+        };
+        scored_edges.push(ScoredEdge {
+            kind: kind_str,
+            from_kind: from_kind.clone(),
+            from_text: from_text.clone(),
+            to_kind: to_kind.clone(),
+            to_text: to_text.clone(),
+        });
+    }
+
+    (scored_nodes, scored_edges)
 }
 
 // --------------------------------------------------------------------------
@@ -477,13 +465,14 @@ fn aggregate_scorecard(results: &[CaseResult]) {
 // --------------------------------------------------------------------------
 
 // --------------------------------------------------------------------------
-// Ceiling mode: gold nodes → CaptureItems (no API call)
+// Ceiling mode: gold nodes → (id, CaptureItem) pairs (no API call)
 // --------------------------------------------------------------------------
 
-// Converts gold expected data to CaptureItems using only the fields the
-// CaptureItem schema can express.  Actor nodes have no CaptureItem kind so
-// they are skipped — this is the honest schema-ceiling, not a perfect one.
-fn gold_as_captures(expected: &Expected) -> Vec<hivemind::events::CaptureItem> {
+// Converts gold expected data to (gold_key, CaptureItem) pairs using the
+// REAL production projector. Actor and Option nodes have no standalone
+// CaptureItem kind; Actor edges are wired via actor_id/accepted_by/rejected_by
+// fields; Option nodes are emitted by project_capture from capture.options.
+fn gold_as_captures(expected: &Expected) -> Vec<(String, hivemind::events::CaptureItem)> {
     use hivemind::events::CaptureItem;
     use std::collections::HashMap;
 
@@ -494,25 +483,67 @@ fn gold_as_captures(expected: &Expected) -> Vec<hivemind::events::CaptureItem> {
         .map(|n| (n.key.as_str(), n.text.as_str()))
         .collect();
 
-    // For each Decision/DecisionRequest, gather its HAS_OPTION and CHOSE targets
+    // Gather edge lists per source/target key for cross-reference population.
     let mut options_map: HashMap<&str, Vec<String>> = HashMap::new();
     let mut chosen_map: HashMap<&str, String> = HashMap::new();
+    let mut evidence_ids_map: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut supersedes_map: HashMap<&str, String> = HashMap::new();
+    let mut assumes_map: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut supports_map: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut refutes_map: HashMap<&str, Vec<String>> = HashMap::new();
+
     for e in &expected.edges {
-        if e.kind == "HAS_OPTION" {
-            if let Some(&opt_text) = key_map.get(e.to.as_str()) {
-                options_map
+        match e.kind.as_str() {
+            "HAS_OPTION" => {
+                if let Some(&opt_text) = key_map.get(e.to.as_str()) {
+                    options_map
+                        .entry(e.from.as_str())
+                        .or_default()
+                        .push(opt_text.to_owned());
+                }
+            }
+            "CHOSE" => {
+                if let Some(&opt_text) = key_map.get(e.to.as_str()) {
+                    chosen_map.insert(e.from.as_str(), opt_text.to_owned());
+                }
+            }
+            "BASED_ON" => {
+                // from=Decision, to=Evidence; store the Evidence key as the id.
+                evidence_ids_map
                     .entry(e.from.as_str())
                     .or_default()
-                    .push(opt_text.to_owned());
+                    .push(e.to.clone());
             }
-        } else if e.kind == "CHOSE" {
-            if let Some(&opt_text) = key_map.get(e.to.as_str()) {
-                chosen_map.insert(e.from.as_str(), opt_text.to_owned());
+            "SUPERSEDES" => {
+                // from=new Decision, to=superseded Decision key.
+                supersedes_map.insert(e.from.as_str(), e.to.clone());
             }
+            "ASSUMES" => {
+                // from=Decision, to=Hypothesis key.
+                assumes_map
+                    .entry(e.from.as_str())
+                    .or_default()
+                    .push(e.to.clone());
+            }
+            "SUPPORTS" => {
+                // from=Evidence, to=Hypothesis key.
+                supports_map
+                    .entry(e.from.as_str())
+                    .or_default()
+                    .push(e.to.clone());
+            }
+            "REFUTES" => {
+                // from=Evidence, to=Hypothesis key.
+                refutes_map
+                    .entry(e.from.as_str())
+                    .or_default()
+                    .push(e.to.clone());
+            }
+            _ => {}
         }
     }
 
-    let mut captures: Vec<CaptureItem> = Vec::new();
+    let mut captures: Vec<(String, CaptureItem)> = Vec::new();
     for node in &expected.nodes {
         let kind = match node.kind.as_str() {
             "Decision" => "decision",
@@ -520,32 +551,35 @@ fn gold_as_captures(expected: &Expected) -> Vec<hivemind::events::CaptureItem> {
             "Evidence" => "evidence",
             "Hypothesis" => "hypothesis",
             "Blocker" => "blocker",
-            // Actor and Option have no CaptureItem kind; skip
+            // Actor and Option have no standalone CaptureItem kind; skip.
             _ => continue,
         };
         let key = node.key.as_str();
-        captures.push(CaptureItem {
-            kind: kind.to_owned(),
-            title: node.text.clone(),
-            rationale: String::new(),
-            topic_keys: vec![],
-            evidence_ids: vec![],
-            options: options_map.get(key).cloned(),
-            chosen_option: chosen_map.get(key).cloned(),
-            extraction_confidence: 1.0,
-            expressed_confidence: None,
-            supersedes_id: None,
-            assumes_ids: vec![],
-            supports_ids: vec![],
-            refutes_ids: vec![],
-            actor_id: None,
-            accepted_by: None,
-            rejected_by: None,
-            blocked_actor_id: None,
-            decision_id: None,
-            participants: vec![],
-            session_initiator: None,
-        });
+        captures.push((
+            key.to_owned(),
+            CaptureItem {
+                kind: kind.to_owned(),
+                title: node.text.clone(),
+                rationale: String::new(),
+                topic_keys: vec![],
+                evidence_ids: evidence_ids_map.get(key).cloned().unwrap_or_default(),
+                options: options_map.get(key).cloned(),
+                chosen_option: chosen_map.get(key).cloned(),
+                extraction_confidence: 1.0,
+                expressed_confidence: node.confidence.clone(),
+                supersedes_id: supersedes_map.get(key).cloned(),
+                assumes_ids: assumes_map.get(key).cloned().unwrap_or_default(),
+                supports_ids: supports_map.get(key).cloned().unwrap_or_default(),
+                refutes_ids: refutes_map.get(key).cloned().unwrap_or_default(),
+                actor_id: None,
+                accepted_by: None,
+                rejected_by: None,
+                blocked_actor_id: None,
+                decision_id: None,
+                participants: vec![],
+                session_initiator: None,
+            },
+        ));
     }
     captures
 }
@@ -588,7 +622,7 @@ async fn main() {
 
     if ceiling_mode {
         println!("HiveMind capture-fidelity evaluator (Phase 1) — CEILING MODE");
-        println!("(Gold nodes → CaptureItems; no LLM calls. Schema-limited upper bound.)");
+        println!("(Gold nodes → CaptureItems via real projector; no LLM calls.)");
     } else {
         println!("HiveMind capture-fidelity evaluator (Phase 1)");
     }
@@ -605,11 +639,16 @@ async fn main() {
     for case in &corpus.cases {
         println!("Running case {} ...", case.id);
 
-        let captures = if ceiling_mode {
+        // id_captures: (stable_node_id, &CaptureItem) pairs for the projector.
+        let id_captures: Vec<(String, hivemind::events::CaptureItem)> = if ceiling_mode {
             gold_as_captures(&case.expected)
         } else {
             match hivemind::classifier::classify_text(&client, &api_key, &case.input).await {
-                Ok(c) => c,
+                Ok(c) => c
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, cap)| (format!("cap:{i}"), cap))
+                    .collect(),
                 Err(e) => {
                     eprintln!("  classifier error for {}: {e}", case.id);
                     // Score as empty produced — full recall penalty
@@ -618,8 +657,13 @@ async fn main() {
             }
         };
 
+        let id_capture_refs: Vec<(&str, &hivemind::events::CaptureItem)> = id_captures
+            .iter()
+            .map(|(id, cap)| (id.as_str(), cap))
+            .collect();
+
         let (gold_nodes, gold_edges) = gold_graph(&case.expected);
-        let (prod_nodes, prod_edges) = produced_graph(&captures);
+        let (prod_nodes, prod_edges) = produced_graph(&id_capture_refs);
 
         let node_counts = score_nodes(&gold_nodes, &prod_nodes);
         let edge_counts = score_edges(&gold_edges, &prod_edges);
@@ -767,7 +811,7 @@ mod tests {
 
     #[test]
     fn produced_graph_simple_decision_with_options() {
-        let captures = vec![hivemind::events::CaptureItem {
+        let cap = hivemind::events::CaptureItem {
             kind: "decision".into(),
             title: "Use Postgres".into(),
             rationale: "concurrent writes".into(),
@@ -788,18 +832,16 @@ mod tests {
             decision_id: None,
             participants: vec![],
             session_initiator: None,
-        }];
-        let (nodes, edges) = produced_graph(&captures);
+        };
+        let id_captures = [("d", &cap)];
+        let (nodes, edges) = produced_graph(&id_captures);
         assert_eq!(nodes.len(), 3); // Decision + 2 Options
         assert!(nodes
             .iter()
-            .any(|n| n.kind == "Decision" && n.text == "use postgres"));
-        assert!(nodes
-            .iter()
-            .any(|n| n.kind == "Option" && n.text == "postgres"));
-        assert!(nodes
-            .iter()
-            .any(|n| n.kind == "Option" && n.text == "sqlite"));
+            .any(|n| n.kind == "DECISION" || n.kind == "Decision"));
+        assert!(nodes.iter().any(|n| n.text == "use postgres"));
+        assert!(nodes.iter().any(|n| n.text == "postgres"));
+        assert!(nodes.iter().any(|n| n.text == "sqlite"));
         assert_eq!(edges.len(), 3); // 2 HAS_OPTION + 1 CHOSE
         assert!(edges
             .iter()

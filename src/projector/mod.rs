@@ -654,6 +654,64 @@ pub fn rebuild_graph_for_tenant(
     project_from_ledger_for_tenant(ledger, tenant_id, graph, 0)
 }
 
+/// Project a slice of captures in-memory and return the resulting graph as
+/// flat vectors for evaluation. Each item in `id_captures` is
+/// `(stable_node_id, &CaptureItem)` — the caller assigns IDs. Returns
+/// `(nodes, edges)` where nodes are `(NodeKind, node_id, text)` and edges
+/// are `(RelationKind, from_id, to_id)`. Notification nodes are excluded.
+pub fn project_captures_in_memory(
+    id_captures: &[(&str, &CaptureItem)],
+) -> Result<(
+    Vec<(NodeKind, String, String)>,
+    Vec<(RelationKind, String, String)>,
+)> {
+    let graph = memory::MemoryGraph::default();
+    for (node_id, capture) in id_captures {
+        project_capture(&graph, capture, node_id, &GraphProperties::default())?;
+    }
+    let (nodes_map, edges) = graph.nodes_and_edges()?;
+    let nodes = nodes_map
+        .into_iter()
+        .filter_map(|((kind, id), props)| {
+            if kind == NodeKind::Notification {
+                return None;
+            }
+            let text = capture_node_text(kind, &props);
+            Some((kind, id, text))
+        })
+        .collect();
+    Ok((nodes, edges))
+}
+
+fn capture_node_text(kind: NodeKind, props: &GraphProperties) -> String {
+    let key = match kind {
+        NodeKind::Decision => "title",
+        NodeKind::Evidence => "content",
+        NodeKind::Hypothesis => "statement",
+        NodeKind::Blocker | NodeKind::DecisionRequest => "reason",
+        NodeKind::Option => "label",
+        NodeKind::Actor | NodeKind::Notification => return String::new(),
+    };
+    match props.get(key) {
+        Some(GraphValue::String(s)) => s.clone(),
+        _ => String::new(),
+    }
+}
+
+fn option_node_id(decision_id: &str, label: &str) -> String {
+    let slug: String = label
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{decision_id}:opt:{slug}")
+}
+
 fn upsert_actor(
     graph: &impl GraphView,
     actor_id: &str,
@@ -856,6 +914,25 @@ fn project_capture(
                     initiator_id,
                     origin_properties,
                 )?;
+            }
+            // Options: project Option nodes + HAS_OPTION/CHOSE edges.
+            if let Some(options) = &capture.options {
+                for option_label in options {
+                    let opt_id = option_node_id(node_id, option_label);
+                    let mut opt_props = origin_properties.clone();
+                    opt_props.insert("label".to_owned(), GraphValue::String(option_label.clone()));
+                    graph.upsert_node(NodeKind::Option, &opt_id, &opt_props)?;
+                    graph.upsert_edge(
+                        RelationKind::HasOption,
+                        node_id,
+                        &opt_id,
+                        origin_properties,
+                    )?;
+                }
+            }
+            if let Some(chosen) = &capture.chosen_option {
+                let opt_id = option_node_id(node_id, chosen);
+                graph.upsert_edge(RelationKind::Chose, node_id, &opt_id, origin_properties)?;
             }
         }
         "evidence" => {
