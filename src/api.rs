@@ -1513,7 +1513,26 @@ async fn mcp_http_handler(
 ) -> Response {
     let ctx = match extract_ctx(&state, &headers) {
         Ok(c) => c,
-        Err(e) => return e.into_response(),
+        Err(e) => {
+            let mut resp = e.into_response();
+            // MCP clients use WWW-Authenticate to discover the PRM endpoint (RFC 9728 §5).
+            if resp.status() == StatusCode::UNAUTHORIZED {
+                let scheme = headers
+                    .get("x-forwarded-proto")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("https");
+                let host = headers
+                    .get("host")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("localhost");
+                let prm_url = format!("{scheme}://{host}/.well-known/oauth-protected-resource");
+                let www_auth = format!("Bearer resource_metadata=\"{prm_url}\"");
+                if let Ok(v) = www_auth.parse::<axum::http::HeaderValue>() {
+                    resp.headers_mut().insert("www-authenticate", v);
+                }
+            }
+            return resp;
+        }
     };
 
     let session_id = headers
@@ -2217,13 +2236,29 @@ fn mcp_collect_strings(
 //   https://api.workos.com/.well-known/openid-configuration
 // ---------------------------------------------------------------------------
 
-async fn oauth_protected_resource_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn oauth_protected_resource_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    // Derive the MCP server's own URL from request headers.
+    // Fly.io sets X-Forwarded-Proto; Host is standard HTTP/1.1.
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("https");
+    let host = headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost");
+    let resource = format!("{scheme}://{host}/mcp");
+
     if let Some(ref cfg) = state.workos_config {
-        // Point MCP clients at WorkOS as the Authorization Server.
+        // `resource` = this MCP server's URL (RFC 9728 §2: the protected resource).
+        // `authorization_servers` = WorkOS (the AS that issues tokens for this resource).
         return (
             StatusCode::OK,
             Json(serde_json::json!({
-                "resource": cfg.domain,
+                "resource": resource,
                 "authorization_servers": [cfg.domain],
                 "bearer_methods_supported": ["header"],
                 "scopes_supported": ["openid", "profile", "email"],
@@ -2234,7 +2269,7 @@ async fn oauth_protected_resource_handler(State(state): State<AppState>) -> impl
     (
         StatusCode::OK,
         Json(serde_json::json!({
-            "resource": "/",
+            "resource": resource,
             "authorization_servers": [],
             "bearer_methods_supported": ["header"],
             "scopes_supported": [],
