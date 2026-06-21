@@ -22,7 +22,7 @@ def flush_epoch(texts, chunk_list):
     if text:
         chunk_list.append(text)
 
-with open(TRANSCRIPT) as f:
+with open(TRANSCRIPT, encoding="utf-8") as f:
     for line in f:
         try:
             obj = json.loads(line)

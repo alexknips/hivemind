@@ -122,12 +122,12 @@ class TestExtractTurn(unittest.TestCase):
 
 class TestCursorFlow(unittest.TestCase):
     def _write_jsonl(self, path, records):
-        with open(path, "w") as fh:
+        with open(path, "w", encoding="utf-8") as fh:
             for record in records:
                 fh.write(json.dumps(record) + "\n")
 
     def _append_jsonl(self, path, records):
-        with open(path, "a") as fh:
+        with open(path, "a", encoding="utf-8") as fh:
             for record in records:
                 fh.write(json.dumps(record) + "\n")
 
@@ -173,7 +173,7 @@ class TestCursorFlow(unittest.TestCase):
             # Cursor file should exist now.
             cursor_file = os.path.join(self.cursor_dir, f"{self.session_id}.offset")
             self.assertTrue(os.path.exists(cursor_file))
-            with open(cursor_file) as fh:
+            with open(cursor_file, encoding="utf-8") as fh:
                 offset = int(fh.read())
             file_size = os.path.getsize(self.jsonl_path)
             self.assertEqual(offset, file_size)
