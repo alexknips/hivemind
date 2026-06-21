@@ -407,7 +407,7 @@ struct ApiRequestCtx {
     actor_id: String,
 }
 
-fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequestCtx> {
+async fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequestCtx> {
     let bearer = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -432,12 +432,18 @@ fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequestCtx
             )
             .map_err(ApiError::unauthorized)?;
 
-            let tenant_id_str = store
-                .resolve_or_create_oidc_user(
-                    &claims.sub,
-                    claims.email.as_deref().unwrap_or(&claims.sub),
-                )
-                .map_err(|e| ApiError::internal(e.to_string()))?;
+            // resolve_or_create_oidc_user calls r2d2 pool.get() which blocks.
+            // Must run on a blocking thread — calling it directly on the async
+            // executor causes "Cannot start a runtime from within a runtime" panic.
+            let store = Arc::clone(store);
+            let sub = claims.sub.clone();
+            let email = claims.email.as_deref().unwrap_or(&claims.sub).to_owned();
+            let tenant_id_str = tokio::task::spawn_blocking(move || {
+                store.resolve_or_create_oidc_user(&sub, &email)
+            })
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
+            .map_err(|e| ApiError::internal(e.to_string()))?;
 
             let tenant_id = TenantId::new(&tenant_id_str)
                 .map_err(|_| ApiError::internal("invalid tenant_id from OIDC mapping"))?;
@@ -465,8 +471,12 @@ fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequestCtx
         if bearer.is_empty() {
             return Err(ApiError::unauthorized("bearer token required"));
         }
-        let tenant_id_str = store
-            .resolve_token(bearer)
+        // resolve_token calls r2d2 pool.get() — must run on a blocking thread.
+        let store = Arc::clone(store);
+        let bearer_owned = bearer.to_owned();
+        let tenant_id_str = tokio::task::spawn_blocking(move || store.resolve_token(&bearer_owned))
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?
             .map_err(|e| ApiError::internal(e.to_string()))?
             .ok_or_else(|| ApiError::unauthorized("invalid or missing bearer token"))?;
         let tenant_id = TenantId::new(&tenant_id_str)
@@ -807,7 +817,7 @@ async fn post_decisions_handler(
     headers: HeaderMap,
     payload: std::result::Result<Json<CaptureDecisionRequest>, JsonRejection>,
 ) -> Response {
-    let ctx = match extract_ctx(&state, &headers) {
+    let ctx = match extract_ctx(&state, &headers).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -906,7 +916,7 @@ async fn post_evidence_handler(
     headers: HeaderMap,
     payload: std::result::Result<Json<CaptureEvidenceRequest>, JsonRejection>,
 ) -> Response {
-    let ctx = match extract_ctx(&state, &headers) {
+    let ctx = match extract_ctx(&state, &headers).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -943,7 +953,7 @@ async fn post_hypotheses_handler(
     headers: HeaderMap,
     payload: std::result::Result<Json<CaptureHypothesisRequest>, JsonRejection>,
 ) -> Response {
-    let ctx = match extract_ctx(&state, &headers) {
+    let ctx = match extract_ctx(&state, &headers).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -981,7 +991,7 @@ async fn disagree_handler(
     Path(decision_id): Path<String>,
     payload: std::result::Result<Json<DisagreeRequest>, JsonRejection>,
 ) -> Response {
-    let ctx = match extract_ctx(&state, &headers) {
+    let ctx = match extract_ctx(&state, &headers).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1027,7 +1037,7 @@ async fn supersede_handler(
     Path(old_decision_id): Path<String>,
     payload: std::result::Result<Json<SupersedeRequest>, JsonRejection>,
 ) -> Response {
-    let ctx = match extract_ctx(&state, &headers) {
+    let ctx = match extract_ctx(&state, &headers).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1091,7 +1101,7 @@ async fn get_decision_handler(
     headers: HeaderMap,
     Path(decision_id): Path<String>,
 ) -> Response {
-    let ctx = match extract_ctx(&state, &headers) {
+    let ctx = match extract_ctx(&state, &headers).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1117,7 +1127,7 @@ async fn supersession_chain_handler(
     headers: HeaderMap,
     Path(decision_id): Path<String>,
 ) -> Response {
-    let ctx = match extract_ctx(&state, &headers) {
+    let ctx = match extract_ctx(&state, &headers).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1149,7 +1159,7 @@ async fn compact_view_handler(
     headers: HeaderMap,
     Path(decision_id): Path<String>,
 ) -> Response {
-    let ctx = match extract_ctx(&state, &headers) {
+    let ctx = match extract_ctx(&state, &headers).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1175,7 +1185,7 @@ async fn search_handler(
     headers: HeaderMap,
     Query(params): Query<SearchParams>,
 ) -> Response {
-    let ctx = match extract_ctx(&state, &headers) {
+    let ctx = match extract_ctx(&state, &headers).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1280,7 +1290,7 @@ async fn relevant_handler(
     headers: HeaderMap,
     Query(params): Query<RelevantParams>,
 ) -> Response {
-    let ctx = match extract_ctx(&state, &headers) {
+    let ctx = match extract_ctx(&state, &headers).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1308,7 +1318,7 @@ async fn post_ingest_handler(
     headers: HeaderMap,
     payload: std::result::Result<Json<IngestBatchRequest>, JsonRejection>,
 ) -> Response {
-    let ctx = match extract_ctx(&state, &headers) {
+    let ctx = match extract_ctx(&state, &headers).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1511,7 +1521,7 @@ async fn mcp_http_handler(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let ctx = match extract_ctx(&state, &headers) {
+    let ctx = match extract_ctx(&state, &headers).await {
         Ok(c) => c,
         Err(e) => {
             let mut resp = e.into_response();
