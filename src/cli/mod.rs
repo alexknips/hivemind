@@ -25,6 +25,8 @@ use crate::ingest::{
     DocumentPreparationReport, DocumentPreparationRequest, SlackIngestOutcome,
     DEFAULT_SLACK_MENTION,
 };
+#[cfg(feature = "shared-backend-postgres")]
+use crate::ledger::PostgresEventLedger;
 use crate::ledger::{EventLedger, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::{
     memory::MemoryGraph, rebuild_graph_for_tenant, GraphParams, GraphProperties, GraphRow,
@@ -123,6 +125,12 @@ pub enum Command {
     /// HIVEMIND_API_KEY; when unset the server starts in development mode
     /// with no authentication.
     Serve(ServeArgs),
+    /// Migrate an existing local SQLite ledger to a remote Postgres deployment.
+    /// Replays all events from the SQLite source into the named Postgres tenant,
+    /// preserving event_uuid for idempotency. Requires the
+    /// `shared-backend-postgres` feature.
+    #[cfg(feature = "shared-backend-postgres")]
+    Migrate(MigrateArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -133,6 +141,27 @@ pub struct ServeArgs {
     /// Port to listen on.
     #[arg(long, short = 'p', env = "HIVEMIND_PORT", default_value_t = 8080)]
     pub port: u16,
+}
+
+#[cfg(feature = "shared-backend-postgres")]
+#[derive(Debug, Clone, Args)]
+pub struct MigrateArgs {
+    /// Source SQLite directory (strips `sqlite://` prefix if present).
+    /// Defaults to `--hivemind-dir` when omitted.
+    #[arg(long)]
+    pub from: Option<String>,
+
+    /// Destination Postgres connection URL (e.g. `postgres://user:pass@host/db`).
+    #[arg(long)]
+    pub to: String,
+
+    /// Tenant name to write events under in the Postgres destination.
+    #[arg(long = "to-tenant")]
+    pub to_tenant: String,
+
+    /// Count events that would be migrated without writing to Postgres.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1195,6 +1224,8 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::SlackApp(args) => run_slack_app(cli, args),
         Command::Mcp(args) => run_mcp(cli, args),
         Command::Serve(args) => run_serve(cli, args),
+        #[cfg(feature = "shared-backend-postgres")]
+        Command::Migrate(args) => run_migrate(cli, args),
     }
 }
 
@@ -3924,6 +3955,115 @@ struct ReviewActionOutput {
     new_decision_id: Option<String>,
     old_decision_status: Option<DecisionStatus>,
     new_decision_status: Option<DecisionStatus>,
+}
+
+// ---------------------------------------------------------------------------
+// migrate subcommand
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "shared-backend-postgres")]
+#[derive(Debug, Serialize)]
+struct MigrateReport {
+    dry_run: bool,
+    source_dir: String,
+    source_tenant: String,
+    destination_tenant: String,
+    events_migrated: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parity_check: Option<ParityCheckResult>,
+}
+
+#[cfg(feature = "shared-backend-postgres")]
+#[derive(Debug, Serialize)]
+struct ParityCheckResult {
+    source_event_count: u64,
+    destination_event_count: u64,
+    ok: bool,
+}
+
+#[cfg(feature = "shared-backend-postgres")]
+fn run_migrate(cli: &Cli, args: &MigrateArgs) -> Result<String> {
+    let source_dir = match &args.from {
+        Some(s) => std::path::PathBuf::from(s.strip_prefix("sqlite://").unwrap_or(s.as_str())),
+        None => cli.hivemind_dir.clone(),
+    };
+    let source_tenant = cli_tenant(cli)?;
+    let sqlite = SqliteEventLedger::open(&source_dir)?;
+
+    if args.dry_run {
+        let mut count = 0u64;
+        sqlite.replay_from_for_tenant(&source_tenant, 0, &mut |_event| {
+            count += 1;
+            Ok(())
+        })?;
+        let report = MigrateReport {
+            dry_run: true,
+            source_dir: source_dir.display().to_string(),
+            source_tenant: source_tenant.to_string(),
+            destination_tenant: args.to_tenant.clone(),
+            events_migrated: count,
+            parity_check: None,
+        };
+        return if cli.json {
+            format_json_value(true, &report)
+        } else {
+            Ok(format!(
+                "Dry run: {count} events would be migrated\n\
+                 Source: {} (tenant: {})\n\
+                 Destination tenant: {}",
+                report.source_dir, report.source_tenant, report.destination_tenant
+            ))
+        };
+    }
+
+    let pg = PostgresEventLedger::connect(&args.to, &args.to_tenant)?;
+
+    let mut migrated = 0u64;
+    sqlite.replay_from_for_tenant(&source_tenant, 0, &mut |event| {
+        pg.append(event.clone())?;
+        migrated += 1;
+        Ok(())
+    })?;
+
+    let mut pg_count = 0u64;
+    pg.replay_from(0, &mut |_event| {
+        pg_count += 1;
+        Ok(())
+    })?;
+
+    let parity_ok = pg_count >= migrated;
+    let report = MigrateReport {
+        dry_run: false,
+        source_dir: source_dir.display().to_string(),
+        source_tenant: source_tenant.to_string(),
+        destination_tenant: args.to_tenant.clone(),
+        events_migrated: migrated,
+        parity_check: Some(ParityCheckResult {
+            source_event_count: migrated,
+            destination_event_count: pg_count,
+            ok: parity_ok,
+        }),
+    };
+
+    if !parity_ok {
+        return Err(CliError::InvalidInput(format!(
+            "parity check failed: migrated {migrated} events but found {pg_count} in Postgres tenant '{}'",
+            args.to_tenant
+        ))
+        .into());
+    }
+
+    if cli.json {
+        format_json_value(true, &report)
+    } else {
+        Ok(format!(
+            "Migration complete: {migrated} events migrated\n\
+             Source: {} (tenant: {})\n\
+             Destination tenant: {}\n\
+             Parity check: OK ({pg_count} events in destination)",
+            report.source_dir, report.source_tenant, report.destination_tenant
+        ))
+    }
 }
 
 #[cfg(test)]

@@ -64,6 +64,7 @@ uuid = { version = "1.23.1", features = ["serde", "v4", "v5"] }
 http-body-util = "0.1"
 jsonschema = { version = "0.46.5", default-features = false }
 proptest = { version = "1.9.0", default-features = false, features = ["std"] }
+tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 
 [[test]]
@@ -74,3 +75,8 @@ harness = false
 [[test]]
 name = "api"
 path = "tests/api.rs"
+
+[[test]]
+name = "migrate"
+path = "tests/migrate.rs"
+required-features = ["shared-backend-postgres"]
