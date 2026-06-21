@@ -676,21 +676,24 @@ pub fn project_captures_in_memory(
             if kind == NodeKind::Notification {
                 return None;
             }
-            let text = capture_node_text(kind, &props);
+            let text = capture_node_text(kind, &id, &props);
             Some((kind, id, text))
         })
         .collect();
     Ok((nodes, edges))
 }
 
-fn capture_node_text(kind: NodeKind, props: &GraphProperties) -> String {
+fn capture_node_text(kind: NodeKind, id: &str, props: &GraphProperties) -> String {
     let key = match kind {
         NodeKind::Decision => "title",
         NodeKind::Evidence => "content",
         NodeKind::Hypothesis => "statement",
         NodeKind::Blocker | NodeKind::DecisionRequest => "reason",
         NodeKind::Option => "label",
-        NodeKind::Actor | NodeKind::Notification => return String::new(),
+        // Actor nodes have no text property; use the ID as a scoring proxy so
+        // gold_as_captures() IDs (e.g. "mia") match the produced Actor node ID.
+        NodeKind::Actor => return id.to_owned(),
+        NodeKind::Notification => return String::new(),
     };
     match props.get(key) {
         Some(GraphValue::String(s)) => s.clone(),

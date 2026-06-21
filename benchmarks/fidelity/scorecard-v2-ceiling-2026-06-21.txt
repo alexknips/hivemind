@@ -1,0 +1,182 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.45s
+     Running `target/debug/fidelity-eval --ceiling`
+HiveMind capture-fidelity evaluator (Phase 1) — CEILING MODE
+(Gold nodes → CaptureItems via real projector; no LLM calls.)
+Corpus: 18 cases
+
+Running case A1-ledger-store ...
+  Case A1-ledger-store
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case A2-frontend-framework ...
+  Case A2-frontend-framework
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case A3-cloud-region ...
+  Case A3-cloud-region
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case B1-pricing-reversal ...
+  Case B1-pricing-reversal
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:SUPERSEDES           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case B2-repo-topology-double ...
+  Case B2-repo-topology-double
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:SUPERSEDES           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case B3-auth-vendor-switch ...
+  Case B3-auth-vendor-switch
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:SUPERSEDES           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case C1-perf-hypothesis-refuted ...
+  Case C1-perf-hypothesis-refuted
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:ASSUMES              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REFUTES              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case C2-growth-assumption-supported ...
+  Case C2-growth-assumption-supported
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:ASSUMES              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:SUPPORTS             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case C3-threat-model-mixed ...
+  Case C3-threat-model-mixed
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:ASSUMES              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REFUTES              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:SUPPORTS             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case D1-launch-blocked-legal ...
+  Case D1-launch-blocked-legal
+    node:Actor                P=1.00 R=0.50 F1=0.67  (tp=1 fp=0 fn=1)
+    node:Blocker              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BLOCKER_FOR_DECISION P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:BLOCKER_REQUIRED_OWNER P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:DECISION_REQUESTED_BY P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 0.61
+
+Running case D2-hiring-contested ...
+  Case D2-hiring-contested
+    node:Actor                P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=2)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:PROPOSED_BY          P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:REJECTED_BY          P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    macro-F1: 0.25
+
+Running case D3-deploy-gate-blocked ...
+  Case D3-deploy-gate-blocked
+    node:Actor                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Blocker              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BLOCKER_FOR_DECISION P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:DECISION_REQUESTED_BY P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 0.80
+
+Running case E1-slack-implicit-option ...
+  Case E1-slack-implicit-option
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case E2-meeting-decision-plus-tangent ...
+  Case E2-meeting-decision-plus-tangent
+    node:Actor                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:ACCEPTED_BY          P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case E3-tentative-low-confidence-decision ...
+  Case E3-tentative-low-confidence-decision
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:ASSUMES              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case F1-unilateral-no-alternatives ...
+  Case F1-unilateral-no-alternatives
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case F2-status-update-non-decision ...
+  Case F2-status-update-non-decision
+    macro-F1: 1.00
+
+Running case F3-request-only-no-decision ...
+  Case F3-request-only-no-decision
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+=== AGGREGATE SCORECARD (18 cases) ===
+
+Nodes:
+  Actor                  P=1.00 R=0.50 F1=0.67  (tp=3 fp=0 fn=3)
+  Blocker                P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+  Decision               P=1.00 R=1.00 F1=1.00  (tp=17 fp=0 fn=0)
+  DecisionRequest        P=1.00 R=1.00 F1=1.00  (tp=4 fp=0 fn=0)
+  Evidence               P=1.00 R=1.00 F1=1.00  (tp=10 fp=0 fn=0)
+  Hypothesis             P=1.00 R=1.00 F1=1.00  (tp=4 fp=0 fn=0)
+  Option                 P=1.00 R=1.00 F1=1.00  (tp=12 fp=0 fn=0)
+
+Edges:
+  ACCEPTED_BY            P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+  ASSUMES                P=1.00 R=1.00 F1=1.00  (tp=4 fp=0 fn=0)
+  BASED_ON               P=1.00 R=1.00 F1=1.00  (tp=9 fp=0 fn=0)
+  BLOCKER_FOR_DECISION   P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=2)
+  BLOCKER_REQUIRED_OWNER P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+  CHOSE                  P=1.00 R=1.00 F1=1.00  (tp=5 fp=0 fn=0)
+  DECISION_REQUESTED_BY  P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+  HAS_OPTION             P=1.00 R=1.00 F1=1.00  (tp=12 fp=0 fn=0)
+  PROPOSED_BY            P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+  REFUTES                P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+  REJECTED_BY            P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+  SUPERSEDES             P=1.00 R=1.00 F1=1.00  (tp=4 fp=0 fn=0)
+  SUPPORTS               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+
+Macro-F1 (mean over cases): 0.93

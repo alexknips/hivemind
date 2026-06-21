@@ -491,6 +491,10 @@ fn gold_as_captures(expected: &Expected) -> Vec<(String, hivemind::events::Captu
     let mut assumes_map: HashMap<&str, Vec<String>> = HashMap::new();
     let mut supports_map: HashMap<&str, Vec<String>> = HashMap::new();
     let mut refutes_map: HashMap<&str, Vec<String>> = HashMap::new();
+    // Actor edge maps (CaptureItem field → Actor node key used as ID).
+    let mut accepted_by_map: HashMap<&str, String> = HashMap::new();
+    let mut rejected_by_map: HashMap<&str, String> = HashMap::new();
+    let mut dr_actor_id_map: HashMap<&str, String> = HashMap::new();
 
     for e in &expected.edges {
         match e.kind.as_str() {
@@ -539,6 +543,20 @@ fn gold_as_captures(expected: &Expected) -> Vec<(String, hivemind::events::Captu
                     .or_default()
                     .push(e.to.clone());
             }
+            // Actor-linking edges — use the target Actor's key as the ID,
+            // matching capture_node_text(Actor) which returns the node ID.
+            "AcceptedBy" => {
+                accepted_by_map.insert(e.from.as_str(), e.to.clone());
+            }
+            "RejectedBy" => {
+                rejected_by_map.insert(e.from.as_str(), e.to.clone());
+            }
+            // DecisionRequestedBy: from=DecisionRequest, to=Actor.
+            // ProposedBy/RejectedBy from DecisionRequest need schema changes;
+            // skip here to avoid producing wrong edge kinds.
+            "DecisionRequestedBy" => {
+                dr_actor_id_map.insert(e.from.as_str(), e.to.clone());
+            }
             _ => {}
         }
     }
@@ -555,6 +573,22 @@ fn gold_as_captures(expected: &Expected) -> Vec<(String, hivemind::events::Captu
             _ => continue,
         };
         let key = node.key.as_str();
+        // Wire actor fields for kinds that support them within the current schema:
+        // - Decision: accepted_by and rejected_by wired from gold edges.
+        // - DecisionRequest: actor_id → DecisionRequestedBy where gold has that edge.
+        //   ProposedBy/RejectedBy from a DecisionRequest need a schema extension;
+        //   left as None to avoid producing wrong edge kinds that tank precision.
+        // - BlockerForDecision and BlockerRequiredOwner need schema extensions;
+        //   decision_id/blocked_actor_id left as None to avoid spurious edges.
+        let (actor_id, accepted_by, rejected_by) = match kind {
+            "decision" => (
+                None,
+                accepted_by_map.get(key).cloned(),
+                rejected_by_map.get(key).cloned(),
+            ),
+            "decision-request" => (dr_actor_id_map.get(key).cloned(), None, None),
+            _ => (None, None, None),
+        };
         captures.push((
             key.to_owned(),
             CaptureItem {
@@ -571,9 +605,9 @@ fn gold_as_captures(expected: &Expected) -> Vec<(String, hivemind::events::Captu
                 assumes_ids: assumes_map.get(key).cloned().unwrap_or_default(),
                 supports_ids: supports_map.get(key).cloned().unwrap_or_default(),
                 refutes_ids: refutes_map.get(key).cloned().unwrap_or_default(),
-                actor_id: None,
-                accepted_by: None,
-                rejected_by: None,
+                actor_id,
+                accepted_by,
+                rejected_by,
                 blocked_actor_id: None,
                 decision_id: None,
                 participants: vec![],
