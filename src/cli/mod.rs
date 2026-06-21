@@ -57,6 +57,7 @@ use crate::suggest::{
     materialize_document_extraction_candidates, propose_document_extraction_candidates,
     DocumentCandidateExtractor, DocumentCandidateMaterializationRequest, DocumentCandidateRequest,
 };
+use crate::summarize::{recall_decisions, RecallRequest, RECALL_MAX_LIMIT};
 use crate::{HivemindError, Result};
 
 #[derive(Debug, Clone, Parser)]
@@ -770,6 +771,9 @@ pub enum QueryCommand {
     Search(QuerySearchDecisionsArgs),
     #[command(name = "search_decisions")]
     SearchDecisions(QuerySearchDecisionsArgs),
+    /// Layer-3 recall: search + summarize in one call. Answers "what was decided about X?".
+    #[command(name = "recall")]
+    Recall(QueryRecallArgs),
     #[command(name = "get_active_decision_blockers")]
     GetActiveDecisionBlockers(QueryActiveDecisionBlockersArgs),
     #[command(name = "get_blocker_notification_candidates")]
@@ -843,6 +847,36 @@ pub struct QuerySearchDecisionsArgs {
     pub until: Option<String>,
 
     #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryRecallArgs {
+    /// Free-text search query (what was decided about X?).
+    pub query: Option<String>,
+
+    #[arg(long = "topic", value_delimiter = ',')]
+    pub topic_keys: Vec<String>,
+
+    #[arg(long = "status", value_delimiter = ',')]
+    pub statuses: Vec<QueryDecisionStatus>,
+
+    #[arg(long = "actor-id", value_delimiter = ',')]
+    pub actor_ids: Vec<String>,
+
+    #[arg(long = "source", value_delimiter = ',')]
+    pub sources: Vec<String>,
+
+    #[arg(long = "since")]
+    pub since: Option<String>,
+
+    #[arg(long = "until")]
+    pub until: Option<String>,
+
+    #[arg(long = "limit", default_value_t = 5)]
     pub limit: usize,
 
     #[arg(long = "cursor")]
@@ -2165,6 +2199,7 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
         | QueryCommand::GetCompactView(_)
         | QueryCommand::Search(_)
         | QueryCommand::SearchDecisions(_)
+        | QueryCommand::Recall(_)
         | QueryCommand::GetActiveDecisionBlockers(_)
         | QueryCommand::GetBlockerNotificationCandidates(_) => {
             return Err(
@@ -2668,6 +2703,31 @@ fn render_search_summary(results: &DecisionSearchResults) -> String {
     output.trim_end().to_owned()
 }
 
+fn render_recall_summary(response: &crate::summarize::RecallResponse) -> String {
+    let mut output = String::new();
+    if response.ranked.items.is_empty() {
+        return "No decisions found matching the query.".to_owned();
+    }
+    let _ = writeln!(output, "digest\t{}", summary_cell(&response.digest.summary));
+    let _ = writeln!(
+        output,
+        "cited\t{}",
+        response.digest.cited_decision_ids.join(",")
+    );
+    for item in &response.ranked.items {
+        let _ = writeln!(
+            output,
+            "match\trank={}\t{}\t{}\t{}\ttopics={}",
+            item.rank,
+            decision_status_label(item.decision.status),
+            item.decision.id,
+            summary_cell(&item.decision.title),
+            item.decision.topic_keys.join(","),
+        );
+    }
+    output.trim_end().to_owned()
+}
+
 fn render_supersession_summary(chain: &SupersessionChain) -> String {
     if chain.decision_ids.is_empty() {
         return "No supersession chain found".to_owned();
@@ -3140,6 +3200,27 @@ fn run_query_with_graph(
                 render_search_summary,
                 response.data.next_cursor.as_deref(),
             )?
+        }
+        QueryCommand::Recall(args) => {
+            let limit = args.limit.clamp(1, RECALL_MAX_LIMIT);
+            let request = RecallRequest {
+                q: args.query.clone(),
+                topic_keys: args.topic_keys.clone(),
+                statuses: args
+                    .statuses
+                    .iter()
+                    .copied()
+                    .map(QueryDecisionStatus::as_decision_status)
+                    .collect(),
+                actor_ids: args.actor_ids.clone(),
+                sources: args.sources.clone(),
+                since: parse_query_datetime(args.since.as_deref(), "--since")?,
+                until: parse_query_datetime(args.until.as_deref(), "--until")?,
+                limit,
+                cursor: args.cursor.clone(),
+            };
+            let response = recall_decisions(context, ledger, graph, &request)?;
+            format_query_response(query.summary, &response, render_recall_summary, None)?
         }
         QueryCommand::GetActiveDecisionBlockers(args) => {
             let request = ActiveDecisionBlockersRequest {

@@ -1209,6 +1209,87 @@ fn search_cli_alias_uses_fts_surface_with_time_filters() {
 }
 
 #[test]
+fn recall_cli_returns_ranked_decisions_and_digest() {
+    let hivemind_dir = unique_test_dir("query-recall");
+    let decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-recall",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Use circuit breaker for downstream calls",
+        "--rationale",
+        "Circuit breaker prevents cascading failures in distributed services",
+        "--topic-keys",
+        "reliability,architecture",
+        "--options",
+        "circuit-breaker,timeout-only",
+        "--chose",
+        "circuit-breaker",
+    ]))
+    .expect("emit decision succeeds");
+
+    // JSON mode: structured recall response
+    let query = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "recall",
+        "circuit breaker",
+        "--limit",
+        "5",
+    ]))
+    .expect("recall query succeeds");
+    let query: serde_json::Value = serde_json::from_str(&query).expect("valid recall json");
+    assert_eq!(query["result_count"], serde_json::json!(1)); // ubs:ignore: test-only assertion
+    assert_eq!(
+        query["data"]["ranked"]["items"][0]["decision"]["id"],
+        decision_id
+    ); // ubs:ignore: test-only assertion
+    let cited = query["data"]["digest"]["cited_decision_ids"]
+        .as_array()
+        .expect("cited_decision_ids array"); // ubs:ignore: test-only; panicking is correct
+    assert!(
+        cited
+            .iter()
+            .any(|id| id.as_str() == Some(decision_id.as_str())),
+        "decision_id must appear in digest cited_decision_ids"
+    ); // ubs:ignore: test-only assertion
+    assert!(
+        query["data"]["digest"]["summary"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "digest summary must be non-empty"
+    ); // ubs:ignore: test-only assertion
+
+    // Summary mode: human-friendly text
+    let summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "--summary",
+        "recall",
+        "circuit breaker",
+    ]))
+    .expect("recall summary succeeds");
+    assert!(
+        summary.contains("digest\t"),
+        "summary output must contain digest line"
+    ); // ubs:ignore: test-only assertion
+    assert!(
+        summary.contains("match\t"),
+        "summary output must contain match line"
+    ); // ubs:ignore: test-only assertion
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
 fn ledger_history_cli_queries_and_exports_read_only_summary() {
     let hivemind_dir = unique_test_dir("query-ledger-history");
     let decision_id = run(&Cli::parse_from([
