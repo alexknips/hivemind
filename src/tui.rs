@@ -19,10 +19,11 @@ use ratatui::{Frame, Terminal};
 use crate::error::CliError;
 use crate::projector::{GraphView, NodeKind, RelationKind};
 use crate::queries::{
-    get_decision, get_decision_neighborhood, get_supersession_chain, search_decisions,
-    DecisionSearchResult, DecisionStatus, DecisionView, NeighborhoodRequest, NeighborhoodView,
-    SearchDecisionRequest,
+    get_compact_view, get_decision, get_decision_neighborhood, get_supersession_chain,
+    search_decisions, CompactView, DecisionSearchResult, DecisionStatus, DecisionView,
+    HypothesisStatus, NeighborhoodRequest, NeighborhoodView, SearchDecisionRequest,
 };
+use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
 
 #[derive(Clone, Debug)]
@@ -120,6 +121,10 @@ struct DecisionSearchApp {
     breadcrumbs: Vec<String>,
     status_message: Option<String>,
     error_message: Option<String>,
+    summary_open: bool,
+    summary_text: Option<String>,
+    compact_view_open: bool,
+    compact_view_data: Option<CompactView>,
 }
 
 impl DecisionSearchApp {
@@ -150,6 +155,10 @@ impl DecisionSearchApp {
             breadcrumbs: Vec::new(),
             status_message: None,
             error_message: None,
+            summary_open: false,
+            summary_text: None,
+            compact_view_open: false,
+            compact_view_data: None,
         }
     }
 
@@ -212,6 +221,8 @@ impl DecisionSearchApp {
                 RelationKind::RejectedBy,
             ]),
             KeyCode::Char('x') => self.export_current_neighborhood(),
+            KeyCode::Char('s') => self.toggle_summary(graph),
+            KeyCode::Char('v') => self.toggle_compact_view(graph),
             KeyCode::Esc => {
                 self.input_mode = None;
                 self.relation_focus = None;
@@ -356,6 +367,10 @@ impl DecisionSearchApp {
         self.neighborhood = Some(neighborhood);
         self.graph_selected = 0;
         self.error_message = None;
+        self.summary_open = false;
+        self.summary_text = None;
+        self.compact_view_open = false;
+        self.compact_view_data = None;
     }
 
     fn move_down(&mut self, graph: &impl GraphView) {
@@ -526,6 +541,66 @@ impl DecisionSearchApp {
                 .collect::<Vec<_>>()
                 .join(",")
         ));
+    }
+
+    fn toggle_summary(&mut self, graph: &impl GraphView) {
+        if self.summary_open {
+            self.summary_open = false;
+            self.status_message = Some("Summary panel closed".to_owned());
+            return;
+        }
+        let Some(id) = self.current_decision_id().map(str::to_owned) else {
+            self.status_message = Some("No decision selected for summary".to_owned());
+            return;
+        };
+        if self.summary_text.is_none() {
+            match summarize_decisions(
+                graph,
+                &SummarizeRequest {
+                    decision_ids: vec![id],
+                    mode: SummarizeMode::Single,
+                },
+            ) {
+                Ok(response) => {
+                    self.summary_text = Some(response.data.summary);
+                    self.error_message = None;
+                }
+                Err(error) => {
+                    self.error_message = Some(error.to_string());
+                    self.status_message = Some("Summary failed".to_owned());
+                    return;
+                }
+            }
+        }
+        self.summary_open = true;
+        self.status_message = Some("Summary panel open; press 's' to close".to_owned());
+    }
+
+    fn toggle_compact_view(&mut self, graph: &impl GraphView) {
+        if self.compact_view_open {
+            self.compact_view_open = false;
+            self.status_message = Some("Compact view closed".to_owned());
+            return;
+        }
+        let Some(id) = self.current_decision_id().map(str::to_owned) else {
+            self.status_message = Some("No decision selected for compact view".to_owned());
+            return;
+        };
+        if self.compact_view_data.is_none() {
+            match get_compact_view(graph, &id) {
+                Ok(response) => {
+                    self.compact_view_data = response.data;
+                    self.error_message = None;
+                }
+                Err(error) => {
+                    self.error_message = Some(error.to_string());
+                    self.status_message = Some("Compact view failed".to_owned());
+                    return;
+                }
+            }
+        }
+        self.compact_view_open = true;
+        self.status_message = Some("Compact graph view open; press 'v' to close".to_owned());
     }
 
     fn export_current_neighborhood(&mut self) {
@@ -733,8 +808,27 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
     if area.width < 100 {
         match app.focus {
             FocusPane::Results => render_results(frame, area, app),
-            FocusPane::Detail => render_detail(frame, area, app),
-            FocusPane::Graph => render_graph(frame, area, app),
+            FocusPane::Detail => {
+                if app.summary_open {
+                    let halves = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .split(area);
+                    let detail_area = halves.first().copied().unwrap_or(area);
+                    let summary_area = halves.get(1).copied().unwrap_or(area);
+                    render_detail(frame, detail_area, app);
+                    render_summary_panel(frame, summary_area, app);
+                } else {
+                    render_detail(frame, area, app);
+                }
+            }
+            FocusPane::Graph => {
+                if app.compact_view_open {
+                    render_compact_graph(frame, area, app);
+                } else {
+                    render_graph(frame, area, app);
+                }
+            }
         }
         return;
     }
@@ -745,15 +839,42 @@ fn render_main(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
         .split(area);
     let left_area = columns.first().copied().unwrap_or(area);
     let right_area = columns.get(1).copied().unwrap_or(area);
+
+    let right_constraints: Vec<Constraint> = if app.summary_open {
+        vec![
+            Constraint::Percentage(38),
+            Constraint::Percentage(20),
+            Constraint::Percentage(42),
+        ]
+    } else {
+        vec![Constraint::Percentage(58), Constraint::Percentage(42)]
+    };
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .constraints(right_constraints)
         .split(right_area);
+
     let detail_area = right.first().copied().unwrap_or(right_area);
-    let graph_area = right.get(1).copied().unwrap_or(right_area);
     render_results(frame, left_area, app);
     render_detail(frame, detail_area, app);
-    render_graph(frame, graph_area, app);
+
+    if app.summary_open {
+        let summary_area = right.get(1).copied().unwrap_or(right_area);
+        let graph_area = right.get(2).copied().unwrap_or(right_area);
+        render_summary_panel(frame, summary_area, app);
+        if app.compact_view_open {
+            render_compact_graph(frame, graph_area, app);
+        } else {
+            render_graph(frame, graph_area, app);
+        }
+    } else {
+        let graph_area = right.get(1).copied().unwrap_or(right_area);
+        if app.compact_view_open {
+            render_compact_graph(frame, graph_area, app);
+        } else {
+            render_graph(frame, graph_area, app);
+        }
+    }
 }
 
 fn render_results(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
@@ -789,9 +910,12 @@ fn render_results(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
         .results
         .iter()
         .map(|result| {
-            let stale = if result.decision.hypotheses.iter().any(|hypothesis| {
-                matches!(hypothesis.status, crate::queries::HypothesisStatus::Refuted)
-            }) {
+            let stale = if result
+                .decision
+                .hypotheses
+                .iter()
+                .any(|hypothesis| matches!(hypothesis.status, HypothesisStatus::Refuted))
+            {
                 " !refuted"
             } else {
                 ""
@@ -887,9 +1011,11 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
         lines.push(Line::from(format!("actors: {}", list_or_none(&actors))));
         let supersession = supersession_summary(app.neighborhood.as_ref(), &detail.id);
         lines.push(Line::from(format!("supersession: {supersession}")));
-        if detail.hypotheses.iter().any(|hypothesis| {
-            matches!(hypothesis.status, crate::queries::HypothesisStatus::Refuted)
-        }) {
+        if detail
+            .hypotheses
+            .iter()
+            .any(|hypothesis| matches!(hypothesis.status, HypothesisStatus::Refuted))
+        {
             lines.push(Line::from(vec![Span::styled(
                 "warning: one or more assumed hypotheses are refuted",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
@@ -982,6 +1108,163 @@ fn render_graph(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
+fn render_summary_panel(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
+    let lines: Vec<Line<'_>> = match app.summary_text.as_deref() {
+        Some(text) => text.lines().map(|l| Line::from(l.to_owned())).collect(),
+        None => vec![Line::from("No summary loaded")],
+    };
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().title("Summary").borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn render_compact_graph(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
+    let focused = app.focus == FocusPane::Graph;
+    let Some(cv) = app.compact_view_data.as_ref() else {
+        let paragraph = Paragraph::new(vec![Line::from("No compact view loaded")])
+            .block(focused_block("Compact View", focused))
+            .wrap(Wrap { trim: true });
+        frame.render_widget(paragraph, area);
+        return;
+    };
+
+    let d = &cv.decision;
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    let staleness = if d.status == DecisionStatus::Superseded {
+        " [SUPERSEDED]"
+    } else {
+        ""
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            d.id.clone(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(decision_status_label(d.status), status_style(d.status)),
+        Span::styled(staleness, Style::default().fg(Color::Magenta)),
+        Span::raw(": "),
+        Span::raw(d.title.clone()),
+    ]));
+
+    if !d.topic_keys.is_empty() {
+        lines.push(Line::from(format!("  topics: {}", d.topic_keys.join(", "))));
+    }
+
+    if let Some(chain) = cv.supersession_chain.as_ref() {
+        lines.push(Line::from(vec![
+            Span::raw("  supersedes chain: "),
+            Span::styled(
+                format!("{} steps", chain.chain_length),
+                Style::default().fg(Color::Magenta),
+            ),
+            Span::raw(format!(", oldest: {}", chain.oldest_id)),
+        ]));
+    }
+
+    if let Some(contest) = cv.contest.as_ref() {
+        lines.push(Line::from(Span::styled(
+            "  [CONTESTED]",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        if !contest.accepted_by.is_empty() {
+            lines.push(Line::from(format!(
+                "    accepted_by: {}",
+                contest.accepted_by.join(", ")
+            )));
+        }
+        if !contest.rejected_by.is_empty() {
+            lines.push(Line::from(format!(
+                "    rejected_by: {}",
+                contest.rejected_by.join(", ")
+            )));
+        }
+    }
+
+    if !cv.hypotheses.is_empty() {
+        lines.push(Line::from(format!(
+            "  hypotheses ({}):",
+            cv.hypotheses.len()
+        )));
+        for hyp in &cv.hypotheses {
+            let badge = match hyp.status {
+                HypothesisStatus::Refuted => Span::styled(
+                    "[refuted]",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                HypothesisStatus::Supported => {
+                    Span::styled("[supported]", Style::default().fg(Color::Green))
+                }
+                HypothesisStatus::Open => Span::styled("[open]", Style::default().fg(Color::Gray)),
+            };
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                badge,
+                Span::raw(" "),
+                Span::styled(hyp.id.as_str(), Style::default().fg(Color::Cyan)),
+                Span::raw(": "),
+                Span::raw(hyp.statement.as_str()),
+            ]));
+            if let Some(refuting) = hyp.refuting_evidence_ids.as_ref() {
+                if !refuting.is_empty() {
+                    let joined = refuting.join(", ");
+                    let mut s = String::with_capacity(16 + joined.len());
+                    let _ = write!(s, "      refuted by: {joined}");
+                    lines.push(Line::from(s));
+                }
+            }
+        }
+    }
+
+    if !cv.evidence_ids.is_empty() {
+        lines.push(Line::from(format!(
+            "  evidence: {}",
+            cv.evidence_ids.join(", ")
+        )));
+    }
+
+    if !cv.active_blockers.is_empty() {
+        lines.push(Line::from(format!(
+            "  active blockers ({}):",
+            cv.active_blockers.len()
+        )));
+        for b in &cv.active_blockers {
+            let mut s = String::with_capacity(b.id.len() + b.reason.len() + 12);
+            let _ = write!(s, "    [{:?}] {}: {}", b.priority, b.id, b.reason);
+            lines.push(Line::from(s));
+        }
+    }
+
+    let e = &cv.elided;
+    let mut elided_parts: Vec<String> = Vec::new();
+    if e.superseded_decision_count > 0 {
+        elided_parts.push(format!("{} superseded", e.superseded_decision_count));
+    }
+    if e.unchosen_option_count > 0 {
+        elided_parts.push(format!("{} unchosen opts", e.unchosen_option_count));
+    }
+    if !elided_parts.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  elided: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                elided_parts.join(", "),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(focused_block("Compact View", focused))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
 fn render_status_bar(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
     let message = app
         .error_message
@@ -989,7 +1272,7 @@ fn render_status_bar(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp)
         .map(|message| format!("error: {message}"))
         .or_else(|| app.status_message.clone())
         .unwrap_or_else(|| {
-            "j/k move | n/N page | enter open | b back | [/] supersession | e/h/p graph | x DOT"
+            "j/k move | n/N page | enter open | b back | [/] supersession | e/h/p graph | s summary | v compact | x DOT"
                 .to_owned()
         });
     let style = if app.error_message.is_some() {
@@ -1006,7 +1289,7 @@ fn render_status_bar(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp)
 }
 
 fn render_help_overlay(frame: &mut Frame<'_>) {
-    let area = centered_rect(72, 20, frame.area());
+    let area = centered_rect(72, 22, frame.area());
     frame.render_widget(Clear, area);
     let lines = vec![
         Line::from("Keyboard"),
@@ -1017,6 +1300,8 @@ fn render_help_overlay(frame: &mut Frame<'_>) {
         Line::from("b: back through breadcrumbs | [ and ]: supersession neighbors"),
         Line::from("e/h/p: focus evidence, hypotheses, or provenance edges"),
         Line::from("x: export focused neighborhood as DOT"),
+        Line::from("s: toggle summary panel (digest below detail pane)"),
+        Line::from("v: toggle compact-graph view (replaces graph context pane)"),
         Line::from("esc: leave input or close focus | q: quit"),
         Line::from(""),
         Line::from("Read-only: this TUI calls query APIs and never emits ledger events."),
@@ -1217,11 +1502,11 @@ fn decision_status_label(status: DecisionStatus) -> &'static str {
     }
 }
 
-fn hypothesis_status_label(status: crate::queries::HypothesisStatus) -> &'static str {
+fn hypothesis_status_label(status: HypothesisStatus) -> &'static str {
     match status {
-        crate::queries::HypothesisStatus::Open => "open",
-        crate::queries::HypothesisStatus::Supported => "supported",
-        crate::queries::HypothesisStatus::Refuted => "refuted",
+        HypothesisStatus::Open => "open",
+        HypothesisStatus::Supported => "supported",
+        HypothesisStatus::Refuted => "refuted",
     }
 }
 
