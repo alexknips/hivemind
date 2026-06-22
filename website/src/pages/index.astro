@@ -75,7 +75,10 @@ const base = import.meta.env.BASE_URL;
         </div>
       </div>
 
-      <div class="flex flex-col sm:flex-row gap-3 justify-center mb-8">
+      <div class="flex flex-col sm:flex-row gap-3 justify-center mb-4">
+        <a href={`${base}demo/`} class="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-lg font-semibold text-base transition-colors">
+          Try the live demo &rarr;
+        </a>
         <a href={`${base}guides/mcp-setup/`} class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-lg font-semibold text-base transition-colors">
           Connect your agent &rarr;
         </a>
@@ -83,6 +86,7 @@ const base = import.meta.env.BASE_URL;
           Self-host guide
         </a>
       </div>
+      <p class="text-sm text-gray-500 mb-8">Explore a real decision graph in your browser &mdash; no signup, no install.</p>
     </section>
 
     <!-- Hosted API callout -->
@@ -359,6 +363,9 @@ const base = import.meta.env.BASE_URL;
           Your agents start capturing and querying decisions immediately.
         </p>
         <div class="flex flex-col sm:flex-row gap-4 justify-center">
+          <a href={`${base}demo/`} class="bg-emerald-600 hover:bg-emerald-500 text-white px-8 py-3 rounded-lg font-semibold text-base transition-colors inline-block">
+            Try the live demo &rarr;
+          </a>
           <a href={`${base}guides/mcp-setup/`} class="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-3 rounded-lg font-semibold text-base transition-colors inline-block">
             Connect your agent &rarr;
           </a>
