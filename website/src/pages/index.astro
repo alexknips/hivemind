@@ -62,20 +62,16 @@ const base = import.meta.env.BASE_URL;
       <!-- Primary CTA: MCP -->
       <div class="max-w-2xl mx-auto mb-6">
         <div class="bg-gray-900 border border-indigo-800 rounded-xl p-6 text-left">
-          <div class="text-xs font-mono text-indigo-400 mb-3 uppercase tracking-wide">Connect your agent &mdash; Claude Code, Claude Desktop, or Cursor</div>
-          <div class="bg-gray-950 rounded-lg p-4 font-mono text-sm text-gray-300 mb-4">
-            <div class="text-gray-500 text-xs mb-2">// .mcp.json (Claude Code) — local stdio, no install needed</div>
-            <div>{`{`}</div>
-            <div>&nbsp;&nbsp;<span class="text-indigo-300">"mcpServers"</span>: {`{`}</div>
-            <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-300">"hivemind"</span>: {`{`}</div>
-            <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-300">"command"</span>: <span class="text-emerald-300">"hivemind"</span>,</div>
-            <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-300">"args"</span>: [<span class="text-emerald-300">"mcp"</span>],</div>
-            <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-indigo-300">"env"</span>: {`{`} <span class="text-indigo-300">"HIVEMIND_DIR"</span>: <span class="text-emerald-300">"./hivemind/"</span> {`}`}</div>
-            <div>&nbsp;&nbsp;&nbsp;&nbsp;{`}`}</div>
-            <div>&nbsp;&nbsp;{`}`}</div>
-            <div>{`}`}</div>
+          <div class="text-xs font-mono text-indigo-400 mb-3 uppercase tracking-wide">Connect your agent &mdash; Claude Code, Cursor, Codex</div>
+          <div class="bg-gray-950 rounded-lg p-4 font-mono text-sm text-gray-300 mb-3">
+            <div class="text-gray-500 text-xs mb-2">// hosted &mdash; open beta, no install, no key</div>
+            <div><span class="text-emerald-300">claude mcp add</span> --transport http hivemind \</div>
+            <div>&nbsp;&nbsp;<span class="text-indigo-300">https://hivemind-tti3sa.fly.dev/mcp</span></div>
           </div>
-          <p class="text-gray-400 text-sm">Agents call 12 tools to capture and query decisions. Your ledger lives in <code class="text-indigo-300">./hivemind/</code>. Team-shared? Use the hosted API.</p>
+          <p class="text-gray-400 text-sm mb-3">Then <span class="text-gray-200">sign in with GitHub or Google</span> &mdash; you&rsquo;re connected. Agents call 12 tools to capture and query decisions; nothing to install.</p>
+          <div class="bg-gray-950/60 rounded-lg p-3 font-mono text-xs text-gray-400">
+            <span class="text-gray-500">// prefer to self-host?</span> &nbsp;<span class="text-emerald-300">claude mcp add</span> hivemind -- hivemind mcp
+          </div>
         </div>
       </div>
 
