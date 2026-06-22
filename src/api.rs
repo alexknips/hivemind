@@ -99,10 +99,10 @@ pub struct ApiConfig {
     pub workos_issuer: Option<String>,
     /// WorkOS JWKS endpoint (e.g. https://api.workos.com/sso/jwks).
     pub workos_jwks_url: Option<String>,
-    /// Expected JWT audience claim. When set, token `aud` is validated.
-    /// With DCR the client_id is dynamic; omitting WORKOS_AUDIENCE disables
-    /// audience validation — set this to the client_id for stricter enforcement.
-    pub workos_audience: Option<String>,
+    /// Expected JWT audience claims. Comma-separated list of accepted client_ids.
+    /// When set, token `aud` must match at least one value. Omit WORKOS_AUDIENCE
+    /// to disable audience validation (DCR / mixed SPA+MCP environments).
+    pub workos_audience: Option<Vec<String>>,
     /// Directory containing the pre-built SPA. When set, the server serves
     /// static files from this directory at `/`, falling back to `index.html`
     /// for SPA client-side routing. API paths always take precedence.
@@ -120,7 +120,12 @@ impl ApiConfig {
             workos_domain: std::env::var("WORKOS_DOMAIN").ok(),
             workos_issuer: std::env::var("WORKOS_ISSUER").ok(),
             workos_jwks_url: std::env::var("WORKOS_JWKS_URL").ok(),
-            workos_audience: std::env::var("WORKOS_AUDIENCE").ok(),
+            workos_audience: std::env::var("WORKOS_AUDIENCE").ok().map(|s| {
+                s.split(',')
+                    .map(|v| v.trim().to_owned())
+                    .filter(|v| !v.is_empty())
+                    .collect()
+            }),
             spa_dir: std::env::var("HIVEMIND_SPA_DIR").ok().map(PathBuf::from),
         }
     }
@@ -232,8 +237,8 @@ struct WorkosConfig {
     domain: String,
     /// OIDC issuer for JWT `iss` claim validation.
     issuer: String,
-    /// Expected JWT `aud` claim. `None` disables audience validation (DCR mode).
-    audience: Option<String>,
+    /// Accepted JWT `aud` values. `None` disables audience validation (DCR mode).
+    audience: Option<Vec<String>>,
 }
 
 /// Claims extracted from a validated WorkOS access token.
@@ -572,13 +577,14 @@ async fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequ
 /// Validate a WorkOS JWT access token against the cached JWKS.
 ///
 /// Validates signature (RS256/ES256), issuer, and expiry. When `audience` is
-/// `Some`, the JWT `aud` claim is also validated — set `WORKOS_AUDIENCE` to
-/// the WorkOS client_id for production to prevent cross-resource token reuse.
+/// `Some`, the JWT `aud` claim must match at least one value — set
+/// `WORKOS_AUDIENCE` to a comma-separated list of client_ids (SPA public app
+/// + MCP confidential app) for strict enforcement. Omit for DCR environments.
 fn validate_workos_jwt(
     token: &str,
     jwks: &JwkSet,
     issuer: &str,
-    audience: Option<&str>,
+    audience: Option<&[String]>,
 ) -> Result<WorkosClaims, String> {
     let header = decode_header(token).map_err(|_| "invalid token")?;
 
@@ -606,7 +612,7 @@ fn validate_workos_jwt(
     validation.set_issuer(&[issuer]);
     validation.validate_exp = true;
     match audience {
-        Some(aud) => validation.set_audience(&[aud]),
+        Some(auds) => validation.set_audience(auds),
         // ubs:ignore: DCR clients have dynamic client_ids; set WORKOS_AUDIENCE for strict aud enforcement
         None => validation.validate_aud = false,
     }
