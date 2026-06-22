@@ -757,8 +757,6 @@ struct GraphData {
     decisions: Vec<serde_json::Value>,
     nodes: Vec<GraphNode>,
     edges: Vec<GraphEdge>,
-    /// Edges grouped by relation label (same data as `edges`, keyed by relation).
-    labeled_edges: std::collections::HashMap<String, Vec<GraphEdge>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -775,19 +773,23 @@ async fn graph_handler(State(state): State<AppState>, headers: HeaderMap) -> Res
     unpack_blocking(result)
 }
 
+fn graph_err(e: impl std::fmt::Display) -> ApiError {
+    ApiError::internal(e.to_string())
+}
+
 fn graph_blocking(backend: &ApiBackend, ctx: &ApiRequestCtx) -> ApiResult<serde_json::Value> {
     let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
     let graph = MemoryGraph::default();
-    rebuild_graph_for_tenant(&ledger, &ctx.tenant_id, &graph)
-        .map_err(|e| ApiError::internal(e.to_string()))?;
+    rebuild_graph_for_tenant(&ledger, &ctx.tenant_id, &graph).map_err(graph_err)?;
 
     let mut nodes: Vec<GraphNode> = Vec::new();
     let mut decisions: Vec<serde_json::Value> = Vec::new();
 
     for kind in NodeKind::ALL {
+        let kind_name = kind.table_name();
         let rows = graph
             .query(&graph_node_query(kind), &GraphParams::new())
-            .map_err(|e| ApiError::internal(e.to_string()))?;
+            .map_err(graph_err)?;
         for row in rows {
             let id = row_string(&row, "id").unwrap_or_default();
             let label = row
@@ -795,62 +797,54 @@ fn graph_blocking(backend: &ApiBackend, ctx: &ApiRequestCtx) -> ApiResult<serde_
                 .or_else(|| row.get("label"))
                 .or_else(|| row.get("statement"))
                 .or_else(|| row.get("content"))
-                .and_then(|v| {
-                    if let GraphValue::String(s) = v {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
+                .and_then(|v| match v {
+                    GraphValue::String(s) => Some(s.into()),
+                    _ => None,
                 });
-            nodes.push(GraphNode {
-                id: format!("{}:{}", kind.table_name(), id),
-                kind: kind.table_name().to_owned(),
-                label: label.clone(),
-            });
             if matches!(kind, NodeKind::Decision) {
                 let obj: serde_json::Map<String, serde_json::Value> = row
                     .iter()
-                    .map(|(k, v)| (k.clone(), graph_value_to_json(v)))
+                    .map(|(k, v)| (k.into(), graph_value_to_json(v)))
                     .collect();
                 decisions.push(serde_json::Value::Object(obj));
             }
+            nodes.push(GraphNode {
+                id: [kind_name, ":", &id].concat(),
+                kind: kind_name.into(),
+                label,
+            });
         }
     }
 
     let mut edges: Vec<GraphEdge> = Vec::new();
-    let mut labeled_edges: std::collections::HashMap<String, Vec<GraphEdge>> =
-        std::collections::HashMap::new();
 
     for relation in RelationKind::ALL {
         let (from_kind, to_kind) = relation.endpoints();
-        let q = format!(
-            "MATCH (from:`{}`)-[rel:`{}`]->(to:`{}`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;",
-            from_kind.table_name(),
-            relation.table_name(),
-            to_kind.table_name()
-        );
-        let rows = graph
-            .query(&q, &GraphParams::new())
-            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let from_name = from_kind.table_name();
+        let to_name = to_kind.table_name();
+        let rel_name = relation.table_name();
+        let q = [
+            "MATCH (from:`",
+            from_name,
+            "`)-[rel:`",
+            rel_name,
+            "`]->(to:`",
+            to_name,
+            "`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;",
+        ]
+        .concat();
+        let rows = graph.query(&q, &GraphParams::new()).map_err(graph_err)?;
         for row in rows {
-            let edge = GraphEdge {
-                from: format!(
-                    "{}:{}",
-                    from_kind.table_name(),
-                    row_string(&row, "from_id").unwrap_or_default()
-                ),
-                to: format!(
-                    "{}:{}",
-                    to_kind.table_name(),
-                    row_string(&row, "to_id").unwrap_or_default()
-                ),
-                relation: relation.table_name().to_owned(),
-            };
-            labeled_edges
-                .entry(edge.relation.clone())
-                .or_default()
-                .push(edge.clone());
-            edges.push(edge);
+            edges.push(GraphEdge {
+                from: [
+                    from_name,
+                    ":",
+                    &row_string(&row, "from_id").unwrap_or_default(),
+                ]
+                .concat(),
+                to: [to_name, ":", &row_string(&row, "to_id").unwrap_or_default()].concat(),
+                relation: rel_name.into(),
+            });
         }
     }
 
@@ -858,18 +852,14 @@ fn graph_blocking(backend: &ApiBackend, ctx: &ApiRequestCtx) -> ApiResult<serde_
         decisions,
         nodes,
         edges,
-        labeled_edges,
     };
-    serde_json::to_value(data).map_err(|e| ApiError::internal(e.to_string()))
+    serde_json::to_value(data).map_err(graph_err)
 }
 
 fn row_string(row: &GraphRow, key: &str) -> Option<String> {
-    row.get(key).and_then(|v| {
-        if let GraphValue::String(s) = v {
-            Some(s.clone())
-        } else {
-            None
-        }
+    row.get(key).and_then(|v| match v {
+        GraphValue::String(s) => Some(s.to_owned()),
+        _ => None,
     })
 }
 
@@ -902,10 +892,10 @@ fn graph_value_to_json(v: &GraphValue) -> serde_json::Value {
         GraphValue::Float(f) => serde_json::Number::from_f64(*f)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        GraphValue::String(s) => serde_json::Value::String(s.clone()),
+        GraphValue::String(s) => serde_json::Value::String(s.to_owned()),
         GraphValue::StringList(list) => serde_json::Value::Array(
             list.iter()
-                .map(|s| serde_json::Value::String(s.clone()))
+                .map(|s| serde_json::Value::String(s.to_owned()))
                 .collect(),
         ),
     }

@@ -1046,14 +1046,10 @@ async fn graph_returns_shape_after_decision() {
     let (gs, gb) = call(app(dir), get_req("/v1/graph")).await;
     assert_eq!(gs, StatusCode::OK, "GET /v1/graph: {gb}"); // ubs:ignore
 
-    // Response must have the four top-level fields.
+    // Response must have the three top-level fields.
     assert!(gb.get("decisions").is_some(), "missing decisions field"); // ubs:ignore
     assert!(gb.get("nodes").is_some(), "missing nodes field"); // ubs:ignore
     assert!(gb.get("edges").is_some(), "missing edges field"); // ubs:ignore
-    assert!(
-        gb.get("labeled_edges").is_some(),
-        "missing labeled_edges field"
-    ); // ubs:ignore
 
     // At least one decision node should be present.
     let decisions = gb["decisions"].as_array().unwrap();
