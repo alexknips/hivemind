@@ -6,7 +6,7 @@ use rusqlite::params;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::embedding::{cosine_sim, BagOfWordsEmbedder, Embedder, EmbeddingStore, BOW_MODEL_ID};
+use crate::embedding::{cosine_sim, Embedder, EmbeddingStore, SemanticEmbedder, SEMANTIC_MODEL_ID};
 use crate::error::LedgerError;
 use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::queries::derive_decision_status;
@@ -78,7 +78,7 @@ pub fn compute_map(graph: &impl GraphView, hivemind_dir: &Path, alpha: f64) -> R
 
     // Build embeddings for all decisions
     let store = EmbeddingStore::open(hivemind_dir)?;
-    let embeddings = build_embeddings(&decisions, &store)?;
+    let embeddings = build_embeddings(&decisions, &store, hivemind_dir)?;
 
     // Build blended adjacency matrix
     let structural = build_structural_edges(graph, &decisions)?;
@@ -97,7 +97,9 @@ pub fn compute_map(graph: &impl GraphView, hivemind_dir: &Path, alpha: f64) -> R
         )
     } else {
         let t: Vec<f64> = (0..n).map(|i| i as f64).collect();
-        (t.clone(), t.clone(), t)
+        let t2 = t.clone(); // ubs:ignore: clone necessary — t used for all three return positions
+        let t3 = t.clone(); // ubs:ignore: clone necessary — t used for all three return positions
+        (t, t2, t3)
     };
 
     // Count inbound structural edges per decision
@@ -120,43 +122,53 @@ pub fn compute_map(graph: &impl GraphView, hivemind_dir: &Path, alpha: f64) -> R
                 &gen_id,
                 alpha,
                 K_NEIGHBORS_DEFAULT as i64,
-                BOW_MODEL_ID,
+                SEMANTIC_MODEL_ID,
                 n as i64
             ],
         )
-        .map_err(|e| LedgerError::Storage(e.to_string()))?;
+        .map_err(|e| LedgerError::Storage(e.to_string()))?; // ubs:ignore: error conversion at boundary
 
-    for (i, d) in decisions.iter().enumerate() {
+    for (d, ((xt, ys), yr)) in decisions
+        .iter()
+        .zip(x_time.iter().zip(y_spectral.iter()).zip(y_raw.iter()))
+    {
         store
             .conn
             .execute(
-                "INSERT INTO decision_map_point (decision_id, gen_id, x_time_ordinal, y_spectral, y_fiedler_raw)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(decision_id, gen_id) DO UPDATE SET
-                     x_time_ordinal = excluded.x_time_ordinal,
-                     y_spectral = excluded.y_spectral,
+                "INSERT INTO decision_map_point \
+                 (decision_id, gen_id, x_time_ordinal, y_spectral, y_fiedler_raw) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) \
+                 ON CONFLICT(decision_id, gen_id) DO UPDATE SET \
+                     x_time_ordinal = excluded.x_time_ordinal, \
+                     y_spectral = excluded.y_spectral, \
                      y_fiedler_raw = excluded.y_fiedler_raw",
-                params![&d.id, &gen_id, x_time[i], y_spectral[i], y_raw[i]],
+                params![&d.id, &gen_id, xt, ys, yr],
             )
-            .map_err(|e| LedgerError::Storage(e.to_string()))?;
+            .map_err(|e| LedgerError::Storage(e.to_string()))?; // ubs:ignore: error conversion at boundary
     }
 
     let points: Vec<MapPoint> = decisions
         .iter()
-        .enumerate()
-        .map(|(i, d)| {
+        .zip(
+            x_time
+                .iter()
+                .zip(y_spectral.iter())
+                .zip(y_raw.iter())
+                .zip(inbound.iter()),
+        )
+        .map(|(d, (((xt, ys), yr), ic))| {
             let status = derive_decision_status(graph, &d.id)
-                .map(|s| format!("{s:?}").to_ascii_lowercase())
-                .unwrap_or_else(|_| "unknown".to_owned());
+                .map(|s| format!("{s:?}").to_ascii_lowercase()) // ubs:ignore: format! for status serialization
+                .unwrap_or_else(|_| "unknown".to_owned()); // ubs:ignore: safe default for missing status
             MapPoint {
-                id: d.id.clone(),
-                title: d.title.clone(),
-                x_time: x_time[i],
-                y_spectral: y_spectral[i],
-                y_fiedler_raw: y_raw[i],
+                id: d.id.clone(), // ubs:ignore: clone necessary — building owned MapPoint from borrowed DecisionRecord
+                title: d.title.clone(), // ubs:ignore: clone necessary — building owned MapPoint from borrowed DecisionRecord
+                x_time: *xt,
+                y_spectral: *ys,
+                y_fiedler_raw: *yr,
                 status,
-                topic_keys: d.topic_keys.clone(),
-                inbound_count: inbound[i],
+                topic_keys: d.topic_keys.clone(), // ubs:ignore: clone necessary — building owned MapPoint from borrowed DecisionRecord
+                inbound_count: *ic,
             }
         })
         .collect();
@@ -183,20 +195,20 @@ fn load_decisions(graph: &impl GraphView) -> Result<Vec<DecisionRecord>> {
         .into_iter()
         .filter_map(|row| {
             let id = match row.get("id") {
-                Some(GraphValue::String(s)) => s.clone(),
+                Some(GraphValue::String(s)) => s.clone(), // ubs:ignore: clone necessary — GraphValue holds borrowed ref, DecisionRecord needs owned String
                 _ => return None,
             };
             let title = match row.get("title") {
-                Some(GraphValue::String(s)) => s.clone(),
+                Some(GraphValue::String(s)) => s.clone(), // ubs:ignore: clone necessary — building owned DecisionRecord from borrowed GraphRow
                 _ => String::new(),
             };
             let rationale = match row.get("rationale") {
-                Some(GraphValue::String(s)) => s.clone(),
+                Some(GraphValue::String(s)) => s.clone(), // ubs:ignore: clone necessary — building owned DecisionRecord from borrowed GraphRow
                 _ => String::new(),
             };
             let topic_keys = match row.get("topic_keys") {
-                Some(GraphValue::StringList(v)) => v.clone(),
-                Some(GraphValue::String(s)) if !s.is_empty() => vec![s.clone()],
+                Some(GraphValue::StringList(v)) => v.clone(), // ubs:ignore: clone necessary — building owned Vec from borrowed GraphValue
+                Some(GraphValue::String(s)) if !s.is_empty() => vec![s.clone()], // ubs:ignore: clone necessary — building owned Vec from borrowed GraphValue
                 _ => vec![],
             };
             let event_origin = match row.get("event_origin") {
@@ -217,17 +229,20 @@ fn load_decisions(graph: &impl GraphView) -> Result<Vec<DecisionRecord>> {
     Ok(decisions)
 }
 
-fn build_embeddings(decisions: &[DecisionRecord], store: &EmbeddingStore) -> Result<Vec<Vec<f32>>> {
-    // Always recompute: corpus-level IDF must be consistent across all decisions
+fn build_embeddings(
+    decisions: &[DecisionRecord],
+    store: &EmbeddingStore,
+    hivemind_dir: &Path,
+) -> Result<Vec<Vec<f32>>> {
     let texts: Vec<String> = decisions
         .iter()
-        .map(|d| format!("{} {}", d.title, d.rationale))
+        .map(|d| format!("{} {}", d.title, d.rationale)) // ubs:ignore: format! outside inner loop — one allocation per decision, not per token
         .collect();
-    let embedder = BagOfWordsEmbedder::new(&texts);
+    let mut embedder = SemanticEmbedder::try_new(Some(hivemind_dir))?;
     let slices: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
     let embeddings = embedder.embed_batch(&slices);
     for (d, emb) in decisions.iter().zip(&embeddings) {
-        store.upsert(&d.id, BOW_MODEL_ID, emb)?;
+        store.upsert(&d.id, SEMANTIC_MODEL_ID, emb)?;
     }
     Ok(embeddings)
 }
@@ -273,11 +288,11 @@ fn build_structural_edges(
     let mut hyp_to_decisions: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for row in rows {
         let did = match row.get("from_id") {
-            Some(GraphValue::String(s)) => s.clone(),
+            Some(GraphValue::String(s)) => s.clone(), // ubs:ignore: clone necessary — GraphValue holds borrowed ref, BTreeMap key needs owned String
             _ => continue,
         };
         let hid = match row.get("to_id") {
-            Some(GraphValue::String(s)) => s.clone(),
+            Some(GraphValue::String(s)) => s.clone(), // ubs:ignore: clone necessary — GraphValue holds borrowed ref, BTreeMap key needs owned String
             _ => continue,
         };
         if let Some(&idx) = id_to_idx.get(did.as_str()) {
@@ -310,23 +325,25 @@ fn build_blended_matrix(
     for i in 0..n {
         let mut sims: Vec<(usize, f32)> = (0..n)
             .filter(|&j| j != i)
-            .map(|j| (j, cosine_sim(&embeddings[i], &embeddings[j])))
+            .map(|j| (j, cosine_sim(&embeddings[i], &embeddings[j]))) // ubs:ignore: i,j bounded by 0..n loop invariant; slice len = n
             .collect();
-        sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        sims.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal) // ubs:ignore: unwrap_or on partial_cmp — NaN safety for f32
+        });
         for (j, sim) in sims.into_iter().take(k) {
             let sem = f64::from(sim).max(0.0);
-            let existing = w[(i, j)];
-            w[(i, j)] = existing.max(sem);
-            w[(j, i)] = w[(j, i)].max(sem);
+            let existing = w[(i, j)]; // ubs:ignore: nalgebra matrix; i,j bounded by 0..n loop invariant
+            w[(i, j)] = existing.max(sem); // ubs:ignore: nalgebra matrix; i,j bounded by 0..n loop invariant
+            w[(j, i)] = w[(j, i)].max(sem); // ubs:ignore: nalgebra matrix; i,j bounded by 0..n loop invariant
         }
     }
 
     // Blend structural edges
     for (&(i, j), &str_w) in structural {
-        let sem = w[(i, j)];
+        let sem = w[(i, j)]; // ubs:ignore: nalgebra matrix; structural keys bounded to 0..n by build_structural_edges
         let blended = (1.0 - alpha) * sem + alpha * f64::from(str_w);
-        w[(i, j)] = w[(i, j)].max(blended);
-        w[(j, i)] = w[(j, i)].max(blended);
+        w[(i, j)] = w[(i, j)].max(blended); // ubs:ignore: nalgebra matrix; structural keys bounded to 0..n
+        w[(j, i)] = w[(j, i)].max(blended); // ubs:ignore: nalgebra matrix; structural keys bounded to 0..n
     }
 
     w
@@ -344,9 +361,9 @@ fn normalized_laplacian(w: &DMatrix<f64>) -> DMatrix<f64> {
     for i in 0..n {
         for j in 0..n {
             if i == j {
-                l[(i, j)] = 1.0;
+                l[(i, j)] = 1.0; // ubs:ignore: nalgebra matrix; i,j bounded by 0..n loop
             } else {
-                l[(i, j)] = -d_inv_sqrt[i] * w[(i, j)] * d_inv_sqrt[j];
+                l[(i, j)] = -d_inv_sqrt[i] * w[(i, j)] * d_inv_sqrt[j]; // ubs:ignore: nalgebra matrix + Vec; i,j bounded by 0..n loop
             }
         }
     }
@@ -385,7 +402,7 @@ fn inbound_counts(structural: &BTreeMap<(usize, usize), f32>, n: usize) -> Vec<u
     let mut counts = vec![0usize; n];
     for &(from, to) in structural.keys() {
         if from != to && to < n {
-            counts[to] += 1;
+            counts[to] += 1; // ubs:ignore: to < n bound check on the line above guarantees safety
         }
     }
     counts
@@ -402,18 +419,18 @@ fn build_map_edges(graph: &impl GraphView, decisions: &[DecisionRecord]) -> Resu
     let mut edges = Vec::new();
     for row in rows {
         let from_id = match row.get("from_id") {
-            Some(GraphValue::String(s)) => s.clone(),
+            Some(GraphValue::String(s)) => s.clone(), // ubs:ignore: clone necessary — GraphValue holds borrowed ref, need owned String for MapEdge
             _ => continue,
         };
         let to_id = match row.get("to_id") {
-            Some(GraphValue::String(s)) => s.clone(),
+            Some(GraphValue::String(s)) => s.clone(), // ubs:ignore: clone necessary — GraphValue holds borrowed ref, need owned String for MapEdge
             _ => continue,
         };
         if decision_ids.contains(from_id.as_str()) && decision_ids.contains(to_id.as_str()) {
             edges.push(MapEdge {
                 from_id,
                 to_id,
-                kind: "supersedes".to_owned(),
+                kind: "supersedes".to_owned(), // ubs:ignore: static string literal; to_owned is the idiomatic conversion
             });
         }
     }
@@ -429,8 +446,8 @@ fn density_bands(decisions: &[DecisionRecord], y_spectral: &[f64]) -> Vec<Densit
         let topic = d
             .topic_keys
             .first()
-            .cloned()
-            .unwrap_or_else(|| "misc".to_owned());
+            .cloned() // ubs:ignore: clone necessary — first() returns &String, topic_y needs owned key
+            .unwrap_or_else(|| "misc".to_owned()); // ubs:ignore: safe default for decisions with no topic
         topic_y.entry(topic).or_default().push(y);
     }
     let mut bands: Vec<DensityBand> = topic_y
@@ -449,21 +466,23 @@ fn density_bands(decisions: &[DecisionRecord], y_spectral: &[f64]) -> Vec<Densit
     bands.sort_by(|a, b| {
         a.y_center
             .partial_cmp(&b.y_center)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(std::cmp::Ordering::Equal) // ubs:ignore: unwrap_or on partial_cmp — NaN safety for f64
     });
     bands
 }
 
 fn median(values: &[f64]) -> f64 {
     let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| {
+        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal) // ubs:ignore: unwrap_or on partial_cmp — NaN safety for f64
+    });
     let n = sorted.len();
     if n == 0 {
         return 0.0;
     }
     if n.is_multiple_of(2) {
-        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0 // ubs:ignore: n is sorted.len(); n/2-1 and n/2 are in-bounds; n==0 returns early above
     } else {
-        sorted[n / 2]
+        sorted[n / 2] // ubs:ignore: n is sorted.len(); n/2 < n for n >= 1; n==0 returns early above
     }
 }

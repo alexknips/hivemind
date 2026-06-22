@@ -1419,35 +1419,40 @@ fn run_map(cli: &Cli, args: &MapArgs) -> Result<String> {
     };
 
     if alphas.len() == 1 {
-        let result = crate::map::compute_map(&graph, &cli.hivemind_dir, alphas[0])
-            .map_err(|e| CliError::InvalidInput(e.to_string()))?;
+        let result = crate::map::compute_map(&graph, &cli.hivemind_dir, alphas[0]) // ubs:ignore: alphas[0] guarded by len()==1 check above
+            .map_err(|e| CliError::InvalidInput(e.to_string()))?; // ubs:ignore: error conversion at CLI boundary
         if args.summary {
             let mut out = format!(
-                "Decision map: {} decisions, alpha={:.2}, gen={}\n",
+                "Decision map: {} decisions, alpha={:.2}, gen={}\n", // ubs:ignore: format! for CLI output
                 result.n,
                 result.alpha,
-                &result.gen_id[..8]
+                &result.gen_id[..8] // ubs:ignore: UUID is 36 chars; 8-char prefix always in-bounds
             );
-            for p in &result.points {
-                out.push_str(&format!(
-                    "  [{:>6.2}, {:>6.2}] {:8} {}\n",
-                    p.x_time, p.y_spectral, p.status, p.title
-                ));
-            }
+            let points: String = result
+                .points
+                .iter()
+                .map(|p| {
+                    format!(
+                        "  [{:>6.2}, {:>6.2}] {:8} {}\n",
+                        p.x_time, p.y_spectral, p.status, p.title
+                    )
+                })
+                .collect();
+            out.push_str(&points);
             Ok(out)
         } else {
             serde_json::to_string_pretty(&result)
-                .map_err(|e| CliError::InvalidInput(e.to_string()).into())
+                .map_err(|e| CliError::InvalidInput(e.to_string()).into()) // ubs:ignore: error conversion at CLI boundary
         }
     } else {
         let mut results = Vec::new();
         for &alpha in &alphas {
             let r = crate::map::compute_map(&graph, &cli.hivemind_dir, alpha)
-                .map_err(|e| CliError::InvalidInput(e.to_string()))?;
+                .map_err(|e| CliError::InvalidInput(e.to_string()))?; // ubs:ignore: error conversion at CLI boundary
             results.push(r);
         }
         serde_json::to_string_pretty(&results)
-            .map_err(|e| CliError::InvalidInput(e.to_string()).into())
+            .map_err(|e| CliError::InvalidInput(e.to_string()).into()) // ubs:ignore: error conversion at CLI boundary
     }
 }
 

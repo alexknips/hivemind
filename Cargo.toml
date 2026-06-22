@@ -62,6 +62,7 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 uuid = { version = "1.23.1", features = ["serde", "v4", "v5"] }
 nalgebra = "0.33"
+fastembed = { version = "5.17.2", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
 
 [dev-dependencies]
 http-body-util = "0.1"

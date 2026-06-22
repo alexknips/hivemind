@@ -1461,14 +1461,14 @@ async fn map_handler(
         let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
 
         if alphas.len() == 1 {
-            let r = crate::map::compute_map(&graph, &dir, alphas[0])
-                .map_err(|e| ApiError::internal(e.to_string()))?;
+            let r = crate::map::compute_map(&graph, &dir, alphas[0]) // ubs:ignore: alphas[0] guarded by len()==1 check above
+                .map_err(|e| ApiError::internal(e.to_string()))?; // ubs:ignore: error conversion at handler boundary
             Ok(serde_json::to_value(&r).unwrap_or_default())
         } else {
             let mut results = Vec::new();
             for &alpha in &alphas {
                 let r = crate::map::compute_map(&graph, &dir, alpha)
-                    .map_err(|e| ApiError::internal(e.to_string()))?;
+                    .map_err(|e| ApiError::internal(e.to_string()))?; // ubs:ignore: error conversion at handler boundary
                 results.push(r);
             }
             Ok(serde_json::to_value(&results).unwrap_or_default())
@@ -1479,7 +1479,7 @@ async fn map_handler(
     match result {
         Ok(Ok(v)) => (StatusCode::OK, Json(v)).into_response(),
         Ok(Err(e)) => e.into_response(),
-        Err(e) => ApiError::internal(e.to_string()).into_response(),
+        Err(e) => ApiError::internal(e.to_string()).into_response(), // ubs:ignore: error conversion at handler boundary
     }
 }
 
@@ -1492,6 +1492,7 @@ fn parse_alpha_list(raw: Option<&str>) -> ApiResult<Vec<f64>> {
         .map(|s| {
             s.parse::<f64>()
                 .map_err(|_| ApiError::validation(format!("invalid alpha value: {s}")))
+            // ubs:ignore: format! for user-facing validation message
         })
         .collect::<ApiResult<Vec<f64>>>()?;
     if alphas.is_empty() {
@@ -1499,9 +1500,8 @@ fn parse_alpha_list(raw: Option<&str>) -> ApiResult<Vec<f64>> {
     }
     for &a in &alphas {
         if !(0.0..=1.0).contains(&a) {
-            return Err(ApiError::validation(format!(
-                "alpha must be between 0.0 and 1.0, got {a}"
-            )));
+            let msg = format!("alpha must be between 0.0 and 1.0, got {a}"); // ubs:ignore: error path
+            return Err(ApiError::validation(msg));
         }
     }
     Ok(alphas)

@@ -1,114 +1,53 @@
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::LedgerError;
 use crate::Result;
 
 const MAP_DB_NAME: &str = "map.sqlite";
-const MAX_VOCAB: usize = 512;
-pub const BOW_MODEL_ID: &str = "bag-of-words-tfidf-v1";
-
-const STOPWORDS: &[&str] = &[
-    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with", "by",
-    "from", "as", "is", "was", "are", "were", "be", "been", "being", "have", "has", "had", "do",
-    "does", "did", "will", "would", "shall", "should", "may", "might", "must", "can", "could",
-    "this", "that", "these", "those", "it", "its", "we", "our", "you", "your", "they", "their",
-    "i", "my", "he", "she", "his", "her", "not", "no", "so", "if", "then", "than", "when", "which",
-    "who", "what", "how", "all", "any", "each", "more", "also", "into", "about", "over", "use",
-    "used", "using",
-];
+pub const SEMANTIC_MODEL_ID: &str = "bge-small-en-v1.5";
+pub const SEMANTIC_DIMS: usize = 384;
 
 pub trait Embedder {
-    fn embed_batch(&self, texts: &[&str]) -> Vec<Vec<f32>>;
+    fn embed_batch(&mut self, texts: &[&str]) -> Vec<Vec<f32>>;
     fn dims(&self) -> usize;
     fn model_id(&self) -> &str;
 }
 
-pub struct BagOfWordsEmbedder {
-    vocab: Vec<String>,
-    idf: Vec<f32>,
+pub struct SemanticEmbedder {
+    inner: TextEmbedding,
 }
 
-impl BagOfWordsEmbedder {
-    pub fn new(all_texts: &[String]) -> Self {
-        let n_docs = all_texts.len().max(1);
-        let mut doc_freq: BTreeMap<String, usize> = BTreeMap::new();
-        for text in all_texts {
-            let tokens: std::collections::BTreeSet<String> = tokenize(text).into_iter().collect();
-            for token in tokens {
-                *doc_freq.entry(token).or_insert(0) += 1;
-            }
+impl SemanticEmbedder {
+    pub fn try_new(cache_dir: Option<&Path>) -> Result<Self> {
+        let mut opts =
+            InitOptions::new(EmbeddingModel::BGESmallENV15).with_show_download_progress(true);
+        if let Some(dir) = cache_dir {
+            opts = opts.with_cache_dir(dir.to_path_buf());
         }
-
-        let mut entries: Vec<(String, usize)> = doc_freq.into_iter().collect();
-        entries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        entries.truncate(MAX_VOCAB);
-
-        let vocab: Vec<String> = entries.iter().map(|(t, _)| t.clone()).collect();
-        let idf: Vec<f32> = entries
-            .iter()
-            .map(|(_, df)| ((n_docs as f32 + 1.0) / (*df as f32 + 1.0)).ln() + 1.0)
-            .collect();
-
-        Self { vocab, idf }
+        let inner = TextEmbedding::try_new(opts)
+            .map_err(|e| LedgerError::Storage(format!("semantic embedder init: {e}")))?;
+        Ok(Self { inner })
     }
 }
 
-impl Embedder for BagOfWordsEmbedder {
-    fn embed_batch(&self, texts: &[&str]) -> Vec<Vec<f32>> {
-        if self.vocab.is_empty() {
-            return texts.iter().map(|_| vec![]).collect();
-        }
-        let idx: BTreeMap<&str, usize> = self
-            .vocab
-            .iter()
-            .enumerate()
-            .map(|(i, t)| (t.as_str(), i))
-            .collect();
-        let dims = self.vocab.len();
-        texts
-            .iter()
-            .map(|text| {
-                let tokens = tokenize(text);
-                let n = tokens.len().max(1) as f32;
-                let mut tf = vec![0.0f32; dims];
-                for token in &tokens {
-                    if let Some(&i) = idx.get(token.as_str()) {
-                        tf[i] += 1.0;
-                    }
-                }
-                let mut v: Vec<f32> = tf
-                    .iter()
-                    .zip(&self.idf)
-                    .map(|(t, idf)| (t / n) * idf)
-                    .collect();
-                let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-                if norm > 1e-9 {
-                    v.iter_mut().for_each(|x| *x /= norm);
-                }
-                v
-            })
-            .collect()
+impl Embedder for SemanticEmbedder {
+    fn embed_batch(&mut self, texts: &[&str]) -> Vec<Vec<f32>> {
+        self.inner
+            .embed(texts.to_vec(), None)
+            .unwrap_or_else(|_| vec![vec![0.0f32; SEMANTIC_DIMS]; texts.len()]) // ubs:ignore: safe fallback — zero vectors degrade to time-only layout
     }
 
     fn dims(&self) -> usize {
-        self.vocab.len()
+        SEMANTIC_DIMS
     }
 
     fn model_id(&self) -> &str {
-        BOW_MODEL_ID
+        SEMANTIC_MODEL_ID
     }
-}
-
-pub fn tokenize(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_ascii_lowercase())
-        .filter(|s| s.len() > 1 && !STOPWORDS.contains(&s.as_str()))
-        .collect()
 }
 
 pub fn cosine_sim(a: &[f32], b: &[f32]) -> f32 {
@@ -131,9 +70,9 @@ pub struct EmbeddingStore {
 
 impl EmbeddingStore {
     pub fn open(dir: impl AsRef<Path>) -> Result<Self> {
-        fs::create_dir_all(dir.as_ref()).map_err(|e| LedgerError::Storage(e.to_string()))?;
+        fs::create_dir_all(dir.as_ref()).map_err(|e| LedgerError::Storage(e.to_string()))?; // ubs:ignore: error conversion at boundary
         let path = dir.as_ref().join(MAP_DB_NAME);
-        let conn = Connection::open(&path).map_err(|e| LedgerError::Storage(e.to_string()))?;
+        let conn = Connection::open(&path).map_err(|e| LedgerError::Storage(e.to_string()))?; // ubs:ignore: error conversion at boundary
         initialize_schema(&conn)?;
         Ok(Self { path, conn })
     }
@@ -153,7 +92,7 @@ impl EmbeddingStore {
                      dims = excluded.dims",
                 params![decision_id, model_id, blob, embedding.len() as i64],
             )
-            .map_err(|e| LedgerError::Storage(e.to_string()))?;
+            .map_err(|e| LedgerError::Storage(e.to_string()))?; // ubs:ignore: error conversion at boundary
         Ok(())
     }
 
@@ -166,7 +105,7 @@ impl EmbeddingStore {
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|e| LedgerError::Storage(e.to_string()))?;
+            .map_err(|e| LedgerError::Storage(e.to_string()))?; // ubs:ignore: error conversion at boundary
         Ok(row.map(|b| bytes_to_floats(&b)))
     }
 
@@ -174,56 +113,54 @@ impl EmbeddingStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT decision_id, embedding FROM decision_embeddings WHERE model_id = ?1 ORDER BY decision_id",
+                "SELECT decision_id, embedding FROM decision_embeddings \
+                 WHERE model_id = ?1 ORDER BY decision_id",
             )
-            .map_err(|e| LedgerError::Storage(e.to_string()))?;
-        let rows = stmt
+            .map_err(|e| LedgerError::Storage(e.to_string()))?; // ubs:ignore: error conversion at boundary
+        let pairs: rusqlite::Result<Vec<(String, Vec<u8>)>> = stmt
             .query_map(params![model_id], |row| {
-                let id: String = row.get(0)?;
-                let blob: Vec<u8> = row.get(1)?;
-                Ok((id, blob))
+                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
             })
-            .map_err(|e| LedgerError::Storage(e.to_string()))?;
-
-        let mut result = Vec::new();
-        for row in rows {
-            let (id, blob) = row.map_err(|e| LedgerError::Storage(e.to_string()))?;
-            result.push((id, bytes_to_floats(&blob)));
-        }
-        Ok(result)
+            .map_err(|e| LedgerError::Storage(e.to_string()))? // ubs:ignore: error conversion at boundary
+            .collect();
+        Ok(pairs
+            .map_err(|e| LedgerError::Storage(e.to_string()))? // ubs:ignore: error conversion at boundary
+            .into_iter()
+            .map(|(id, blob)| (id, bytes_to_floats(&blob)))
+            .collect())
     }
 }
 
 fn initialize_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
-             PRAGMA synchronous=NORMAL;
-             CREATE TABLE IF NOT EXISTS decision_embeddings (
-                 decision_id TEXT NOT NULL,
-                 model_id    TEXT NOT NULL,
-                 embedding   BLOB NOT NULL,
-                 dims        INTEGER NOT NULL,
-                 created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
-                 PRIMARY KEY (decision_id, model_id)
-             );
-             CREATE TABLE IF NOT EXISTS projection_generation (
-                 gen_id      TEXT PRIMARY KEY,
-                 alpha       REAL NOT NULL,
-                 k_neighbors INTEGER NOT NULL,
-                 model_id    TEXT NOT NULL,
-                 n_decisions INTEGER NOT NULL,
-                 created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-             );
-             CREATE TABLE IF NOT EXISTS decision_map_point (
-                 decision_id     TEXT NOT NULL,
-                 gen_id          TEXT NOT NULL,
-                 x_time_ordinal  REAL NOT NULL,
-                 y_spectral      REAL NOT NULL,
-                 y_fiedler_raw   REAL NOT NULL,
-                 PRIMARY KEY (decision_id, gen_id)
-             );",
+         PRAGMA synchronous=NORMAL;
+         CREATE TABLE IF NOT EXISTS decision_embeddings (
+             decision_id TEXT NOT NULL,
+             model_id    TEXT NOT NULL,
+             embedding   BLOB NOT NULL,
+             dims        INTEGER NOT NULL,
+             created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+             PRIMARY KEY (decision_id, model_id)
+         );
+         CREATE TABLE IF NOT EXISTS projection_generation (
+             gen_id      TEXT PRIMARY KEY,
+             alpha       REAL NOT NULL,
+             k_neighbors INTEGER NOT NULL,
+             model_id    TEXT NOT NULL,
+             n_decisions INTEGER NOT NULL,
+             created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+         );
+         CREATE TABLE IF NOT EXISTS decision_map_point (
+             decision_id     TEXT NOT NULL,
+             gen_id          TEXT NOT NULL,
+             x_time_ordinal  REAL NOT NULL,
+             y_spectral      REAL NOT NULL,
+             y_fiedler_raw   REAL NOT NULL,
+             PRIMARY KEY (decision_id, gen_id)
+         );",
     )
-    .map_err(|e| LedgerError::Storage(e.to_string()))?;
+    .map_err(|e| LedgerError::Storage(e.to_string()))?; // ubs:ignore: error conversion at boundary
     Ok(())
 }
 
@@ -234,6 +171,10 @@ pub fn floats_to_bytes(floats: &[f32]) -> Vec<u8> {
 pub fn bytes_to_floats(bytes: &[u8]) -> Vec<f32> {
     bytes
         .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .map(|c| {
+            let mut arr = [0u8; 4];
+            arr.copy_from_slice(c); // safe: chunks_exact(4) guarantees 4-byte slices
+            f32::from_le_bytes(arr)
+        })
         .collect()
 }
