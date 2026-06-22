@@ -276,7 +276,7 @@ fn find_unscored_decisions(
                                 let kind =
                                     capture.get("kind").and_then(|v| v.as_str()).unwrap_or("");
                                 if kind == "decision" {
-                                    let node_id = format!("capture:{event_id}:{idx}");
+                                    let node_id = format!("capture:{event_id}:{idx}"); // ubs:ignore: per-capture owned key moved into CaptureToScore.node_id
                                     let text = render_decision_text(capture);
                                     pending.push(CaptureToScore {
                                         node_id,
@@ -294,7 +294,7 @@ fn find_unscored_decisions(
                         .get("capture_node_id")
                         .and_then(|v| v.as_str())
                     {
-                        scored_node_ids.insert(node_id.to_owned());
+                        scored_node_ids.insert(node_id.to_owned()); // ubs:ignore: borrows from event.payload &str; owned copy needed for HashSet<String>
                     }
                 }
                 _ => {}
