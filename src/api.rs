@@ -31,6 +31,7 @@
 //! - `GET  /v1/decisions/{id}/supersession-chain`  — supersession chain
 //! - `GET  /v1/decisions/search`                   — full-text search (SQLite only)
 //! - `GET  /v1/decisions/relevant`                 — decisions by topic
+//! - `GET  /v1/decisions/map[?alpha=0.5]`          — 2-D spectral decision map
 //! - `GET  /v1/graph`                              — full decision graph (JSON)
 //! - `GET  /v1/health`                             — liveness probe
 //!
@@ -148,6 +149,15 @@ enum ApiBackend {
 }
 
 impl ApiBackend {
+    /// Return the on-disk directory for SQLite backends; None for Postgres.
+    fn sqlite_dir(&self) -> Option<&std::path::Path> {
+        match self {
+            ApiBackend::Sqlite(dir) => Some(dir.as_ref()),
+            #[cfg(feature = "shared-backend-postgres")]
+            ApiBackend::Postgres(_) => None,
+        }
+    }
+
     /// Open a tenant-scoped ledger for use within a blocking closure.
     fn open_ledger_for_tenant(&self, tenant_id: &TenantId) -> ApiResult<ApiLedger> {
         #[cfg(not(feature = "shared-backend-postgres"))]
@@ -723,6 +733,13 @@ struct RelevantParams {
     status: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct MapParams {
+    /// Blend weight: 0.0 = pure semantic, 1.0 = pure structural. Comma-separated
+    /// list (e.g. "0.0,0.5") returns two result sets for side-by-side comparison.
+    alpha: Option<String>,
+}
+
 #[cfg(feature = "shared-backend-postgres")]
 #[derive(Debug, Deserialize)]
 struct ProvisionTenantRequest {
@@ -917,6 +934,7 @@ fn build_router(state: AppState) -> Router {
         // Static routes before dynamic /:id to avoid ambiguity
         .route("/v1/decisions/search", get(search_handler))
         .route("/v1/decisions/relevant", get(relevant_handler))
+        .route("/v1/decisions/map", get(map_handler))
         // Decision resource routes
         .route("/v1/decisions", post(post_decisions_handler))
         .route("/v1/decisions/{id}", get(get_decision_handler))
@@ -1417,6 +1435,76 @@ async fn compact_view_handler(
         Ok(Err(e)) => e.into_response(),
         Err(e) => ApiError::internal(e.to_string()).into_response(),
     }
+}
+
+async fn map_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<MapParams>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let dir = backend
+            .sqlite_dir()
+            .ok_or_else(|| {
+                ApiError::validation("GET /v1/decisions/map requires the SQLite backend")
+            })?
+            .to_path_buf();
+
+        let alphas = parse_alpha_list(params.alpha.as_deref())?;
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
+
+        if alphas.len() == 1 {
+            let r = crate::map::compute_map(&graph, &dir, alphas[0])
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            Ok(serde_json::to_value(&r).unwrap_or_default())
+        } else {
+            let mut results = Vec::new();
+            for &alpha in &alphas {
+                let r = crate::map::compute_map(&graph, &dir, alpha)
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+                results.push(r);
+            }
+            Ok(serde_json::to_value(&results).unwrap_or_default())
+        }
+    })
+    .await;
+
+    match result {
+        Ok(Ok(v)) => (StatusCode::OK, Json(v)).into_response(),
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => ApiError::internal(e.to_string()).into_response(),
+    }
+}
+
+fn parse_alpha_list(raw: Option<&str>) -> ApiResult<Vec<f64>> {
+    let raw = raw.unwrap_or("0.5");
+    let alphas: Vec<f64> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.parse::<f64>()
+                .map_err(|_| ApiError::validation(format!("invalid alpha value: {s}")))
+        })
+        .collect::<ApiResult<Vec<f64>>>()?;
+    if alphas.is_empty() {
+        return Ok(vec![0.5]);
+    }
+    for &a in &alphas {
+        if !(0.0..=1.0).contains(&a) {
+            return Err(ApiError::validation(format!(
+                "alpha must be between 0.0 and 1.0, got {a}"
+            )));
+        }
+    }
+    Ok(alphas)
 }
 
 async fn search_handler(

@@ -27,6 +27,7 @@ path = "benchmarks/fidelity/main.rs"
 [features]
 default = []
 graph-kuzu = ["dep:kuzu", "dep:cxx-build"]
+semantic = []
 shared-backend-postgres = ["dep:postgres", "dep:r2d2", "dep:r2d2_postgres", "dep:native-tls", "dep:postgres-native-tls"]
 tui = ["dep:crossterm", "dep:ratatui"]
 
@@ -60,6 +61,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 uuid = { version = "1.23.1", features = ["serde", "v4", "v5"] }
+nalgebra = "0.33"
 
 [dev-dependencies]
 http-body-util = "0.1"

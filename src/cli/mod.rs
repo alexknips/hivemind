@@ -132,6 +132,11 @@ pub enum Command {
     /// `shared-backend-postgres` feature.
     #[cfg(feature = "shared-backend-postgres")]
     Migrate(MigrateArgs),
+    /// Compute the 2-D spectral decision map (x=time, y=semantic embedding).
+    /// Outputs a JSON point-set to stdout. Use --alpha to blend semantic and
+    /// structural (supersession) similarity. Outputs JSON unless --summary is
+    /// passed.
+    Map(MapArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -163,6 +168,18 @@ pub struct MigrateArgs {
     /// Count events that would be migrated without writing to Postgres.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct MapArgs {
+    /// Blend weight between pure-semantic (0.0) and structural-supersession (1.0).
+    /// Values between 0 and 1 blend both signals. Use 0.0,0.5 to output both.
+    #[arg(long, default_value = "0.5")]
+    pub alpha: Vec<f64>,
+
+    /// Output compact text summary instead of JSON.
+    #[arg(long)]
+    pub summary: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1260,6 +1277,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Serve(args) => run_serve(cli, args),
         #[cfg(feature = "shared-backend-postgres")]
         Command::Migrate(args) => run_migrate(cli, args),
+        Command::Map(args) => run_map(cli, args),
     }
 }
 
@@ -1386,6 +1404,51 @@ fn run_serve(cli: &Cli, args: &ServeArgs) -> Result<String> {
         .map_err(|e| CliError::InvalidInput(format!("failed to create tokio runtime: {e}")))?;
     runtime.block_on(crate::api::serve_http(state, &config))?;
     Ok(String::new())
+}
+
+fn run_map(cli: &Cli, args: &MapArgs) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
+
+    let alphas: Vec<f64> = if args.alpha.is_empty() {
+        vec![0.5]
+    } else {
+        args.alpha.clone()
+    };
+
+    if alphas.len() == 1 {
+        let result = crate::map::compute_map(&graph, &cli.hivemind_dir, alphas[0])
+            .map_err(|e| CliError::InvalidInput(e.to_string()))?;
+        if args.summary {
+            let mut out = format!(
+                "Decision map: {} decisions, alpha={:.2}, gen={}\n",
+                result.n,
+                result.alpha,
+                &result.gen_id[..8]
+            );
+            for p in &result.points {
+                out.push_str(&format!(
+                    "  [{:>6.2}, {:>6.2}] {:8} {}\n",
+                    p.x_time, p.y_spectral, p.status, p.title
+                ));
+            }
+            Ok(out)
+        } else {
+            serde_json::to_string_pretty(&result)
+                .map_err(|e| CliError::InvalidInput(e.to_string()).into())
+        }
+    } else {
+        let mut results = Vec::new();
+        for &alpha in &alphas {
+            let r = crate::map::compute_map(&graph, &cli.hivemind_dir, alpha)
+                .map_err(|e| CliError::InvalidInput(e.to_string()))?;
+            results.push(r);
+        }
+        serde_json::to_string_pretty(&results)
+            .map_err(|e| CliError::InvalidInput(e.to_string()).into())
+    }
 }
 
 fn run_ingest(cli: &Cli, ingest: &IngestArgs) -> Result<String> {
