@@ -1,0 +1,890 @@
+# HiveMind Showcase Corpus — Acme Payments
+# ---------------------------------------------------------------------------
+# A synthetic but realistic decision history for a B2B embedded-payments
+# startup over 12 months (Jan–Dec 2026).  Designed to exercise every
+# visualisation feature of the SPA + 2-D spectral map.
+#
+# Feature coverage:
+#   ✓ Multiple TOPICS with CROSS-TOPIC BRIDGES
+#   ✓ SUPERSESSION CHAINS (2–3 generations each for auth + DB)
+#   ✓ VARIED METRICS  (importance=stakes×irrev×action, quality [0,1])
+#   ✓ CONTESTED decisions  (accepted_by / rejected_by split)
+#   ✓ RICH structure: options (HAS_OPTION/CHOSE), evidence, hypotheses,
+#     blockers, decision-requests, actors
+#   ✓ MULTI-SOURCE + BITEMPORAL: some from Slack/Docs (backdated occurred_at),
+#     some captured live (occurred_at ≈ recorded_at)
+#   ✓ SCALE: 30 decisions over 12 months
+#
+# Actors:
+#   human:alex-m   — Alex Martinez, CTO
+#   human:priya-k  — Priya Krishnamurthy, VP Engineering
+#   human:dan-r    — Dan Rodriguez, VP Product
+#   human:sarah-l  — Sarah Lin, Head of Security
+#   human:tom-b    — Tom Burke, CEO
+#   agent:claude:arch  — AI architectural analysis assistant
+#   agent:claude:sec   — AI security-review assistant
+#
+# Topics:
+#   infrastructure, payments, security, product, engineering
+#
+# NOTE on metrics: decision.scored events require the scorer branch
+# (hivemind-m2-shared-backend-lives-uuq9.19) to be merged.  The loader
+# emits them conditionally; the YAML values here are the authored targets.
+# ---------------------------------------------------------------------------
+
+meta:
+  narrative: "Acme Payments — 12 months of a B2B embedded-payments startup building a payments API for e-commerce platforms."
+  period:
+    start: "2026-01-10"
+    end:   "2026-12-18"
+  actors:
+    - id: "human:alex-m"
+      name: "Alex Martinez"
+      role: "CTO"
+    - id: "human:priya-k"
+      name: "Priya Krishnamurthy"
+      role: "VP Engineering"
+    - id: "human:dan-r"
+      name: "Dan Rodriguez"
+      role: "VP Product"
+    - id: "human:sarah-l"
+      name: "Sarah Lin"
+      role: "Head of Security"
+    - id: "human:tom-b"
+      name: "Tom Burke"
+      role: "CEO"
+    - id: "agent:claude:arch"
+      name: "Claude (architecture)"
+      role: "AI assistant"
+    - id: "agent:claude:sec"
+      name: "Claude (security)"
+      role: "AI assistant"
+
+# ---------------------------------------------------------------------------
+# EVIDENCE (recorded before decisions that reference them)
+# ---------------------------------------------------------------------------
+evidence:
+  - id: "ev-001"
+    content: >
+      Load-test run 2026-01-08: Postgres sustained 220 TPS/tenant at 50 concurrent
+      connections on db.t3.xlarge.  MySQL reached 190 TPS but showed lock contention
+      at 30+ connections.  DynamoDB showed p99 latency > 90 ms on aggregate queries.
+    actor: "agent:claude:arch"
+    source: document
+    source_ref: "gdoc:arch-benchmarks-jan-2026"
+    occurred_at: "2026-01-08T14:00:00Z"
+
+  - id: "ev-002"
+    content: >
+      Stripe API integration spike: p99 charge latency 320 ms, p50 180 ms across
+      10 k sample transactions.  Adyen average 410 ms, higher variance.  Square
+      unavailable for B2B-only use-case without retail plan.
+    actor: "agent:claude:arch"
+    source: document
+    source_ref: "gdoc:payments-api-spike-mar-2026"
+    occurred_at: "2026-03-05T11:30:00Z"
+
+  - id: "ev-003"
+    content: >
+      Legal memo 2026-03-15: SAQ-A applies when card data is handled exclusively
+      via Stripe-hosted iframe (Stripe Elements).  We never touch raw PANs.
+      SAQ-D would apply only if we wrote our own card-capture forms.
+    actor: "human:sarah-l"
+    source: document
+    source_ref: "gdoc:pci-legal-memo-mar-2026"
+    occurred_at: "2026-03-15T09:00:00Z"
+
+  - id: "ev-004"
+    content: >
+      Incident report 2026-05-12: 3 long-lived API tokens leaked via a
+      compromised developer laptop.  Tokens had no expiry.  No production payment
+      data accessed (confirmed via audit logs).  Root cause: tokens in .env files
+      synced to personal cloud backup.
+    actor: "human:sarah-l"
+    source: slack
+    source_ref: "slack:C07INCIDENT:1747046400"
+    occurred_at: "2026-05-12T16:30:00Z"
+
+  - id: "ev-005"
+    content: >
+      EU market research Q3 2026: 38 % of surveyed e-commerce platforms are
+      actively expanding to EU within 12 months.  Top blocker cited: lack of
+      localised payment methods (iDEAL, SOFORT, Bancontact).
+    actor: "human:dan-r"
+    source: document
+    source_ref: "gdoc:eu-market-research-aug-2026"
+    occurred_at: "2026-08-20T10:00:00Z"
+
+  - id: "ev-006"
+    content: >
+      WorkOS incident post-mortem 2026-07-03: 47-minute outage affecting all
+      WorkOS-hosted SSO.  Root cause: DNS propagation failure during datacenter
+      maintenance.  Acme Payments saw 12 % login failure rate during window.
+    actor: "human:priya-k"
+    source: document
+    source_ref: "gdoc:workos-outage-postmortem-jul-2026"
+    occurred_at: "2026-07-04T09:00:00Z"
+
+  - id: "ev-007"
+    content: >
+      GDPR counsel memo 2026-09-02: Processing EU residents' payment data requires
+      Article 30 record-keeping, DPO appointment if processing is large-scale,
+      and a Transfer Impact Assessment for US→EU data flows.  SAQ-A scope does
+      not cover GDPR obligations.
+    actor: "human:sarah-l"
+    source: document
+    source_ref: "gdoc:gdpr-counsel-memo-sep-2026"
+    occurred_at: "2026-09-02T14:00:00Z"
+
+  - id: "ev-008"
+    content: >
+      AWS vs GCP TCO model (2026-01-15): 3-year TCO at projected scale —
+      AWS $1.2 M, GCP $1.05 M, Azure $1.35 M.  AWS wins on existing team
+      familiarity (8/12 engineers have AWS certs) and breadth of managed services
+      (RDS, SQS, Lambda all needed).  GCP savings insufficient to offset
+      retraining cost.
+    actor: "agent:claude:arch"
+    source: document
+    source_ref: "gdoc:cloud-tco-jan-2026"
+    occurred_at: "2026-01-15T10:00:00Z"
+
+  - id: "ev-009"
+    content: >
+      Auth scalability test 2026-06-18: stateless JWT with in-memory session
+      cache fails at 520 concurrent users — cache eviction races cause 8 %
+      401 error rate.  Adding Redis eliminates errors but doubles p99 latency
+      to 420 ms.  WorkOS hosted auth baseline: 280 ms p99 at 1000 concurrent.
+    actor: "agent:claude:sec"
+    source: document
+    source_ref: "gdoc:auth-scale-test-jun-2026"
+    occurred_at: "2026-06-18T15:00:00Z"
+
+# ---------------------------------------------------------------------------
+# HYPOTHESES
+# ---------------------------------------------------------------------------
+hypotheses:
+  - id: "hy-001"
+    statement: >
+      Stateless JWT sessions will scale to 1 000 concurrent users without
+      requiring a shared cache (Redis or equivalent).
+    actor: "human:alex-m"
+    source: cli
+    occurred_at: "2026-01-20T11:00:00Z"
+
+  - id: "hy-002"
+    statement: >
+      The 2026-05 API token leak was isolated to the compromised developer
+      laptop and did not propagate to additional machines or cloud credentials.
+    actor: "agent:claude:sec"
+    source: cli
+    occurred_at: "2026-05-13T09:00:00Z"
+
+  - id: "hy-003"
+    statement: >
+      EU expansion can proceed under the existing PCI SAQ-A compliance posture
+      without a separate GDPR audit, since payment data handling is unchanged.
+    actor: "human:dan-r"
+    source: cli
+    occurred_at: "2026-08-25T10:00:00Z"
+
+# ---------------------------------------------------------------------------
+# DECISIONS
+# Ordered by occurred_at (narrative chronology).
+# Fields:
+#   id, title, rationale, actor, topic_keys, source, source_ref, occurred_at
+#   options:  [{label, chosen}]
+#   hypotheses: [id]
+#   evidence: [id]
+#   accepted_by: [actor_id]   → decision.accepted events
+#   rejected_by: [actor_id]   → decision.rejected events  (contested if both)
+#   superseded_by: id         → decision.superseded event
+#   score:
+#     stakes: float           → unbounded (log-scale magnitude)
+#     irreversibility: float  → [0,1]
+#     actionability: float    → [0,1]
+#     quality: float          → composite [0,1]
+# ---------------------------------------------------------------------------
+decisions:
+
+  # ── Chapter 1: Foundation (Jan 2026) ──────────────────────────────────────
+
+  - id: "d-001"
+    title: "Use Postgres as the primary transactional database"
+    rationale: >
+      We need ACID transactions, row-level locking for concurrent payment
+      writes, and mature JSON support for event payloads.  MySQL had lock
+      contention at 30+ connections in our bench.  DynamoDB's aggregate
+      query latency (>90 ms p99) is unacceptable for dashboard queries.
+      Postgres on RDS managed instances gives us maintenance, failover,
+      and backups without ops overhead.
+    actor: "human:alex-m"
+    topic_keys: [infrastructure]
+    source: slack
+    source_ref: "slack:C07ARCH:1736467200"
+    occurred_at: "2026-01-10T10:00:00Z"
+    options:
+      - {label: "Postgres", chosen: true}
+      - {label: "MySQL", chosen: false}
+      - {label: "DynamoDB", chosen: false}
+    evidence: [ev-001]
+    accepted_by: [human:priya-k, human:alex-m]
+    score:
+      stakes: 85.0
+      irreversibility: 0.80
+      actionability: 1.0
+      quality: 0.82
+
+  - id: "d-002"
+    title: "Run all infrastructure on AWS (primary cloud provider)"
+    rationale: >
+      8 of 12 engineers hold AWS certifications.  TCO model over 3 years
+      shows AWS at $1.2 M vs GCP $1.05 M — the $150 K saving does not
+      offset ~$400 K in retraining and tooling migration costs.  AWS managed
+      services (RDS, SQS, Lambda) cover our full stack without third-party
+      glue.  Azure ruled out: highest TCO + weakest managed payments ecosystem.
+    actor: "human:alex-m"
+    topic_keys: [infrastructure]
+    source: document
+    source_ref: "gdoc:cloud-decision-jan-2026"
+    occurred_at: "2026-01-18T14:00:00Z"
+    options:
+      - {label: "AWS", chosen: true}
+      - {label: "GCP", chosen: false}
+      - {label: "Azure", chosen: false}
+    evidence: [ev-008]
+    accepted_by: [human:tom-b, human:priya-k]
+    score:
+      stakes: 90.0
+      irreversibility: 0.75
+      actionability: 1.0
+      quality: 0.85
+
+  - id: "d-003"
+    title: "Use stateless JWT + in-memory session cache for API authentication"
+    rationale: >
+      Auth0 and WorkOS both introduce vendor lock-in at a $24 K/year price
+      point we can't justify pre-Series-A.  Stateless JWT avoids Redis
+      dependency and keeps p99 auth latency under 50 ms in our test env.
+      We'll revisit at 500+ concurrent users.
+    actor: "human:alex-m"
+    topic_keys: [security]
+    source: cli
+    occurred_at: "2026-01-22T11:00:00Z"
+    options:
+      - {label: "Stateless JWT + in-memory cache", chosen: true}
+      - {label: "WorkOS AuthKit", chosen: false}
+      - {label: "Auth0", chosen: false}
+    hypotheses: [hy-001]
+    accepted_by: [human:priya-k]
+    superseded_by: "d-010"
+    score:
+      stakes: 60.0
+      irreversibility: 0.50
+      actionability: 1.0
+      quality: 0.38
+
+  - id: "d-004"
+    title: "Use Rust as the primary backend language"
+    rationale: >
+      Payments infra requires predictable latency, memory safety, and
+      auditability.  Go is a reasonable alternative but our two senior
+      engineers have Rust production experience.  Node is ruled out:
+      async GC pauses are unacceptable for payment critical paths.
+      We accept the steeper onboarding curve given the safety payoff.
+    actor: "human:alex-m"
+    topic_keys: [engineering]
+    source: cli
+    occurred_at: "2026-01-25T10:00:00Z"
+    options:
+      - {label: "Rust", chosen: true}
+      - {label: "Go", chosen: false}
+      - {label: "Node.js", chosen: false}
+    accepted_by: [human:priya-k, human:tom-b]
+    score:
+      stakes: 70.0
+      irreversibility: 0.85
+      actionability: 1.0
+      quality: 0.79
+
+  # ── Chapter 2: Payment Provider (Mar 2026) ────────────────────────────────
+
+  - id: "d-005"
+    title: "Use Stripe as our primary payment processor"
+    rationale: >
+      Stripe Connect covers our B2B marketplace model with direct charges
+      and instant payouts.  API latency p99 is 320 ms vs Adyen's 410 ms.
+      Square requires a retail plan and doesn't support B2B-only.
+      Stripe's ecosystem (Radar fraud, Revenue Recognition, Data Pipeline)
+      means we buy vs build on ancillary products.
+    actor: "human:dan-r"
+    topic_keys: [payments]
+    source: document
+    source_ref: "gdoc:payments-provider-decision-mar-2026"
+    occurred_at: "2026-03-08T14:00:00Z"
+    options:
+      - {label: "Stripe Connect", chosen: true}
+      - {label: "Adyen for Platforms", chosen: false}
+      - {label: "Square", chosen: false}
+    evidence: [ev-002]
+    accepted_by: [human:tom-b, human:alex-m, human:priya-k]
+    score:
+      stakes: 110.0
+      irreversibility: 0.70
+      actionability: 1.0
+      quality: 0.81
+
+  - id: "d-006"
+    title: "Maintain PCI DSS SAQ-A compliance scope (not SAQ-D)"
+    rationale: >
+      We use Stripe Elements exclusively for card capture — card data never
+      touches our servers.  Legal confirms SAQ-A applies.  SAQ-D would require
+      quarterly scans and annual on-site assessment, adding ~$80 K/year.
+      Constraint: we must never render our own card-input forms.
+    actor: "human:sarah-l"
+    topic_keys: [security, payments]
+    source: document
+    source_ref: "gdoc:pci-scope-decision-mar-2026"
+    occurred_at: "2026-03-18T10:00:00Z"
+    options:
+      - {label: "SAQ-A (iframe only)", chosen: true}
+      - {label: "SAQ-D (full cardholder data environment)", chosen: false}
+    evidence: [ev-003]
+    accepted_by: [human:tom-b, human:alex-m]
+    score:
+      stakes: 65.0
+      irreversibility: 0.55
+      actionability: 1.0
+      quality: 0.88
+
+  - id: "d-007"
+    title: "Charge platforms a flat 0.5 % processing fee"
+    rationale: >
+      Flat rate is simpler to explain to customers and reduces billing
+      disputes.  Tiered pricing optimises margin at high volume but we
+      have no high-volume customers yet.  Per-transaction ($0.10 + 0.2 %)
+      favours low-value, high-frequency transactions which is not our
+      current mix.  We'll revisit after first $10 M GMV.
+    actor: "human:tom-b"
+    topic_keys: [payments, product]
+    source: cli
+    occurred_at: "2026-03-25T11:00:00Z"
+    options:
+      - {label: "Flat 0.5 %", chosen: true}
+      - {label: "Tiered (0.3–0.8 %)", chosen: false}
+      - {label: "Per-transaction ($0.10 + 0.2 %)", chosen: false}
+    accepted_by: [human:dan-r]
+    score:
+      stakes: 45.0
+      irreversibility: 0.40
+      actionability: 1.0
+      quality: 0.60
+
+  # ── Chapter 3: Security Incident (May 2026) ───────────────────────────────
+
+  - id: "d-008"
+    title: "Rotate all API tokens and enforce 2-FA on all developer accounts"
+    rationale: >
+      Three long-lived tokens were leaked via a compromised laptop.  Rotating
+      every token is the only way to guarantee the blast radius is contained.
+      2-FA prevents credential reuse even if another laptop is compromised.
+      Disruption to active integrations is acceptable given the security risk.
+    actor: "human:sarah-l"
+    topic_keys: [security]
+    source: slack
+    source_ref: "slack:C07INCIDENT:1747132800"
+    occurred_at: "2026-05-13T10:00:00Z"
+    accepted_by: [human:sarah-l, human:dan-r]
+    rejected_by: [human:alex-m]
+    hypotheses: [hy-002]
+    evidence: [ev-004]
+    score:
+      stakes: 95.0
+      irreversibility: 0.50
+      actionability: 1.0
+      quality: 0.51
+
+  - id: "d-009"
+    title: "Disable API-key authentication; require JWT for all API access"
+    rationale: >
+      API keys are static secrets with no expiry.  Post-incident analysis
+      shows long-lived keys are the primary risk surface.  JWT tokens expire
+      in 24 h and are tied to a session.  Deprecating API keys closes that
+      attack vector permanently.
+    actor: "human:sarah-l"
+    topic_keys: [security]
+    source: slack
+    source_ref: "slack:C07INCIDENT:1747219200"
+    occurred_at: "2026-05-14T09:00:00Z"
+    accepted_by: [human:sarah-l, agent:claude:sec]
+    rejected_by: [human:priya-k]
+    score:
+      stakes: 70.0
+      irreversibility: 0.60
+      actionability: 1.0
+      quality: 0.54
+
+  # ── Chapter 4: Auth Supersession Chain (Jun 2026) ─────────────────────────
+  # D-003 → D-010 → D-011
+  # Triggered by: hy-001 REFUTED (JWT doesn't scale past 500 users)
+
+  - id: "d-010"
+    title: "Migrate API authentication to WorkOS AuthKit"
+    rationale: >
+      Load testing at 520 concurrent users revealed JWT + in-memory cache
+      causes 8 % 401 errors due to cache eviction races (hypothesis hy-001
+      refuted by ev-009).  Adding Redis eliminates errors but doubles auth
+      latency.  WorkOS AuthKit at 280 ms p99 at 1000 concurrent is superior.
+      Post-Series-A budget now justifies the $24 K/year cost.
+      Supersedes d-003 (stateless JWT approach proved insufficient).
+    actor: "human:alex-m"
+    topic_keys: [security, infrastructure]
+    source: cli
+    occurred_at: "2026-06-22T14:00:00Z"
+    options:
+      - {label: "WorkOS AuthKit", chosen: true}
+      - {label: "Redis-backed JWT", chosen: false}
+      - {label: "Auth0", chosen: false}
+    evidence: [ev-009]
+    hypotheses: [hy-001]
+    accepted_by: [human:priya-k, human:sarah-l]
+    superseded_by: "d-011"
+    score:
+      stakes: 65.0
+      irreversibility: 0.55
+      actionability: 1.0
+      quality: 0.77
+
+  - id: "d-011"
+    title: "Add SSO fallback provider (Okta) alongside WorkOS for auth resilience"
+    rationale: >
+      WorkOS experienced a 47-minute outage on 2026-07-03 that caused 12 %
+      login failures.  Single auth provider is a critical availability risk.
+      Adding Okta as a hot standby allows failover in under 5 minutes.
+      Supersedes d-010 (WorkOS-only approach proved insufficient for 99.9 % SLA).
+    actor: "human:priya-k"
+    topic_keys: [security, infrastructure]
+    source: document
+    source_ref: "gdoc:auth-resilience-decision-jul-2026"
+    occurred_at: "2026-07-07T11:00:00Z"
+    options:
+      - {label: "WorkOS + Okta hot standby", chosen: true}
+      - {label: "WorkOS only (accept risk)", chosen: false}
+      - {label: "Build in-house SSO abstraction layer", chosen: false}
+    evidence: [ev-006]
+    accepted_by: [human:alex-m, human:tom-b]
+    score:
+      stakes: 55.0
+      irreversibility: 0.50
+      actionability: 1.0
+      quality: 0.83
+
+  # ── Chapter 4b: DB Supersession Chain (Jun–Sep 2026) ─────────────────────
+  # D-001 → D-012 → D-013
+
+  - id: "d-012"
+    title: "Add a Postgres read replica for dashboard and analytics queries"
+    rationale: >
+      Dashboard queries now account for 35 % of DB load and are causing
+      p95 latency degradation on write paths.  A read replica isolates
+      read load.  This is the first step on the DB scaling ladder;
+      connection pooling and sharding are deferred.
+      Extends d-001 (still Postgres, adding operational topology).
+    actor: "human:priya-k"
+    topic_keys: [infrastructure]
+    source: cli
+    occurred_at: "2026-06-30T10:00:00Z"
+    options:
+      - {label: "Postgres primary + read replica", chosen: true}
+      - {label: "Read-through cache (Redis)", chosen: false}
+    accepted_by: [human:alex-m]
+    superseded_by: "d-013"
+    score:
+      stakes: 50.0
+      irreversibility: 0.45
+      actionability: 1.0
+      quality: 0.74
+
+  - id: "d-013"
+    title: "Add PgBouncer connection pooler in front of Postgres (primary + replica)"
+    rationale: >
+      After read replica deploy, we still see connection exhaustion during peak
+      (>180 connections).  PgBouncer in transaction-pooling mode lets us serve
+      1000+ app connections over 50 backend connections.  Eliminates connection
+      exhaustion without schema changes.
+      Extends d-012 (adds pooler layer to existing read-replica topology).
+    actor: "human:priya-k"
+    topic_keys: [infrastructure]
+    source: cli
+    occurred_at: "2026-09-05T14:00:00Z"
+    options:
+      - {label: "PgBouncer transaction mode", chosen: true}
+      - {label: "RDS Proxy (AWS managed)", chosen: false}
+      - {label: "Shard the database", chosen: false}
+    accepted_by: [human:alex-m, agent:claude:arch]
+    score:
+      stakes: 40.0
+      irreversibility: 0.35
+      actionability: 1.0
+      quality: 0.80
+
+  # ── Chapter 5: Product Pivot (Aug–Oct 2026) ───────────────────────────────
+
+  - id: "d-014"
+    title: "Do not add cryptocurrency payment support in 2026"
+    rationale: >
+      DecisionRequest dr-001 asked whether to add crypto.  After analysis:
+      crypto volume in B2B e-commerce is < 0.3 % of GMV per Stripe data.
+      Compliance burden (FinCEN MSB registration, BitLicense NY) is
+      disproportionate.  Engineering cost is 3+ months.  Deferred to 2027
+      reassessment when regulatory clarity improves.
+    actor: "human:tom-b"
+    topic_keys: [product, payments]
+    source: cli
+    occurred_at: "2026-08-28T10:00:00Z"
+    options:
+      - {label: "Add crypto support (BTC + ETH)", chosen: false}
+      - {label: "Defer to 2027", chosen: true}
+    accepted_by: [human:dan-r, human:sarah-l]
+    score:
+      stakes: 35.0
+      irreversibility: 0.25
+      actionability: 1.0
+      quality: 0.72
+
+  - id: "d-015"
+    title: "Expand product to EU market (starting with Germany + Netherlands)"
+    rationale: >
+      38 % of surveyed platforms are expanding to EU within 12 months.
+      iDEAL (NL) and SOFORT (DE) are top-requested payment methods.
+      Stripe supports both natively.  We target Q1 2027 GA;
+      compliance groundwork (GDPR, local payment methods) starts Q4 2026.
+    actor: "human:tom-b"
+    topic_keys: [product, payments]
+    source: document
+    source_ref: "gdoc:eu-expansion-decision-sep-2026"
+    occurred_at: "2026-09-10T11:00:00Z"
+    options:
+      - {label: "EU expansion (DE + NL first)", chosen: true}
+      - {label: "APAC expansion", chosen: false}
+      - {label: "Deepen US coverage only", chosen: false}
+    evidence: [ev-005]
+    accepted_by: [human:dan-r, human:priya-k]
+    score:
+      stakes: 130.0
+      irreversibility: 0.60
+      actionability: 0.90
+      quality: 0.76
+
+  - id: "d-016"
+    title: "Deprecate Webhook API v1; require migration to Webhook API v2"
+    rationale: >
+      Webhook v1 lacks idempotency keys, has no retry logic, and exposes
+      raw event payloads that caused two data-consistency incidents in Q2.
+      v2 fixes all three.  We'll give customers 6 months (until 2027-04-01)
+      to migrate.  v1 will be disabled, not sunset slowly, to avoid split
+      maintenance burden.
+    actor: "human:priya-k"
+    topic_keys: [product, engineering]
+    source: cli
+    occurred_at: "2026-09-20T14:00:00Z"
+    accepted_by: [human:dan-r, human:alex-m]
+    score:
+      stakes: 25.0
+      irreversibility: 0.55
+      actionability: 1.0
+      quality: 0.78
+
+  - id: "d-017"
+    title: "Host EU customer data exclusively in AWS eu-central-1 (Frankfurt)"
+    rationale: >
+      GDPR data residency requires EU personal data stay in the EU or an
+      adequacy-listed country.  eu-central-1 (Frankfurt) and eu-west-1
+      (Dublin) both qualify.  Frankfurt has lower latency to our primary
+      DE + NL markets (13 ms vs 22 ms from Dublin).  All EU tenants get
+      an isolated RDS instance in eu-central-1; no cross-region replication
+      of personal data.
+    actor: "human:sarah-l"
+    topic_keys: [infrastructure, security, payments]
+    source: cli
+    occurred_at: "2026-10-05T10:00:00Z"
+    options:
+      - {label: "eu-central-1 (Frankfurt)", chosen: true}
+      - {label: "eu-west-1 (Dublin)", chosen: false}
+    evidence: [ev-007]
+    accepted_by: [human:tom-b, human:alex-m]
+    score:
+      stakes: 80.0
+      irreversibility: 0.65
+      actionability: 1.0
+      quality: 0.84
+
+  # ── Chapter 6: Compliance & Scale (Oct–Dec 2026) ──────────────────────────
+
+  - id: "d-018"
+    title: "Appoint external DPO firm for GDPR compliance"
+    rationale: >
+      GDPR Article 37 mandates a Data Protection Officer when processing
+      large-scale sensitive data.  In-house DPO would cost ~$180 K/year
+      (loaded) plus 3–6 months to hire.  External DPO firm at $36 K/year
+      provides immediate coverage, regulatory network, and scales with
+      headcount.  Selected firm: DataGuard (EU-specialist).
+    actor: "human:tom-b"
+    topic_keys: [security, product]
+    source: cli
+    occurred_at: "2026-10-15T10:00:00Z"
+    options:
+      - {label: "External DPO firm (DataGuard)", chosen: true}
+      - {label: "In-house DPO hire", chosen: false}
+    evidence: [ev-007]
+    accepted_by: [human:sarah-l, human:dan-r]
+    score:
+      stakes: 55.0
+      irreversibility: 0.35
+      actionability: 1.0
+      quality: 0.82
+
+  - id: "d-019"
+    title: "Upgrade to PCI DSS Level 1 compliance ahead of EU launch"
+    rationale: >
+      EU enterprise customers require PCI Level 1 (Report on Compliance,
+      not self-assessment).  Current SAQ-A is insufficient for contracts
+      above €1 M GMV/year.  Level 1 audit cost ($120 K) is offset by
+      unlocking the enterprise tier.  Audit scope: Stripe integration,
+      tokenisation flow, audit logging.
+    actor: "human:sarah-l"
+    topic_keys: [security, payments]
+    source: document
+    source_ref: "gdoc:pci-level1-decision-oct-2026"
+    occurred_at: "2026-10-22T14:00:00Z"
+    evidence: [ev-003]
+    accepted_by: [human:tom-b, human:alex-m]
+    score:
+      stakes: 75.0
+      irreversibility: 0.50
+      actionability: 1.0
+      quality: 0.86
+
+  - id: "d-020"
+    title: "Reorganise engineering into a Platform team and a Product teams"
+    rationale: >
+      Single-team structure creates coordination overhead as we approach 20
+      engineers.  Platform team owns: payments infra, auth, DB, deployment.
+      Product teams (2) own: Merchant Dashboard and Partner API.
+      Avoids a third-tier hierarchy that would slow decisions.
+    actor: "human:alex-m"
+    topic_keys: [engineering]
+    source: cli
+    occurred_at: "2026-11-01T11:00:00Z"
+    options:
+      - {label: "Platform + 2 product teams", chosen: true}
+      - {label: "Feature squads (no platform)", chosen: false}
+      - {label: "Functional departments (Eng / Product / Infra)", chosen: false}
+    accepted_by: [human:tom-b, human:priya-k]
+    score:
+      stakes: 55.0
+      irreversibility: 0.45
+      actionability: 1.0
+      quality: 0.74
+
+  - id: "d-021"
+    title: "Move merchant onboarding to self-serve (remove white-glove prerequisite)"
+    rationale: >
+      White-glove onboarding caps throughput at 8 new merchants/month
+      (3 sales engineers, full-day sessions).  Self-serve with docs + sandbox
+      targets 50+ merchants/month.  B2B SaaS comps show self-serve achieves
+      comparable activation rates when sandbox is frictionless.
+      Requires: improved CLI quickstart, hosted sandbox env, video walkthroughs.
+    actor: "human:dan-r"
+    topic_keys: [product, engineering]
+    source: document
+    source_ref: "gdoc:onboarding-model-decision-nov-2026"
+    occurred_at: "2026-11-15T14:00:00Z"
+    options:
+      - {label: "Self-serve + async support", chosen: true}
+      - {label: "White-glove only (status quo)", chosen: false}
+      - {label: "Hybrid (self-serve + optional white-glove)", chosen: false}
+    accepted_by: [human:tom-b, human:alex-m]
+    score:
+      stakes: 60.0
+      irreversibility: 0.40
+      actionability: 0.95
+      quality: 0.78
+
+  - id: "d-022"
+    title: "Adopt Temporal.io for all long-running payment workflow orchestration"
+    rationale: >
+      Payout workflows, dispute handling, and reconciliation jobs all need
+      durable execution with retries.  Current approach (SQS + Lambda + ad-hoc
+      state in Postgres) has caused 4 data-consistency incidents in 2026.
+      Temporal provides durable saga patterns, built-in replay, and a workflow
+      history UI.  Replaces ad-hoc queue/cron approach.
+    actor: "human:alex-m"
+    topic_keys: [infrastructure, payments, engineering]
+    source: cli
+    occurred_at: "2026-11-28T10:00:00Z"
+    options:
+      - {label: "Temporal.io (self-hosted)", chosen: true}
+      - {label: "AWS Step Functions", chosen: false}
+      - {label: "Maintain current SQS+Lambda approach", chosen: false}
+    accepted_by: [human:priya-k, agent:claude:arch]
+    score:
+      stakes: 70.0
+      irreversibility: 0.65
+      actionability: 1.0
+      quality: 0.79
+
+  - id: "d-023"
+    title: "Freeze EU data in us-east-1; do not migrate to eu-central-1 (reversed)"
+    rationale: >
+      Early EU beta (3 pilot customers) showed data volumes too small to justify
+      a dedicated eu-central-1 instance.  Legal confirmed pilot data is covered
+      by SCCs under our existing DPA.  We'll revisit at 100+ EU tenants.
+      Supersedes d-017 for beta phase only; d-017 remains the target for GA.
+    actor: "human:sarah-l"
+    topic_keys: [infrastructure, security]
+    source: cli
+    occurred_at: "2026-12-05T10:00:00Z"
+    accepted_by: [human:tom-b]
+    rejected_by: [human:dan-r]
+    score:
+      stakes: 50.0
+      irreversibility: 0.30
+      actionability: 1.0
+      quality: 0.55
+
+  - id: "d-024"
+    title: "Use Sentry for error monitoring and Datadog for infrastructure metrics"
+    rationale: >
+      Two tools rather than one: Sentry owns application errors (stack traces,
+      release tracking, user context); Datadog owns infra metrics, APM, and
+      logs.  Evaluated New Relic (all-in-one) — worse DX for Rust, higher cost
+      at our scale.  Combined Sentry+Datadog is $18 K/year vs New Relic $22 K.
+    actor: "human:priya-k"
+    topic_keys: [engineering, infrastructure]
+    source: cli
+    occurred_at: "2026-12-10T11:00:00Z"
+    options:
+      - {label: "Sentry + Datadog", chosen: true}
+      - {label: "New Relic (all-in-one)", chosen: false}
+      - {label: "Grafana OSS stack (self-hosted)", chosen: false}
+    accepted_by: [human:alex-m]
+    score:
+      stakes: 18.0
+      irreversibility: 0.30
+      actionability: 1.0
+      quality: 0.75
+
+  - id: "d-025"
+    title: "Adopt feature-flag service (LaunchDarkly) for all new feature rollouts"
+    rationale: >
+      EU expansion and PCI Level 1 rollout both need progressive deployment
+      with instant kill-switches.  Current approach (hard-coded env vars) can't
+      target by tenant or percentage.  LaunchDarkly at $12 K/year with SDK
+      support for Rust.  Custom implementation estimated at 6 weeks.
+    actor: "human:priya-k"
+    topic_keys: [engineering, product]
+    source: cli
+    occurred_at: "2026-12-18T14:00:00Z"
+    options:
+      - {label: "LaunchDarkly", chosen: true}
+      - {label: "Build in-house flag service", chosen: false}
+      - {label: "Unleash OSS (self-hosted)", chosen: false}
+    accepted_by: [human:dan-r, human:alex-m]
+    score:
+      stakes: 22.0
+      irreversibility: 0.25
+      actionability: 1.0
+      quality: 0.76
+
+# ---------------------------------------------------------------------------
+# DECISION REQUESTS
+# ---------------------------------------------------------------------------
+decision_requests:
+  - id: "dr-001"
+    reason: >
+      Several enterprise prospects have asked whether we plan to accept Bitcoin
+      or Ethereum payments.  No decision made.  Do we add crypto payment support
+      in 2026, and if so what scope?
+    topic_keys: [product, payments]
+    actor: "human:dan-r"
+    priority: P2
+    for_decision: "d-014"
+    occurred_at: "2026-08-15T10:00:00Z"
+    source: slack
+    source_ref: "slack:C07PRODUCT:1755244800"
+
+# ---------------------------------------------------------------------------
+# BLOCKERS
+# ---------------------------------------------------------------------------
+blockers:
+  - id: "bl-001"
+    description: >
+      PCI Level 1 audit required before EU launch.  Cannot onboard EU enterprise
+      customers (>€1 M GMV/year) until Report on Compliance is issued.
+    priority: P1
+    actor: "human:sarah-l"
+    occurred_at: "2026-10-22T15:00:00Z"
+    resolved_by_decision: "d-019"
+    resolved_at: "2026-10-22T15:30:00Z"
+
+  - id: "bl-002"
+    description: >
+      DPO appointment pending.  Cannot publish GDPR privacy notice or sign
+      EU data processing agreements until DPO is named.
+    priority: P1
+    actor: "human:sarah-l"
+    occurred_at: "2026-10-01T09:00:00Z"
+    resolved_by_decision: "d-018"
+    resolved_at: "2026-10-15T11:00:00Z"
+
+# ---------------------------------------------------------------------------
+# RELATIONS (cross-node semantic links)
+# These supplement the implicit links carried by hypothesis_ids/evidence_ids.
+# ---------------------------------------------------------------------------
+relations:
+  # D-006 (PCI SAQ-A) SUPPORTS D-005 (Stripe) — SAQ-A only possible because
+  # we use Stripe Elements, which in turn justified the Stripe choice.
+  - kind: SUPPORTS
+    from: "d-006"
+    to: "d-005"
+
+  # D-015 (EU expansion) ASSUMES D-017 (eu-central-1 data residency)
+  - kind: ASSUMES
+    from: "d-015"
+    to: "d-017"
+
+  # D-019 (PCI Level 1) SUPPORTS D-015 (EU expansion) — Level 1 unblocks enterprise EU
+  - kind: SUPPORTS
+    from: "d-019"
+    to: "d-015"
+
+  # D-018 (DPO) SUPPORTS D-015 (EU expansion) — DPO unblocks GDPR compliance
+  - kind: SUPPORTS
+    from: "d-018"
+    to: "d-015"
+
+  # D-010 (WorkOS) ASSUMES HY-001 is refuted (we only moved because JWT failed)
+  # captured via hypotheses: [hy-001] on d-010, plus evidence ev-009
+
+  # D-022 (Temporal) SUPPORTS D-005 (Stripe) — better orchestration for Stripe workflows
+  - kind: SUPPORTS
+    from: "d-022"
+    to: "d-005"
+
+  # D-021 (self-serve onboarding) ASSUMES D-016 (webhook v2 ready, simpler integration)
+  - kind: ASSUMES
+    from: "d-021"
+    to: "d-016"
+
+  # D-025 (LaunchDarkly flags) SUPPORTS D-015 (EU expansion rollout)
+  - kind: SUPPORTS
+    from: "d-025"
+    to: "d-015"
+
+  # D-009 (disable API keys) ASSUMES D-003 was wrong (contested security decisions)
+  - kind: REFUTES
+    from: "d-009"
+    to: "d-003"
+
+  # D-014 (no crypto) is BASED_ON evidence about market size (implicit in rationale;
+  # no explicit evidence node — correct to omit one, rationale cites Stripe data directly)
