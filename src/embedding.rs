@@ -37,7 +37,7 @@ impl SemanticEmbedder {
 impl Embedder for SemanticEmbedder {
     fn embed_batch(&mut self, texts: &[&str]) -> Vec<Vec<f32>> {
         self.inner
-            .embed(texts.to_vec(), None)
+            .embed(texts, None)
             .unwrap_or_else(|_| vec![vec![0.0f32; SEMANTIC_DIMS]; texts.len()]) // ubs:ignore: safe fallback — zero vectors degrade to time-only layout
     }
 
