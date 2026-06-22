@@ -9,7 +9,9 @@ COPY website/ ./
 RUN npm run build
 
 # Stage 2: Rust build
-FROM rust:1.88-slim-bookworm AS builder
+# Debian trixie (glibc 2.40) required: fastembed-rs/ort pre-built ONNX Runtime
+# binaries use glibc 2.38+ symbols (__isoc23_strtol etc.) unavailable in bookworm.
+FROM rust:1.88-slim-trixie AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
@@ -36,8 +38,8 @@ COPY schemas ./schemas
 RUN find src -name "*.rs" -exec touch {} + && \
     cargo build --release --locked --bin hivemind --features shared-backend-postgres
 
-# Stage 3: Runtime
-FROM debian:bookworm-slim
+# Stage 3: Runtime (trixie to match builder glibc ≥ 2.38 for ort/ONNX binaries)
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
