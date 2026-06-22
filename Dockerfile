@@ -1,4 +1,14 @@
-# Stage 1: Build
+# Stage 1: SPA build (Node.js)
+FROM node:22-slim AS spa-builder
+
+WORKDIR /app/website
+COPY website/package.json website/package-lock.json ./
+RUN npm ci --prefer-offline
+
+COPY website/ ./
+RUN npm run build
+
+# Stage 2: Rust build
 FROM rust:1.88-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -25,7 +35,7 @@ COPY schemas ./schemas
 RUN find src -name "*.rs" -exec touch {} + && \
     cargo build --release --locked --bin hivemind --features shared-backend-postgres
 
-# Stage 2: Runtime
+# Stage 3: Runtime
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -36,9 +46,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/hivemind /usr/local/bin/hivemind
+COPY --from=spa-builder /app/website/dist /app/dist
 
 ENV HIVEMIND_DIR=/data
 ENV HIVEMIND_PORT=8080
+ENV HIVEMIND_SPA_DIR=/app/dist
 
 EXPOSE 8080
 

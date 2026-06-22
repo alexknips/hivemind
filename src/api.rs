@@ -7,8 +7,9 @@
 //! ## Auth
 //!
 //! **SQLite dev mode** (`HIVEMIND_DATABASE_URL` unset): bearer token compared
-//! in constant time against `HIVEMIND_API_KEY`. Tenant identity comes from
-//! `X-HiveMind-Tenant` header.
+//! in constant time against `HIVEMIND_API_KEY`. When `WORKOS_DOMAIN` is also
+//! set, WorkOS JWTs are additionally accepted — the JWT `org_id` claim (or
+//! `sub` if absent) is used as the tenant key.
 //!
 //! **Postgres multi-tenant mode** (`HIVEMIND_DATABASE_URL` set): bearer token
 //! is resolved to a `tenant_id` via `TenantStore::resolve_token`. The token
@@ -30,7 +31,15 @@
 //! - `GET  /v1/decisions/{id}/supersession-chain`  — supersession chain
 //! - `GET  /v1/decisions/search`                   — full-text search (SQLite only)
 //! - `GET  /v1/decisions/relevant`                 — decisions by topic
+//! - `GET  /v1/graph`                              — full decision graph (JSON)
 //! - `GET  /v1/health`                             — liveness probe
+//!
+//! ## SPA serving
+//!
+//! When `HIVEMIND_SPA_DIR` is set, the server statically serves the built SPA
+//! from that directory at `/`. API paths (`/v1/*`, `/mcp`, `/.well-known/*`,
+//! `/auth/*`) take priority. Unknown paths fall back to the SPA's `index.html`
+//! for client-side routing (same-origin, no CORS needed).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,14 +48,14 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
+use axum::routing::post;
 use axum::Router;
 use chrono::{DateTime, Utc};
-#[cfg(feature = "shared-backend-postgres")]
 use jsonwebtoken::jwk::JwkSet;
-#[cfg(feature = "shared-backend-postgres")]
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
 
 use crate::commands::{CommandContext, Commands};
@@ -55,7 +64,10 @@ use crate::events::{EventProvenance, IngestTurn, TenantId};
 use crate::ledger::{EventLedger, SqliteEventLedger};
 #[cfg(feature = "shared-backend-postgres")]
 use crate::ledger::{PostgresEventLedger, TenantStore};
-use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
+use crate::projector::{
+    memory::MemoryGraph, rebuild_graph_for_tenant, GraphParams, GraphRow, GraphValue, GraphView,
+    NodeKind, RelationKind,
+};
 use crate::queries::{
     derive_decision_status, get_compact_view, get_decision, get_relevant_decisions,
     get_supersession_chain, search_decisions_fts_with_context, DecisionStatus, QueryContext,
@@ -91,6 +103,10 @@ pub struct ApiConfig {
     /// With DCR the client_id is dynamic; omitting WORKOS_AUDIENCE disables
     /// audience validation — set this to the client_id for stricter enforcement.
     pub workos_audience: Option<String>,
+    /// Directory containing the pre-built SPA. When set, the server serves
+    /// static files from this directory at `/`, falling back to `index.html`
+    /// for SPA client-side routing. API paths always take precedence.
+    pub spa_dir: Option<PathBuf>,
 }
 
 impl ApiConfig {
@@ -105,6 +121,7 @@ impl ApiConfig {
             workos_issuer: std::env::var("WORKOS_ISSUER").ok(),
             workos_jwks_url: std::env::var("WORKOS_JWKS_URL").ok(),
             workos_audience: std::env::var("WORKOS_AUDIENCE").ok(),
+            spa_dir: std::env::var("HIVEMIND_SPA_DIR").ok().map(PathBuf::from),
         }
     }
 
@@ -213,21 +230,21 @@ impl EventLedger for ApiLedger {
 struct WorkosConfig {
     /// AuthKit domain, e.g. `https://your-tenant.authkit.app`.
     domain: String,
-    /// OIDC issuer for JWT `iss` claim validation (postgres/JWT-auth path only).
-    #[cfg(feature = "shared-backend-postgres")]
+    /// OIDC issuer for JWT `iss` claim validation.
     issuer: String,
     /// Expected JWT `aud` claim. `None` disables audience validation (DCR mode).
-    #[cfg(feature = "shared-backend-postgres")]
     audience: Option<String>,
 }
 
 /// Claims extracted from a validated WorkOS access token.
-#[cfg(feature = "shared-backend-postgres")]
 #[derive(Debug, serde::Deserialize)]
 struct WorkosClaims {
     sub: String,
     #[serde(default)]
     email: Option<String>,
+    /// WorkOS organization ID — used as tenant key in SQLite mode.
+    #[serde(default)]
+    org_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -244,17 +261,15 @@ pub struct AppState {
     /// WorkOS OAuth resource-server config (set when WORKOS_DOMAIN is configured).
     workos_config: Option<WorkosConfig>,
     /// Cached WorkOS JWKS, fetched at startup. Empty if WorkOS not configured.
-    #[cfg(feature = "shared-backend-postgres")]
     workos_jwks: Arc<JwkSet>,
+    /// Pre-built SPA directory to serve at `/`. None = no SPA serving.
+    spa_dir: Option<PathBuf>,
 }
 
 impl AppState {
     pub fn from_config(config: &ApiConfig) -> crate::Result<Self> {
         // Fetch WorkOS config and JWKS once at startup (blocking I/O, pre-tokio).
-        #[cfg(feature = "shared-backend-postgres")]
         let (workos_config, workos_jwks) = build_workos_state(config);
-        #[cfg(not(feature = "shared-backend-postgres"))]
-        let workos_config = build_workos_state(config);
 
         #[cfg(feature = "shared-backend-postgres")]
         if let Some(ref url) = config.database_url {
@@ -267,6 +282,7 @@ impl AppState {
                 tenant_store: Some(Arc::new(store)),
                 workos_config,
                 workos_jwks,
+                spa_dir: config.spa_dir.clone(),
             });
         }
 
@@ -278,15 +294,14 @@ impl AppState {
             #[cfg(feature = "shared-backend-postgres")]
             tenant_store: None,
             workos_config,
-            #[cfg(feature = "shared-backend-postgres")]
             workos_jwks,
+            spa_dir: config.spa_dir.clone(),
         })
     }
 }
 
-/// Build WorkOS resource-server config and pre-fetch JWKS (postgres+JWT path).
+/// Build WorkOS resource-server config and pre-fetch JWKS.
 /// Called before the tokio runtime starts, so blocking I/O is safe.
-#[cfg(feature = "shared-backend-postgres")]
 fn build_workos_state(config: &ApiConfig) -> (Option<WorkosConfig>, Arc<JwkSet>) {
     let (Some(domain), Some(issuer), Some(jwks_url)) = (
         config.workos_domain.as_deref(),
@@ -296,7 +311,18 @@ fn build_workos_state(config: &ApiConfig) -> (Option<WorkosConfig>, Arc<JwkSet>)
             .or(config.workos_domain.as_deref()),
         config.workos_jwks_url.as_deref(),
     ) else {
-        return (None, Arc::new(JwkSet { keys: vec![] }));
+        // WORKOS_DOMAIN/WORKOS_JWKS_URL not set — WorkOS JWT auth disabled.
+        return (
+            config.workos_domain.as_deref().map(|domain| WorkosConfig {
+                domain: domain.to_owned(),
+                issuer: config
+                    .workos_issuer
+                    .clone()
+                    .unwrap_or_else(|| domain.to_owned()),
+                audience: config.workos_audience.clone(),
+            }),
+            Arc::new(JwkSet { keys: vec![] }),
+        );
     };
 
     let workos_cfg = WorkosConfig {
@@ -315,14 +341,6 @@ fn build_workos_state(config: &ApiConfig) -> (Option<WorkosConfig>, Arc<JwkSet>)
             (Some(workos_cfg), Arc::new(JwkSet { keys: vec![] }))
         }
     }
-}
-
-/// Build WorkOS resource-server config (SQLite/dev path — no JWKS fetch needed).
-#[cfg(not(feature = "shared-backend-postgres"))]
-fn build_workos_state(config: &ApiConfig) -> Option<WorkosConfig> {
-    config.workos_domain.as_deref().map(|domain| WorkosConfig {
-        domain: domain.to_owned(),
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +511,37 @@ async fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequ
         });
     }
 
+    // SQLite WorkOS JWT path: WorkOS configured, no postgres store, bearer looks like JWT.
+    // org_id claim → tenant key; falls back to sub when org_id absent.
+    if bearer.starts_with("ey") {
+        if let Some(ref workos) = state.workos_config {
+            #[cfg(not(feature = "shared-backend-postgres"))]
+            {
+                if state.workos_jwks.keys.is_empty() {
+                    return Err(ApiError::unauthorized(
+                        "WorkOS JWKS not loaded — cannot validate JWT",
+                    ));
+                }
+                let claims = validate_workos_jwt(
+                    bearer,
+                    &state.workos_jwks,
+                    &workos.issuer,
+                    workos.audience.as_deref(),
+                )
+                .map_err(ApiError::unauthorized)?;
+
+                let tenant_raw = claims.org_id.as_deref().unwrap_or(claims.sub.as_str());
+                let tenant_id = TenantId::new(tenant_raw)
+                    .map_err(|_| ApiError::internal("invalid tenant from WorkOS org_id"))?;
+                let actor_id = format!("human:{}", claims.email.as_deref().unwrap_or(&claims.sub));
+                return Ok(ApiRequestCtx {
+                    tenant_id,
+                    actor_id,
+                });
+            }
+        }
+    }
+
     // SQLite dev mode: single-key constant-time comparison.
     if let Some(expected) = &state.api_key {
         if !constant_time_eq(bearer, expected) {
@@ -520,7 +569,6 @@ async fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequ
     })
 }
 
-#[cfg(feature = "shared-backend-postgres")]
 /// Validate a WorkOS JWT access token against the cached JWKS.
 ///
 /// Validates signature (RS256/ES256), issuer, and expiry. When `audience` is
@@ -677,6 +725,187 @@ struct ProvisionTenantRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Graph endpoint types
+// ---------------------------------------------------------------------------
+
+/// A single node in the decision graph, as returned by GET /v1/graph.
+#[derive(Debug, serde::Serialize)]
+struct GraphNode {
+    id: String,
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+}
+
+/// A directed edge in the decision graph.
+#[derive(Clone, Debug, serde::Serialize)]
+struct GraphEdge {
+    from: String,
+    to: String,
+    relation: String,
+}
+
+/// Full decision graph for a tenant, in the shape expected by the SPA.
+#[derive(Debug, serde::Serialize)]
+struct GraphData {
+    decisions: Vec<serde_json::Value>,
+    nodes: Vec<GraphNode>,
+    edges: Vec<GraphEdge>,
+    /// Edges grouped by relation label (same data as `edges`, keyed by relation).
+    labeled_edges: std::collections::HashMap<String, Vec<GraphEdge>>,
+}
+
+// ---------------------------------------------------------------------------
+// Graph handler
+// ---------------------------------------------------------------------------
+
+async fn graph_handler(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    let backend = Arc::clone(&state.backend);
+    let result = tokio::task::spawn_blocking(move || graph_blocking(&backend, &ctx)).await;
+    unpack_blocking(result)
+}
+
+fn graph_blocking(backend: &ApiBackend, ctx: &ApiRequestCtx) -> ApiResult<serde_json::Value> {
+    let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&ledger, &ctx.tenant_id, &graph)
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    let mut nodes: Vec<GraphNode> = Vec::new();
+    let mut decisions: Vec<serde_json::Value> = Vec::new();
+
+    for kind in NodeKind::ALL {
+        let rows = graph
+            .query(&graph_node_query(kind), &GraphParams::new())
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        for row in rows {
+            let id = row_string(&row, "id").unwrap_or_default();
+            let label = row
+                .get("title")
+                .or_else(|| row.get("label"))
+                .or_else(|| row.get("statement"))
+                .or_else(|| row.get("content"))
+                .and_then(|v| {
+                    if let GraphValue::String(s) = v {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                });
+            nodes.push(GraphNode {
+                id: format!("{}:{}", kind.table_name(), id),
+                kind: kind.table_name().to_owned(),
+                label: label.clone(),
+            });
+            if matches!(kind, NodeKind::Decision) {
+                let obj: serde_json::Map<String, serde_json::Value> = row
+                    .iter()
+                    .map(|(k, v)| (k.clone(), graph_value_to_json(v)))
+                    .collect();
+                decisions.push(serde_json::Value::Object(obj));
+            }
+        }
+    }
+
+    let mut edges: Vec<GraphEdge> = Vec::new();
+    let mut labeled_edges: std::collections::HashMap<String, Vec<GraphEdge>> =
+        std::collections::HashMap::new();
+
+    for relation in RelationKind::ALL {
+        let (from_kind, to_kind) = relation.endpoints();
+        let q = format!(
+            "MATCH (from:`{}`)-[rel:`{}`]->(to:`{}`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;",
+            from_kind.table_name(),
+            relation.table_name(),
+            to_kind.table_name()
+        );
+        let rows = graph
+            .query(&q, &GraphParams::new())
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        for row in rows {
+            let edge = GraphEdge {
+                from: format!(
+                    "{}:{}",
+                    from_kind.table_name(),
+                    row_string(&row, "from_id").unwrap_or_default()
+                ),
+                to: format!(
+                    "{}:{}",
+                    to_kind.table_name(),
+                    row_string(&row, "to_id").unwrap_or_default()
+                ),
+                relation: relation.table_name().to_owned(),
+            };
+            labeled_edges
+                .entry(edge.relation.clone())
+                .or_default()
+                .push(edge.clone());
+            edges.push(edge);
+        }
+    }
+
+    let data = GraphData {
+        decisions,
+        nodes,
+        edges,
+        labeled_edges,
+    };
+    serde_json::to_value(data).map_err(|e| ApiError::internal(e.to_string()))
+}
+
+fn row_string(row: &GraphRow, key: &str) -> Option<String> {
+    row.get(key).and_then(|v| {
+        if let GraphValue::String(s) = v {
+            Some(s.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn graph_node_query(kind: NodeKind) -> String {
+    let projection = match kind {
+        NodeKind::Decision => {
+            "node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys"
+        }
+        NodeKind::DecisionRequest => {
+            "node.id AS id, node.topic_keys AS topic_keys, node.reason AS reason"
+        }
+        NodeKind::Actor => "node.id AS id",
+        NodeKind::Blocker => "node.id AS id, node.reason AS reason",
+        NodeKind::Evidence => "node.id AS id, node.content AS content",
+        NodeKind::Notification => "node.id AS id",
+        NodeKind::Option => "node.id AS id, node.label AS label, node.description AS description",
+        NodeKind::Hypothesis => "node.id AS id, node.statement AS statement",
+    };
+    format!(
+        "MATCH (node:`{}`) RETURN {projection} ORDER BY node.id;",
+        kind.table_name()
+    )
+}
+
+fn graph_value_to_json(v: &GraphValue) -> serde_json::Value {
+    match v {
+        GraphValue::Null => serde_json::Value::Null,
+        GraphValue::Bool(b) => serde_json::Value::Bool(*b),
+        GraphValue::Int(i) => serde_json::Value::Number(serde_json::Number::from(*i)),
+        GraphValue::Float(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        GraphValue::String(s) => serde_json::Value::String(s.clone()),
+        GraphValue::StringList(list) => serde_json::Value::Array(
+            list.iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Router — public so tests can call create_router without binding a port
 // ---------------------------------------------------------------------------
 
@@ -717,12 +946,22 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/.well-known/oauth-authorization-server",
             get(oauth_authorization_server_handler),
-        );
+        )
+        // Full decision graph (read layer — no layer-3 inference)
+        .route("/v1/graph", get(graph_handler));
 
     #[cfg(feature = "shared-backend-postgres")]
     let router = router.route("/v1/tenants", post(provision_tenant_handler));
 
-    router.with_state(state)
+    // SPA static serving: API routes above take precedence via axum route order.
+    // Non-API paths fall back to the SPA's index.html for client-side routing.
+    if let Some(ref spa_dir) = state.spa_dir {
+        let index = spa_dir.join("index.html");
+        let serve = ServeDir::new(spa_dir).fallback(ServeFile::new(index));
+        router.with_state(state).fallback_service(serve)
+    } else {
+        router.with_state(state)
+    }
 }
 
 /// Bind to `config.port` and serve until SIGINT/SIGTERM.

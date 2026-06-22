@@ -29,6 +29,7 @@ fn app(hivemind_dir: PathBuf) -> axum::Router {
         workos_issuer: None,
         workos_jwks_url: None,
         workos_audience: None,
+        spa_dir: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -44,6 +45,7 @@ fn app_with_key(hivemind_dir: PathBuf, key: &str) -> axum::Router {
         workos_issuer: None,
         workos_jwks_url: None,
         workos_audience: None,
+        spa_dir: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -1011,4 +1013,54 @@ async fn mcp_http_oauth_metadata_stubs_respond() {
     // no AS is set up (WorkOS is the AS in the WorkOS bake-off branch).
     let (s2, _b2) = call(router, get_req("/.well-known/oauth-authorization-server")).await;
     assert_eq!(s2, StatusCode::NOT_FOUND); // ubs:ignore
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/graph
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn graph_returns_shape_after_decision() {
+    let dir = test_ledger_dir();
+
+    // Capture a decision so the graph is non-empty.
+    let (status, _) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            serde_json::json!({
+                "title": "Use SQLite for the hosted MVP",
+                "rationale": "Single binary, zero ops",
+                "topic_keys": ["persistence"],
+                "options": [
+                    { "label": "SQLite", "description": "Local file" },
+                    { "label": "Postgres", "description": "Managed Postgres" }
+                ],
+                "chosen_option_label": "SQLite"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "precondition: capture failed"); // ubs:ignore
+
+    let (gs, gb) = call(app(dir), get_req("/v1/graph")).await;
+    assert_eq!(gs, StatusCode::OK, "GET /v1/graph: {gb}"); // ubs:ignore
+
+    // Response must have the four top-level fields.
+    assert!(gb.get("decisions").is_some(), "missing decisions field"); // ubs:ignore
+    assert!(gb.get("nodes").is_some(), "missing nodes field"); // ubs:ignore
+    assert!(gb.get("edges").is_some(), "missing edges field"); // ubs:ignore
+    assert!(
+        gb.get("labeled_edges").is_some(),
+        "missing labeled_edges field"
+    ); // ubs:ignore
+
+    // At least one decision node should be present.
+    let decisions = gb["decisions"].as_array().unwrap();
+    assert!(!decisions.is_empty(), "expected at least one decision"); // ubs:ignore
+
+    // Each decision must have id and title.
+    let d = &decisions[0];
+    assert!(d.get("id").is_some(), "decision missing id"); // ubs:ignore
+    assert!(d.get("title").is_some(), "decision missing title"); // ubs:ignore
 }
