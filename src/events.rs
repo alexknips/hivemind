@@ -77,6 +77,8 @@ pub enum EventType {
     IngestBatchReceived,
     #[serde(rename = "ingest.batch_classified")]
     IngestBatchClassified,
+    #[serde(rename = "decision.scored")]
+    DecisionScored,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -407,6 +409,65 @@ pub struct IngestBatchClassifiedPayload {
     pub captures: Vec<CaptureItem>,
 }
 
+/// One scored quality dimension: score in [0,1] plus a human-readable explanation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QualityDim {
+    /// Score in [0,1] for this dimension.
+    pub score: f64,
+    pub explanation: String,
+}
+
+/// All seven Quality dimensions assessed ex ante.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QualityDims {
+    pub framing: QualityDim,
+    pub alternatives: QualityDim,
+    pub information: QualityDim,
+    pub reasoning: QualityDim,
+    pub values_tradeoffs: QualityDim,
+    pub bias_exposure: QualityDim,
+    pub calibration: QualityDim,
+}
+
+/// Importance factors stored individually (Importance = stakes × irreversibility × actionability).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportanceFactors {
+    /// Unbounded positive magnitude (log-scaled; severity × reach).
+    pub stakes: f64,
+    pub stakes_explanation: String,
+    /// Irreversibility discount in [0,1]: 0 = fully reversible, 1 = fully irreversible.
+    pub irreversibility: f64,
+    pub irreversibility_explanation: String,
+    /// Actionability gate in [0,1]: 0 = not actionable, 1 = fully actionable.
+    pub actionability: f64,
+    pub actionability_explanation: String,
+}
+
+/// Payload for a `decision.scored` append-only annotation event.
+///
+/// Scores are Layer-3: server-computed, stored separately from the decision,
+/// never an edit to it. Re-assessments append a new event with `supersedes_score_id`
+/// pointing at the prior one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionScoredPayload {
+    /// The capture node ID (e.g. `capture:42:0`) from the classified batch.
+    pub capture_node_id: String,
+    pub scorer_model: String,
+    /// Version tag for the quality dimension weights (e.g. "v1") so composites can recompute.
+    pub weight_version: String,
+    /// event_uuid of a prior `decision.scored` event that this assessment supersedes, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes_score_id: Option<String>,
+    /// Per-dimension Quality scores [0,1] with explanations.
+    pub quality_dims: QualityDims,
+    /// Importance factors (stakes × irreversibility × actionability).
+    pub importance: ImportanceFactors,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RelationAddedPayload {
@@ -431,6 +492,7 @@ pub enum EventPayload {
     NotificationAcknowledged(NotificationAcknowledgedPayload),
     IngestBatchReceived(IngestBatchReceivedPayload),
     IngestBatchClassified(IngestBatchClassifiedPayload),
+    DecisionScored(DecisionScoredPayload),
 }
 
 impl EventPayload {
@@ -450,6 +512,7 @@ impl EventPayload {
             Self::NotificationAcknowledged(_) => EventType::NotificationAcknowledged,
             Self::IngestBatchReceived(_) => EventType::IngestBatchReceived,
             Self::IngestBatchClassified(_) => EventType::IngestBatchClassified,
+            Self::DecisionScored(_) => EventType::DecisionScored,
         }
     }
 
@@ -469,6 +532,7 @@ impl EventPayload {
             Self::NotificationAcknowledged(payload) => serde_json::to_value(payload),
             Self::IngestBatchReceived(payload) => serde_json::to_value(payload),
             Self::IngestBatchClassified(payload) => serde_json::to_value(payload),
+            Self::DecisionScored(payload) => serde_json::to_value(payload),
         }
     }
 }
@@ -771,6 +835,13 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty("payload.classifier_model", &payload.classifier_model)?;
             require_non_empty("payload.schema_version", &payload.schema_version)?;
             Ok(EventPayload::IngestBatchClassified(payload))
+        }
+        EventType::DecisionScored => {
+            let payload: DecisionScoredPayload = parse_payload(event)?;
+            require_non_empty("payload.capture_node_id", &payload.capture_node_id)?;
+            require_non_empty("payload.scorer_model", &payload.scorer_model)?;
+            require_non_empty("payload.weight_version", &payload.weight_version)?;
+            Ok(EventPayload::DecisionScored(payload))
         }
     }
 }

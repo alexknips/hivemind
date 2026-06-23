@@ -25,6 +25,11 @@ fn app(hivemind_dir: PathBuf) -> axum::Router {
         api_key: None,
         database_url: None,
         admin_key: None,
+        workos_domain: None,
+        workos_issuer: None,
+        workos_jwks_url: None,
+        workos_audience: None,
+        spa_dir: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -36,6 +41,11 @@ fn app_with_key(hivemind_dir: PathBuf, key: &str) -> axum::Router {
         api_key: Some(key.to_owned()),
         database_url: None,
         admin_key: None,
+        workos_domain: None,
+        workos_issuer: None,
+        workos_jwks_url: None,
+        workos_audience: None,
+        spa_dir: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -855,4 +865,198 @@ async fn classifier_batch_classified_event_round_trips() {
         captures_arr[0]["extraction_confidence"].as_f64().unwrap(),
         0.85
     );
+}
+
+// ---------------------------------------------------------------------------
+// MCP Streamable HTTP transport tests
+// ---------------------------------------------------------------------------
+
+fn mcp_post(body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("content-type", "application/json")
+        .header("x-hivemind-actor", "agent:test:mcp-session")
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn mcp_http_initialize_returns_session_id() {
+    let dir = test_ledger_dir();
+    let req = mcp_post(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "clientInfo": { "name": "test", "version": "0.1" }
+        }
+    }));
+    let response = app(dir).oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK); // ubs:ignore
+                                                   // initialize must echo back a Mcp-Session-Id header
+    assert!(response.headers().contains_key("mcp-session-id")); // ubs:ignore
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["result"]["protocolVersion"], "2025-03-26"); // ubs:ignore
+    assert_eq!(body["result"]["serverInfo"]["name"], "hivemind"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn mcp_http_tools_list_returns_14_tools() {
+    let dir = test_ledger_dir();
+    let (status, body) = call(
+        app(dir),
+        mcp_post(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK); // ubs:ignore
+    let tools = body["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 14); // ubs:ignore
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"capture_decision")); // ubs:ignore
+    assert!(names.contains(&"get_decision")); // ubs:ignore
+    assert!(names.contains(&"recall_decisions")); // ubs:ignore
+    assert!(names.contains(&"summarize_decisions")); // ubs:ignore
+}
+
+#[tokio::test]
+async fn mcp_http_capture_and_get_decision_round_trip() {
+    let dir = test_ledger_dir();
+
+    // Capture a decision via MCP HTTP
+    let (status, body) = call(
+        app(dir.clone()),
+        mcp_post(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "capture_decision",
+                "arguments": {
+                    "title": "Use axum for HTTP",
+                    "rationale": "Good ergonomics and async support",
+                    "topic_keys": ["http", "framework"],
+                    "options": [
+                        { "label": "axum", "description": "The chosen framework" },
+                        { "label": "actix-web" }
+                    ],
+                    "chosen_option_label": "axum"
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK); // ubs:ignore
+    assert_eq!(body["result"]["isError"], false); // ubs:ignore
+    let decision_id = body["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!decision_id.is_empty()); // ubs:ignore
+
+    // Read it back via MCP HTTP
+    let (status2, body2) = call(
+        app(dir),
+        mcp_post(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "get_decision",
+                "arguments": { "decision_id": decision_id }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status2, StatusCode::OK); // ubs:ignore
+    assert_eq!(body2["result"]["isError"], false); // ubs:ignore
+}
+
+#[tokio::test]
+async fn mcp_http_unknown_tool_returns_tool_error() {
+    let dir = test_ledger_dir();
+    let (status, body) = call(
+        app(dir),
+        mcp_post(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": { "name": "does_not_exist", "arguments": {} }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK); // ubs:ignore
+                                        // Unknown tool is a protocol error → JSON-RPC error object
+    assert!(body.get("error").is_some()); // ubs:ignore
+}
+
+#[tokio::test]
+async fn mcp_http_oauth_metadata_stubs_respond() {
+    let dir = test_ledger_dir();
+    let router = app(dir);
+
+    let (s1, b1) = call(
+        router.clone(),
+        get_req("/.well-known/oauth-protected-resource"),
+    )
+    .await;
+    assert_eq!(s1, StatusCode::OK); // ubs:ignore
+    assert!(b1.get("resource").is_some()); // ubs:ignore
+
+    // Without WorkOS configured, the authorization-server endpoint indicates
+    // no AS is set up (WorkOS is the AS in the WorkOS bake-off branch).
+    let (s2, _b2) = call(router, get_req("/.well-known/oauth-authorization-server")).await;
+    assert_eq!(s2, StatusCode::NOT_FOUND); // ubs:ignore
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/graph
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn graph_returns_shape_after_decision() {
+    let dir = test_ledger_dir();
+
+    // Capture a decision so the graph is non-empty.
+    let (status, _) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            serde_json::json!({
+                "title": "Use SQLite for the hosted MVP",
+                "rationale": "Single binary, zero ops",
+                "topic_keys": ["persistence"],
+                "options": [
+                    { "label": "SQLite", "description": "Local file" },
+                    { "label": "Postgres", "description": "Managed Postgres" }
+                ],
+                "chosen_option_label": "SQLite"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "precondition: capture failed"); // ubs:ignore
+
+    let (gs, gb) = call(app(dir), get_req("/v1/graph")).await;
+    assert_eq!(gs, StatusCode::OK, "GET /v1/graph: {gb}"); // ubs:ignore
+
+    // Response must have the three top-level fields.
+    assert!(gb.get("decisions").is_some(), "missing decisions field"); // ubs:ignore
+    assert!(gb.get("nodes").is_some(), "missing nodes field"); // ubs:ignore
+    assert!(gb.get("edges").is_some(), "missing edges field"); // ubs:ignore
+
+    // At least one decision node should be present.
+    let decisions = gb["decisions"].as_array().unwrap();
+    assert!(!decisions.is_empty(), "expected at least one decision"); // ubs:ignore
+
+    // Each decision must have id and title.
+    let d = &decisions[0];
+    assert!(d.get("id").is_some(), "decision missing id"); // ubs:ignore
+    assert!(d.get("title").is_some(), "decision missing title"); // ubs:ignore
 }

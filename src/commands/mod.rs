@@ -8,9 +8,10 @@ use uuid::Uuid;
 use crate::error::CommandError;
 use crate::events::{
     CaptureItem, DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload,
-    DecisionSupersededPayload, Event, EventBuilder, EventId, EventPayload, EventProvenance,
-    EventType, EvidenceRecordedPayload, HypothesisRecordedPayload, IngestBatchClassifiedPayload,
-    IngestBatchReceivedPayload, IngestTurn, RelationAddedPayload, RelationKind, TenantId,
+    DecisionScoredPayload, DecisionSupersededPayload, Event, EventBuilder, EventId, EventPayload,
+    EventProvenance, EventType, EvidenceRecordedPayload, HypothesisRecordedPayload,
+    IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn, RelationAddedPayload,
+    RelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -225,6 +226,27 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 schema_version: schema_version.to_owned(),
                 captures,
             }),
+            causation_event_id,
+            Uuid::new_v4(),
+        )?;
+
+        self.append_event(event)
+    }
+
+    pub fn record_decision_scored(
+        &self,
+        actor_id: &str,
+        payload: DecisionScoredPayload,
+        causation_event_id: Option<EventId>,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("payload.capture_node_id", &payload.capture_node_id)?;
+        require_non_empty("payload.scorer_model", &payload.scorer_model)?;
+        require_non_empty("payload.weight_version", &payload.weight_version)?;
+
+        let event = self.event_with_uuid(
+            actor_id,
+            EventPayload::DecisionScored(payload),
             causation_event_id,
             Uuid::new_v4(),
         )?;

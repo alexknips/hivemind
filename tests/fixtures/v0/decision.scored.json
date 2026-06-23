@@ -1,0 +1,34 @@
+{
+  "event_id": 3,
+  "event_uuid": "018f5d8a-04ab-7ef1-9f47-75e8521dff32",
+  "correlation_id": null,
+  "causation_event_id": 2,
+  "type": "decision.scored",
+  "actor_id": "agent:hivemind:scorer",
+  "source": "agent",
+  "source_ref": "agent:hivemind:scorer",
+  "payload": {
+    "capture_node_id": "capture:2:0",
+    "scorer_model": "claude-haiku-4-5-20251001",
+    "weight_version": "v1",
+    "supersedes_score_id": null,
+    "quality_dims": {
+      "framing":          { "score": 0.8, "explanation": "REST vs JSON-RPC is a clear framing of the API style choice." },
+      "alternatives":     { "score": 0.7, "explanation": "Two options were considered: REST and JSON-RPC." },
+      "information":      { "score": 0.6, "explanation": "Curl ergonomics cited; no benchmarks or load-test data." },
+      "reasoning":        { "score": 0.9, "explanation": "The inference from resource orientation to REST is sound." },
+      "values_tradeoffs": { "score": 0.5, "explanation": "Tradeoffs (type safety, streaming) not made explicit." },
+      "bias_exposure":    { "score": 0.8, "explanation": "No obvious anchoring or confirmation bias detected." },
+      "calibration":      { "score": 0.7, "explanation": "0.9 extraction confidence is reasonable given clear rationale." }
+    },
+    "importance": {
+      "stakes": 10.0,
+      "stakes_explanation": "API style affects all consumers; department-level impact.",
+      "irreversibility": 0.6,
+      "irreversibility_explanation": "Migration to JSON-RPC would require client rewrites but is feasible.",
+      "actionability": 1.0,
+      "actionability_explanation": "Decision has a clear owner and can be acted on immediately."
+    }
+  },
+  "ts": "2026-06-21T08:00:00Z"
+}

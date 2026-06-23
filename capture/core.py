@@ -84,7 +84,7 @@ def _ship_impl(
 
     # Load cursor. On first run: initialise to EOF and return (skip history).
     try:
-        with open(cursor_file) as fh:
+        with open(cursor_file, encoding="utf-8") as fh:
             cursor = int(fh.read().strip())
     except (OSError, ValueError):
         _init_cursor(cursor_file, jsonl_path)
@@ -224,5 +224,5 @@ def _init_cursor(cursor_file: str, jsonl_path: str) -> None:
 
 def _write_cursor(cursor_file: str, offset: int) -> None:
     os.makedirs(os.path.dirname(cursor_file), exist_ok=True)
-    with open(cursor_file, "w") as fh:
+    with open(cursor_file, "w", encoding="utf-8") as fh:
         fh.write(str(offset))

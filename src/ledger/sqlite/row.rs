@@ -106,6 +106,7 @@ fn event_type_as_str(event_type: EventType) -> &'static str {
         EventType::NotificationAcknowledged => "notification.acknowledged",
         EventType::IngestBatchReceived => "ingest.batch_received",
         EventType::IngestBatchClassified => "ingest.batch_classified",
+        EventType::DecisionScored => "decision.scored",
     }
 }
 
@@ -125,6 +126,7 @@ fn parse_event_type(value: &str) -> Result<EventType> {
         "notification.acknowledged" => Ok(EventType::NotificationAcknowledged),
         "ingest.batch_received" => Ok(EventType::IngestBatchReceived),
         "ingest.batch_classified" => Ok(EventType::IngestBatchClassified),
+        "decision.scored" => Ok(EventType::DecisionScored),
         other => Err(storage_error(format!("unknown event type in row: {other}")).into()),
     }
 }

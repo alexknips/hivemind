@@ -25,6 +25,8 @@ use crate::ingest::{
     DocumentPreparationReport, DocumentPreparationRequest, SlackIngestOutcome,
     DEFAULT_SLACK_MENTION,
 };
+#[cfg(feature = "shared-backend-postgres")]
+use crate::ledger::PostgresEventLedger;
 use crate::ledger::{EventLedger, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::{
     memory::MemoryGraph, rebuild_graph_for_tenant, GraphParams, GraphProperties, GraphRow,
@@ -55,6 +57,7 @@ use crate::suggest::{
     materialize_document_extraction_candidates, propose_document_extraction_candidates,
     DocumentCandidateExtractor, DocumentCandidateMaterializationRequest, DocumentCandidateRequest,
 };
+use crate::summarize::{recall_decisions, RecallRequest, RECALL_MAX_LIMIT};
 use crate::{HivemindError, Result};
 
 #[derive(Debug, Clone, Parser)]
@@ -123,6 +126,17 @@ pub enum Command {
     /// HIVEMIND_API_KEY; when unset the server starts in development mode
     /// with no authentication.
     Serve(ServeArgs),
+    /// Migrate an existing local SQLite ledger to a remote Postgres deployment.
+    /// Replays all events from the SQLite source into the named Postgres tenant,
+    /// preserving event_uuid for idempotency. Requires the
+    /// `shared-backend-postgres` feature.
+    #[cfg(feature = "shared-backend-postgres")]
+    Migrate(MigrateArgs),
+    /// Compute the 2-D spectral decision map (x=time, y=semantic embedding).
+    /// Outputs a JSON point-set to stdout. Use --alpha to blend semantic and
+    /// structural (supersession) similarity. Outputs JSON unless --summary is
+    /// passed.
+    Map(MapArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -133,6 +147,39 @@ pub struct ServeArgs {
     /// Port to listen on.
     #[arg(long, short = 'p', env = "HIVEMIND_PORT", default_value_t = 8080)]
     pub port: u16,
+}
+
+#[cfg(feature = "shared-backend-postgres")]
+#[derive(Debug, Clone, Args)]
+pub struct MigrateArgs {
+    /// Source SQLite directory (strips `sqlite://` prefix if present).
+    /// Defaults to `--hivemind-dir` when omitted.
+    #[arg(long)]
+    pub from: Option<String>,
+
+    /// Destination Postgres connection URL (e.g. `postgres://user:pass@host/db`).
+    #[arg(long)]
+    pub to: String,
+
+    /// Tenant name to write events under in the Postgres destination.
+    #[arg(long = "to-tenant")]
+    pub to_tenant: String,
+
+    /// Count events that would be migrated without writing to Postgres.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct MapArgs {
+    /// Blend weight between pure-semantic (0.0) and structural-supersession (1.0).
+    /// Values between 0 and 1 blend both signals. Use 0.0,0.5 to output both.
+    #[arg(long, default_value = "0.5")]
+    pub alpha: Vec<f64>,
+
+    /// Output compact text summary instead of JSON.
+    #[arg(long)]
+    pub summary: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -741,11 +788,14 @@ pub enum QueryCommand {
     Search(QuerySearchDecisionsArgs),
     #[command(name = "search_decisions")]
     SearchDecisions(QuerySearchDecisionsArgs),
+    /// Layer-3 recall: search + summarize in one call. Answers "what was decided about X?".
+    #[command(name = "recall")]
+    Recall(QueryRecallArgs),
     #[command(name = "get_active_decision_blockers")]
     GetActiveDecisionBlockers(QueryActiveDecisionBlockersArgs),
     #[command(name = "get_blocker_notification_candidates")]
     GetBlockerNotificationCandidates(QueryBlockerNotificationCandidatesArgs),
-    #[command(name = "recent")]
+    #[command(name = "recent_decisions", alias = "recent")]
     RecentDecisions(QueryRecentDecisionsArgs),
     #[command(name = "get_recent_activity")]
     GetRecentActivity(QueryRecentActivityArgs),
@@ -814,6 +864,36 @@ pub struct QuerySearchDecisionsArgs {
     pub until: Option<String>,
 
     #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryRecallArgs {
+    /// Free-text search query (what was decided about X?).
+    pub query: Option<String>,
+
+    #[arg(long = "topic", value_delimiter = ',')]
+    pub topic_keys: Vec<String>,
+
+    #[arg(long = "status", value_delimiter = ',')]
+    pub statuses: Vec<QueryDecisionStatus>,
+
+    #[arg(long = "actor-id", value_delimiter = ',')]
+    pub actor_ids: Vec<String>,
+
+    #[arg(long = "source", value_delimiter = ',')]
+    pub sources: Vec<String>,
+
+    #[arg(long = "since")]
+    pub since: Option<String>,
+
+    #[arg(long = "until")]
+    pub until: Option<String>,
+
+    #[arg(long = "limit", default_value_t = 5)]
     pub limit: usize,
 
     #[arg(long = "cursor")]
@@ -1195,6 +1275,9 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::SlackApp(args) => run_slack_app(cli, args),
         Command::Mcp(args) => run_mcp(cli, args),
         Command::Serve(args) => run_serve(cli, args),
+        #[cfg(feature = "shared-backend-postgres")]
+        Command::Migrate(args) => run_migrate(cli, args),
+        Command::Map(args) => run_map(cli, args),
     }
 }
 
@@ -1311,10 +1394,66 @@ fn run_serve(cli: &Cli, args: &ServeArgs) -> Result<String> {
     // the tokio runtime. r2d2 pool construction internally calls block_on,
     // which panics if already inside an existing runtime.
     let state = crate::api::AppState::from_config(&config)?;
+    // Hold a clone so the Arc<ApiBackend> (postgres pool) survives until AFTER
+    // the runtime is dropped. Rust drops locals in reverse declaration order:
+    // `runtime` (declared below) drops before `_pg_guard`, so the pool's Drop
+    // runs outside any runtime context — preventing the block_on-within-block_on
+    // SIGABRT on scale-to-zero autostop (hivemind-noc9).
+    let _pg_guard = state.clone();
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| CliError::InvalidInput(format!("failed to create tokio runtime: {e}")))?;
     runtime.block_on(crate::api::serve_http(state, &config))?;
     Ok(String::new())
+}
+
+fn run_map(cli: &Cli, args: &MapArgs) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
+
+    let alphas: Vec<f64> = if args.alpha.is_empty() {
+        vec![0.5]
+    } else {
+        args.alpha.clone()
+    };
+
+    if alphas.len() == 1 {
+        let result = crate::map::compute_map(&graph, &cli.hivemind_dir, alphas[0]) // ubs:ignore: alphas[0] guarded by len()==1 check above
+            .map_err(|e| CliError::InvalidInput(e.to_string()))?; // ubs:ignore: error conversion at CLI boundary
+        if args.summary {
+            let mut out = format!(
+                "Decision map: {} decisions, alpha={:.2}, gen={}\n", // ubs:ignore: format! for CLI output
+                result.n,
+                result.alpha,
+                &result.gen_id[..8] // ubs:ignore: UUID is 36 chars; 8-char prefix always in-bounds
+            );
+            let points: String = result
+                .points
+                .iter()
+                .map(|p| {
+                    format!(
+                        "  [{:>6.2}, {:>6.2}] {:8} {}\n",
+                        p.x_time, p.y_spectral, p.status, p.title
+                    )
+                })
+                .collect();
+            out.push_str(&points);
+            Ok(out)
+        } else {
+            serde_json::to_string_pretty(&result)
+                .map_err(|e| CliError::InvalidInput(e.to_string()).into()) // ubs:ignore: error conversion at CLI boundary
+        }
+    } else {
+        let mut results = Vec::new();
+        for &alpha in &alphas {
+            let r = crate::map::compute_map(&graph, &cli.hivemind_dir, alpha)
+                .map_err(|e| CliError::InvalidInput(e.to_string()))?; // ubs:ignore: error conversion at CLI boundary
+            results.push(r);
+        }
+        serde_json::to_string_pretty(&results)
+            .map_err(|e| CliError::InvalidInput(e.to_string()).into()) // ubs:ignore: error conversion at CLI boundary
+    }
 }
 
 fn run_ingest(cli: &Cli, ingest: &IngestArgs) -> Result<String> {
@@ -2128,6 +2267,7 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
         | QueryCommand::GetCompactView(_)
         | QueryCommand::Search(_)
         | QueryCommand::SearchDecisions(_)
+        | QueryCommand::Recall(_)
         | QueryCommand::GetActiveDecisionBlockers(_)
         | QueryCommand::GetBlockerNotificationCandidates(_) => {
             return Err(
@@ -2203,7 +2343,8 @@ fn reviewed_decision_ids_by_actor(
             | EventPayload::NotificationSent(_)
             | EventPayload::NotificationAcknowledged(_)
             | EventPayload::IngestBatchReceived(_)
-            | EventPayload::IngestBatchClassified(_) => {}
+            | EventPayload::IngestBatchClassified(_)
+            | EventPayload::DecisionScored(_) => {}
         }
     }
     Ok(reviewed)
@@ -2241,7 +2382,8 @@ impl ReviewLedgerContext {
                 | EventPayload::NotificationSent(_)
                 | EventPayload::NotificationAcknowledged(_)
                 | EventPayload::IngestBatchReceived(_)
-                | EventPayload::IngestBatchClassified(_) => {}
+                | EventPayload::IngestBatchClassified(_)
+                | EventPayload::DecisionScored(_) => {}
             }
         }
         Ok(context)
@@ -2631,6 +2773,31 @@ fn render_search_summary(results: &DecisionSearchResults) -> String {
     output.trim_end().to_owned()
 }
 
+fn render_recall_summary(response: &crate::summarize::RecallResponse) -> String {
+    let mut output = String::new();
+    if response.ranked.items.is_empty() {
+        return "No decisions found matching the query.".to_owned();
+    }
+    let _ = writeln!(output, "digest\t{}", summary_cell(&response.digest.summary));
+    let _ = writeln!(
+        output,
+        "cited\t{}",
+        response.digest.cited_decision_ids.join(",")
+    );
+    for item in &response.ranked.items {
+        let _ = writeln!(
+            output,
+            "match\trank={}\t{}\t{}\t{}\ttopics={}",
+            item.rank,
+            decision_status_label(item.decision.status),
+            item.decision.id,
+            summary_cell(&item.decision.title),
+            item.decision.topic_keys.join(","),
+        );
+    }
+    output.trim_end().to_owned()
+}
+
 fn render_supersession_summary(chain: &SupersessionChain) -> String {
     if chain.decision_ids.is_empty() {
         return "No supersession chain found".to_owned();
@@ -2804,6 +2971,7 @@ fn event_type_label(event_type: EventType) -> &'static str {
         EventType::NotificationAcknowledged => "notification.acknowledged",
         EventType::IngestBatchReceived => "ingest.batch_received",
         EventType::IngestBatchClassified => "ingest.batch_classified",
+        EventType::DecisionScored => "decision.scored",
     }
 }
 
@@ -3103,6 +3271,27 @@ fn run_query_with_graph(
                 render_search_summary,
                 response.data.next_cursor.as_deref(),
             )?
+        }
+        QueryCommand::Recall(args) => {
+            let limit = args.limit.clamp(1, RECALL_MAX_LIMIT);
+            let request = RecallRequest {
+                q: args.query.clone(),
+                topic_keys: args.topic_keys.clone(),
+                statuses: args
+                    .statuses
+                    .iter()
+                    .copied()
+                    .map(QueryDecisionStatus::as_decision_status)
+                    .collect(),
+                actor_ids: args.actor_ids.clone(),
+                sources: args.sources.clone(),
+                since: parse_query_datetime(args.since.as_deref(), "--since")?,
+                until: parse_query_datetime(args.until.as_deref(), "--until")?,
+                limit,
+                cursor: args.cursor.clone(),
+            };
+            let response = recall_decisions(context, ledger, graph, &request)?;
+            format_query_response(query.summary, &response, render_recall_summary, None)?
         }
         QueryCommand::GetActiveDecisionBlockers(args) => {
             let request = ActiveDecisionBlockersRequest {
@@ -3918,6 +4107,115 @@ struct ReviewActionOutput {
     new_decision_id: Option<String>,
     old_decision_status: Option<DecisionStatus>,
     new_decision_status: Option<DecisionStatus>,
+}
+
+// ---------------------------------------------------------------------------
+// migrate subcommand
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "shared-backend-postgres")]
+#[derive(Debug, Serialize)]
+struct MigrateReport {
+    dry_run: bool,
+    source_dir: String,
+    source_tenant: String,
+    destination_tenant: String,
+    events_migrated: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parity_check: Option<ParityCheckResult>,
+}
+
+#[cfg(feature = "shared-backend-postgres")]
+#[derive(Debug, Serialize)]
+struct ParityCheckResult {
+    source_event_count: u64,
+    destination_event_count: u64,
+    ok: bool,
+}
+
+#[cfg(feature = "shared-backend-postgres")]
+fn run_migrate(cli: &Cli, args: &MigrateArgs) -> Result<String> {
+    let source_dir = match &args.from {
+        Some(s) => std::path::PathBuf::from(s.strip_prefix("sqlite://").unwrap_or(s.as_str())),
+        None => cli.hivemind_dir.clone(),
+    };
+    let source_tenant = cli_tenant(cli)?;
+    let sqlite = SqliteEventLedger::open(&source_dir)?;
+
+    if args.dry_run {
+        let mut count = 0u64;
+        sqlite.replay_from_for_tenant(&source_tenant, 0, &mut |_event| {
+            count += 1;
+            Ok(())
+        })?;
+        let report = MigrateReport {
+            dry_run: true,
+            source_dir: source_dir.display().to_string(),
+            source_tenant: source_tenant.to_string(),
+            destination_tenant: args.to_tenant.clone(),
+            events_migrated: count,
+            parity_check: None,
+        };
+        return if cli.json {
+            format_json_value(true, &report)
+        } else {
+            Ok(format!(
+                "Dry run: {count} events would be migrated\n\
+                 Source: {} (tenant: {})\n\
+                 Destination tenant: {}",
+                report.source_dir, report.source_tenant, report.destination_tenant
+            ))
+        };
+    }
+
+    let pg = PostgresEventLedger::connect(&args.to, &args.to_tenant)?;
+
+    let mut migrated = 0u64;
+    sqlite.replay_from_for_tenant(&source_tenant, 0, &mut |event| {
+        pg.append(event.clone())?;
+        migrated += 1;
+        Ok(())
+    })?;
+
+    let mut pg_count = 0u64;
+    pg.replay_from(0, &mut |_event| {
+        pg_count += 1;
+        Ok(())
+    })?;
+
+    let parity_ok = pg_count >= migrated;
+    let report = MigrateReport {
+        dry_run: false,
+        source_dir: source_dir.display().to_string(),
+        source_tenant: source_tenant.to_string(),
+        destination_tenant: args.to_tenant.clone(),
+        events_migrated: migrated,
+        parity_check: Some(ParityCheckResult {
+            source_event_count: migrated,
+            destination_event_count: pg_count,
+            ok: parity_ok,
+        }),
+    };
+
+    if !parity_ok {
+        return Err(CliError::InvalidInput(format!(
+            "parity check failed: migrated {migrated} events but found {pg_count} in Postgres tenant '{}'",
+            args.to_tenant
+        ))
+        .into());
+    }
+
+    if cli.json {
+        format_json_value(true, &report)
+    } else {
+        Ok(format!(
+            "Migration complete: {migrated} events migrated\n\
+             Source: {} (tenant: {})\n\
+             Destination tenant: {}\n\
+             Parity check: OK ({pg_count} events in destination)",
+            report.source_dir, report.source_tenant, report.destination_tenant
+        ))
+    }
 }
 
 #[cfg(test)]

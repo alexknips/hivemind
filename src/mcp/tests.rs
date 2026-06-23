@@ -42,7 +42,7 @@ fn initialize_reports_server_metadata() {
 }
 
 #[test]
-fn tools_list_includes_all_twelve_tools() {
+fn tools_list_includes_all_fourteen_tools() {
     let dir = unique_dir("list");
     let config = McpConfig::new(&dir).with_session_id("test-session");
     let responses = drive(
@@ -51,7 +51,7 @@ fn tools_list_includes_all_twelve_tools() {
     );
     assert_eq!(responses.len(), 1); // ubs:ignore: test-only; index guaranteed by test setup
     let tools = responses[0]["result"]["tools"].as_array().expect("array"); // ubs:ignore: test-only; panicking is correct in tests
-    assert_eq!(tools.len(), 12, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
+    assert_eq!(tools.len(), 14, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("string name")) // ubs:ignore: test-only; panicking is correct in tests
@@ -66,6 +66,8 @@ fn tools_list_includes_all_twelve_tools() {
         "get_relevant_decisions",
         "get_supersession_chain",
         "search_decisions",
+        "recall_decisions",
+        "recent_decisions",
         "dump_graph",
         "hivemind_compact_view",
         "summarize_decisions",
@@ -247,6 +249,126 @@ fn search_decisions_tool_returns_fts_query_response() {
         structured["data"]["items"][0]["matched_fields"],
         serde_json::json!(["option.id"])
     );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn recall_decisions_tool_returns_ranked_and_digest() {
+    let dir = unique_dir("recall");
+    let config = McpConfig::new(&dir).with_session_id("recall-session");
+
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "actor_id": "agent:test:recall",
+                "title": "Use JWT for auth tokens",
+                "rationale": "Stateless tokens reduce session storage overhead",
+                "topic_keys": ["auth"],
+                "options": [{"label": "jwt"}, {"label": "opaque"}],
+                "chosen_option_label": "jwt"
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[capture.as_str()]);
+    let decision_id = responses[0]["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("decision_id") // ubs:ignore: test-only; panicking is correct in tests
+        .to_owned();
+
+    let recall = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "recall_decisions",
+            "arguments": {
+                "q": "jwt auth",
+                "limit": 5
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[recall.as_str()]);
+    let structured = &responses[0]["result"]["structuredContent"];
+    // Should find our decision in the ranked results
+    assert_eq!(structured["result_count"], serde_json::json!(1)); // ubs:ignore: test-only assertion
+    assert_eq!(
+        structured["data"]["ranked"]["items"][0]["decision"]["id"],
+        decision_id
+    ); // ubs:ignore: test-only assertion
+       // Digest must be present and cite the decision
+    let digest = &structured["data"]["digest"];
+    assert!(
+        digest["cited_decision_ids"]
+            .as_array()
+            .expect("array") // ubs:ignore: test-only; panicking is correct in tests
+            .iter()
+            .any(|id| id.as_str() == Some(&decision_id)),
+        "decision_id must appear in cited_decision_ids"
+    ); // ubs:ignore: test-only assertion
+    assert!(
+        digest["summary"].as_str().is_some_and(|s| !s.is_empty()),
+        "summary must be non-empty"
+    ); // ubs:ignore: test-only assertion
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn recent_decisions_tool_returns_recent_query_response() {
+    let dir = unique_dir("recent-decisions");
+    let config = McpConfig::new(&dir).with_session_id("recent-session");
+
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "actor_id": "agent:test:recent",
+                "title": "Keep recent decisions discoverable",
+                "rationale": "Agents need a bounded recent decisions query",
+                "topic_keys": ["query"],
+                "options": [{"label": "recent_decisions"}],
+                "chosen_option_label": "recent_decisions"
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[capture.as_str()]);
+    let decision_id = responses[0]["result"]["structuredContent"]["decision_id"] // ubs:ignore: test-only; panicking chain is correct in tests
+        .as_str() // ubs:ignore: test-only; chain continues to expect
+        .expect("decision_id") // ubs:ignore: test-only; panicking is correct in tests
+        .to_owned();
+
+    let recent = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "recent_decisions",
+            "arguments": {
+                "since": "1970-01-01T00:00:00Z",
+                "topic": ["query"],
+                "actor": ["agent:test:recent"],
+                "status": ["proposed"],
+                "limit": 5
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[recent.as_str()]);
+    let structured = &responses[0]["result"]["structuredContent"]; // ubs:ignore: test-only; index guaranteed by test setup
+    assert_eq!(structured["result_count"], serde_json::json!(1)); // ubs:ignore: test-only.
+    let item_id = structured["data"]["items"][0]["decision_id"].clone(); // ubs:ignore: test-only; panicking is correct in tests
+    assert_eq!(item_id, serde_json::json!(decision_id)); // ubs:ignore: test-only.
 
     let _ = std::fs::remove_dir_all(&dir);
 }

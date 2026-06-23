@@ -27,6 +27,7 @@ path = "benchmarks/fidelity/main.rs"
 [features]
 default = []
 graph-kuzu = ["dep:kuzu", "dep:cxx-build"]
+semantic = []
 shared-backend-postgres = ["dep:postgres", "dep:r2d2", "dep:r2d2_postgres", "dep:native-tls", "dep:postgres-native-tls"]
 tui = ["dep:crossterm", "dep:ratatui"]
 
@@ -47,7 +48,8 @@ r2d2_postgres = { version = "0.18.2", optional = true }
 native-tls = { version = "0.2", optional = true }
 postgres-native-tls = { version = "0.5", optional = true }
 ratatui = { version = "0.29.0", optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+jsonwebtoken = "9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "blocking"] }
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -55,14 +57,18 @@ serde_yaml = "0.9"
 sha2 = "0.10.9"
 thiserror = "2.0.17"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tower-http = { version = "0.6", features = ["fs"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 uuid = { version = "1.23.1", features = ["serde", "v4", "v5"] }
+nalgebra = "0.33"
+fastembed = { version = "5.17.2", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
 jsonschema = { version = "0.46.5", default-features = false }
 proptest = { version = "1.9.0", default-features = false, features = ["std"] }
+tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 
 [[test]]
@@ -73,3 +79,8 @@ harness = false
 [[test]]
 name = "api"
 path = "tests/api.rs"
+
+[[test]]
+name = "migrate"
+path = "tests/migrate.rs"
+required-features = ["shared-backend-postgres"]

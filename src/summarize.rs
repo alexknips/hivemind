@@ -11,10 +11,15 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+use crate::ledger::SqliteEventLedger;
 use crate::projector::{GraphParams, GraphValue, GraphView};
-use crate::queries::{get_decision, get_supersession_chain, DecisionView, QueryResponse};
+use crate::queries::{
+    get_decision, get_supersession_chain, search_decisions_fts_with_context, DecisionSearchResult,
+    DecisionStatus, DecisionView, QueryContext, QueryResponse, SearchDecisionRequest,
+};
 use crate::Result;
 
 const MAX_DECISION_IDS: usize = 10;
@@ -309,6 +314,112 @@ fn trim_rationale(rationale: &str, max_chars: usize) -> String {
         let trimmed: String = rationale.chars().take(max_chars).collect();
         format!("{trimmed}…")
     }
+}
+
+// ---------------------------------------------------------------------------
+// recall_decisions — Layer-3 pipeline: search (L2) → summarize (L3)
+// ---------------------------------------------------------------------------
+
+/// Maximum number of search results to summarize in a recall call.
+pub const RECALL_MAX_LIMIT: usize = 10;
+/// Default number of search results to recall (and summarize).
+pub const RECALL_DEFAULT_LIMIT: usize = 5;
+
+pub struct RecallRequest {
+    pub q: Option<String>,
+    pub topic_keys: Vec<String>,
+    pub statuses: Vec<DecisionStatus>,
+    pub actor_ids: Vec<String>,
+    pub sources: Vec<String>,
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+    /// How many top search results to return and summarize (1–RECALL_MAX_LIMIT).
+    pub limit: usize,
+    pub cursor: Option<String>,
+}
+
+/// The ranked search portion of a recall response (Layer-2 provenance).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RecallRanked {
+    pub items: Vec<DecisionSearchResult>,
+    pub total_matches: usize,
+    pub truncated: bool,
+}
+
+/// Full recall response: ranked decisions + text digest.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RecallResponse {
+    pub query: Option<String>,
+    pub ranked: RecallRanked,
+    pub digest: DecisionSummary,
+}
+
+/// Search for relevant decisions and return them ranked alongside a concise text
+/// digest. The rank comes from FTS scoring (Layer 2) and is ordinal — it is NOT
+/// a confidence score. The digest is deterministic template rendering (Layer 3)
+/// with no invented content; every contributing decision ID is listed in
+/// `digest.cited_decision_ids`.
+pub fn recall_decisions(
+    context: &QueryContext,
+    ledger: &SqliteEventLedger,
+    graph: &impl GraphView,
+    request: &RecallRequest,
+) -> crate::Result<QueryResponse<RecallResponse>> {
+    let started = Instant::now();
+
+    let limit = request.limit.clamp(1, RECALL_MAX_LIMIT);
+
+    let search_req = SearchDecisionRequest {
+        query: request.q.clone(),
+        topic_keys: request.topic_keys.clone(),
+        statuses: request.statuses.clone(),
+        actor_ids: request.actor_ids.clone(),
+        sources: request.sources.clone(),
+        since: request.since,
+        until: request.until,
+        limit,
+        cursor: request.cursor.clone(),
+    };
+    let search_response = search_decisions_fts_with_context(context, ledger, graph, &search_req)?;
+    let truncated = search_response.truncated;
+    let search_data = search_response.data;
+
+    let decision_ids: Vec<String> = search_data
+        .items
+        .iter()
+        .map(|item| item.decision.id.clone()) // ubs:ignore: clone necessary — building owned Vec from borrowed slice
+        .collect();
+
+    let digest = if decision_ids.is_empty() {
+        DecisionSummary {
+            summary: "No decisions found matching the query.".to_owned(),
+            cited_decision_ids: vec![],
+            unit: SummarizeMode::Cluster,
+        }
+    } else {
+        let mode = if decision_ids.len() == 1 {
+            SummarizeMode::Single
+        } else {
+            SummarizeMode::Cluster
+        };
+        let summarize_req = SummarizeRequest { decision_ids, mode };
+        summarize_decisions(graph, &summarize_req)?.data
+    };
+
+    Ok(QueryResponse {
+        result_count: search_data.items.len(),
+        truncated,
+        latency_ms: started.elapsed().as_millis(),
+        data: RecallResponse {
+            query: search_data.query,
+            ranked: RecallRanked {
+                total_matches: search_data.total_matches,
+                truncated,
+                items: search_data.items,
+            },
+            digest,
+        },
+    })
 }
 
 #[cfg(test)]

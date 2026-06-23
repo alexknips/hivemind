@@ -209,7 +209,7 @@ fn parses_recent_decisions_command_with_composable_filters(
     let cli = Cli::parse_from([
         "hivemind",
         "query",
-        "recent",
+        "recent_decisions",
         "--since",
         "7d",
         "--until",
@@ -251,6 +251,17 @@ fn parses_recent_decisions_command_with_composable_filters(
         Some(Utc.with_ymd_and_hms(2026, 5, 19, 0, 0, 0).unwrap())
     );
     assert_eq!(request.filters.actor_patterns, vec!["agent:claude:*"]);
+    Ok(())
+}
+
+#[test]
+fn parses_legacy_recent_alias() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse_from(["hivemind", "query", "recent", "--since", "7d"]);
+    let Command::Query(args) = cli.command else {
+        return Err("expected query command".into());
+    };
+    let is_recent = matches!(args.command, QueryCommand::RecentDecisions(_));
+    assert!(is_recent, "recent alias must map to RecentDecisions"); // ubs:ignore: test-only.
     Ok(())
 }
 
@@ -1198,6 +1209,87 @@ fn search_cli_alias_uses_fts_surface_with_time_filters() {
 }
 
 #[test]
+fn recall_cli_returns_ranked_decisions_and_digest() {
+    let hivemind_dir = unique_test_dir("query-recall");
+    let decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-recall",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Use circuit breaker for downstream calls",
+        "--rationale",
+        "Circuit breaker prevents cascading failures in distributed services",
+        "--topic-keys",
+        "reliability,architecture",
+        "--options",
+        "circuit-breaker,timeout-only",
+        "--chose",
+        "circuit-breaker",
+    ]))
+    .expect("emit decision succeeds");
+
+    // JSON mode: structured recall response
+    let query = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "recall",
+        "circuit breaker",
+        "--limit",
+        "5",
+    ]))
+    .expect("recall query succeeds");
+    let query: serde_json::Value = serde_json::from_str(&query).expect("valid recall json");
+    assert_eq!(query["result_count"], serde_json::json!(1)); // ubs:ignore: test-only assertion
+    assert_eq!(
+        query["data"]["ranked"]["items"][0]["decision"]["id"],
+        decision_id
+    ); // ubs:ignore: test-only assertion
+    let cited = query["data"]["digest"]["cited_decision_ids"]
+        .as_array()
+        .expect("cited_decision_ids array"); // ubs:ignore: test-only; panicking is correct
+    assert!(
+        cited
+            .iter()
+            .any(|id| id.as_str() == Some(decision_id.as_str())),
+        "decision_id must appear in digest cited_decision_ids"
+    ); // ubs:ignore: test-only assertion
+    assert!(
+        query["data"]["digest"]["summary"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "digest summary must be non-empty"
+    ); // ubs:ignore: test-only assertion
+
+    // Summary mode: human-friendly text
+    let summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "--summary",
+        "recall",
+        "circuit breaker",
+    ]))
+    .expect("recall summary succeeds");
+    assert!(
+        summary.contains("digest\t"),
+        "summary output must contain digest line"
+    ); // ubs:ignore: test-only assertion
+    assert!(
+        summary.contains("match\t"),
+        "summary output must contain match line"
+    ); // ubs:ignore: test-only assertion
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
 fn ledger_history_cli_queries_and_exports_read_only_summary() {
     let hivemind_dir = unique_test_dir("query-ledger-history");
     let decision_id = run(&Cli::parse_from([
@@ -1247,7 +1339,7 @@ fn ledger_history_cli_queries_and_exports_read_only_summary() {
         "--hivemind-dir",
         hivemind_dir.to_str().expect("utf-8 temp path"),
         "query",
-        "recent",
+        "recent_decisions",
         "--since",
         "7d",
         "--actor",
@@ -1279,7 +1371,7 @@ fn ledger_history_cli_queries_and_exports_read_only_summary() {
         "--hivemind-dir",
         hivemind_dir.to_str().expect("utf-8 temp path"),
         "query",
-        "recent",
+        "recent_decisions",
         "--since",
         "9999-01-01",
     ]))
@@ -1297,7 +1389,7 @@ fn ledger_history_cli_queries_and_exports_read_only_summary() {
         "--hivemind-dir",
         hivemind_dir.to_str().expect("utf-8 temp path"),
         "query",
-        "recent",
+        "recent_decisions",
         "--since",
         "7d",
         "--summary",

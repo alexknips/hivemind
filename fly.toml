@@ -1,4 +1,4 @@
-# HiveMind — Fly.io deployment config (cheapest possible)
+# HiveMind — Fly.io deployment config
 #
 # Before first deploy:
 #   1. Create the app (already done — live as hivemind-tti3sa in lax):
@@ -34,11 +34,11 @@ HIVEMIND_PORT = "8080"
 [http_service]
 internal_port = 8080
 force_https = true
-# Scale to zero when idle — the app machine is ~$0 while stopped.
-# Fly starts it automatically on the first request (cold start ~1-3s).
-auto_stop_machines = "stop"
+# Warm machines avoid cold-start 502s that read as false-negative outages;
+# ~$4/mo for 2x shared-cpu-1x:256MB is worth it; revisit if traffic grows.
+auto_stop_machines = "off"
 auto_start_machines = true
-min_machines_running = 0
+min_machines_running = 2
 
 [[http_service.checks]]
 grace_period = "10s"

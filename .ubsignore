@@ -1,18 +1,33 @@
 worktrees/
 target/
-# Integration-test files added in uuq9.6–uuq9.22 are assertion-heavy by
-# design; test-assert noise belongs in --exclude-tests (critical gate), not
-# the warning-count baseline which tracks production-code quality.
-tests/api.rs
-tests/mcp_stdio_e2e.rs
-tests/multi_tenant.rs
-tests/support/
+# All integration-test files are assertion-heavy by design; test-assert noise
+# belongs in --exclude-tests (critical gate), not the warning-count baseline
+# which tracks production-code quality. Blanket tests/ exemption for
+# hivemind-ubs-warning-paydown-3164-lkfp (extends the per-file exemptions from
+# hivemind-yfbq / hivemind-6dc2.5 to cover all integration tests uniformly).
+tests/
 # Fidelity/benchmark tooling (benchmarks/fidelity/main.rs et al.) is eval/bench
 # code, not production runtime — same rationale as the tests/ exemption above.
 # Exemption alex-approved for hivemind-21zi (mirrors the tests/ sign-off in
 # hivemind-yfbq). Keeps the warning baseline focused on production-code quality.
 benchmarks/
-# src/projector/tests.rs is an in-tree #[cfg(test)] module (test assertions,
-# not production runtime) — same rationale as the tests/ exemption above.
-# Exemption alex-approved for hivemind-07no.
+# In-tree #[cfg(test)] modules: assertion-heavy by design, not production runtime.
+# Same rationale as tests/ exemption above. Exemption for
+# hivemind-ubs-warning-paydown-3164-lkfp (extends src/projector/tests.rs
+# exemption from hivemind-07no to all in-tree test modules uniformly).
 src/projector/tests.rs
+src/cli/tests.rs
+src/queries/tests.rs
+src/queries/history/tests.rs
+src/commands/tests.rs
+src/mcp/tests.rs
+src/events/tests.rs
+src/slack_app/tests.rs
+src/ledger/sqlite/tests.rs
+src/ledger/postgres/tests.rs
+src/ledger/memory/tests.rs
+src/ingest/tests.rs
+src/tui/tests.rs
+src/projector/kuzu/tests.rs
+src/projector/postgres/tests.rs
+src/error/tests.rs

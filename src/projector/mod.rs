@@ -565,6 +565,59 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
                 project_capture(graph, capture, &node_id, &origin_properties)?;
             }
         }
+        EventPayload::DecisionScored(payload) => {
+            // Annotate the capture node with per-dimension Quality scores and
+            // Importance factors. Upsert merges onto the existing node without
+            // overwriting any decision fields.
+            let mut props = origin_properties.clone();
+            let dims = &payload.quality_dims;
+            props.insert(
+                "score_framing".to_owned(),
+                GraphValue::Float(dims.framing.score),
+            );
+            props.insert(
+                "score_alternatives".to_owned(),
+                GraphValue::Float(dims.alternatives.score),
+            );
+            props.insert(
+                "score_information".to_owned(),
+                GraphValue::Float(dims.information.score),
+            );
+            props.insert(
+                "score_reasoning".to_owned(),
+                GraphValue::Float(dims.reasoning.score),
+            );
+            props.insert(
+                "score_values_tradeoffs".to_owned(),
+                GraphValue::Float(dims.values_tradeoffs.score),
+            );
+            props.insert(
+                "score_bias_exposure".to_owned(),
+                GraphValue::Float(dims.bias_exposure.score),
+            );
+            props.insert(
+                "score_calibration".to_owned(),
+                GraphValue::Float(dims.calibration.score),
+            );
+            props.insert(
+                "score_weight_version".to_owned(),
+                GraphValue::String(payload.weight_version.clone()),
+            );
+            let imp = &payload.importance;
+            props.insert(
+                "importance_stakes".to_owned(),
+                GraphValue::Float(imp.stakes),
+            );
+            props.insert(
+                "importance_irreversibility".to_owned(),
+                GraphValue::Float(imp.irreversibility),
+            );
+            props.insert(
+                "importance_actionability".to_owned(),
+                GraphValue::Float(imp.actionability),
+            );
+            graph.upsert_node(NodeKind::Decision, &payload.capture_node_id, &props)?;
+        }
     }
 
     Ok(())
