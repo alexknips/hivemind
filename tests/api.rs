@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt as _;
 use serde_json::Value;
 use tower::ServiceExt as _;
@@ -30,6 +30,7 @@ fn app(hivemind_dir: PathBuf) -> axum::Router {
         workos_jwks_url: None,
         workos_audience: None,
         spa_dir: None,
+        cors_origins: vec![],
     };
     hivemind::api::create_router(&config)
 }
@@ -46,6 +47,24 @@ fn app_with_key(hivemind_dir: PathBuf, key: &str) -> axum::Router {
         workos_jwks_url: None,
         workos_audience: None,
         spa_dir: None,
+        cors_origins: vec![],
+    };
+    hivemind::api::create_router(&config)
+}
+
+fn app_with_cors(hivemind_dir: PathBuf, origins: Vec<String>) -> axum::Router {
+    let config = hivemind::api::ApiConfig {
+        hivemind_dir,
+        port: 0,
+        api_key: None,
+        database_url: None,
+        admin_key: None,
+        workos_domain: None,
+        workos_issuer: None,
+        workos_jwks_url: None,
+        workos_audience: None,
+        spa_dir: None,
+        cors_origins: origins,
     };
     hivemind::api::create_router(&config)
 }
@@ -1059,4 +1078,137 @@ async fn graph_returns_shape_after_decision() {
     let d = &decisions[0];
     assert!(d.get("id").is_some(), "decision missing id"); // ubs:ignore
     assert!(d.get("title").is_some(), "decision missing title"); // ubs:ignore
+}
+
+// ---------------------------------------------------------------------------
+// CORS tests
+// ---------------------------------------------------------------------------
+
+/// Helper: send an OPTIONS preflight and return the response headers.
+async fn preflight(app: axum::Router, origin: &str) -> (StatusCode, HeaderMap) {
+    let req = Request::builder()
+        .method("OPTIONS")
+        .uri("/v1/health")
+        .header("origin", origin)
+        .header("access-control-request-method", "GET")
+        .header(
+            "access-control-request-headers",
+            "authorization,content-type",
+        )
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.expect("handler error");
+    let status = response.status();
+    (status, response.headers().clone())
+}
+
+/// Helper: send a simple cross-origin GET and return the response headers.
+async fn cross_origin_get(app: axum::Router, origin: &str) -> (StatusCode, HeaderMap) {
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/health")
+        .header("origin", origin)
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(req).await.expect("handler error");
+    let status = response.status();
+    (status, response.headers().clone())
+}
+
+#[tokio::test]
+async fn cors_disabled_by_default() {
+    let dir = test_ledger_dir();
+    let (status, headers) = cross_origin_get(app(dir), "https://alexknips.github.io").await;
+    assert_eq!(status, StatusCode::OK, "health check should succeed"); // ubs:ignore
+    assert!(
+        headers.get("access-control-allow-origin").is_none(),
+        "no CORS headers expected when cors_origins is empty"
+    ); // ubs:ignore
+}
+
+#[tokio::test]
+async fn cors_preflight_allowed_origin() {
+    let dir = test_ledger_dir();
+    let origin = "https://alexknips.github.io";
+    let (status, headers) = preflight(app_with_cors(dir, vec![origin.to_owned()]), origin).await;
+    // tower-http CorsLayer returns 200 for valid preflights
+    assert!(
+        status.is_success(),
+        "preflight from allowed origin should succeed, got {status}"
+    ); // ubs:ignore
+    let acao = headers
+        .get("access-control-allow-origin")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(acao, origin, "ACAO header must echo the allowed origin"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn cors_preflight_disallowed_origin_gets_no_acao() {
+    let dir = test_ledger_dir();
+    let (status, headers) = preflight(
+        app_with_cors(dir, vec!["https://alexknips.github.io".to_owned()]),
+        "https://evil.example.com",
+    )
+    .await;
+    // Request still succeeds (CORS is about the browser; server always responds)
+    assert!(status.is_success(), "preflight call itself should succeed"); // ubs:ignore
+    let acao = headers
+        .get("access-control-allow-origin")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_ne!(
+        acao, "https://evil.example.com",
+        "disallowed origin must not appear in ACAO"
+    ); // ubs:ignore
+}
+
+#[tokio::test]
+async fn cors_actual_request_allowed_origin() {
+    let dir = test_ledger_dir();
+    let origin = "https://alexknips.github.io";
+    let (status, headers) =
+        cross_origin_get(app_with_cors(dir, vec![origin.to_owned()]), origin).await;
+    assert_eq!(status, StatusCode::OK, "health check must succeed"); // ubs:ignore
+    let acao = headers
+        .get("access-control-allow-origin")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(acao, origin, "ACAO header must echo the allowed origin"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn cors_auth_still_enforced_on_cross_origin_request() {
+    // Use app_with_key (api_key set) — cross-origin GET /v1/decisions/search
+    // without a bearer token must still return 401, not 200.
+    let dir = test_ledger_dir();
+    let origin = "https://alexknips.github.io";
+    let config = hivemind::api::ApiConfig {
+        hivemind_dir: dir,
+        port: 0,
+        api_key: Some("secret".to_owned()),
+        database_url: None,
+        admin_key: None,
+        workos_domain: None,
+        workos_issuer: None,
+        workos_jwks_url: None,
+        workos_audience: None,
+        spa_dir: None,
+        cors_origins: vec![origin.to_owned()],
+    };
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/decisions/search?q=test")
+        .header("origin", origin)
+        .body(Body::empty())
+        .unwrap();
+    let response = hivemind::api::create_router(&config)
+        .oneshot(req)
+        .await
+        .expect("handler error");
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "auth must still be enforced on cross-origin requests"
+    ); // ubs:ignore
 }

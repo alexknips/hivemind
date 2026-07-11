@@ -47,7 +47,7 @@ use std::sync::Arc;
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::routing::post;
@@ -56,6 +56,7 @@ use chrono::{DateTime, Utc};
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
 
@@ -108,6 +109,10 @@ pub struct ApiConfig {
     /// static files from this directory at `/`, falling back to `index.html`
     /// for SPA client-side routing. API paths always take precedence.
     pub spa_dir: Option<PathBuf>,
+    /// Exact origins allowed to make cross-origin requests (CORS). Empty = no
+    /// CORS headers (same-origin only). Populated from HIVEMIND_CORS_ORIGINS
+    /// (comma-separated). Self-hosters are unaffected by default.
+    pub cors_origins: Vec<String>,
 }
 
 impl ApiConfig {
@@ -128,6 +133,15 @@ impl ApiConfig {
                     .collect()
             }),
             spa_dir: std::env::var("HIVEMIND_SPA_DIR").ok().map(PathBuf::from),
+            cors_origins: std::env::var("HIVEMIND_CORS_ORIGINS")
+                .ok()
+                .map(|s| {
+                    s.split(',')
+                        .map(|v| v.trim().to_owned())
+                        .filter(|v| !v.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -279,6 +293,8 @@ pub struct AppState {
     workos_jwks: Arc<JwkSet>,
     /// Pre-built SPA directory to serve at `/`. None = no SPA serving.
     spa_dir: Option<PathBuf>,
+    /// Allowed CORS origins — empty means no CORS headers (same-origin only).
+    cors_origins: Vec<String>,
 }
 
 impl AppState {
@@ -298,6 +314,7 @@ impl AppState {
                 workos_config,
                 workos_jwks,
                 spa_dir: config.spa_dir.clone(),
+                cors_origins: config.cors_origins.clone(),
             });
         }
 
@@ -311,6 +328,7 @@ impl AppState {
             workos_config,
             workos_jwks,
             spa_dir: config.spa_dir.clone(),
+            cors_origins: config.cors_origins.clone(),
         })
     }
 }
@@ -928,7 +946,23 @@ pub fn create_router(config: &ApiConfig) -> Router {
     build_router(state)
 }
 
+fn build_cors_layer(origins: &[String]) -> Option<CorsLayer> {
+    let parsed: Vec<axum::http::HeaderValue> =
+        origins.iter().filter_map(|o| o.parse().ok()).collect();
+    if parsed.is_empty() {
+        return None;
+    }
+    Some(
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(parsed))
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+            .max_age(std::time::Duration::from_secs(3600)),
+    )
+}
+
 fn build_router(state: AppState) -> Router {
+    let cors = build_cors_layer(&state.cors_origins);
     let router = Router::new()
         .route("/v1/health", get(health_handler))
         // Static routes before dynamic /:id to avoid ambiguity
@@ -969,12 +1003,18 @@ fn build_router(state: AppState) -> Router {
 
     // SPA static serving: API routes above take precedence via axum route order.
     // Non-API paths fall back to the SPA's index.html for client-side routing.
-    if let Some(ref spa_dir) = state.spa_dir {
+    let router = if let Some(ref spa_dir) = state.spa_dir {
         let index = spa_dir.join("index.html");
         let serve = ServeDir::new(spa_dir).fallback(ServeFile::new(index));
         router.with_state(state).fallback_service(serve)
     } else {
         router.with_state(state)
+    };
+
+    if let Some(cors) = cors {
+        router.layer(cors)
+    } else {
+        router
     }
 }
 
