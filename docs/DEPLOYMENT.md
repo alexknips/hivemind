@@ -42,16 +42,22 @@ reads these from the shell or from an `.env` file in the project root.
 
 | Variable | Default | Description |
 |---|---|---|
+| `HIVEMIND_DATABASE_URL` | *(unset)* | Postgres connection string. When set enables the multi-tenant Postgres backend. Unset = SQLite at `HIVEMIND_DIR`. |
 | `HIVEMIND_DIR` | `/data` | Directory where the SQLite ledger is stored. Mount a volume here for persistence. |
 | `HIVEMIND_PORT` | `8080` | Port the HTTP API listens on. Also accepted as `--port` / `-p` on the CLI. |
-| `HIVEMIND_API_KEY` | *(unset)* | Bearer token for API auth. When unset the server starts in **development mode** — all requests are accepted without auth. Set this in production. |
-| `HIVEMIND_TENANT` | `local` | Default tenant identifier written into events emitted via CLI. The HTTP API reads tenant scope from the `X-HiveMind-Tenant` request header (default: `local`). |
+| `HIVEMIND_API_KEY` | *(unset)* | Static bearer token (SQLite mode only). Omit for development/trusted-network mode. |
+| `HIVEMIND_ADMIN_KEY` | *(unset)* | Bearer token for `POST /v1/tenants` (Postgres mode). Required before provisioning tenants. |
+| `HIVEMIND_TENANT` | `local` | Default tenant for CLI usage (not used in Postgres mode). |
+| `HIVEMIND_CORS_ORIGINS` | *(unset)* | Comma-separated origins for browser cross-origin requests. |
+| `ANTHROPIC_API_KEY` | *(unset)* | Enables the Layer-3 ingest classifier (Claude Haiku). Optional. |
 | `POSTGRES_PASSWORD` | `hivemind` | Password for the bundled Postgres service (compose only). |
+
+For a self-hosted cell (server + Postgres, one command), see [SELF_HOSTING.md](SELF_HOSTING.md).
 
 ### Example `.env` file
 
 ```dotenv
-HIVEMIND_API_KEY=change-me-before-production
+HIVEMIND_ADMIN_KEY=change-me-before-production
 HIVEMIND_PORT=8080
 HIVEMIND_TENANT=acme-corp
 POSTGRES_PASSWORD=s3cr3t

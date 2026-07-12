@@ -9,10 +9,21 @@ services:
     environment:
       HIVEMIND_DIR: /data
       HIVEMIND_PORT: "8080"
-      HIVEMIND_TENANT: "${HIVEMIND_TENANT:-local}"
-      HIVEMIND_API_KEY: "${HIVEMIND_API_KEY:-}"
+      # Postgres backend — resolves to the companion postgres service.
+      # Remove to fall back to SQLite stored in the hivemind-data volume.
+      HIVEMIND_DATABASE_URL: "postgres://hivemind:${POSTGRES_PASSWORD:-hivemind}@postgres:5432/hivemind"
+      # Per-tenant bearer tokens are issued via POST /v1/tenants (admin-gated).
+      # Set HIVEMIND_ADMIN_KEY before provisioning your first tenant.
+      HIVEMIND_ADMIN_KEY: "${HIVEMIND_ADMIN_KEY:-}"
+      # Optional: enable the Layer-3 ingest classifier (Claude Haiku).
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      # Optional: comma-separated CORS origins for browser SPA access.
+      HIVEMIND_CORS_ORIGINS: "${HIVEMIND_CORS_ORIGINS:-}"
     volumes:
       - hivemind-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/v1/health"]
       interval: 30s
@@ -21,9 +32,6 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # Postgres is available for the shared-backend-postgres feature.
-  # HiveMind defaults to SQLite (HIVEMIND_DIR volume). To use Postgres,
-  # wire DATABASE_URL to this service and select the postgres backend.
   postgres:
     image: postgres:17-alpine
     environment:

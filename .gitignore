@@ -2,6 +2,9 @@
 /hivemind/
 /target/
 
+# Local environment secrets — use .env.example as the template
+/.env
+
 # Local tool/editor state
 /.gitignore.local
 /.vscode/
