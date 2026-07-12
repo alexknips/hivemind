@@ -8,6 +8,11 @@ use super::{
     GraphParams, GraphProperties, GraphRow, GraphValue, GraphView, NodeKind, RelationKind,
 };
 
+type NodesAndEdges = (
+    BTreeMap<(NodeKind, String), GraphProperties>,
+    Vec<(RelationKind, String, String)>,
+);
+
 #[derive(Debug, Default)]
 pub struct MemoryGraph {
     nodes: Mutex<BTreeMap<(NodeKind, String), GraphProperties>>,
@@ -329,12 +334,7 @@ impl GraphView for MemoryGraph {
 
 impl MemoryGraph {
     /// Return all nodes and edges as plain tuples, for evaluation use.
-    pub fn nodes_and_edges(
-        &self,
-    ) -> Result<(
-        BTreeMap<(NodeKind, String), GraphProperties>,
-        Vec<(RelationKind, String, String)>,
-    )> {
+    pub fn nodes_and_edges(&self) -> Result<NodesAndEdges> {
         let nodes = self.nodes_snapshot()?;
         let edges = self
             .edges_snapshot()?

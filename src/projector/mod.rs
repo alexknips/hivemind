@@ -19,6 +19,11 @@ pub type GraphProperties = BTreeMap<String, GraphValue>;
 pub type GraphParams = BTreeMap<String, GraphValue>;
 pub type GraphRow = BTreeMap<String, GraphValue>;
 
+type ProjectedGraph = (
+    Vec<(NodeKind, String, String)>,
+    Vec<(RelationKind, String, String)>,
+);
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum GraphValue {
     Null,
@@ -659,12 +664,7 @@ pub fn rebuild_graph_for_tenant(
 /// `(stable_node_id, &CaptureItem)` — the caller assigns IDs. Returns
 /// `(nodes, edges)` where nodes are `(NodeKind, node_id, text)` and edges
 /// are `(RelationKind, from_id, to_id)`. Notification nodes are excluded.
-pub fn project_captures_in_memory(
-    id_captures: &[(&str, &CaptureItem)],
-) -> Result<(
-    Vec<(NodeKind, String, String)>,
-    Vec<(RelationKind, String, String)>,
-)> {
+pub fn project_captures_in_memory(id_captures: &[(&str, &CaptureItem)]) -> Result<ProjectedGraph> {
     let graph = memory::MemoryGraph::default();
     for (node_id, capture) in id_captures {
         project_capture(&graph, capture, node_id, &GraphProperties::default())?;
