@@ -169,12 +169,6 @@ pub fn floats_to_bytes(floats: &[f32]) -> Vec<u8> {
 }
 
 pub fn bytes_to_floats(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| {
-            let mut arr = [0u8; 4];
-            arr.copy_from_slice(c); // safe: chunks_exact(4) guarantees 4-byte slices
-            f32::from_le_bytes(arr)
-        })
-        .collect()
+    let (chunks, _) = bytes.as_chunks::<4>();
+    chunks.iter().map(|c| f32::from_le_bytes(*c)).collect()
 }
