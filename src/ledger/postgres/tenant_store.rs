@@ -14,10 +14,7 @@ use super::super::backend_error::storage_error;
 
 type PgPool = Pool<PostgresConnectionManager<MakeTlsConnector>>;
 
-/// Token prefix for all HiveMind bearer tokens.
-/// Uses `hm_tk_` (not `sk_live_`) to avoid false-positive matches with
-/// third-party secret-scanning patterns (e.g. Highnote).
-const TOKEN_PREFIX: &str = "hm_tk_";
+pub(crate) const TOKEN_PREFIX: &str = "hm_tk_";
 
 /// Result of provisioning a new tenant.
 pub struct ProvisionedTenant {
@@ -25,6 +22,31 @@ pub struct ProvisionedTenant {
     pub token_id: Uuid,
     /// Full bearer secret — `hm_tk_<64-hex>`. Returned ONCE, never stored.
     pub token_secret: String,
+}
+
+/// Auth resolution result for an opaque bearer token.
+pub struct ResolvedToken {
+    pub tenant_id: String,
+    pub user_id: Option<Uuid>,
+    pub actor_id: String,
+}
+
+/// A newly created user with their first bearer token.
+pub struct ProvisionedUser {
+    pub user_id: Uuid,
+    pub email: String,
+    pub display_name: String,
+    pub role: String,
+    pub token_id: Uuid,
+    pub token_secret: String,
+}
+
+/// Summary of a user for listing.
+pub struct UserInfo {
+    pub user_id: Uuid,
+    pub email: String,
+    pub display_name: String,
+    pub role: String,
 }
 
 /// Provisioning and token resolution backed by Postgres.
@@ -58,7 +80,6 @@ impl TenantStore {
     pub fn initialize_schema(&self) -> Result<()> {
         let mut client = self.pool.get().map_err(storage_error)?;
 
-        // Create provisioning tables (all idempotent).
         client
             .batch_execute(
                 "CREATE TABLE IF NOT EXISTS hm_tenants (
@@ -66,12 +87,24 @@ impl TenantStore {
                     display_name text NOT NULL,
                     created_at   timestamptz NOT NULL DEFAULT now()
                 );
+                CREATE TABLE IF NOT EXISTS hm_users (
+                    user_id      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                    tenant_id    text NOT NULL REFERENCES hm_tenants(tenant_id),
+                    email        text NOT NULL,
+                    display_name text NOT NULL,
+                    role         text NOT NULL DEFAULT 'member',
+                    created_at   timestamptz NOT NULL DEFAULT now(),
+                    UNIQUE (tenant_id, email)
+                );
                 CREATE TABLE IF NOT EXISTS hm_tokens (
-                    token_id   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-                    token_hash text NOT NULL UNIQUE,
-                    tenant_id  text NOT NULL REFERENCES hm_tenants(tenant_id),
-                    label      text,
-                    created_at timestamptz NOT NULL DEFAULT now()
+                    token_id    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+                    token_hash  text NOT NULL UNIQUE,
+                    tenant_id   text NOT NULL REFERENCES hm_tenants(tenant_id),
+                    user_id     uuid REFERENCES hm_users(user_id),
+                    actor_id    text NOT NULL DEFAULT 'service:api',
+                    label       text,
+                    revoked_at  timestamptz,
+                    created_at  timestamptz NOT NULL DEFAULT now()
                 );
                 CREATE INDEX IF NOT EXISTS hm_tokens_hash_idx ON hm_tokens (token_hash);
                 CREATE TABLE IF NOT EXISTS hm_oidc_users (
@@ -80,6 +113,15 @@ impl TenantStore {
                     email      text,
                     created_at timestamptz NOT NULL DEFAULT now()
                 );",
+            )
+            .map_err(storage_error)?;
+
+        // Idempotent column additions for deployments that predate this schema version.
+        client
+            .batch_execute(
+                "ALTER TABLE hm_tokens ADD COLUMN IF NOT EXISTS user_id    uuid REFERENCES hm_users(user_id);
+                 ALTER TABLE hm_tokens ADD COLUMN IF NOT EXISTS actor_id   text NOT NULL DEFAULT 'service:api';
+                 ALTER TABLE hm_tokens ADD COLUMN IF NOT EXISTS revoked_at timestamptz;",
             )
             .map_err(storage_error)?;
 
@@ -144,18 +186,7 @@ impl TenantStore {
             return Err(LedgerError::Storage("display_name must not be empty".to_owned()).into());
         }
 
-        let secret_bytes: [u8; 32] = {
-            let mut bytes = [0u8; 32];
-            // Use UUID-based entropy for compatibility without external rand crate.
-            let a = Uuid::new_v4();
-            let b = Uuid::new_v4();
-            bytes[..16].copy_from_slice(a.as_bytes());
-            bytes[16..].copy_from_slice(b.as_bytes());
-            bytes
-        };
-        let secret_hex = hex_encode(&secret_bytes);
-        let token_secret = format!("{TOKEN_PREFIX}{secret_hex}");
-        let token_hash = sha256_hex(secret_hex.as_bytes());
+        let (token_secret, token_hash) = generate_token_secret();
 
         let mut client = self.pool.get().map_err(storage_error)?;
         let mut tx = client.transaction().map_err(storage_error)?;
@@ -229,21 +260,172 @@ impl TenantStore {
         Ok(tenant_id)
     }
 
-    /// Resolve a bearer token to a tenant_id, or `None` if not found.
-    pub fn resolve_token(&self, token: &str) -> Result<Option<String>> {
+    /// Create a user and issue their first bearer token.
+    pub fn create_user(
+        &self,
+        tenant_id: &str,
+        email: &str,
+        display_name: &str,
+        role: &str,
+    ) -> Result<ProvisionedUser> {
+        if email.trim().is_empty() {
+            return Err(LedgerError::Storage("email must not be empty".to_owned()).into());
+        }
+        if !matches!(role, "admin" | "member") {
+            return Err(LedgerError::Storage("role must be 'admin' or 'member'".to_owned()).into());
+        }
+
+        let (token_secret, token_hash) = generate_token_secret();
+        let actor_id = format!("human:{email}");
+
+        let mut client = self.pool.get().map_err(storage_error)?;
+        let mut tx = client.transaction().map_err(storage_error)?;
+
+        let user_id: Uuid = tx
+            .query_one(
+                "INSERT INTO hm_users (tenant_id, email, display_name, role)
+                 VALUES ($1, $2, $3, $4)
+                 RETURNING user_id",
+                &[&tenant_id, &email, &display_name, &role],
+            )
+            .map_err(storage_error)?
+            .get(0);
+
+        let token_id: Uuid = tx
+            .query_one(
+                "INSERT INTO hm_tokens (token_hash, tenant_id, user_id, actor_id, label)
+                 VALUES ($1, $2, $3, $4, 'default')
+                 RETURNING token_id",
+                &[&token_hash, &tenant_id, &user_id, &actor_id],
+            )
+            .map_err(storage_error)?
+            .get(0);
+
+        tx.commit().map_err(storage_error)?;
+
+        Ok(ProvisionedUser {
+            user_id,
+            email: email.to_owned(),
+            display_name: display_name.to_owned(),
+            role: role.to_owned(),
+            token_id,
+            token_secret,
+        })
+    }
+
+    /// Mint an additional bearer token for an existing user.
+    pub fn mint_user_token(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+        label: Option<&str>,
+    ) -> Result<ProvisionedUser> {
+        let (token_secret, token_hash) = generate_token_secret();
+
+        let mut client = self.pool.get().map_err(storage_error)?;
+
+        let row = client
+            .query_opt(
+                "SELECT email, display_name, role FROM hm_users WHERE user_id = $1 AND tenant_id = $2",
+                &[&user_id, &tenant_id],
+            )
+            .map_err(storage_error)?
+            .ok_or_else(|| LedgerError::Storage("user not found".to_owned()))?;
+
+        let email: String = row.get(0);
+        let display_name: String = row.get(1);
+        let role: String = row.get(2);
+        let actor_id = format!("human:{email}");
+
+        let token_id: Uuid = client
+            .query_one(
+                "INSERT INTO hm_tokens (token_hash, tenant_id, user_id, actor_id, label)
+                 VALUES ($1, $2, $3, $4, $5)
+                 RETURNING token_id",
+                &[&token_hash, &tenant_id, &user_id, &actor_id, &label],
+            )
+            .map_err(storage_error)?
+            .get(0);
+
+        Ok(ProvisionedUser {
+            user_id,
+            email,
+            display_name,
+            role,
+            token_id,
+            token_secret,
+        })
+    }
+
+    /// Revoke a token. Returns false if not found or already revoked.
+    pub fn revoke_token(&self, tenant_id: &str, token_id: Uuid) -> Result<bool> {
+        let mut client = self.pool.get().map_err(storage_error)?;
+        let n = client
+            .execute(
+                "UPDATE hm_tokens SET revoked_at = now()
+                 WHERE token_id = $1 AND tenant_id = $2 AND revoked_at IS NULL",
+                &[&token_id, &tenant_id],
+            )
+            .map_err(storage_error)?;
+        Ok(n > 0)
+    }
+
+    /// List all users for a tenant.
+    pub fn list_users(&self, tenant_id: &str) -> Result<Vec<UserInfo>> {
+        let mut client = self.pool.get().map_err(storage_error)?;
+        let rows = client
+            .query(
+                "SELECT user_id, email, display_name, role FROM hm_users
+                 WHERE tenant_id = $1 ORDER BY created_at",
+                &[&tenant_id],
+            )
+            .map_err(storage_error)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| UserInfo {
+                user_id: r.get(0),
+                email: r.get(1),
+                display_name: r.get(2),
+                role: r.get(3),
+            })
+            .collect())
+    }
+
+    /// Resolve a bearer token to auth context, or `None` if not found/revoked.
+    pub fn resolve_token(&self, token: &str) -> Result<Option<ResolvedToken>> {
         let secret = token.strip_prefix(TOKEN_PREFIX).unwrap_or(token);
         let token_hash = sha256_hex(secret.as_bytes());
 
         let mut client = self.pool.get().map_err(storage_error)?;
         let row = client
             .query_opt(
-                "SELECT tenant_id FROM hm_tokens WHERE token_hash = $1",
+                "SELECT tenant_id, user_id, actor_id FROM hm_tokens
+                 WHERE token_hash = $1 AND revoked_at IS NULL",
                 &[&token_hash],
             )
             .map_err(storage_error)?;
 
-        Ok(row.map(|r| r.get::<_, String>(0)))
+        Ok(row.map(|r| ResolvedToken {
+            tenant_id: r.get(0),
+            user_id: r.get(1),
+            actor_id: r.get(2),
+        }))
     }
+}
+
+fn generate_token_secret() -> (String, String) {
+    let secret_bytes: [u8; 32] = {
+        let mut bytes = [0u8; 32];
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        bytes[..16].copy_from_slice(a.as_bytes());
+        bytes[16..].copy_from_slice(b.as_bytes());
+        bytes
+    };
+    let secret_hex = hex_encode(&secret_bytes);
+    let token_secret = format!("{TOKEN_PREFIX}{secret_hex}");
+    let token_hash = sha256_hex(secret_hex.as_bytes());
+    (token_secret, token_hash)
 }
 
 fn sha256_hex(data: &[u8]) -> String {
