@@ -327,7 +327,7 @@ async fn main() {
     let all_scenarios = scenarios();
     let run_scenarios: Vec<&Scenario> = all_scenarios
         .iter()
-        .filter(|s| task_filter.as_deref().map_or(true, |t| s.id == t))
+        .filter(|s| task_filter.as_deref().is_none_or(|t| s.id == t))
         .collect();
 
     println!("HiveMind A/B Uplift Scorecard — Phase 1");

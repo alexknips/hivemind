@@ -688,7 +688,10 @@ async fn main() {
     }
     println!("Corpus: {} cases", corpus.cases.len());
     if !corpus.org_bundles.is_empty() {
-        println!("Org bundles: {} (metadata for hmd-4tf, not scored)", corpus.org_bundles.len());
+        println!(
+            "Org bundles: {} (metadata for hmd-4tf, not scored)",
+            corpus.org_bundles.len()
+        );
     }
     println!();
 
