@@ -60,7 +60,7 @@ Choose your path:
 
 ## CLI quickstart
 
-For self-hosted installs. First [install the binary](/getting-started/install/).
+For self-hosted installs. First [set up your self-hosted cell](/getting-started/install/).
 
 The fastest first run uses an isolated temporary ledger:
 

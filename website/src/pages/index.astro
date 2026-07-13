@@ -119,12 +119,12 @@ const base = import.meta.env.BASE_URL;
             </div>
             <h3 class="text-xl font-bold text-white mb-3">Run your own</h3>
             <p class="text-gray-300 text-sm leading-relaxed mb-4">
-              Install the binary, point it at a directory, and you own the ledger.
-              Local stdio MCP for Claude Desktop, Claude Code, or Cursor &mdash;
-              or run <code class="text-indigo-300">hivemind serve</code> to expose the HTTP API yourself.
+              Your instance, your data &mdash; nothing phones home. Three commands spin
+              up a full cell: clone, set one secret, <code class="text-indigo-300">docker compose up</code>.
+              Connect your agent via MCP in under five minutes.
             </p>
-            <div class="bg-gray-950 rounded-lg p-3 font-mono text-xs text-gray-400 mb-6 break-all">
-              cargo install --git https://github.com/alexknips/hivemind
+            <div class="bg-gray-950 rounded-lg p-3 font-mono text-xs text-gray-400 mb-6">
+              docker compose up --build -d
             </div>
             <a href={`${base}getting-started/install/`} class="inline-block border border-gray-700 hover:border-gray-500 text-gray-300 hover:text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors">
               Self-host guide &rarr;

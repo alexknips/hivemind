@@ -1,81 +1,139 @@
 ---
 title: Self-host
-description: Install HiveMind on Linux or macOS and run your own server or local MCP.
+description: Run your own HiveMind cell — three commands, your data, your infrastructure.
 ---
 
-This guide is for **hands-on builders** who want to run their own HiveMind instance.
-If you want the fastest path, skip the install and
-[connect your agent via the managed remote MCP server](/guides/mcp-setup/) instead —
-no local install required.
+Your instance, your data, nothing phones home. A self-hosted cell takes about five minutes on any machine with Docker.
 
 ---
 
-## Install the binary
+## Start in three commands
 
-The fastest path is the installer script, which downloads the prebuilt binary for your
-platform, verifies its SHA-256 checksum, and places `hivemind` in `~/.local/bin`:
+**Prerequisites:** Docker 24+ with Compose v2 (`docker compose version`). Port 8080 must be available.
+
+```bash
+# 1. Fetch the compose cell
+git clone https://github.com/alexknips/hivemind && cd hivemind
+
+# 2. Create your config and set strong secrets
+cp .env.example .env
+# Linux:
+sed -i "s/change-me-before-production/$(openssl rand -hex 32)/g" .env
+# macOS: sed -i '' "s/change-me-before-production/$(openssl rand -hex 32)/g" .env
+
+# 3. Start (builds the image on first run, ~5 minutes)
+docker compose up --build -d
+```
+
+Confirm the cell is healthy:
+
+```bash
+docker compose ps
+```
+
+```
+NAME        STATUS                   PORTS
+hivemind    Up (healthy)             0.0.0.0:8080->8080/tcp
+postgres    Up (healthy)
+```
+
+---
+
+## Connect your agent
+
+Provision a tenant to get your bearer token (shown once — save it):
+
+```bash
+ADMIN_KEY=$(grep HIVEMIND_ADMIN_KEY .env | cut -d= -f2)
+curl -s -X POST http://localhost:8080/v1/tenants \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id": "me", "display_name": "My Team"}'
+```
+
+The response includes `token_secret` — a value starting with `hm_sk_live_...`. Copy it now.
+
+Add HiveMind to Claude Code by pasting this into `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "hivemind": {
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer hm_sk_live_..."
+      }
+    }
+  }
+}
+```
+
+Reload Claude Code. The HiveMind tools appear in your agent's tool list. Your instance is running.
+
+:::note
+**Your data stays on your machine.** The self-hosted cell never communicates with
+the managed hosted service. Separate deployments, separate data.
+:::
+
+:::note
+**TODO (hivemind-iioq, in flight):** Multi-user auth will change the "add users" step.
+For now, provision one tenant per user with the `curl` command above. This section
+will be updated when that feature lands — the page is intentionally structured
+so the update slots in here without a rewrite.
+:::
+
+---
+
+## Local CLI / development
+
+For single-user local use or development without Docker.
+
+**Installer script** (places `hivemind` in `~/.local/bin`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/alexknips/hivemind/master/scripts/install.sh | sh
 ```
 
-Set `HIVEMIND_VERSION=v0.3.0` to pin a specific release, or `HIVEMIND_INSTALL_DIR=/usr/local/bin`
-to choose a different destination.
-
-## Prebuilt binaries
-
-Tagged releases publish prebuilt tarballs for Linux and macOS on x86_64 and ARM64:
-
-| Platform | Asset |
-|----------|-------|
-| Linux x86_64 | `hivemind-linux-x86_64.tar.gz` |
-| Linux ARM64 | `hivemind-linux-arm64.tar.gz` |
-| macOS x86_64 | `hivemind-macos-x86_64.tar.gz` |
-| macOS ARM64 | `hivemind-macos-arm64.tar.gz` |
-
-## Build from source
+**Build from source:**
 
 ```bash
 cargo install --git https://github.com/alexknips/hivemind --locked hivemind
 ```
 
-Optional features:
-
-```bash
-# Persistent Kuzu graph projection
-cargo install --git https://github.com/alexknips/hivemind --locked --features graph-kuzu hivemind
-
-# Terminal UI
-cargo install --git https://github.com/alexknips/hivemind --locked --features tui hivemind
-```
-
-## Verify
-
-```bash
-hivemind --version
-hivemind --help
-```
-
-## Run the local MCP server
-
-Once installed, use the local stdio MCP server with any MCP-aware client:
+Run a local MCP server over stdio — no HTTP, no auth required:
 
 ```bash
 hivemind --hivemind-dir ./hivemind/ mcp
 ```
 
-See [MCP Setup](/guides/mcp-setup/) for client configuration.
+Add to Claude Code via `.mcp.json`:
 
-## Run the HTTP API server
+```json
+{
+  "mcpServers": {
+    "hivemind": {
+      "command": "hivemind",
+      "args": ["mcp"],
+      "env": { "HIVEMIND_DIR": "./hivemind/" }
+    }
+  }
+}
+```
+
+Run the HTTP API server directly:
 
 ```bash
 HIVEMIND_DIR=./hivemind hivemind serve --port 8080
 ```
 
-The server exposes all write and read operations over HTTP at `http://localhost:8080/v1/`.
 Set `HIVEMIND_API_KEY` to require bearer-token authentication.
 
-## Next steps
+---
 
-- [MCP Setup](/guides/mcp-setup/) — local stdio MCP configuration for all clients
+## Going deeper
+
+The [full self-hosting runbook](https://github.com/alexknips/hivemind/blob/master/docs/SELF_HOSTING.md)
+covers production configuration, TLS setup, E2E verification, upgrading, and troubleshooting.
+
+- [MCP Setup](/guides/mcp-setup/) — agent configuration for all MCP clients
 - [Quickstart](/getting-started/quickstart/) — capture your first decision in one command
