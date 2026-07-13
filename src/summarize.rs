@@ -9,6 +9,7 @@
 //! - No inference, no invention.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
@@ -420,6 +421,284 @@ pub fn recall_decisions(
             digest,
         },
     })
+}
+
+// ---------------------------------------------------------------------------
+// weekly_digest — Layer-3: window-scoped decision digest
+// ---------------------------------------------------------------------------
+
+/// Maximum decisions returned in a single digest window.
+pub const DIGEST_MAX_DECISIONS: usize = 50;
+
+pub struct DigestRequest {
+    pub since: DateTime<Utc>,
+    pub until: DateTime<Utc>,
+    pub actor_ids: Vec<String>,
+    pub limit: usize,
+}
+
+/// One entry in the digest — one decision with its full rationale context.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DigestEntry {
+    pub decision_id: String,
+    pub title: String,
+    pub rationale: String,
+    pub topic_keys: Vec<String>,
+    pub status: DecisionStatus,
+    pub actor_ids: Vec<String>,
+    pub option_labels: Vec<String>,
+    pub chosen_option_label: Option<String>,
+    pub supersedes_ids: Vec<String>,
+    pub superseded_by_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct DigestResponse {
+    pub since: DateTime<Utc>,
+    pub until: DateTime<Utc>,
+    pub entries: Vec<DigestEntry>,
+    pub total_in_window: usize,
+    pub truncated: bool,
+    /// Rendered prose text (mode-1 compatible; no LLM required).
+    pub text: String,
+    pub cited_decision_ids: Vec<String>,
+}
+
+/// Build a textual decision digest for a time window.
+///
+/// Deterministic graph assembly: pulls all decisions proposed in [since, until],
+/// optionally filtered by actor. Renders a human-readable prose digest with full
+/// rationale context. Every claim is backed by a cited decision ID.
+pub fn weekly_digest(
+    context: &QueryContext,
+    ledger: &SqliteEventLedger,
+    graph: &impl GraphView,
+    request: &DigestRequest,
+) -> crate::Result<QueryResponse<DigestResponse>> {
+    let started = Instant::now();
+    let limit = request.limit.clamp(1, DIGEST_MAX_DECISIONS);
+
+    let search_req = SearchDecisionRequest {
+        query: None,
+        topic_keys: vec![],
+        statuses: vec![],
+        actor_ids: request.actor_ids.clone(), // ubs:ignore: clone necessary — building owned SearchDecisionRequest from borrowed DigestRequest fields
+        sources: vec![],
+        since: Some(request.since),
+        until: Some(request.until),
+        limit,
+        cursor: None,
+    };
+    let search_response = search_decisions_fts_with_context(context, ledger, graph, &search_req)?;
+    let truncated = search_response.truncated;
+    let total_in_window = search_response.data.total_matches;
+
+    let option_label_cache = load_option_label_cache(graph)?;
+
+    let mut entries: Vec<DigestEntry> = Vec::with_capacity(search_response.data.items.len());
+    for item in search_response.data.items {
+        let entry = build_digest_entry(item, &option_label_cache);
+        entries.push(entry);
+    }
+
+    let cited_decision_ids: Vec<String> = entries
+        .iter()
+        .map(|e| e.decision_id.clone()) // ubs:ignore: clone necessary — building owned Vec from borrowed entries
+        .collect();
+
+    let text = render_digest_text(&entries, request.since, request.until, truncated);
+
+    Ok(QueryResponse {
+        result_count: entries.len(),
+        truncated,
+        latency_ms: started.elapsed().as_millis(),
+        data: DigestResponse {
+            since: request.since,
+            until: request.until,
+            entries,
+            total_in_window,
+            truncated,
+            text,
+            cited_decision_ids,
+        },
+    })
+}
+
+fn load_option_label_cache(
+    graph: &impl GraphView,
+) -> crate::Result<std::collections::BTreeMap<String, String>> {
+    let rows = graph.query(
+        "MATCH (node:`Option`) RETURN node.id AS id ORDER BY node.id;",
+        &GraphParams::new(),
+    )?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let id = match row.get("id") {
+                Some(GraphValue::String(s)) => s.clone(), // ubs:ignore: clone necessary — extracting owned String from ref
+                _ => return None,
+            };
+            let label = row
+                .get("label")
+                .and_then(|v| {
+                    if let GraphValue::String(s) = v {
+                        Some(s.clone()) // ubs:ignore: clone necessary — extracting owned String from ref
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| id.clone()); // ubs:ignore: unwrap_or_else — safe default; clone necessary
+            Some((id, label))
+        })
+        .collect())
+}
+
+fn build_digest_entry(
+    item: DecisionSearchResult,
+    option_label_cache: &std::collections::BTreeMap<String, String>,
+) -> DigestEntry {
+    let d = &item.decision;
+    let ctx = &item.graph_context;
+
+    let option_labels: Vec<String> = d
+        .option_ids
+        .iter()
+        .map(|id| {
+            option_label_cache
+                .get(id)
+                .cloned() // ubs:ignore: clone necessary — extracting owned String from map ref
+                .unwrap_or_else(|| id.clone()) // ubs:ignore: unwrap_or_else — fall back to id; clone necessary
+        })
+        .collect();
+
+    let chosen_option_label = d.chosen_option_id.as_ref().map(|id| {
+        option_label_cache
+            .get(id)
+            .cloned() // ubs:ignore: clone necessary — extracting owned String from map ref
+            .unwrap_or_else(|| id.clone()) // ubs:ignore: unwrap_or_else — safe default; clone necessary
+    });
+
+    DigestEntry {
+        decision_id: d.id.clone(),              // ubs:ignore: clone necessary — building owned DigestEntry from borrowed DecisionView
+        title: d.title.clone(),                 // ubs:ignore: clone necessary — building owned DigestEntry
+        rationale: d.rationale.clone(),         // ubs:ignore: clone necessary — building owned DigestEntry
+        topic_keys: d.topic_keys.clone(),       // ubs:ignore: clone necessary — building owned DigestEntry
+        status: d.status,
+        actor_ids: ctx.actor_ids.clone(),       // ubs:ignore: clone necessary — building owned DigestEntry from borrowed SearchGraphContext
+        option_labels,
+        chosen_option_label,
+        supersedes_ids: ctx.supersedes_decision_ids.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
+        superseded_by_ids: ctx.superseded_by_decision_ids.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
+    }
+}
+
+fn render_digest_text(
+    entries: &[DigestEntry],
+    since: DateTime<Utc>,
+    until: DateTime<Utc>,
+    truncated: bool,
+) -> String {
+    if entries.is_empty() {
+        return format!(
+            "No decisions found in window {} → {}.",
+            since.format("%Y-%m-%d"),
+            until.format("%Y-%m-%d")
+        );
+    }
+
+    let mut out = String::new();
+
+    let _ = writeln!(
+        out,
+        "Decision Digest: {} → {}",
+        since.format("%Y-%m-%d"),
+        until.format("%Y-%m-%d")
+    );
+    let sep = "=".repeat(40);
+    let _ = writeln!(out, "{sep}");
+
+    let n = entries.len();
+    let actor_set: BTreeSet<String> = entries
+        .iter()
+        .flat_map(|e| e.actor_ids.iter().cloned()) // ubs:ignore: cloned necessary — collecting owned Strings from borrowed entries
+        .collect();
+    if actor_set.is_empty() {
+        let _ = writeln!(out, "{n} decision(s)");
+    } else {
+        let _ = writeln!(out, "{n} decision(s) · {} actor(s)", actor_set.len());
+    }
+
+    // Group by first topic key for readability; ungrouped go under "(general)"
+    let mut groups: std::collections::BTreeMap<String, Vec<&DigestEntry>> =
+        std::collections::BTreeMap::new();
+    for entry in entries {
+        let key = entry
+            .topic_keys
+            .first()
+            .cloned() // ubs:ignore: cloned necessary — extracting owned String from borrowed entry
+            .unwrap_or_else(|| "(general)".to_owned()); // ubs:ignore: unwrap_or_else — safe default for ungrouped entries
+        groups.entry(key).or_default().push(entry);
+    }
+
+    for (topic, group) in &groups {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "{}", topic.to_uppercase());
+        for entry in group {
+            let status_label = format!("{:?}", entry.status).to_lowercase();
+            let _ = writeln!(out, "• [{}] {} ({})", entry.decision_id, entry.title, status_label);
+
+            let rationale = trim_rationale(&entry.rationale, RATIONALE_TRIM_CHARS);
+            let _ = writeln!(out, "  Why: {rationale}");
+
+            if !entry.option_labels.is_empty() {
+                let opts = entry.option_labels.join(", ");
+                if let Some(chosen) = &entry.chosen_option_label {
+                    let _ = writeln!(out, "  Options: {opts} — Chose: {chosen}");
+                } else {
+                    let _ = writeln!(out, "  Options: {opts}");
+                }
+            }
+
+            if !entry.actor_ids.is_empty() {
+                let _ = writeln!(out, "  By: {}", entry.actor_ids.join(", "));
+            }
+
+            if !entry.supersedes_ids.is_empty() {
+                let _ = writeln!(out, "  Supersedes: {}", entry.supersedes_ids.join(", "));
+            }
+            if !entry.superseded_by_ids.is_empty() {
+                let _ = writeln!(out, "  Superseded by: {}", entry.superseded_by_ids.join(", "));
+            }
+        }
+    }
+
+    out.push('\n');
+
+    // Reversals this week
+    let reversed: Vec<String> = entries
+        .iter()
+        .filter(|e| !e.superseded_by_ids.is_empty())
+        .map(|e| format!("{} → {}", e.decision_id, e.superseded_by_ids.join(", ")))
+        .collect();
+    if !reversed.is_empty() {
+        let _ = writeln!(out, "Reversals this window:");
+        for r in &reversed {
+            let _ = writeln!(out, "  {r}");
+        }
+        out.push('\n');
+    }
+
+    if truncated {
+        let _ = writeln!(out, "Note: digest is truncated; use --limit to raise the cap.");
+    }
+
+    let cited: Vec<String> = entries
+        .iter()
+        .map(|e| e.decision_id.clone()) // ubs:ignore: clone necessary — building owned Vec from borrowed entries
+        .collect();
+    let _ = writeln!(out, "Cited: {}", cited.join(", "));
+
+    out.trim_end().to_owned()
 }
 
 #[cfg(test)]

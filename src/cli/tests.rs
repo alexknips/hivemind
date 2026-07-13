@@ -1290,6 +1290,79 @@ fn recall_cli_returns_ranked_decisions_and_digest() {
 }
 
 #[test]
+fn digest_cli_returns_decisions_in_window() {
+    let hivemind_dir = unique_test_dir("digest");
+    let decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-digest-test",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Pick serialization format",
+        "--rationale",
+        "MessagePack is more compact than JSON for our payloads",
+        "--topic-keys",
+        "api,serialization",
+        "--options",
+        "json,msgpack",
+        "--chose",
+        "msgpack",
+    ]))
+    .expect("emit decision succeeds");
+
+    // JSON mode: structured digest response
+    let out = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "digest",
+        "--window",
+        "7d",
+    ]))
+    .expect("digest query succeeds");
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid digest json"); // ubs:ignore: test-only; panicking is correct
+    let entries = parsed["data"]["entries"].as_array().expect("entries array"); // ubs:ignore: test-only; panicking is correct
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["decision_id"].as_str() == Some(decision_id.as_str())),
+        "digest must include the emitted decision"
+    ); // ubs:ignore: test-only assertion
+    let cited = parsed["data"]["cited_decision_ids"]
+        .as_array()
+        .expect("cited_decision_ids array"); // ubs:ignore: test-only; panicking is correct
+    assert!(
+        cited
+            .iter()
+            .any(|id| id.as_str() == Some(decision_id.as_str())),
+        "decision_id must appear in cited_decision_ids"
+    ); // ubs:ignore: test-only assertion
+
+    // Summary mode: prose output
+    let summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "digest",
+        "--window",
+        "7d",
+        "--summary",
+    ]))
+    .expect("digest summary succeeds");
+    assert!(summary.contains("Decision Digest"), "summary must contain header"); // ubs:ignore: test-only assertion
+    assert!(
+        summary.contains("Pick serialization format"),
+        "summary must mention the decision title"
+    ); // ubs:ignore: test-only assertion
+    assert!(summary.contains("Cited:"), "summary must include citation line"); // ubs:ignore: test-only assertion
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
 fn ledger_history_cli_queries_and_exports_read_only_summary() {
     let hivemind_dir = unique_test_dir("query-ledger-history");
     let decision_id = run(&Cli::parse_from([
