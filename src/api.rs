@@ -49,8 +49,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, Path, Query, State};
 use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use axum::routing::post;
+use axum::routing::{delete, get, post};
 use axum::Router;
 use chrono::{DateTime, Utc};
 use jsonwebtoken::jwk::JwkSet;
@@ -63,9 +62,9 @@ use tracing::warn;
 use crate::commands::{CommandContext, Commands};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, IngestTurn, TenantId};
-use crate::ledger::{EventLedger, SqliteEventLedger};
+use crate::ledger::{EventLedger, SqliteEventLedger, SqliteUserStore};
 #[cfg(feature = "shared-backend-postgres")]
-use crate::ledger::{PostgresEventLedger, TenantStore};
+use crate::ledger::{PostgresEventLedger, ProvisionedUser, ResolvedToken, TenantStore, UserInfo};
 use crate::projector::{
     memory::MemoryGraph, rebuild_graph_for_tenant, GraphParams, GraphRow, GraphValue, GraphView,
     NodeKind, RelationKind,
@@ -281,9 +280,10 @@ pub struct AppState {
     backend: Arc<ApiBackend>,
     /// Single-token dev auth (SQLite mode).
     api_key: Option<String>,
-    /// Admin key for `POST /v1/tenants`.
-    #[cfg(feature = "shared-backend-postgres")]
+    /// Admin key for provisioning endpoints (`POST /v1/tenants`, `POST /v1/users`).
     admin_key: Option<String>,
+    /// Per-user token store for SQLite mode.
+    sqlite_user_store: Option<Arc<SqliteUserStore>>,
     /// Token store for per-tenant bearer token resolution (Postgres mode).
     #[cfg(feature = "shared-backend-postgres")]
     tenant_store: Option<Arc<TenantStore>>,
@@ -310,6 +310,7 @@ impl AppState {
                 backend: Arc::new(ApiBackend::Postgres(Arc::new(ledger))),
                 api_key: None,
                 admin_key: config.admin_key.clone(),
+                sqlite_user_store: None,
                 tenant_store: Some(Arc::new(store)),
                 workos_config,
                 workos_jwks,
@@ -318,11 +319,15 @@ impl AppState {
             });
         }
 
+        let sqlite_user_store = SqliteUserStore::open(&config.hivemind_dir)
+            .ok()
+            .map(Arc::new);
+
         Ok(Self {
             backend: Arc::new(ApiBackend::Sqlite(Arc::new(config.hivemind_dir.clone()))),
             api_key: config.api_key.clone(),
-            #[cfg(feature = "shared-backend-postgres")]
             admin_key: config.admin_key.clone(),
+            sqlite_user_store,
             #[cfg(feature = "shared-backend-postgres")]
             tenant_store: None,
             workos_config,
@@ -517,30 +522,24 @@ async fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequ
                 "WorkOS browser-OAuth JWT required (use GitHub or Google login)",
             ));
         }
-        // Postgres without WorkOS: existing opaque-token resolution for tenants
-        // provisioned via POST /v1/tenants (admin-gated provisioning path).
+        // Postgres without WorkOS: per-user or legacy tenant opaque token.
+        // actor_id comes from the token record — never from the caller header.
         if bearer.is_empty() {
             return Err(ApiError::unauthorized("bearer token required"));
         }
-        // resolve_token calls r2d2 pool.get() — must run on a blocking thread.
         let store = Arc::clone(store);
         let bearer_owned = bearer.to_owned();
-        let tenant_id_str = tokio::task::spawn_blocking(move || store.resolve_token(&bearer_owned))
-            .await
-            .map_err(|e| ApiError::internal(e.to_string()))?
-            .map_err(|e| ApiError::internal(e.to_string()))?
-            .ok_or_else(|| ApiError::unauthorized("invalid or missing bearer token"))?;
-        let tenant_id = TenantId::new(&tenant_id_str)
+        let resolved: ResolvedToken =
+            tokio::task::spawn_blocking(move || store.resolve_token(&bearer_owned))
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))?
+                .map_err(|e| ApiError::internal(e.to_string()))?
+                .ok_or_else(|| ApiError::unauthorized("invalid or missing bearer token"))?;
+        let tenant_id = TenantId::new(&resolved.tenant_id)
             .map_err(|_| ApiError::internal("invalid tenant_id from token store"))?;
-        let actor_id = headers
-            .get(HEADER_ACTOR)
-            .and_then(|v| v.to_str().ok())
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(DEFAULT_ACTOR)
-            .to_owned();
         return Ok(ApiRequestCtx {
             tenant_id,
-            actor_id,
+            actor_id: resolved.actor_id,
         });
     }
 
@@ -575,7 +574,32 @@ async fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequ
         }
     }
 
-    // SQLite dev mode: single-key constant-time comparison.
+    // SQLite mode: try per-user token resolution for hm_tk_ prefixed tokens.
+    // If the user store is initialized and the token is not found/revoked, reject immediately.
+    if bearer.starts_with(crate::ledger::SQLITE_TOKEN_PREFIX) {
+        if let Some(ref user_store) = state.sqlite_user_store {
+            let bearer_owned = bearer.to_owned();
+            let user_store = Arc::clone(user_store);
+            let resolved =
+                tokio::task::spawn_blocking(move || user_store.resolve_token(&bearer_owned))
+                    .await
+                    .map_err(|e| ApiError::internal(e.to_string()))?
+                    .map_err(|e| ApiError::internal(e.to_string()))?;
+            return match resolved {
+                Some(r) => {
+                    let tenant_id = TenantId::new(&r.tenant_id)
+                        .map_err(|_| ApiError::internal("invalid tenant_id from user token"))?;
+                    Ok(ApiRequestCtx {
+                        tenant_id,
+                        actor_id: r.actor_id,
+                    })
+                }
+                None => Err(ApiError::unauthorized("invalid or revoked bearer token")),
+            };
+        }
+    }
+
+    // SQLite dev mode: single static key comparison.
     if let Some(expected) = &state.api_key {
         if !constant_time_eq(bearer, expected) {
             return Err(ApiError::unauthorized("invalid or missing bearer token"));
@@ -1000,6 +1024,17 @@ fn build_router(state: AppState) -> Router {
 
     #[cfg(feature = "shared-backend-postgres")]
     let router = router.route("/v1/tenants", post(provision_tenant_handler));
+
+    let router = router
+        .route(
+            "/v1/users",
+            post(create_user_handler).get(list_users_handler),
+        )
+        .route("/v1/users/{user_id}/tokens", post(mint_user_token_handler))
+        .route(
+            "/v1/users/{user_id}/tokens/{token_id}",
+            delete(revoke_token_handler),
+        );
 
     // SPA static serving: API routes above take precedence via axum route order.
     // Non-API paths fall back to the SPA's index.html for client-side routing.
@@ -1817,6 +1852,316 @@ async fn provision_tenant_handler(
         Ok(Err(e)) => e.into_response(),
         Err(e) => ApiError::internal(e.to_string()).into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// User management endpoints (SQLite + Postgres, admin-gated)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct CreateUserRequest {
+    email: String,
+    display_name: String,
+    #[serde(default = "default_role")]
+    role: String,
+    tenant_id: Option<String>,
+}
+
+fn default_role() -> String {
+    "member".to_owned()
+}
+
+#[allow(clippy::result_large_err)]
+fn check_admin_key(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
+    let provided = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    match &state.admin_key {
+        None => Err(ApiError::internal("HIVEMIND_ADMIN_KEY not configured").into_response()),
+        Some(expected) => {
+            if constant_time_eq(provided, expected) {
+                Ok(())
+            } else {
+                Err(ApiError::unauthorized("invalid admin key").into_response())
+            }
+        }
+    }
+}
+
+async fn create_user_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    payload: std::result::Result<Json<CreateUserRequest>, JsonRejection>,
+) -> Response {
+    if let Err(r) = check_admin_key(&state, &headers) {
+        return r;
+    }
+    let req = match payload {
+        Ok(Json(r)) => r,
+        Err(e) => return ApiError::validation(e.to_string()).into_response(),
+    };
+
+    // Postgres path
+    #[cfg(feature = "shared-backend-postgres")]
+    if let Some(ref store) = state.tenant_store {
+        let tenant_id = req.tenant_id.clone().unwrap_or_else(|| "local".to_owned());
+        let store = Arc::clone(store);
+        let result = tokio::task::spawn_blocking(move || {
+            let u = store
+                .create_user(&tenant_id, &req.email, &req.display_name, &req.role)
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            Ok::<_, ApiError>(serde_json::json!({
+                "user_id": u.user_id,
+                "email": u.email,
+                "display_name": u.display_name,
+                "role": u.role,
+                "token_id": u.token_id,
+                "token_secret": u.token_secret,
+            }))
+        })
+        .await;
+        return match result {
+            Ok(Ok(body)) => (StatusCode::CREATED, Json(body)).into_response(),
+            Ok(Err(e)) => e.into_response(),
+            Err(e) => ApiError::internal(e.to_string()).into_response(),
+        };
+    }
+
+    // SQLite path
+    if let Some(ref user_store) = state.sqlite_user_store {
+        let tenant_id = req
+            .tenant_id
+            .clone()
+            .unwrap_or_else(|| crate::events::TenantId::LOCAL_VALUE.to_owned());
+        let user_store = Arc::clone(user_store);
+        let result = tokio::task::spawn_blocking(move || {
+            let u = user_store
+                .create_user(&tenant_id, &req.email, &req.display_name, &req.role)
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            Ok::<_, ApiError>(serde_json::json!({
+                "user_id": u.user_id,
+                "email": u.email,
+                "display_name": u.display_name,
+                "role": u.role,
+                "token_id": u.token_id,
+                "token_secret": u.token_secret,
+            }))
+        })
+        .await;
+        return match result {
+            Ok(Ok(body)) => (StatusCode::CREATED, Json(body)).into_response(),
+            Ok(Err(e)) => e.into_response(),
+            Err(e) => ApiError::internal(e.to_string()).into_response(),
+        };
+    }
+
+    ApiError::internal("user store not initialized").into_response()
+}
+
+async fn list_users_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if let Err(r) = check_admin_key(&state, &headers) {
+        return r;
+    }
+    let tenant_id = params
+        .get("tenant_id")
+        .map(|s| s.as_str())
+        .unwrap_or("local")
+        .to_owned();
+
+    #[cfg(feature = "shared-backend-postgres")]
+    if let Some(ref store) = state.tenant_store {
+        let store = Arc::clone(store);
+        let result = tokio::task::spawn_blocking(move || {
+            store
+                .list_users(&tenant_id)
+                .map_err(|e| ApiError::internal(e.to_string()))
+        })
+        .await;
+        return match result {
+            Ok(Ok(users)) => {
+                let body: Vec<_> = users
+                    .into_iter()
+                    .map(|u| {
+                        serde_json::json!({
+                            "user_id": u.user_id,
+                            "email": u.email,
+                            "display_name": u.display_name,
+                            "role": u.role,
+                        })
+                    })
+                    .collect();
+                Json(serde_json::json!({ "users": body })).into_response()
+            }
+            Ok(Err(e)) => e.into_response(),
+            Err(e) => ApiError::internal(e.to_string()).into_response(),
+        };
+    }
+
+    if let Some(ref user_store) = state.sqlite_user_store {
+        let user_store = Arc::clone(user_store);
+        let result = tokio::task::spawn_blocking(move || {
+            user_store
+                .list_users(&tenant_id)
+                .map_err(|e| ApiError::internal(e.to_string()))
+        })
+        .await;
+        return match result {
+            Ok(Ok(users)) => {
+                let body: Vec<_> = users
+                    .into_iter()
+                    .map(|u| {
+                        serde_json::json!({
+                            "user_id": u.user_id,
+                            "email": u.email,
+                            "display_name": u.display_name,
+                            "role": u.role,
+                        })
+                    })
+                    .collect();
+                Json(serde_json::json!({ "users": body })).into_response()
+            }
+            Ok(Err(e)) => e.into_response(),
+            Err(e) => ApiError::internal(e.to_string()).into_response(),
+        };
+    }
+
+    ApiError::internal("user store not initialized").into_response()
+}
+
+async fn mint_user_token_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(user_id_str): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if let Err(r) = check_admin_key(&state, &headers) {
+        return r;
+    }
+    let user_id = match uuid::Uuid::parse_str(&user_id_str) {
+        Ok(u) => u,
+        Err(_) => return ApiError::validation("invalid user_id").into_response(),
+    };
+    let tenant_id = params
+        .get("tenant_id")
+        .map(|s| s.as_str())
+        .unwrap_or("local")
+        .to_owned();
+    let label = params.get("label").cloned();
+
+    #[cfg(feature = "shared-backend-postgres")]
+    if let Some(ref store) = state.tenant_store {
+        let store = Arc::clone(store);
+        let label2 = label.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let u = store
+                .mint_user_token(&tenant_id, user_id, label2.as_deref())
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            Ok::<_, ApiError>(serde_json::json!({
+                "user_id": u.user_id,
+                "token_id": u.token_id,
+                "token_secret": u.token_secret,
+            }))
+        })
+        .await;
+        return match result {
+            Ok(Ok(body)) => (StatusCode::CREATED, Json(body)).into_response(),
+            Ok(Err(e)) => e.into_response(),
+            Err(e) => ApiError::internal(e.to_string()).into_response(),
+        };
+    }
+
+    if let Some(ref user_store) = state.sqlite_user_store {
+        let user_store = Arc::clone(user_store);
+        let result = tokio::task::spawn_blocking(move || {
+            user_store
+                .mint_user_token(&tenant_id, user_id, label.as_deref())
+                .map_err(|e| ApiError::internal(e.to_string()))
+        })
+        .await;
+        return match result {
+            Ok(Ok((token_id, token_secret))) => (
+                StatusCode::CREATED,
+                Json(serde_json::json!({
+                    "user_id": user_id,
+                    "token_id": token_id,
+                    "token_secret": token_secret,
+                })),
+            )
+                .into_response(),
+            Ok(Err(e)) => e.into_response(),
+            Err(e) => ApiError::internal(e.to_string()).into_response(),
+        };
+    }
+
+    ApiError::internal("user store not initialized").into_response()
+}
+
+async fn revoke_token_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((user_id_str, token_id_str)): Path<(String, String)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    if let Err(r) = check_admin_key(&state, &headers) {
+        return r;
+    }
+    let token_id = match uuid::Uuid::parse_str(&token_id_str) {
+        Ok(u) => u,
+        Err(_) => return ApiError::validation("invalid token_id").into_response(),
+    };
+    if uuid::Uuid::parse_str(&user_id_str).is_err() {
+        return ApiError::validation("invalid user_id").into_response();
+    }
+    let tenant_id = params
+        .get("tenant_id")
+        .map(|s| s.as_str())
+        .unwrap_or("local")
+        .to_owned();
+
+    #[cfg(feature = "shared-backend-postgres")]
+    if let Some(ref store) = state.tenant_store {
+        let store = Arc::clone(store);
+        let result = tokio::task::spawn_blocking(move || {
+            store
+                .revoke_token(&tenant_id, token_id)
+                .map_err(|e| ApiError::internal(e.to_string()))
+        })
+        .await;
+        return match result {
+            Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
+            Ok(Ok(false)) => {
+                ApiError::not_found("token not found or already revoked").into_response()
+            }
+            Ok(Err(e)) => e.into_response(),
+            Err(e) => ApiError::internal(e.to_string()).into_response(),
+        };
+    }
+
+    if let Some(ref user_store) = state.sqlite_user_store {
+        let user_store = Arc::clone(user_store);
+        let result = tokio::task::spawn_blocking(move || {
+            user_store
+                .revoke_token(&tenant_id, token_id)
+                .map_err(|e| ApiError::internal(e.to_string()))
+        })
+        .await;
+        return match result {
+            Ok(Ok(true)) => StatusCode::NO_CONTENT.into_response(),
+            Ok(Ok(false)) => {
+                ApiError::not_found("token not found or already revoked").into_response()
+            }
+            Ok(Err(e)) => e.into_response(),
+            Err(e) => ApiError::internal(e.to_string()).into_response(),
+        };
+    }
+
+    ApiError::internal("user store not initialized").into_response()
 }
 
 // ---------------------------------------------------------------------------

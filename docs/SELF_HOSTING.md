@@ -55,52 +55,109 @@ curl http://localhost:8080/v1/health
 
 ## Auth story (no WorkOS required)
 
-Self-hosted cells do not need WorkOS. The server supports two auth modes
-depending on whether `HIVEMIND_DATABASE_URL` is set:
+Self-hosted cells do not need WorkOS. A single cell can serve multiple users —
+each user gets their own bearer token, and every captured decision is attributed
+to that user's identity. The admin provisions users via the API; users connect
+their agents with their personal token.
 
-### Postgres mode (default in this compose)
+The server supports two auth modes depending on whether `HIVEMIND_DATABASE_URL`
+is set:
 
-When `HIVEMIND_DATABASE_URL` is set, the server uses per-tenant bearer tokens
-issued by the provisioning endpoint. There is no single shared API key.
+### Postgres mode (default in this compose) — multi-user quickstart
 
-**Provision your first tenant:**
+When `HIVEMIND_DATABASE_URL` is set, the server uses per-user bearer tokens.
+
+**Step 1 — provision your first tenant (one-time):**
 
 ```bash
 # Replace <ADMIN_KEY> with the value of HIVEMIND_ADMIN_KEY in your .env
 curl -s -X POST http://localhost:8080/v1/tenants \
   -H "Authorization: Bearer <ADMIN_KEY>" \
   -H "Content-Type: application/json" \
-  -d '{"tenant_id": "acme", "display_name": "Acme Corp"}' | tee /tmp/tenant.json
+  -d '{"tenant_id": "myorg", "display_name": "My Org"}' | tee /tmp/tenant.json
 ```
 
-Response:
+**Step 2 — add users:**
+
+Each team member gets their own token. The `actor_id` recorded in every
+decision they capture is derived from their email at token-creation time and
+cannot be overridden by the caller.
+
+```bash
+# Add Alice (admin)
+curl -s -X POST http://localhost:8080/v1/users \
+  -H "Authorization: Bearer <ADMIN_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "alice@example.com", "display_name": "Alice", "role": "admin"}' \
+  | tee /tmp/alice.json
+
+# Add Bob (member)
+curl -s -X POST http://localhost:8080/v1/users \
+  -H "Authorization: Bearer <ADMIN_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"email": "bob@example.com", "display_name": "Bob", "role": "member"}' \
+  | tee /tmp/bob.json
+```
+
+Response for each user:
 
 ```json
 {
-  "tenant_id": "acme",
-  "token_id": "tok_...",
-  "token_secret": "hm_sk_live_..."
+  "user_id":      "3fa85f64-...",
+  "email":        "alice@example.com",
+  "display_name": "Alice",
+  "role":         "admin",
+  "token_id":     "8d3f...",
+  "token_secret": "hm_tk_<64-hex>"
 }
 ```
 
-Save `token_secret` — it is shown only once. Use it as the bearer token for
-all subsequent requests from this tenant. The server never stores the raw
-secret, only its hash.
+`token_secret` is shown **once only** — save it immediately. The server stores
+only its hash.
 
-**Use the token:**
+**Step 3 — each user connects their agent:**
 
-```bash
-export HM_TOKEN="hm_sk_live_..."   # token_secret from above
-
-curl http://localhost:8080/v1/decisions/search?q=architecture \
-  -H "Authorization: Bearer $HM_TOKEN"
+```json
+{
+  "mcpServers": {
+    "hivemind": {
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer hm_tk_<Alice's token>"
+      }
+    }
+  }
+}
 ```
 
-### SQLite mode (no Postgres, single user)
+Decisions captured by Alice are attributed to `human:alice@example.com`; Bob's
+to `human:bob@example.com`. Actor identity is locked to the token — the server
+ignores any `X-HiveMind-Actor` header.
+
+**Managing tokens:**
+
+```bash
+# List all users
+curl -s http://localhost:8080/v1/users \
+  -H "Authorization: Bearer <ADMIN_KEY>"
+
+# Mint an additional token for an existing user (e.g. new device)
+curl -s -X POST "http://localhost:8080/v1/users/<USER_ID>/tokens?label=laptop" \
+  -H "Authorization: Bearer <ADMIN_KEY>"
+
+# Revoke a token (e.g. lost device)
+curl -s -X DELETE "http://localhost:8080/v1/users/<USER_ID>/tokens/<TOKEN_ID>" \
+  -H "Authorization: Bearer <ADMIN_KEY>"
+```
+
+### SQLite mode (no Postgres)
 
 If you remove the `HIVEMIND_DATABASE_URL` line from `docker-compose.yml` the
-server falls back to SQLite stored in the `hivemind-data` volume. Auth becomes
-a single static bearer token:
+server falls back to SQLite stored in the `hivemind-data` volume. With
+`HIVEMIND_ADMIN_KEY` set, the same `POST /v1/users` endpoint works for
+per-user SQLite tokens (default tenant `local`; omit `tenant_id` in body).
+
+For a single static key instead:
 
 ```bash
 # In .env:
@@ -123,7 +180,7 @@ project root, or from the shell environment.
 | `HIVEMIND_DATABASE_URL` | *(unset)* | Postgres connection string. When set enables the multi-tenant Postgres backend. Unset = SQLite at `HIVEMIND_DIR`. |
 | `HIVEMIND_DIR` | `/data` | Directory for the SQLite ledger (SQLite mode only). Mount a volume here. |
 | `HIVEMIND_PORT` | `8080` | Port the HTTP API listens on inside the container. |
-| `HIVEMIND_ADMIN_KEY` | *(unset)* | Bearer token for `POST /v1/tenants` (Postgres mode). Required before provisioning tenants. |
+| `HIVEMIND_ADMIN_KEY` | *(unset)* | Bearer token for `POST /v1/tenants`, `POST /v1/users`, `GET /v1/users`, and token revocation. Required before provisioning tenants or users. |
 | `HIVEMIND_API_KEY` | *(unset)* | Static bearer token (SQLite mode only). Omit for development/trusted-network mode. |
 | `ANTHROPIC_API_KEY` | *(unset)* | Enables the Layer-3 ingest classifier (Claude Haiku). Optional. |
 | `HIVEMIND_CORS_ORIGINS` | *(unset)* | Comma-separated origins allowed for browser cross-origin requests. |
@@ -144,27 +201,27 @@ Run these checks after provisioning your first tenant to confirm all layers work
 
 ```bash
 export HM_URL=http://localhost:8080
-export HM_TOKEN="hm_sk_live_..."   # your tenant token
+export HM_TOKEN="hm_tk_..."   # a user token from POST /v1/users
 
 # 1. Health
 curl -s $HM_URL/v1/health
 # → {"status":"ok"}
 
-# 2. Capture a decision
+# 2. Capture a decision (actor_id is resolved from your token — no need to supply it)
 curl -s -X POST $HM_URL/v1/decisions \
   -H "Authorization: Bearer $HM_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Use Postgres for shared-backend storage",
     "rationale": "WAL mode does not scale across writers.",
-    "actor_id": "human:alice",
+    "topic_keys": ["infrastructure"],
     "chosen_option_label": "postgres",
     "options": [
       {"label": "postgres", "description": "r2d2 connection pool"},
       {"label": "sqlite",   "description": "WAL mode, single writer"}
     ]
   }' | tee /tmp/decision.json
-# → {"id":"dec_...","status":"proposed",...}
+# → {"decision_id":"decision-...","option_ids":[...],...}
 
 # 3. Query it back
 # Note: full-text search (GET /v1/decisions/search) is SQLite mode only.

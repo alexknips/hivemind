@@ -12,8 +12,8 @@ use crate::Result;
 
 pub use memory::InMemoryEventLedger;
 #[cfg(feature = "shared-backend-postgres")]
-pub use postgres::{PostgresEventLedger, TenantStore};
-pub use sqlite::SqliteEventLedger;
+pub use postgres::{PostgresEventLedger, ProvisionedUser, ResolvedToken, TenantStore, UserInfo};
+pub use sqlite::{SqliteEventLedger, SqliteUserStore, SQLITE_TOKEN_PREFIX};
 
 pub trait EventLedger {
     fn append_for_tenant(&self, tenant_id: &TenantId, event: Event) -> Result<EventId>;

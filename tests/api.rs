@@ -1212,3 +1212,285 @@ async fn cors_auth_still_enforced_on_cross_origin_request() {
         "auth must still be enforced on cross-origin requests"
     ); // ubs:ignore
 }
+
+// ---------------------------------------------------------------------------
+// Multi-user auth (SQLite user store)
+// ---------------------------------------------------------------------------
+
+fn app_with_admin_key(hivemind_dir: PathBuf, admin_key: &str) -> axum::Router {
+    let config = hivemind::api::ApiConfig {
+        hivemind_dir,
+        port: 0,
+        api_key: None,
+        database_url: None,
+        admin_key: Some(admin_key.to_owned()),
+        workos_domain: None,
+        workos_issuer: None,
+        workos_jwks_url: None,
+        workos_audience: None,
+        spa_dir: None,
+        cors_origins: vec![],
+    };
+    hivemind::api::create_router(&config)
+}
+
+fn admin_post(uri: &str, body: Value, admin_key: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {admin_key}"))
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap()
+}
+
+fn admin_get(uri: &str, admin_key: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("authorization", format!("Bearer {admin_key}"))
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn authed_post(uri: &str, body: Value, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        // intentionally different from the token-bound actor to test spoofing prevention
+        .header("x-hivemind-actor", "agent:evil:spoofer")
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn create_user_and_authenticate() {
+    let dir = test_ledger_dir();
+    let admin_key = "admin-key-xyz";
+    let app = app_with_admin_key(dir, admin_key);
+
+    let (status, body) = call(
+        app.clone(),
+        admin_post(
+            "/v1/users",
+            serde_json::json!({
+                "email": "alice@example.com",
+                "display_name": "Alice",
+                "role": "member"
+            }),
+            admin_key,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}"); // ubs:ignore
+    let token = body["token_secret"].as_str().unwrap().to_owned();
+    assert!(token.starts_with("hm_tk_"), "token must have hm_tk_ prefix"); // ubs:ignore
+
+    // Token must grant access to the API
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/decisions/search?q=test")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = call(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK, "user token should grant access"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn actor_bound_to_token_not_header() {
+    // actor_id must come from the token record, not X-HiveMind-Actor header
+    let dir = test_ledger_dir();
+    let admin_key = "admin-key-abc";
+    let app = app_with_admin_key(dir, admin_key);
+
+    let (_, body) = call(
+        app.clone(),
+        admin_post(
+            "/v1/users",
+            serde_json::json!({ "email": "bob@example.com", "display_name": "Bob", "role": "member" }),
+            admin_key,
+        ),
+    )
+    .await;
+    let token = body["token_secret"].as_str().unwrap().to_owned();
+
+    // Capture a decision using the user token but with a spoofed X-HiveMind-Actor header
+    let (status, dec) = call(
+        app.clone(),
+        authed_post(
+            "/v1/decisions",
+            serde_json::json!({
+                "title": "Actor binding test",
+                "rationale": "verifying actor comes from token",
+                "topic_keys": ["auth"],
+                "chosen_option_label": "a",
+                "options": [{"label": "a", "description": "option a"}]
+            }),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{dec}"); // ubs:ignore
+
+    // Search by the token-bound actor — should find the decision
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/decisions/search?q=Actor+binding&actor_id=human:bob@example.com")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = call(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    let hits = body["data"]["items"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert!(
+        hits > 0,
+        "decision must be found by token-bound actor_id, got: {body}"
+    ); // ubs:ignore
+
+    // Spoofed actor should NOT find it
+    let req2 = Request::builder()
+        .method("GET")
+        .uri("/v1/decisions/search?q=Actor+binding&actor_id=agent:evil:spoofer")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (_, body2) = call(app.clone(), req2).await;
+    let hits2 = body2["data"]["items"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(
+        hits2, 0,
+        "spoofed actor must not find the decision, got: {body2}"
+    ); // ubs:ignore
+}
+
+#[tokio::test]
+async fn revoke_token_denies_access() {
+    let dir = test_ledger_dir();
+    let admin_key = "admin-revoke";
+    let app = app_with_admin_key(dir, admin_key);
+
+    let (_, body) = call(
+        app.clone(),
+        admin_post(
+            "/v1/users",
+            serde_json::json!({ "email": "carol@example.com", "display_name": "Carol", "role": "member" }),
+            admin_key,
+        ),
+    )
+    .await;
+    let token = body["token_secret"].as_str().unwrap().to_owned();
+    let user_id = body["user_id"].as_str().unwrap().to_owned();
+    let token_id = body["token_id"].as_str().unwrap().to_owned();
+
+    // Revoke the token
+    let revoke_req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/users/{user_id}/tokens/{token_id}"))
+        .header("authorization", format!("Bearer {admin_key}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(revoke_req).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::NO_CONTENT,
+        "revoke must succeed"
+    ); // ubs:ignore
+
+    // Revoked token must now be rejected
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/decisions/search?q=test")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = call(app.clone(), req).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "revoked token must be rejected"
+    ); // ubs:ignore
+}
+
+#[tokio::test]
+async fn create_user_requires_admin_key() {
+    let dir = test_ledger_dir();
+    let app = app_with_admin_key(dir, "real-admin");
+
+    // Wrong key
+    let (status, body) = call(
+        app.clone(),
+        admin_post(
+            "/v1/users",
+            serde_json::json!({ "email": "eve@example.com", "display_name": "Eve", "role": "member" }),
+            "wrong-key",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}"); // ubs:ignore
+
+    // No key at all
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/users")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::to_string(
+                &serde_json::json!({"email":"e@e.com","display_name":"E","role":"member"}),
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    let (status, _) = call(app.clone(), req).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "missing admin key must be rejected"
+    ); // ubs:ignore
+}
+
+#[tokio::test]
+async fn list_users_returns_created_users() {
+    let dir = test_ledger_dir();
+    let admin_key = "list-admin";
+    let app = app_with_admin_key(dir, admin_key);
+
+    call(
+        app.clone(),
+        admin_post(
+            "/v1/users",
+            serde_json::json!({"email":"x@x.com","display_name":"X","role":"member"}),
+            admin_key,
+        ),
+    )
+    .await;
+    call(
+        app.clone(),
+        admin_post(
+            "/v1/users",
+            serde_json::json!({"email":"y@y.com","display_name":"Y","role":"admin"}),
+            admin_key,
+        ),
+    )
+    .await;
+
+    let (status, body) = call(app.clone(), admin_get("/v1/users", admin_key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    let users = body["users"].as_array().unwrap();
+    assert_eq!(users.len(), 2, "should list both users"); // ubs:ignore
+    assert!(
+        users.iter().any(|u| u["email"] == "x@x.com"),
+        "x@x.com must be listed"
+    ); // ubs:ignore
+    assert!(
+        users.iter().any(|u| u["email"] == "y@y.com"),
+        "y@y.com must be listed"
+    ); // ubs:ignore
+}

@@ -1,5 +1,8 @@
 worktrees/
 target/
+# Astro framework build cache (generated at project root when astro dev/build
+# runs from root; not source code).
+.astro/
 # Committed build artifacts (minified demo bundles), not source: they carry
 # thousands of phantom ast-grep criticals (loose-equality, "secret comparison"
 # hits on THREE.js shader code) and stall single-language ubs scans.
