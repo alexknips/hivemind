@@ -289,7 +289,7 @@ fn chosen_label<'a>(
     let chosen_id = chosen_id?;
     option_labels
         .iter()
-        .find(|(id, _)| id == chosen_id)
+        .find(|(id, _)| id == chosen_id) // ubs:ignore: comparing option IDs (String == &str), not secrets — benign equality check
         .map(|(_, label)| label.as_str())
 }
 
@@ -644,7 +644,7 @@ fn render_digest_text(
         let _ = writeln!(out);
         let _ = writeln!(out, "{}", topic.to_uppercase());
         for entry in group {
-            let status_label = format!("{:?}", entry.status).to_lowercase();
+            let status_label = format!("{:?}", entry.status).to_lowercase(); // ubs:ignore: bounded-length alloc in digest render loop — not a hot path
             let _ = writeln!(
                 out,
                 "• [{}] {} ({})",
