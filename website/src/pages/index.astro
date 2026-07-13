@@ -7,8 +7,8 @@ const base = import.meta.env.BASE_URL;
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>HiveMind — Organizational Decision Memory</title>
-  <meta name="description" content="HiveMind records what was decided, why, and by whom — for every human and agent on your team. Connect as a remote MCP server. Queryable, contestable, auditable." />
+  <title>HiveMind — Honesty-backed Decision Memory</title>
+  <meta name="description" content="Your wiki says what was decided. HiveMind proves it — with options, evidence, and provenance no one can quietly rewrite. Decision memory for humans and agents." />
   <link rel="icon" type="image/svg+xml" href={`${base}favicon.svg`} />
 </head>
 <body class="bg-gray-950 text-gray-100 antialiased">
@@ -50,13 +50,14 @@ const base = import.meta.env.BASE_URL;
         MCP-native &middot; stdio + HTTP &middot; 12 tools &middot; works with Claude, Codex, Cursor
       </div>
       <h1 class="text-5xl sm:text-6xl font-bold text-white leading-tight mb-6">
-        Your decisions.<br/>
-        <span class="text-indigo-400">Remembered. Contested. Queryable.</span>
+        The wiki says what was decided.<br/>
+        <span class="text-indigo-400">It cannot prove it.</span>
       </h1>
       <p class="text-xl text-gray-400 max-w-2xl mx-auto mb-10 leading-relaxed">
-        HiveMind is the decision ledger for teams where humans and agents work side by side.
-        Add it to Claude Code, Claude Desktop, or Cursor as an MCP server &mdash; agents
-        capture and query every decision in a shared, auditable ledger.
+        Wiki pages are written after the fact &mdash; options not taken are forgotten, evidence is paraphrased,
+        and anyone can silently edit the rationale to match what actually happened.
+        HiveMind captures decisions the moment they&rsquo;re made: with the options you weighed,
+        the evidence you had, and a provenance trail no one can rewrite.
       </p>
 
       <!-- Primary CTA: MCP -->
@@ -77,7 +78,7 @@ const base = import.meta.env.BASE_URL;
 
       <div class="flex flex-col sm:flex-row gap-3 justify-center mb-4">
         <a href={`${base}demo/`} class="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-lg font-semibold text-base transition-colors">
-          Try the live demo &rarr;
+          Explore a real decision &rarr;
         </a>
         <a href={`${base}guides/mcp-setup/`} class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-lg font-semibold text-base transition-colors">
           Connect your agent &rarr;
@@ -86,7 +87,7 @@ const base = import.meta.env.BASE_URL;
           Self-host guide
         </a>
       </div>
-      <p class="text-sm text-gray-500 mb-8">Explore a real decision graph in your browser &mdash; no signup, no install.</p>
+      <p class="text-sm text-gray-500 mb-8">See how a real decision was made, step by step &mdash; options, evidence, provenance. No signup, no install.</p>
     </section>
 
     <!-- Hosted API callout -->
@@ -136,33 +137,37 @@ const base = import.meta.env.BASE_URL;
 
     <!-- Problem -->
     <section class="max-w-6xl mx-auto px-6 py-20">
-      <h2 class="text-3xl font-bold text-white text-center mb-4">The problem with how decisions live today</h2>
+      <h2 class="text-3xl font-bold text-white text-center mb-4">The wiki habit makes decisions unverifiable</h2>
       <p class="text-gray-400 text-center max-w-xl mx-auto mb-16">
-        Knowledge work produces decisions constantly. None of them have a home.
+        Every team documents decisions. Almost none can verify what was decided, when, by whom,
+        or whether the rationale has been quietly updated since.
       </p>
       <div class="grid md:grid-cols-3 gap-8">
         <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <div class="text-2xl mb-3">&#x1F4AC;</div>
-          <h3 class="font-semibold text-white mb-2">Lost in chat</h3>
+          <div class="text-2xl mb-3">&#x1F4CB;</div>
+          <h3 class="font-semibold text-white mb-2">Written after the fact</h3>
           <p class="text-gray-400 text-sm leading-relaxed">
-            A senior engineer reviews a junior&rsquo;s work by reading a Claude chat URL.
-            The reasoning disappears when the thread scrolls out of view.
+            By the time a decision makes it to the wiki, the options not taken are already gone,
+            the evidence is a summary of a summary, and the reasoning has been cleaned up
+            to match the outcome. The record is a reconstruction, not the original.
           </p>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <div class="text-2xl mb-3">&#x1F916;</div>
-          <h3 class="font-semibold text-white mb-2">Agents can&rsquo;t learn from each other</h3>
+          <h3 class="font-semibold text-white mb-2">No actor, no dissent</h3>
           <p class="text-gray-400 text-sm leading-relaxed">
-            An agent making a follow-up choice has no structured place to learn what
-            the previous agent decided or why. Reasoning gets regenerated from scratch.
+            Documents have no who. When a human overrides an agent call, or two engineers
+            disagree, that signal disappears into the last-saved version.
+            An agent picking up the work has no structured place to learn what was tried or why.
           </p>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <div class="text-2xl mb-3">&#x1F4CB;</div>
-          <h3 class="font-semibold text-white mb-2">Wikis capture artifacts, not choices</h3>
+          <div class="text-2xl mb-3">&#x270F;&#xFE0F;</div>
+          <h3 class="font-semibold text-white mb-2">Silently rewritable</h3>
           <p class="text-gray-400 text-sm leading-relaxed">
-            Documents have no actor model. They can&rsquo;t represent &ldquo;this superseded that
-            on Tuesday because new evidence came in.&rdquo; Disagreement is invisible.
+            A wiki page that says &ldquo;we chose X because of Y&rdquo; offers no proof that Y was the real reason,
+            or that the rationale hasn&rsquo;t been quietly updated since.
+            The record and the reasoning can both change without a trace.
           </p>
         </div>
       </div>
@@ -235,6 +240,15 @@ const base = import.meta.env.BASE_URL;
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8l4 4 8-8" stroke="#818cf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </div>
           <div>
+            <h3 class="font-semibold text-white mb-1">Captured at the moment</h3>
+            <p class="text-gray-400 text-sm">Decisions enter the ledger when they happen &mdash; with the options considered, the evidence cited, and the actor on record. Not reconstructed afterward.</p>
+          </div>
+        </div>
+        <div class="flex gap-4">
+          <div class="mt-1 flex-shrink-0 w-8 h-8 rounded-lg bg-indigo-900 flex items-center justify-center">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8l4 4 8-8" stroke="#818cf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div>
             <h3 class="font-semibold text-white mb-1">Humans and agents as peers</h3>
             <p class="text-gray-400 text-sm">Every event carries an actor. Human decisions and agent decisions have the same shape and the same review surface.</p>
           </div>
@@ -254,7 +268,7 @@ const base = import.meta.env.BASE_URL;
           </div>
           <div>
             <h3 class="font-semibold text-white mb-1">Supersession without deletion</h3>
-            <p class="text-gray-400 text-sm">Old decisions are never deleted or mutated. A <code class="text-indigo-300">SUPERSEDES</code> edge preserves the full history of &ldquo;we changed our mind.&rdquo;</p>
+            <p class="text-gray-400 text-sm">Old decisions are never deleted or mutated. A <code class="text-indigo-300">SUPERSEDES</code> edge preserves the full history of &ldquo;we changed our mind&rdquo; &mdash; and why.</p>
           </div>
         </div>
         <div class="flex gap-4">
@@ -275,23 +289,14 @@ const base = import.meta.env.BASE_URL;
             <p class="text-gray-400 text-sm">Agentic layer scores are traceable. &ldquo;Because the model said so&rdquo; is not acceptable provenance.</p>
           </div>
         </div>
-        <div class="flex gap-4">
-          <div class="mt-1 flex-shrink-0 w-8 h-8 rounded-lg bg-indigo-900 flex items-center justify-center">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8l4 4 8-8" stroke="#818cf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </div>
-          <div>
-            <h3 class="font-semibold text-white mb-1">MCP + CLI + HTTP, same API</h3>
-            <p class="text-gray-400 text-sm">All surfaces are thin wrappers over the same internal functions. No behavior exists in one surface but not another.</p>
-          </div>
-        </div>
       </div>
     </section>
 
-    <!-- Proof point / Dogfood -->
+    <!-- Proof point / Self-audit -->
     <section class="border-t border-gray-800 bg-gray-900/30">
       <div class="max-w-6xl mx-auto px-6 py-20">
         <div class="bg-gradient-to-br from-indigo-950 to-purple-950 border border-indigo-800 rounded-2xl p-10 text-center">
-          <div class="text-sm font-mono text-indigo-400 mb-4">SIGNAL FROM NOISE &mdash; PRODUCTION DOGFOOD RESULT</div>
+          <div class="text-sm font-mono text-indigo-400 mb-4">THE SYSTEM AUDITS ITSELF &mdash; PRODUCTION FIDELITY RESULT</div>
           <div class="flex flex-col sm:flex-row justify-center gap-12 mb-8">
             <div>
               <div class="text-5xl font-bold text-white mb-2">~92%</div>
@@ -304,9 +309,10 @@ const base = import.meta.env.BASE_URL;
             </div>
           </div>
           <p class="text-gray-400 max-w-lg mx-auto text-sm leading-relaxed">
-            HiveMind&rsquo;s capture classifier runs on the real HiveMind development process itself.
-            Out of thousands of agent activity events, fewer than 1 in 2000 becomes a
-            captured decision &mdash; and those are the ones that matter six months from now.
+            HiveMind runs on itself. The capture classifier measures fidelity in production:
+            of every agent activity event, fewer than 1&nbsp;in&nbsp;2000 becomes a captured decision.
+            Not by dropping data &mdash; by proving that almost all activity is legitimately noise.
+            This is a claim you can verify against the ledger.
           </p>
         </div>
       </div>
@@ -316,7 +322,7 @@ const base = import.meta.env.BASE_URL;
     <section class="max-w-6xl mx-auto px-6 py-20">
       <h2 class="text-3xl font-bold text-white text-center mb-4">Who it&rsquo;s for</h2>
       <p class="text-gray-400 text-center max-w-xl mx-auto mb-16">
-        Anyone whose work produces decisions worth remembering &mdash; and who increasingly works alongside agents.
+        Anyone whose work produces decisions worth proving &mdash; and who increasingly makes them alongside agents.
       </p>
       <div class="grid md:grid-cols-2 gap-8">
         <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
@@ -330,7 +336,7 @@ const base = import.meta.env.BASE_URL;
         <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <h3 class="font-semibold text-white mb-3">Technical leaders</h3>
           <p class="text-gray-400 text-sm leading-relaxed">
-            Review reasoning as structured decisions, not as shared chat URLs.
+            Review reasoning as structured decisions with options and evidence, not as shared chat URLs.
             Build a queryable record of architectural choices that survives
             team changes and agent generations.
           </p>
@@ -339,16 +345,16 @@ const base = import.meta.env.BASE_URL;
           <h3 class="font-semibold text-white mb-3">Large organizations</h3>
           <p class="text-gray-400 text-sm leading-relaxed">
             Cross-team decision visibility without crawling a wiki. Compliance
-            and audit teams get a reviewable trail of who chose what, when, and
-            on what evidence.
+            and audit teams get a provenance trail of who chose what, when, and
+            on what evidence &mdash; and whether it&rsquo;s been superseded since.
           </p>
         </div>
         <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
           <h3 class="font-semibold text-white mb-3">Small teams shipping fast</h3>
           <p class="text-gray-400 text-sm leading-relaxed">
-            Keep decision history alive past the conversation that created it.
-            One agent&rsquo;s choice becomes the next agent&rsquo;s structured starting
-            context, instead of being regenerated from scratch.
+            Keep decision context alive past the conversation that created it.
+            One agent&rsquo;s choice &mdash; with the options it considered &mdash; becomes
+            the next agent&rsquo;s structured starting point, not a blank slate.
           </p>
         </div>
       </div>
@@ -357,14 +363,14 @@ const base = import.meta.env.BASE_URL;
     <!-- Bottom CTA -->
     <section class="border-t border-gray-800 bg-gray-900/30">
       <div class="max-w-6xl mx-auto px-6 py-24 text-center">
-        <h2 class="text-3xl font-bold text-white mb-4">Add HiveMind to your agent in two minutes</h2>
+        <h2 class="text-3xl font-bold text-white mb-4">Make your team&rsquo;s decisions honest, evidenced, and auditable</h2>
         <p class="text-gray-400 mb-10 max-w-lg mx-auto">
-          Add HiveMind to your Claude Code, Claude Desktop, or Cursor config.
-          Your agents start capturing and querying decisions immediately.
+          HiveMind connects to Claude Code, Claude Desktop, or Cursor as an MCP server.
+          Agents start capturing decisions the moment they make them &mdash; with options, evidence, and provenance built in.
         </p>
         <div class="flex flex-col sm:flex-row gap-4 justify-center">
           <a href={`${base}demo/`} class="bg-emerald-600 hover:bg-emerald-500 text-white px-8 py-3 rounded-lg font-semibold text-base transition-colors inline-block">
-            Try the live demo &rarr;
+            Explore a real decision &rarr;
           </a>
           <a href={`${base}guides/mcp-setup/`} class="bg-indigo-600 hover:bg-indigo-500 text-white px-8 py-3 rounded-lg font-semibold text-base transition-colors inline-block">
             Connect your agent &rarr;
@@ -382,7 +388,7 @@ const base = import.meta.env.BASE_URL;
   <footer class="border-t border-gray-800 py-12">
     <div class="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
       <div class="text-sm text-gray-500">
-        HiveMind &mdash; organizational decision memory
+        HiveMind &mdash; honesty-backed decision memory
       </div>
       <div class="flex items-center gap-6 text-sm text-gray-500">
         <a href={`${base}guides/mcp-setup/`} class="hover:text-gray-300 transition-colors">MCP Setup</a>
