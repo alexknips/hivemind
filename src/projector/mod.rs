@@ -922,8 +922,8 @@ fn project_capture(
             if let Some(options) = &capture.options {
                 for option_label in options {
                     let opt_id = option_node_id(node_id, option_label);
-                    let mut opt_props = origin_properties.clone();
-                    opt_props.insert("label".to_owned(), GraphValue::String(option_label.clone()));
+                    let mut opt_props = origin_properties.clone(); // ubs:ignore: per-option props copy; each Option node needs a fresh map with a distinct "label" entry
+                    opt_props.insert("label".to_owned(), GraphValue::String(option_label.clone())); // ubs:ignore: per-option label; key alloc + value clone differ per iteration — unavoidable with BTreeMap<String,…>
                     graph.upsert_node(NodeKind::Option, &opt_id, &opt_props)?;
                     graph.upsert_edge(
                         RelationKind::HasOption,
