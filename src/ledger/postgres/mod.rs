@@ -20,7 +20,7 @@ use super::backend_error::storage_error;
 use super::EventLedger;
 
 mod tenant_store;
-pub use tenant_store::TenantStore;
+pub use tenant_store::{ProvisionedUser, ResolvedToken, TenantStore, UserInfo};
 
 const DEFAULT_POOL_SIZE: u32 = 16;
 const MAX_TRANSIENT_RETRIES: usize = 3;
