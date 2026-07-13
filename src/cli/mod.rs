@@ -57,7 +57,10 @@ use crate::suggest::{
     materialize_document_extraction_candidates, propose_document_extraction_candidates,
     DocumentCandidateExtractor, DocumentCandidateMaterializationRequest, DocumentCandidateRequest,
 };
-use crate::summarize::{recall_decisions, RecallRequest, RECALL_MAX_LIMIT};
+use crate::summarize::{
+    recall_decisions, weekly_digest, DigestRequest, RecallRequest, DIGEST_MAX_DECISIONS,
+    RECALL_MAX_LIMIT,
+};
 use crate::{HivemindError, Result};
 
 #[derive(Debug, Clone, Parser)]
@@ -137,6 +140,10 @@ pub enum Command {
     /// structural (supersession) similarity. Outputs JSON unless --summary is
     /// passed.
     Map(MapArgs),
+    /// Generate a textual decision digest for a time window.
+    /// Answers "what did the team decide this week and why?" using graph data.
+    /// Outputs structured JSON by default; pass --summary for readable prose.
+    Digest(Box<DigestArgs>),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -178,6 +185,34 @@ pub struct MapArgs {
     pub alpha: Vec<f64>,
 
     /// Output compact text summary instead of JSON.
+    #[arg(long)]
+    pub summary: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct DigestArgs {
+    /// Time window as a duration string: Nd (days), Nh (hours), Nw (weeks).
+    /// Defaults to "7d" (the past 7 days from now).
+    #[arg(long, default_value = "7d")]
+    pub window: String,
+
+    /// Explicit window start (ISO 8601 / RFC 3339). Overrides --window.
+    #[arg(long)]
+    pub since: Option<String>,
+
+    /// Explicit window end (ISO 8601 / RFC 3339). Defaults to now.
+    #[arg(long)]
+    pub until: Option<String>,
+
+    /// Filter to decisions involving these actor IDs (repeatable, comma-separated).
+    #[arg(long = "actor", value_delimiter = ',')]
+    pub actor_ids: Vec<String>,
+
+    /// Maximum number of decisions to include (1–50, default 50).
+    #[arg(long, default_value_t = DIGEST_MAX_DECISIONS)]
+    pub limit: usize,
+
+    /// Output readable prose instead of JSON.
     #[arg(long)]
     pub summary: bool,
 }
@@ -1278,6 +1313,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         #[cfg(feature = "shared-backend-postgres")]
         Command::Migrate(args) => run_migrate(cli, args),
         Command::Map(args) => run_map(cli, args),
+        Command::Digest(args) => run_digest(cli, args),
     }
 }
 
@@ -1453,6 +1489,71 @@ fn run_map(cli: &Cli, args: &MapArgs) -> Result<String> {
         }
         serde_json::to_string_pretty(&results)
             .map_err(|e| CliError::InvalidInput(e.to_string()).into()) // ubs:ignore: error conversion at CLI boundary
+    }
+}
+
+fn parse_window_duration(window: &str) -> Result<chrono::Duration> {
+    let window = window.trim();
+    let (digits, unit) = window.split_at(
+        window
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(window.len()), // ubs:ignore: unwrap_or — safe default: all-digits treated as days
+    );
+    let n: i64 = digits
+        .parse()
+        .map_err(|_| CliError::InvalidInput(format!("--window: invalid duration '{window}'")))?;
+    if n <= 0 {
+        return Err(
+            CliError::InvalidInput(format!("--window: duration must be positive, got '{window}'"))
+                .into(),
+        );
+    }
+    match unit {
+        "h" => Ok(chrono::Duration::hours(n)),
+        "d" | "" => Ok(chrono::Duration::days(n)),
+        "w" => Ok(chrono::Duration::weeks(n)),
+        other => Err(CliError::InvalidInput(format!(
+            "--window: unknown unit '{other}'; use h (hours), d (days), or w (weeks)"
+        ))
+        .into()),
+    }
+}
+
+fn run_digest(cli: &Cli, args: &DigestArgs) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let context = QueryContext::new(tenant_id.clone());
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
+
+    let now = Utc::now();
+
+    let until = match args.until.as_deref() {
+        Some(s) => parse_required_query_datetime(s, "--until")?,
+        None => now,
+    };
+    let since = match args.since.as_deref() {
+        Some(s) => parse_required_query_datetime(s, "--since")?,
+        None => {
+            let duration = parse_window_duration(&args.window)?;
+            until - duration
+        }
+    };
+
+    let request = DigestRequest {
+        since,
+        until,
+        actor_ids: args.actor_ids.clone(), // ubs:ignore: clone necessary — building owned DigestRequest from borrowed DigestArgs
+        limit: args.limit,
+    };
+    let response = weekly_digest(&context, &ledger, &graph, &request)?;
+
+    if args.summary {
+        let mut out = response.data.text.clone(); // ubs:ignore: clone necessary — formatting owned output from borrowed DigestResponse
+        append_truncation_notice(&mut out, response.truncated, None);
+        Ok(out.trim_end().to_owned())
+    } else {
+        format_json_value(true, &response)
     }
 }
 
