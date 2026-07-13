@@ -24,13 +24,39 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 struct Corpus {
     cases: Vec<Case>,
+    #[serde(default)]
+    org_bundles: Vec<OrgDef>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Case {
     id: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    project_id: Option<String>,
     input: String,
     expected: Expected,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct OrgDef {
+    id: String,
+    name: String,
+    case_ids: Vec<String>,
+    #[serde(default)]
+    cross_project_references: Vec<CrossProjectRef>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+struct CrossProjectRef {
+    from_case: String,
+    to_case: String,
+    from_project: String,
+    to_project: String,
+    kind: String,
+    expected_retrieved: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -661,6 +687,9 @@ async fn main() {
         println!("HiveMind capture-fidelity evaluator (Phase 1)");
     }
     println!("Corpus: {} cases", corpus.cases.len());
+    if !corpus.org_bundles.is_empty() {
+        println!("Org bundles: {} (metadata for hmd-4tf, not scored)", corpus.org_bundles.len());
+    }
     println!();
 
     let client = reqwest::Client::builder()

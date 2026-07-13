@@ -50,6 +50,7 @@ cases:
     archetype: clean-multi-option
     domain: infrastructure
     difficulty: clean
+    project_id: default
     input: >
       Decision: use Postgres for the ledger store. We weighed Postgres vs SQLite.
       Chose Postgres — we need concurrent multi-tenant writes with row-level
@@ -71,6 +72,7 @@ cases:
     archetype: clean-multi-option
     domain: frontend-eng
     difficulty: clean
+    project_id: default
     input: >
       We picked React for the console over Svelte and SolidJS. React won mainly
       on hiring pool and ecosystem; Svelte was the runner-up on bundle size.
@@ -93,6 +95,7 @@ cases:
     archetype: clean-multi-option
     domain: infra-compliance
     difficulty: moderate
+    project_id: default
     input: >
       For EU customer data we will host in eu-central-1 rather than us-east-1.
       Driver is GDPR data residency. We considered eu-west-1 too but central had
@@ -118,6 +121,7 @@ cases:
     archetype: superseded
     domain: finance-product
     difficulty: moderate
+    project_id: default
     input: >
       We are reversing the March decision to use usage-based pricing; moving to
       flat per-seat. Usage-based created bill shock and churn (Q2 churn up 4pts).
@@ -134,6 +138,7 @@ cases:
     archetype: superseded
     domain: architecture
     difficulty: hard
+    project_id: default
     input: >
       Going back to a monorepo. We started monorepo, split to polyrepo last year
       for team autonomy, but cross-repo change coordination got too painful.
@@ -154,6 +159,7 @@ cases:
     archetype: superseded
     domain: auth
     difficulty: moderate
+    project_id: default
     input: >
       Switching from Auth0 to our own OIDC on Keycloak. The Auth0 choice no longer
       fits — per-MAU cost crossed $40k/mo at current growth. Keycloak self-host
@@ -177,6 +183,7 @@ cases:
     archetype: hypothesis-driven
     domain: research-perf
     difficulty: moderate
+    project_id: default
     input: >
       We assumed batching writes would cut p99 latency. The benchmark refuted it:
       batching cut throughput cost but p99 was unchanged because the bottleneck is
@@ -195,6 +202,7 @@ cases:
     archetype: hypothesis-driven
     domain: product-data
     difficulty: moderate
+    project_id: default
     input: >
       Hypothesis: teams that import existing decisions in week 1 retain better.
       Cohort analysis supports it — importers retained at 68% vs 41%. So we'll make
@@ -213,6 +221,7 @@ cases:
     archetype: hypothesis-driven
     domain: security
     difficulty: hard
+    project_id: default
     input: >
       Threat hypothesis: tenant isolation could leak via the shared FTS index.
       Pen-test partially supported it (cross-tenant rows were rankable) but the
@@ -235,6 +244,7 @@ cases:
     archetype: blocked
     domain: legal
     difficulty: moderate
+    project_id: default
     input: >
       Request to launch the EU beta. Blocked: legal has not signed off on the DPA
       template. Owner Priya raised the request; Sam (legal) is the blocker owner.
@@ -256,6 +266,7 @@ cases:
     archetype: blocked
     domain: org-people
     difficulty: hard
+    project_id: default
     input: >
       Should we extend an offer to candidate K for staff eng? Dana (hiring mgr)
       proposed yes; Ravi (bar raiser) rejected on system-design signal. Unresolved —
@@ -274,6 +285,7 @@ cases:
     archetype: blocked
     domain: security
     difficulty: moderate
+    project_id: default
     input: >
       Decision request: ship v0.3 to prod. Blocked by a failing dependency CVE scan
       (RUSTSEC on postgres-protocol). Release owner is Mia. Will proceed once the
@@ -292,6 +304,7 @@ cases:
     archetype: implicit
     domain: eng
     difficulty: hard
+    project_id: default
     input: >
       "ok so we're just gonna go with the queue approach for retries. yeah cron
       would technically work but nobody wants to babysit cron windows again lol.
@@ -311,6 +324,7 @@ cases:
     archetype: implicit
     domain: product
     difficulty: hard
+    project_id: default
     input: >
       Standup notes: "Discussed the roadmap. Lots of back-and-forth on naming.
       Decided: cut the CSV export from v1 to save two weeks. Also someone's coffee
@@ -328,6 +342,7 @@ cases:
     archetype: implicit
     domain: eng
     difficulty: hard
+    project_id: default
     input: >
       "We'll probably go with gRPC for the internal API but I want to sanity-check
       latency first before we commit."
@@ -349,6 +364,7 @@ cases:
     archetype: sparse
     domain: ops
     difficulty: clean
+    project_id: default
     input: >
       Decision: rotate the signing key today. Non-negotiable, security incident.
     expected:
@@ -362,6 +378,7 @@ cases:
     archetype: negative
     domain: general
     difficulty: moderate
+    project_id: default
     input: >
       "Update: the migration is 60% done, on track for Friday. No blockers right
       now. I'll post again tomorrow."
@@ -375,6 +392,7 @@ cases:
     archetype: negative
     domain: finance
     difficulty: clean
+    project_id: default
     input: >
       "Requesting approval to increase the data-egress budget by $5k/mo. Routing to
       Finance for a call."
@@ -384,3 +402,449 @@ cases:
       edges: []
       # a request with no resolution: DecisionRequest only — no Decision, no CHOSE,
       # no AcceptedBy. Tests the request/decision boundary.
+
+# ===== Archetype G: multi-actor contested decisions (adversarial actor graph)
+  - id: G1-data-tier-contested
+    archetype: contested
+    domain: architecture
+    difficulty: hard
+    project_id: default
+    input: >
+      Elena proposed creating a separate analytics data tier to isolate reporting
+      load from transactional writes. Marco rejected it — prefers keeping analytics
+      on the shared schema with read replicas. No agreement reached; decision
+      contested between the two tech leads.
+    expected:
+      nodes:
+        - {kind: DecisionRequest, key: req, text: "separate data tier for analytics", status: contested}
+        - {kind: Actor, key: elena, text: "Elena"}
+        - {kind: Actor, key: marco, text: "Marco"}
+      edges:
+        - {kind: ProposedBy, from: req, to: elena}
+        - {kind: RejectedBy, from: req, to: marco}
+      # two opposing positions preserved; no Decision node until resolved.
+
+  - id: G2-pricing-three-way
+    archetype: contested
+    domain: finance-product
+    difficulty: hard
+    project_id: default
+    input: >
+      Three-way disagreement on the v2 pricing model. Pat proposed per-seat licensing.
+      Sam rejected it in favor of usage-based (wants aligned incentives). Jo rejected
+      per-seat too, pushing for a hybrid tier model. Decision still contested; all
+      three positions are on the record for the next review.
+    expected:
+      nodes:
+        - {kind: DecisionRequest, key: req, text: "pricing model for v2 launch", status: contested}
+        - {kind: Actor, key: pat, text: "Pat"}
+        - {kind: Actor, key: sam, text: "Sam"}
+        - {kind: Actor, key: jo, text: "Jo"}
+      edges:
+        - {kind: ProposedBy, from: req, to: pat}
+        - {kind: RejectedBy, from: req, to: sam}
+        - {kind: RejectedBy, from: req, to: jo}
+      # two separate RejectedBy edges — both Sam and Jo rejected Pat's proposal.
+
+  - id: G3-migration-converge
+    archetype: contested
+    domain: eng
+    difficulty: moderate
+    project_id: default
+    input: >
+      Lena proposed migrating to GraphQL for the public API. Raj initially
+      objected on latency grounds. After the load test showed GraphQL request
+      batching cut API calls by 40%, Raj withdrew his objection and accepted.
+      Decision: migrate to GraphQL. Both Lena and Raj are on record accepting.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "migrate to GraphQL", status: accepted, confidence: high}
+        - {kind: Actor, key: lena, text: "Lena"}
+        - {kind: Actor, key: raj, text: "Raj"}
+        - {kind: Evidence, key: ev, text: "load test: GraphQL batching cut API calls by 40%"}
+      edges:
+        - {kind: AcceptedBy, from: d, to: lena}
+        - {kind: AcceptedBy, from: d, to: raj}
+        - {kind: BASED_ON, from: d, to: ev}
+      # initial rejection resolved — final state is accepted; only the settled
+      # decision is captured, not the intermediate rejection.
+
+  - id: G4-rewrite-frontend
+    archetype: contested
+    domain: frontend-eng
+    difficulty: hard
+    project_id: default
+    input: >
+      Kim proposed a full frontend rewrite in Vue 3 to modernize the stack. Dev
+      rejected it citing excessive tech debt cost. Chen also rejected, flagging
+      that the scope is incompatible with the Q3 timeline. Two independent
+      rejections; rewrite is contested.
+    expected:
+      nodes:
+        - {kind: DecisionRequest, key: req, text: "full frontend rewrite in Vue 3", status: contested}
+        - {kind: Actor, key: kim, text: "Kim"}
+        - {kind: Actor, key: dev, text: "Dev"}
+        - {kind: Actor, key: chen, text: "Chen"}
+      edges:
+        - {kind: ProposedBy, from: req, to: kim}
+        - {kind: RejectedBy, from: req, to: dev}
+        - {kind: RejectedBy, from: req, to: chen}
+
+  - id: G5-ownership-contested
+    archetype: contested
+    domain: org-people
+    difficulty: moderate
+    project_id: default
+    input: >
+      The platform team proposed that they should own the shared authentication
+      SDK going forward. The product team rejected the transfer — they argue the
+      SDK's primary consumers are product features and ownership should stay
+      with product. Contested; escalated to the CTO.
+    expected:
+      nodes:
+        - {kind: DecisionRequest, key: req, text: "own the shared authentication SDK", status: contested}
+        - {kind: Actor, key: platform, text: "team-platform"}
+        - {kind: Actor, key: product, text: "team-product"}
+      edges:
+        - {kind: ProposedBy, from: req, to: platform}
+        - {kind: RejectedBy, from: req, to: product}
+
+  - id: G6-classic-two-actor
+    archetype: contested
+    domain: infra
+    difficulty: clean
+    project_id: default
+    input: >
+      Alice proposed switching all services to blue-green deployments to eliminate
+      downtime windows. Bob rejected: argues the infra cost doubles per deployment
+      slot and we don't have the runway for it. Contested.
+    expected:
+      nodes:
+        - {kind: DecisionRequest, key: req, text: "switch to blue-green deployments", status: contested}
+        - {kind: Actor, key: alice, text: "Alice"}
+        - {kind: Actor, key: bob, text: "Bob"}
+      edges:
+        - {kind: ProposedBy, from: req, to: alice}
+        - {kind: RejectedBy, from: req, to: bob}
+
+# ===== Archetype H: adversarial structural (cross-topic, chains, noise, precision)
+  - id: H1-cross-topic-hypothesis
+    archetype: hypothesis-driven
+    domain: product-eng
+    difficulty: hard
+    project_id: default
+    input: >
+      We're going with REST for the public API rather than gRPC. The choice rests
+      on a product hypothesis: external developer ecosystems strongly prefer REST
+      for integration. A developer survey backs this — 73% of respondents prefer
+      REST for external integrations. The hypothesis is about market fit, but the
+      decision is technical. Both are captured.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "use REST for public API", status: accepted, confidence: medium}
+        - {kind: Hypothesis, key: h, text: "external developer ecosystem prefers REST over gRPC"}
+        - {kind: Evidence, key: ev, text: "developer survey: 73% prefer REST for external integrations"}
+        - {kind: Option, key: rest, text: "REST", chosen: true}
+        - {kind: Option, key: grpc, text: "gRPC", chosen: false}
+      edges:
+        - {kind: ASSUMES, from: d, to: h}
+        - {kind: SUPPORTS, from: ev, to: h}
+        - {kind: BASED_ON, from: d, to: ev}
+        - {kind: HAS_OPTION, from: d, to: rest}
+        - {kind: HAS_OPTION, from: d, to: grpc}
+        - {kind: CHOSE, from: d, to: rest}
+      # cross-domain: product hypothesis → technical decision. Tests ASSUMES
+      # across topic domains.
+
+  - id: H2-long-chain-five
+    archetype: superseded
+    domain: infra
+    difficulty: hard
+    project_id: default
+    input: >
+      Our deployment strategy has evolved through five iterations. We started on
+      bare metal (v1). Moved to VMs for easier provisioning (superseded bare metal).
+      Then containers on ECS (superseded VMs). Then EKS for better orchestration
+      (superseded ECS). Finally serverless — a load analysis showed it cuts ops
+      cost by 60%. Each supersedes the prior. Current decision is serverless.
+    expected:
+      nodes:
+        - {kind: Decision, key: d1, text: "deploy on bare metal", status: superseded, confidence: high}
+        - {kind: Decision, key: d2, text: "deploy on VMs", status: superseded, confidence: high}
+        - {kind: Decision, key: d3, text: "deploy containers on ECS", status: superseded, confidence: high}
+        - {kind: Decision, key: d4, text: "deploy containers on EKS", status: superseded, confidence: high}
+        - {kind: Decision, key: d5, text: "deploy serverless", status: accepted, confidence: high}
+        - {kind: Evidence, key: ev, text: "load analysis: serverless cuts ops cost by 60%"}
+      edges:
+        - {kind: SUPERSEDES, from: d2, to: d1}
+        - {kind: SUPERSEDES, from: d3, to: d2}
+        - {kind: SUPERSEDES, from: d4, to: d3}
+        - {kind: SUPERSEDES, from: d5, to: d4}
+        - {kind: BASED_ON, from: d5, to: ev}
+      # five-node chain: tests that full supersession depth is captured, not just
+      # the most recent transition.
+
+  - id: H3-two-evidence-conflict
+    archetype: hypothesis-driven
+    domain: architecture
+    difficulty: hard
+    project_id: default
+    input: >
+      We're adopting event-sourcing. The decision rests on the hypothesis that
+      event replay enables time-travel debugging. POC evidence supports it —
+      replay reduced bug diagnosis from 2h to 10min. But load testing refutes
+      the same hypothesis on throughput: write throughput degrades 30% under
+      replay load. We accept the trade-off and proceed with event-sourcing.
+      Options were adopt or keep the current approach.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "adopt event-sourcing architecture", status: accepted, confidence: high}
+        - {kind: Hypothesis, key: h, text: "event replay enables time-travel debugging"}
+        - {kind: Evidence, key: ev1, text: "POC: replay reduced bug diagnosis from 2h to 10min"}
+        - {kind: Evidence, key: ev2, text: "load test: replay degrades write throughput 30%"}
+        - {kind: Option, key: adopt, text: "adopt event-sourcing", chosen: true}
+        - {kind: Option, key: keep, text: "keep current approach", chosen: false}
+      edges:
+        - {kind: ASSUMES, from: d, to: h}
+        - {kind: SUPPORTS, from: ev1, to: h}
+        - {kind: REFUTES, from: ev2, to: h}
+        - {kind: BASED_ON, from: d, to: ev1}
+        - {kind: BASED_ON, from: d, to: ev2}
+        - {kind: HAS_OPTION, from: d, to: adopt}
+        - {kind: HAS_OPTION, from: d, to: keep}
+        - {kind: CHOSE, from: d, to: adopt}
+      # same hypothesis, one SUPPORTS + one REFUTES — mixed evidence test.
+
+  - id: H4-partial-noisy-input
+    archetype: implicit
+    domain: eng
+    difficulty: hard
+    project_id: default
+    input: >
+      Meeting transcript excerpt: "We discussed a few things. Someone mentioned
+      caching might help with the API slowness — worth exploring but not decided.
+      We did decide to add rate limiting at the API gateway; Dev accepted that one.
+      Also, what should our rate limits actually be? That's still open — routing
+      to the platform team for a call next week."
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "add rate limiting at the API gateway", status: accepted, confidence: high}
+        - {kind: DecisionRequest, key: req, text: "determine rate limit values", status: open}
+        - {kind: Actor, key: dev, text: "Dev"}
+      edges:
+        - {kind: AcceptedBy, from: d, to: dev}
+      # Noise: caching mention must NOT become a Decision or Hypothesis node.
+      # One real Decision + one open DecisionRequest; no edge from req (no named
+      # requester for the rate-limit-values follow-up).
+
+  - id: H5-non-decision-procedural
+    archetype: negative
+    domain: general
+    difficulty: clean
+    project_id: default
+    input: >
+      Shared agenda for Friday: 1) review Q3 metrics 2) discuss roadmap priorities
+      3) Alex to send out the survey. Meeting adjourned at 3pm.
+    expected:
+      nodes: []
+      edges: []
+      # pure procedural / agenda text — no decision, no request, no hypothesis.
+      # Any node captured here is a fabrication.
+
+  - id: H6-two-decisions-in-blob
+    archetype: implicit
+    domain: eng
+    difficulty: moderate
+    project_id: default
+    input: >
+      Two things from today's sync: We agreed to use TypeScript strict mode for all
+      new code going forward. We also decided to move standups from 10am to 9am to
+      free up the afternoon block.
+    expected:
+      nodes:
+        - {kind: Decision, key: d1, text: "use TypeScript strict mode for all new code", status: accepted, confidence: high}
+        - {kind: Decision, key: d2, text: "move standup to 9am", status: accepted, confidence: high}
+      edges: []
+      # two independent decisions in one input blob; both must be captured
+      # separately with no spurious edge between them.
+
+# ===== Org bundles: multi-project cases (project_id scoping, cross-project refs)
+# Cross-project references are declared in org_bundles below, NOT as edges in
+# the individual case expected graphs. This separates per-project capture fidelity
+# from cross-project retrieval scoping (hmd-4tf Phase 1 target).
+
+  - id: MA1-acme-db
+    archetype: clean-multi-option
+    domain: infrastructure
+    difficulty: clean
+    project_id: org-acme
+    input: >
+      Acme Tech: we've decided to use PostgreSQL as our primary datastore. We
+      evaluated MySQL and DynamoDB as alternatives. PostgreSQL won on ACID
+      guarantees required for financial transactions. Load test confirmed 500
+      concurrent writes at p99 < 20ms.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "use PostgreSQL as the primary datastore", status: accepted, confidence: high}
+        - {kind: Option, key: pg, text: "PostgreSQL", chosen: true}
+        - {kind: Option, key: mysql, text: "MySQL", chosen: false}
+        - {kind: Option, key: dynamo, text: "DynamoDB", chosen: false}
+        - {kind: Evidence, key: ev, text: "ACID guarantees needed for financial transactions"}
+      edges:
+        - {kind: HAS_OPTION, from: d, to: pg}
+        - {kind: HAS_OPTION, from: d, to: mysql}
+        - {kind: HAS_OPTION, from: d, to: dynamo}
+        - {kind: CHOSE, from: d, to: pg}
+        - {kind: BASED_ON, from: d, to: ev}
+
+  - id: MA2-acme-api-format
+    archetype: clean-multi-option
+    domain: architecture
+    difficulty: moderate
+    project_id: org-acme
+    input: >
+      Acme Tech: adopting Protocol Buffers for all internal API serialization.
+      We considered JSON and Avro. The choice aligns with Beacon's cross-system
+      gRPC specification, which we need to interoperate with. Proto chosen for
+      the schema-first contract and generated clients.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "adopt Protocol Buffers for internal API serialization", status: accepted, confidence: high}
+        - {kind: Option, key: proto, text: "Protocol Buffers", chosen: true}
+        - {kind: Option, key: json, text: "JSON", chosen: false}
+        - {kind: Option, key: avro, text: "Avro", chosen: false}
+        - {kind: Evidence, key: ev, text: "aligned with Beacon cross-system gRPC spec for interoperability"}
+      edges:
+        - {kind: HAS_OPTION, from: d, to: proto}
+        - {kind: HAS_OPTION, from: d, to: json}
+        - {kind: HAS_OPTION, from: d, to: avro}
+        - {kind: CHOSE, from: d, to: proto}
+        - {kind: BASED_ON, from: d, to: ev}
+      # cross-org reference to MB1-beacon-grpc-spec is declared in org_bundles,
+      # not as an edge here — keeps per-project capture scores clean.
+
+  - id: MB1-beacon-grpc-spec
+    archetype: clean-multi-option
+    domain: architecture
+    difficulty: clean
+    project_id: org-beacon
+    input: >
+      Beacon Systems: standardizing on gRPC for all cross-system APIs. Compared
+      REST and GraphQL. Latency benchmark showed gRPC at 40% lower p99 than REST
+      for streaming use cases. Schema enforcement and generated stubs are secondary
+      wins.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "use gRPC for all cross-system APIs", status: accepted, confidence: high}
+        - {kind: Option, key: grpc, text: "gRPC", chosen: true}
+        - {kind: Option, key: rest, text: "REST", chosen: false}
+        - {kind: Option, key: gql, text: "GraphQL", chosen: false}
+        - {kind: Evidence, key: ev, text: "latency benchmark: gRPC 40% lower p99 than REST for streaming"}
+      edges:
+        - {kind: HAS_OPTION, from: d, to: grpc}
+        - {kind: HAS_OPTION, from: d, to: rest}
+        - {kind: HAS_OPTION, from: d, to: gql}
+        - {kind: CHOSE, from: d, to: grpc}
+        - {kind: BASED_ON, from: d, to: ev}
+
+  - id: MB2-beacon-auth
+    archetype: clean-multi-option
+    domain: auth
+    difficulty: clean
+    project_id: org-beacon
+    input: >
+      Beacon Systems: using OAuth 2.0 with PKCE for the Beacon mobile clients.
+      We evaluated the Device Authorization Flow as the alternative. PKCE chosen
+      because it mitigates auth code interception on mobile without requiring
+      a device code step.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "use OAuth 2.0 with PKCE for Beacon mobile clients", status: accepted, confidence: high}
+        - {kind: Option, key: pkce, text: "OAuth 2.0 with PKCE", chosen: true}
+        - {kind: Option, key: device, text: "Device Authorization Flow", chosen: false}
+        - {kind: Evidence, key: ev, text: "PKCE mitigates auth code interception on mobile"}
+      edges:
+        - {kind: HAS_OPTION, from: d, to: pkce}
+        - {kind: HAS_OPTION, from: d, to: device}
+        - {kind: CHOSE, from: d, to: pkce}
+        - {kind: BASED_ON, from: d, to: ev}
+
+  - id: MC1-cascade-integration
+    archetype: clean-multi-option
+    domain: data
+    difficulty: moderate
+    project_id: org-cascade
+    input: >
+      Cascade Analytics: integrating the Cascade reporting service directly with
+      Acme's PostgreSQL data layer via read replica. We considered an event-stream
+      approach instead. Direct DB chosen because Acme's PostgreSQL supports read
+      replicas suitable for analytics workloads without impacting transactional
+      performance.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "integrate Cascade reporting service with Acme PostgreSQL data layer", status: accepted, confidence: high}
+        - {kind: Option, key: direct, text: "direct database via read replica", chosen: true}
+        - {kind: Option, key: stream, text: "event-stream", chosen: false}
+        - {kind: Evidence, key: ev, text: "Acme PostgreSQL supports read replicas suitable for analytics workloads"}
+      edges:
+        - {kind: HAS_OPTION, from: d, to: direct}
+        - {kind: HAS_OPTION, from: d, to: stream}
+        - {kind: CHOSE, from: d, to: direct}
+        - {kind: BASED_ON, from: d, to: ev}
+      # cross-org reference to MA1-acme-db declared in org_bundles; not an edge here.
+
+  - id: MC2-cascade-rollout
+    archetype: clean-multi-option
+    domain: ops
+    difficulty: clean
+    project_id: org-cascade
+    input: >
+      Cascade Analytics: rolling out the analytics feature in canary phases
+      (1% → 10% → 100%) rather than a big-bang release. Q4 incident post-mortem
+      showed big-bang caused a 4-hour outage last time. Canary is the safer path.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "roll out Cascade analytics in canary phases 1% to 10% to 100%", status: accepted, confidence: high}
+        - {kind: Option, key: canary, text: "canary phases", chosen: true}
+        - {kind: Option, key: bigbang, text: "big-bang release", chosen: false}
+        - {kind: Evidence, key: ev, text: "Q4 incident post-mortem: big-bang rollout caused 4-hour outage"}
+      edges:
+        - {kind: HAS_OPTION, from: d, to: canary}
+        - {kind: HAS_OPTION, from: d, to: bigbang}
+        - {kind: CHOSE, from: d, to: canary}
+        - {kind: BASED_ON, from: d, to: ev}
+
+# ---------------------------------------------------------------------------
+# Org bundles — multi-project metadata for hmd-4tf Phase 1.
+# These declare which cases belong to which project and document cross-project
+# references. expected_retrieved: false means a scoped query to from_project
+# must NOT return the referenced to_project case (scope isolation test).
+# ---------------------------------------------------------------------------
+
+org_bundles:
+  - id: org-acme
+    name: "Org A (Acme Tech)"
+    case_ids: [MA1-acme-db, MA2-acme-api-format]
+    cross_project_references:
+      - from_case: MA2-acme-api-format
+        to_case: MB1-beacon-grpc-spec
+        from_project: org-acme
+        to_project: org-beacon
+        kind: BASED_ON
+        expected_retrieved: false
+
+  - id: org-beacon
+    name: "Org B (Beacon Systems)"
+    case_ids: [MB1-beacon-grpc-spec, MB2-beacon-auth]
+    cross_project_references: []
+
+  - id: org-cascade
+    name: "Org C (Cascade Analytics)"
+    case_ids: [MC1-cascade-integration, MC2-cascade-rollout]
+    cross_project_references:
+      - from_case: MC1-cascade-integration
+        to_case: MA1-acme-db
+        from_project: org-cascade
+        to_project: org-acme
+        kind: BASED_ON
+        expected_retrieved: false
