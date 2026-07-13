@@ -1,0 +1,26 @@
+{
+  "query": "EU cloud region",
+  "decisions": [
+    {
+      "id": "decision-eu-region-euc1",
+      "title": "host EU customer data in eu-central-1",
+      "status": "accepted",
+      "confidence": "high",
+      "rationale": "",
+      "options": ["eu-central-1", "eu-west-1", "us-east-1"],
+      "chosen_option": "eu-central-1",
+      "evidence": [
+        "GDPR data residency requirement",
+        "RUM dashboard: lower latency to EU cohort from central"
+      ],
+      "hypotheses": [],
+      "supersedes": [],
+      "superseded_by": [],
+      "actors": [],
+      "topics": ["infrastructure", "compliance"],
+      "created_at": "2024-09-12T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}

@@ -1,0 +1,32 @@
+{
+  "query": "write batching latency",
+  "decisions": [
+    {
+      "id": "decision-no-write-batching",
+      "title": "do not add write batching",
+      "status": "accepted",
+      "confidence": "high",
+      "rationale": "Benchmark refuted the hypothesis: p99 latency unchanged by batching. Bottleneck is fsync, not write call frequency.",
+      "options": [],
+      "chosen_option": null,
+      "evidence": [
+        "benchmark: p99 unchanged, bottleneck is fsync"
+      ],
+      "hypotheses": [
+        {
+          "id": "hypothesis-batching-latency",
+          "text": "batching writes will cut p99 latency",
+          "status": "refuted",
+          "refuting_evidence": "benchmark: p99 unchanged, bottleneck is fsync"
+        }
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "actors": [],
+      "topics": ["performance", "storage"],
+      "created_at": "2024-02-15T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}

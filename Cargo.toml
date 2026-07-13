@@ -24,6 +24,10 @@ path = "src/main.rs"
 name = "fidelity-eval"
 path = "benchmarks/fidelity/main.rs"
 
+[[bin]]
+name = "ab-eval"
+path = "benchmarks/fidelity/ab-eval/main.rs"
+
 [features]
 default = []
 graph-kuzu = ["dep:kuzu", "dep:cxx-build"]

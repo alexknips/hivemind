@@ -1,0 +1,41 @@
+{
+  "query": "pricing model",
+  "decisions": [
+    {
+      "id": "decision-pricing-usage-based",
+      "title": "usage-based pricing",
+      "status": "superseded",
+      "confidence": null,
+      "rationale": "",
+      "options": [],
+      "chosen_option": null,
+      "evidence": [],
+      "hypotheses": [],
+      "supersedes": [],
+      "superseded_by": ["decision-pricing-per-seat"],
+      "actors": [],
+      "topics": ["pricing", "product"],
+      "created_at": "2024-03-01T00:00:00Z"
+    },
+    {
+      "id": "decision-pricing-per-seat",
+      "title": "flat per-seat pricing",
+      "status": "accepted",
+      "confidence": "high",
+      "rationale": "Usage-based pricing caused bill shock and churn. Q2 churn up 4 points.",
+      "options": [],
+      "chosen_option": null,
+      "evidence": [
+        "Q2 churn up 4 points (bill shock)"
+      ],
+      "hypotheses": [],
+      "supersedes": ["decision-pricing-usage-based"],
+      "superseded_by": [],
+      "actors": [],
+      "topics": ["pricing", "product"],
+      "created_at": "2024-06-01T00:00:00Z"
+    }
+  ],
+  "total": 2,
+  "truncated": false
+}
