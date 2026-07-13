@@ -579,12 +579,12 @@ fn build_digest_entry(
     });
 
     DigestEntry {
-        decision_id: d.id.clone(),              // ubs:ignore: clone necessary — building owned DigestEntry from borrowed DecisionView
-        title: d.title.clone(),                 // ubs:ignore: clone necessary — building owned DigestEntry
-        rationale: d.rationale.clone(),         // ubs:ignore: clone necessary — building owned DigestEntry
-        topic_keys: d.topic_keys.clone(),       // ubs:ignore: clone necessary — building owned DigestEntry
+        decision_id: d.id.clone(), // ubs:ignore: clone necessary — building owned DigestEntry from borrowed DecisionView
+        title: d.title.clone(),    // ubs:ignore: clone necessary — building owned DigestEntry
+        rationale: d.rationale.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
+        topic_keys: d.topic_keys.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
         status: d.status,
-        actor_ids: ctx.actor_ids.clone(),       // ubs:ignore: clone necessary — building owned DigestEntry from borrowed SearchGraphContext
+        actor_ids: ctx.actor_ids.clone(), // ubs:ignore: clone necessary — building owned DigestEntry from borrowed SearchGraphContext
         option_labels,
         chosen_option_label,
         supersedes_ids: ctx.supersedes_decision_ids.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
@@ -645,7 +645,11 @@ fn render_digest_text(
         let _ = writeln!(out, "{}", topic.to_uppercase());
         for entry in group {
             let status_label = format!("{:?}", entry.status).to_lowercase();
-            let _ = writeln!(out, "• [{}] {} ({})", entry.decision_id, entry.title, status_label);
+            let _ = writeln!(
+                out,
+                "• [{}] {} ({})",
+                entry.decision_id, entry.title, status_label
+            );
 
             let rationale = trim_rationale(&entry.rationale, RATIONALE_TRIM_CHARS);
             let _ = writeln!(out, "  Why: {rationale}");
@@ -667,7 +671,11 @@ fn render_digest_text(
                 let _ = writeln!(out, "  Supersedes: {}", entry.supersedes_ids.join(", "));
             }
             if !entry.superseded_by_ids.is_empty() {
-                let _ = writeln!(out, "  Superseded by: {}", entry.superseded_by_ids.join(", "));
+                let _ = writeln!(
+                    out,
+                    "  Superseded by: {}",
+                    entry.superseded_by_ids.join(", ")
+                );
             }
         }
     }
@@ -689,7 +697,10 @@ fn render_digest_text(
     }
 
     if truncated {
-        let _ = writeln!(out, "Note: digest is truncated; use --limit to raise the cap.");
+        let _ = writeln!(
+            out,
+            "Note: digest is truncated; use --limit to raise the cap."
+        );
     }
 
     let cited: Vec<String> = entries

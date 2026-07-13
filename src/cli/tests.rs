@@ -1352,12 +1352,18 @@ fn digest_cli_returns_decisions_in_window() {
         "--summary",
     ]))
     .expect("digest summary succeeds");
-    assert!(summary.contains("Decision Digest"), "summary must contain header"); // ubs:ignore: test-only assertion
+    assert!(
+        summary.contains("Decision Digest"),
+        "summary must contain header"
+    ); // ubs:ignore: test-only assertion
     assert!(
         summary.contains("Pick serialization format"),
         "summary must mention the decision title"
     ); // ubs:ignore: test-only assertion
-    assert!(summary.contains("Cited:"), "summary must include citation line"); // ubs:ignore: test-only assertion
+    assert!(
+        summary.contains("Cited:"),
+        "summary must include citation line"
+    ); // ubs:ignore: test-only assertion
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);
 }
