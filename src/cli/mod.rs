@@ -1503,10 +1503,10 @@ fn parse_window_duration(window: &str) -> Result<chrono::Duration> {
         .parse()
         .map_err(|_| CliError::InvalidInput(format!("--window: invalid duration '{window}'")))?;
     if n <= 0 {
-        return Err(
-            CliError::InvalidInput(format!("--window: duration must be positive, got '{window}'"))
-                .into(),
-        );
+        return Err(CliError::InvalidInput(format!(
+            "--window: duration must be positive, got '{window}'"
+        ))
+        .into());
     }
     match unit {
         "h" => Ok(chrono::Duration::hours(n)),
