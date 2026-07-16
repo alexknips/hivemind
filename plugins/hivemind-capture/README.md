@@ -10,11 +10,17 @@ This directory is both the Codex capture plugin and the Claude Code
   `emit decision.capture`.
 - `/hivemind-capture:query-decisions` for bounded `query search_decisions`
   reads.
+- `/hivemind-capture:classify-queue` (Worker A) — drains the pending
+  classification work queue using the agent's subscription seat. Run after a
+  session to classify batches that the server-side classifier has not yet
+  processed. See [Queue drain](#queue-drain-worker-a) below.
 - A `hivemind` MCP stdio server wired to `hivemind mcp`.
 - The `hivemind-capture` skill for capture boundaries and provenance rules.
 - The Claude `active-capture` skill, which nudges `/capture <text>
   [--kind decision|evidence|hypothesis|blocker]` during live durable-decision
   moments while avoiding synthetic test data and routing chatter.
+- The `citation` skill, which guides the agent to pin URL versions (commit
+  hash, revision ID, or access date) when a link appears in a capture context.
 
 The shared helper defaults to `source=agent` and derives
 `actor_id=agent:<tool>:<session>` from the active session. Under Codex it uses
@@ -100,6 +106,58 @@ suggested query or use:
 
 The MCP server appears as `hivemind` in Claude Code's MCP tool list after the
 plugin is loaded.
+
+## Queue drain (Worker A)
+
+HiveMind accumulates unclassified ingest batches in a work queue. Worker A
+drains this queue using the agent's subscription seat — no API key required.
+
+### Run manually
+
+```text
+/hivemind-capture:classify-queue
+```
+
+The command lists pending batches, classifies each one using your subscription
+model, and writes `IngestBatchClassified` events. Report at the end: batches
+processed and total captures written.
+
+Pass `--limit N` to cap the number of batches processed per run (default 20):
+
+```text
+/hivemind-capture:classify-queue --limit 5
+```
+
+### Check queue depth
+
+```bash
+hivemind classify-queue list --json | jq length
+```
+
+### Session hook (optional)
+
+Add `scripts/check-classify-queue.sh` as a `Stop` hook in `.claude/settings.json`
+to see a nudge when unclassified batches are waiting:
+
+```json
+{
+  "hooks": {
+    "Stop": [{
+      "matcher": "",
+      "command": "plugins/hivemind-capture/scripts/check-classify-queue.sh"
+    }]
+  }
+}
+```
+
+The hook only prints a one-line notification; it does not drain autonomously.
+
+### Bounds
+
+- Each batch = one model invocation (subscription-seat bound).
+- Large backlogs drain across multiple `/classify-queue` runs — the queue persists.
+- The server-side classifier (Worker B) and Worker A share the same queue;
+  concurrent classification is idempotent (last-writer-wins per batch).
 
 ## Uninstall
 

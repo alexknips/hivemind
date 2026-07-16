@@ -3139,3 +3139,95 @@ fn assert_decision_queryable(hivemind_dir: &std::path::Path, decision_id: &str) 
     assert_eq!(query["result_count"], serde_json::json!(1));
     assert_eq!(query["data"]["id"], serde_json::json!(decision_id));
 }
+
+#[test]
+fn classify_queue_list_and_submit_round_trip() {
+    use crate::commands::{CommandContext, Commands};
+    use crate::events::{EventProvenance, IngestTurn, TenantId};
+    use crate::ledger::SqliteEventLedger;
+
+    let hivemind_dir = unique_test_dir("classify-queue");
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(TenantId::local(), EventProvenance::cli()),
+    );
+
+    // Seed a batch that needs classification.
+    commands
+        .record_ingest_batch(
+            "agent:test",
+            "batch-abc",
+            "claude-code",
+            "session-1",
+            vec![IngestTurn {
+                turn_id: "t1".to_owned(),
+                role: "user".to_owned(),
+                text: "Should we use Postgres or SQLite?".to_owned(),
+                truncated: false,
+            }],
+        )
+        .expect("record batch");
+
+    let dir_str = hivemind_dir.to_str().expect("utf-8");
+
+    // list sees the pending batch
+    let list_output = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir_str,
+        "classify-queue",
+        "list",
+    ]))
+    .expect("classify-queue list succeeds");
+    let list: serde_json::Value = serde_json::from_str(&list_output).expect("valid json");
+    assert_eq!(list.as_array().map(|a| a.len()), Some(1));
+    assert_eq!(list[0]["batch_id"], serde_json::json!("batch-abc"));
+    assert_eq!(list[0]["turn_count"], serde_json::json!(1));
+
+    // submit classification
+    let captures_json = serde_json::json!([{
+        "kind": "decision",
+        "title": "Use Postgres for production",
+        "rationale": "Scale and concurrent-write requirements favour Postgres",
+        "topic_keys": ["database"],
+        "evidence_ids": [],
+        "options": null,
+        "chosen_option": null,
+        "extraction_confidence": 0.9
+    }])
+    .to_string();
+
+    let submit_output = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--actor",
+        "agent:claude-code:session-1",
+        "--hivemind-dir",
+        dir_str,
+        "classify-queue",
+        "submit",
+        "--batch-id",
+        "batch-abc",
+        "--captures",
+        &captures_json,
+    ]))
+    .expect("classify-queue submit succeeds");
+    let submit: serde_json::Value = serde_json::from_str(&submit_output).expect("valid json");
+    assert_eq!(submit["batch_id"], serde_json::json!("batch-abc"));
+    assert_eq!(submit["capture_count"], serde_json::json!(1));
+
+    // list now returns empty (batch is classified)
+    let list2_output = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir_str,
+        "classify-queue",
+        "list",
+    ]))
+    .expect("classify-queue list after submit succeeds");
+    let list2: serde_json::Value = serde_json::from_str(&list2_output).expect("valid json");
+    assert_eq!(list2.as_array().map(|a| a.len()), Some(0));
+}
