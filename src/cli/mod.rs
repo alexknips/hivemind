@@ -683,6 +683,8 @@ pub enum ImportCommand {
     Documents(ImportDocumentsArgs),
     #[command(name = "prepare-documents", alias = "prepare-document")]
     PrepareDocuments(PrepareDocumentsArgs),
+    #[command(name = "connector")]
+    Connector(ImportConnectorArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -742,6 +744,15 @@ impl ImportDocumentConflictAction {
             Self::AddContext => DocumentConflictResolutionAction::AddContext,
         }
     }
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ImportConnectorArgs {
+    #[arg(long = "url", value_name = "URL_OR_PATH")]
+    pub url_or_id: String,
+
+    #[arg(long = "max-versions", default_value_t = 50)]
+    pub max_versions: usize,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -2143,6 +2154,27 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
                 output_dir: args.output_dir.clone(),
             })?;
             format_prepare_documents_output(cli.json, &report)
+        }
+        ImportCommand::Connector(args) => {
+            use crate::connector::{
+                import_via_connector, ConnectorImportRequest, GitFileConnector,
+            };
+            let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+            let tenant_id = cli_tenant(cli)?;
+            let connectors: Vec<Box<dyn crate::connector::Connector>> =
+                vec![Box::new(GitFileConnector)];
+            let report = import_via_connector(
+                &ledger,
+                &tenant_id,
+                &ConnectorImportRequest {
+                    url_or_id: args.url_or_id.clone(),
+                    importer_actor_id: cli.actor.clone(),
+                    max_versions: args.max_versions,
+                    import_run_id: None,
+                },
+                &connectors,
+            )?;
+            format_json_value(cli.json, &report)
         }
     }
 }

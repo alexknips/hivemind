@@ -2,6 +2,7 @@ pub mod api;
 pub mod classifier;
 pub mod cli;
 pub mod commands;
+pub mod connector;
 pub mod embedding;
 pub mod error;
 pub mod events;
