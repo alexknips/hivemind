@@ -1,0 +1,39 @@
+{
+  "query": "TLS cipher suite configuration decision",
+  "decisions": [
+    {
+      "id": "decision-tls-rsa-cipher-suites",
+      "title": "approve TLS_RSA_WITH_AES cipher suites as security baseline",
+      "status": "accepted",
+      "confidence": "low",
+      "rationale": "RSA-AES cipher suites approved as industry-standard and compliant in 2023. Annual review commitment made. External security assessment in 2024 found the suites insufficient per updated NIST guidance: static RSA key exchange provides no forward secrecy, rendering the compliance assumption stale.",
+      "options": [],
+      "chosen_option": null,
+      "evidence": [
+        "suites industry-standard and supported by all evaluated customer environments as of 2023-08-20",
+        "SEC-04 (external assessment, 2024-09-05): NIST SP 800-52 Rev. 2 (2024) classifies static RSA key exchange as insufficient; no forward secrecy; ECDHE/DHE migration required within 90 days"
+      ],
+      "hypotheses": [
+        {
+          "id": "hypothesis-tls-rsa-suites-compliant",
+          "text": "TLS_RSA_WITH_AES cipher suites comply with current vendor guidance and are sufficient for our security posture",
+          "status": "refuted",
+          "refuting_evidence": "SEC-04: NIST SP 800-52 Rev. 2 (2024 update) designates static RSA key exchange insufficient for new deployments; no forward secrecy means retroactive decryption is possible if private key is compromised"
+        }
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "actors": [
+        {
+          "id": "team:security",
+          "display": "Security Team",
+          "position": "proposed"
+        }
+      ],
+      "topics": ["security", "tls", "cryptography", "compliance"],
+      "created_at": "2023-08-20T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}

@@ -1,0 +1,36 @@
+{
+  "query": "database sharding partitioning strategy decision",
+  "decisions": [
+    {
+      "id": "decision-user-id-modulo-sharding",
+      "title": "partition customer database by user_id modulo 16",
+      "status": "accepted",
+      "confidence": "low",
+      "rationale": "Modulo-16 sharding chosen over time-based partitioning to avoid hot-shard risk during write-heavy periods. Core assumption of uniform ID distribution refuted by incident INC-882: 2022 growth campaign IDs cluster on high-engagement accounts, causing 3.8× imbalance on partition 3.",
+      "options": [
+        "user_id modulo 16 (chosen)",
+        "time-based range partitioning (rejected: hot-shard risk)"
+      ],
+      "chosen_option": "user_id modulo 16",
+      "evidence": [
+        "modulo routing distributes writes evenly given uniform ID assignment; avoids time-based hot-shard risk (architecture decision, 2023-11-10)",
+        "INC-882 (2024-06-03): partition 3 reached 3.8× average row count; 2022 campaign IDs in 300–400K range generate 60–80% of writes"
+      ],
+      "hypotheses": [
+        {
+          "id": "hypothesis-uniform-id-distribution",
+          "text": "user account creation is approximately uniformly distributed across ID ranges, keeping modulo shards balanced over time",
+          "status": "refuted",
+          "refuting_evidence": "INC-882: growth campaign cohort (IDs 300–400K) concentrates 60–80% of write throughput on partition 3, causing 3.8× size imbalance"
+        }
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "actors": [],
+      "topics": ["database", "performance", "scaling"],
+      "created_at": "2023-11-10T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}

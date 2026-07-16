@@ -1,0 +1,45 @@
+{
+  "query": "principal engineer offer level decision candidate L",
+  "decisions": [
+    {
+      "id": "decision-candidate-l-level",
+      "title": "offer level for Candidate L — principal vs staff engineer",
+      "status": "contested",
+      "confidence": null,
+      "rationale": "Two-vs-one split: hiring manager and technical interviewer recommend staff calibration given role scope; EM opposes because staff requires re-requisition beyond the approved principal headcount band. No unified recommendation; panel coordination with finance required.",
+      "options": [
+        "offer at principal (approved band: $220K–$260K, no re-requisition needed)",
+        "offer at staff (requires new finance approval and delays hire)"
+      ],
+      "chosen_option": null,
+      "evidence": [
+        "role scope warrants staff calibration: two interviewers (Nadia, Kenji) assessed candidate L at staff on technical depth and ownership expectations",
+        "finance approved a principal headcount; converting to staff requires re-opening requisition and a new approval cycle"
+      ],
+      "hypotheses": [],
+      "supersedes": [],
+      "superseded_by": [],
+      "actors": [
+        {
+          "id": "human:nadia",
+          "display": "Nadia (Hiring Manager)",
+          "position": "proposed"
+        },
+        {
+          "id": "human:kenji",
+          "display": "Kenji (Staff Eng, panel)",
+          "position": "proposed"
+        },
+        {
+          "id": "human:alicia",
+          "display": "Alicia (EM)",
+          "position": "contested"
+        }
+      ],
+      "topics": ["hiring", "compensation", "leveling"],
+      "created_at": "2024-10-12T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}

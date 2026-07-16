@@ -1,0 +1,40 @@
+{
+  "query": "frontend framework dashboard decision",
+  "decisions": [
+    {
+      "id": "decision-dashboard-framework",
+      "title": "select frontend framework for customer analytics dashboard rebuild",
+      "status": "contested",
+      "confidence": null,
+      "rationale": "Two positions from different stakeholders captured across separate documents. Maya (Product Eng) advocates SvelteKit for bundle size and DX; Chris (DevOps) prefers React due to existing Kubernetes operator tooling. Decision deferred to Q2.",
+      "options": [
+        "SvelteKit",
+        "React"
+      ],
+      "chosen_option": null,
+      "evidence": [
+        "SvelteKit: smaller bundle, faster initial load, simpler component model (Q1 planning notes, 2025-01-15)",
+        "SvelteKit SSR requires new Kubernetes configuration not budgeted for Q1; React has mature operator tooling already in cluster (Q1 retro, 2025-03-28)"
+      ],
+      "hypotheses": [],
+      "supersedes": [],
+      "superseded_by": [],
+      "actors": [
+        {
+          "id": "human:maya",
+          "display": "Maya (Product Engineering)",
+          "position": "proposed"
+        },
+        {
+          "id": "human:chris",
+          "display": "Chris (DevOps)",
+          "position": "contested"
+        }
+      ],
+      "topics": ["frontend", "infrastructure"],
+      "created_at": "2025-03-28T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}

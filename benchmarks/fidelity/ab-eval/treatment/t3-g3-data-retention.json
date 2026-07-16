@@ -1,0 +1,47 @@
+{
+  "query": "data retention lifecycle policy decision",
+  "decisions": [
+    {
+      "id": "decision-data-lifecycle-policy",
+      "title": "set enterprise data retention and online-access lifecycle policy",
+      "status": "contested",
+      "confidence": null,
+      "rationale": "Three uncoordinated positions across separate documents with no cross-references. Legal mandates 7-year (84-month) minimum retention. Engineering approved a 365-day purge lifecycle for cost reduction. Customer Success surfaced enterprise MSAs requiring 60-month online access. Engineering's 365-day purge violates both the statutory 7-year floor and enterprise SLAs; the conflicting obligations have not been reconciled.",
+      "options": [
+        "statutory minimum: 7-year (84-month) full retention (Legal, 2024-02-05)",
+        "tiered lifecycle: 90-day active + 180-day cold + 365-day purge (Engineering, 2024-05-14)",
+        "60-month online access tier for enterprise MSA accounts (Customer Success request, 2024-09-03)"
+      ],
+      "chosen_option": null,
+      "evidence": [
+        "regulatory obligation: 7-year minimum for customer transaction records (Legal memo, 2024-02-05)",
+        "40% storage cost reduction estimated with 365-day lifecycle; approved by engineering leadership (Infrastructure proposal, 2024-05-14)",
+        "Meridian Corp MSA: 60-month online access guarantee; 22-month-old record triggered warm-tier delay violating next-business-day SLA; fourth similar case in Q3 (CS escalation, 2024-09-03)"
+      ],
+      "hypotheses": [],
+      "supersedes": [],
+      "superseded_by": [],
+      "actors": [
+        {
+          "id": "team:legal-compliance",
+          "display": "Legal & Compliance",
+          "position": "proposed"
+        },
+        {
+          "id": "team:engineering",
+          "display": "Engineering Leadership",
+          "position": "contested"
+        },
+        {
+          "id": "team:customer-success",
+          "display": "Customer Success",
+          "position": "contested"
+        }
+      ],
+      "topics": ["compliance", "storage", "enterprise", "legal"],
+      "created_at": "2024-09-03T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}

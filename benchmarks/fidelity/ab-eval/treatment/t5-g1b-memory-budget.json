@@ -1,0 +1,33 @@
+{
+  "query": "in-memory index budget decision",
+  "decisions": [
+    {
+      "id": "decision-memory-index-budget",
+      "title": "maintain decision graph index in memory with 4 GB budget per node",
+      "status": "accepted",
+      "confidence": "low",
+      "rationale": "4 GB budget accepted based on 8 KB/node average and 5× headroom over projected 100K-node maximum. Performance benchmarks met. Core sizing assumption refuted by production: bulk-import evidence blobs average 40 KB/node, causing OOM at 210K nodes.",
+      "options": [],
+      "chosen_option": null,
+      "evidence": [
+        "benchmark at 100K nodes: p99 read latency 4.1 ms — within target (2024-04-10)",
+        "production: two enterprise nodes hit memory exhaustion at ~210K nodes; bulk-import evidence averaging 40 KB/node (5× sizing assumption); 12–18 minute service degradation each (2024-08-15)"
+      ],
+      "hypotheses": [
+        {
+          "id": "hypothesis-8kb-avg-node-size",
+          "text": "average decision node size is 8 KB, giving 4 GB capacity for ~500K nodes with 5× headroom",
+          "status": "refuted",
+          "refuting_evidence": "bulk-import path allows full document text in evidence fields; production average 40 KB/node → OOM at 210K nodes, not the projected 500K ceiling"
+        }
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "actors": [],
+      "topics": ["storage", "performance", "memory"],
+      "created_at": "2024-01-22T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}

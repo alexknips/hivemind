@@ -1,0 +1,45 @@
+{
+  "query": "deployment strategy history",
+  "decisions": [
+    {
+      "id": "decision-blue-green-deployment",
+      "title": "adopt blue-green deployment for production releases",
+      "status": "accepted",
+      "confidence": "high",
+      "rationale": "Blue-green deployment adopted in Q2 2023 for atomic traffic switching and simple rollback.",
+      "options": [],
+      "chosen_option": null,
+      "evidence": [],
+      "hypotheses": [],
+      "supersedes": [],
+      "superseded_by": ["decision-canary-rollout"],
+      "actors": [],
+      "topics": ["devops", "deployment"],
+      "created_at": "2023-04-01T00:00:00Z"
+    },
+    {
+      "id": "decision-canary-rollout",
+      "title": "replace blue-green with canary rollout (5% → 25% → 100%)",
+      "status": "accepted",
+      "confidence": "high",
+      "rationale": "Three H2 2023 production incidents caused by blue-green environment configuration drift (secrets mismatch, service discovery lag). Canary releases limit blast radius: 5% traffic for 30-minute observation, then 25%, then 100%. ~60% incident rate reduction in first two quarters post-adoption.",
+      "options": [
+        "continue blue-green deployment",
+        "canary rollout (5% → 25% → 100%)"
+      ],
+      "chosen_option": "canary rollout",
+      "evidence": [
+        "three H2 2023 incidents: blue-green configuration drift (secrets mismatch, service discovery lag)",
+        "~60% production incident reduction in first two quarters after canary adoption"
+      ],
+      "hypotheses": [],
+      "supersedes": ["decision-blue-green-deployment"],
+      "superseded_by": [],
+      "actors": [],
+      "topics": ["devops", "deployment", "reliability"],
+      "created_at": "2024-01-01T00:00:00Z"
+    }
+  ],
+  "total": 2,
+  "truncated": false
+}
