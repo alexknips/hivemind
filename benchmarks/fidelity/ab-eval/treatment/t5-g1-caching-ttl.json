@@ -1,0 +1,33 @@
+{
+  "query": "auth token caching TTL decision",
+  "decisions": [
+    {
+      "id": "decision-auth-cache-15min-ttl",
+      "title": "cache user profile data with 15-minute TTL to reduce database reads",
+      "status": "accepted",
+      "confidence": "low",
+      "rationale": "15-minute TTL accepted to reduce database load; performance target (≥90% hit rate) met. Core assumption that mid-session permission changes are rare was refuted by incidents #4471 and #4489.",
+      "options": [],
+      "chosen_option": null,
+      "evidence": [
+        "cache hit rate 93–95% — performance target met (2024-07-20)",
+        "incidents #4471, #4489: contractor role revocations persisted in cache up to 14 minutes; two cases in audit review period (2024-07-20)"
+      ],
+      "hypotheses": [
+        {
+          "id": "hypothesis-low-midsession-permission-changes",
+          "text": "mid-session permission changes are rare enough that a 15-minute TTL does not create a meaningful security gap",
+          "status": "refuted",
+          "refuting_evidence": "incidents #4471 and #4489: revoked contractor access persisted up to 14 minutes; two cases discovered in a single audit review, suggesting the pattern is not isolated"
+        }
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "actors": [],
+      "topics": ["security", "caching", "auth"],
+      "created_at": "2024-03-08T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}

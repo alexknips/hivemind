@@ -1,0 +1,30 @@
+{
+  "query": "async notification queue decision",
+  "decisions": [
+    {
+      "id": "decision-rabbitmq-notification-queue",
+      "title": "adopt RabbitMQ for async notification job queue",
+      "status": "accepted",
+      "confidence": "high",
+      "rationale": "RabbitMQ chosen over Kafka and AWS SQS. Kafka over-engineered for current throughput and retention needs (no stream replay or multi-consumer fan-out required). SQS introduces AWS vendor lock-in the team wants to avoid.",
+      "options": [
+        "RabbitMQ",
+        "Apache Kafka",
+        "AWS SQS"
+      ],
+      "chosen_option": "RabbitMQ",
+      "evidence": [
+        "no requirement for stream replay or multi-consumer fan-out at current scale — Kafka capabilities unnecessary",
+        "SQS introduces AWS vendor lock-in"
+      ],
+      "hypotheses": [],
+      "supersedes": [],
+      "superseded_by": [],
+      "actors": [],
+      "topics": ["infrastructure", "messaging", "notifications"],
+      "created_at": "2024-10-14T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}

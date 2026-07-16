@@ -1,8 +1,19 @@
-//! A/B uplift harness (Phase 1) — see bead hivemind-4ygu.
+//! A/B uplift harness (Phase 1 + Tier 1.5) — see beads hivemind-4ygu, hivemind-92fs.
 //!
 //! Measures whether HiveMind's structured query output (treatment arm)
 //! outperforms hand-authored ADR/MADR documents (control arm) on five
 //! decision-recall task types. Both arms use the same model.
+//!
+//! Tier 1.5 extends the corpus with dispersion-graded cases (G0–G3) to
+//! measure how uplift scales with signal dispersion:
+//!   G0 = single doc, explicit cross-ref (original Phase 1 cases)
+//!   G1 = single doc, implicit phrasing (no "contested"/"refuted" labels)
+//!   G2 = signal split across 2-3 docs, paraphrased (no shared names)
+//!   G3 = 3+ docs, temporal gaps, terminology drift, zero back-links
+//!
+//! Honesty constraint: both arms derive from the SAME source documents.
+//! Control = flat doc bundle as-is. Treatment = same docs ingested through
+//! HiveMind (capture-time linking). Uplift is attributable only to capture.
 //!
 //! Scoring:
 //!   T1 (decision-recall):         token-F1 over decision title + options
@@ -11,14 +22,16 @@
 //!   T4 (onboarding):              token-F1 over decisions + evidence
 //!   T5 (staleness-detection):     binary accuracy (refuted/superseded signal)
 //!
-//! Results are labeled PRELIMINARY (agent-only phase 1).
+//! Results are labeled PRELIMINARY (agent-only phase 1 / tier 1.5).
 //!
 //! Usage:
-//!   cargo run --bin ab-eval                       # 5 tasks × 2 arms × 3 runs
+//!   cargo run --bin ab-eval                       # all tasks × 2 arms × 3 runs
 //!   cargo run --bin ab-eval -- --dry-run          # PRELIMINARY template (no API)
-//!   cargo run --bin ab-eval -- --task T3          # single task, 3 runs each arm
+//!   cargo run --bin ab-eval -- --task T3          # all T3 scenarios (any grade)
+//!   cargo run --bin ab-eval -- --grade 2          # only G2 scenarios
 //!   cargo run --bin ab-eval -- --n-runs 5         # increase run count
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -28,7 +41,7 @@ const MAX_TOKENS: u64 = 512;
 const DEFAULT_RUNS: usize = 3;
 
 // --------------------------------------------------------------------------
-// Embedded contexts (compile-time)
+// Embedded contexts (compile-time) — G0 originals
 // --------------------------------------------------------------------------
 
 const T1_CONTROL: &str = include_str!("control/t1-cloud-region.md");
@@ -40,6 +53,54 @@ const T1_TREATMENT: &str = include_str!("treatment/t1-cloud-region.json");
 const T3_TREATMENT: &str = include_str!("treatment/t3-hiring-contested.json");
 const T4_TREATMENT: &str = include_str!("treatment/t4-pricing-reversal.json");
 const T5_TREATMENT: &str = include_str!("treatment/t5-write-batching.json");
+
+// --------------------------------------------------------------------------
+// Tier 1.5 — G1 cases (implicit, single doc)
+// --------------------------------------------------------------------------
+
+const T3G1_CTRL: &str = include_str!("control/t3-g1-security-lib.md");
+const T3G1_TRTM: &str = include_str!("treatment/t3-g1-security-lib.json");
+
+const T5G1_CTRL: &str = include_str!("control/t5-g1-caching-ttl.md");
+const T5G1_TRTM: &str = include_str!("treatment/t5-g1-caching-ttl.json");
+
+const T5G1B_CTRL: &str = include_str!("control/t5-g1b-memory-budget.md");
+const T5G1B_TRTM: &str = include_str!("treatment/t5-g1b-memory-budget.json");
+
+const T1G1_CTRL: &str = include_str!("control/t1-g1-messaging-queue.md");
+const T1G1_TRTM: &str = include_str!("treatment/t1-g1-messaging-queue.json");
+
+const T4G1_CTRL: &str = include_str!("control/t4-g1-deploy-strategy.md");
+const T4G1_TRTM: &str = include_str!("treatment/t4-g1-deploy-strategy.json");
+
+// --------------------------------------------------------------------------
+// Tier 1.5 — G2 cases (2-3 docs, paraphrased, no shared signal words)
+// --------------------------------------------------------------------------
+
+const T3G2_CTRL: &str = include_str!("control/t3-g2-frontend-fw.md");
+const T3G2_TRTM: &str = include_str!("treatment/t3-g2-frontend-fw.json");
+
+const T3G2B_CTRL: &str = include_str!("control/t3-g2b-hiring-scope.md");
+const T3G2B_TRTM: &str = include_str!("treatment/t3-g2b-hiring-scope.json");
+
+const T5G2_CTRL: &str = include_str!("control/t5-g2-sharding.md");
+const T5G2_TRTM: &str = include_str!("treatment/t5-g2-sharding.json");
+
+const T5G2B_CTRL: &str = include_str!("control/t5-g2b-tls-cipher.md");
+const T5G2B_TRTM: &str = include_str!("treatment/t5-g2b-tls-cipher.json");
+
+const T1G2_CTRL: &str = include_str!("control/t1-g2-log-stack.md");
+const T1G2_TRTM: &str = include_str!("treatment/t1-g2-log-stack.json");
+
+// --------------------------------------------------------------------------
+// Tier 1.5 — G3 cases (3+ docs, temporal gaps, terminology drift)
+// --------------------------------------------------------------------------
+
+const T3G3_CTRL: &str = include_str!("control/t3-g3-data-retention.md");
+const T3G3_TRTM: &str = include_str!("treatment/t3-g3-data-retention.json");
+
+const T5G3_CTRL: &str = include_str!("control/t5-g3-event-bus.md");
+const T5G3_TRTM: &str = include_str!("treatment/t5-g3-event-bus.json");
 
 // --------------------------------------------------------------------------
 // Score type
@@ -57,6 +118,7 @@ enum ScoreType {
 struct Scenario {
     id: &'static str,
     name: &'static str,
+    grade: u8,
     question: &'static str,
     control_context: &'static str,
     treatment_context: &'static str,
@@ -65,41 +127,44 @@ struct Scenario {
 
 fn scenarios() -> Vec<Scenario> {
     vec![
+        // ----------------------------------------------------------------
+        // G0 — original Phase 1 cases (explicit single doc)
+        // ----------------------------------------------------------------
         Scenario {
             id: "T1",
             name: "decision-recall",
+            grade: 0,
             question:
                 "List all decisions described in this context. \
                        For each decision, state the options considered and which option was chosen.",
             control_context: T1_CONTROL,
             treatment_context: T1_TREATMENT,
             score_type: ScoreType::TokenF1 {
-                // gold: decision title + all options (normalized union)
                 gold_text: "host eu customer data eu central 1 eu central 1 eu west 1 us east 1",
             },
         },
         Scenario {
             id: "T2",
             name: "rationale-reconstruction",
+            grade: 0,
             // T2 reuses the same case as T1 (cloud region), different question
             question: "Why was the cloud region decision made? \
                        What specific evidence supported the chosen option?",
             control_context: T1_CONTROL,
             treatment_context: T1_TREATMENT,
             score_type: ScoreType::TokenF1 {
-                // gold: evidence texts (GDPR + RUM dashboard)
                 gold_text: "gdpr data residency rum dashboard lower latency eu cohort central",
             },
         },
         Scenario {
             id: "T3",
             name: "contradiction-detection",
+            grade: 0,
             question: "Are there any decisions in this context that are contested, \
                        disputed, or have conflicting positions from different stakeholders? \
                        Answer yes or no, and briefly explain.",
             control_context: T3_CONTROL,
             treatment_context: T3_TREATMENT,
-            // gold: case has ProposedBy + RejectedBy on same node → contested = true
             score_type: ScoreType::Binary {
                 expect_positive: true,
             },
@@ -107,12 +172,12 @@ fn scenarios() -> Vec<Scenario> {
         Scenario {
             id: "T4",
             name: "onboarding",
+            grade: 0,
             question: "I am new to this project. Summarize the pricing model history: \
                        what changed, why it was changed, and what the current status is.",
             control_context: T4_CONTROL,
             treatment_context: T4_TREATMENT,
             score_type: ScoreType::TokenF1 {
-                // gold: both decisions + evidence + key rationale tokens
                 gold_text:
                     "usage based pricing flat per seat supersedes bill shock churn q2 4 points",
             },
@@ -120,12 +185,177 @@ fn scenarios() -> Vec<Scenario> {
         Scenario {
             id: "T5",
             name: "staleness-detection",
+            grade: 0,
             question: "Is the write batching decision still sound? \
                        Have any of its underlying assumptions been proven wrong? \
                        Answer yes or no, and briefly explain.",
             control_context: T5_CONTROL,
             treatment_context: T5_TREATMENT,
-            // gold: hypothesis refuted → answer should be "no longer sound / refuted"
+            score_type: ScoreType::Binary {
+                expect_positive: true,
+            },
+        },
+        // ----------------------------------------------------------------
+        // G1 — implicit phrasing, single document
+        // ----------------------------------------------------------------
+        Scenario {
+            id: "T3G1",
+            name: "contradiction-detection",
+            grade: 1,
+            question: "Are there any decisions in this context that are contested, \
+                       disputed, or have conflicting positions from different stakeholders? \
+                       Answer yes or no, and briefly explain.",
+            control_context: T3G1_CTRL,
+            treatment_context: T3G1_TRTM,
+            score_type: ScoreType::Binary {
+                expect_positive: true,
+            },
+        },
+        Scenario {
+            id: "T5G1",
+            name: "staleness-detection",
+            grade: 1,
+            question: "Is the auth token caching strategy still sound? \
+                       Have any of its underlying assumptions been proven wrong? \
+                       Answer yes or no, and briefly explain.",
+            control_context: T5G1_CTRL,
+            treatment_context: T5G1_TRTM,
+            score_type: ScoreType::Binary {
+                expect_positive: true,
+            },
+        },
+        Scenario {
+            id: "T5G1b",
+            name: "staleness-detection",
+            grade: 1,
+            question: "Is the in-memory index budget decision still sound? \
+                       Have any of its underlying assumptions been proven wrong? \
+                       Answer yes or no, and briefly explain.",
+            control_context: T5G1B_CTRL,
+            treatment_context: T5G1B_TRTM,
+            score_type: ScoreType::Binary {
+                expect_positive: true,
+            },
+        },
+        Scenario {
+            id: "T1G1",
+            name: "decision-recall",
+            grade: 1,
+            question:
+                "List all decisions described in this context. \
+                       For each decision, state the options considered and which option was chosen.",
+            control_context: T1G1_CTRL,
+            treatment_context: T1G1_TRTM,
+            score_type: ScoreType::TokenF1 {
+                gold_text: "rabbitmq apache kafka aws sqs rabbitmq",
+            },
+        },
+        Scenario {
+            id: "T4G1",
+            name: "onboarding",
+            grade: 1,
+            question: "I am new to this project. Summarize the deployment strategy history: \
+                       what changed, why it was changed, and what the current status is.",
+            control_context: T4G1_CTRL,
+            treatment_context: T4G1_TRTM,
+            score_type: ScoreType::TokenF1 {
+                gold_text: "blue green canary rollout five percent traffic three incidents \
+                            configuration drift sixty percent incident reduction",
+            },
+        },
+        // ----------------------------------------------------------------
+        // G2 — split across 2-3 docs, paraphrased (no shared signal words)
+        // ----------------------------------------------------------------
+        Scenario {
+            id: "T3G2",
+            name: "contradiction-detection",
+            grade: 2,
+            question: "Are there any decisions in this context that are contested, \
+                       disputed, or have conflicting positions from different stakeholders? \
+                       Answer yes or no, and briefly explain.",
+            control_context: T3G2_CTRL,
+            treatment_context: T3G2_TRTM,
+            score_type: ScoreType::Binary {
+                expect_positive: true,
+            },
+        },
+        Scenario {
+            id: "T3G2b",
+            name: "contradiction-detection",
+            grade: 2,
+            question: "Are there any decisions in this context that are contested, \
+                       disputed, or have conflicting positions from different stakeholders? \
+                       Answer yes or no, and briefly explain.",
+            control_context: T3G2B_CTRL,
+            treatment_context: T3G2B_TRTM,
+            score_type: ScoreType::Binary {
+                expect_positive: true,
+            },
+        },
+        Scenario {
+            id: "T5G2",
+            name: "staleness-detection",
+            grade: 2,
+            question: "Is the database sharding strategy still sound? \
+                       Have any of its underlying assumptions been proven wrong? \
+                       Answer yes or no, and briefly explain.",
+            control_context: T5G2_CTRL,
+            treatment_context: T5G2_TRTM,
+            score_type: ScoreType::Binary {
+                expect_positive: true,
+            },
+        },
+        Scenario {
+            id: "T5G2b",
+            name: "staleness-detection",
+            grade: 2,
+            question: "Is the TLS cipher suite configuration still sound? \
+                       Have any of its underlying assumptions been proven wrong? \
+                       Answer yes or no, and briefly explain.",
+            control_context: T5G2B_CTRL,
+            treatment_context: T5G2B_TRTM,
+            score_type: ScoreType::Binary {
+                expect_positive: true,
+            },
+        },
+        Scenario {
+            id: "T1G2",
+            name: "decision-recall",
+            grade: 2,
+            question:
+                "List all decisions described in this context. \
+                       For each decision, state the options considered and which option was chosen.",
+            control_context: T1G2_CTRL,
+            treatment_context: T1G2_TRTM,
+            score_type: ScoreType::TokenF1 {
+                gold_text: "elk elasticsearch logstash kibana loki grafana datadog loki grafana",
+            },
+        },
+        // ----------------------------------------------------------------
+        // G3 — 3+ docs, temporal gaps, terminology drift, zero back-links
+        // ----------------------------------------------------------------
+        Scenario {
+            id: "T3G3",
+            name: "contradiction-detection",
+            grade: 3,
+            question: "Are there any decisions in this context that are contested, \
+                       disputed, or have conflicting positions from different stakeholders? \
+                       Answer yes or no, and briefly explain.",
+            control_context: T3G3_CTRL,
+            treatment_context: T3G3_TRTM,
+            score_type: ScoreType::Binary {
+                expect_positive: true,
+            },
+        },
+        Scenario {
+            id: "T5G3",
+            name: "staleness-detection",
+            grade: 3,
+            question: "Is the event backbone capacity decision still sound? \
+                       Have any of its underlying assumptions been proven wrong? \
+                       Answer yes or no, and briefly explain.",
+            control_context: T5G3_CTRL,
+            treatment_context: T5G3_TRTM,
             score_type: ScoreType::Binary {
                 expect_positive: true,
             },
@@ -190,7 +420,6 @@ fn score_token_f1(gold_text: &str, produced: &str) -> f64 {
 
 fn score_binary(expect_positive: bool, produced: &str) -> f64 {
     let lower = produced.to_lowercase();
-    // Positive signals: response affirms disputed/contested/refuted/superseded
     let positive_signals = [
         "yes",
         "contested",
@@ -305,6 +534,7 @@ async fn main() {
     let dry_run = args.iter().any(|a| a == "--dry-run");
     let n_runs = parse_flag_usize(&args, "--n-runs", DEFAULT_RUNS);
     let task_filter: Option<String> = parse_flag_str(&args, "--task");
+    let grade_filter: Option<u8> = parse_flag_str(&args, "--grade").and_then(|s| s.parse().ok());
 
     let api_key = if dry_run {
         String::new()
@@ -327,26 +557,36 @@ async fn main() {
     let all_scenarios = scenarios();
     let run_scenarios: Vec<&Scenario> = all_scenarios
         .iter()
-        .filter(|s| task_filter.as_deref().is_none_or(|t| s.id == t))
+        .filter(|s| {
+            let task_ok = task_filter.as_deref().is_none_or(|t| s.id.starts_with(t));
+            let grade_ok = grade_filter.map(|g| s.grade == g).unwrap_or(true);
+            task_ok && grade_ok
+        })
         .collect();
 
-    println!("HiveMind A/B Uplift Scorecard — Phase 1");
-    println!("PRELIMINARY — agent-only, 2026-07-13");
+    println!("HiveMind A/B Uplift Scorecard — Phase 1 + Tier 1.5");
+    println!("PRELIMINARY — agent-only, 2026-07-16");
     if dry_run {
         println!("Mode: DRY-RUN (no API calls; scores are N/A)");
     } else {
         println!("Mode: LIVE (model: {MODEL}, {n_runs} run(s) per task per arm)");
     }
-    println!("Corpus: benchmarks/fidelity/corpus.yaml (36 cases, 3 org bundles)");
+    println!(
+        "Corpus: {}/{} scenarios shown (G0: explicit; G1: implicit; G2: 2-3 docs; G3: 3+ docs+drift)",
+        run_scenarios.len(),
+        all_scenarios.len()
+    );
     println!();
     println!(
-        "{:<4} {:<30} {:<10} {:<10} {:<10} {:<6}",
-        "Task", "Name", "Arm", "F1|Acc", "Tokens", "Runs"
+        "{:<6} {:>2} {:<24} {:<10} {:<10} {:<10} {:<6}",
+        "Task", "Gr", "Name", "Arm", "F1|Acc", "Tokens", "Runs"
     );
     println!("{}", "-".repeat(76));
 
     let mut control_f1s: Vec<f64> = Vec::new();
     let mut treatment_f1s: Vec<f64> = Vec::new();
+    // per-grade: grade -> (control scores, treatment scores)
+    let mut grade_scores: HashMap<u8, (Vec<f64>, Vec<f64>)> = HashMap::new();
 
     for scenario in &run_scenarios {
         let (ctl, trt) = if dry_run {
@@ -390,8 +630,9 @@ async fn main() {
         };
 
         println!(
-            "{:<4} {:<30} {:<10} {:<10} {:<10} {:<6}",
+            "{:<6} G{} {:<24} {:<10} {:<10} {:<10} {:<6}",
             scenario.id,
+            scenario.grade,
             scenario.name,
             "control",
             fmt_score(ctl.score),
@@ -399,7 +640,8 @@ async fn main() {
             fmt_runs(ctl.runs, dry_run),
         );
         println!(
-            "{:<4} {:<30} {:<10} {:<10} {:<10} {:<6}",
+            "{:<6} {:>2} {:<24} {:<10} {:<10} {:<10} {:<6}",
+            "",
             "",
             "",
             "treatment",
@@ -418,14 +660,21 @@ async fn main() {
                 format!("{:.3}", d)
             }
         };
-        println!("{:<4} {:<30} {:<10} {:<10}", "", "", "Δ uplift", uplift_str);
+        println!(
+            "{:<6} {:>2} {:<24} {:<10} {:<10}",
+            "", "", "", "Δ uplift", uplift_str
+        );
         println!();
 
         if !dry_run && !ctl.score.is_nan() {
             control_f1s.push(ctl.score);
+            let entry = grade_scores.entry(scenario.grade).or_default();
+            entry.0.push(ctl.score);
         }
         if !dry_run && !trt.score.is_nan() {
             treatment_f1s.push(trt.score);
+            let entry = grade_scores.entry(scenario.grade).or_default();
+            entry.1.push(trt.score);
         }
     }
 
@@ -436,31 +685,74 @@ async fn main() {
         println!("  Macro-F1 treatment: N/A");
         println!("  Net uplift:         N/A");
     } else {
-        let macro_ctl = if control_f1s.is_empty() {
-            0.0
-        } else {
-            control_f1s.iter().sum::<f64>() / control_f1s.len() as f64
-        };
-        let macro_trt = if treatment_f1s.is_empty() {
-            0.0
-        } else {
-            treatment_f1s.iter().sum::<f64>() / treatment_f1s.len() as f64
-        };
+        let macro_ctl = mean(&control_f1s);
+        let macro_trt = mean(&treatment_f1s);
         let net = macro_trt - macro_ctl;
         println!("  Macro-F1 control:   {:.3}", macro_ctl);
         println!("  Macro-F1 treatment: {:.3}", macro_trt);
-        println!(
-            "  Net uplift:         {}",
-            if net >= 0.0 {
-                format!("+{:.3}", net)
-            } else {
-                format!("{:.3}", net)
-            }
-        );
+        println!("  Net uplift:         {}", fmt_delta(net));
+    }
+    println!();
+
+    // Uplift-vs-dispersion curve (Tier 1.5 deliverable)
+    println!("Uplift by Dispersion Grade");
+    println!(
+        "  {:<38} {:>8}  {:>8}  {:>8}  {:>6}",
+        "Grade", "Ctl", "Trt", "Δ uplift", "Cases"
+    );
+    println!("  {}", "-".repeat(72));
+    for grade in 0u8..=3 {
+        let label = match grade {
+            0 => "G0 explicit, single doc",
+            1 => "G1 implicit, single doc",
+            2 => "G2 split 2-3 docs",
+            3 => "G3 dispersed 3+ docs+drift",
+            _ => unreachable!(),
+        };
+        if dry_run {
+            println!(
+                "  {:<38} {:>8}  {:>8}  {:>8}  {:>6}",
+                label, "N/A", "N/A", "N/A", "N/A"
+            );
+        } else if let Some((ctls, trts)) = grade_scores.get(&grade) {
+            let ctl_avg = mean(ctls);
+            let trt_avg = mean(trts);
+            let n = ctls.len();
+            println!(
+                "  {:<38} {:>8.3}  {:>8.3}  {:>8}  {:>6}",
+                label,
+                ctl_avg,
+                trt_avg,
+                fmt_delta(trt_avg - ctl_avg),
+                n
+            );
+        } else {
+            println!(
+                "  {:<38} {:>8}  {:>8}  {:>8}  {:>6}",
+                label, "—", "—", "—", 0
+            );
+        }
     }
     println!();
     println!("Note: Phase 1 scores are agent-only (synthetic corpus). Phase 2");
     println!("will replace control arm with real organization ADR archives.");
+    println!("Tier 1.5: G0 expected Δ≈0 (saturation); G1-G3 test capture-time linking value.");
+}
+
+fn mean(v: &[f64]) -> f64 {
+    if v.is_empty() {
+        0.0
+    } else {
+        v.iter().sum::<f64>() / v.len() as f64
+    }
+}
+
+fn fmt_delta(d: f64) -> String {
+    if d >= 0.0 {
+        format!("+{:.3}", d)
+    } else {
+        format!("{:.3}", d)
+    }
 }
 
 async fn run_arm(
@@ -485,8 +777,9 @@ async fn run_arm(
             Ok((text, tokens)) => {
                 let s = score(scenario, &text);
                 eprintln!(
-                    "  {} {} run {}/{}: score={:.3} tokens={}",
+                    "  {} G{} {} run {}/{}: score={:.3} tokens={}",
                     scenario.id,
+                    scenario.grade,
                     arm_label,
                     run + 1,
                     n_runs,
@@ -498,8 +791,9 @@ async fn run_arm(
             }
             Err(e) => {
                 eprintln!(
-                    "  {} {} run {}/{}: error: {e}",
+                    "  {} G{} {} run {}/{}: error: {e}",
                     scenario.id,
+                    scenario.grade,
                     arm_label,
                     run + 1,
                     n_runs
@@ -509,11 +803,7 @@ async fn run_arm(
         }
     }
 
-    let mean_score = if scores.is_empty() {
-        0.0
-    } else {
-        scores.iter().sum::<f64>() / scores.len() as f64
-    };
+    let mean_score = mean(&scores);
     let mean_tokens = if scores.is_empty() {
         0
     } else {

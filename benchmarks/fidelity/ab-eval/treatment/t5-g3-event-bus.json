@@ -1,0 +1,34 @@
+{
+  "query": "event bus kafka capacity decision",
+  "decisions": [
+    {
+      "id": "decision-kafka-2gbps-provisioning",
+      "title": "provision Kafka event backbone at 2 GB/s with 4-year growth headroom",
+      "status": "accepted",
+      "confidence": "low",
+      "rationale": "2 GB/s provisioning accepted as 10× margin over 200 MB/s measured peak, projecting adequacy through 2027. Core assumption of uniform load distribution refuted by PIR-2024-031: correlated enterprise telemetry bursts reached 2.1 GB/s within 14 months, saturating the cluster. Capacity increased 3× post-incident.",
+      "options": [],
+      "chosen_option": null,
+      "evidence": [
+        "design: 2 GB/s = 10× margin over 200 MB/s peak; 30%/yr growth → adequate through 2027 (platform design spec, 2023-04-12)",
+        "Q4 2023 review: consumer lag grew from <1s to 8 min average; broker approaching configured limits — root cause unknown at time (capacity review, 2023-12-08)",
+        "PIR-2024-031: peak throughput 2.1 GB/s exceeded rated capacity; enterprise telemetry storms from overlapping business-hour time zones; 4-hour outage; 3× capacity increase applied (2024-06-20)"
+      ],
+      "hypotheses": [
+        {
+          "id": "hypothesis-uniform-load-distribution",
+          "text": "telemetry events distribute approximately uniformly across the business day, making 2 GB/s adequate through at least 2027",
+          "status": "refuted",
+          "refuting_evidence": "PIR-2024-031: enterprise customers exhibit bursty correlated load during overlapping business hours (NA + APAC); peak 2.1 GB/s exceeded 2 GB/s ceiling within 14 months of deployment"
+        }
+      ],
+      "supersedes": [],
+      "superseded_by": [],
+      "actors": [],
+      "topics": ["infrastructure", "messaging", "capacity", "performance"],
+      "created_at": "2023-04-12T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}

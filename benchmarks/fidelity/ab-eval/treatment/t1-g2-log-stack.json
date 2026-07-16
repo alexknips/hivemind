@@ -1,0 +1,31 @@
+{
+  "query": "centralized logging stack decision",
+  "decisions": [
+    {
+      "id": "decision-loki-logging-stack",
+      "title": "adopt Loki + Grafana for centralized log aggregation",
+      "status": "accepted",
+      "confidence": "high",
+      "rationale": "Loki chosen over ELK Stack (high resource overhead, operational complexity) and Datadog Logs (estimated $4,200/month, exceeds budget). Loki integrates natively with existing Grafana deployment and has significantly lower resource requirements.",
+      "options": [
+        "ELK Stack (Elasticsearch + Logstash + Kibana)",
+        "Loki + Grafana",
+        "Datadog Logs (SaaS)"
+      ],
+      "chosen_option": "Loki + Grafana",
+      "evidence": [
+        "ELK: requires ~6 CPU cores, 24 GB RAM per node; high operational complexity",
+        "Datadog Logs: estimated $4,200/month at current log volume — exceeds infrastructure budget",
+        "Loki: lower resource overhead; integrates with existing Grafana instance; label-based indexing sufficient"
+      ],
+      "hypotheses": [],
+      "supersedes": [],
+      "superseded_by": [],
+      "actors": [],
+      "topics": ["infrastructure", "observability", "logging"],
+      "created_at": "2024-03-05T00:00:00Z"
+    }
+  ],
+  "total": 1,
+  "truncated": false
+}
