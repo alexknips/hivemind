@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
@@ -17,7 +18,7 @@ use crate::events::{CaptureItem, EventProvenance, EventType, TenantId};
 use crate::ledger::{EventLedger, SqliteEventLedger};
 
 const CLASSIFIER_MODEL: &str = "claude-haiku-4-5-20251001";
-const SCHEMA_VERSION: &str = "2";
+pub const SCHEMA_VERSION: &str = "2";
 const ACTOR_ID: &str = "agent:hivemind:classifier";
 const POLL_INTERVAL: Duration = Duration::from_secs(10);
 const HAIKU_TIMEOUT: Duration = Duration::from_secs(5);
@@ -247,6 +248,74 @@ async fn run_classifier_loop(hivemind_dir: Arc<PathBuf>, tenant_id: TenantId, ap
         classify_pending_batches(&client, &hivemind_dir, &tenant_id, &api_key).await;
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+/// Summary of a pending (unclassified) ingest batch, for `classify-queue list` output.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingBatch {
+    pub batch_id: String,
+    pub submitted_at: Option<DateTime<Utc>>,
+    pub actor_id: String,
+    pub turn_count: usize,
+}
+
+/// Lists batches received but not yet classified (no IngestBatchClassified event).
+/// Used by `hivemind classify-queue list`.
+pub fn list_pending_batches(
+    hivemind_dir: &PathBuf,
+    tenant_id: &TenantId,
+) -> crate::Result<Vec<PendingBatch>> {
+    let ledger = SqliteEventLedger::open(hivemind_dir)?;
+    let mut offset = 0u64;
+    const PAGE: usize = 256;
+
+    let mut received: Vec<PendingBatch> = Vec::new();
+    let mut classified_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    loop {
+        let events = ledger.read_for_tenant(tenant_id, offset, PAGE)?;
+        if events.is_empty() {
+            break;
+        }
+
+        for event in &events {
+            match event.event_type {
+                EventType::IngestBatchReceived => {
+                    if let Some(batch_id) = event.payload.get("batch_id").and_then(|v| v.as_str()) {
+                        let turn_count = event
+                            .payload
+                            .get("turns")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
+                        received.push(PendingBatch {
+                            batch_id: batch_id.to_owned(), // ubs:ignore: &str from JSON, must be owned
+                            submitted_at: event.ts,
+                            actor_id: event.actor_id.clone(), // ubs:ignore: field copy from Event borrow
+                            turn_count,
+                        });
+                    }
+                }
+                EventType::IngestBatchClassified => {
+                    if let Some(batch_id) = event.payload.get("batch_id").and_then(|v| v.as_str()) {
+                        classified_ids.insert(batch_id.to_owned()); // ubs:ignore: &str from JSON, must be owned
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(last) = events.last().and_then(|e| e.event_id) {
+            offset = last;
+        } else {
+            break;
+        }
+    }
+
+    Ok(received
+        .into_iter()
+        .filter(|b| !classified_ids.contains(&b.batch_id))
+        .collect())
 }
 
 struct BatchInfo {

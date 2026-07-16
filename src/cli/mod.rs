@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::commands::{CommandContext, Commands};
 use crate::error::{CliError, CommandError};
 use crate::events::{
-    BlockerPriority, Event, EventId, EventPayload, EventProvenance, EventType,
+    BlockerPriority, CaptureItem, Event, EventId, EventPayload, EventProvenance, EventType,
     RelationKind as EventRelationKind, TenantId,
 };
 use crate::identity::{
@@ -144,6 +144,11 @@ pub enum Command {
     /// Answers "what did the team decide this week and why?" using graph data.
     /// Outputs structured JSON by default; pass --summary for readable prose.
     Digest(Box<DigestArgs>),
+    /// Inspect and drain the classification work queue (Worker A).
+    /// Use `classify-queue list` to see pending batches; use `classify-queue submit`
+    /// to write structured captures produced by the agent on its subscription seat.
+    #[command(name = "classify-queue")]
+    ClassifyQueue(ClassifyQueueArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -215,6 +220,43 @@ pub struct DigestArgs {
     /// Output readable prose instead of JSON.
     #[arg(long)]
     pub summary: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ClassifyQueueArgs {
+    #[command(subcommand)]
+    pub command: ClassifyQueueCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum ClassifyQueueCommand {
+    /// List batches pending classification (received but not yet classified).
+    List(ClassifyQueueListArgs),
+    /// Submit agent-produced captures for a batch, appending an IngestBatchClassified event.
+    Submit(ClassifyQueueSubmitArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ClassifyQueueListArgs {
+    /// Maximum number of pending batches to return.
+    #[arg(long, default_value_t = 20)]
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ClassifyQueueSubmitArgs {
+    /// Batch ID to classify (from `classify-queue list` output).
+    #[arg(long = "batch-id")]
+    pub batch_id: String,
+
+    /// Structured captures as a JSON array of CaptureItem objects.
+    #[arg(long)]
+    pub captures: String,
+
+    /// Classifier identifier recorded in the event.
+    /// Defaults to "agent:worker-a" to indicate subscription-seat classification.
+    #[arg(long, default_value = "agent:worker-a")]
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1314,6 +1356,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Migrate(args) => run_migrate(cli, args),
         Command::Map(args) => run_map(cli, args),
         Command::Digest(args) => run_digest(cli, args),
+        Command::ClassifyQueue(args) => run_classify_queue(cli, args),
     }
 }
 
@@ -1555,6 +1598,49 @@ fn run_digest(cli: &Cli, args: &DigestArgs) -> Result<String> {
     } else {
         format_json_value(true, &response)
     }
+}
+
+fn run_classify_queue(cli: &Cli, args: &ClassifyQueueArgs) -> Result<String> {
+    match &args.command {
+        ClassifyQueueCommand::List(args) => run_classify_queue_list(cli, args),
+        ClassifyQueueCommand::Submit(args) => run_classify_queue_submit(cli, args),
+    }
+}
+
+fn run_classify_queue_list(cli: &Cli, args: &ClassifyQueueListArgs) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
+    let mut batches = crate::classifier::list_pending_batches(&cli.hivemind_dir, &tenant_id)
+        .map_err(|e| CliError::InvalidInput(format!("ledger scan failed: {e}")))?;
+    batches.truncate(args.limit);
+    format_json_value(cli.json, &batches)
+}
+
+fn run_classify_queue_submit(cli: &Cli, args: &ClassifyQueueSubmitArgs) -> Result<String> {
+    let captures: Vec<CaptureItem> = serde_json::from_str(&args.captures)
+        .map_err(|e| CliError::InvalidInput(format!("--captures is not valid JSON: {e}")))?;
+
+    let tenant_id = cli_tenant(cli)?;
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(tenant_id, EventProvenance::cli()),
+    );
+
+    let capture_count = captures.len();
+    commands.record_ingest_batch_classified(
+        &cli.actor,
+        &args.batch_id,
+        &args.model,
+        crate::classifier::SCHEMA_VERSION,
+        captures,
+        None,
+    )?;
+
+    let result = serde_json::json!({
+        "batch_id": args.batch_id,
+        "capture_count": capture_count,
+    });
+    format_json_value(cli.json, &result)
 }
 
 fn run_ingest(cli: &Cli, ingest: &IngestArgs) -> Result<String> {
