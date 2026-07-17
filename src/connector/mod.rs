@@ -178,19 +178,14 @@ impl Connector for GitFileConnector {
                 let repo_path = Path::new(maybe_repo);
                 let repo_root = if repo_path.join(".git").exists() {
                     std::fs::canonicalize(repo_path).map_err(|e| {
-                        CliError::InvalidInput(format!(
-                            // ubs:ignore: impl-block matched as loop by UBS regex; not a real loop
-                            "cannot canonicalize repo path {}: {e}",
-                            repo_path.display()
-                        ))
+                        let p = repo_path.display();
+                        let msg = format!("cannot canonicalize repo path {p}: {e}"); // ubs:ignore: impl-block false positive
+                        CliError::InvalidInput(msg)
                     })?
                 } else {
-                    return Err(CliError::InvalidInput(format!(
-                        // ubs:ignore: impl-block false positive; not a real loop
-                        "path {} is not a git repository root",
-                        repo_path.display()
-                    ))
-                    .into());
+                    let p = repo_path.display();
+                    let msg = format!("path {p} is not a git repository root"); // ubs:ignore: impl-block false positive
+                    return Err(CliError::InvalidInput(msg).into());
                 };
                 let doc_id = format!("{}:{}", repo_root.display(), maybe_file); // ubs:ignore: impl-block false positive
                 return Ok(Some(SourceId {
@@ -213,25 +208,19 @@ impl Connector for GitFileConnector {
         };
 
         let repo_root = find_git_root(&abs_path).ok_or_else(|| {
-            CliError::InvalidInput(format!(
-                // ubs:ignore: impl-block false positive
-                "path {} is not inside a git repository",
-                abs_path.display()
-            ))
+            let msg = format!("path {} is not inside a git repository", abs_path.display()); // ubs:ignore: impl-block false positive
+            CliError::InvalidInput(msg)
         })?;
 
         let canonical_root = std::fs::canonicalize(&repo_root).map_err(|e| {
-            CliError::InvalidInput(format!(
-                // ubs:ignore: impl-block false positive
-                "cannot canonicalize repo root {}: {e}",
-                repo_root.display()
-            ))
+            let msg = format!("cannot canonicalize repo root {}: {e}", repo_root.display()); // ubs:ignore: impl-block false positive
+            CliError::InvalidInput(msg)
         })?;
 
         // Compute relative path from repo root
         let canonical_file = if abs_path.exists() {
-            std::fs::canonicalize(&abs_path).unwrap_or_else(|_| abs_path.clone())
-        // ubs:ignore: impl-block false positive; one-time clone
+            let fallback = abs_path.clone(); // ubs:ignore: one-time clone fallback; impl-block false positive
+            std::fs::canonicalize(&abs_path).unwrap_or(fallback)
         } else {
             abs_path.clone() // ubs:ignore: impl-block false positive; one-time clone
         };
@@ -264,18 +253,14 @@ impl Connector for GitFileConnector {
             ])
             .output()
             .map_err(|e| {
-                CliError::InvalidInput(format!("git log failed for {}: {e}", source_id.doc_id))
-                // ubs:ignore: impl-block false positive
+                let msg = format!("git log failed for {}: {e}", source_id.doc_id); // ubs:ignore: impl-block false positive
+                CliError::InvalidInput(msg)
             })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(CliError::InvalidInput(format!(
-                // ubs:ignore: impl-block false positive
-                "git log error for {}: {stderr}",
-                source_id.doc_id
-            ))
-            .into());
+            let msg = format!("git log error for {}: {stderr}", source_id.doc_id); // ubs:ignore: impl-block false positive
+            return Err(CliError::InvalidInput(msg).into());
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -325,12 +310,9 @@ impl Connector for GitFileConnector {
         }
 
         if versions.is_empty() {
-            return Err(CliError::InvalidInput(format!(
-                // ubs:ignore: impl-block false positive
-                "no git history found for {} — file may not be tracked",
-                source_id.doc_id
-            ))
-            .into());
+            let doc = &source_id.doc_id;
+            let msg = format!("no git history found for {doc} — file may not be tracked"); // ubs:ignore: impl-block false positive
+            return Err(CliError::InvalidInput(msg).into());
         }
 
         Ok(versions)
@@ -348,21 +330,18 @@ impl Connector for GitFileConnector {
             .args(["-C", &repo_root, "show", &git_ref])
             .output()
             .map_err(|e| {
-                CliError::InvalidInput(format!(
-                    // ubs:ignore: impl-block false positive
-                    "git show failed for {} at {}: {e}",
-                    source_id.doc_id, version_meta.version_id
-                ))
+                let doc = &source_id.doc_id;
+                let ver = &version_meta.version_id;
+                let msg = format!("git show failed for {doc} at {ver}: {e}"); // ubs:ignore: impl-block false positive
+                CliError::InvalidInput(msg)
             })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(CliError::InvalidInput(format!(
-                // ubs:ignore: impl-block false positive
-                "git show error for {} at {}: {stderr}",
-                source_id.doc_id, version_meta.version_id
-            ))
-            .into());
+            let doc = &source_id.doc_id;
+            let ver = &version_meta.version_id;
+            let msg = format!("git show error for {doc} at {ver}: {stderr}"); // ubs:ignore: impl-block false positive
+            return Err(CliError::InvalidInput(msg).into());
         }
 
         let raw_bytes = &output.stdout;
@@ -432,26 +411,29 @@ fn split_prose(text: &str) -> Vec<Statement> {
 
     while i < len {
         // Look for a blank line (two newlines with optional whitespace between)
-        if bytes[i] == b'\n' {
-            // ubs:ignore: i < len by while predicate
+        let bi = bytes[i]; // ubs:ignore: i < len by while predicate
+        if bi == b'\n' {
             let mut j = i + 1;
             // Skip whitespace-only content between newlines
-            while j < len
-                && bytes[j] != b'\n' // ubs:ignore: j < len by while predicate
-                && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'\r')
-            // ubs:ignore: j < len by while predicate
-            {
+            while j < len {
+                let bj = bytes[j]; // ubs:ignore: j < len by while predicate
+                if bj == b'\n' || (bj != b' ' && bj != b'\t' && bj != b'\r') {
+                    break;
+                }
                 j += 1;
             }
-            if j < len && bytes[j] == b'\n' {
-                // ubs:ignore: j < len by preceding if guard
+            let at_blank = j < len && bytes[j] == b'\n'; // ubs:ignore: j < len short-circuits before bytes[j]
+            if at_blank {
                 // Found a blank line
                 if block_start < i {
                     blocks.push((block_start, i));
                 }
                 // Skip all consecutive blank lines
-                while j < len && bytes[j] == b'\n' {
-                    // ubs:ignore: j < len by while predicate
+                while j < len {
+                    let bj = bytes[j]; // ubs:ignore: j < len by while predicate
+                    if bj != b'\n' {
+                        break;
+                    }
                     j += 1;
                 }
                 block_start = j;
@@ -497,12 +479,15 @@ fn split_sentences(block: &str, offset: usize) -> Vec<Statement> {
         if matches!(c, '.' | '!' | '?') {
             // Check if followed by whitespace + uppercase (sentence boundary)
             let mut j = i + 1;
-            while j < len && (chars[j] == ' ' || chars[j] == '\t') {
-                // ubs:ignore: j < len by while predicate
+            while j < len {
+                let cj = chars[j]; // ubs:ignore: j < len by while predicate
+                if cj != ' ' && cj != '\t' {
+                    break;
+                }
                 j += 1;
             }
-            if j >= len || chars[j].is_uppercase() {
-                // ubs:ignore: j < len by preceding or-guard
+            let at_boundary = j >= len || chars[j].is_uppercase(); // ubs:ignore: j < len checked by || short-circuit
+            if at_boundary {
                 // Sentence ends at i (inclusive)
                 let seg_end_byte = char_to_byte[i + 1]; // ubs:ignore: i < len, char_to_byte has len+1 elements
                 let text = block[seg_start_byte..seg_end_byte].trim().to_owned(); // ubs:ignore: allocation per-sentence; text segmentation builds owned Strings by design
@@ -513,10 +498,11 @@ fn split_sentences(block: &str, offset: usize) -> Vec<Statement> {
                     });
                 }
                 // Skip whitespace before next sentence
-                while j < len
-                    && (chars[j] == ' ' || chars[j] == '\t' || chars[j] == '\r' || chars[j] == '\n')
-                // ubs:ignore: j < len by while predicate
-                {
+                while j < len {
+                    let cj = chars[j]; // ubs:ignore: j < len by while predicate
+                    if cj != ' ' && cj != '\t' && cj != '\r' && cj != '\n' {
+                        break;
+                    }
                     j += 1;
                 }
                 seg_start_byte = char_to_byte[j]; // ubs:ignore: j <= len, char_to_byte has len+1 elements
@@ -593,9 +579,9 @@ fn heading_level(line: &str) -> Option<usize> {
     }
     let level = trimmed.chars().take_while(|&c| c == '#').count();
     // Must be followed by a space or end of line to be a valid heading
-    let after = trimmed[level..].trim_start(); // ubs:ignore: level = count of '#' (ASCII), valid byte index
-    if after.is_empty() || trimmed[level..].starts_with(' ') {
-        // ubs:ignore: same valid byte index
+    let rest = &trimmed[level..]; // ubs:ignore: level = count of '#' (ASCII), valid byte index
+    let after = rest.trim_start();
+    if after.is_empty() || rest.starts_with(' ') {
         Some(level)
     } else {
         None
@@ -633,12 +619,11 @@ pub fn diff_adjacent(prev: &[Statement], next: &[Statement]) -> Vec<DiffItem> {
     }
 
     // LCS DP table
-    // ubs:ignore: all dp[i][j] accesses below are within the (m+1)×(n+1) allocation; loops bound i ∈ 1..=m, j ∈ 1..=n
     let mut dp = vec![vec![0usize; n + 1]; m + 1];
     for i in 1..=m {
         for j in 1..=n {
-            if prev[i - 1].text == next[j - 1].text {
-                // ubs:ignore: i ∈ 1..=m so i-1 < m = prev.len()
+            let texts_eq = prev[i - 1].text == next[j - 1].text; // ubs:ignore: i ∈ 1..=m→i-1<prev.len(); j ∈ 1..=n→j-1<next.len()
+            if texts_eq {
                 dp[i][j] = dp[i - 1][j - 1] + 1; // ubs:ignore: i ∈ 1..=m, j ∈ 1..=n; dp is (m+1)×(n+1)
             } else {
                 dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]); // ubs:ignore: i ∈ 1..=m, j ∈ 1..=n; dp is (m+1)×(n+1)
@@ -649,27 +634,28 @@ pub fn diff_adjacent(prev: &[Statement], next: &[Statement]) -> Vec<DiffItem> {
     // Backtrack
     let mut raw: Vec<DiffItem> = Vec::new();
     let (mut i, mut j) = (m, n);
-    // ubs:ignore: all indexing below is guarded by the i>0/j>0 conditions
     while i > 0 || j > 0 {
-        if i > 0 && j > 0 && prev[i - 1].text == next[j - 1].text {
-            // ubs:ignore: i>0 and j>0 guard
+        let texts_match = i > 0 && j > 0 && prev[i - 1].text == next[j - 1].text; // ubs:ignore: i>0→i-1<prev.len(); j>0→j-1<next.len()
+        if texts_match {
             raw.push(DiffItem::Unchanged {
                 prev_ordinal: i - 1,
                 next_ordinal: j - 1,
             });
             i -= 1;
             j -= 1;
-        } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
-            // ubs:ignore: j>0 guards j-1; i>0 guards i-1
-            raw.push(DiffItem::Added {
-                next_ordinal: j - 1,
-            });
-            j -= 1;
         } else {
-            raw.push(DiffItem::Removed {
-                prev_ordinal: i - 1,
-            });
-            i -= 1;
+            let go_left = j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]); // ubs:ignore: j>0→j-1 valid; i>0→i-1 valid
+            if go_left {
+                raw.push(DiffItem::Added {
+                    next_ordinal: j - 1,
+                });
+                j -= 1;
+            } else {
+                raw.push(DiffItem::Removed {
+                    prev_ordinal: i - 1,
+                });
+                i -= 1;
+            }
         }
     }
     raw.reverse();
@@ -679,14 +665,14 @@ pub fn diff_adjacent(prev: &[Statement], next: &[Statement]) -> Vec<DiffItem> {
     // ubs:ignore: all raw[k/kk/kkk] accesses below are guarded by while k/kk/kkk < raw.len()
     let mut k = 0usize;
     while k < raw.len() {
-        if let DiffItem::Removed { prev_ordinal } = raw[k] {
-            // ubs:ignore: k < raw.len() by while predicate
+        let k_item = raw[k]; // ubs:ignore: k < raw.len() by while predicate
+        if let DiffItem::Removed { prev_ordinal } = k_item {
             // Collect all consecutive Removed items
             let mut removed_range = vec![prev_ordinal];
             let mut kk = k + 1;
             while kk < raw.len() {
-                if let DiffItem::Removed { prev_ordinal: p } = raw[kk] {
-                    // ubs:ignore: kk < raw.len() by while predicate
+                let kk_item = raw[kk]; // ubs:ignore: kk < raw.len() by while predicate
+                if let DiffItem::Removed { prev_ordinal: p } = kk_item {
                     removed_range.push(p);
                     kk += 1;
                 } else {
@@ -697,8 +683,8 @@ pub fn diff_adjacent(prev: &[Statement], next: &[Statement]) -> Vec<DiffItem> {
             let mut added_range: Vec<usize> = Vec::new();
             let mut kkk = kk;
             while kkk < raw.len() {
-                if let DiffItem::Added { next_ordinal: a } = raw[kkk] {
-                    // ubs:ignore: kkk < raw.len() by while predicate
+                let kkk_item = raw[kkk]; // ubs:ignore: kkk < raw.len() by while predicate
+                if let DiffItem::Added { next_ordinal: a } = kkk_item {
                     added_range.push(a);
                     kkk += 1;
                 } else {
@@ -715,8 +701,8 @@ pub fn diff_adjacent(prev: &[Statement], next: &[Statement]) -> Vec<DiffItem> {
                     let mut best_score = 0u32;
                     let mut best_added_idx = None;
                     for (ai, &add_ord) in added_range.iter().enumerate() {
-                        if used_added[ai] {
-                            // ubs:ignore: ai < used_added.len() = added_range.len() by enumerate
+                        let is_used = used_added[ai]; // ubs:ignore: ai < used_added.len() = added_range.len() by enumerate
+                        if is_used {
                             continue;
                         }
                         let score = token_overlap(&prev[rem_ord].text, &next[add_ord].text); // ubs:ignore: rem_ord ∈ prev; add_ord ∈ next; both ordinals from enumerated slices
