@@ -72,7 +72,7 @@ pub fn get_decision(
         let hypothesis_ids = neighbor_ids(
             graph,
             &id,
-            RelationKind::Assumes,
+            RelationKind::PremisedOn,
             NodeKind::Hypothesis,
             "hypothesis_id",
         )?;

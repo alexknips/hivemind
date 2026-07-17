@@ -147,7 +147,7 @@ This is explicit and replay-friendly:
    }
 
 6. relation.added Decision -BASED_ON-> Evidence
-7. relation.added Decision -ASSUMES-> Hypothesis
+7. relation.added Decision -PREMISED_ON-> Hypothesis
 8. relation.added Decision -HAS_OPTION-> sqlite
 9. relation.added Decision -HAS_OPTION-> postgres
 10. relation.added Decision -CHOSE-> sqlite

@@ -631,7 +631,7 @@ fn collect_graph_search_results(
             .into_iter()
             .next();
         let evidence_ids = relation_targets(&edges, &[RelationKind::BasedOn], &id);
-        let hypothesis_ids = relation_targets(&edges, &[RelationKind::Assumes], &id);
+        let hypothesis_ids = relation_targets(&edges, &[RelationKind::PremisedOn], &id);
         let supersedes_decision_ids = relation_targets(&edges, &[RelationKind::Supersedes], &id);
         let superseded_by_decision_ids = relation_sources(&edges, RelationKind::Supersedes, &id);
 

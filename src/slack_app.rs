@@ -544,7 +544,7 @@ fn render_show_response<L: EventLedger, G: GraphView>(
             RelationKind::BasedOn,
             RelationKind::HasOption,
             RelationKind::Chose,
-            RelationKind::Assumes,
+            RelationKind::PremisedOn,
         ]),
     )?
     .data;

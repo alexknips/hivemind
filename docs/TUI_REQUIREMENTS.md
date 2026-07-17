@@ -95,7 +95,7 @@ Terminal graph UI should be ego-centric, not canvas-style:
 - Related evidence-to-hypothesis edges should appear when a displayed hypothesis
   is supported or refuted by visible evidence.
 - Edge labels must be short and explicit: `PROPOSED_BY`, `ACCEPTED_BY`,
-  `REJECTED_BY`, `SUPERSEDES`, `BASED_ON`, `HAS_OPTION`, `CHOSE`, `ASSUMES`,
+  `REJECTED_BY`, `SUPERSEDES`, `BASED_ON`, `HAS_OPTION`, `CHOSE`, `PREMISED_ON`,
   `SUPPORTS`, `REFUTES`.
 - Dense graphs collapse by relation group with counts and an expand action.
 - Cycles, branched supersession chains, and missing nodes are visible error
@@ -132,7 +132,7 @@ at a time: results -> detail -> graph context.
 - Query limit hit: show `truncated: true` and the next-page action.
 - Missing graph projection or replay failure: show the query error and keep the
   user in the TUI shell.
-- Refuted hypothesis: render as a warning on every decision that assumes it.
+- Refuted hypothesis: render as a warning on every decision that is premised on it.
 - Contested decision: render as a top-level status, not a badge hidden in detail.
 
 ## Stack Recommendation

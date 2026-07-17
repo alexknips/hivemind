@@ -91,7 +91,7 @@ pub enum RelationKind {
     BasedOn,
     HasOption,
     Chose,
-    Assumes,
+    PremisedOn,
     Supports,
     Refutes,
     SameAs,
@@ -118,7 +118,7 @@ impl RelationKind {
         Self::BasedOn,
         Self::HasOption,
         Self::Chose,
-        Self::Assumes,
+        Self::PremisedOn,
         Self::Supports,
         Self::Refutes,
         Self::SameAs,
@@ -143,7 +143,7 @@ impl RelationKind {
             Self::BasedOn => "BASED_ON",
             Self::HasOption => "HAS_OPTION",
             Self::Chose => "CHOSE",
-            Self::Assumes => "ASSUMES",
+            Self::PremisedOn => "PREMISED_ON",
             Self::Supports => "SUPPORTS",
             Self::Refutes => "REFUTES",
             Self::SameAs => "SAME_AS",
@@ -168,7 +168,7 @@ impl RelationKind {
             Self::NotificationRecipient => (NodeKind::Notification, NodeKind::Actor),
             Self::BasedOn => (NodeKind::Decision, NodeKind::Evidence),
             Self::HasOption | Self::Chose => (NodeKind::Decision, NodeKind::Option),
-            Self::Assumes => (NodeKind::Decision, NodeKind::Hypothesis),
+            Self::PremisedOn => (NodeKind::Decision, NodeKind::Hypothesis),
             Self::Supports | Self::Refutes => (NodeKind::Evidence, NodeKind::Hypothesis),
             Self::SameAs => (NodeKind::Decision, NodeKind::Decision),
             Self::ParticipatedBy | Self::InitiatedBy => (NodeKind::Decision, NodeKind::Actor),
@@ -255,7 +255,7 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
 
             for hypothesis_id in &payload.hypothesis_ids {
                 graph.upsert_edge(
-                    RelationKind::Assumes,
+                    RelationKind::PremisedOn,
                     &payload.decision_id,
                     hypothesis_id,
                     &origin_properties,
@@ -812,7 +812,7 @@ fn relation_kind(kind: EventRelationKind) -> RelationKind {
         EventRelationKind::BasedOn => RelationKind::BasedOn,
         EventRelationKind::HasOption => RelationKind::HasOption,
         EventRelationKind::Chose => RelationKind::Chose,
-        EventRelationKind::Assumes => RelationKind::Assumes,
+        EventRelationKind::Assumes => RelationKind::PremisedOn,
         EventRelationKind::Supports => RelationKind::Supports,
         EventRelationKind::Refutes => RelationKind::Refutes,
         EventRelationKind::SameAs => RelationKind::SameAs,
@@ -885,7 +885,7 @@ fn project_capture(
                     origin_properties,
                 )?;
             }
-            for hypothesis_id in &capture.assumes_ids {
+            for hypothesis_id in &capture.premised_on_ids {
                 ensure_node_reference(
                     graph,
                     NodeKind::Hypothesis,
@@ -893,7 +893,7 @@ fn project_capture(
                     origin_properties,
                 )?;
                 graph.upsert_edge(
-                    RelationKind::Assumes,
+                    RelationKind::PremisedOn,
                     node_id,
                     hypothesis_id,
                     origin_properties,

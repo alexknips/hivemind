@@ -1339,7 +1339,7 @@ pub enum QueryRelationKind {
     BasedOn,
     HasOption,
     Chose,
-    Assumes,
+    PremisedOn,
     Supports,
     Refutes,
 }
@@ -1354,7 +1354,7 @@ impl QueryRelationKind {
             QueryRelationKind::BasedOn => GraphRelationKind::BasedOn,
             QueryRelationKind::HasOption => GraphRelationKind::HasOption,
             QueryRelationKind::Chose => GraphRelationKind::Chose,
-            QueryRelationKind::Assumes => GraphRelationKind::Assumes,
+            QueryRelationKind::PremisedOn => GraphRelationKind::PremisedOn,
             QueryRelationKind::Supports => GraphRelationKind::Supports,
             QueryRelationKind::Refutes => GraphRelationKind::Refutes,
         }
@@ -3403,7 +3403,7 @@ fn change_kind_label(kind: HistoryChangeKind) -> &'static str {
         HistoryChangeKind::NewDecision => "new_decision",
         HistoryChangeKind::StatusChange => "status_change",
         HistoryChangeKind::NewEvidence => "new_evidence",
-        HistoryChangeKind::RefutedAssumption => "refuted_assumption",
+        HistoryChangeKind::RefutedPremise => "refuted_premise",
         HistoryChangeKind::Supersession => "supersession",
         HistoryChangeKind::ContextChange => "context_change",
     }

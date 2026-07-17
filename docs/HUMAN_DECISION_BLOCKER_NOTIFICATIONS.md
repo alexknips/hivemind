@@ -32,7 +32,7 @@ agentic layer and must remain optional.
 | --- | --- | --- |
 | Explicit request | An actor says work cannot proceed without a decision. | `decision.requested` or `blocker.reported` with actor, topic or decision, priority, blocked reference, and requested owner. |
 | Unresolved options | A decision has options but no accepted choice, and an actor marks work as waiting on that choice. | Decision is `proposed` or `contested`, has `HAS_OPTION` edges, lacks an accepted outcome, and has an active blocker edge. |
-| Open evidence conflict | Evidence or hypotheses still conflict with the decision. | A decision `ASSUMES` a hypothesis that is `contested` or `refuted`, or visible evidence both `SUPPORTS` and `REFUTES` a required hypothesis. |
+| Open evidence conflict | Evidence or hypotheses still conflict with the decision. | A decision `PREMISED_ON` a hypothesis that is `contested` or `refuted`, or visible evidence both `SUPPORTS` and `REFUTES` a required hypothesis. |
 | Missing owner | The required approver, domain owner, or accountable actor is absent or unknown. | Blocker payload has `required_owner_id` missing, unknown, inactive, or unauthorized for the authority class. |
 | SLA exceeded | The blocker or decision has exceeded the response window for its priority. | `now - blocker_reported_at` or `now - last_progress_at` crosses the configured threshold. |
 | Repeated bounce | Work keeps returning to the same decision without resolution. | Three or more blocker reports or external-work bounce correlations for the same decision or topic in a suppression window. |
@@ -174,7 +174,7 @@ release manager have active blockers linked to the rollout decision.
 
 Threshold result: P0/P1 direct notification is immediate because an accepted
 decision now rests on a refuted assumption and multiple actors are blocked. The
-message points to the accepted decision, `ASSUMES` edge, refuting evidence, and
+message points to the accepted decision, `PREMISED_ON` edge, refuting evidence, and
 affected blocker reports.
 
 ## Relation To Adjacent Studies

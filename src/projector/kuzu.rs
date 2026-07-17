@@ -111,8 +111,8 @@ const RELATION_DDL: &[(RelationKind, &str)] = &[
         "CREATE REL TABLE IF NOT EXISTS `CHOSE` (FROM `Decision` TO `Option`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
-        RelationKind::Assumes,
-        "CREATE REL TABLE IF NOT EXISTS `ASSUMES` (FROM `Decision` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+        RelationKind::PremisedOn,
+        "CREATE REL TABLE IF NOT EXISTS `PREMISED_ON` (FROM `Decision` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::Supports,

@@ -811,7 +811,7 @@ async fn classifier_batch_classified_event_round_trips() {
         extraction_confidence: 0.85,
         expressed_confidence: None,
         supersedes_id: None,
-        assumes_ids: vec![],
+        premised_on_ids: vec![],
         supports_ids: vec![],
         refutes_ids: vec![],
         actor_id: None,

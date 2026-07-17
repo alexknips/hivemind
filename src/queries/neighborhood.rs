@@ -98,7 +98,7 @@ const DECISION_HOP1_RELATIONS: [(RelationKind, NodeKind, Direction); 9] = [
         Direction::Outgoing,
     ),
     (
-        RelationKind::Assumes,
+        RelationKind::PremisedOn,
         NodeKind::Hypothesis,
         Direction::Outgoing,
     ),

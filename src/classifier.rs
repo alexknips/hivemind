@@ -82,7 +82,7 @@ rejected it, IF explicitly named. null otherwise.
 supersedes_id: For decisions that explicitly replace a prior decision. Only use
 an ID that appears verbatim in the input text. null if none.
 
-assumes_ids: For decisions. Hypothesis IDs this decision explicitly assumes,
+premised_on_ids: For decisions. Hypothesis IDs this decision is explicitly premised on,
 from the input text only. Empty array if none.
 
 supports_ids / refutes_ids: For evidence. Hypothesis IDs this evidence
@@ -132,7 +132,7 @@ fn capture_schema() -> serde_json::Value {
                             ]
                         },
                         "supersedes_id": nullable_string.clone(),
-                        "assumes_ids": string_array.clone(),
+                        "premised_on_ids": string_array.clone(),
                         "supports_ids": string_array.clone(),
                         "refutes_ids": string_array.clone(),
                         "actor_id": nullable_string.clone(),
@@ -145,7 +145,7 @@ fn capture_schema() -> serde_json::Value {
                         "kind", "title", "rationale", "topic_keys", "evidence_ids",
                         "options", "chosen_option", "extraction_confidence",
                         "expressed_confidence", "supersedes_id",
-                        "assumes_ids", "supports_ids", "refutes_ids",
+                        "premised_on_ids", "supports_ids", "refutes_ids",
                         "actor_id", "accepted_by", "rejected_by",
                         "blocked_actor_id", "decision_id"
                     ],
@@ -213,8 +213,8 @@ struct CaptureItemRaw {
     extraction_confidence: f64,
     expressed_confidence: Option<String>,
     supersedes_id: Option<String>,
-    #[serde(default)]
-    assumes_ids: Vec<String>,
+    #[serde(default, alias = "assumes_ids")]
+    premised_on_ids: Vec<String>,
     #[serde(default)]
     supports_ids: Vec<String>,
     #[serde(default)]
@@ -384,7 +384,7 @@ async fn classify_pending_batches(
                             extraction_confidence: r.extraction_confidence,
                             expressed_confidence: r.expressed_confidence,
                             supersedes_id: r.supersedes_id,
-                            assumes_ids: r.assumes_ids,
+                            premised_on_ids: r.premised_on_ids,
                             supports_ids: r.supports_ids,
                             refutes_ids: r.refutes_ids,
                             actor_id: r.actor_id,
@@ -613,7 +613,7 @@ pub async fn classify_text(
             extraction_confidence: r.extraction_confidence,
             expressed_confidence: r.expressed_confidence,
             supersedes_id: r.supersedes_id,
-            assumes_ids: r.assumes_ids,
+            premised_on_ids: r.premised_on_ids,
             supports_ids: r.supports_ids,
             refutes_ids: r.refutes_ids,
             actor_id: r.actor_id,

@@ -88,7 +88,7 @@ fn changed_since_classifies_decision_history_and_paginates() -> Result<()> {
         kinds,
         vec![
             HistoryChangeKind::NewEvidence,
-            HistoryChangeKind::RefutedAssumption,
+            HistoryChangeKind::RefutedPremise,
             HistoryChangeKind::Supersession,
         ]
     );
@@ -96,7 +96,7 @@ fn changed_since_classifies_decision_history_and_paginates() -> Result<()> {
         .data
         .items
         .iter()
-        .find(|row| row.change_kind == HistoryChangeKind::RefutedAssumption)
+        .find(|row| row.change_kind == HistoryChangeKind::RefutedPremise)
         .expect("refuted assumption row");
     assert_eq!(refuted.decision_ids, vec!["decision-a".to_owned()]);
     assert_eq!(refuted.source_ref.as_deref(), Some("thread-1"));
@@ -478,7 +478,7 @@ fn added_since_separates_added_and_changed_with_deterministic_order() -> Result<
         .map(|change| change.change_kind)
         .collect();
     assert!(kinds.contains(&HistoryChangeKind::StatusChange));
-    assert!(kinds.contains(&HistoryChangeKind::RefutedAssumption));
+    assert!(kinds.contains(&HistoryChangeKind::RefutedPremise));
     assert!(kinds.contains(&HistoryChangeKind::Supersession));
 
     let decision_b = &response.data.added_decisions[1];

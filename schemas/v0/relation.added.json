@@ -21,7 +21,7 @@
       "required": ["relation", "from_id", "to_id"],
       "properties": {
         "relation": {
-          "enum": ["BASED_ON", "HAS_OPTION", "CHOSE", "ASSUMES", "SUPPORTS", "REFUTES"]
+          "enum": ["BASED_ON", "HAS_OPTION", "CHOSE", "ASSUMES", "PREMISED_ON", "SUPPORTS", "REFUTES"]
         },
         "from_id": { "type": "string", "minLength": 1 },
         "to_id": { "type": "string", "minLength": 1 }

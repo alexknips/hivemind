@@ -28,9 +28,9 @@ The unit of compactification is a **focal decision** (a decision_id) and its sub
 | Terminal decision — ACCEPTED_BY (actor) | **SIGNAL** if accepted or contested | Who accepted it |
 | Terminal decision — REJECTED_BY (actor) | **SIGNAL** if rejected or contested | Who rejected it; both sides of contest are always kept |
 | Terminal decision — BASED_ON (evidence) | **SIGNAL** | Supporting facts for the current decision |
-| Terminal decision — ASSUMES (hypothesis, status=open) | **SIGNAL** | Uncertain assumptions must be visible |
-| Terminal decision — ASSUMES (hypothesis, status=refuted) | **SIGNAL** | Refuted assumptions propagate staleness — hiding them is the worst failure mode |
-| Terminal decision — ASSUMES (hypothesis, status=supported) | **COMPACT** — surface status only, drop evidence chain | The assumption is confirmed; detailed evidence is audit-only |
+| Terminal decision — PREMISED_ON (hypothesis, status=open) | **SIGNAL** | Uncertain assumptions must be visible |
+| Terminal decision — PREMISED_ON (hypothesis, status=refuted) | **SIGNAL** | Refuted assumptions propagate staleness — hiding them is the worst failure mode |
+| Terminal decision — PREMISED_ON (hypothesis, status=supported) | **COMPACT** — surface status only, drop evidence chain | The assumption is confirmed; detailed evidence is audit-only |
 | Superseded decisions in chain (all except terminal) | **COMPACT** — summarize as chain metadata | Their rationales are encoded in what superseded them; full detail available via ledger audit |
 | Intermediate chain — PROPOSED_BY, ACCEPTED_BY, REJECTED_BY | **COMPACT** | Historical actor provenance; available in full view |
 | Terminal decision — unchosen options (HAS_OPTION but not CHOSE) | **COMPACT** | Options considered but not chosen; useful only for deep audit |

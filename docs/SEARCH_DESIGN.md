@@ -50,7 +50,7 @@ These are the real user questions the surface must cover.
 | What decisions did agent X make this quarter? | `actor_ids=[X]`, timestamp or offset window. | Actor filters match explicit proposal, acceptance, rejection, and supersession edges as the graph supports them. |
 | What did Claude decide that contradicted what Codex decided? | `status=contested`, `actor_ids=[Claude, Codex]`, `actor_match=all`, optional topic or time filters. | Layer 2 only finds explicit disagreement. Inferring textual contradiction is layer 3 and must cite the layer-2 rows it used. |
 | Find decisions on topic X that are contested. | `topic_keys=[X]`, `statuses=[contested]`. | `contested` is a top-level status. |
-| Find decisions that depend on hypothesis Y. | `assumes_hypothesis_ids=[Y]`. | Refuted hypothesis status is returned with the result. |
+| Find decisions that depend on hypothesis Y. | `premised_on_hypothesis_ids=[Y]`. | Refuted hypothesis status is returned with the result. |
 | Find decisions where the rationale mentions a fragment. | `query=<fragment>`, `field_scopes=[decision.rationale]`. | Field scoping is deterministic string matching, not semantic intent. |
 | Find decisions supported by evidence containing a fragment. | `query=<fragment>`, `field_scopes=[evidence.content]`. | Results are decisions that reference matching evidence. |
 | Find decisions superseded by decision D. | `superseded_by_decision_ids=[D]`. | Concurrent supersessions are returned as multiple explicit edges. |
@@ -92,7 +92,7 @@ hivemind query search \
   --source cli|agent|human|slack|document|api[,..] \
   --source-ref <source-ref>[,<source-ref>...] \
   --field all|decision.title|decision.rationale|decision.topic|decision.status|actor.id|actor.source_ref|option.label|option.description|evidence.content|hypothesis.statement|supersession.id[,..] \
-  --assumes-hypothesis-id <hypothesis-id>[,<hypothesis-id>...] \
+  --premised-on-hypothesis-id <hypothesis-id>[,<hypothesis-id>...] \
   --based-on-evidence-id <evidence-id>[,<evidence-id>...] \
   --supersedes-decision-id <decision-id>[,<decision-id>...] \
   --superseded-by-decision-id <decision-id>[,<decision-id>...] \
@@ -118,7 +118,7 @@ CLI examples:
 hivemind query search --q authentication --since 2026-05-19T00:00:00Z --until 2026-05-20T00:00:00Z
 hivemind query search --actor-id agent:claude:s1 --since 2026-04-01T00:00:00Z --until 2026-07-01T00:00:00Z
 hivemind query search --status contested --actor-id agent:claude:s1,agent:codex:s2 --actor-match all
-hivemind query search --assumes-hypothesis-id hypothesis-123
+hivemind query search --premised-on-hypothesis-id hypothesis-123
 hivemind query search --q "cache eviction" --field decision.rationale
 ```
 
@@ -144,7 +144,7 @@ pub struct SearchDecisionFilters {
     pub sources: Vec<String>,
     pub source_refs: Vec<String>,
     pub field_scopes: Vec<SearchFieldScope>,
-    pub assumes_hypothesis_ids: Vec<String>,
+    pub premised_on_hypothesis_ids: Vec<String>,
     pub based_on_evidence_ids: Vec<String>,
     pub supersedes_decision_ids: Vec<String>,
     pub superseded_by_decision_ids: Vec<String>,
@@ -281,7 +281,7 @@ Input schema sketch:
         "sources": { "type": "array", "items": { "type": "string" } },
         "source_refs": { "type": "array", "items": { "type": "string" } },
         "field_scopes": { "type": "array", "items": { "type": "string" } },
-        "assumes_hypothesis_ids": { "type": "array", "items": { "type": "string" } },
+        "premised_on_hypothesis_ids": { "type": "array", "items": { "type": "string" } },
         "based_on_evidence_ids": { "type": "array", "items": { "type": "string" } },
         "supersedes_decision_ids": { "type": "array", "items": { "type": "string" } },
         "superseded_by_decision_ids": { "type": "array", "items": { "type": "string" } },
