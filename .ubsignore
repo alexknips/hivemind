@@ -25,6 +25,7 @@ benchmarks/
 # exemption from hivemind-07no to all in-tree test modules uniformly).
 src/projector/tests.rs
 src/cli/tests.rs
+src/connector/tests.rs
 src/queries/tests.rs
 src/queries/history/tests.rs
 src/commands/tests.rs

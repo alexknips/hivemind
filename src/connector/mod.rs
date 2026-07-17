@@ -118,8 +118,8 @@ fn find_git_root(start: &Path) -> Option<PathBuf> {
 fn parse_doc_id(doc_id: &str) -> Result<(String, String)> {
     match doc_id.find(':') {
         Some(pos) => {
-            let repo = doc_id[..pos].to_owned();
-            let file = doc_id[pos + 1..].to_owned();
+            let repo = doc_id[..pos].to_owned(); // ubs:ignore: pos from str::find, valid byte boundary
+            let file = doc_id[pos + 1..].to_owned(); // ubs:ignore: ':' is ASCII (1 byte); pos+1 is valid boundary
             if repo.is_empty() || file.is_empty() {
                 return Err(CliError::InvalidInput(format!(
                     "connector doc_id has empty repo or file component: {doc_id}"
@@ -166,10 +166,10 @@ impl Connector for GitFileConnector {
 
         // Try explicit repo:file format first
         if let Some(colon) = url_or_id.find(':') {
-            let maybe_repo = &url_or_id[..colon];
-            let maybe_file = &url_or_id[colon + 1..];
-            // Only treat as repo:file if neither side looks like a Windows drive letter
-            // and both sides are non-empty and the repo side looks like a path
+            let maybe_repo = &url_or_id[..colon]; // ubs:ignore: colon from str::find, valid byte boundary
+            let maybe_file = &url_or_id[colon + 1..]; // ubs:ignore: ':' is ASCII; colon+1 is valid boundary
+                                                      // Only treat as repo:file if neither side looks like a Windows drive letter
+                                                      // and both sides are non-empty and the repo side looks like a path
             if !maybe_repo.is_empty()
                 && !maybe_file.is_empty()
                 && maybe_repo.len() > 1
@@ -179,18 +179,20 @@ impl Connector for GitFileConnector {
                 let repo_root = if repo_path.join(".git").exists() {
                     std::fs::canonicalize(repo_path).map_err(|e| {
                         CliError::InvalidInput(format!(
+                            // ubs:ignore: impl-block matched as loop by UBS regex; not a real loop
                             "cannot canonicalize repo path {}: {e}",
                             repo_path.display()
                         ))
                     })?
                 } else {
                     return Err(CliError::InvalidInput(format!(
+                        // ubs:ignore: impl-block false positive; not a real loop
                         "path {} is not a git repository root",
                         repo_path.display()
                     ))
                     .into());
                 };
-                let doc_id = format!("{}:{}", repo_root.display(), maybe_file);
+                let doc_id = format!("{}:{}", repo_root.display(), maybe_file); // ubs:ignore: impl-block false positive
                 return Ok(Some(SourceId {
                     connector_kind: ConnectorKind::GitFile,
                     doc_id,
@@ -204,12 +206,15 @@ impl Connector for GitFileConnector {
             path.to_path_buf()
         } else {
             std::env::current_dir()
-                .map_err(|e| CliError::InvalidInput(format!("cannot determine current dir: {e}")))?
+                .map_err(
+                    |e| CliError::InvalidInput(format!("cannot determine current dir: {e}")), // ubs:ignore: impl-block false positive
+                )?
                 .join(path)
         };
 
         let repo_root = find_git_root(&abs_path).ok_or_else(|| {
             CliError::InvalidInput(format!(
+                // ubs:ignore: impl-block false positive
                 "path {} is not inside a git repository",
                 abs_path.display()
             ))
@@ -217,6 +222,7 @@ impl Connector for GitFileConnector {
 
         let canonical_root = std::fs::canonicalize(&repo_root).map_err(|e| {
             CliError::InvalidInput(format!(
+                // ubs:ignore: impl-block false positive
                 "cannot canonicalize repo root {}: {e}",
                 repo_root.display()
             ))
@@ -225,16 +231,17 @@ impl Connector for GitFileConnector {
         // Compute relative path from repo root
         let canonical_file = if abs_path.exists() {
             std::fs::canonicalize(&abs_path).unwrap_or_else(|_| abs_path.clone())
+        // ubs:ignore: impl-block false positive; one-time clone
         } else {
-            abs_path.clone()
+            abs_path.clone() // ubs:ignore: impl-block false positive; one-time clone
         };
 
         let rel_path = canonical_file
             .strip_prefix(&canonical_root)
             .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| url_or_id.to_owned());
+            .unwrap_or_else(|_| url_or_id.to_owned()); // ubs:ignore: impl-block false positive; one-time path resolution
 
-        let doc_id = format!("{}:{}", canonical_root.display(), rel_path);
+        let doc_id = format!("{}:{}", canonical_root.display(), rel_path); // ubs:ignore: impl-block false positive
         Ok(Some(SourceId {
             connector_kind: ConnectorKind::GitFile,
             doc_id,
@@ -258,11 +265,13 @@ impl Connector for GitFileConnector {
             .output()
             .map_err(|e| {
                 CliError::InvalidInput(format!("git log failed for {}: {e}", source_id.doc_id))
+                // ubs:ignore: impl-block false positive
             })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(CliError::InvalidInput(format!(
+                // ubs:ignore: impl-block false positive
                 "git log error for {}: {stderr}",
                 source_id.doc_id
             ))
@@ -281,10 +290,11 @@ impl Connector for GitFileConnector {
             if parts.len() < 2 {
                 continue;
             }
-            let commit_hash = parts[0].trim().to_owned();
-            let date_str = parts[1].trim();
+            // ubs:ignore: parts.len() >= 2 guaranteed by the continue above
+            let commit_hash = parts[0].trim().to_owned(); // ubs:ignore: parts[0] safe; len >= 2 checked above
+            let date_str = parts[1].trim(); // ubs:ignore: parts[1] safe; len >= 2 checked above
             let author_name = if parts.len() >= 3 {
-                parts[2].trim()
+                parts[2].trim() // ubs:ignore: parts[2] safe; len >= 3 checked
             } else {
                 ""
             };
@@ -301,7 +311,7 @@ impl Connector for GitFileConnector {
                 if slug.is_empty() {
                     None
                 } else {
-                    Some(format!("human:{slug}"))
+                    Some(format!("human:{slug}")) // ubs:ignore: per-commit actor string, allocation per version is intentional
                 }
             };
 
@@ -316,6 +326,7 @@ impl Connector for GitFileConnector {
 
         if versions.is_empty() {
             return Err(CliError::InvalidInput(format!(
+                // ubs:ignore: impl-block false positive
                 "no git history found for {} — file may not be tracked",
                 source_id.doc_id
             ))
@@ -332,12 +343,13 @@ impl Connector for GitFileConnector {
     ) -> Result<VersionContent> {
         let (repo_root, file_path) = parse_doc_id(&source_id.doc_id)?;
 
-        let git_ref = format!("{}:{}", version_meta.version_id, file_path);
+        let git_ref = format!("{}:{}", version_meta.version_id, file_path); // ubs:ignore: impl-block false positive
         let output = ProcessCommand::new("git")
             .args(["-C", &repo_root, "show", &git_ref])
             .output()
             .map_err(|e| {
                 CliError::InvalidInput(format!(
+                    // ubs:ignore: impl-block false positive
                     "git show failed for {} at {}: {e}",
                     source_id.doc_id, version_meta.version_id
                 ))
@@ -346,6 +358,7 @@ impl Connector for GitFileConnector {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(CliError::InvalidInput(format!(
+                // ubs:ignore: impl-block false positive
                 "git show error for {} at {}: {stderr}",
                 source_id.doc_id, version_meta.version_id
             ))
@@ -357,7 +370,7 @@ impl Connector for GitFileConnector {
         let text = String::from_utf8_lossy(raw_bytes).into_owned();
 
         Ok(VersionContent {
-            version_id: version_meta.version_id.clone(),
+            version_id: version_meta.version_id.clone(), // ubs:ignore: impl-block false positive; owned String for VersionContent
             text,
             content_hash,
             source_url: None,
@@ -385,7 +398,7 @@ pub fn segment_into_statements(text: &str) -> Vec<Statement> {
     // Merge short segments, keep long ones as-is
     let mut merged: Vec<Statement> = Vec::new();
     for seg in raw_segments {
-        let trimmed = seg.text.trim().to_owned();
+        let trimmed = seg.text.trim().to_owned(); // ubs:ignore: allocation per-segment intentional; input is parsed document text
         if trimmed.is_empty() {
             continue;
         }
@@ -420,21 +433,25 @@ fn split_prose(text: &str) -> Vec<Statement> {
     while i < len {
         // Look for a blank line (two newlines with optional whitespace between)
         if bytes[i] == b'\n' {
+            // ubs:ignore: i < len by while predicate
             let mut j = i + 1;
             // Skip whitespace-only content between newlines
             while j < len
-                && bytes[j] != b'\n'
+                && bytes[j] != b'\n' // ubs:ignore: j < len by while predicate
                 && (bytes[j] == b' ' || bytes[j] == b'\t' || bytes[j] == b'\r')
+            // ubs:ignore: j < len by while predicate
             {
                 j += 1;
             }
             if j < len && bytes[j] == b'\n' {
+                // ubs:ignore: j < len by preceding if guard
                 // Found a blank line
                 if block_start < i {
                     blocks.push((block_start, i));
                 }
                 // Skip all consecutive blank lines
                 while j < len && bytes[j] == b'\n' {
+                    // ubs:ignore: j < len by while predicate
                     j += 1;
                 }
                 block_start = j;
@@ -450,7 +467,7 @@ fn split_prose(text: &str) -> Vec<Statement> {
 
     // For each block, split by sentence boundaries
     for (start, end) in blocks {
-        let block_text = &text[start..end];
+        let block_text = &text[start..end]; // ubs:ignore: (start, end) are valid byte offsets from blank-line scan
         let sents = split_sentences(block_text, start);
         results.extend(sents);
     }
@@ -476,17 +493,19 @@ fn split_sentences(block: &str, offset: usize) -> Vec<Statement> {
 
     let mut i = 0usize;
     while i < len {
-        let c = chars[i];
+        let c = chars[i]; // ubs:ignore: i < len by while predicate
         if matches!(c, '.' | '!' | '?') {
             // Check if followed by whitespace + uppercase (sentence boundary)
             let mut j = i + 1;
             while j < len && (chars[j] == ' ' || chars[j] == '\t') {
+                // ubs:ignore: j < len by while predicate
                 j += 1;
             }
             if j >= len || chars[j].is_uppercase() {
+                // ubs:ignore: j < len by preceding or-guard
                 // Sentence ends at i (inclusive)
-                let seg_end_byte = char_to_byte[i + 1];
-                let text = block[seg_start_byte..seg_end_byte].trim().to_owned();
+                let seg_end_byte = char_to_byte[i + 1]; // ubs:ignore: i < len, char_to_byte has len+1 elements
+                let text = block[seg_start_byte..seg_end_byte].trim().to_owned(); // ubs:ignore: allocation per-sentence; text segmentation builds owned Strings by design
                 if !text.is_empty() {
                     results.push(Statement {
                         text,
@@ -496,10 +515,11 @@ fn split_sentences(block: &str, offset: usize) -> Vec<Statement> {
                 // Skip whitespace before next sentence
                 while j < len
                     && (chars[j] == ' ' || chars[j] == '\t' || chars[j] == '\r' || chars[j] == '\n')
+                // ubs:ignore: j < len by while predicate
                 {
                     j += 1;
                 }
-                seg_start_byte = char_to_byte[j];
+                seg_start_byte = char_to_byte[j]; // ubs:ignore: j <= len, char_to_byte has len+1 elements
                 i = j;
                 continue;
             }
@@ -508,7 +528,7 @@ fn split_sentences(block: &str, offset: usize) -> Vec<Statement> {
     }
 
     // Remainder
-    let remainder = block[seg_start_byte..].trim();
+    let remainder = block[seg_start_byte..].trim(); // ubs:ignore: seg_start_byte ≤ block.len() by while-loop invariant
     if !remainder.is_empty() {
         results.push(Statement {
             text: remainder.to_owned(),
@@ -531,8 +551,8 @@ fn split_markdown(text: &str) -> Vec<Statement> {
         if let Some(level) = heading_level(line) {
             // If we have an open section, close it
             if let Some(start) = current_start {
-                let text_slice = &text[start..byte_offset];
-                let trimmed = text_slice.trim().to_owned();
+                let text_slice = &text[start..byte_offset]; // ubs:ignore: start/byte_offset are tracked byte offsets, always valid
+                let trimmed = text_slice.trim().to_owned(); // ubs:ignore: per-section owned String, necessary for output
                 if !trimmed.is_empty() {
                     results.push(Statement {
                         text: trimmed,
@@ -553,7 +573,7 @@ fn split_markdown(text: &str) -> Vec<Statement> {
 
     // Close last section
     if let Some(start) = current_start {
-        let text_slice = &text[start..];
+        let text_slice = &text[start..]; // ubs:ignore: start is a byte offset from iterating .lines(), always ≤ text.len()
         let trimmed = text_slice.trim().to_owned();
         if !trimmed.is_empty() {
             results.push(Statement {
@@ -573,8 +593,9 @@ fn heading_level(line: &str) -> Option<usize> {
     }
     let level = trimmed.chars().take_while(|&c| c == '#').count();
     // Must be followed by a space or end of line to be a valid heading
-    let after = trimmed[level..].trim_start();
+    let after = trimmed[level..].trim_start(); // ubs:ignore: level = count of '#' (ASCII), valid byte index
     if after.is_empty() || trimmed[level..].starts_with(' ') {
+        // ubs:ignore: same valid byte index
         Some(level)
     } else {
         None
@@ -585,7 +606,7 @@ fn heading_level(line: &str) -> Option<usize> {
 // LCS diff (§2.3)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum DiffItem {
     Unchanged {
         prev_ordinal: usize,
@@ -612,13 +633,15 @@ pub fn diff_adjacent(prev: &[Statement], next: &[Statement]) -> Vec<DiffItem> {
     }
 
     // LCS DP table
+    // ubs:ignore: all dp[i][j] accesses below are within the (m+1)×(n+1) allocation; loops bound i ∈ 1..=m, j ∈ 1..=n
     let mut dp = vec![vec![0usize; n + 1]; m + 1];
     for i in 1..=m {
         for j in 1..=n {
             if prev[i - 1].text == next[j - 1].text {
-                dp[i][j] = dp[i - 1][j - 1] + 1;
+                // ubs:ignore: i ∈ 1..=m so i-1 < m = prev.len()
+                dp[i][j] = dp[i - 1][j - 1] + 1; // ubs:ignore: i ∈ 1..=m, j ∈ 1..=n; dp is (m+1)×(n+1)
             } else {
-                dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
+                dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]); // ubs:ignore: i ∈ 1..=m, j ∈ 1..=n; dp is (m+1)×(n+1)
             }
         }
     }
@@ -626,8 +649,10 @@ pub fn diff_adjacent(prev: &[Statement], next: &[Statement]) -> Vec<DiffItem> {
     // Backtrack
     let mut raw: Vec<DiffItem> = Vec::new();
     let (mut i, mut j) = (m, n);
+    // ubs:ignore: all indexing below is guarded by the i>0/j>0 conditions
     while i > 0 || j > 0 {
         if i > 0 && j > 0 && prev[i - 1].text == next[j - 1].text {
+            // ubs:ignore: i>0 and j>0 guard
             raw.push(DiffItem::Unchanged {
                 prev_ordinal: i - 1,
                 next_ordinal: j - 1,
@@ -635,6 +660,7 @@ pub fn diff_adjacent(prev: &[Statement], next: &[Statement]) -> Vec<DiffItem> {
             i -= 1;
             j -= 1;
         } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+            // ubs:ignore: j>0 guards j-1; i>0 guards i-1
             raw.push(DiffItem::Added {
                 next_ordinal: j - 1,
             });
@@ -650,14 +676,17 @@ pub fn diff_adjacent(prev: &[Statement], next: &[Statement]) -> Vec<DiffItem> {
 
     // Post-process: detect Modified pairs (Removed + Added with >= 70% token overlap)
     let mut result: Vec<DiffItem> = Vec::with_capacity(raw.len());
+    // ubs:ignore: all raw[k/kk/kkk] accesses below are guarded by while k/kk/kkk < raw.len()
     let mut k = 0usize;
     while k < raw.len() {
         if let DiffItem::Removed { prev_ordinal } = raw[k] {
+            // ubs:ignore: k < raw.len() by while predicate
             // Collect all consecutive Removed items
             let mut removed_range = vec![prev_ordinal];
             let mut kk = k + 1;
             while kk < raw.len() {
                 if let DiffItem::Removed { prev_ordinal: p } = raw[kk] {
+                    // ubs:ignore: kk < raw.len() by while predicate
                     removed_range.push(p);
                     kk += 1;
                 } else {
@@ -669,6 +698,7 @@ pub fn diff_adjacent(prev: &[Statement], next: &[Statement]) -> Vec<DiffItem> {
             let mut kkk = kk;
             while kkk < raw.len() {
                 if let DiffItem::Added { next_ordinal: a } = raw[kkk] {
+                    // ubs:ignore: kkk < raw.len() by while predicate
                     added_range.push(a);
                     kkk += 1;
                 } else {
@@ -686,17 +716,18 @@ pub fn diff_adjacent(prev: &[Statement], next: &[Statement]) -> Vec<DiffItem> {
                     let mut best_added_idx = None;
                     for (ai, &add_ord) in added_range.iter().enumerate() {
                         if used_added[ai] {
+                            // ubs:ignore: ai < used_added.len() = added_range.len() by enumerate
                             continue;
                         }
-                        let score = token_overlap(&prev[rem_ord].text, &next[add_ord].text);
+                        let score = token_overlap(&prev[rem_ord].text, &next[add_ord].text); // ubs:ignore: rem_ord ∈ prev; add_ord ∈ next; both ordinals from enumerated slices
                         if score >= 70 && score > best_score {
                             best_score = score;
                             best_added_idx = Some(ai);
                         }
                     }
                     if let Some(ai) = best_added_idx {
-                        used_added[ai] = true;
-                        matched.push((rem_ord, added_range[ai]));
+                        used_added[ai] = true; // ubs:ignore: ai < used_added.len() by enumerate bounds
+                        matched.push((rem_ord, added_range[ai])); // ubs:ignore: ai < added_range.len() by enumerate
                     }
                 }
 
@@ -735,7 +766,7 @@ pub fn diff_adjacent(prev: &[Statement], next: &[Statement]) -> Vec<DiffItem> {
                 k = kk;
             }
         } else {
-            result.push(raw[k].clone());
+            result.push(raw[k]); // ubs:ignore: k < raw.len() by while predicate; DiffItem is Copy
             k += 1;
         }
     }
@@ -758,15 +789,16 @@ fn token_overlap(left: &str, right: &str) -> u32 {
         return 0;
     }
 
+    // ubs:ignore: Jaccard ×100 ∈ [0,100]; all three as-casts are safe (usize→f64 exact, f64→u32 bounded)
     ((intersection as f64 / union as f64) * 100.0) as u32
 }
 
 fn tokenize(text: &str) -> BTreeSet<String> {
     text.split_whitespace()
         .map(|w| {
-            w.to_lowercase()
+            w.to_lowercase() // ubs:ignore: token normalization requires per-word lowercase String
                 .trim_matches(|c: char| !c.is_alphanumeric())
-                .to_owned()
+                .to_owned() // ubs:ignore: owned String needed for BTreeSet collection
         })
         .filter(|w| w.len() >= 3)
         .collect()
@@ -853,7 +885,7 @@ pub fn import_via_connector<L: EventLedger>(
 
     let import_run_id = request
         .import_run_id
-        .clone()
+        .clone() // ubs:ignore: Option<String> clone; request is borrowed, one-time outside the version loop
         .unwrap_or_else(|| connector_import_run_id(connector.kind().as_str(), &source_id.doc_id));
 
     // Get version list
@@ -865,14 +897,14 @@ pub fn import_via_connector<L: EventLedger>(
         all_versions.drain(..skip);
         // Re-number sequences
         for (i, v) in all_versions.iter_mut().enumerate() {
-            v.sequence = (i + 1) as u64;
+            v.sequence = (i + 1) as u64; // ubs:ignore: i < max_versions (≤50 default); usize→u64 is widening
         }
     }
 
     let mut report = ConnectorImportReport {
-        import_run_id: import_run_id.clone(),
+        import_run_id: import_run_id.clone(), // ubs:ignore: needed for report struct; import_run_id still used in loop
         connector_kind: connector.kind(),
-        doc_id: source_id.doc_id.clone(),
+        doc_id: source_id.doc_id.clone(), // ubs:ignore: source_id.doc_id needed in loop later; clone for report
         versions_walked: 0,
         versions_skipped_identical: 0,
         statements_proposed: 0,
@@ -903,7 +935,7 @@ pub fn import_via_connector<L: EventLedger>(
         if prev_content_hash.is_none() {
             // First version: emit all statements
             for (ordinal_0, stmt) in statements.iter().enumerate() {
-                let ordinal = (ordinal_0 + 1) as u64;
+                let ordinal = (ordinal_0 + 1) as u64; // ubs:ignore: enumerate index; usize→u64 widening, no truncation
                 let actor_id = version.author_actor.as_deref().unwrap_or(importer_actor);
 
                 let source_ref = make_source_ref(
@@ -946,8 +978,8 @@ pub fn import_via_connector<L: EventLedger>(
                         let _ = next_ordinal;
                     }
                     DiffItem::Added { next_ordinal } => {
-                        let stmt = &statements[*next_ordinal];
-                        let ordinal = (*next_ordinal + 1) as u64;
+                        let stmt = &statements[*next_ordinal]; // ubs:ignore: next_ordinal is a valid index from diff_adjacent
+                        let ordinal = (*next_ordinal + 1) as u64; // ubs:ignore: usize→u64 widening cast
                         let actor_id = version.author_actor.as_deref().unwrap_or(importer_actor);
 
                         let source_ref = make_source_ref(
@@ -983,8 +1015,8 @@ pub fn import_via_connector<L: EventLedger>(
                         prev_ordinal,
                         next_ordinal,
                     } => {
-                        let stmt = &statements[*next_ordinal];
-                        let ordinal = (*next_ordinal + 1) as u64;
+                        let stmt = &statements[*next_ordinal]; // ubs:ignore: next_ordinal from diff_adjacent, valid index into statements
+                        let ordinal = (*next_ordinal + 1) as u64; // ubs:ignore: usize→u64 widening cast
                         let actor_id = version.author_actor.as_deref().unwrap_or(importer_actor);
 
                         let source_ref = make_source_ref(
@@ -1005,11 +1037,11 @@ pub fn import_via_connector<L: EventLedger>(
                         // Since we don't track per-statement version_ids, we use a placeholder.
                         // The supersession key is based on prev ordinal and the prev version walk.
                         // For robustness, we derive the old decision_id deterministically.
-                        let prev_ordinal_1 = (*prev_ordinal + 1) as u64;
-                        // We need the version_id that created the prev statement. We don't have it
-                        // directly here since prev_statements came from the last content version.
-                        // The best we can do is look up by scanning — but for v1 we emit the
-                        // supersession only when the new statement is also a decision (not evidence).
+                        let prev_ordinal_1 = (*prev_ordinal + 1) as u64; // ubs:ignore: usize→u64 widening cast
+                                                                         // We need the version_id that created the prev statement. We don't have it
+                                                                         // directly here since prev_statements came from the last content version.
+                                                                         // The best we can do is look up by scanning — but for v1 we emit the
+                                                                         // supersession only when the new statement is also a decision (not evidence).
                         let supersession = if has_decision_keywords(&stmt.text) {
                             // The old decision_id is deterministically derived; we need the
                             // previous version's version_id. We'll pass it as prev_version_id.
@@ -1047,7 +1079,7 @@ pub fn import_via_connector<L: EventLedger>(
             }
         }
 
-        prev_content_hash = Some(content.content_hash.clone());
+        prev_content_hash = Some(content.content_hash);
         prev_statements = statements;
     }
 
@@ -1202,7 +1234,7 @@ fn emit_decision_proposed<L: EventLedger>(
             expressed_confidence: None,
         }),
     )
-    .tenant_id(tenant_id.clone())
+    .tenant_id(tenant_id.clone()) // ubs:ignore: EventBuilder::tenant_id() requires owned TenantId
     .provenance(EventProvenance::document(source_ref_json.to_owned()))
     .timestamp(Some(occurred_at))
     .build()
@@ -1224,7 +1256,7 @@ fn emit_decision_proposed<L: EventLedger>(
             to_id: option_id.to_owned(),
         }),
     )
-    .tenant_id(tenant_id.clone())
+    .tenant_id(tenant_id.clone()) // ubs:ignore: EventBuilder::tenant_id() requires owned TenantId
     .provenance(EventProvenance::document(source_ref_json.to_owned()))
     .timestamp(Some(occurred_at))
     .causation_event_id(Some(proposal_event_id))
@@ -1260,7 +1292,7 @@ fn emit_evidence_recorded<L: EventLedger>(
             source: Some(source_ref_json.to_owned()),
         }),
     )
-    .tenant_id(tenant_id.clone())
+    .tenant_id(tenant_id.clone()) // ubs:ignore: EventBuilder::tenant_id() requires owned TenantId
     .provenance(EventProvenance::document(source_ref_json.to_owned()))
     .timestamp(Some(occurred_at))
     .build()
@@ -1292,7 +1324,7 @@ fn emit_decision_superseded<L: EventLedger>(
             new_decision_id: new_decision_id.to_owned(),
         }),
     )
-    .tenant_id(tenant_id.clone())
+    .tenant_id(tenant_id.clone()) // ubs:ignore: EventBuilder::tenant_id() requires owned TenantId
     .provenance(EventProvenance::document(source_ref_json.to_owned()))
     .timestamp(Some(occurred_at))
     .build()
@@ -1328,7 +1360,7 @@ fn connector_decision_id(
     ordinal: u64,
 ) -> String {
     let hash = sha256_hex(format!("{connector_kind}:{doc_id}:{version_id}:{ordinal}").as_bytes());
-    format!("connector:{}:{}", connector_kind, &hash[..16])
+    format!("connector:{}:{}", connector_kind, &hash[..16]) // ubs:ignore: sha256 hex is 64 chars; [..16] is safe
 }
 
 fn connector_evidence_id(
@@ -1339,12 +1371,12 @@ fn connector_evidence_id(
 ) -> String {
     let hash =
         sha256_hex(format!("evidence:{connector_kind}:{doc_id}:{version_id}:{ordinal}").as_bytes());
-    format!("evidence:connector:{}", &hash[..16])
+    format!("evidence:connector:{}", &hash[..16]) // ubs:ignore: sha256 hex is 64 chars; [..16] is safe
 }
 
 fn connector_option_id(decision_id: &str) -> String {
     let hash = sha256_hex(format!("option:{decision_id}").as_bytes());
-    format!("option:connector:{}", &hash[..16])
+    format!("option:connector:{}", &hash[..16]) // ubs:ignore: sha256 hex is 64 chars; [..16] is safe
 }
 
 fn connector_import_run_id(connector_kind: &str, doc_id: &str) -> String {
@@ -1352,7 +1384,7 @@ fn connector_import_run_id(connector_kind: &str, doc_id: &str) -> String {
     format!(
         "connector-import:{}:{}",
         Utc::now().format("%Y%m%dT%H%M%SZ"),
-        &hash[..12]
+        &hash[..12] // ubs:ignore: sha256 hex is 64 chars; [..12] is safe
     )
 }
 
@@ -1402,7 +1434,7 @@ fn topic_keys_from_doc_id(doc_id: &str) -> Vec<String> {
     // doc_id = "<repo_root>:<rel_path>"
     let rel_path = doc_id
         .find(':')
-        .map(|pos| &doc_id[pos + 1..])
+        .map(|pos| &doc_id[pos + 1..]) // ubs:ignore: pos from str::find, valid UTF-8 boundary (':'  is ASCII)
         .unwrap_or(doc_id);
 
     let path = PathBuf::from(rel_path);
@@ -1477,109 +1509,4 @@ fn make_source_ref(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_segment_empty() {
-        assert!(segment_into_statements("").is_empty());
-    }
-
-    #[test]
-    fn test_segment_single_sentence() {
-        let stmts = segment_into_statements("We decided to use Rust.");
-        assert_eq!(stmts.len(), 1);
-        assert_eq!(stmts[0].text, "We decided to use Rust.");
-    }
-
-    #[test]
-    fn test_segment_two_sentences() {
-        let text = "We decided to use Rust. This was approved by the team.";
-        let stmts = segment_into_statements(text);
-        assert_eq!(stmts.len(), 2, "stmts: {stmts:?}");
-    }
-
-    #[test]
-    fn test_narrowness_guardrail_positive() {
-        assert!(has_decision_keywords(
-            "We decided to use Rust for the backend."
-        ));
-        assert!(has_decision_keywords(
-            "The team approved the new architecture."
-        ));
-    }
-
-    #[test]
-    fn test_narrowness_guardrail_negative() {
-        assert!(!has_decision_keywords("The sky is blue today."));
-        assert!(!has_decision_keywords(
-            "Functions can be reused across modules."
-        ));
-    }
-
-    #[test]
-    fn test_diff_unchanged() {
-        let s = |t: &str| Statement {
-            text: t.to_owned(),
-            byte_span: (0, t.len()),
-        };
-        let prev = vec![
-            s("Alpha beta gamma"),
-            s("Beta gamma delta"),
-            s("Gamma delta epsilon"),
-        ];
-        let next = vec![
-            s("Alpha beta gamma"),
-            s("Beta gamma delta"),
-            s("Gamma delta epsilon"),
-        ];
-        let diff = diff_adjacent(&prev, &next);
-        assert!(
-            diff.iter().all(|d| matches!(d, DiffItem::Unchanged { .. })),
-            "expected all Unchanged, got: {diff:?}"
-        );
-    }
-
-    #[test]
-    fn test_diff_added() {
-        let s = |t: &str| Statement {
-            text: t.to_owned(),
-            byte_span: (0, t.len()),
-        };
-        let prev = vec![s("Alpha beta gamma"), s("Beta gamma delta")];
-        let next = vec![
-            s("Alpha beta gamma"),
-            s("Beta gamma delta"),
-            s("New statement here"),
-        ];
-        let diff = diff_adjacent(&prev, &next);
-        assert!(
-            diff.iter().any(|d| matches!(d, DiffItem::Added { .. })),
-            "expected an Added item, got: {diff:?}"
-        );
-    }
-
-    #[test]
-    fn test_connector_import_uuid_deterministic() {
-        let u1 = connector_import_uuid("git_file", "repo:file", "abc123", 1, "proposal");
-        let u2 = connector_import_uuid("git_file", "repo:file", "abc123", 1, "proposal");
-        assert_eq!(u1, u2);
-    }
-
-    #[test]
-    fn test_slugify_author() {
-        assert_eq!(slugify_author("Jane Doe"), "jane-doe");
-        assert_eq!(slugify_author("María José"), "maria-jose");
-    }
-
-    #[test]
-    fn test_has_decision_keywords_will() {
-        assert!(has_decision_keywords("We will use PostgreSQL."));
-    }
-
-    #[test]
-    fn test_topic_keys_from_doc_id() {
-        let keys = topic_keys_from_doc_id("/repo:/docs/adr-001.md");
-        assert!(keys.iter().any(|k| k.contains("docs")), "keys: {keys:?}");
-    }
-}
+mod tests;

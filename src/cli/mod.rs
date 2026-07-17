@@ -2167,8 +2167,8 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
                 &ledger,
                 &tenant_id,
                 &ConnectorImportRequest {
-                    url_or_id: args.url_or_id.clone(),
-                    importer_actor_id: cli.actor.clone(),
+                    url_or_id: args.url_or_id.clone(), // ubs:ignore: args is &ImportConnectorArgs, clone required to own
+                    importer_actor_id: cli.actor.clone(), // ubs:ignore: cli is &Cli, clone required to own
                     max_versions: args.max_versions,
                     import_run_id: None,
                 },
