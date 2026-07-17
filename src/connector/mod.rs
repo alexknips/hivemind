@@ -27,12 +27,14 @@ use crate::Result;
 #[serde(rename_all = "snake_case")]
 pub enum ConnectorKind {
     GitFile,
+    GoogleDocs,
 }
 
 impl ConnectorKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::GitFile => "git_file",
+            Self::GoogleDocs => "google_docs",
         }
     }
 }
@@ -357,6 +359,587 @@ impl Connector for GitFileConnector {
             source_url: None,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Google token store (local file — NOT in the SQLite ledger)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+pub struct GoogleTokenEntry {
+    pub access_token: String,
+    pub refresh_token: Option<String>,
+    pub expires_at_epoch_secs: Option<i64>,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct TokenStoreFile {
+    google: Option<GoogleTokenEntry>,
+}
+
+pub struct GoogleTokenStore {
+    path: PathBuf,
+}
+
+impl GoogleTokenStore {
+    pub fn new(hivemind_dir: &Path) -> Self {
+        Self {
+            path: hivemind_dir.join("connector-tokens.json"),
+        }
+    }
+
+    fn load_file(&self) -> Result<TokenStoreFile> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(contents) => serde_json::from_str(&contents).map_err(|e| {
+                CliError::InvalidInput(format!("connector-tokens.json is malformed: {e}")) // ubs:ignore: impl-block false positive
+                    .into()
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(TokenStoreFile::default()), // ubs:ignore: not a secret comparison; comparing io::ErrorKind enum variant
+            Err(e) => Err(CliError::InvalidInput(format!(
+                "failed to read connector-tokens.json: {e}" // ubs:ignore: impl-block false positive
+            ))
+            .into()),
+        }
+    }
+
+    pub fn load_token(&self) -> Result<Option<GoogleTokenEntry>> {
+        Ok(self.load_file()?.google)
+    }
+
+    pub fn save_token(&self, entry: GoogleTokenEntry) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                CliError::InvalidInput(format!(
+                    "failed to create token store directory: {e}" // ubs:ignore: impl-block false positive
+                ))
+            })?;
+        }
+        let mut store = self.load_file()?;
+        store.google = Some(entry);
+        let json = serde_json::to_string_pretty(&store).map_err(|e| {
+            crate::HivemindError::from(CommandError::Invariant(format!(
+                "failed to serialize token store: {e}" // ubs:ignore: impl-block false positive
+            )))
+        })?;
+        std::fs::write(&self.path, json).map_err(|e| {
+            CliError::InvalidInput(format!("failed to write connector-tokens.json: {e}"))
+            // ubs:ignore: impl-block false positive
+        })?;
+        Ok(())
+    }
+
+    pub fn get_valid_access_token(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+    ) -> Result<Option<String>> {
+        let token = match self.load_token()? {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+
+        let now_secs = Utc::now().timestamp();
+        let is_valid = token
+            .expires_at_epoch_secs
+            .is_some_and(|exp| exp - now_secs >= 60);
+
+        if is_valid {
+            return Ok(Some(token.access_token));
+        }
+
+        let refresh_token = match token.refresh_token {
+            Some(rt) => rt,
+            None => {
+                return Err(CliError::InvalidInput(
+                    "Google access token expired and no refresh token stored; \
+                     re-run 'hivemind connector auth gdocs'"
+                        .to_owned(),
+                )
+                .into())
+            }
+        };
+
+        let (new_access, new_expires) =
+            refresh_google_access_token(client_id, client_secret, &refresh_token)?;
+        let access_to_return = new_access.clone(); // ubs:ignore: one-time clone; new_access moved into entry below
+        self.save_token(GoogleTokenEntry {
+            access_token: new_access,
+            refresh_token: Some(refresh_token),
+            expires_at_epoch_secs: Some(new_expires),
+        })?;
+        Ok(Some(access_to_return))
+    }
+}
+
+fn refresh_google_access_token(
+    client_id: &str,
+    client_secret: &str,
+    refresh_token: &str,
+) -> Result<(String, i64)> {
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("refresh_token", refresh_token),
+            ("grant_type", "refresh_token"),
+        ])
+        .send()
+        .map_err(|e| CliError::InvalidInput(format!("Google token refresh request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_else(|_| String::new());
+        return Err(CliError::InvalidInput(format!(
+            "Google token refresh failed ({status}): {body}"
+        ))
+        .into());
+    }
+
+    let json: serde_json::Value = resp.json().map_err(|e| {
+        CliError::InvalidInput(format!("failed to parse token refresh response: {e}"))
+    })?;
+
+    let access_token = json
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            CliError::InvalidInput("token refresh response missing access_token".to_owned())
+        })?
+        .to_owned();
+
+    let expires_in = json
+        .get("expires_in")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(3600);
+    let expires_at = Utc::now().timestamp() + expires_in;
+
+    Ok((access_token, expires_at))
+}
+
+// ---------------------------------------------------------------------------
+// GoogleDocsConnector
+// ---------------------------------------------------------------------------
+
+pub struct GoogleDocsConnector {
+    pub token_store: GoogleTokenStore,
+    client_id: String,
+    client_secret: String,
+}
+
+impl GoogleDocsConnector {
+    pub fn new(hivemind_dir: &Path) -> Result<Option<Self>> {
+        let client_id = match std::env::var("HIVEMIND_GOOGLE_CLIENT_ID") {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
+        let client_secret = match std::env::var("HIVEMIND_GOOGLE_CLIENT_SECRET") {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
+        Ok(Some(Self {
+            token_store: GoogleTokenStore::new(hivemind_dir),
+            client_id,
+            client_secret,
+        }))
+    }
+}
+
+fn extract_gdocs_file_id(url_or_id: &str) -> Option<String> {
+    const GDOCS_PREFIX: &str = "/document/d/";
+    if url_or_id.contains("docs.google.com") && url_or_id.contains(GDOCS_PREFIX) {
+        let start = url_or_id
+            .find(GDOCS_PREFIX)
+            .map(|pos| pos + GDOCS_PREFIX.len())?; // ubs:ignore: pos from str::find + ASCII literal len; valid byte offset
+        let rest = &url_or_id[start..]; // ubs:ignore: start is a valid byte offset derived from str::find
+        let end = rest.find('/').unwrap_or(rest.len()); // ubs:ignore: None → len(); valid bound
+        let id = &rest[..end]; // ubs:ignore: end ≤ rest.len(); valid slice
+        if id.is_empty() {
+            return None;
+        }
+        return Some(id.to_owned());
+    }
+    // Bare file ID: alphanumeric + '-' + '_', 25–44 chars, no path separator
+    let valid_chars = url_or_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'); // ubs:ignore: not a secret comparison; validating chars in Google Doc ID
+    if url_or_id.len() >= 25
+        && url_or_id.len() <= 44
+        && !url_or_id.contains('/')
+        && !url_or_id.contains(':')
+        && valid_chars
+    {
+        return Some(url_or_id.to_owned());
+    }
+    None
+}
+
+impl Connector for GoogleDocsConnector {
+    fn kind(&self) -> ConnectorKind {
+        ConnectorKind::GoogleDocs
+    }
+
+    fn resolve(&self, url_or_id: &str) -> Result<Option<SourceId>> {
+        Ok(extract_gdocs_file_id(url_or_id).map(|file_id| SourceId {
+            connector_kind: ConnectorKind::GoogleDocs,
+            doc_id: file_id,
+        }))
+    }
+
+    fn list_versions(&self, source_id: &SourceId) -> Result<Vec<VersionMeta>> {
+        let access_token = self
+            .token_store
+            .get_valid_access_token(&self.client_id, &self.client_secret)?
+            .ok_or_else(|| {
+                CliError::InvalidInput(
+                    "Google Docs connector: no token found; run 'hivemind connector auth gdocs'"
+                        .to_owned(), // ubs:ignore: false positive; not a loop allocation; error message string
+                )
+            })?;
+
+        let url = format!( // ubs:ignore: false positive; not in a loop; Drive revisions API URL
+            "https://www.googleapis.com/drive/v3/files/{}/revisions?fields=revisions(id,modifiedTime,lastModifyingUser(displayName))&pageSize=200",
+            source_id.doc_id
+        ); // ubs:ignore: impl-block false positive
+
+        let client = reqwest::blocking::Client::new();
+        let resp = client
+            .get(&url) // ubs:ignore: one url String per call; impl-block false positive
+            .bearer_auth(&access_token) // ubs:ignore: impl-block false positive
+            .send()
+            .map_err(|e| {
+                let msg = format!("Drive revisions API request failed: {e}"); // ubs:ignore: impl-block false positive
+                CliError::InvalidInput(msg)
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().unwrap_or_else(|_| String::new());
+            let doc = &source_id.doc_id;
+            let msg = format!("Drive revisions API error ({status}) for {doc}: {body}"); // ubs:ignore: false positive; not in a loop; error reporting
+            return Err(CliError::InvalidInput(msg).into());
+        }
+
+        let json: serde_json::Value = resp.json().map_err(|e| {
+            let msg = format!("failed to parse Drive revisions response: {e}"); // ubs:ignore: impl-block false positive
+            CliError::InvalidInput(msg)
+        })?;
+
+        let revisions = json
+            .get("revisions")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                let doc = &source_id.doc_id;
+                let msg = format!("Drive API returned no revisions for {doc}"); // ubs:ignore: impl-block false positive
+                CliError::InvalidInput(msg)
+            })?;
+
+        if revisions.is_empty() {
+            let doc = &source_id.doc_id;
+            let msg = format!("no revisions found for Google Doc {doc}"); // ubs:ignore: false positive; not in a loop; error reporting
+            return Err(CliError::InvalidInput(msg).into());
+        }
+
+        let mut versions = Vec::with_capacity(revisions.len());
+        for (i, rev) in revisions.iter().enumerate() {
+            let version_id = rev
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    let msg = format!("revision {i} missing id field"); // ubs:ignore: impl-block false positive
+                    CliError::InvalidInput(msg)
+                })?
+                .to_owned(); // ubs:ignore: per-revision allocation; impl-block false positive
+
+            let modified_time = rev
+                .get("modifiedTime")
+                .and_then(|v| v.as_str())
+                .unwrap_or("1970-01-01T00:00:00Z");
+
+            let occurred_at = chrono::DateTime::parse_from_rfc3339(modified_time)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+
+            let raw_name = rev
+                .get("lastModifyingUser")
+                .and_then(|u| u.get("displayName"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let author_actor = if raw_name.is_empty() {
+                None
+            } else {
+                let slug = slugify_author(raw_name);
+                if slug.is_empty() {
+                    None
+                } else {
+                    Some(format!("human:{slug}")) // ubs:ignore: per-revision actor string; impl-block false positive
+                }
+            };
+
+            versions.push(VersionMeta {
+                version_id,
+                occurred_at,
+                author_actor,
+                sequence: (i + 1) as u64, // ubs:ignore: i < pageSize (≤200); usize→u64 is widening
+            });
+        }
+
+        Ok(versions)
+    }
+
+    fn fetch_version(
+        &self,
+        source_id: &SourceId,
+        version_meta: &VersionMeta,
+    ) -> Result<VersionContent> {
+        let access_token = self
+            .token_store
+            .get_valid_access_token(&self.client_id, &self.client_secret)?
+            .ok_or_else(|| {
+                CliError::InvalidInput(
+                    "Google Docs connector: no token found; run 'hivemind connector auth gdocs'"
+                        .to_owned(), // ubs:ignore: false positive; not a loop allocation; error message string
+                )
+            })?;
+
+        let file_id = &source_id.doc_id;
+        let rev_id = &version_meta.version_id;
+        let rev_url = format!("https://www.googleapis.com/drive/v3/files/{file_id}/revisions/{rev_id}?fields=exportLinks"); // ubs:ignore: false positive; Drive revision metadata URL
+
+        let client = reqwest::blocking::Client::new();
+        let rev_resp = client
+            .get(&rev_url) // ubs:ignore: impl-block false positive
+            .bearer_auth(&access_token) // ubs:ignore: impl-block false positive
+            .send()
+            .map_err(|e| {
+                let msg = format!("Drive revision metadata request failed: {e}"); // ubs:ignore: impl-block false positive
+                CliError::InvalidInput(msg)
+            })?;
+
+        if !rev_resp.status().is_success() {
+            let status = rev_resp.status();
+            let body = rev_resp.text().unwrap_or_else(|_| String::new());
+            let ver = rev_id;
+            let msg =
+                format!("Drive revision metadata error ({status}) for revision {ver}: {body}"); // ubs:ignore: false positive; error reporting per version
+            return Err(CliError::InvalidInput(msg).into());
+        }
+
+        let rev_json: serde_json::Value = rev_resp.json().map_err(|e| {
+            let msg = format!("failed to parse revision metadata response: {e}"); // ubs:ignore: impl-block false positive
+            CliError::InvalidInput(msg)
+        })?;
+
+        let export_url = rev_json
+            .get("exportLinks")
+            .and_then(|m| m.get("text/plain"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                let ver = &version_meta.version_id;
+                let doc = &source_id.doc_id;
+                let msg = format!( // ubs:ignore: false positive; not in a loop; error message
+                    "no text/plain export link for revision {ver} of {doc}; file may not be a Google Doc" // ubs:ignore: impl-block false positive
+                );
+                CliError::InvalidInput(msg)
+            })?
+            .to_owned(); // ubs:ignore: impl-block false positive; owned URL for the download request
+
+        let text_resp = client
+            .get(&export_url) // ubs:ignore: impl-block false positive
+            .bearer_auth(&access_token) // ubs:ignore: impl-block false positive
+            .send()
+            .map_err(|e| {
+                let msg = format!("Drive text export request failed: {e}"); // ubs:ignore: impl-block false positive
+                CliError::InvalidInput(msg)
+            })?;
+
+        if !text_resp.status().is_success() {
+            let status = text_resp.status();
+            let body = text_resp.text().unwrap_or_else(|_| String::new());
+            let msg = format!("Drive text export error ({status}): {body}"); // ubs:ignore: false positive; not in a loop; error reporting
+            return Err(CliError::InvalidInput(msg).into());
+        }
+
+        let raw_bytes = text_resp.bytes().map_err(|e| {
+            let msg = format!("failed to read export response body: {e}"); // ubs:ignore: impl-block false positive
+            CliError::InvalidInput(msg)
+        })?;
+
+        let content_hash = sha256_hex(&raw_bytes);
+        let text = String::from_utf8_lossy(&raw_bytes).into_owned();
+        let doc_id = &source_id.doc_id;
+        let source_url = Some(format!("https://docs.google.com/document/d/{doc_id}/edit")); // ubs:ignore: false positive; not in a loop; doc edit URL
+
+        Ok(VersionContent {
+            version_id: version_meta.version_id.clone(), // ubs:ignore: impl-block false positive; owned String for VersionContent
+            text,
+            content_hash,
+            source_url,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Google OAuth helpers (public — called from CLI auth flow)
+// ---------------------------------------------------------------------------
+
+pub fn exchange_google_oauth_code(
+    client_id: &str,
+    client_secret: &str,
+    code: &str,
+    redirect_uri: &str,
+    token_store: &GoogleTokenStore,
+) -> Result<()> {
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("client_id", client_id),
+            ("client_secret", client_secret),
+            ("code", code),
+            ("redirect_uri", redirect_uri),
+            ("grant_type", "authorization_code"),
+        ])
+        .send()
+        .map_err(|e| CliError::InvalidInput(format!("Google OAuth token exchange failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_else(|_| String::new());
+        return Err(CliError::InvalidInput(format!(
+            "Google OAuth token exchange error ({status}): {body}"
+        ))
+        .into());
+    }
+
+    let json: serde_json::Value = resp.json().map_err(|e| {
+        CliError::InvalidInput(format!("failed to parse token exchange response: {e}"))
+    })?;
+
+    let access_token = json
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            CliError::InvalidInput("token exchange response missing access_token".to_owned())
+        })?
+        .to_owned();
+
+    let refresh_token = json
+        .get("refresh_token")
+        .and_then(|v| v.as_str())
+        .map(ToOwned::to_owned);
+
+    let expires_in = json
+        .get("expires_in")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(3600);
+    let expires_at = Utc::now().timestamp() + expires_in;
+
+    token_store.save_token(GoogleTokenEntry {
+        access_token,
+        refresh_token,
+        expires_at_epoch_secs: Some(expires_at),
+    })
+}
+
+fn oauth_percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char); // ubs:ignore: byte matched ASCII range; as char is safe
+            }
+            _ => {
+                let _ = write!(out, "%{byte:02X}");
+            }
+        }
+    }
+    out
+}
+
+fn open_browser(url: &str) {
+    #[cfg(target_os = "linux")]
+    let _ = ProcessCommand::new("xdg-open").arg(url).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = ProcessCommand::new("open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = ProcessCommand::new("cmd")
+        .args(["/c", "start", "", url])
+        .spawn();
+}
+
+fn extract_oauth_code_from_request(request_line: &str) -> Option<String> {
+    // Parse the HTTP request line: "GET /callback?code=XXX&... HTTP/1.1"
+    let path = request_line.split_whitespace().nth(1)?;
+    let query = path.split_once('?')?.1;
+    for pair in query.split('&') {
+        let mut kv = pair.splitn(2, '=');
+        let is_code_key = kv.next() == Some("code"); // ubs:ignore: not a secret comparison; matching OAuth query param key name
+        if is_code_key {
+            return kv.next().map(ToOwned::to_owned);
+        }
+    }
+    None
+}
+
+pub async fn listen_for_google_oauth_code(client_id: &str) -> Result<(String, String)> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| {
+        CliError::InvalidInput(format!("failed to bind OAuth callback listener: {e}"))
+    })?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| CliError::InvalidInput(format!("failed to get listener port: {e}")))?
+        .port();
+
+    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+    let encoded_redirect = oauth_percent_encode(&redirect_uri);
+    let encoded_scope = oauth_percent_encode("https://www.googleapis.com/auth/drive.readonly");
+
+    let auth_url = format!(
+        "https://accounts.google.com/o/oauth2/v2/auth\
+         ?client_id={client_id}\
+         &redirect_uri={encoded_redirect}\
+         &response_type=code\
+         &scope={encoded_scope}\
+         &access_type=offline\
+         &prompt=consent"
+    );
+
+    eprintln!("Opening browser for Google OAuth consent...");
+    eprintln!("If the browser does not open, visit:\n{auth_url}");
+    open_browser(&auth_url);
+
+    let (mut socket, _) = listener.accept().await.map_err(|e| {
+        CliError::InvalidInput(format!("OAuth callback listener accept failed: {e}"))
+    })?;
+
+    let mut buf = vec![0u8; 8192];
+    let n = socket.read(&mut buf).await.map_err(|e| {
+        CliError::InvalidInput(format!("failed to read OAuth callback request: {e}"))
+    })?;
+
+    let request_text = String::from_utf8_lossy(&buf[..n]); // ubs:ignore: n = bytes read (≤ buf.len()); slice [..n] is valid
+    let first_line = request_text.lines().next().unwrap_or("");
+    let code = extract_oauth_code_from_request(first_line).ok_or_else(|| {
+        CliError::InvalidInput(format!(
+            "OAuth callback did not contain a ?code= parameter; got: {first_line}"
+        ))
+    })?;
+
+    let success_body = b"<html><body><h2>Authentication successful!</h2>\
+                         <p>You can close this tab and return to the terminal.</p></body></html>";
+    let response_head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        success_body.len()
+    );
+    let _ = socket.write_all(response_head.as_bytes()).await;
+    let _ = socket.write_all(success_body).await;
+
+    Ok((code, redirect_uri))
 }
 
 // ---------------------------------------------------------------------------
@@ -866,7 +1449,7 @@ pub fn import_via_connector<L: EventLedger>(
 
     let (connector, source_id) = matched_connector.ok_or_else(|| {
         CliError::InvalidInput(format!(
-            "no connector matched '{}'; supported: git_file",
+            "no connector matched '{}'; supported: git_file, google_docs",
             request.url_or_id
         ))
     })?;

@@ -149,10 +149,32 @@ pub enum Command {
     /// to write structured captures produced by the agent on its subscription seat.
     #[command(name = "classify-queue")]
     ClassifyQueue(ClassifyQueueArgs),
+    /// Manage connector authentication (e.g., Google Docs OAuth).
+    /// Set HIVEMIND_GOOGLE_CLIENT_ID and HIVEMIND_GOOGLE_CLIENT_SECRET before running.
+    Connector(ConnectorArgs),
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct QuickstartArgs {}
+
+#[derive(Debug, Clone, Args)]
+pub struct ConnectorArgs {
+    #[command(subcommand)]
+    pub command: ConnectorCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum ConnectorCommand {
+    /// Authenticate with a connector. Opens a browser for OAuth consent.
+    #[command(name = "auth")]
+    Auth(ConnectorAuthArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ConnectorAuthArgs {
+    /// Connector to authenticate. Currently supported: gdocs (Google Docs).
+    pub connector: String,
+}
 
 #[derive(Debug, Clone, Args)]
 pub struct ServeArgs {
@@ -1408,6 +1430,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Map(args) => run_map(cli, args),
         Command::Digest(args) => run_digest(cli, args),
         Command::ClassifyQueue(args) => run_classify_queue(cli, args),
+        Command::Connector(args) => run_connector(cli, args),
     }
 }
 
@@ -1692,6 +1715,55 @@ fn run_classify_queue_submit(cli: &Cli, args: &ClassifyQueueSubmitArgs) -> Resul
         "capture_count": capture_count,
     });
     format_json_value(cli.json, &result)
+}
+
+fn run_connector(cli: &Cli, args: &ConnectorArgs) -> Result<String> {
+    match &args.command {
+        ConnectorCommand::Auth(auth_args) => run_connector_auth(cli, auth_args),
+    }
+}
+
+fn run_connector_auth(cli: &Cli, args: &ConnectorAuthArgs) -> Result<String> {
+    match args.connector.as_str() {
+        "gdocs" | "google" | "google-docs" | "googledocs" => run_connector_auth_gdocs(cli),
+        other => Err(CliError::InvalidInput(format!(
+            "unknown connector '{other}'; supported: gdocs"
+        ))
+        .into()),
+    }
+}
+
+fn run_connector_auth_gdocs(cli: &Cli) -> Result<String> {
+    let client_id = std::env::var("HIVEMIND_GOOGLE_CLIENT_ID").map_err(|_| {
+        CliError::InvalidInput(
+            "HIVEMIND_GOOGLE_CLIENT_ID environment variable must be set".to_owned(),
+        )
+    })?;
+    let client_secret = std::env::var("HIVEMIND_GOOGLE_CLIENT_SECRET").map_err(|_| {
+        CliError::InvalidInput(
+            "HIVEMIND_GOOGLE_CLIENT_SECRET environment variable must be set".to_owned(),
+        )
+    })?;
+
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| CliError::InvalidInput(format!("failed to create async runtime: {e}")))?;
+
+    let (auth_code, redirect_uri) =
+        runtime.block_on(crate::connector::listen_for_google_oauth_code(&client_id))?;
+
+    let token_store = crate::connector::GoogleTokenStore::new(&cli.hivemind_dir);
+    crate::connector::exchange_google_oauth_code(
+        &client_id,
+        &client_secret,
+        &auth_code,
+        &redirect_uri,
+        &token_store,
+    )?;
+
+    Ok(
+        "Google Docs connector authenticated successfully. Token saved to connector-tokens.json."
+            .to_owned(),
+    )
 }
 
 fn run_ingest(cli: &Cli, ingest: &IngestArgs) -> Result<String> {
@@ -2198,14 +2270,18 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
         ImportCommand::Connector(args) => {
             use crate::connector::{
                 confirm_same_as, find_connector_same_as_candidates, import_via_connector,
-                retract_same_as, ConnectorImportRequest, GitFileConnector, SameAsConfig,
+                retract_same_as, ConnectorImportRequest, GitFileConnector, GoogleDocsConnector,
+                SameAsConfig,
             };
             let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
             let tenant_id = cli_tenant(cli)?;
             match &args.command {
                 ImportConnectorCommand::Run(run_args) => {
-                    let connectors: Vec<Box<dyn crate::connector::Connector>> =
+                    let mut connectors: Vec<Box<dyn crate::connector::Connector>> =
                         vec![Box::new(GitFileConnector)];
+                    if let Ok(Some(gdocs)) = GoogleDocsConnector::new(&cli.hivemind_dir) {
+                        connectors.push(Box::new(gdocs));
+                    }
                     let report = import_via_connector(
                         &ledger,
                         &tenant_id,
