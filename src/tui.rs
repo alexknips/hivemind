@@ -211,7 +211,7 @@ impl DecisionSearchApp {
                 RelationKind::Refutes,
             ]),
             KeyCode::Char('h') => self.focus_relation_group(&[
-                RelationKind::Assumes,
+                RelationKind::PremisedOn,
                 RelationKind::Supports,
                 RelationKind::Refutes,
             ]),
@@ -1017,7 +1017,7 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
             .any(|hypothesis| matches!(hypothesis.status, HypothesisStatus::Refuted))
         {
             lines.push(Line::from(vec![Span::styled(
-                "warning: one or more assumed hypotheses are refuted",
+                "warning: one or more premises are refuted",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             )]));
         }

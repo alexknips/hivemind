@@ -51,7 +51,7 @@ A function that crosses layers is a bug. A query that calls an LLM is a bug. A w
 - Every node and edge in the graph carries `event_origin` — the ledger offset that created it.
 - Optional cryptographic signing (Ed25519) is a real commitment for the shared-backend / multi-org direction, not a vague aspiration. When a multi-organization deployment lands, signing becomes mandatory.
 - `contested` decisions are surfaced as a top-level status — never hidden in flags.
-- A `Hypothesis` flipping to `refuted` propagates to every `Decision` that `ASSUMES` it. This propagation is visible in queries by default.
+- A `Hypothesis` flipping to `refuted` propagates to every `Decision` that `PREMISED_ON` it. This propagation is visible in queries by default.
 
 ---
 

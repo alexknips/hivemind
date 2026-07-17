@@ -109,7 +109,7 @@ pub enum HistoryChangeKind {
     NewDecision,
     StatusChange,
     NewEvidence,
-    RefutedAssumption,
+    RefutedPremise,
     Supersession,
     ContextChange,
 }
@@ -1483,7 +1483,7 @@ fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
             EventRelationKind::BasedOn | EventRelationKind::Supports => {
                 HistoryChangeKind::NewEvidence
             }
-            EventRelationKind::Refutes => HistoryChangeKind::RefutedAssumption,
+            EventRelationKind::Refutes => HistoryChangeKind::RefutedPremise,
             EventRelationKind::HasOption
             | EventRelationKind::Chose
             | EventRelationKind::Assumes => HistoryChangeKind::ContextChange,

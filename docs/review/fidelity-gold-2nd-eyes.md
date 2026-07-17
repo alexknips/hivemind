@@ -200,7 +200,7 @@ Missing: `DecisionRequestedBy, DecisionRequestRequiredOwner, BlockerRequiredOwne
 All three appear in D1 cases. Add them to the header.
 
 ### Doc-2: Edge notation inconsistency
-Semantic edges: `BASED_ON, HAS_OPTION, CHOSE, ASSUMES, SUPPORTS, REFUTES,
+Semantic edges: `BASED_ON, HAS_OPTION, CHOSE, PREMISED_ON, SUPPORTS, REFUTES,
 SUPERSEDES` (CAPS_CASE — matches string representation in code).
 Projected edges: `ProposedBy, AcceptedBy, ...` (CamelCase — matches enum
 variant names, not string representations like "PROPOSED_BY").
@@ -225,8 +225,8 @@ and document the default rule explicitly in the corpus header.
 | B1-pricing-reversal | Correct. Supersession + Evidence. |
 | B2-repo-topology-double | Correct. Double supersession chain. |
 | B3-auth-vendor-switch | Correct. Superseded + new with options. |
-| C1-perf-hypothesis-refuted | Correct. ASSUMES + REFUTES + BASED_ON. |
-| C2-growth-assumption-supported | Correct. ASSUMES + SUPPORTS + BASED_ON. |
+| C1-perf-hypothesis-refuted | Correct. PREMISED_ON + REFUTES + BASED_ON. |
+| C2-growth-assumption-supported | Correct. PREMISED_ON + SUPPORTS + BASED_ON. |
 | C3-threat-model-mixed | Correct. Mixed support/refute. BASED_ON to rank only is defensible. |
 | D2-hiring-contested | Correct. ProposedBy + RejectedBy → contested is emergent, correct. |
 | E1-slack-implicit-option | Correct. Implicit option (cron) correctly captured. |

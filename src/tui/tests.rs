@@ -75,7 +75,7 @@ fn dot_export_renders_node_statuses_and_relation_labels() {
         edges: vec![NeighborEdge {
             from: "d1".to_owned(),
             to: "h1".to_owned(),
-            relation: RelationKind::Assumes,
+            relation: RelationKind::PremisedOn,
             event_origin: Some(7),
         }],
     };

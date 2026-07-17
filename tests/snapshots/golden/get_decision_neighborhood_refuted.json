@@ -28,7 +28,7 @@
       },
       {
         "from": "decision-005",
-        "relation": "assumes",
+        "relation": "premised_on",
         "to": "hypothesis-001"
       },
       {

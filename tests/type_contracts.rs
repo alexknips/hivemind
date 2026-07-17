@@ -72,7 +72,7 @@ const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 20] = [
     ProjectorRelationKind::BasedOn,
     ProjectorRelationKind::HasOption,
     ProjectorRelationKind::Chose,
-    ProjectorRelationKind::Assumes,
+    ProjectorRelationKind::PremisedOn,
     ProjectorRelationKind::Supports,
     ProjectorRelationKind::Refutes,
     ProjectorRelationKind::ParticipatedBy,
@@ -567,7 +567,7 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                     extraction_confidence: 0.9,
                     expressed_confidence: None,
                     supersedes_id: None,
-                    assumes_ids: vec![],
+                    premised_on_ids: vec![],
                     supports_ids: vec![],
                     refutes_ids: vec![],
                     actor_id: None,
@@ -774,7 +774,9 @@ fn projector_relation_contract(kind: ProjectorRelationKind) -> (&'static str, No
         ProjectorRelationKind::BasedOn => ("BASED_ON", NodeKind::Decision, NodeKind::Evidence),
         ProjectorRelationKind::HasOption => ("HAS_OPTION", NodeKind::Decision, NodeKind::Option),
         ProjectorRelationKind::Chose => ("CHOSE", NodeKind::Decision, NodeKind::Option),
-        ProjectorRelationKind::Assumes => ("ASSUMES", NodeKind::Decision, NodeKind::Hypothesis),
+        ProjectorRelationKind::PremisedOn => {
+            ("PREMISED_ON", NodeKind::Decision, NodeKind::Hypothesis)
+        }
         ProjectorRelationKind::Supports => ("SUPPORTS", NodeKind::Evidence, NodeKind::Hypothesis),
         ProjectorRelationKind::Refutes => ("REFUTES", NodeKind::Evidence, NodeKind::Hypothesis),
         ProjectorRelationKind::ParticipatedBy => {

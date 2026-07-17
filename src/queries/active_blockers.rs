@@ -390,7 +390,7 @@ fn refuted_assumption_ids(
     decision_id: &str,
 ) -> Result<Vec<String>> {
     let mut ids = Vec::new();
-    for hypothesis_id in relation_targets(edges, &[RelationKind::Assumes], decision_id) {
+    for hypothesis_id in relation_targets(edges, &[RelationKind::PremisedOn], decision_id) {
         if derive_hypothesis_status(graph, &hypothesis_id)? == HypothesisStatus::Refuted {
             ids.push(hypothesis_id);
         }

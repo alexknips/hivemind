@@ -26,7 +26,7 @@
 # Node kinds (src/projector/mod.rs): Decision, DecisionRequest, Actor, Blocker,
 #   Evidence, Option, Hypothesis.  (Notification is system-internal; not scored.)
 #   "artifacts" == Evidence (per alex).
-# Edge kinds: semantic (src/events.rs): BASED_ON, HAS_OPTION, CHOSE, ASSUMES,
+# Edge kinds: semantic (src/events.rs): BASED_ON, HAS_OPTION, CHOSE, PREMISED_ON (was ASSUMES),
 #   SUPPORTS, REFUTES, SUPERSEDES;  projected (src/projector/mod.rs): ProposedBy,
 #   AcceptedBy, RejectedBy, Supersedes, BlockerForDecision, BlockedActor,
 #   DecisionRequestForDecision.
@@ -178,7 +178,7 @@ cases:
         - {kind: CHOSE, from: new, to: kc}
         - {kind: BASED_ON, from: new, to: cost}
 
-# ===== Archetype C: hypothesis-driven (Hypothesis/ASSUMES/SUPPORTS/REFUTES/Evidence)
+# ===== Archetype C: hypothesis-driven (Hypothesis/PREMISED_ON/SUPPORTS/REFUTES/Evidence)
   - id: C1-perf-hypothesis-refuted
     archetype: hypothesis-driven
     domain: research-perf
@@ -194,7 +194,7 @@ cases:
         - {kind: Hypothesis, key: h, text: "batching writes will cut p99 latency"}
         - {kind: Evidence, key: bench, text: "benchmark: p99 unchanged, bottleneck is fsync"}
       edges:
-        - {kind: ASSUMES, from: d, to: h}
+        - {kind: PREMISED_ON, from: d, to: h}
         - {kind: REFUTES, from: bench, to: h}
         - {kind: BASED_ON, from: d, to: bench}
 
@@ -213,7 +213,7 @@ cases:
         - {kind: Hypothesis, key: h, text: "week-1 importers retain better"}
         - {kind: Evidence, key: cohort, text: "cohort: importers 68% vs 41% retention"}
       edges:
-        - {kind: ASSUMES, from: d, to: h}
+        - {kind: PREMISED_ON, from: d, to: h}
         - {kind: SUPPORTS, from: cohort, to: h}
         - {kind: BASED_ON, from: d, to: cohort}
 
@@ -234,7 +234,7 @@ cases:
         - {kind: Evidence, key: rank, text: "pen-test: cross-tenant rows were rankable"}
         - {kind: Evidence, key: filter, text: "pen-test: row-level filter blocked actual readability"}
       edges:
-        - {kind: ASSUMES, from: d, to: h}
+        - {kind: PREMISED_ON, from: d, to: h}
         - {kind: SUPPORTS, from: rank, to: h}
         - {kind: REFUTES, from: filter, to: h}
         - {kind: BASED_ON, from: d, to: rank}
@@ -351,7 +351,7 @@ cases:
         - {kind: Decision, key: d, text: "use gRPC for the internal API", confidence: low}
         - {kind: Hypothesis, key: h, text: "gRPC latency will be acceptable for the internal API"}
       edges:
-        - {kind: ASSUMES, from: d, to: h}
+        - {kind: PREMISED_ON, from: d, to: h}
       # LOCKED CONTRACT (2026-06-18): "probably" = a LEAN = a real but LOW-confidence
       # decision -> CAPTURE it as a Decision(confidence: low), NOT a no-decision
       # DecisionRequest. The "sanity-check latency first" = the assumption it ASSUMES
@@ -547,7 +547,7 @@ cases:
         - {kind: Option, key: rest, text: "REST", chosen: true}
         - {kind: Option, key: grpc, text: "gRPC", chosen: false}
       edges:
-        - {kind: ASSUMES, from: d, to: h}
+        - {kind: PREMISED_ON, from: d, to: h}
         - {kind: SUPPORTS, from: ev, to: h}
         - {kind: BASED_ON, from: d, to: ev}
         - {kind: HAS_OPTION, from: d, to: rest}
@@ -605,7 +605,7 @@ cases:
         - {kind: Option, key: adopt, text: "adopt event-sourcing", chosen: true}
         - {kind: Option, key: keep, text: "keep current approach", chosen: false}
       edges:
-        - {kind: ASSUMES, from: d, to: h}
+        - {kind: PREMISED_ON, from: d, to: h}
         - {kind: SUPPORTS, from: ev1, to: h}
         - {kind: REFUTES, from: ev2, to: h}
         - {kind: BASED_ON, from: d, to: ev1}

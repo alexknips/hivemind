@@ -322,7 +322,12 @@ pub enum RelationKind {
     HasOption,
     #[serde(rename = "CHOSE", alias = "chose")]
     Chose,
-    #[serde(rename = "ASSUMES", alias = "assumes")]
+    #[serde(
+        rename = "ASSUMES",
+        alias = "assumes",
+        alias = "PREMISED_ON",
+        alias = "premised_on"
+    )]
     Assumes,
     #[serde(rename = "SUPPORTS", alias = "supports")]
     Supports,
@@ -366,9 +371,9 @@ pub struct CaptureItem {
     /// ID of the decision being superseded; only when present in the input text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supersedes_id: Option<String>,
-    /// Hypothesis IDs this decision assumes; only IDs present in the input.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub assumes_ids: Vec<String>,
+    /// Hypothesis IDs this decision is premised on; only IDs present in the input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "assumes_ids")]
+    pub premised_on_ids: Vec<String>,
     /// Hypothesis IDs this evidence supports; only IDs present in the input.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supports_ids: Vec<String>,

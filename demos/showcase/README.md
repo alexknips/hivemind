@@ -25,7 +25,7 @@ HIVEMIND_DIR=./hivemind-demo/ TENANT=demo ./demos/showcase/load_showcase.sh
 | Cross-topic bridges | 6+ (security↔payments, product↔payments, infra↔security, etc.) |
 | Decision requests | 1 |
 | Blockers + resolutions | 2 |
-| Semantic relations | 9 (SUPPORTS, ASSUMES, REFUTES) |
+| Semantic relations | 9 (SUPPORTS, PREMISED_ON, REFUTES) |
 | Sources | cli + slack + document (bitemporal) |
 
 ## Scorer metrics

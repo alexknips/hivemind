@@ -495,7 +495,7 @@ impl FixtureGraph {
             .insert((RelationKind::BasedOn, "d1".to_owned(), "e1".to_owned()));
         graph
             .edges
-            .insert((RelationKind::Assumes, "d1".to_owned(), "h1".to_owned()));
+            .insert((RelationKind::PremisedOn, "d1".to_owned(), "h1".to_owned()));
         graph
             .edges
             .insert((RelationKind::Supports, "e1".to_owned(), "h1".to_owned()));
@@ -719,7 +719,7 @@ impl GraphView for FixtureGraph {
             (RelationKind::HasOption, "option_id"),
             (RelationKind::Chose, "option_id"),
             (RelationKind::BasedOn, "evidence_id"),
-            (RelationKind::Assumes, "hypothesis_id"),
+            (RelationKind::PremisedOn, "hypothesis_id"),
         ] {
             if cypher.contains(&format!("[:`{}`]", relation.table_name())) {
                 let decision_id = match params.get("id") {
@@ -1008,7 +1008,7 @@ fn get_decision_neighborhood_returns_full_one_hop() -> Result<()> {
     assert!(edge_relations.contains(&RelationKind::HasOption));
     assert!(edge_relations.contains(&RelationKind::Chose));
     assert!(edge_relations.contains(&RelationKind::BasedOn));
-    assert!(edge_relations.contains(&RelationKind::Assumes));
+    assert!(edge_relations.contains(&RelationKind::PremisedOn));
     // SUPPORTS arrives via 2-hop from the visible hypothesis h1 <- e1
     assert!(edge_relations.contains(&RelationKind::Supports));
 

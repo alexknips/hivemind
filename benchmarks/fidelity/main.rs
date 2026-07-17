@@ -140,7 +140,8 @@ fn canonical_edge_kind(raw: &str) -> String {
         "CHOSE" | "Chose" => "CHOSE",
         "BASED_ON" | "BasedOn" => "BASED_ON",
         "SUPERSEDES" | "Supersedes" => "SUPERSEDES",
-        "ASSUMES" | "Assumes" => "ASSUMES",
+        "PREMISED_ON" | "PremisedOn" => "PREMISED_ON",
+        "ASSUMES" | "Assumes" => "PREMISED_ON",
         "SUPPORTS" | "Supports" => "SUPPORTS",
         "REFUTES" | "Refutes" => "REFUTES",
         "ProposedBy" | "PROPOSED_BY" => "PROPOSED_BY",
@@ -514,7 +515,7 @@ fn gold_as_captures(expected: &Expected) -> Vec<(String, hivemind::events::Captu
     let mut chosen_map: HashMap<&str, String> = HashMap::new();
     let mut evidence_ids_map: HashMap<&str, Vec<String>> = HashMap::new();
     let mut supersedes_map: HashMap<&str, String> = HashMap::new();
-    let mut assumes_map: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut premised_on_map: HashMap<&str, Vec<String>> = HashMap::new();
     let mut supports_map: HashMap<&str, Vec<String>> = HashMap::new();
     let mut refutes_map: HashMap<&str, Vec<String>> = HashMap::new();
     // Actor edge maps (CaptureItem field → Actor node key used as ID).
@@ -548,9 +549,9 @@ fn gold_as_captures(expected: &Expected) -> Vec<(String, hivemind::events::Captu
                 // from=new Decision, to=superseded Decision key.
                 supersedes_map.insert(e.from.as_str(), e.to.clone());
             }
-            "ASSUMES" => {
+            "PREMISED_ON" => {
                 // from=Decision, to=Hypothesis key.
-                assumes_map
+                premised_on_map
                     .entry(e.from.as_str())
                     .or_default()
                     .push(e.to.clone());
@@ -628,7 +629,7 @@ fn gold_as_captures(expected: &Expected) -> Vec<(String, hivemind::events::Captu
                 extraction_confidence: 1.0,
                 expressed_confidence: node.confidence.clone(),
                 supersedes_id: supersedes_map.get(key).cloned(),
-                assumes_ids: assumes_map.get(key).cloned().unwrap_or_default(),
+                premised_on_ids: premised_on_map.get(key).cloned().unwrap_or_default(),
                 supports_ids: supports_map.get(key).cloned().unwrap_or_default(),
                 refutes_ids: refutes_map.get(key).cloned().unwrap_or_default(),
                 actor_id,
@@ -888,7 +889,7 @@ mod tests {
             extraction_confidence: 0.9,
             expressed_confidence: None,
             supersedes_id: None,
-            assumes_ids: vec![],
+            premised_on_ids: vec![],
             supports_ids: vec![],
             refutes_ids: vec![],
             actor_id: None,
