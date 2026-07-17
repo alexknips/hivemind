@@ -1480,6 +1480,7 @@ const fn relation_kind_name(relation_kind: RelationKind) -> &'static str {
         RelationKind::Assumes => "ASSUMES",
         RelationKind::Supports => "SUPPORTS",
         RelationKind::Refutes => "REFUTES",
+        RelationKind::SameAs => "SAME_AS",
     }
 }
 

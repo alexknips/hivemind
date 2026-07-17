@@ -65,6 +65,8 @@ pub enum EventType {
     HypothesisRecorded,
     #[serde(rename = "relation.added")]
     RelationAdded,
+    #[serde(rename = "relation.removed")]
+    RelationRemoved,
     #[serde(rename = "blocker.reported")]
     BlockerReported,
     #[serde(rename = "blocker.resolved")]
@@ -328,6 +330,8 @@ pub enum RelationKind {
     Supports,
     #[serde(rename = "REFUTES", alias = "refutes")]
     Refutes,
+    #[serde(rename = "SAME_AS", alias = "same_as")]
+    SameAs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,6 +480,14 @@ pub struct RelationAddedPayload {
     pub to_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelationRemovedPayload {
+    pub relation: RelationKind,
+    pub from_id: String,
+    pub to_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventPayload {
     DecisionProposed(DecisionProposedPayload),
@@ -486,6 +498,7 @@ pub enum EventPayload {
     EvidenceRecorded(EvidenceRecordedPayload),
     HypothesisRecorded(HypothesisRecordedPayload),
     RelationAdded(RelationAddedPayload),
+    RelationRemoved(RelationRemovedPayload),
     BlockerReported(BlockerReportedPayload),
     BlockerResolved(BlockerResolvedPayload),
     NotificationSent(NotificationSentPayload),
@@ -506,6 +519,7 @@ impl EventPayload {
             Self::EvidenceRecorded(_) => EventType::EvidenceRecorded,
             Self::HypothesisRecorded(_) => EventType::HypothesisRecorded,
             Self::RelationAdded(_) => EventType::RelationAdded,
+            Self::RelationRemoved(_) => EventType::RelationRemoved,
             Self::BlockerReported(_) => EventType::BlockerReported,
             Self::BlockerResolved(_) => EventType::BlockerResolved,
             Self::NotificationSent(_) => EventType::NotificationSent,
@@ -526,6 +540,7 @@ impl EventPayload {
             Self::EvidenceRecorded(payload) => serde_json::to_value(payload),
             Self::HypothesisRecorded(payload) => serde_json::to_value(payload),
             Self::RelationAdded(payload) => serde_json::to_value(payload),
+            Self::RelationRemoved(payload) => serde_json::to_value(payload),
             Self::BlockerReported(payload) => serde_json::to_value(payload),
             Self::BlockerResolved(payload) => serde_json::to_value(payload),
             Self::NotificationSent(payload) => serde_json::to_value(payload),
@@ -768,6 +783,12 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty("payload.from_id", &payload.from_id)?;
             require_non_empty("payload.to_id", &payload.to_id)?;
             Ok(EventPayload::RelationAdded(payload))
+        }
+        EventType::RelationRemoved => {
+            let payload: RelationRemovedPayload = parse_payload(event)?;
+            require_non_empty("payload.from_id", &payload.from_id)?;
+            require_non_empty("payload.to_id", &payload.to_id)?;
+            Ok(EventPayload::RelationRemoved(payload))
         }
         EventType::BlockerReported => {
             require_event_provenance(event)?;

@@ -10,7 +10,7 @@ use hivemind::events::{
     HypothesisRecordedPayload, ImportanceFactors, IngestBatchClassifiedPayload,
     IngestBatchReceivedPayload, IngestTurn, NotificationAcknowledgedPayload,
     NotificationSentPayload, QualityDim, QualityDims, RelationAddedPayload,
-    RelationKind as EventRelationKind,
+    RelationKind as EventRelationKind, RelationRemovedPayload,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};
@@ -18,7 +18,7 @@ use hivemind::{CliError, CommandError, HivemindError, LedgerError, ProjectorErro
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const EVENT_TYPES: [EventType; 15] = [
+const EVENT_TYPES: [EventType; 16] = [
     EventType::DecisionProposed,
     EventType::DecisionRequested,
     EventType::DecisionAccepted,
@@ -27,6 +27,7 @@ const EVENT_TYPES: [EventType; 15] = [
     EventType::EvidenceRecorded,
     EventType::HypothesisRecorded,
     EventType::RelationAdded,
+    EventType::RelationRemoved,
     EventType::BlockerReported,
     EventType::BlockerResolved,
     EventType::NotificationSent,
@@ -36,13 +37,14 @@ const EVENT_TYPES: [EventType; 15] = [
     EventType::DecisionScored,
 ];
 
-const EVENT_RELATION_KINDS: [EventRelationKind; 6] = [
+const EVENT_RELATION_KINDS: [EventRelationKind; 7] = [
     EventRelationKind::BasedOn,
     EventRelationKind::HasOption,
     EventRelationKind::Chose,
     EventRelationKind::Assumes,
     EventRelationKind::Supports,
     EventRelationKind::Refutes,
+    EventRelationKind::SameAs,
 ];
 
 const NODE_KINDS: [NodeKind; 8] = [
@@ -56,7 +58,7 @@ const NODE_KINDS: [NodeKind; 8] = [
     NodeKind::Hypothesis,
 ];
 
-const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 20] = [
+const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 21] = [
     ProjectorRelationKind::ProposedBy,
     ProjectorRelationKind::DecisionRequestedBy,
     ProjectorRelationKind::DecisionRequestForDecision,
@@ -75,6 +77,7 @@ const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 20] = [
     ProjectorRelationKind::Assumes,
     ProjectorRelationKind::Supports,
     ProjectorRelationKind::Refutes,
+    ProjectorRelationKind::SameAs,
     ProjectorRelationKind::ParticipatedBy,
     ProjectorRelationKind::InitiatedBy,
 ];
@@ -338,6 +341,7 @@ fn event_type_name(event_type: EventType) -> &'static str {
         EventType::EvidenceRecorded => "evidence.recorded",
         EventType::HypothesisRecorded => "hypothesis.recorded",
         EventType::RelationAdded => "relation.added",
+        EventType::RelationRemoved => "relation.removed",
         EventType::BlockerReported => "blocker.reported",
         EventType::BlockerResolved => "blocker.resolved",
         EventType::NotificationSent => "notification.sent",
@@ -358,6 +362,7 @@ fn payload_variant_type(payload: &EventPayload) -> EventType {
         EventPayload::EvidenceRecorded(_) => EventType::EvidenceRecorded,
         EventPayload::HypothesisRecorded(_) => EventType::HypothesisRecorded,
         EventPayload::RelationAdded(_) => EventType::RelationAdded,
+        EventPayload::RelationRemoved(_) => EventType::RelationRemoved,
         EventPayload::BlockerReported(_) => EventType::BlockerReported,
         EventPayload::BlockerResolved(_) => EventType::BlockerResolved,
         EventPayload::NotificationSent(_) => EventType::NotificationSent,
@@ -395,6 +400,9 @@ fn typed_payload_from_value(
             EventPayload::HypothesisRecorded(serde_json::from_value(payload)?)
         }
         EventType::RelationAdded => EventPayload::RelationAdded(serde_json::from_value(payload)?),
+        EventType::RelationRemoved => {
+            EventPayload::RelationRemoved(serde_json::from_value(payload)?)
+        }
         EventType::BlockerReported => {
             EventPayload::BlockerReported(serde_json::from_value(payload)?)
         }
@@ -487,6 +495,14 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 relation: EventRelationKind::Supports,
                 from_id: "evidence:minimal".to_owned(),
                 to_id: "hypothesis:minimal".to_owned(),
+            }),
+        ),
+        (
+            EventType::RelationRemoved,
+            EventPayload::RelationRemoved(RelationRemovedPayload {
+                relation: EventRelationKind::SameAs,
+                from_id: "decision:aaa".to_owned(),
+                to_id: "decision:bbb".to_owned(),
             }),
         ),
         (
@@ -640,6 +656,7 @@ fn payload_json(payload: &EventPayload) -> Value {
         EventPayload::EvidenceRecorded(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::HypothesisRecorded(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::RelationAdded(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::RelationRemoved(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::BlockerReported(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::BlockerResolved(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::NotificationSent(payload) => serde_json::to_value(payload).unwrap(),
@@ -670,6 +687,8 @@ fn shape_compatible(left: EventType, right: EventType) -> bool {
     matches!(
         (left, right),
         (EventType::DecisionAccepted, EventType::DecisionRejected)
+            | (EventType::RelationAdded, EventType::RelationRemoved)
+            | (EventType::RelationRemoved, EventType::RelationAdded)
     )
 }
 
@@ -713,6 +732,7 @@ fn event_relation_contract(kind: EventRelationKind) -> (&'static str, &'static s
         EventRelationKind::Assumes => ("ASSUMES", "assumes"),
         EventRelationKind::Supports => ("SUPPORTS", "supports"),
         EventRelationKind::Refutes => ("REFUTES", "refutes"),
+        EventRelationKind::SameAs => ("SAME_AS", "same_as"),
     }
 }
 
@@ -777,6 +797,7 @@ fn projector_relation_contract(kind: ProjectorRelationKind) -> (&'static str, No
         ProjectorRelationKind::Assumes => ("ASSUMES", NodeKind::Decision, NodeKind::Hypothesis),
         ProjectorRelationKind::Supports => ("SUPPORTS", NodeKind::Evidence, NodeKind::Hypothesis),
         ProjectorRelationKind::Refutes => ("REFUTES", NodeKind::Evidence, NodeKind::Hypothesis),
+        ProjectorRelationKind::SameAs => ("SAME_AS", NodeKind::Decision, NodeKind::Decision),
         ProjectorRelationKind::ParticipatedBy => {
             ("PARTICIPATED_BY", NodeKind::Decision, NodeKind::Actor)
         }

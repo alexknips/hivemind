@@ -94,6 +94,7 @@ pub enum RelationKind {
     Assumes,
     Supports,
     Refutes,
+    SameAs,
     /// Actor that participated in the session that produced this decision.
     ParticipatedBy,
     /// Actor that initiated the session that produced this decision.
@@ -101,7 +102,7 @@ pub enum RelationKind {
 }
 
 impl RelationKind {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::ProposedBy,
         Self::DecisionRequestedBy,
         Self::DecisionRequestForDecision,
@@ -120,6 +121,7 @@ impl RelationKind {
         Self::Assumes,
         Self::Supports,
         Self::Refutes,
+        Self::SameAs,
         Self::ParticipatedBy,
         Self::InitiatedBy,
     ];
@@ -144,6 +146,7 @@ impl RelationKind {
             Self::Assumes => "ASSUMES",
             Self::Supports => "SUPPORTS",
             Self::Refutes => "REFUTES",
+            Self::SameAs => "SAME_AS",
             Self::ParticipatedBy => "PARTICIPATED_BY",
             Self::InitiatedBy => "INITIATED_BY",
         }
@@ -167,6 +170,7 @@ impl RelationKind {
             Self::HasOption | Self::Chose => (NodeKind::Decision, NodeKind::Option),
             Self::Assumes => (NodeKind::Decision, NodeKind::Hypothesis),
             Self::Supports | Self::Refutes => (NodeKind::Evidence, NodeKind::Hypothesis),
+            Self::SameAs => (NodeKind::Decision, NodeKind::Decision),
             Self::ParticipatedBy | Self::InitiatedBy => (NodeKind::Decision, NodeKind::Actor),
         }
     }
@@ -623,6 +627,9 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
             );
             graph.upsert_node(NodeKind::Decision, &payload.capture_node_id, &props)?;
         }
+        EventPayload::RelationRemoved(_) => {
+            // GraphView has no remove_edge; retraction is recorded in the ledger only
+        }
     }
 
     Ok(())
@@ -808,6 +815,7 @@ fn relation_kind(kind: EventRelationKind) -> RelationKind {
         EventRelationKind::Assumes => RelationKind::Assumes,
         EventRelationKind::Supports => RelationKind::Supports,
         EventRelationKind::Refutes => RelationKind::Refutes,
+        EventRelationKind::SameAs => RelationKind::SameAs,
     }
 }
 

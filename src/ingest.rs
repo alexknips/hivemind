@@ -2042,7 +2042,9 @@ fn affected_dependencies_for_decision<L: EventLedger>(
                         events::RelationKind::Assumes => {
                             hypothesis_ids.insert(payload.to_id);
                         }
-                        events::RelationKind::Supports | events::RelationKind::Refutes => {}
+                        events::RelationKind::Supports
+                        | events::RelationKind::Refutes
+                        | events::RelationKind::SameAs => {}
                     }
                 }
                 EventPayload::DecisionSuperseded(payload)

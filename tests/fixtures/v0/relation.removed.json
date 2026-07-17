@@ -1,0 +1,16 @@
+{
+  "event_id": 99,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe99",
+  "correlation_id": "session-1",
+  "causation_event_id": null,
+  "type": "relation.removed",
+  "actor_id": "agent-a",
+  "source": "cli",
+  "source_ref": null,
+  "payload": {
+    "relation": "SAME_AS",
+    "from_id": "decision:aaa",
+    "to_id": "decision:bbb"
+  },
+  "ts": "2026-07-17T21:00:00Z"
+}

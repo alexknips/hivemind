@@ -1,4 +1,5 @@
-use std::collections::BTreeSet;
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -12,7 +13,8 @@ use crate::commands::normalize_topic_key;
 use crate::error::{CliError, CommandError};
 use crate::events::{
     DecisionProposedPayload, DecisionSupersededPayload, EventBuilder, EventId, EventPayload,
-    EventProvenance, EvidenceRecordedPayload, RelationAddedPayload, RelationKind, TenantId,
+    EventProvenance, EventType, EvidenceRecordedPayload, RelationAddedPayload, RelationKind,
+    RelationRemovedPayload, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -1488,6 +1490,397 @@ fn make_source_ref(
             "failed to serialize ConnectorSourceRef: {e}"
         )))
     })
+}
+
+// ---------------------------------------------------------------------------
+// Same-as / dedup layer (§3)
+// ---------------------------------------------------------------------------
+
+pub struct SameAsConfig {
+    pub min_score: u32,
+    pub min_field_matches: usize,
+}
+
+impl Default for SameAsConfig {
+    fn default() -> Self {
+        Self {
+            min_score: 70,
+            min_field_matches: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SameAsCandidate {
+    pub left_id: String,
+    pub right_id: String,
+    pub score: u32,
+    pub basis: SameAsBasis,
+    pub review_required: bool,
+    pub reviewer_action: SameAsReviewerAction,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SameAsBasis {
+    pub algorithm: &'static str,
+    pub title_token_overlap: u32,
+    pub rationale_token_overlap: u32,
+    pub topic_key_overlap: u32,
+    pub matched_fields: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SameAsReviewerAction {
+    ReviewFuzzySameAs,
+    ReviewAmbiguousSameAs,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SameAsCandidateReport {
+    pub import_run_id: String,
+    pub candidates_found: usize,
+    pub candidates: Vec<SameAsCandidate>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SameAsActionReport {
+    pub left_id: String,
+    pub right_id: String,
+    pub action: &'static str,
+    pub idempotent: bool,
+}
+
+struct DecisionRecord {
+    decision_id: String,
+    title: String,
+    rationale: String,
+    topic_keys: Vec<String>,
+}
+
+pub fn find_connector_same_as_candidates<L: EventLedger>(
+    ledger: &L,
+    tenant_id: &TenantId,
+    import_run_id: &str,
+    config: &SameAsConfig,
+) -> Result<SameAsCandidateReport> {
+    let (all_decisions, run_decision_ids) =
+        scan_decisions_for_run(ledger, tenant_id, import_run_id)?;
+
+    let confirmed_pairs = scan_same_as_edges(ledger, tenant_id, EventType::RelationAdded)?;
+    let retracted_pairs = scan_same_as_edges(ledger, tenant_id, EventType::RelationRemoved)?;
+
+    // A pair to skip if confirmed (and not retracted) OR if retracted (durable)
+    let skip_pairs: HashSet<(String, String)> =
+        confirmed_pairs.union(&retracted_pairs).cloned().collect();
+
+    let mut candidates: Vec<SameAsCandidate> = Vec::new();
+    let mut seen_pairs: HashSet<(String, String)> = HashSet::new();
+
+    for left_id in &run_decision_ids {
+        let Some(left) = all_decisions.get(left_id.as_str()) else {
+            continue;
+        };
+
+        for right in all_decisions.values() {
+            if right.decision_id == *left_id {
+                continue;
+            }
+
+            let pair_key = canonical_pair(left_id, &right.decision_id);
+            if skip_pairs.contains(&pair_key) || seen_pairs.contains(&pair_key) {
+                continue;
+            }
+
+            let title_overlap = token_overlap(&left.title, &right.title);
+            let rationale_overlap = token_overlap(&left.rationale, &right.rationale);
+            let topic_overlap =
+                token_overlap(&left.topic_keys.join(" "), &right.topic_keys.join(" "));
+
+            let mut matched_fields: Vec<&'static str> = Vec::new();
+            if title_overlap >= config.min_score {
+                matched_fields.push("title");
+            }
+            if rationale_overlap >= config.min_score {
+                matched_fields.push("rationale");
+            }
+            if topic_overlap >= config.min_score {
+                matched_fields.push("topic_keys");
+            }
+
+            if matched_fields.len() < config.min_field_matches {
+                continue;
+            }
+
+            let score = title_overlap.max(rationale_overlap).max(topic_overlap);
+
+            let reviewer_action = if score >= 85 {
+                SameAsReviewerAction::ReviewFuzzySameAs
+            } else {
+                SameAsReviewerAction::ReviewAmbiguousSameAs
+            };
+
+            seen_pairs.insert(pair_key);
+            candidates.push(SameAsCandidate {
+                left_id: left_id.clone(), // ubs:ignore: same-as candidate owns both IDs for output
+                right_id: right.decision_id.clone(), // ubs:ignore: same-as candidate owns both IDs for output
+                score,
+                basis: SameAsBasis {
+                    algorithm: "token-overlap-jaccard-v1",
+                    title_token_overlap: title_overlap,
+                    rationale_token_overlap: rationale_overlap,
+                    topic_key_overlap: topic_overlap,
+                    matched_fields,
+                },
+                review_required: true,
+                reviewer_action,
+            });
+        }
+    }
+
+    candidates.sort_by_key(|c| Reverse(c.score));
+    let found = candidates.len();
+    Ok(SameAsCandidateReport {
+        import_run_id: import_run_id.to_owned(),
+        candidates_found: found,
+        candidates,
+    })
+}
+
+pub fn confirm_same_as<L: EventLedger>(
+    ledger: &L,
+    tenant_id: &TenantId,
+    left_id: &str,
+    right_id: &str,
+    actor_id: &str,
+) -> Result<SameAsActionReport> {
+    let event_uuid = same_as_event_uuid("confirm", left_id, right_id);
+    let idempotent = event_uuid_exists_for_tenant(ledger, tenant_id, event_uuid)?;
+
+    if !idempotent {
+        let (from_id, to_id) = canonical_ordered(left_id, right_id);
+        let event = EventBuilder::new(
+            event_uuid,
+            actor_id,
+            EventPayload::RelationAdded(RelationAddedPayload {
+                relation: RelationKind::SameAs,
+                from_id: from_id.to_owned(), // ubs:ignore: owned for EventPayload
+                to_id: to_id.to_owned(),     // ubs:ignore: owned for EventPayload
+            }),
+        )
+        .tenant_id(tenant_id.clone()) // ubs:ignore: EventBuilder::tenant_id() requires owned TenantId
+        .provenance(EventProvenance::cli())
+        .build()
+        .map_err(|e| {
+            crate::HivemindError::from(CommandError::Invariant(format!(
+                "failed to build same-as confirm event: {e}"
+            )))
+        })?;
+        ledger.append_for_tenant(tenant_id, event)?;
+    }
+
+    Ok(SameAsActionReport {
+        left_id: left_id.to_owned(),   // ubs:ignore: owned for report output
+        right_id: right_id.to_owned(), // ubs:ignore: owned for report output
+        action: "confirmed",
+        idempotent,
+    })
+}
+
+pub fn retract_same_as<L: EventLedger>(
+    ledger: &L,
+    tenant_id: &TenantId,
+    left_id: &str,
+    right_id: &str,
+    actor_id: &str,
+) -> Result<SameAsActionReport> {
+    let event_uuid = same_as_event_uuid("retract", left_id, right_id);
+    let idempotent = event_uuid_exists_for_tenant(ledger, tenant_id, event_uuid)?;
+
+    if !idempotent {
+        let (from_id, to_id) = canonical_ordered(left_id, right_id);
+        let event = EventBuilder::new(
+            event_uuid,
+            actor_id,
+            EventPayload::RelationRemoved(RelationRemovedPayload {
+                relation: RelationKind::SameAs,
+                from_id: from_id.to_owned(), // ubs:ignore: owned for EventPayload
+                to_id: to_id.to_owned(),     // ubs:ignore: owned for EventPayload
+            }),
+        )
+        .tenant_id(tenant_id.clone()) // ubs:ignore: EventBuilder::tenant_id() requires owned TenantId
+        .provenance(EventProvenance::cli())
+        .build()
+        .map_err(|e| {
+            crate::HivemindError::from(CommandError::Invariant(format!(
+                "failed to build same-as retract event: {e}"
+            )))
+        })?;
+        ledger.append_for_tenant(tenant_id, event)?;
+    }
+
+    Ok(SameAsActionReport {
+        left_id: left_id.to_owned(),   // ubs:ignore: owned for report output
+        right_id: right_id.to_owned(), // ubs:ignore: owned for report output
+        action: "retracted",
+        idempotent,
+    })
+}
+
+// Scan ledger for all decision.proposed events, returning:
+// (all_decisions_map, decision_ids_from_run)
+fn scan_decisions_for_run<L: EventLedger>(
+    ledger: &L,
+    tenant_id: &TenantId,
+    import_run_id: &str,
+) -> Result<(HashMap<String, DecisionRecord>, Vec<String>)> {
+    let mut all: HashMap<String, DecisionRecord> = HashMap::new();
+    let mut run_ids: Vec<String> = Vec::new();
+    let mut offset = 0u64;
+    const PAGE: usize = 1024;
+
+    loop {
+        let events = ledger.read_for_tenant(tenant_id, offset, PAGE)?;
+        if events.is_empty() {
+            break;
+        }
+
+        for event in &events {
+            if event.event_type != EventType::DecisionProposed {
+                if let Some(last_id) = events.last().and_then(|e| e.event_id) {
+                    let _ = last_id;
+                }
+                continue;
+            }
+
+            let Some(decision_id) = event.payload.get("decision_id").and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+            let title = event
+                .payload
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned(); // ubs:ignore: per-decision String clone for HashMap storage
+            let rationale = event
+                .payload
+                .get("rationale")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned(); // ubs:ignore: per-decision String clone for HashMap storage
+            let topic_keys: Vec<String> = event
+                .payload
+                .get("topic_keys")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(ToOwned::to_owned) // ubs:ignore: per-topic-key owned String for Vec<String>
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let decision_id_owned = decision_id.to_owned(); // ubs:ignore: decision_id is &str from event.payload; clone for HashMap key
+
+            // Check if this decision belongs to the requested import_run_id
+            let in_run = event
+                .source_ref
+                .as_deref()
+                .and_then(|sr| serde_json::from_str::<ConnectorSourceRef>(sr).ok())
+                .map(|src| src.import_run_id == import_run_id)
+                .unwrap_or(false);
+
+            if in_run && !run_ids.contains(&decision_id_owned) {
+                run_ids.push(decision_id_owned.clone()); // ubs:ignore: run_ids is a small per-run list; clone is intentional
+            }
+
+            all.entry(decision_id_owned.clone()) // ubs:ignore: HashMap entry by owned key; clone here, move into value below
+                .or_insert_with(|| DecisionRecord {
+                    decision_id: decision_id_owned, // ubs:ignore: moved; not cloned twice (entry key is separate from struct field)
+                    title,
+                    rationale,
+                    topic_keys,
+                });
+        }
+
+        if let Some(last_id) = events.last().and_then(|e| e.event_id) {
+            offset = last_id;
+        } else {
+            break;
+        }
+    }
+
+    Ok((all, run_ids))
+}
+
+// Scan ledger for SAME_AS relation events of the given type (added or removed).
+fn scan_same_as_edges<L: EventLedger>(
+    ledger: &L,
+    tenant_id: &TenantId,
+    event_type: EventType,
+) -> Result<HashSet<(String, String)>> {
+    let mut pairs: HashSet<(String, String)> = HashSet::new();
+    let mut offset = 0u64;
+    const PAGE: usize = 1024;
+
+    loop {
+        let events = ledger.read_for_tenant(tenant_id, offset, PAGE)?;
+        if events.is_empty() {
+            break;
+        }
+
+        for event in &events {
+            if event.event_type != event_type {
+                continue;
+            }
+            let relation = event
+                .payload
+                .get("relation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if relation != "SAME_AS" && relation != "same_as" {
+                continue;
+            }
+            let Some(from_id) = event.payload.get("from_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(to_id) = event.payload.get("to_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            pairs.insert(canonical_pair(from_id, to_id));
+        }
+
+        if let Some(last_id) = events.last().and_then(|e| e.event_id) {
+            offset = last_id;
+        } else {
+            break;
+        }
+    }
+
+    Ok(pairs)
+}
+
+fn canonical_pair(a: &str, b: &str) -> (String, String) {
+    if a <= b {
+        (a.to_owned(), b.to_owned()) // ubs:ignore: canonical pair ordering; two owned Strings per pair
+    } else {
+        (b.to_owned(), a.to_owned()) // ubs:ignore: canonical pair ordering; two owned Strings per pair
+    }
+}
+
+fn canonical_ordered<'a>(a: &'a str, b: &'a str) -> (&'a str, &'a str) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+fn same_as_event_uuid(action: &str, left_id: &str, right_id: &str) -> Uuid {
+    let (a, b) = canonical_ordered(left_id, right_id);
+    let key = format!("same-as:{action}:v1:{a}:{b}");
+    Uuid::new_v5(&Uuid::NAMESPACE_URL, key.as_bytes())
 }
 
 // ---------------------------------------------------------------------------

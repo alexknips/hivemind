@@ -1372,9 +1372,12 @@ impl DecisionIndex {
                             .option_ids
                             .insert(payload.to_id);
                     }
-                    EventRelationKind::Supports | EventRelationKind::Refutes => {}
+                    EventRelationKind::Supports
+                    | EventRelationKind::Refutes
+                    | EventRelationKind::SameAs => {}
                 },
-                EventPayload::EvidenceRecorded(_)
+                EventPayload::RelationRemoved(_)
+                | EventPayload::EvidenceRecorded(_)
                 | EventPayload::HypothesisRecorded(_)
                 | EventPayload::BlockerResolved(_)
                 | EventPayload::NotificationSent(_)
@@ -1486,9 +1489,11 @@ fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
             EventRelationKind::Refutes => HistoryChangeKind::RefutedAssumption,
             EventRelationKind::HasOption
             | EventRelationKind::Chose
-            | EventRelationKind::Assumes => HistoryChangeKind::ContextChange,
+            | EventRelationKind::Assumes
+            | EventRelationKind::SameAs => HistoryChangeKind::ContextChange,
         },
-        EventPayload::HypothesisRecorded(_)
+        EventPayload::RelationRemoved(_)
+        | EventPayload::HypothesisRecorded(_)
         | EventPayload::DecisionRequested(_)
         | EventPayload::BlockerReported(_)
         | EventPayload::BlockerResolved(_)
@@ -1530,7 +1535,8 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
             EventRelationKind::BasedOn
             | EventRelationKind::HasOption
             | EventRelationKind::Chose
-            | EventRelationKind::Assumes => {
+            | EventRelationKind::Assumes
+            | EventRelationKind::SameAs => {
                 ids.insert(from_id.clone());
             }
             EventRelationKind::Supports => {}
@@ -1538,6 +1544,7 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
                 ids.extend(index.decisions_assuming(to_id));
             }
         },
+        EventPayload::RelationRemoved(_) => {}
         EventPayload::BlockerReported(payload) => {
             if let Some(decision_id) = &payload.decision_id {
                 ids.insert(decision_id.clone());
@@ -1613,6 +1620,11 @@ fn affected_nodes_for_event(event: &Event, payload: &EventPayload) -> Vec<Affect
             nodes.insert(affected_node(&payload.from_id, from_kind));
             nodes.insert(affected_node(&payload.to_id, to_kind));
         }
+        EventPayload::RelationRemoved(payload) => {
+            let (from_kind, to_kind) = event_relation_endpoints(payload.relation);
+            nodes.insert(affected_node(&payload.from_id, from_kind));
+            nodes.insert(affected_node(&payload.to_id, to_kind));
+        }
         EventPayload::BlockerReported(payload) => {
             nodes.insert(affected_node(&payload.blocker_id, NodeKind::Blocker));
             nodes.insert(affected_node(&payload.blocked_actor_id, NodeKind::Actor));
@@ -1664,6 +1676,7 @@ fn event_relation_endpoints(relation: EventRelationKind) -> (NodeKind, NodeKind)
         EventRelationKind::Supports | EventRelationKind::Refutes => {
             (NodeKind::Evidence, NodeKind::Hypothesis)
         }
+        EventRelationKind::SameAs => (NodeKind::Decision, NodeKind::Decision),
     }
 }
 

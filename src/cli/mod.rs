@@ -748,11 +748,51 @@ impl ImportDocumentConflictAction {
 
 #[derive(Debug, Clone, Args)]
 pub struct ImportConnectorArgs {
+    #[command(subcommand)]
+    pub command: ImportConnectorCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum ImportConnectorCommand {
+    #[command(name = "run")]
+    Run(ImportConnectorRunArgs),
+    #[command(name = "same-as-candidates")]
+    SameAsCandidates(ImportConnectorSameAsCandidatesArgs),
+    #[command(name = "confirm-same-as")]
+    ConfirmSameAs(ImportConnectorConfirmSameAsArgs),
+    #[command(name = "retract-same-as")]
+    RetractSameAs(ImportConnectorRetractSameAsArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ImportConnectorRunArgs {
     #[arg(long = "url", value_name = "URL_OR_PATH")]
     pub url_or_id: String,
 
     #[arg(long = "max-versions", default_value_t = 50)]
     pub max_versions: usize,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ImportConnectorSameAsCandidatesArgs {
+    #[arg(long = "since-run", value_name = "IMPORT_RUN_ID")]
+    pub import_run_id: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ImportConnectorConfirmSameAsArgs {
+    #[arg(long = "left", value_name = "DECISION_ID")]
+    pub left_id: String,
+    #[arg(long = "right", value_name = "DECISION_ID")]
+    pub right_id: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ImportConnectorRetractSameAsArgs {
+    #[arg(long = "left", value_name = "DECISION_ID")]
+    pub left_id: String,
+    #[arg(long = "right", value_name = "DECISION_ID")]
+    pub right_id: String,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -2157,24 +2197,58 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
         }
         ImportCommand::Connector(args) => {
             use crate::connector::{
-                import_via_connector, ConnectorImportRequest, GitFileConnector,
+                confirm_same_as, find_connector_same_as_candidates, import_via_connector,
+                retract_same_as, ConnectorImportRequest, GitFileConnector, SameAsConfig,
             };
             let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
             let tenant_id = cli_tenant(cli)?;
-            let connectors: Vec<Box<dyn crate::connector::Connector>> =
-                vec![Box::new(GitFileConnector)];
-            let report = import_via_connector(
-                &ledger,
-                &tenant_id,
-                &ConnectorImportRequest {
-                    url_or_id: args.url_or_id.clone(), // ubs:ignore: args is &ImportConnectorArgs, clone required to own
-                    importer_actor_id: cli.actor.clone(), // ubs:ignore: cli is &Cli, clone required to own
-                    max_versions: args.max_versions,
-                    import_run_id: None,
-                },
-                &connectors,
-            )?;
-            format_json_value(cli.json, &report)
+            match &args.command {
+                ImportConnectorCommand::Run(run_args) => {
+                    let connectors: Vec<Box<dyn crate::connector::Connector>> =
+                        vec![Box::new(GitFileConnector)];
+                    let report = import_via_connector(
+                        &ledger,
+                        &tenant_id,
+                        &ConnectorImportRequest {
+                            url_or_id: run_args.url_or_id.clone(), // ubs:ignore: clone required to own from &ImportConnectorRunArgs
+                            importer_actor_id: cli.actor.clone(), // ubs:ignore: clone required to own from &Cli
+                            max_versions: run_args.max_versions,
+                            import_run_id: None,
+                        },
+                        &connectors,
+                    )?;
+                    format_json_value(cli.json, &report)
+                }
+                ImportConnectorCommand::SameAsCandidates(ca) => {
+                    let report = find_connector_same_as_candidates(
+                        &ledger,
+                        &tenant_id,
+                        &ca.import_run_id,
+                        &SameAsConfig::default(),
+                    )?;
+                    format_json_value(cli.json, &report)
+                }
+                ImportConnectorCommand::ConfirmSameAs(ca) => {
+                    let report = confirm_same_as(
+                        &ledger,
+                        &tenant_id,
+                        &ca.left_id,
+                        &ca.right_id,
+                        &cli.actor,
+                    )?;
+                    format_json_value(cli.json, &report)
+                }
+                ImportConnectorCommand::RetractSameAs(ra) => {
+                    let report = retract_same_as(
+                        &ledger,
+                        &tenant_id,
+                        &ra.left_id,
+                        &ra.right_id,
+                        &cli.actor,
+                    )?;
+                    format_json_value(cli.json, &report)
+                }
+            }
         }
     }
 }
@@ -2557,6 +2631,7 @@ fn reviewed_decision_ids_by_actor(
             | EventPayload::EvidenceRecorded(_)
             | EventPayload::HypothesisRecorded(_)
             | EventPayload::RelationAdded(_)
+            | EventPayload::RelationRemoved(_)
             | EventPayload::BlockerReported(_)
             | EventPayload::BlockerResolved(_)
             | EventPayload::NotificationSent(_)
@@ -2596,6 +2671,7 @@ impl ReviewLedgerContext {
                 | EventPayload::DecisionRejected(_)
                 | EventPayload::DecisionSuperseded(_)
                 | EventPayload::RelationAdded(_)
+                | EventPayload::RelationRemoved(_)
                 | EventPayload::BlockerReported(_)
                 | EventPayload::BlockerResolved(_)
                 | EventPayload::NotificationSent(_)
@@ -3184,6 +3260,7 @@ fn event_type_label(event_type: EventType) -> &'static str {
         EventType::EvidenceRecorded => "evidence.recorded",
         EventType::HypothesisRecorded => "hypothesis.recorded",
         EventType::RelationAdded => "relation.added",
+        EventType::RelationRemoved => "relation.removed",
         EventType::BlockerReported => "blocker.reported",
         EventType::BlockerResolved => "blocker.resolved",
         EventType::NotificationSent => "notification.sent",
