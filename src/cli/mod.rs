@@ -250,6 +250,9 @@ pub struct ClassifyQueueSubmitArgs {
     pub batch_id: String,
 
     /// Structured captures as a JSON array of CaptureItem objects.
+    /// Accepts either an inline JSON string or a path to a JSON file (prefix with @).
+    /// Example: --captures '[{"kind":"decision",...}]'
+    /// Example: --captures @/tmp/captures.json
     #[arg(long)]
     pub captures: String,
 
@@ -1616,7 +1619,14 @@ fn run_classify_queue_list(cli: &Cli, args: &ClassifyQueueListArgs) -> Result<St
 }
 
 fn run_classify_queue_submit(cli: &Cli, args: &ClassifyQueueSubmitArgs) -> Result<String> {
-    let captures: Vec<CaptureItem> = serde_json::from_str(&args.captures)
+    let json_str = if let Some(path) = args.captures.strip_prefix('@') {
+        std::fs::read_to_string(path).map_err(|e| {
+            CliError::InvalidInput(format!("cannot read captures file '{path}': {e}"))
+        })?
+    } else {
+        args.captures.clone()
+    };
+    let captures: Vec<CaptureItem> = serde_json::from_str(&json_str)
         .map_err(|e| CliError::InvalidInput(format!("--captures is not valid JSON: {e}")))?;
 
     let tenant_id = cli_tenant(cli)?;

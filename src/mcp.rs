@@ -305,6 +305,8 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "dump_graph" => tool_dump_graph(arguments, config),
         "hivemind_compact_view" => tool_compact_view(arguments, config),
         "summarize_decisions" => tool_summarize_decisions(arguments, config),
+        "list_pending_batches" => tool_list_pending_batches(arguments, config),
+        "submit_batch_classification" => tool_submit_batch_classification(arguments, config),
         other => return Err(RpcError::invalid_params(format!("unknown tool: {other}"))),
     };
 
@@ -553,6 +555,58 @@ fn tool_definitions() -> Vec<Value> {
                         "type": "string",
                         "enum": ["single", "cluster", "chain"],
                         "description": "single = one decision digest; cluster = multi-decision synthesis; chain = supersession chain evolution. Defaults to single when one ID is given, cluster when multiple."
+                    }
+                }
+            }
+        }),
+        json!({
+            "name": "list_pending_batches",
+            "description": "List ingest batches that have been received but not yet classified (Worker A queue). Returns batch_id, actor_id, turn_count, and submitted_at for each pending batch. Use this before submit_batch_classification to discover what needs classifying.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of pending batches to return (default 20).",
+                        "default": 20
+                    }
+                }
+            }
+        }),
+        json!({
+            "name": "submit_batch_classification",
+            "description": "Submit agent-produced captures for an ingest batch, completing Worker A classification. Appends an IngestBatchClassified event with structured captures derived from the batch text. Use list_pending_batches to find batch IDs.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["batch_id", "captures"],
+                "properties": {
+                    "batch_id": {
+                        "type": "string",
+                        "description": "Batch ID to classify (from list_pending_batches)."
+                    },
+                    "captures": {
+                        "type": "array",
+                        "description": "Structured captures derived from the batch. Each item must have kind, title, rationale, topic_keys, evidence_ids, and extraction_confidence.",
+                        "items": {
+                            "type": "object",
+                            "required": ["kind", "title", "rationale", "topic_keys", "evidence_ids", "extraction_confidence"],
+                            "properties": {
+                                "kind": { "type": "string", "enum": ["decision", "evidence", "hypothesis", "blocker", "decision-request", "notification"] },
+                                "title": { "type": "string" },
+                                "rationale": { "type": "string" },
+                                "topic_keys": { "type": "array", "items": { "type": "string" } },
+                                "evidence_ids": { "type": "array", "items": { "type": "string" } },
+                                "extraction_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+                                "options": { "type": ["array", "null"] },
+                                "chosen_option": { "type": ["string", "null"] },
+                                "expressed_confidence": { "type": "string", "enum": ["low", "medium", "high"] },
+                                "actor_id": { "type": "string" }
+                            }
+                        }
+                    },
+                    "actor_id": {
+                        "type": "string",
+                        "description": "Actor submitting the classification. Defaults to agent:<tool>:<session>."
                     }
                 }
             }
@@ -943,6 +997,59 @@ fn open_memory_graph(config: &McpConfig) -> Result<MemoryGraph> {
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &config.tenant_id, &graph)?;
     Ok(graph)
+}
+
+fn tool_list_pending_batches(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let limit = optional_usize(&args, "limit")?.unwrap_or(20);
+    let mut batches =
+        crate::classifier::list_pending_batches(&config.hivemind_dir, &config.tenant_id)
+            .map_err(|e| RpcError::internal(format!("ledger scan failed: {e}")))?;
+    batches.truncate(limit);
+    Ok(serde_json::to_value(&batches)?)
+}
+
+fn tool_submit_batch_classification(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let batch_id = require_string(&args, "batch_id")?;
+    let actor_id = actor_id_or_default(&args, config)?;
+
+    let captures_value = args
+        .get("captures")
+        .cloned()
+        .ok_or_else(|| RpcError::invalid_params("missing `captures`"))?;
+    let captures: Vec<crate::events::CaptureItem> = serde_json::from_value(captures_value)
+        .map_err(|e| {
+            RpcError::invalid_params(format!("`captures` is not valid CaptureItem array: {e}"))
+        })?;
+
+    let capture_count = captures.len();
+    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let commands = Commands::new_with_context(
+        &ledger,
+        config.command_context(EventProvenance::agent(actor_id)),
+    );
+    commands
+        .record_ingest_batch_classified(
+            &actor_id_or_default(&args, config)?,
+            &batch_id,
+            "agent:worker-a",
+            crate::classifier::SCHEMA_VERSION,
+            captures,
+            None,
+        )
+        .map_err(|e| RpcError::internal(format!("submit failed: {e}")))?;
+
+    Ok(json!({
+        "batch_id": batch_id,
+        "capture_count": capture_count,
+    }))
 }
 
 // ---------------------------------------------------------------------------

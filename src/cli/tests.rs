@@ -3231,3 +3231,71 @@ fn classify_queue_list_and_submit_round_trip() {
     let list2: serde_json::Value = serde_json::from_str(&list2_output).expect("valid json");
     assert_eq!(list2.as_array().map(|a| a.len()), Some(0));
 }
+
+#[test]
+fn classify_queue_submit_accepts_file_path_captures() {
+    use crate::commands::{CommandContext, Commands};
+    use crate::events::{EventProvenance, IngestTurn, TenantId};
+    use crate::ledger::SqliteEventLedger;
+
+    let hivemind_dir = unique_test_dir("classify-queue-file");
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(TenantId::local(), EventProvenance::cli()),
+    );
+    commands
+        .record_ingest_batch(
+            "agent:test",
+            "batch-file",
+            "claude-code",
+            "session-2",
+            vec![IngestTurn {
+                turn_id: "t1".to_owned(),
+                role: "user".to_owned(),
+                text: "Do we need a cache layer?".to_owned(),
+                truncated: false,
+            }],
+        )
+        .expect("record batch");
+
+    let captures_json = serde_json::json!([{
+        "kind": "decision",
+        "title": "Add Redis cache layer",
+        "rationale": "Latency requirements need caching",
+        "topic_keys": ["infrastructure"],
+        "evidence_ids": [],
+        "options": null,
+        "chosen_option": null,
+        "extraction_confidence": 0.9
+    }])
+    .to_string();
+
+    let captures_file = {
+        let mut path = hivemind_dir.clone();
+        path.push("captures.json");
+        std::fs::write(&path, &captures_json).expect("write captures file");
+        path
+    };
+    let file_arg = format!("@{}", captures_file.to_str().expect("utf-8"));
+
+    let dir_str = hivemind_dir.to_str().expect("utf-8");
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--actor",
+        "agent:claude-code:session-2",
+        "--hivemind-dir",
+        dir_str,
+        "classify-queue",
+        "submit",
+        "--batch-id",
+        "batch-file",
+        "--captures",
+        &file_arg,
+    ]))
+    .expect("classify-queue submit with file path succeeds");
+    let result: serde_json::Value = serde_json::from_str(&output).expect("valid json");
+    assert_eq!(result["batch_id"], serde_json::json!("batch-file"));
+    assert_eq!(result["capture_count"], serde_json::json!(1));
+}

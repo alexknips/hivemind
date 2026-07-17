@@ -51,7 +51,7 @@ fn tools_list_includes_all_fourteen_tools() {
     );
     assert_eq!(responses.len(), 1); // ubs:ignore: test-only; index guaranteed by test setup
     let tools = responses[0]["result"]["tools"].as_array().expect("array"); // ubs:ignore: test-only; panicking is correct in tests
-    assert_eq!(tools.len(), 14, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
+    assert_eq!(tools.len(), 16, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("string name")) // ubs:ignore: test-only; panicking is correct in tests
@@ -71,6 +71,8 @@ fn tools_list_includes_all_fourteen_tools() {
         "dump_graph",
         "hivemind_compact_view",
         "summarize_decisions",
+        "list_pending_batches",
+        "submit_batch_classification",
     ] {
         assert!(names.contains(&expected), "missing tool {expected}"); // ubs:ignore: test-only assertion
     }
@@ -639,5 +641,91 @@ fn summarize_mode_single_with_multiple_ids_returns_tool_error() {
     let responses = drive(&config, &[req.as_str()]);
     let result = &responses[0]["result"]; // ubs:ignore: test-only; index guaranteed by test setup
     assert!(result["isError"].as_bool().unwrap_or(false)); // ubs:ignore: test-only assertion
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn list_pending_batches_and_submit_classification_round_trip() {
+    use crate::commands::{CommandContext, Commands};
+    use crate::events::{EventProvenance, IngestTurn, TenantId};
+
+    let dir = unique_dir("classify-queue-mcp");
+    let config = McpConfig::new(&dir).with_session_id("cq-mcp-session");
+
+    let ledger = SqliteEventLedger::open(&dir).expect("ledger opens"); // ubs:ignore: test-only
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(TenantId::local(), EventProvenance::cli()),
+    );
+    commands
+        .record_ingest_batch(
+            "agent:test",
+            "batch-mcp-1",
+            "claude-code",
+            "session-x",
+            vec![IngestTurn {
+                turn_id: "t1".to_owned(),
+                role: "user".to_owned(),
+                text: "Should we use Redis or Memcached?".to_owned(),
+                truncated: false,
+            }],
+        )
+        .expect("record batch"); // ubs:ignore: test-only; panicking on setup failure is correct
+
+    // list_pending_batches returns the unseeded batch
+    let list_req = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": "list_pending_batches", "arguments": {} }
+    })
+    .to_string();
+    let responses = drive(&config, &[list_req.as_str()]);
+    let result = &responses[0]["result"]; // ubs:ignore: test-only; index guaranteed by test setup
+    assert!(
+        !result["isError"].as_bool().unwrap_or(true),
+        "list failed: {result}"
+    ); // ubs:ignore: test-only assertion
+    let batches: serde_json::Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().expect("text")).expect("json"); // ubs:ignore: test-only; panicking is correct
+    assert_eq!(batches.as_array().map(|a| a.len()), Some(1)); // ubs:ignore: test-only assertion
+    assert_eq!(batches[0]["batch_id"], json!("batch-mcp-1")); // ubs:ignore: test-only assertion
+
+    // submit_batch_classification drains the batch
+    let submit_req = json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {
+            "name": "submit_batch_classification",
+            "arguments": {
+                "batch_id": "batch-mcp-1",
+                "captures": [{
+                    "kind": "decision",
+                    "title": "Use Redis for caching",
+                    "rationale": "Better pub/sub and data structures than Memcached",
+                    "topic_keys": ["infrastructure"],
+                    "evidence_ids": [],
+                    "extraction_confidence": 0.85
+                }]
+            }
+        }
+    })
+    .to_string();
+    let responses2 = drive(&config, &[submit_req.as_str()]);
+    let result2 = &responses2[0]["result"]; // ubs:ignore: test-only; index guaranteed by test setup
+    assert!(
+        !result2["isError"].as_bool().unwrap_or(true),
+        "submit failed: {result2}"
+    ); // ubs:ignore: test-only assertion
+    assert_eq!(
+        result2["structuredContent"]["batch_id"],
+        json!("batch-mcp-1")
+    ); // ubs:ignore: test-only assertion
+    assert_eq!(result2["structuredContent"]["capture_count"], json!(1)); // ubs:ignore: test-only assertion
+
+    // list_pending_batches returns empty after classification
+    let responses3 = drive(&config, &[list_req.as_str()]);
+    let result3 = &responses3[0]["result"]; // ubs:ignore: test-only; index guaranteed by test setup
+    let batches2: serde_json::Value =
+        serde_json::from_str(result3["content"][0]["text"].as_str().expect("text")).expect("json"); // ubs:ignore: test-only
+    assert_eq!(batches2.as_array().map(|a| a.len()), Some(0)); // ubs:ignore: test-only assertion
+
     let _ = std::fs::remove_dir_all(&dir);
 }
