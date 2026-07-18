@@ -46,8 +46,8 @@ const base = import.meta.env.BASE_URL;
     <!-- Hero -->
     <section class="max-w-6xl mx-auto px-6 pt-24 pb-20 text-center">
       <div class="inline-flex items-center gap-2 bg-indigo-950 border border-indigo-800 text-indigo-300 text-xs px-3 py-1.5 rounded-full mb-8">
-        <span class="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
-        MCP-native &middot; stdio + HTTP &middot; 12 tools &middot; works with Claude, Codex, Cursor
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+        v0.4.0 &middot; MCP-native &middot; stdio + HTTP &middot; 12 tools &middot; works with Claude, Codex, Cursor
       </div>
       <h1 class="text-5xl sm:text-6xl font-bold text-white leading-tight mb-6">
         The wiki says what was decided.<br/>
@@ -71,7 +71,8 @@ const base = import.meta.env.BASE_URL;
           </div>
           <p class="text-gray-400 text-sm mb-3">Then <span class="text-gray-200">sign in with GitHub or Google</span> &mdash; you&rsquo;re connected. Agents call 12 tools to capture and query decisions; nothing to install.</p>
           <div class="bg-gray-950/60 rounded-lg p-3 font-mono text-xs text-gray-400">
-            <span class="text-gray-500">// prefer to self-host?</span> &nbsp;<span class="text-emerald-300">claude mcp add</span> hivemind -- hivemind mcp
+            <span class="text-gray-500">// self-host via CLI &mdash; stdio, no Docker, no API key</span><br/>
+            <span class="text-emerald-300">claude mcp add</span> hivemind -- hivemind mcp
           </div>
         </div>
       </div>
@@ -116,7 +117,8 @@ const base = import.meta.env.BASE_URL;
           <!-- Self-host -->
           <div class="bg-gray-900 border border-gray-800 rounded-xl p-8">
             <div class="flex items-center gap-2 mb-4">
-              <span class="text-xs font-mono text-gray-500 uppercase tracking-wide">Self-host</span>
+              <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span class="text-xs font-mono text-emerald-400 uppercase tracking-wide">v0.4.0 &mdash; GA</span>
             </div>
             <h3 class="text-xl font-bold text-white mb-3">Run your own</h3>
             <p class="text-gray-300 text-sm leading-relaxed mb-4">
@@ -124,8 +126,11 @@ const base = import.meta.env.BASE_URL;
               up a full cell: clone, set one secret, <code class="text-indigo-300">docker compose up</code>.
               Connect your agent via MCP in under five minutes.
             </p>
-            <div class="bg-gray-950 rounded-lg p-3 font-mono text-xs text-gray-400 mb-6">
+            <div class="bg-gray-950 rounded-lg p-3 font-mono text-xs text-gray-400 mb-4">
               docker compose up --build -d
+            </div>
+            <div class="bg-emerald-950/40 border border-emerald-900 rounded-lg px-4 py-3 text-xs text-emerald-300 mb-6">
+              No <code class="text-emerald-200">ANTHROPIC_API_KEY</code> on your server &mdash; capture classification rides your own Claude subscription.
             </div>
             <a href={`${base}getting-started/install/`} class="inline-block border border-gray-700 hover:border-gray-500 text-gray-300 hover:text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors">
               Self-host guide &rarr;

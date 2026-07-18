@@ -75,13 +75,6 @@ Reload Claude Code. The HiveMind tools appear in your agent's tool list. Your in
 the managed hosted service. Separate deployments, separate data.
 :::
 
-:::note
-**TODO (hivemind-iioq, in flight):** Multi-user auth will change the "add users" step.
-For now, provision one tenant per user with the `curl` command above. This section
-will be updated when that feature lands — the page is intentionally structured
-so the update slots in here without a rewrite.
-:::
-
 ---
 
 ## Local CLI / development
