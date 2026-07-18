@@ -51,7 +51,7 @@ curl -s -X POST http://localhost:8080/v1/tenants \
   -d '{"tenant_id": "me", "display_name": "My Team"}'
 ```
 
-The response includes `token_secret` — a value starting with `hm_sk_live_...`. Copy it now.
+The response includes `token_secret` — a value starting with `hm_tk_...`. Copy it now.
 
 Add HiveMind to Claude Code by pasting this into `.mcp.json` in your project root:
 
@@ -61,7 +61,7 @@ Add HiveMind to Claude Code by pasting this into `.mcp.json` in your project roo
     "hivemind": {
       "url": "http://localhost:8080/mcp",
       "headers": {
-        "Authorization": "Bearer hm_sk_live_..."
+        "Authorization": "Bearer hm_tk_..."
       }
     }
   }
@@ -73,13 +73,6 @@ Reload Claude Code. The HiveMind tools appear in your agent's tool list. Your in
 :::note
 **Your data stays on your machine.** The self-hosted cell never communicates with
 the managed hosted service. Separate deployments, separate data.
-:::
-
-:::note
-**TODO (hivemind-iioq, in flight):** Multi-user auth will change the "add users" step.
-For now, provision one tenant per user with the `curl` command above. This section
-will be updated when that feature lands — the page is intentionally structured
-so the update slots in here without a rewrite.
 :::
 
 ---
