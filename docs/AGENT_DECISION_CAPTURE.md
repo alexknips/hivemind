@@ -193,6 +193,34 @@ worker exits immediately when `ANTHROPIC_API_KEY` is absent — the rest of
 the system stays correct without it. See
 [`CAPTURE_CLASSIFIER.md`](CAPTURE_CLASSIFIER.md) for the classifier design.
 
+## Keyless classification (Worker A)
+
+`ANTHROPIC_API_KEY` is optional. When it is absent, the server-side background
+classifier (Worker B) does not start — the ingest path, ledger, and all queries
+remain fully functional.
+
+The `hivemind-capture` plugin ships **Worker A**: a
+`/hivemind-capture:classify-queue` slash command that drains the same pending
+classification queue using the agent's subscription seat. No API key is needed
+on the server.
+
+Install the plugin and run after a session:
+
+```text
+/hivemind-capture:classify-queue
+```
+
+Pass `--limit N` to cap the number of batches per run (default 20). The queue
+persists across runs; large backlogs drain across multiple invocations.
+
+Both Worker A and Worker B write identical `IngestBatchClassified` events to the
+same queue. Concurrent classification is idempotent — last writer wins per batch.
+Setting `ANTHROPIC_API_KEY` later starts Worker B automatically; Worker A remains
+available for on-demand draining.
+
+See [`docs/KEYLESS_CAPTURE.md`](KEYLESS_CAPTURE.md) for a zero-to-first-decision
+walkthrough that requires no API key.
+
 ## Reliability Tradeoffs
 
 Direct CLI capture is the explicit, testable, write-once path for named

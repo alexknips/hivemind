@@ -200,6 +200,60 @@ config (`CONNECTOR_*`) as a placeholder — that surface is not yet finalised
 
 ---
 
+## Keyless capture — no ANTHROPIC_API_KEY required
+
+`ANTHROPIC_API_KEY` in the table above is **optional**. Without it the server
+starts and operates correctly — the only thing that doesn't run is the
+server-side background classifier (Worker B).
+
+**If you omit `ANTHROPIC_API_KEY`**, classification still happens via
+**Worker A**: the `hivemind-capture` plugin ships a
+`/hivemind-capture:classify-queue` command that drains the same pending queue
+using your agent's subscription seat. No key, no extra configuration.
+
+### Keyless walkthrough
+
+1. **Start the cell** without an API key (skip that line in `.env`).
+
+2. **Install the capture plugin** from Claude Code:
+
+   ```text
+   /plugin marketplace add alexknips/hivemind
+   /plugin install hivemind-capture@hivemind
+   /reload-plugins
+   ```
+
+3. **Capture a decision** in-session:
+
+   ```text
+   /hivemind-capture:capture "Use Postgres for the shared backend" \
+     --kind decision \
+     --rationale "SQLite WAL mode does not scale across concurrent writers" \
+     --topic-keys infrastructure,storage \
+     --options sqlite,postgres \
+     --chose postgres
+   ```
+
+4. **Drain the classification queue** after your session:
+
+   ```text
+   /hivemind-capture:classify-queue
+   ```
+
+   The command classifies pending batches using your subscription model and
+   writes `IngestBatchClassified` events. Pass `--limit N` to cap the run.
+
+5. **Query back**:
+
+   ```bash
+   hivemind query recent_decisions --since 1h --limit 5
+   ```
+
+See [`docs/KEYLESS_CAPTURE.md`](KEYLESS_CAPTURE.md) for the full walkthrough
+and a comparison of Worker A vs Worker B.
+
+---
+
 ## E2E verification
 
 Run these checks after provisioning your first tenant to confirm all layers work.

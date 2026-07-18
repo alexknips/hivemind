@@ -85,6 +85,24 @@ LLM-backed query, multi-tenant shared backend, federation. These belong to
 the agentic layer above the ledger and to the shared-backend front —
 [`STRATEGY.md`](STRATEGY.md) tracks where each one stands.
 
+## Self-hosting
+
+Run a full HiveMind cell on your own infrastructure — your data stays on your
+machine, nothing phones home, no API key required to get started.
+
+```bash
+git clone https://github.com/alexknips/hivemind && cd hivemind
+cp .env.example .env
+sed -i "s/change-me-before-production/$(openssl rand -hex 32)/g" .env
+docker compose up --build -d
+```
+
+Then install the capture plugin and start capturing decisions — see
+[`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) for the full runbook (auth,
+multi-user, production checklist, troubleshooting) and
+[`docs/KEYLESS_CAPTURE.md`](docs/KEYLESS_CAPTURE.md) for a zero-to-first-decision
+walkthrough that needs no `ANTHROPIC_API_KEY`.
+
 ## Install
 
 Install the default CLI directly from Git:
@@ -242,10 +260,22 @@ plugin in `plugins/hivemind-capture`. Install it from Claude Code:
 
 In this repository, `.claude/settings.json` advertises the marketplace and
 enables `hivemind-capture@hivemind` so trusted Claude Code sessions are prompted
-to install it. The plugin provides `/hivemind-capture:capture-decision`,
-`/hivemind-capture:query-decisions`, and a `hivemind` MCP server wired to
-`hivemind mcp`. See `plugins/hivemind-capture/README.md` for uninstall and
-verification steps.
+to install it. The plugin provides:
+
+- `/hivemind-capture:capture` — capture a decision, evidence, or hypothesis
+- `/hivemind-capture:capture-decision` — legacy decision-only shorthand
+- `/hivemind-capture:query-decisions` — bounded topic/status reads
+- `/hivemind-capture:classify-queue` — drain the pending classification queue
+  using your subscription seat (**no `ANTHROPIC_API_KEY` required**)
+- A `hivemind` MCP server wired to `hivemind mcp`
+
+See `plugins/hivemind-capture/README.md` for uninstall and verification steps.
+
+**Keyless capture:** `ANTHROPIC_API_KEY` is optional. Without it the server
+runs without a background classifier; run `/hivemind-capture:classify-queue`
+after a session to classify pending batches using your agent's subscription
+seat. See [`docs/KEYLESS_CAPTURE.md`](docs/KEYLESS_CAPTURE.md) for the full
+zero-to-first-decision walkthrough.
 
 From a local HiveMind checkout, start Codex in this repository, open `/plugins`,
 choose `HiveMind Plugins`, and install `HiveMind Capture`. From another
@@ -427,7 +457,11 @@ Architecture and surfaces:
 Per-feature docs:
 
 - [`docs/AGENT_DECISION_CAPTURE.md`](docs/AGENT_DECISION_CAPTURE.md) — the
-  Claude/Codex capture path.
+  Claude/Codex capture path (CLI, HTTP API, hooks, MCP, and keyless Worker-A).
+- [`docs/KEYLESS_CAPTURE.md`](docs/KEYLESS_CAPTURE.md) — zero-to-first-decision
+  walkthrough without an `ANTHROPIC_API_KEY`.
+- [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) — self-hosting runbook (auth,
+  users, production checklist, troubleshooting).
 - [`docs/DOGFOOD.md`](docs/DOGFOOD.md) — operating contract for the repo-local
   shared dogfood ledger and agent capture loop.
 - [`docs/LOCAL_CAPTURE_DEMO.md`](docs/LOCAL_CAPTURE_DEMO.md) — local Slack plus
