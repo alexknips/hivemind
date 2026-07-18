@@ -72,6 +72,30 @@ hivemind --hivemind-dir ./hivemind/ emit decision.capture \
   --chose direct-cli
 ```
 
+## Keyless classification — no ANTHROPIC_API_KEY required
+
+`ANTHROPIC_API_KEY` is **optional**. Without it the server runs without the
+background classifier. Classification still happens on demand via
+`/hivemind-capture:classify-queue` — **Worker A**, which uses your agent's
+subscription seat.
+
+After a capture session:
+
+```text
+/hivemind-capture:classify-queue
+```
+
+The command drains the pending classification queue and writes
+`IngestBatchClassified` events. Pass `--limit N` to cap the number of batches
+per run (default 20).
+
+This means you can self-host HiveMind with zero external API keys and still get
+fully classified decisions — you just run the classify command rather than
+relying on the server's background worker.
+
+See the [keyless capture walkthrough](https://github.com/alexknips/hivemind/blob/master/docs/KEYLESS_CAPTURE.md)
+for a zero-to-first-decision guide.
+
 ## What agents should capture
 
 The capture classifier (layer 3) helps distinguish signal from noise. In practice:
