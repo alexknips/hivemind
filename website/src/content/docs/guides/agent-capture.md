@@ -1,15 +1,27 @@
 ---
 title: Agent Capture
-description: Let Claude Code and Codex capture decisions automatically.
+description: Let Claude Code and Codex capture decisions automatically — no API key required on your server.
 ---
 
-HiveMind ships installable capture bundles for **Claude Code** and **Codex**. Both
-packages teach agents when to preserve a decision and how to call the same
-`decision.capture` CLI used by humans.
+HiveMind ships installable capture bundles for **Claude Code** and **Codex**. Agents
+capture decisions directly into the local ledger or a self-hosted cell — no
+`ANTHROPIC_API_KEY` on the server is required.
 
-## Claude Code
+## Two capture paths
 
-### Install via marketplace
+| Path | When to use | API key on server? |
+|------|-------------|-------------------|
+| **Direct** (`emit decision.capture`) | Single, deterministic decision at the moment it's made | Not required |
+| **Batch / keyless** (`emit ingest.batch_classified`) | Retrospective extraction over accumulated context | Not required — rides your Claude subscription |
+
+The server-side background classifier (`ANTHROPIC_API_KEY` on the server) is optional.
+The keyless path spawns a Haiku subagent inside your own Claude session and submits
+pre-classified captures directly to the ledger. If your server has an API key
+configured, the background classifier picks up `enqueue-capture` batches instead.
+
+## Install
+
+### Claude Code — marketplace
 
 ```text
 /plugin marketplace add alexknips/hivemind
@@ -21,25 +33,11 @@ This installs three skills and an MCP server:
 
 | Skill / Tool | What it does |
 |-------------|-------------|
-| `/hivemind-capture:capture-decision` | Capture a decision to the local ledger |
+| `/hivemind-capture:capture-decision` | Capture a single decision to the local ledger |
 | `/hivemind-capture:query-decisions` | Query recent decisions by topic or status |
 | `hivemind` MCP server | Full write + query access via MCP tools |
 
-### Manual install
-
-Copy the skill directory into Claude Code's skill path:
-
-```bash
-cp -r plugins/hivemind-capture/skills/hivemind-capture \
-    "$HOME/.claude/plugins/hivemind-capture/"
-```
-
-### From a repo checkout
-
-In `.claude/settings.json`, the marketplace is pre-configured for trusted sessions
-in the HiveMind repository. Claude Code will prompt to install the plugin on launch.
-
-## Codex
+### Codex
 
 From a local HiveMind checkout: open `/plugins`, choose `HiveMind Plugins`, and
 install `HiveMind Capture`.
@@ -56,12 +54,10 @@ Or copy the skill bundle directly:
 cp -r plugins/hivemind-capture/skills/hivemind-capture "$HOME/.agents/skills/"
 ```
 
-## The capture path
+## Direct capture — single decision
 
-Both bundles call the same noninteractive `decision.capture` CLI path, which:
-- Defaults actor and provenance to `agent:<tool>:<session>`
-- Records `source=agent` with a per-session `source_ref`
-- Writes to `HIVEMIND_DIR` (or `--hivemind-dir`)
+Use `emit decision.capture` for a single, deterministic decision you're making
+right now. This is the preferred path for in-the-moment choices.
 
 ```bash
 hivemind --hivemind-dir ./hivemind/ emit decision.capture \
@@ -72,22 +68,63 @@ hivemind --hivemind-dir ./hivemind/ emit decision.capture \
   --chose direct-cli
 ```
 
-## Keyless classification — no ANTHROPIC_API_KEY required
+Actor identity is derived automatically from session environment variables
+(`CLAUDE_SESSION_ID`, `CODEX_THREAD_ID`, etc.). Use `--agent-tool` and
+`--agent-session` only when overriding the defaults.
 
-`ANTHROPIC_API_KEY` is **optional**. Without it the server runs without the
-background classifier. Classification still happens on demand via
-`/hivemind-capture:classify-queue` — **Worker A**, which uses your agent's
-subscription seat.
+## Batch capture (keyless)
 
-After a capture session:
+For retrospective extraction over a batch of conversation turns, spawn a Haiku
+subagent inside your own session. Classification rides your Claude subscription —
+no `ANTHROPIC_API_KEY` is read from the server environment.
 
-```text
-/hivemind-capture:classify-queue
+### When to use the batch path
+
+- You have accumulated context to classify at once.
+- Your server does not have `ANTHROPIC_API_KEY` configured (self-hosted zero-key deployment).
+- You want extraction to complete immediately rather than waiting for the server's background poll.
+
+### Batch capture workflow
+
+1. Spawn a Haiku subagent with the classifier prompt (see `plugins/hivemind-capture/skills/hivemind-capture/SKILL.md` for the full prompt template). The subagent returns a JSON array of `CaptureItem` objects.
+
+2. Write the output and submit:
+
+```bash
+cat > /tmp/hivemind-captures.json <<'EOF'
+[ { "kind": "decision", "title": "...", "rationale": "...", ... } ]
+EOF
+
+HIVEMIND_AGENT_SESSION="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${GC_SESSION_ID:-manual-session}}}"
+hivemind --hivemind-dir ./hivemind/ emit ingest.batch_classified \
+  --captures /tmp/hivemind-captures.json \
+  --agent-tool claude \
+  --agent-session "$HIVEMIND_AGENT_SESSION" \
+  --classifier-model "claude-haiku-4-5-20251001"
 ```
 
-The command drains the pending classification queue and writes
-`IngestBatchClassified` events. Pass `--limit N` to cap the number of batches
-per run (default 20).
+3. Verify the captures are visible:
+
+```bash
+hivemind --hivemind-dir ./hivemind/ query search_decisions --limit 5
+```
+
+The server's background classifier does not reprocess plugin-submitted batches —
+`ingest.batch_classified` events are already classified and the background worker
+only processes `ingest.batch_received` events.
+
+### Checking the classify queue
+
+When the server-side classifier is enabled (`ANTHROPIC_API_KEY` configured),
+`enqueue-capture` queues activity for background classification. Use
+`classify-queue` to inspect:
+
+```bash
+hivemind --hivemind-dir ./hivemind/ classify-queue list
+hivemind --hivemind-dir ./hivemind/ classify-queue submit --batch-id <id>
+```
+
+Pass `--limit N` to cap the number of batches per run (default: 20).
 
 This means you can self-host HiveMind with zero external API keys and still get
 fully classified decisions — you just run the classify command rather than
@@ -98,7 +135,7 @@ for a zero-to-first-decision guide.
 
 ## What agents should capture
 
-The capture classifier (layer 3) helps distinguish signal from noise. In practice:
+The capture classifier (layer 3) distinguishes signal from noise. In practice:
 
 **Capture:**
 - A choice between implementation approaches where the rationale is non-obvious
@@ -110,9 +147,8 @@ The capture classifier (layer 3) helps distinguish signal from noise. In practic
 - Exploratory actions with no committed outcome
 - Status updates or progress notes
 
-The classifier runs in production on the HiveMind development process itself and
-correctly classifies ~92% of agent activity as noise. The 8% that becomes a captured
-decision is the part that matters six months later.
+The classifier measures ~92% of agent activity as noise in production. The 8%
+that becomes a captured decision is the part that matters six months later.
 
 ## Reviewing agent decisions
 
