@@ -153,6 +153,156 @@ ledger write must stay explicit and deterministic.
      --limit 10
    ```
 
+## Batch Capture via Haiku Subagent (Keyless)
+
+When you want to extract multiple decisions from a conversation batch without
+requiring a server-side `ANTHROPIC_API_KEY`, spawn a Haiku subagent inside
+your own session. The subagent runs the classifier prompt against recent
+activity and writes the results directly to the ledger using
+`emit ingest.batch_classified`. No HiveMind-held key is required — it rides
+the user's own Claude subscription.
+
+Use this path when:
+- You have a batch of conversation turns to classify at once.
+- The server may not have `ANTHROPIC_API_KEY` configured (self-hosted, zero-key
+  deployments).
+- You want extraction to happen immediately rather than waiting for the server's
+  background poll.
+
+Explicit `emit decision.capture` remains the preferred path for single,
+deterministic decisions you make in the moment. Use the batch path for
+retrospective extraction over accumulated context.
+
+### Batch Capture Workflow
+
+1. **Collect the batch text** — the recent conversation activity to classify.
+   Write it to a temporary file:
+
+   ```bash
+   cat > /tmp/hivemind-batch.txt <<'BATCH'
+   [assistant] Decided to use SQLite for local ledger storage — lighter than
+   Postgres for single-user deployments, sufficient for prototype scale.
+   Options considered: postgres, sqlite, dolt. Chose sqlite.
+   BATCH
+   ```
+
+2. **Spawn a Haiku subagent** (keeps classification off your main context):
+
+   Use the `Agent` tool with `model: "haiku"` and the following prompt,
+   substituting `<BATCH_CONTENT>` with the text from step 1:
+
+   ```
+   You are the HiveMind capture classifier.
+
+   HiveMind stores organizational decision memory: durable decisions, evidence,
+   hypotheses, blockers, decision requests, and notifications with provenance.
+   It does not store chat history, task tracking, private scratch notes, or
+   raw tool logs.
+
+   Read the batch of recent agent activity. Return ONLY a JSON array of
+   capture objects. Most batches should return [].
+
+   Capture a decision only when the text shows a chosen path among plausible
+   alternatives and gives or implies a reason.
+
+   Each capture object must have exactly these fields:
+   {
+     "kind": "decision" | "evidence" | "hypothesis" | "blocker" | "decision-request" | "notification",
+     "title": string,
+     "rationale": string,
+     "topic_keys": [string, ...],
+     "evidence_ids": [],
+     "options": [string, ...] | null,
+     "chosen_option": string | null,
+     "extraction_confidence": number (0.0-1.0),
+     "expressed_confidence": "low" | "medium" | "high" | null,
+     "supersedes_id": null,
+     "assumes_ids": [],
+     "supports_ids": [],
+     "refutes_ids": [],
+     "actor_id": null,
+     "accepted_by": null,
+     "rejected_by": null,
+     "blocked_actor_id": null,
+     "decision_id": null
+   }
+
+   Return only the JSON array, no other text.
+
+   ---BATCH---
+   <BATCH_CONTENT>
+   ```
+
+   The subagent returns a JSON array like:
+   ```json
+   [
+     {
+       "kind": "decision",
+       "title": "Use SQLite for local ledger",
+       "rationale": "Lighter than Postgres for single-user deployments; sufficient for prototype scale",
+       "topic_keys": ["storage", "architecture"],
+       "evidence_ids": [],
+       "options": ["postgres", "sqlite", "dolt"],
+       "chosen_option": "sqlite",
+       "extraction_confidence": 0.92,
+       "expressed_confidence": null,
+       "supersedes_id": null,
+       "assumes_ids": [],
+       "supports_ids": [],
+       "refutes_ids": [],
+       "actor_id": null,
+       "accepted_by": null,
+       "rejected_by": null,
+       "blocked_actor_id": null,
+       "decision_id": null
+     }
+   ]
+   ```
+
+3. **Write the captures to a file** and submit to the ledger:
+
+   ```bash
+   # Write the JSON array the subagent returned
+   cat > /tmp/hivemind-captures.json <<'EOF'
+   [{ ... subagent output ... }]
+   EOF
+
+   HIVEMIND_AGENT_SESSION="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}"
+   hivemind --hivemind-dir "$HIVEMIND_DIR" emit ingest.batch_classified \
+     --captures /tmp/hivemind-captures.json \
+     --agent-tool claude \
+     --agent-session "$HIVEMIND_AGENT_SESSION" \
+     --classifier-model "claude-haiku-4-5-20251001"
+   ```
+
+   For Codex sessions:
+   ```bash
+   HIVEMIND_AGENT_SESSION="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}"
+   hivemind --hivemind-dir "$HIVEMIND_DIR" emit ingest.batch_classified \
+     --captures /tmp/hivemind-captures.json \
+     --agent-tool codex \
+     --agent-session "$HIVEMIND_AGENT_SESSION" \
+     --classifier-model "claude-haiku-4-5-20251001"
+   ```
+
+   The command returns the `batch_id` for the submitted batch. The server's
+   background classifier does not re-process plugin-submitted batches because
+   no `ingest.batch_received` event is created — the classifier only processes
+   those.
+
+4. **Verify** the captures are visible:
+
+   ```bash
+   hivemind --hivemind-dir "$HIVEMIND_DIR" query search_decisions --limit 5
+   ```
+
+### Schema Contract
+
+The JSON array must match the `CaptureItem` schema from `src/classifier.rs`.
+All fields listed in step 2 are required. Use empty arrays for `evidence_ids`,
+`assumes_ids`, `supports_ids`, `refutes_ids`. Use `null` for all optional
+string fields unless the input text explicitly names them. Do not invent ids.
+
 ## Quality Rules
 
 - Use the helper or HiveMind CLI commands; do not write directly to the ledger from this skill.

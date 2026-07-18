@@ -3231,3 +3231,138 @@ fn classify_queue_list_and_submit_round_trip() {
     let list2: serde_json::Value = serde_json::from_str(&list2_output).expect("valid json");
     assert_eq!(list2.as_array().map(|a| a.len()), Some(0));
 }
+
+#[test]
+fn emit_ingest_batch_classified_plugin_path_round_trip() {
+    use crate::events::EventType;
+    use crate::ledger::SqliteEventLedger;
+
+    // This test covers the keyless plugin-edge capture path:
+    // the plugin spawns a Haiku subagent in-session, gets CaptureItem JSON back,
+    // and submits it via `emit ingest.batch_classified` — no server API key needed.
+    // The server background classifier is not involved (no IngestBatchReceived event
+    // exists for this batch_id, so classify-queue list stays empty).
+
+    let hivemind_dir = unique_test_dir("emit-ingest-batch-classified-plugin");
+    let captures_file = unique_test_dir("emit-ingest-batch-classified-captures");
+    let captures_path = captures_file.with_extension("json");
+
+    // Write a minimal captures JSON file (as the Haiku subagent would return)
+    let captures_json = serde_json::json!([
+        {
+            "kind": "decision",
+            "title": "Use SQLite for local prototype ledger",
+            "rationale": "Lighter than Postgres for single-user deployments, sufficient for prototype scale",
+            "topic_keys": ["storage", "architecture"],
+            "evidence_ids": [],
+            "options": ["postgres", "sqlite", "dolt"],
+            "chosen_option": "sqlite",
+            "extraction_confidence": 0.92,
+            "expressed_confidence": null,
+            "supersedes_id": null,
+            "assumes_ids": [],
+            "supports_ids": [],
+            "refutes_ids": [],
+            "actor_id": null,
+            "accepted_by": null,
+            "rejected_by": null,
+            "blocked_actor_id": null,
+            "decision_id": null
+        }
+    ]);
+    std::fs::write(&captures_path, captures_json.to_string()).expect("write captures file");
+
+    // Submit via the new edge-capture command
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "ingest.batch_classified",
+        "--captures",
+        captures_path.to_str().expect("utf-8 captures path"),
+        "--agent-tool",
+        "claude",
+        "--agent-session",
+        "plugin-session-1",
+        "--classifier-model",
+        "claude-haiku-4-5-20251001",
+    ]))
+    .expect("edge batch submit succeeds");
+
+    let output: serde_json::Value = serde_json::from_str(&output).expect("valid json output");
+    assert_eq!(
+        output.get("subcommand").and_then(|v| v.as_str()),
+        Some("emit")
+    );
+    assert_eq!(
+        output.get("kind").and_then(|v| v.as_str()),
+        Some("batch_id")
+    );
+    let batch_id = output
+        .get("value")
+        .and_then(|v| v.as_str())
+        .expect("batch_id in output");
+    assert!(!batch_id.is_empty());
+
+    // Verify the IngestBatchClassified event landed in the ledger
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let events = ledger.read(0, 50).expect("events read");
+
+    let classified_event = events
+        .iter()
+        .find(|e| e.event_type == EventType::IngestBatchClassified)
+        .expect("IngestBatchClassified event written");
+    // ubs:ignore: batch IDs are public ledger identifiers
+    assert_eq!(
+        classified_event
+            .payload
+            .get("batch_id")
+            .and_then(|v| v.as_str()),
+        Some(batch_id)
+    );
+    assert_eq!(classified_event.actor_id, "agent:claude:plugin-session-1");
+    assert_eq!(
+        classified_event
+            .payload
+            .get("classifier_model")
+            .and_then(|v| v.as_str()),
+        Some("claude-haiku-4-5-20251001")
+    );
+
+    // No IngestBatchReceived event — server classifier has nothing to process
+    assert!(
+        events
+            .iter()
+            .all(|e| e.event_type != EventType::IngestBatchReceived),
+        "plugin-edge path must not create a IngestBatchReceived event"
+    );
+
+    // The captures project to a queryable decision in the graph
+    let search_output = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "search_decisions",
+        "--limit",
+        "5",
+    ]))
+    .expect("search succeeds");
+    let search: serde_json::Value =
+        serde_json::from_str(&search_output).expect("valid search json");
+    assert_eq!(
+        search["result_count"],
+        serde_json::json!(1),
+        "one capture projected to graph"
+    );
+    assert_eq!(
+        search["data"]["items"][0]["decision"]["title"],
+        serde_json::json!("Use SQLite for local prototype ledger")
+    );
+
+    let _ = std::fs::remove_file(&captures_path);
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}

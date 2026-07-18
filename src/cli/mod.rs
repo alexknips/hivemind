@@ -553,6 +553,8 @@ pub enum EmitCommand {
     RelationAdded(EmitRelationAddedArgs),
     #[command(name = "relation.attach_evidence")]
     AttachEvidence(EmitAttachEvidenceArgs),
+    #[command(name = "ingest.batch_classified")]
+    IngestBatchClassified(EmitIngestBatchClassifiedArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -671,6 +673,32 @@ pub struct EmitAttachEvidenceArgs {
 
     #[arg(long = "evidence-id")]
     pub evidence_id: String,
+}
+
+/// Submit a pre-classified capture batch from a plugin/edge session.
+///
+/// The captures JSON must be an array of CaptureItem objects matching the
+/// schema produced by src/classifier.rs (the ingest.batch_classified contract).
+/// This path writes IngestBatchClassified directly — no ANTHROPIC_API_KEY
+/// needed. The server classifier skips this batch because no companion
+/// IngestBatchReceived event exists for this batch_id.
+#[derive(Debug, Clone, Args)]
+pub struct EmitIngestBatchClassifiedArgs {
+    /// Path to a JSON file containing the captures array (CaptureItem[]).
+    #[arg(long = "captures")]
+    pub captures_file: PathBuf,
+
+    /// Classifier model name (e.g. "claude-haiku-4-5-20251001"). Records which
+    /// model the plugin ran in-session.
+    #[arg(long = "classifier-model", default_value = "claude-haiku-4-5-20251001")]
+    pub classifier_model: String,
+
+    /// Schema version; must be "2" for downstream schema parity.
+    #[arg(long = "schema-version", default_value = "2")]
+    pub schema_version: String,
+
+    #[command(flatten)]
+    pub provenance: EmitCaptureProvenanceArgs,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1945,6 +1973,29 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
             let event_id =
                 commands.attach_evidence(&args.decision_id, &args.evidence_id, &cli.actor)?;
             OutputEnvelope::new("emit", "event_id", event_id.to_string())
+        }
+        EmitCommand::IngestBatchClassified(args) => {
+            let (actor_id, provenance) = capture_actor_and_provenance(&args.provenance)?;
+            let commands =
+                Commands::new_with_context(&ledger, cli_command_context(cli, provenance)?);
+            let json_text = std::fs::read_to_string(&args.captures_file).map_err(|e| {
+                CliError::InvalidInput(format!(
+                    "cannot read captures file {:?}: {e}",
+                    args.captures_file
+                ))
+            })?;
+            let captures: Vec<CaptureItem> = serde_json::from_str(&json_text)
+                .map_err(|e| CliError::InvalidInput(format!("captures JSON parse error: {e}")))?;
+            let batch_id = Uuid::new_v4().to_string();
+            let _event_id = commands.record_ingest_batch_classified(
+                &actor_id,
+                &batch_id,
+                &args.classifier_model,
+                &args.schema_version,
+                captures,
+                None,
+            )?;
+            OutputEnvelope::new("emit", "batch_id", batch_id)
         }
     };
 
