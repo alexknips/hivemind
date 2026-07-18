@@ -169,7 +169,7 @@ run_classifier() {
   if command -v claude >/dev/null 2>&1; then
     local prompt
     prompt="$(printf 'Classify this HiveMind capture text. Return JSON only, with kind set to one of decision, evidence, hypothesis, blocker, decision-request, notification, or none.\n\nText:\n%s\n' "$input")"
-    local claude_cmd=(claude --print --no-session-persistence --model "${HIVEMIND_CLASSIFIER_MODEL:-haiku}" --agent hivemind-classifier --json-schema "$(classifier_schema)")
+    local claude_cmd=(claude --print --no-session-persistence --model "${HIVEMIND_CLASSIFIER_MODEL:-haiku}" --json-schema "$(classifier_schema)")
     if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
       claude_cmd+=(--plugin-dir "$CLAUDE_PLUGIN_ROOT")
     fi

@@ -51,6 +51,11 @@ curl http://localhost:8080/v1/health
 # {"status":"ok"}
 ```
 
+> **Search note:** The default Postgres compose uses `GET /v1/decisions/relevant?topic=<topic>`
+> for querying. Full-text search (`GET /v1/decisions/search`) is only available in SQLite
+> mode. Switch to `HIVEMIND_DATABASE_URL=` (empty/unset) for a single-user local setup
+> with full-text search.
+
 ---
 
 ## Auth story (no WorkOS required)
@@ -257,23 +262,15 @@ Point your Claude Code (or any MCP-compatible agent) at the `/mcp` endpoint:
     "hivemind": {
       "url": "http://localhost:8080/mcp",
       "headers": {
-        "Authorization": "Bearer hm_sk_live_..."
+        "Authorization": "Bearer hm_tk_<your-token-secret>"
       }
     }
   }
 }
 ```
 
-Or using the `hivemind mcp` CLI against the remote server:
-
-```bash
-hivemind mcp \
-  --remote http://localhost:8080 \
-  --token-env HM_TOKEN \
-  --tenant acme \
-  --agent-tool claude \
-  --session-id my-session
-```
+Use the `token_secret` value returned by `POST /v1/users` as the bearer token.
+The token format is `hm_tk_<64-hex>` (shown once at creation time).
 
 ---
 
