@@ -16,8 +16,11 @@ jobs:
     name: Build ${{ matrix.artifact }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    continue-on-error: true
     strategy:
+      # fail-fast: false already lets every platform attempt its build, so a
+      # single failure still yields a full diagnostic picture. Do NOT add
+      # continue-on-error here: it masks build failures from the publish gate
+      # and lets an incomplete release ship (v0.4.0 published 2/4 platforms).
       fail-fast: false
       matrix:
         include:
@@ -54,11 +57,14 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Install Linux ARM64 linker
+      - name: Install Linux ARM64 cross toolchain
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          # g++-aarch64-linux-gnu is required, not just gcc-: native deps
+          # (ort/onnxruntime via fastembed, onig_sys) link against -lstdc++,
+          # and gcc- alone ships no aarch64 libstdc++ -> "cannot find -lstdc++".
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: Build release binary
         shell: bash
@@ -67,6 +73,7 @@ jobs:
           if [ -n "${{ matrix.linker }}" ]; then
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="${{ matrix.linker }}"
             export CC_aarch64_unknown_linux_gnu="${{ matrix.linker }}"
+            export CXX_aarch64_unknown_linux_gnu="aarch64-linux-gnu-g++"
             export AR_aarch64_unknown_linux_gnu="aarch64-linux-gnu-ar"
           fi
           cargo build --release --locked --target "${{ matrix.target }}"
@@ -101,8 +108,10 @@ jobs:
   publish:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
+    # No `if:` override here on purpose. The default is success(), so a failed
+    # build job skips publish entirely. `if: !cancelled()` previously forced
+    # publish to run even when platforms failed, shipping a partial release.
     needs: build
-    if: ${{ !cancelled() }}
 
     steps:
       - name: Download release artifacts
@@ -111,6 +120,36 @@ jobs:
           pattern: hivemind-*
           path: dist
           merge-multiple: true
+
+      # Defense in depth: the success() gate above should already prevent this,
+      # but an artifact that fails to upload would still slip through. Never
+      # publish a release that is missing a platform -- "the workflow succeeded"
+      # is not proof that every artifact is actually present.
+      - name: Verify all platform artifacts are present
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            hivemind-linux-x86_64.tar.gz
+            hivemind-linux-arm64.tar.gz
+            hivemind-macos-x86_64.tar.gz
+            hivemind-macos-arm64.tar.gz
+          )
+          missing=()
+          for artifact in "${expected[@]}"; do
+            [ -s "dist/${artifact}" ] || missing+=("${artifact}")
+            [ -s "dist/${artifact}.sha256" ] || missing+=("${artifact}.sha256")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Refusing to publish an incomplete release."
+            for artifact in "${missing[@]}"; do
+              echo "::error::  missing: ${artifact}"
+            done
+            echo "Present in dist/:"
+            ls -la dist/ || true
+            exit 1
+          fi
+          echo "All ${#expected[@]} platform artifacts present and non-empty."
 
       - name: Create or update release
         shell: bash
