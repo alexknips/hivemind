@@ -34,11 +34,12 @@ jobs:
             artifact: hivemind-linux-arm64
             linker: aarch64-linux-gnu-gcc
             stripper: aarch64-linux-gnu-strip
-          - os: macos-14
-            target: x86_64-apple-darwin
-            artifact: hivemind-macos-x86_64
-            linker: ""
-            stripper: strip
+          # x86_64-apple-darwin (Intel Mac) is intentionally not built: the
+          # ONNX runtime (ort-sys, via fastembed) ships no prebuilt for that
+          # target and building it from source in CI is not worth it for a
+          # shrinking platform. Intel Mac users install via `cargo install
+          # --git`. If this is revisited, add the target back here AND to the
+          # publish guard's expected-artifact list below in the same commit.
           - os: macos-14
             target: aarch64-apple-darwin
             artifact: hivemind-macos-arm64
@@ -129,10 +130,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Keep this list in lockstep with the build matrix above. Intel
+          # macOS (hivemind-macos-x86_64) is intentionally not built.
           expected=(
             hivemind-linux-x86_64.tar.gz
             hivemind-linux-arm64.tar.gz
-            hivemind-macos-x86_64.tar.gz
             hivemind-macos-arm64.tar.gz
           )
           missing=()
