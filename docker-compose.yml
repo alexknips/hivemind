@@ -1,9 +1,11 @@
 services:
   hivemind:
+    # Pre-built server image from ghcr; `docker compose pull` fetches it.
+    # To build from source instead: docker compose up --build
+    image: ghcr.io/alexknips/hivemind:latest
     build:
       context: .
       dockerfile: Dockerfile
-    image: hivemind:latest
     ports:
       - "${HIVEMIND_PORT:-8080}:8080"
     environment:
