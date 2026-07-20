@@ -111,9 +111,11 @@ Install the default CLI directly from Git:
 cargo install --git https://github.com/alexknips/hivemind --locked hivemind
 ```
 
-Tagged releases publish prebuilt tarballs for Linux and macOS on x86_64 and
-ARM64. The installer selects the matching asset and verifies its SHA-256
-checksum before copying `hivemind` into `~/.local/bin`:
+Tagged releases publish prebuilt tarballs for Linux (x86_64 and ARM64) and
+macOS (ARM64 / Apple Silicon). On Intel macOS, install from source with the
+`cargo install --git` command above. The installer selects the matching
+asset and verifies its SHA-256 checksum before copying `hivemind` into
+`~/.local/bin`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/alexknips/hivemind/master/scripts/install.sh | sh

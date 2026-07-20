@@ -3,7 +3,7 @@
 All notable changes to HiveMind are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
-## v0.4.0 — 2026-07-19 — M4: Self-hosting GA, keyless capture, and Ingestion v1
+## v0.4.0 — 2026-07-20 — M4: Self-hosting GA, keyless capture, and Ingestion v1
 
 Organizational self-hosting exits beta: per-user bearer tokens, a
 compose-first deployment cell, WorkOS AuthKit OAuth for the hosted MCP
@@ -11,43 +11,54 @@ gateway, and self-host polish bring the self-hosted path to GA readiness.
 Keyless capture (no `ANTHROPIC_API_KEY` on the server) ships via a
 subscription-seat Worker A path. Ingestion v1 lands as **experimental**
 connectors: a `Connector` trait, `GitFileConnector`, `GoogleDocsConnector`
-(OAuth), same-as/dedup layer, and review CLI commands. Layer-3 gains a
-2-axis decision scorer and a semantic spectral decision map; the CLI adds
-`recall` and `digest` subcommands; the MCP gateway adds HTTP Streamable
+(OAuth), and a same-as/dedup layer with same-as review commands. Layer-3
+gains a 2-axis decision scorer and a semantic spectral decision map; the CLI
+adds `recall` and `digest` subcommands; the MCP gateway adds HTTP Streamable
 transport and a `recall_decisions` tool. Fidelity measurement matures via a
 36-case gold corpus, A/B harness, and Tier 1.5 synthetic dispersion cases.
+
+Prebuilt binaries ship for **linux-x86_64, linux-arm64, and macos-arm64**.
+Intel macOS (`x86_64-apple-darwin`) is not currently published as a prebuilt
+— the ONNX runtime that backs the spectral map ships no prebuilt for that
+target — so Intel Mac users install via `cargo install --git`.
 
 ### Added
 
 #### Self-hosting and auth
 - **Per-user bearer tokens** for self-hosted cells. Each provisioned user
   receives an `hm_tk_<64-hex>` token validated against a per-cell token
-  store. (`src/auth.rs`, hivemind-iioq, f57dd30)
+  store. (`src/ledger/postgres/tenant_store.rs`, `src/ledger/sqlite/mod.rs`,
+  hivemind-iioq, f57dd30)
 - **Self-hosted cell compose wiring.** `docker-compose.yml` ships a
   production-ready cell configuration — env surface, volume mounts, and
   health-check; `docs/SELF_HOSTING.md` is the authoritative runbook.
   (hivemind-ppw3, 5780e7a)
 - **WorkOS AuthKit OAuth.** The hosted MCP gateway accepts WorkOS-issued
   JWTs, enabling browser-based GitHub/Google login for MCP clients.
-  (`src/auth.rs`, hivemind-k6hv, 74d7ec0)
-- **CORS layer.** Browser SPA clients can now call `/v1/` directly.
-  (hivemind-2l8h, 936a3d7)
+  (`src/api.rs`, hivemind-k6hv, 74d7ec0)
+- **CORS layer**, opt-in. Browser SPA clients can call `/v1/` directly when
+  origins are set via `HIVEMIND_CORS_ORIGINS`; off by default, so
+  self-hosters are unaffected unless they enable it. (hivemind-2l8h, 936a3d7)
 - **`hivemind digest` command.** Generates a weekly decision-digest summary
-  for a given time window. (`src/cli/digest.rs`, hivemind-k125, d798df7)
-- **`hivemind migrate` CLI.** Migrates a local SQLite ledger to a remote
+  for a given time window. (`src/cli/mod.rs`, `src/summarize.rs`,
+  hivemind-k125, d798df7)
+- **`hivemind migrate` CLI**, behind the `shared-backend-postgres` build
+  feature (off by default). Migrates a local SQLite ledger to a remote
   Postgres-backed shared backend. (hivemind-uuq9.8, d4b7e7b)
 - **SPA static serving + `GET /v1/graph`.** The server serves the SPA demo
-  bundle and exposes a graph endpoint for spectral-map queries. (98fb8a7)
+  bundle and exposes `GET /v1/graph`, which returns the full decision graph
+  as JSON (nodes + edges, no coordinates). The 2-D spectral *layout* is a
+  separate endpoint — see the decision map below. (98fb8a7)
 
 #### Keyless capture (no server-side ANTHROPIC_API_KEY)
 - **Worker A — subscription-seat keyless path.** `hivemind classify-queue`
   CLI and capture plugin drain unclassified batches using the subscription
   seat's API key, not the server's. Enables zero-API-key self-hosted
   deployments. (hivemind-v8im, 731d367)
-- **Haiku edge classifier subagent.** `hivemind capture` can classify graph
-  edges (actor, evidence, option relationships) at capture time via a local
-  Haiku call rather than the server-side classifier.
-  (hivemind-mfc7, 97f869d)
+- **Haiku edge classifier subagent.** The capture path (`hivemind emit`
+  plus the capture plugin/skill) can classify graph edges (actor, evidence,
+  option relationships) at capture time via a local Haiku call rather than
+  the server-side classifier. (hivemind-mfc7, 97f869d)
 - **Keyless capture docs and onboarding.** `docs/KEYLESS_CAPTURE.md` —
   zero-to-first-decision walkthrough. The self-hosting funnel (README,
   `docs/SELF_HOSTING.md`, `docs/AGENT_DECISION_CAPTURE.md`) updated to
@@ -64,16 +75,24 @@ transport and a `recall_decisions` tool. Fidelity measurement matures via a
 - **`GoogleDocsConnector`.** Ingests Google Docs via Drive API OAuth2 flow
   with credentials and token caching. (hivemind-2tcl.2, ced6ed9)
 - **Same-as / dedup layer.** Deduplicates connector output across ingestion
-  runs; `hivemind connector review` and `hivemind connector dedup` commands
-  for manual review of same-as candidates. (hivemind-2tcl.3, 7d7269a)
+  runs; `hivemind import connector same-as-candidates` /
+  `confirm-same-as` / `retract-same-as` for manual review of same-as
+  candidates. (hivemind-2tcl.3, 7d7269a)
 
 #### Layer-3 intelligence
-- **2-axis decision scorer.** Layer-3 scorer ranks decisions by impact and
-  confidence. Swappable — query and write layers are unaffected.
-  (`src/scorer.rs`, hivemind-uuq9.19, 7b64b8c)
-- **2-D spectral decision map.** `GET /v1/graph` returns a spectral layout
-  (x=time, y=Fiedler eigenmap) backed by `fastembed-rs` BGE-small-en-v1.5
-  semantic embeddings. (hivemind-plvq, 36519f6 / 0c34846)
+- **2-axis decision scorer.** Layer-3 scorer annotates decisions (via
+  `decision.scored` events) on two axes: **Quality** [0,1], a weighted
+  composite over 7 dimensions, and **Importance** (Stakes × Irreversibility
+  × Actionability). Swappable — query and write layers are unaffected. Note:
+  scoring calls a model and requires a server-side `ANTHROPIC_API_KEY`; it is
+  distinct from the keyless *capture* path. (`src/scorer.rs`,
+  hivemind-uuq9.19, 7b64b8c)
+- **2-D spectral decision map.** `GET /v1/decisions/map` returns a spectral
+  layout (x=time, y=Fiedler eigenmap) backed by `fastembed-rs`
+  BGE-small-en-v1.5 semantic embeddings. **Currently SQLite-backend only** —
+  the endpoint returns a validation error on the Postgres backend, so the map
+  is not yet available on the hosted deployment. (hivemind-plvq, 36519f6 /
+  0c34846)
 - **`hivemind query recall` CLI.** Wraps search + summarize in one command
   for fast on-demand recall. (M3/ynt5.2, 80d74c0)
 - **`recall_decisions` MCP tool.** One-call search + summarize over the MCP
@@ -93,7 +112,8 @@ transport and a `recall_decisions` tool. Fidelity measurement matures via a
   (hivemind-21zi, hivemind-0d2v, 7dc29e2)
 - **A/B uplift harness.** `ab-eval` binary compares two classifier
   strategies on the same corpus; Phase 1 scorecard published at
-  `benchmarks/fidelity/scorecard-v3.md`. (ee1798d / df894c2)
+  `benchmarks/fidelity/ab-eval-scorecard-v1-phase1-2026-07-13.txt`.
+  (ee1798d / df894c2)
 - **Tier 1.5 synthetic corpus** (G1–G3): dispersion-graded cases for
   evaluating classifier robustness across signal density.
   (hivemind-92fs, d56f799)
@@ -106,8 +126,13 @@ transport and a `recall_decisions` tool. Fidelity measurement matures via a
   (hivemind-669v, c87a819)
 - Postgres AppState build/startup panic; `extract_ctx` Postgres lookups
   wrapped in `spawn_blocking`. (hivemind-noc9, hivemind-e8zp)
-- macOS-x86_64 release runner starvation; runner pinned to avoid
-  `continue-on-error` publish with missing platform artifacts. (062d1d3)
+- Release pipeline could publish an incomplete release. `continue-on-error`
+  on the build matrix plus an `if: !cancelled()` publish gate let a release
+  publish with platform artifacts missing. Publish is now gated on all
+  builds succeeding, with an explicit guard that refuses to publish unless
+  every expected platform tarball and checksum is present. linux-arm64
+  cross-linking (`cannot find -lstdc++`) is fixed by installing the aarch64
+  C++ toolchain. (hivemind-ehwd, 375f81e)
 - Three `cargo-audit` advisories resolved: crossbeam-epoch, quinn-proto,
   lopdf. (hivemind-7g5o)
 - Docker base image bumped to Debian Trixie (glibc 2.40) for `ort`
