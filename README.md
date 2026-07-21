@@ -121,7 +121,7 @@ asset and verifies its SHA-256 checksum before copying `hivemind` into
 curl -fsSL https://raw.githubusercontent.com/alexknips/hivemind/master/scripts/install.sh | sh
 ```
 
-Set `HIVEMIND_VERSION=v0.4.0` to install a specific release tag or
+Set `HIVEMIND_VERSION=v0.4.1` to install a specific release tag or
 `HIVEMIND_INSTALL_DIR=/usr/local/bin` to choose another destination.
 
 Verify the installed binary:
