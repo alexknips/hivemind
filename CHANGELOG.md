@@ -3,6 +3,22 @@
 All notable changes to HiveMind are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.4.1 — 2026-07-21 — Self-host server image on ghcr
+
+A packaging release that completes the self-hosting deployment path. No
+functional changes to the `hivemind` binary since v0.4.0.
+
+### Added
+- **Self-host server image on ghcr.** Tagged releases now build and publish
+  the multi-tenant server image to `ghcr.io/alexknips/hivemind` (tags
+  `:latest`, `:0.4`, `:0.4.1`), built with the `shared-backend-postgres`
+  feature. `docker-compose.yml` now pulls this prebuilt image, with the local
+  `build:` retained as a fallback — so `docker compose up` no longer requires
+  a ~5-minute local Rust build on first run. (hivemind-4qj7)
+
+### Changed
+- **README install snippet.** `HIVEMIND_VERSION` example updated to `v0.4.1`.
+
 ## v0.4.0 — 2026-07-20 — M4: Self-hosting GA, keyless capture, and Ingestion v1
 
 Organizational self-hosting exits beta: per-user bearer tokens, a
