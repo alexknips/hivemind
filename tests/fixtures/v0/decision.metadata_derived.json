@@ -1,0 +1,36 @@
+{
+  "event_id": 4,
+  "event_uuid": "018f5d8a-04ab-7ef1-9f47-75e8521dff33",
+  "correlation_id": null,
+  "causation_event_id": null,
+  "type": "decision.metadata_derived",
+  "actor_id": "agent:hivemind:derivation",
+  "source": "agent",
+  "source_ref": "agent:hivemind:derivation",
+  "payload": {
+    "decision_id": "decision:d-cache-idkey",
+    "derivation_model": "stub",
+    "schema_version": "v1",
+    "supersedes_derivation_id": null,
+    "premises": [
+      {
+        "statement": "User IDs are immutable",
+        "provenance": "derived",
+        "confidence": 0.8,
+        "derived_hypothesis_id": null
+      }
+    ],
+    "foreclosed_options": [],
+    "disposition": null,
+    "goals": [],
+    "cross_track_surfaces": [
+      {
+        "surface": "user-id-schema",
+        "kind": "schema",
+        "provenance": "derived",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "ts": "2026-07-23T10:00:00Z"
+}

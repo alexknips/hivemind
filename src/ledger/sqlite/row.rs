@@ -108,6 +108,7 @@ fn event_type_as_str(event_type: EventType) -> &'static str {
         EventType::IngestBatchReceived => "ingest.batch_received",
         EventType::IngestBatchClassified => "ingest.batch_classified",
         EventType::DecisionScored => "decision.scored",
+        EventType::DecisionMetadataDerived => "decision.metadata_derived",
     }
 }
 
@@ -129,6 +130,7 @@ fn parse_event_type(value: &str) -> Result<EventType> {
         "ingest.batch_received" => Ok(EventType::IngestBatchReceived),
         "ingest.batch_classified" => Ok(EventType::IngestBatchClassified),
         "decision.scored" => Ok(EventType::DecisionScored),
+        "decision.metadata_derived" => Ok(EventType::DecisionMetadataDerived),
         other => Err(storage_error(format!("unknown event type in row: {other}")).into()),
     }
 }

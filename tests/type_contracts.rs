@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 
 use hivemind::events::{
     self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionBlockerPriority,
-    DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload, DecisionRequestedPayload,
-    DecisionScoredPayload, DecisionSupersededPayload, Event, EventBuilder, EventEnvelope,
-    EventPayload, EventSource, EventType, EventValidationError, EvidenceRecordedPayload,
-    HypothesisRecordedPayload, ImportanceFactors, IngestBatchClassifiedPayload,
-    IngestBatchReceivedPayload, IngestTurn, NotificationAcknowledgedPayload,
-    NotificationSentPayload, QualityDim, QualityDims, RelationAddedPayload,
-    RelationKind as EventRelationKind, RelationRemovedPayload,
+    DecisionIdPayload, DecisionMetadataDerivedPayload, DecisionProposedPayload,
+    DecisionRejectedPayload, DecisionRequestedPayload, DecisionScoredPayload,
+    DecisionSupersededPayload, Event, EventBuilder, EventEnvelope, EventPayload, EventSource,
+    EventType, EventValidationError, EvidenceRecordedPayload, HypothesisRecordedPayload,
+    ImportanceFactors, IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn,
+    NotificationAcknowledgedPayload, NotificationSentPayload, QualityDim, QualityDims,
+    RelationAddedPayload, RelationKind as EventRelationKind, RelationRemovedPayload,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};
@@ -18,7 +18,7 @@ use hivemind::{CliError, CommandError, HivemindError, LedgerError, ProjectorErro
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const EVENT_TYPES: [EventType; 16] = [
+const EVENT_TYPES: [EventType; 17] = [
     EventType::DecisionProposed,
     EventType::DecisionRequested,
     EventType::DecisionAccepted,
@@ -35,6 +35,7 @@ const EVENT_TYPES: [EventType; 16] = [
     EventType::IngestBatchReceived,
     EventType::IngestBatchClassified,
     EventType::DecisionScored,
+    EventType::DecisionMetadataDerived,
 ];
 
 const EVENT_RELATION_KINDS: [EventRelationKind; 7] = [
@@ -349,6 +350,7 @@ fn event_type_name(event_type: EventType) -> &'static str {
         EventType::IngestBatchReceived => "ingest.batch_received",
         EventType::IngestBatchClassified => "ingest.batch_classified",
         EventType::DecisionScored => "decision.scored",
+        EventType::DecisionMetadataDerived => "decision.metadata_derived",
     }
 }
 
@@ -370,6 +372,7 @@ fn payload_variant_type(payload: &EventPayload) -> EventType {
         EventPayload::IngestBatchReceived(_) => EventType::IngestBatchReceived,
         EventPayload::IngestBatchClassified(_) => EventType::IngestBatchClassified,
         EventPayload::DecisionScored(_) => EventType::DecisionScored,
+        EventPayload::DecisionMetadataDerived(_) => EventType::DecisionMetadataDerived,
     }
 }
 
@@ -422,6 +425,9 @@ fn typed_payload_from_value(
             EventPayload::IngestBatchClassified(serde_json::from_value(payload)?)
         }
         EventType::DecisionScored => EventPayload::DecisionScored(serde_json::from_value(payload)?),
+        EventType::DecisionMetadataDerived => {
+            EventPayload::DecisionMetadataDerived(serde_json::from_value(payload)?)
+        }
     })
 }
 
@@ -597,6 +603,20 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
             }),
         ),
         (
+            EventType::DecisionMetadataDerived,
+            EventPayload::DecisionMetadataDerived(DecisionMetadataDerivedPayload {
+                decision_id: "decision:minimal".to_owned(),
+                derivation_model: "stub".to_owned(),
+                schema_version: "v1".to_owned(),
+                supersedes_derivation_id: None,
+                premises: vec![],
+                foreclosed_options: vec![],
+                disposition: None,
+                goals: vec![],
+                cross_track_surfaces: vec![],
+            }),
+        ),
+        (
             EventType::DecisionScored,
             EventPayload::DecisionScored(DecisionScoredPayload {
                 capture_node_id: "capture:1:0".to_owned(),
@@ -664,6 +684,7 @@ fn payload_json(payload: &EventPayload) -> Value {
         EventPayload::IngestBatchReceived(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::IngestBatchClassified(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionScored(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::DecisionMetadataDerived(payload) => serde_json::to_value(payload).unwrap(),
     }
 }
 

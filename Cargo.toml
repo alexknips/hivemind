@@ -28,6 +28,10 @@ path = "benchmarks/fidelity/main.rs"
 name = "ab-eval"
 path = "benchmarks/fidelity/ab-eval/main.rs"
 
+[[bin]]
+name = "misalignment-eval"
+path = "benchmarks/misalignment/main.rs"
+
 [features]
 default = []
 graph-kuzu = ["dep:kuzu", "dep:cxx-build"]

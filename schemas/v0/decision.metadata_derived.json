@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivemind.local/schemas/v0/decision.metadata_derived.json",
+  "title": "decision.metadata_derived event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_uuid", "type", "actor_id", "source", "payload"],
+  "properties": {
+    "event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "event_uuid": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": ["string", "null"], "minLength": 1 },
+    "causation_event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "type": { "const": "decision.metadata_derived" },
+    "actor_id": { "type": "string", "minLength": 1 },
+    "source": { "enum": ["cli", "agent", "human", "slack", "api"] },
+    "source_ref": { "type": ["string", "null"], "minLength": 1 },
+    "ts": { "type": ["string", "null"], "format": "date-time" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision_id", "derivation_model", "schema_version"],
+      "properties": {
+        "decision_id": { "type": "string", "minLength": 1 },
+        "derivation_model": { "type": "string", "minLength": 1 },
+        "schema_version": { "type": "string", "minLength": 1 },
+        "supersedes_derivation_id": { "type": ["string", "null"], "minLength": 1 },
+        "premises": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/premiseAttr" },
+          "default": []
+        },
+        "foreclosed_options": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/foreclosedAttr" },
+          "default": []
+        },
+        "disposition": {
+          "oneOf": [
+            { "$ref": "#/$defs/dispositionAttr" },
+            { "type": "null" }
+          ]
+        },
+        "goals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/goalAttr" },
+          "default": []
+        },
+        "cross_track_surfaces": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/surfaceAttr" },
+          "default": []
+        }
+      }
+    }
+  },
+  "$defs": {
+    "provenance": { "enum": ["stated", "derived"] },
+    "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+    "premiseAttr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "provenance", "confidence"],
+      "properties": {
+        "statement": { "type": "string", "minLength": 1 },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "derived_hypothesis_id": { "type": ["string", "null"], "minLength": 1 }
+      }
+    },
+    "foreclosedAttr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "provenance", "confidence"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1 },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    },
+    "goalAttr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement", "provenance", "confidence"],
+      "properties": {
+        "statement": { "type": "string", "minLength": 1 },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    },
+    "dispositionAttr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "provenance", "confidence"],
+      "properties": {
+        "value": { "enum": ["willing", "constrained", "unwilling"] },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    },
+    "surfaceAttr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface", "kind", "provenance", "confidence"],
+      "properties": {
+        "surface": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["resource", "interface", "schema", "constraint", "concept"] },
+        "provenance": { "$ref": "#/$defs/provenance" },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      }
+    }
+  }
+}
