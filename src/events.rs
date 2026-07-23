@@ -81,6 +81,8 @@ pub enum EventType {
     IngestBatchClassified,
     #[serde(rename = "decision.scored")]
     DecisionScored,
+    #[serde(rename = "decision.metadata_derived")]
+    DecisionMetadataDerived,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -472,6 +474,108 @@ pub struct DecisionScoredPayload {
     pub importance: ImportanceFactors,
 }
 
+/// Provenance for a derived attribute: was it explicitly stated or inferred?
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provenance {
+    Stated,
+    Derived,
+}
+
+/// Disposition of a decision actor toward an option or constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DispositionValue {
+    Willing,
+    Constrained,
+    Unwilling,
+}
+
+/// Kind of cross-track surface referenced by a decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceKind {
+    Resource,
+    Interface,
+    Schema,
+    Constraint,
+    Concept,
+}
+
+/// A premise extracted from a captured decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PremiseAttribute {
+    pub statement: String,
+    pub provenance: Provenance,
+    pub confidence: f64,
+    /// Set when a Hypothesis node was also emitted for this premise (ASSUMES edge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_hypothesis_id: Option<String>,
+}
+
+/// A foreclosed option extracted from a captured decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForeclosedOptionAttribute {
+    pub description: String,
+    pub provenance: Provenance,
+    pub confidence: f64,
+}
+
+/// A goal extracted from a captured decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GoalAttribute {
+    pub statement: String,
+    pub provenance: Provenance,
+    pub confidence: f64,
+}
+
+/// Disposition annotation on a captured decision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DispositionAttribute {
+    pub value: DispositionValue,
+    pub provenance: Provenance,
+    pub confidence: f64,
+}
+
+/// A surface (resource, interface, schema, constraint, concept) that a decision touches.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CrossTrackSurface {
+    pub surface: String,
+    pub kind: SurfaceKind,
+    pub provenance: Provenance,
+    pub confidence: f64,
+}
+
+/// Payload for a `decision.metadata_derived` append-only annotation event.
+///
+/// Layer-3: server- or agent-computed derived metadata stored separately from
+/// the decision, never an edit to it. Re-derivations append a new event with
+/// `supersedes_derivation_id` pointing at the prior one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionMetadataDerivedPayload {
+    pub decision_id: String,
+    pub derivation_model: String,
+    pub schema_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes_derivation_id: Option<String>,
+    #[serde(default)]
+    pub premises: Vec<PremiseAttribute>,
+    #[serde(default)]
+    pub foreclosed_options: Vec<ForeclosedOptionAttribute>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<DispositionAttribute>,
+    #[serde(default)]
+    pub goals: Vec<GoalAttribute>,
+    #[serde(default)]
+    pub cross_track_surfaces: Vec<CrossTrackSurface>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RelationAddedPayload {
@@ -506,6 +610,7 @@ pub enum EventPayload {
     IngestBatchReceived(IngestBatchReceivedPayload),
     IngestBatchClassified(IngestBatchClassifiedPayload),
     DecisionScored(DecisionScoredPayload),
+    DecisionMetadataDerived(DecisionMetadataDerivedPayload),
 }
 
 impl EventPayload {
@@ -527,6 +632,7 @@ impl EventPayload {
             Self::IngestBatchReceived(_) => EventType::IngestBatchReceived,
             Self::IngestBatchClassified(_) => EventType::IngestBatchClassified,
             Self::DecisionScored(_) => EventType::DecisionScored,
+            Self::DecisionMetadataDerived(_) => EventType::DecisionMetadataDerived,
         }
     }
 
@@ -548,6 +654,7 @@ impl EventPayload {
             Self::IngestBatchReceived(payload) => serde_json::to_value(payload),
             Self::IngestBatchClassified(payload) => serde_json::to_value(payload),
             Self::DecisionScored(payload) => serde_json::to_value(payload),
+            Self::DecisionMetadataDerived(payload) => serde_json::to_value(payload),
         }
     }
 }
@@ -863,6 +970,13 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty("payload.scorer_model", &payload.scorer_model)?;
             require_non_empty("payload.weight_version", &payload.weight_version)?;
             Ok(EventPayload::DecisionScored(payload))
+        }
+        EventType::DecisionMetadataDerived => {
+            let payload: DecisionMetadataDerivedPayload = parse_payload(event)?;
+            require_non_empty("payload.decision_id", &payload.decision_id)?;
+            require_non_empty("payload.derivation_model", &payload.derivation_model)?;
+            require_non_empty("payload.schema_version", &payload.schema_version)?;
+            Ok(EventPayload::DecisionMetadataDerived(payload))
         }
     }
 }

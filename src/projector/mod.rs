@@ -630,6 +630,9 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
         EventPayload::RelationRemoved(_) => {
             // GraphView has no remove_edge; retraction is recorded in the ledger only
         }
+        EventPayload::DecisionMetadataDerived(_) => {
+            // Derived metadata is stored in the ledger only; graph projection deferred to layer 3
+        }
     }
 
     Ok(())

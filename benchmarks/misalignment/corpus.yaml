@@ -1,0 +1,147 @@
+fixture_schema_version: "1"
+
+cases:
+  - id: CT-1-contradicted-premise
+    name: "CONTRADICTED PREMISE fires (reactive)"
+    archetype: contradicted_premise
+
+    tracks:
+      track_a:
+        actor: "team-platform"
+        captured_decisions:
+          - decision_id: "d-cache-idkey"
+            title: "Build ID-keyed user profile cache"
+            rationale: >
+              We need sub-millisecond lookups for user profile data.
+              Design: shard by user_id — IDs are stable and unique per user,
+              so consistent hashing by ID gives us perfect locality.
+            topic_keys: ["cache", "user-service"]
+      track_b:
+        actor: "team-accounts"
+        captured_decisions:
+          - decision_id: "d-id-merge"
+            title: "Ship account merge: users get a canonical ID when accounts merge"
+            rationale: >
+              Account merge is our top support request. When a user merges duplicate
+              accounts, their primary user_id becomes the canonical one; secondary IDs
+              are retired. This requires ID reassignment.
+            topic_keys: ["accounts", "user-service"]
+
+    expected_derived_metadata:
+      - decision_id: "d-cache-idkey"
+        premises:
+          - statement: "User IDs are immutable"
+            provenance: derived
+            confidence_min: 0.7
+        cross_track_surfaces:
+          - surface: "user-id-schema"
+            kind: schema
+      - decision_id: "d-id-merge"
+        cross_track_surfaces:
+          - surface: "user-id-schema"
+            kind: schema
+
+    expected_detector_output:
+      fire: true
+      alert_kind: contradicted_premise
+      counterparty: ["team-platform", "team-accounts"]
+      shared_surface: "user-id-schema"
+      liveness: live
+
+  - id: CT-2-foreclosed-option
+    name: "FORECLOSED OPTION fires (preventive)"
+    archetype: foreclosed_option
+
+    tracks:
+      track_a:
+        actor: "team-backend"
+        captured_decisions:
+          - decision_id: "d-grpc-transport"
+            title: "Use gRPC for all internal service transport"
+            rationale: >
+              gRPC gives us strong typing, bi-directional streaming, and low overhead
+              for our internal microservices. We're standardizing on it across all
+              backend-to-backend calls.
+            topic_keys: ["transport", "internal-api"]
+      track_b:
+        actor: "team-product"
+        captured_decisions:
+          - decision_id: "d-browser-direct"
+            title: "Browser clients will call internal services directly"
+            rationale: >
+              For latency reasons, the web app will bypass the API gateway for
+              high-frequency calls and invoke backend services directly from the browser.
+            topic_keys: ["browser", "internal-api"]
+
+    expected_derived_metadata:
+      - decision_id: "d-grpc-transport"
+        foreclosed_options:
+          - statement: "Clients that cannot speak native gRPC, such as browser clients"
+            provenance: derived
+            confidence_min: 0.65
+        cross_track_surfaces:
+          - surface: "internal-api-protocol"
+            kind: interface
+      - decision_id: "d-browser-direct"
+        premises:
+          - statement: "Internal services speak a browser-compatible protocol"
+            provenance: derived
+            confidence_min: 0.6
+        cross_track_surfaces:
+          - surface: "internal-api-protocol"
+            kind: interface
+
+    expected_detector_output:
+      fire: true
+      alert_kind: foreclosed_option
+      counterparty: ["team-backend"]
+      shared_surface: "internal-api-protocol"
+      liveness: live
+
+  - id: CT-3-compat-shim-no-fire
+    name: "NON-FIRE: compat shim for frozen external contract"
+    archetype: non_fire
+
+    tracks:
+      track_a:
+        actor: "team-platform"
+        captured_decisions:
+          - decision_id: "d-v1-shim"
+            title: "Add compat shim for legacy v1 API clients"
+            rationale: >
+              External partners still call our v1 API. We add a translation shim that
+              maps v1 request shapes to v2 internals, so we can evolve v2 without
+              breaking partners.
+            topic_keys: ["api", "compatibility", "v1-clients"]
+      track_b:
+        actor: "external-legacy-contract"
+        captured_decisions:
+          - decision_id: "d-v1-spec-frozen"
+            title: "v1 API spec is frozen"
+            rationale: >
+              The v1 API is an external contract with third-party clients who cannot
+              update their integrations. The spec cannot change.
+            topic_keys: ["api", "v1-clients"]
+
+    expected_derived_metadata:
+      - decision_id: "d-v1-shim"
+        cross_track_surfaces:
+          - surface: "v1-api-contract"
+            kind: constraint
+        disposition:
+          value: constrained
+          provenance: derived
+      - decision_id: "d-v1-spec-frozen"
+        cross_track_surfaces:
+          - surface: "v1-api-contract"
+            kind: constraint
+        disposition:
+          value: constrained
+          provenance: stated
+
+    expected_detector_output:
+      fire: false
+      alert_kind: null
+      counterparty: []
+      shared_surface: "v1-api-contract"
+      liveness: frozen
