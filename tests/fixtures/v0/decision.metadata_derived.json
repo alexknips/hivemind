@@ -16,8 +16,7 @@
       {
         "statement": "User IDs are immutable",
         "provenance": "derived",
-        "confidence": 0.8,
-        "derived_hypothesis_id": null
+        "confidence": 0.8
       }
     ],
     "foreclosed_options": [],

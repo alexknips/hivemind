@@ -514,9 +514,6 @@ pub struct PremiseAttribute {
     pub statement: String,
     pub provenance: Provenance,
     pub confidence: f64,
-    /// Set when a Hypothesis node was also emitted for this premise (ASSUMES edge).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub derived_hypothesis_id: Option<String>,
 }
 
 /// A foreclosed option extracted from a captured decision.

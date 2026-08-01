@@ -63,8 +63,7 @@
       "properties": {
         "statement": { "type": "string", "minLength": 1 },
         "provenance": { "$ref": "#/$defs/provenance" },
-        "confidence": { "$ref": "#/$defs/confidence" },
-        "derived_hypothesis_id": { "type": ["string", "null"], "minLength": 1 }
+        "confidence": { "$ref": "#/$defs/confidence" }
       }
     },
     "foreclosedAttr": {
