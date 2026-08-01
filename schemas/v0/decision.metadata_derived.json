@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://hivemind.local/schemas/v0/decision.metadata_derived.json",
   "title": "decision.metadata_derived event",
+  "description": "DERIVED NON-AUTHORITATIVE quasi-cache annotation. Attributes are machine-inferred (see per-attribute provenance and confidence fields), never treated as captured or stated fact. Persisted pragmatically for query performance; subject to future dedicated derived-layer refactor.",
   "type": "object",
   "additionalProperties": false,
   "required": ["event_uuid", "type", "actor_id", "source", "payload"],

@@ -1,5 +1,11 @@
 # Misalignment Eval
 
+> **Non-authoritative derived data.** The `decision.metadata_derived` events scored here are
+> machine-inferred quasi-cache annotations — not captured or stated facts. Each attribute carries
+> a `provenance` (`stated` | `derived`) and a `confidence` score. This layer is persisted
+> pragmatically and is subject to a future dedicated derived-layer refactor; do not treat it as
+> authoritative organizational memory.
+
 Measures cross-track misalignment detection capability using a hand-authored gold corpus.
 
 ## What it measures
