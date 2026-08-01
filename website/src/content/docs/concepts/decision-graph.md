@@ -24,7 +24,7 @@ typed edge kinds. Status is always derived from edges — never stored, never ov
 | `ACCEPTED_BY` | Actor who accepted the decision |
 | `REJECTED_BY` | Actor who rejected the decision |
 | `SUPERSEDES` | This decision replaces an older one |
-| `ASSUMES` | Decision depends on a hypothesis being true |
+| `PREMISED_ON` | Decision depends on a hypothesis being true |
 | `SUPPORTED_BY` | Decision is supported by this evidence |
 | `OPTION_OF` | Option was considered for this decision |
 
@@ -45,7 +45,7 @@ eventually resolvable through explicit action.
 
 ## Staleness propagation
 
-When a `Hypothesis` is refuted, every `Decision` that `ASSUMES` it surfaces
+When a `Hypothesis` is refuted, every `Decision` that `PREMISED_ON` it surfaces
 `hypothesis_refuted: true` in queries. Staleness is visible by default — not hidden.
 
 ## Supersession chains
@@ -65,7 +65,7 @@ Decision: "Use SQLite for local prototype"
   PROPOSED_BY → Actor: human:alice
   ACCEPTED_BY → Actor: human:alice
   SUPPORTED_BY → Evidence: "SQLite WAL is sufficient for current local writes"
-  ASSUMES → Hypothesis: "Single-node deployments are the primary case for 2026"
+  PREMISED_ON → Hypothesis: "Single-node deployments are the primary case for 2026"
   OPTION_OF → Option: "Postgres"
   OPTION_OF → Option: "DuckDB"
 ```
