@@ -1273,6 +1273,7 @@ fn timestamp_boundary_offset(events: &[Event], timestamp: DateTime<Utc>) -> Even
 struct DecisionIndex {
     decisions: BTreeMap<String, DecisionIndexEntry>,
     assumed_by_hypothesis: BTreeMap<String, BTreeSet<String>>,
+    option_to_decision: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1344,17 +1345,22 @@ impl DecisionIndex {
                 }
                 EventPayload::RelationAdded(payload) => match payload.relation {
                     EventRelationKind::Assumes => {
+                        let decision_id = index
+                            .option_to_decision
+                            .get(&payload.from_id)
+                            .cloned()
+                            .unwrap_or_else(|| payload.from_id.clone()); // ubs:ignore:
                         index
                             .decisions
-                            .entry(payload.from_id.clone())
+                            .entry(decision_id.clone()) // ubs:ignore:
                             .or_default()
                             .hypothesis_ids
-                            .insert(payload.to_id.clone());
+                            .insert(payload.to_id.clone()); // ubs:ignore:
                         index
                             .assumed_by_hypothesis
                             .entry(payload.to_id)
                             .or_default()
-                            .insert(payload.from_id);
+                            .insert(decision_id);
                     }
                     EventRelationKind::BasedOn => {
                         index
@@ -1364,13 +1370,24 @@ impl DecisionIndex {
                             .evidence_ids
                             .insert(payload.to_id);
                     }
-                    EventRelationKind::HasOption | EventRelationKind::Chose => {
+                    EventRelationKind::HasOption => {
                         index
                             .decisions
                             .entry(payload.from_id)
                             .or_default()
                             .option_ids
                             .insert(payload.to_id);
+                    }
+                    EventRelationKind::Chose => {
+                        index
+                            .decisions
+                            .entry(payload.from_id.clone()) // ubs:ignore:
+                            .or_default()
+                            .option_ids
+                            .insert(payload.to_id.clone()); // ubs:ignore:
+                        index
+                            .option_to_decision
+                            .insert(payload.to_id, payload.from_id);
                     }
                     EventRelationKind::Supports
                     | EventRelationKind::Refutes
@@ -1537,9 +1554,16 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
             EventRelationKind::BasedOn
             | EventRelationKind::HasOption
             | EventRelationKind::Chose
-            | EventRelationKind::Assumes
             | EventRelationKind::SameAs => {
                 ids.insert(from_id.clone());
+            }
+            EventRelationKind::Assumes => {
+                let decision_id = index
+                    .option_to_decision
+                    .get(from_id)
+                    .cloned()
+                    .unwrap_or_else(|| from_id.clone()); // ubs:ignore:
+                ids.insert(decision_id);
             }
             EventRelationKind::Supports => {}
             EventRelationKind::Refutes => {
@@ -1619,14 +1643,38 @@ fn affected_nodes_for_event(event: &Event, payload: &EventPayload) -> Vec<Affect
             nodes.insert(affected_node(&payload.hypothesis_id, NodeKind::Hypothesis));
         }
         EventPayload::RelationAdded(payload) => {
-            let (from_kind, to_kind) = event_relation_endpoints(payload.relation);
-            nodes.insert(affected_node(&payload.from_id, from_kind));
-            nodes.insert(affected_node(&payload.to_id, to_kind));
+            if payload.relation == EventRelationKind::Assumes {
+                let from_kind = if payload.from_id.starts_with("option-")
+                    || payload.from_id.starts_with("option:")
+                {
+                    NodeKind::Option
+                } else {
+                    NodeKind::Decision
+                };
+                nodes.insert(affected_node(&payload.from_id, from_kind));
+                nodes.insert(affected_node(&payload.to_id, NodeKind::Hypothesis));
+            } else {
+                let (from_kind, to_kind) = event_relation_endpoints(payload.relation);
+                nodes.insert(affected_node(&payload.from_id, from_kind));
+                nodes.insert(affected_node(&payload.to_id, to_kind));
+            }
         }
         EventPayload::RelationRemoved(payload) => {
-            let (from_kind, to_kind) = event_relation_endpoints(payload.relation);
-            nodes.insert(affected_node(&payload.from_id, from_kind));
-            nodes.insert(affected_node(&payload.to_id, to_kind));
+            if payload.relation == EventRelationKind::Assumes {
+                let from_kind = if payload.from_id.starts_with("option-")
+                    || payload.from_id.starts_with("option:")
+                {
+                    NodeKind::Option
+                } else {
+                    NodeKind::Decision
+                };
+                nodes.insert(affected_node(&payload.from_id, from_kind));
+                nodes.insert(affected_node(&payload.to_id, NodeKind::Hypothesis));
+            } else {
+                let (from_kind, to_kind) = event_relation_endpoints(payload.relation);
+                nodes.insert(affected_node(&payload.from_id, from_kind));
+                nodes.insert(affected_node(&payload.to_id, to_kind));
+            }
         }
         EventPayload::BlockerReported(payload) => {
             nodes.insert(affected_node(&payload.blocker_id, NodeKind::Blocker));

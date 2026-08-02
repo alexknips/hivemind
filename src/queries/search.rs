@@ -631,7 +631,16 @@ fn collect_graph_search_results(
             .into_iter()
             .next();
         let evidence_ids = relation_targets(&edges, &[RelationKind::BasedOn], &id);
-        let hypothesis_ids = relation_targets(&edges, &[RelationKind::PremisedOn], &id);
+        let mut hypothesis_ids = relation_targets(&edges, &[RelationKind::PremisedOnDirect], &id);
+        if let Some(opt_id) = &chosen_option_id {
+            hypothesis_ids.extend(relation_targets(
+                &edges,
+                &[RelationKind::PremisedOn],
+                opt_id,
+            ));
+            hypothesis_ids.sort();
+            hypothesis_ids.dedup();
+        }
         let supersedes_decision_ids = relation_targets(&edges, &[RelationKind::Supersedes], &id);
         let superseded_by_decision_ids = relation_sources(&edges, RelationKind::Supersedes, &id);
 

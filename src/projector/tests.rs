@@ -194,7 +194,7 @@ fn projects_all_slice_one_events_to_graph_mutations() -> Result<()> {
         (RelationKind::ProposedBy, "decision:1", "actor:alice"),
         (RelationKind::HasOption, "decision:1", "option:1"),
         (RelationKind::Chose, "decision:1", "option:2"),
-        (RelationKind::PremisedOn, "decision:1", "hypothesis:1"),
+        (RelationKind::PremisedOn, "option:2", "hypothesis:1"),
         (RelationKind::BasedOn, "decision:1", "evidence:1"),
         (RelationKind::AcceptedBy, "decision:1", "actor:bob"),
         (RelationKind::RejectedBy, "decision:1", "actor:carol"),

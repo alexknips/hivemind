@@ -5,7 +5,10 @@ use serde::Serialize;
 use crate::projector::{GraphParams, GraphValue, GraphView, NodeKind, RelationKind};
 use crate::Result;
 
-use super::shared::{neighbor_ids, optional_string, optional_string_list, required_string};
+use super::shared::{
+    neighbor_ids, optional_string, optional_string_list, premised_on_hypothesis_ids,
+    required_string,
+};
 use super::status::{
     derive_decision_status, derive_hypothesis_status, DecisionStatus, HypothesisStatus,
 };
@@ -69,13 +72,7 @@ pub fn get_decision(
             NodeKind::Evidence,
             "evidence_id",
         )?;
-        let hypothesis_ids = neighbor_ids(
-            graph,
-            &id,
-            RelationKind::PremisedOn,
-            NodeKind::Hypothesis,
-            "hypothesis_id",
-        )?;
+        let hypothesis_ids = premised_on_hypothesis_ids(graph, &id)?;
         let mut hypotheses = Vec::with_capacity(hypothesis_ids.len());
         for hypothesis_id in hypothesis_ids {
             hypotheses.push(HypothesisContext {

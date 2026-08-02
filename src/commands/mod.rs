@@ -537,12 +537,13 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             )?);
         }
 
+        let assumes_from_id = chosen_option_id.unwrap_or(decision_id);
         for (hypothesis_id, event_uuid) in hypothesis_ids.iter().zip(event_uuids.assumes) {
             relation_event_ids.push(self.append_relation_event_with_uuid(
                 actor_id,
                 root_event_id,
                 RelationKind::Assumes,
-                decision_id,
+                assumes_from_id,
                 hypothesis_id,
                 event_uuid,
             )?);
@@ -920,11 +921,14 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
+        let from_id = self
+            .chosen_option_for_decision(decision_id)?
+            .unwrap_or_else(|| decision_id.to_owned());
         self.append_relation_event_with_uuid(
             actor_id,
             0,
             RelationKind::Assumes,
-            decision_id,
+            &from_id,
             hypothesis_id,
             event_uuid,
         )
@@ -1152,6 +1156,12 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 return Ok(None);
             }
         }
+    }
+
+    pub fn chosen_option_for_decision(&self, decision_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .decision_proposal_snapshot(decision_id)?
+            .and_then(|s| s.chosen_option_id))
     }
 
     #[allow(clippy::too_many_arguments)]

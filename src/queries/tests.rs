@@ -495,7 +495,7 @@ impl FixtureGraph {
             .insert((RelationKind::BasedOn, "d1".to_owned(), "e1".to_owned()));
         graph
             .edges
-            .insert((RelationKind::PremisedOn, "d1".to_owned(), "h1".to_owned()));
+            .insert((RelationKind::PremisedOn, "o2".to_owned(), "h1".to_owned()));
         graph
             .edges
             .insert((RelationKind::Supports, "e1".to_owned(), "h1".to_owned()));
@@ -713,6 +713,37 @@ impl GraphView for FixtureGraph {
                 format!("{l:?}").cmp(&format!("{r:?}"))
             });
             return Ok(rows);
+        }
+
+        // Handle the premised_on_hypothesis_ids UNION Cypher (2-hop + direct).
+        if cypher.contains("UNION") && cypher.contains("hypothesis_id") && cypher.contains("$id") {
+            let decision_id = match params.get("id") {
+                Some(GraphValue::String(id)) => id,
+                _ => return Err(query_error("missing id param").into()),
+            };
+            let mut ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let chosen_options: Vec<String> = self
+                .edges
+                .iter()
+                .filter(|(kind, from, _)| *kind == RelationKind::Chose && from == decision_id)
+                .map(|(_, _, to)| to.clone())
+                .collect();
+            for opt_id in &chosen_options {
+                for (kind, from, to) in &self.edges {
+                    if *kind == RelationKind::PremisedOn && from == opt_id {
+                        ids.insert(to.clone());
+                    }
+                }
+            }
+            for (kind, from, to) in &self.edges {
+                if *kind == RelationKind::PremisedOnDirect && from == decision_id {
+                    ids.insert(to.clone());
+                }
+            }
+            return Ok(ids
+                .into_iter()
+                .map(|id| GraphRow::from([("hypothesis_id".to_owned(), GraphValue::String(id))]))
+                .collect());
         }
 
         for (relation, alias) in [

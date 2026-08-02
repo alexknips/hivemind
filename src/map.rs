@@ -282,7 +282,7 @@ fn build_structural_edges(
     // Co-assumption: two decisions that both ASSUME the same hypothesis
     // Uses "RETURN from.id AS from_id, to.id AS to_id" pattern; from=decision, to=hypothesis
     let rows = graph.query(
-        "MATCH (from:`Decision`)-[:`PREMISED_ON`]->(to:`Hypothesis`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;",
+        "MATCH (d:`Decision`)-[:`CHOSE`]->(o:`Option`)-[:`PREMISED_ON`]->(h:`Hypothesis`) RETURN d.id AS from_id, h.id AS to_id UNION MATCH (d:`Decision`)-[:`PREMISED_ON_DIRECT`]->(h:`Hypothesis`) RETURN d.id AS from_id, h.id AS to_id ORDER BY from_id, to_id;",
         &GraphParams::new(),
     )?;
     let mut hyp_to_decisions: BTreeMap<String, Vec<usize>> = BTreeMap::new();

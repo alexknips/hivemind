@@ -92,6 +92,7 @@ pub enum RelationKind {
     HasOption,
     Chose,
     PremisedOn,
+    PremisedOnDirect,
     Supports,
     Refutes,
     SameAs,
@@ -102,7 +103,7 @@ pub enum RelationKind {
 }
 
 impl RelationKind {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::ProposedBy,
         Self::DecisionRequestedBy,
         Self::DecisionRequestForDecision,
@@ -119,6 +120,7 @@ impl RelationKind {
         Self::HasOption,
         Self::Chose,
         Self::PremisedOn,
+        Self::PremisedOnDirect,
         Self::Supports,
         Self::Refutes,
         Self::SameAs,
@@ -144,6 +146,7 @@ impl RelationKind {
             Self::HasOption => "HAS_OPTION",
             Self::Chose => "CHOSE",
             Self::PremisedOn => "PREMISED_ON",
+            Self::PremisedOnDirect => "PREMISED_ON_DIRECT",
             Self::Supports => "SUPPORTS",
             Self::Refutes => "REFUTES",
             Self::SameAs => "SAME_AS",
@@ -168,7 +171,8 @@ impl RelationKind {
             Self::NotificationRecipient => (NodeKind::Notification, NodeKind::Actor),
             Self::BasedOn => (NodeKind::Decision, NodeKind::Evidence),
             Self::HasOption | Self::Chose => (NodeKind::Decision, NodeKind::Option),
-            Self::PremisedOn => (NodeKind::Decision, NodeKind::Hypothesis),
+            Self::PremisedOn => (NodeKind::Option, NodeKind::Hypothesis),
+            Self::PremisedOnDirect => (NodeKind::Decision, NodeKind::Hypothesis),
             Self::Supports | Self::Refutes => (NodeKind::Evidence, NodeKind::Hypothesis),
             Self::SameAs => (NodeKind::Decision, NodeKind::Decision),
             Self::ParticipatedBy | Self::InitiatedBy => (NodeKind::Decision, NodeKind::Actor),
@@ -253,10 +257,16 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
                 )?;
             }
 
+            let (premised_on_kind, premised_on_from) =
+                if let Some(opt_id) = &payload.chosen_option_id {
+                    (RelationKind::PremisedOn, opt_id.as_str())
+                } else {
+                    (RelationKind::PremisedOnDirect, payload.decision_id.as_str())
+                };
             for hypothesis_id in &payload.hypothesis_ids {
                 graph.upsert_edge(
-                    RelationKind::PremisedOn,
-                    &payload.decision_id,
+                    premised_on_kind,
+                    premised_on_from,
                     hypothesis_id,
                     &origin_properties,
                 )?;
@@ -378,12 +388,21 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
                 &hypothesis_properties,
             )?;
         }
-        EventPayload::RelationAdded(payload) => graph.upsert_edge(
-            relation_kind(payload.relation),
-            &payload.from_id,
-            &payload.to_id,
-            &origin_properties,
-        )?,
+        EventPayload::RelationAdded(payload) => {
+            let kind = if payload.relation == EventRelationKind::Assumes {
+                // Route based on from_id prefix: option-prefix → PREMISED_ON (Option→Hypothesis),
+                // decision-prefix or legacy → PREMISED_ON_DIRECT (Decision→Hypothesis).
+                if payload.from_id.starts_with("option-") || payload.from_id.starts_with("option:")
+                {
+                    RelationKind::PremisedOn
+                } else {
+                    RelationKind::PremisedOnDirect
+                }
+            } else {
+                relation_kind(payload.relation)
+            };
+            graph.upsert_edge(kind, &payload.from_id, &payload.to_id, &origin_properties)?;
+        }
         EventPayload::BlockerReported(payload) => {
             let mut blocker_properties = origin_properties.clone();
             blocker_properties.insert(
@@ -888,6 +907,12 @@ fn project_capture(
                     origin_properties,
                 )?;
             }
+            let (premised_on_kind, premised_on_from) = if let Some(chosen) = &capture.chosen_option
+            {
+                (RelationKind::PremisedOn, option_node_id(node_id, chosen))
+            } else {
+                (RelationKind::PremisedOnDirect, node_id.to_owned())
+            };
             for hypothesis_id in &capture.premised_on_ids {
                 ensure_node_reference(
                     graph,
@@ -896,8 +921,8 @@ fn project_capture(
                     origin_properties,
                 )?;
                 graph.upsert_edge(
-                    RelationKind::PremisedOn,
-                    node_id,
+                    premised_on_kind,
+                    &premised_on_from,
                     hypothesis_id,
                     origin_properties,
                 )?;

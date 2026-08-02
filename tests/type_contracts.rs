@@ -59,7 +59,7 @@ const NODE_KINDS: [NodeKind; 8] = [
     NodeKind::Hypothesis,
 ];
 
-const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 21] = [
+const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 22] = [
     ProjectorRelationKind::ProposedBy,
     ProjectorRelationKind::DecisionRequestedBy,
     ProjectorRelationKind::DecisionRequestForDecision,
@@ -76,6 +76,7 @@ const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 21] = [
     ProjectorRelationKind::HasOption,
     ProjectorRelationKind::Chose,
     ProjectorRelationKind::PremisedOn,
+    ProjectorRelationKind::PremisedOnDirect,
     ProjectorRelationKind::Supports,
     ProjectorRelationKind::Refutes,
     ProjectorRelationKind::SameAs,
@@ -816,8 +817,13 @@ fn projector_relation_contract(kind: ProjectorRelationKind) -> (&'static str, No
         ProjectorRelationKind::HasOption => ("HAS_OPTION", NodeKind::Decision, NodeKind::Option),
         ProjectorRelationKind::Chose => ("CHOSE", NodeKind::Decision, NodeKind::Option),
         ProjectorRelationKind::PremisedOn => {
-            ("PREMISED_ON", NodeKind::Decision, NodeKind::Hypothesis)
+            ("PREMISED_ON", NodeKind::Option, NodeKind::Hypothesis)
         }
+        ProjectorRelationKind::PremisedOnDirect => (
+            "PREMISED_ON_DIRECT",
+            NodeKind::Decision,
+            NodeKind::Hypothesis,
+        ),
         ProjectorRelationKind::Supports => ("SUPPORTS", NodeKind::Evidence, NodeKind::Hypothesis),
         ProjectorRelationKind::Refutes => ("REFUTES", NodeKind::Evidence, NodeKind::Hypothesis),
         ProjectorRelationKind::SameAs => ("SAME_AS", NodeKind::Decision, NodeKind::Decision),

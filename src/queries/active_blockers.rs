@@ -389,8 +389,16 @@ fn refuted_assumption_ids(
     edges: &BTreeMap<RelationKind, Vec<(String, String)>>,
     decision_id: &str,
 ) -> Result<Vec<String>> {
+    let mut hypothesis_ids =
+        relation_targets(edges, &[RelationKind::PremisedOnDirect], decision_id);
+    let chosen_option_ids = relation_targets(edges, &[RelationKind::Chose], decision_id);
+    for opt_id in &chosen_option_ids {
+        hypothesis_ids.extend(relation_targets(edges, &[RelationKind::PremisedOn], opt_id));
+    }
+    hypothesis_ids.sort();
+    hypothesis_ids.dedup();
     let mut ids = Vec::new();
-    for hypothesis_id in relation_targets(edges, &[RelationKind::PremisedOn], decision_id) {
+    for hypothesis_id in hypothesis_ids {
         if derive_hypothesis_status(graph, &hypothesis_id)? == HypothesisStatus::Refuted {
             ids.push(hypothesis_id);
         }

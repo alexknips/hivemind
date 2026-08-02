@@ -112,7 +112,11 @@ const RELATION_DDL: &[(RelationKind, &str)] = &[
     ),
     (
         RelationKind::PremisedOn,
-        "CREATE REL TABLE IF NOT EXISTS `PREMISED_ON` (FROM `Decision` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `PREMISED_ON` (FROM `Option` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::PremisedOnDirect,
+        "CREATE REL TABLE IF NOT EXISTS `PREMISED_ON_DIRECT` (FROM `Decision` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
         RelationKind::Supports,

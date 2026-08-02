@@ -269,6 +269,24 @@ pub(crate) fn neighbor_ids(
     Ok(ids)
 }
 
+pub(crate) fn premised_on_hypothesis_ids(
+    graph: &impl GraphView,
+    decision_id: &str,
+) -> Result<Vec<String>> {
+    let rows = graph.query(
+        "MATCH (d:`Decision` {id: $id})-[:`CHOSE`]->(o:`Option`)-[:`PREMISED_ON`]->(h:`Hypothesis`) RETURN h.id AS hypothesis_id \
+         UNION \
+         MATCH (d:`Decision` {id: $id})-[:`PREMISED_ON_DIRECT`]->(h:`Hypothesis`) RETURN h.id AS hypothesis_id \
+         ORDER BY hypothesis_id;",
+        &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
+    )?;
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(required_string(&row, "hypothesis_id")?);
+    }
+    Ok(ids)
+}
+
 pub(crate) fn required_string(row: &GraphRow, key: &str) -> Result<String> {
     match row.get(key) {
         Some(GraphValue::String(value)) => Ok(value.clone()),

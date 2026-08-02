@@ -165,27 +165,73 @@ pub fn get_decision_neighborhood(
         if !request.allows(relation) {
             continue;
         }
-        let pairs = neighbor_pairs(
-            graph,
-            NodeKind::Decision,
-            decision_id,
-            relation,
-            other_kind,
-            direction,
-        )?;
-        for (other_id, event_origin) in pairs {
-            let (from, to) = match direction {
-                Direction::Outgoing => (decision_id.to_owned(), other_id.clone()),
-                Direction::Incoming => (other_id.clone(), decision_id.to_owned()),
-            };
-            edges.push(NeighborEdge {
-                from,
-                to,
+        if relation == RelationKind::PremisedOn {
+            // Direct hypotheses (optionless / legacy path).
+            let direct = neighbor_pairs(
+                graph,
+                NodeKind::Decision,
+                decision_id,
+                RelationKind::PremisedOnDirect,
+                NodeKind::Hypothesis,
+                Direction::Outgoing,
+            )?;
+            for (hypothesis_id, event_origin) in direct {
+                edges.push(NeighborEdge {
+                    from: decision_id.to_owned(), // ubs:ignore:
+                    to: hypothesis_id.clone(),    // ubs:ignore:
+                    relation: RelationKind::PremisedOn,
+                    event_origin,
+                });
+                hypothesis_ids.insert(hypothesis_id);
+            }
+            // Option-routed hypotheses (Decision→CHOSE→Option→PREMISED_ON→Hypothesis).
+            let chosen_option_ids: Vec<String> = edges
+                .iter()
+                .filter(|e| e.relation == RelationKind::Chose && e.from == decision_id)
+                .map(|e| e.to.clone()) // ubs:ignore:
+                .collect();
+            for opt_id in chosen_option_ids {
+                let opt_pairs = neighbor_pairs(
+                    graph,
+                    NodeKind::Option,
+                    &opt_id,
+                    RelationKind::PremisedOn,
+                    NodeKind::Hypothesis,
+                    Direction::Outgoing,
+                )?;
+                for (hypothesis_id, event_origin) in opt_pairs {
+                    edges.push(NeighborEdge {
+                        from: decision_id.to_owned(), // ubs:ignore:
+                        to: hypothesis_id.clone(),    // ubs:ignore:
+                        relation: RelationKind::PremisedOn,
+                        event_origin,
+                    });
+                    hypothesis_ids.insert(hypothesis_id);
+                }
+            }
+        } else {
+            let pairs = neighbor_pairs(
+                graph,
+                NodeKind::Decision,
+                decision_id,
                 relation,
-                event_origin,
-            });
-            if matches!(other_kind, NodeKind::Hypothesis) {
-                hypothesis_ids.insert(other_id);
+                other_kind,
+                direction,
+            )?;
+            for (other_id, event_origin) in pairs {
+                let (from, to) = match direction {
+                    Direction::Outgoing => (decision_id.to_owned(), other_id.clone()),
+                    Direction::Incoming => (other_id.clone(), decision_id.to_owned()),
+                };
+                edges.push(NeighborEdge {
+                    from,
+                    to,
+                    relation,
+                    event_origin,
+                });
+                if matches!(other_kind, NodeKind::Hypothesis) {
+                    hypothesis_ids.insert(other_id);
+                }
             }
         }
     }

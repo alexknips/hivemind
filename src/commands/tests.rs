@@ -130,13 +130,21 @@ fn propose_decision_fans_out_relation_events_with_causation_linkage() {
 
     for relation_event in &relation_events {
         assert_eq!(relation_event.causation_event_id, Some(proposal_id));
-        assert_eq!(
-            relation_event
-                .payload
-                .get("from_id")
-                .and_then(|value| value.as_str()),
-            Some(decision_id.as_str())
-        );
+        let from_id = relation_event
+            .payload
+            .get("from_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let relation_kind = relation_event
+            .payload
+            .get("relation")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if relation_kind == "ASSUMES" {
+            assert_eq!(from_id, option_b.as_str());
+        } else {
+            assert_eq!(from_id, decision_id.as_str());
+        }
     }
 
     let has_option_count = relation_events

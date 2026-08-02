@@ -85,5 +85,5 @@ fn dot_export_renders_node_statuses_and_relation_labels() {
     assert!(dot.contains("Decision:d1"));
     assert!(dot.contains("status: accepted"));
     assert!(dot.contains("status: refuted"));
-    assert!(dot.contains("ASSUMES"));
+    assert!(dot.contains("PREMISED_ON"));
 }

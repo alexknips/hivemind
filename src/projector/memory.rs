@@ -114,6 +114,41 @@ impl GraphView for MemoryGraph {
             return Ok(rows);
         }
 
+        if cypher.contains("UNION") && cypher.contains("from_id") && cypher.contains("to_id") {
+            let edges = self.edges_snapshot()?;
+            let mut pairs: std::collections::BTreeSet<(String, String)> =
+                std::collections::BTreeSet::new();
+            for edge in &edges {
+                if edge.relation == RelationKind::Chose {
+                    let opt_id = &edge.to_id;
+                    let decision_id = &edge.from_id;
+                    for hop2 in &edges {
+                        if hop2.relation == RelationKind::PremisedOn && hop2.from_id == *opt_id {
+                            let pair = (decision_id.clone(), hop2.to_id.clone()); // ubs:ignore:
+                            pairs.insert(pair);
+                        }
+                    }
+                }
+                if edge.relation == RelationKind::PremisedOnDirect {
+                    pairs.insert((edge.from_id.clone(), edge.to_id.clone())); // ubs:ignore:
+                }
+            }
+            let mut rows: Vec<GraphRow> = pairs
+                .into_iter()
+                .map(|(from_id, to_id)| {
+                    GraphRow::from([
+                        ("from_id".to_owned(), GraphValue::String(from_id)),
+                        ("to_id".to_owned(), GraphValue::String(to_id)),
+                    ])
+                })
+                .collect();
+            rows.sort_by(|left, right| {
+                (row_string(left, "from_id"), row_string(left, "to_id")) // ubs:ignore:
+                    .cmp(&(row_string(right, "from_id"), row_string(right, "to_id")))
+            });
+            return Ok(rows);
+        }
+
         if cypher.contains("RETURN from.id AS from_id, to.id AS to_id") {
             let relation = query_relation(cypher)?;
             let mut rows = self
@@ -234,6 +269,37 @@ impl GraphView for MemoryGraph {
             decisions.sort_by(|left, right| row_string(left, "id").cmp(row_string(right, "id")));
             decisions.truncate(1000);
             return Ok(decisions);
+        }
+
+        if cypher.contains("UNION") && cypher.contains("hypothesis_id") && cypher.contains("$id") {
+            let decision_id = required_param_string(params, "id")?;
+            let edges = self.edges_snapshot()?;
+            let mut ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let chosen_options: Vec<String> = edges
+                .iter()
+                .filter(|e| e.relation == RelationKind::Chose && e.from_id == decision_id)
+                .map(|e| e.to_id.clone()) // ubs:ignore:
+                .collect();
+            for opt_id in &chosen_options {
+                ids.extend(
+                    edges
+                        .iter()
+                        .filter(|e| e.relation == RelationKind::PremisedOn && e.from_id == *opt_id)
+                        .map(|e| e.to_id.clone()), // ubs:ignore:
+                );
+            }
+            ids.extend(
+                edges
+                    .iter()
+                    .filter(|e| {
+                        e.relation == RelationKind::PremisedOnDirect && e.from_id == decision_id
+                    })
+                    .map(|e| e.to_id.clone()), // ubs:ignore:
+            );
+            return Ok(ids
+                .into_iter()
+                .map(|id| GraphRow::from([("hypothesis_id".to_owned(), GraphValue::String(id))])) // ubs:ignore:
+                .collect());
         }
 
         if cypher.contains("RETURN n.id AS") {
