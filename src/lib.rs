@@ -19,6 +19,7 @@ pub mod suggest;
 pub mod summarize;
 #[cfg(feature = "tui")]
 pub mod tui;
+pub(crate) mod util;
 
 pub use error::{
     CliError, CommandError, HivemindError, LedgerError, ProjectorError, QueryError, Result,

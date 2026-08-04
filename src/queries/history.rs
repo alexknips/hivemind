@@ -17,6 +17,7 @@ use crate::ledger::EventLedger;
 use crate::projector::NodeKind;
 use crate::Result;
 
+use super::shared::normalized_query;
 use super::{DecisionStatus, QueryResponse, MAX_QUERY_RESULTS};
 
 const DEFAULT_HISTORY_LIMIT: usize = 25;
@@ -1821,13 +1822,6 @@ fn normalized_history_limit(limit: usize) -> usize {
     } else {
         limit.min(MAX_QUERY_RESULTS)
     }
-}
-
-fn normalized_query(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
 }
 
 fn parse_history_cursor(cursor: Option<&str>) -> Result<usize> {

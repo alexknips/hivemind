@@ -14,6 +14,7 @@ use crate::events::{
     RelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
+use crate::util::require_non_empty;
 use crate::Result;
 
 pub type DecisionId = String;
@@ -1491,14 +1492,6 @@ const fn relation_kind_name(relation_kind: RelationKind) -> &'static str {
         RelationKind::Supports => "SUPPORTS",
         RelationKind::Refutes => "REFUTES",
         RelationKind::SameAs => "SAME_AS",
-    }
-}
-
-fn require_non_empty(field: &'static str, value: &str) -> Result<()> {
-    if value.trim().is_empty() {
-        Err(CommandError::Validation(format!("{field} must not be empty")).into())
-    } else {
-        Ok(())
     }
 }
 
