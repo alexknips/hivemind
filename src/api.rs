@@ -72,7 +72,7 @@ use crate::projector::{
 use crate::queries::{
     derive_decision_status, get_compact_view, get_decision, get_relevant_decisions,
     get_supersession_chain, search_decisions_fts_with_context, DecisionStatus, QueryContext,
-    SearchDecisionRequest,
+    QueryResponse, SearchDecisionRequest,
 };
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
@@ -438,7 +438,7 @@ impl IntoResponse for ApiError {
     }
 }
 
-fn map_err(error: HivemindError) -> ApiError {
+fn to_api_error(error: HivemindError) -> ApiError {
     match error {
         HivemindError::Command(CommandError::Validation(msg)) => ApiError::Validation(msg),
         HivemindError::Command(CommandError::Invariant(msg)) if msg.contains("does not exist") => {
@@ -456,6 +456,8 @@ fn map_err(error: HivemindError) -> ApiError {
 const DEFAULT_ACTOR: &str = "service:api";
 const HEADER_TENANT: &str = "x-hivemind-tenant";
 const HEADER_ACTOR: &str = "x-hivemind-actor";
+const HEADER_AUTHORIZATION: &str = "authorization";
+const HEADER_FORWARDED_PROTO: &str = "x-forwarded-proto";
 
 #[derive(Clone)]
 struct ApiRequestCtx {
@@ -465,7 +467,7 @@ struct ApiRequestCtx {
 
 async fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequestCtx> {
     let bearer = headers
-        .get("authorization")
+        .get(HEADER_AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
@@ -829,7 +831,7 @@ async fn graph_handler(State(state): State<AppState>, headers: HeaderMap) -> Res
     };
     let backend = Arc::clone(&state.backend);
     let result = tokio::task::spawn_blocking(move || graph_blocking(&backend, &ctx)).await;
-    unpack_blocking(result)
+    respond(result, StatusCode::OK)
 }
 
 fn graph_err(e: impl std::fmt::Display) -> ApiError {
@@ -1162,7 +1164,7 @@ async fn post_decisions_handler(
     let result =
         tokio::task::spawn_blocking(move || capture_decision_blocking(&backend, &ctx, req)).await;
 
-    unpack_blocking(result)
+    respond(result, StatusCode::OK)
 }
 
 fn capture_decision_blocking(
@@ -1208,7 +1210,7 @@ fn capture_decision_blocking(
 
         let option_id = commands
             .record_option(&ctx.actor_id, &label, &description)
-            .map_err(map_err)?;
+            .map_err(to_api_error)?;
 
         // ubs:ignore: == compares option labels (user-visible strings), not secrets
         if req.chosen_option_label.as_deref() == Some(label.as_str()) {
@@ -1234,7 +1236,7 @@ fn capture_decision_blocking(
             &req.hypothesis_ids,
             &req.evidence_ids,
         )
-        .map_err(map_err)?;
+        .map_err(to_api_error)?;
 
     Ok(serde_json::json!({
         "decision_id": decision_id,
@@ -1272,12 +1274,12 @@ async fn post_evidence_handler(
         );
         let evidence_id = commands
             .record_evidence(&ctx.actor_id, &req.content)
-            .map_err(map_err)?;
+            .map_err(to_api_error)?;
         Ok(serde_json::json!({ "evidence_id": evidence_id }))
     })
     .await;
 
-    unpack_blocking(result)
+    respond(result, StatusCode::OK)
 }
 
 async fn post_hypotheses_handler(
@@ -1309,12 +1311,12 @@ async fn post_hypotheses_handler(
         );
         let hypothesis_id = commands
             .record_hypothesis(&ctx.actor_id, &req.statement)
-            .map_err(map_err)?;
+            .map_err(to_api_error)?;
         Ok(serde_json::json!({ "hypothesis_id": hypothesis_id }))
     })
     .await;
 
-    unpack_blocking(result)
+    respond(result, StatusCode::OK)
 }
 
 async fn disagree_handler(
@@ -1347,10 +1349,10 @@ async fn disagree_handler(
         );
         let event_id = commands
             .disagree(&ctx.actor_id, &decision_id, &req.reason)
-            .map_err(map_err)?;
+            .map_err(to_api_error)?;
 
         let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
-        let decision_status = derive_decision_status(&graph, &decision_id).map_err(map_err)?;
+        let decision_status = derive_decision_status(&graph, &decision_id).map_err(to_api_error)?;
 
         Ok(serde_json::json!({
             "decision_id": decision_id,
@@ -1360,7 +1362,7 @@ async fn disagree_handler(
     })
     .await;
 
-    unpack_blocking(result)
+    respond(result, StatusCode::OK)
 }
 
 async fn supersede_handler(
@@ -1406,12 +1408,12 @@ async fn supersede_handler(
                 &req.hypothesis_ids,
                 &req.evidence_ids,
             )
-            .map_err(map_err)?;
+            .map_err(to_api_error)?;
 
         let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
-        let old_status = derive_decision_status(&graph, &old_decision_id).map_err(map_err)?;
+        let old_status = derive_decision_status(&graph, &old_decision_id).map_err(to_api_error)?;
         let new_status =
-            derive_decision_status(&graph, &outcome.new_decision_id).map_err(map_err)?;
+            derive_decision_status(&graph, &outcome.new_decision_id).map_err(to_api_error)?;
 
         Ok(serde_json::json!({
             "old_decision_id": old_decision_id,
@@ -1425,7 +1427,7 @@ async fn supersede_handler(
     })
     .await;
 
-    unpack_blocking(result)
+    respond(result, StatusCode::OK)
 }
 
 async fn get_decision_handler(
@@ -1442,16 +1444,12 @@ async fn get_decision_handler(
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
         let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
-        let view = get_decision(&graph, &decision_id).map_err(map_err)?;
+        let view = get_decision(&graph, &decision_id).map_err(to_api_error)?;
         Ok(view)
     })
     .await;
 
-    match result {
-        Ok(Ok(view)) => (StatusCode::OK, Json(query_envelope(view))).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(e) => ApiError::internal(e.to_string()).into_response(),
-    }
+    respond_envelope(result)
 }
 
 async fn supersession_chain_handler(
@@ -1468,22 +1466,18 @@ async fn supersession_chain_handler(
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
         let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
-        let exists = get_decision(&graph, &decision_id).map_err(map_err)?;
+        let exists = get_decision(&graph, &decision_id).map_err(to_api_error)?;
         if exists.data.is_none() {
             return Err(ApiError::not_found(format!(
                 "decision not found: {decision_id}"
             )));
         }
-        let response = get_supersession_chain(&graph, &decision_id).map_err(map_err)?;
+        let response = get_supersession_chain(&graph, &decision_id).map_err(to_api_error)?;
         Ok(response)
     })
     .await;
 
-    match result {
-        Ok(Ok(view)) => (StatusCode::OK, Json(query_envelope(view))).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(e) => ApiError::internal(e.to_string()).into_response(),
-    }
+    respond_envelope(result)
 }
 
 async fn compact_view_handler(
@@ -1500,16 +1494,12 @@ async fn compact_view_handler(
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
         let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
-        let response = get_compact_view(&graph, &decision_id).map_err(map_err)?;
+        let response = get_compact_view(&graph, &decision_id).map_err(to_api_error)?;
         Ok(response)
     })
     .await;
 
-    match result {
-        Ok(Ok(view)) => (StatusCode::OK, Json(query_envelope(view))).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(e) => ApiError::internal(e.to_string()).into_response(),
-    }
+    respond_envelope(result)
 }
 
 async fn map_handler(
@@ -1551,11 +1541,7 @@ async fn map_handler(
     })
     .await;
 
-    match result {
-        Ok(Ok(v)) => (StatusCode::OK, Json(v)).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(e) => ApiError::internal(e.to_string()).into_response(), // ubs:ignore: error conversion at handler boundary
-    }
+    respond(result, StatusCode::OK)
 }
 
 fn parse_alpha_list(raw: Option<&str>) -> ApiResult<Vec<f64>> {
@@ -1668,7 +1654,7 @@ async fn search_handler(
                 let query_ctx = QueryContext::new(ctx.tenant_id);
                 let response =
                     search_decisions_fts_with_context(&query_ctx, &ledger, &graph, &request)
-                        .map_err(map_err)?;
+                        .map_err(to_api_error)?;
                 Ok(response)
             }
             #[cfg(feature = "shared-backend-postgres")]
@@ -1680,11 +1666,7 @@ async fn search_handler(
     })
     .await;
 
-    match result {
-        Ok(Ok(view)) => (StatusCode::OK, Json(query_envelope(view))).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(e) => ApiError::internal(e.to_string()).into_response(),
-    }
+    respond_envelope(result)
 }
 
 async fn relevant_handler(
@@ -1703,16 +1685,12 @@ async fn relevant_handler(
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
         let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
         let response =
-            get_relevant_decisions(&graph, &params.topic, status_filter).map_err(map_err)?;
+            get_relevant_decisions(&graph, &params.topic, status_filter).map_err(to_api_error)?;
         Ok(response)
     })
     .await;
 
-    match result {
-        Ok(Ok(view)) => (StatusCode::OK, Json(query_envelope(view))).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(e) => ApiError::internal(e.to_string()).into_response(),
-    }
+    respond_envelope(result)
 }
 
 async fn post_ingest_handler(
@@ -1733,11 +1711,7 @@ async fn post_ingest_handler(
     let result =
         tokio::task::spawn_blocking(move || ingest_batch_blocking(&backend, &ctx, req)).await;
 
-    match result {
-        Ok(Ok(body)) => (StatusCode::ACCEPTED, Json(body)).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(e) => ApiError::internal(e.to_string()).into_response(),
-    }
+    respond(result, StatusCode::ACCEPTED)
 }
 
 const MAX_INGEST_TURNS: usize = 20;
@@ -1790,7 +1764,7 @@ fn ingest_batch_blocking(
             &req.session_id,
             turns,
         )
-        .map_err(map_err)?;
+        .map_err(to_api_error)?;
 
     Ok(serde_json::json!({
         "batch_id": req.batch_id,
@@ -1810,7 +1784,7 @@ async fn provision_tenant_handler(
 ) -> Response {
     // Admin key gate (separate from per-tenant bearer tokens).
     let provided = headers
-        .get("authorization")
+        .get(HEADER_AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
@@ -1847,11 +1821,7 @@ async fn provision_tenant_handler(
     })
     .await;
 
-    match result {
-        Ok(Ok(body)) => (StatusCode::CREATED, Json(body)).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(e) => ApiError::internal(e.to_string()).into_response(),
-    }
+    respond(result, StatusCode::CREATED)
 }
 
 // ---------------------------------------------------------------------------
@@ -1874,7 +1844,7 @@ fn default_role() -> String {
 #[allow(clippy::result_large_err)]
 fn check_admin_key(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
     let provided = headers
-        .get("authorization")
+        .get(HEADER_AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
@@ -1922,11 +1892,7 @@ async fn create_user_handler(
             }))
         })
         .await;
-        return match result {
-            Ok(Ok(body)) => (StatusCode::CREATED, Json(body)).into_response(),
-            Ok(Err(e)) => e.into_response(),
-            Err(e) => ApiError::internal(e.to_string()).into_response(),
-        };
+        return respond(result, StatusCode::CREATED);
     }
 
     // SQLite path
@@ -1950,11 +1916,7 @@ async fn create_user_handler(
             }))
         })
         .await;
-        return match result {
-            Ok(Ok(body)) => (StatusCode::CREATED, Json(body)).into_response(),
-            Ok(Err(e)) => e.into_response(),
-            Err(e) => ApiError::internal(e.to_string()).into_response(),
-        };
+        return respond(result, StatusCode::CREATED);
     }
 
     ApiError::internal("user store not initialized").into_response()
@@ -2069,11 +2031,7 @@ async fn mint_user_token_handler(
             }))
         })
         .await;
-        return match result {
-            Ok(Ok(body)) => (StatusCode::CREATED, Json(body)).into_response(),
-            Ok(Err(e)) => e.into_response(),
-            Err(e) => ApiError::internal(e.to_string()).into_response(),
-        };
+        return respond(result, StatusCode::CREATED);
     }
 
     if let Some(ref user_store) = state.sqlite_user_store {
@@ -2207,11 +2165,22 @@ fn query_envelope<T: Serialize>(response: crate::queries::QueryResponse<T>) -> Q
     }
 }
 
-fn unpack_blocking(
-    result: std::result::Result<ApiResult<serde_json::Value>, tokio::task::JoinError>,
+fn respond<T: Serialize>(
+    result: std::result::Result<ApiResult<T>, tokio::task::JoinError>,
+    status: StatusCode,
 ) -> Response {
     match result {
-        Ok(Ok(body)) => (StatusCode::OK, Json(body)).into_response(),
+        Ok(Ok(body)) => (status, Json(body)).into_response(),
+        Ok(Err(e)) => e.into_response(),
+        Err(e) => ApiError::internal(e.to_string()).into_response(),
+    }
+}
+
+fn respond_envelope<T: Serialize>(
+    result: std::result::Result<ApiResult<QueryResponse<T>>, tokio::task::JoinError>,
+) -> Response {
+    match result {
+        Ok(Ok(view)) => (StatusCode::OK, Json(query_envelope(view))).into_response(),
         Ok(Err(e)) => e.into_response(),
         Err(e) => ApiError::internal(e.to_string()).into_response(),
     }
@@ -2240,7 +2209,7 @@ async fn mcp_http_handler(
             // MCP clients use WWW-Authenticate to discover the PRM endpoint (RFC 9728 §5).
             if resp.status() == StatusCode::UNAUTHORIZED {
                 let scheme = headers
-                    .get("x-forwarded-proto")
+                    .get(HEADER_FORWARDED_PROTO)
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("https");
                 let host = headers
@@ -2965,7 +2934,7 @@ async fn oauth_protected_resource_handler(
     // Derive the MCP server's own URL from request headers.
     // Fly.io sets X-Forwarded-Proto; Host is standard HTTP/1.1.
     let scheme = headers
-        .get("x-forwarded-proto")
+        .get(HEADER_FORWARDED_PROTO)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("https");
     let host = headers
