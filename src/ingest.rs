@@ -12,6 +12,7 @@ use crate::commands::{Commands, DecisionProposalEventUuids};
 use crate::error::{CliError, CommandError};
 use crate::events::{self, Event, EventPayload, EventProvenance, EventSource, EventType};
 use crate::ledger::EventLedger;
+use crate::util::require_non_empty;
 use crate::Result;
 
 pub const DEFAULT_SLACK_MENTION: &str = "@hivemind";
@@ -214,14 +215,6 @@ fn render_thread_context(thread: &SlackThreadFixture, source_ref: &str) -> Strin
         );
     }
     context
-}
-
-fn require_non_empty(field: &'static str, value: &str) -> Result<()> {
-    if value.trim().is_empty() {
-        Err(CommandError::Validation(format!("{field} must not be empty")).into())
-    } else {
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2239,26 +2232,34 @@ fn import_run_id_from_source_ref(source_ref: Option<&str>) -> Option<String> {
     Some(parsed.import_run_id)
 }
 
-fn evidence_id_exists<L: EventLedger>(ledger: &L, evidence_id: &str) -> Result<bool> {
+fn entity_id_exists<L: EventLedger>(
+    ledger: &L,
+    event_type: EventType,
+    key: &str,
+    id: &str,
+) -> Result<bool> {
     scan_ledger(ledger, |event| {
-        event.event_type == EventType::EvidenceRecorded
-            && event
-                .payload
-                .get("evidence_id")
-                .and_then(|value| value.as_str())
-                == Some(evidence_id)
+        event.event_type == event_type
+            && event.payload.get(key).and_then(|value| value.as_str()) == Some(id)
     })
 }
 
+fn evidence_id_exists<L: EventLedger>(ledger: &L, evidence_id: &str) -> Result<bool> {
+    entity_id_exists(
+        ledger,
+        EventType::EvidenceRecorded,
+        "evidence_id",
+        evidence_id,
+    )
+}
+
 fn hypothesis_id_exists<L: EventLedger>(ledger: &L, hypothesis_id: &str) -> Result<bool> {
-    scan_ledger(ledger, |event| {
-        event.event_type == EventType::HypothesisRecorded
-            && event
-                .payload
-                .get("hypothesis_id")
-                .and_then(|value| value.as_str())
-                == Some(hypothesis_id)
-    })
+    entity_id_exists(
+        ledger,
+        EventType::HypothesisRecorded,
+        "hypothesis_id",
+        hypothesis_id,
+    )
 }
 
 fn missing_superseded_decision<L: EventLedger>(
@@ -2863,14 +2864,12 @@ fn event_uuid_exists<L: EventLedger>(ledger: &L, event_uuid: Uuid) -> Result<boo
 }
 
 fn decision_id_exists<L: EventLedger>(ledger: &L, decision_id: &str) -> Result<bool> {
-    scan_ledger(ledger, |event| {
-        event.event_type == EventType::DecisionProposed
-            && event
-                .payload
-                .get("decision_id")
-                .and_then(|value| value.as_str())
-                == Some(decision_id)
-    })
+    entity_id_exists(
+        ledger,
+        EventType::DecisionProposed,
+        "decision_id",
+        decision_id,
+    )
 }
 
 fn find_document_duplicate_candidate<L: EventLedger>(
