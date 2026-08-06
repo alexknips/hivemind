@@ -747,18 +747,17 @@ mod tests {
                 .position(|l| *l == c)
                 .map(|i| option_ids[i].clone()) // ubs:ignore: test-only; index bounds safe (position returns valid index)
         });
-        commands // ubs:ignore: test-only; panicking is correct in tests
-            .propose_decision(DecisionProposalInput {
-                actor_id: actor,
-                title,
-                rationale,
-                topic_keys: &topic_keys,
-                option_ids: &option_ids,
-                chosen_option_id: chosen_id.as_deref(),
-                hypothesis_ids: &[],
-                evidence_ids: &[],
-            })
-            .unwrap() // ubs:ignore: test-only helper; panicking is correct in tests
+        let input = DecisionProposalInput {
+            actor_id: actor,
+            title,
+            rationale,
+            topic_keys: &topic_keys,
+            option_ids: &option_ids,
+            chosen_option_id: chosen_id.as_deref(),
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        };
+        commands.propose_decision(input).unwrap() // ubs:ignore: test-only helper; panicking is correct in tests
     }
 
     #[test]
@@ -848,19 +847,19 @@ mod tests {
             &["old-approach"],
             None,
         );
-        let outcome = commands // ubs:ignore: test-only; panicking is correct in tests
-            .supersede(SupersedeInput {
-                actor_id: "test-actor",
-                old_decision_id: &old_id,
-                new_title: "New Decision",
-                new_rationale: "New rationale supersedes old",
-                topic_keys: &["api".to_string()],
-                option_labels: &[],
-                chosen_option_label: None,
-                hypothesis_ids: &[],
-                evidence_ids: &[],
-            })
-            .unwrap(); // ubs:ignore: test-only; panicking is correct in tests
+        let supersede_topic_keys = ["api".to_string()];
+        let supersede_input = SupersedeInput {
+            actor_id: "test-actor",
+            old_decision_id: &old_id,
+            new_title: "New Decision",
+            new_rationale: "New rationale supersedes old",
+            topic_keys: &supersede_topic_keys,
+            option_labels: &[],
+            chosen_option_label: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        };
+        let outcome = commands.supersede(supersede_input).unwrap(); // ubs:ignore: test-only; panicking is correct in tests
         let new_id = outcome.new_decision_id;
         let graph = make_graph(&ledger);
         let request = SummarizeRequest {
