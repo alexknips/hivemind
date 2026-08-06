@@ -385,9 +385,7 @@ fn fiedler_vector(laplacian: &DMatrix<f64>) -> Result<DVector<f64>> {
         .get(1)
         .or_else(|| pairs.first())
         .map(|p| p.1)
-        .ok_or_else(|| {
-            LedgerError::Storage("empty Laplacian has no eigenvectors".to_string())
-        })?;
+        .ok_or_else(|| LedgerError::Storage("empty Laplacian has no eigenvectors".to_string()))?;
     Ok(sym.eigenvectors.column(col).clone_owned())
 }
 
