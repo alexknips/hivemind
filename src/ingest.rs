@@ -1645,14 +1645,19 @@ fn write_document_decision_events<L: EventLedger>(
     Ok(event_ids)
 }
 
-fn resolve_document_import_conflict<L: EventLedger>(
+struct ConflictDetectionSetup {
+    conflict: DocumentImportConflictReport,
+    reviewer_action: Option<DocumentReviewerAction>,
+}
+
+fn conflict_detection_setup<L: EventLedger>(
     ledger: &L,
     draft: &DocumentDecisionDraft,
     existing_decision_id: &str,
     context: &DocumentImportContext<'_>,
     selected_action: DocumentConflictResolutionAction,
-    similarity_matches: Vec<DocumentSimilarityMatch>,
-) -> Result<DocumentBlockImportReport> {
+    similarity_matches: &[DocumentSimilarityMatch],
+) -> Result<ConflictDetectionSetup> {
     let existing = existing_document_conflict_item(ledger, existing_decision_id)?;
     let affected_dependencies = affected_dependencies_for_decision(ledger, existing_decision_id)?;
     let proposed_update = proposed_conflict_update(
@@ -1663,7 +1668,7 @@ fn resolve_document_import_conflict<L: EventLedger>(
         context.importer_actor_id,
         context.import_run_id,
     );
-    let mut conflict = DocumentImportConflictReport {
+    let conflict = DocumentImportConflictReport {
         selected_action,
         available_actions: DocumentConflictResolutionAction::available_actions(),
         existing,
@@ -1671,7 +1676,7 @@ fn resolve_document_import_conflict<L: EventLedger>(
         affected_dependencies,
         resolved_decision_id: None,
     };
-    let report_reviewer_action = match selected_action {
+    let reviewer_action = match selected_action {
         DocumentConflictResolutionAction::Report if similarity_matches.len() > 1 => {
             Some(DocumentReviewerAction::ReviewAmbiguousFuzzyMatches)
         }
@@ -1680,177 +1685,267 @@ fn resolve_document_import_conflict<L: EventLedger>(
         }
         _ => None,
     };
+    Ok(ConflictDetectionSetup {
+        conflict,
+        reviewer_action,
+    })
+}
 
-    match selected_action {
-        DocumentConflictResolutionAction::Report => conflict_block_report(
-            draft,
-            existing_decision_id,
-            ConflictBlockOutcome::new(
-                DocumentBlockImportStatus::Conflict,
-                "stable decision id already exists with different imported content",
-            ),
-            Vec::new(),
-            ConflictBlockReportDetails {
-                reviewer_action: report_reviewer_action,
-                similarity_matches,
-                conflict,
-            },
+fn apply_conflict_report(
+    draft: &DocumentDecisionDraft,
+    existing_decision_id: &str,
+    setup: ConflictDetectionSetup,
+    similarity_matches: Vec<DocumentSimilarityMatch>,
+) -> Result<DocumentBlockImportReport> {
+    conflict_block_report(
+        draft,
+        existing_decision_id,
+        ConflictBlockOutcome::new(
+            DocumentBlockImportStatus::Conflict,
+            "stable decision id already exists with different imported content",
         ),
-        DocumentConflictResolutionAction::KeepExisting => conflict_block_report(
+        Vec::new(),
+        ConflictBlockReportDetails {
+            reviewer_action: setup.reviewer_action,
+            similarity_matches,
+            conflict: setup.conflict,
+        },
+    )
+}
+
+fn apply_conflict_keep_existing(
+    draft: &DocumentDecisionDraft,
+    existing_decision_id: &str,
+    setup: ConflictDetectionSetup,
+    similarity_matches: Vec<DocumentSimilarityMatch>,
+) -> Result<DocumentBlockImportReport> {
+    conflict_block_report(
+        draft,
+        existing_decision_id,
+        ConflictBlockOutcome::new(
+            DocumentBlockImportStatus::ConflictKeptExisting,
+            "kept existing ledger-derived decision; no events written",
+        ),
+        Vec::new(),
+        ConflictBlockReportDetails {
+            reviewer_action: None,
+            similarity_matches,
+            conflict: setup.conflict,
+        },
+    )
+}
+
+fn apply_conflict_supersede<L: EventLedger>(
+    ledger: &L,
+    draft: &DocumentDecisionDraft,
+    existing_decision_id: &str,
+    context: &DocumentImportContext<'_>,
+    mut setup: ConflictDetectionSetup,
+    similarity_matches: Vec<DocumentSimilarityMatch>,
+) -> Result<DocumentBlockImportReport> {
+    let identities = DocumentImportIdentities::new_conflict_supersession(
+        draft,
+        context.canonical_path,
+        context.source_hash,
+        context.namespace,
+        existing_decision_id,
+    )?;
+    if let Some(missing_decision_id) = missing_superseded_decision(ledger, &identities)? {
+        return conflict_block_report(
             draft,
             existing_decision_id,
             ConflictBlockOutcome::new(
-                DocumentBlockImportStatus::ConflictKeptExisting,
-                "kept existing ledger-derived decision; no events written",
+                DocumentBlockImportStatus::ValidationError,
+                &format!("superseded decision does not exist: {missing_decision_id}"),
             ),
             Vec::new(),
             ConflictBlockReportDetails {
                 reviewer_action: None,
                 similarity_matches,
-                conflict,
+                conflict: setup.conflict,
             },
+        );
+    }
+    let resolved_decision_id = identities.decision_id.clone();
+    let source_ref = document_source_ref(
+        draft,
+        context.canonical_path,
+        context.source_hash,
+        context.importer_actor_id,
+        context.import_run_id,
+        Some(DocumentConflictSourceRefResolution {
+            action: DocumentConflictResolutionAction::Supersede,
+            existing_decision_id: existing_decision_id.to_owned(),
+            resolved_decision_id: Some(resolved_decision_id.clone()),
+        }),
+    )?;
+    let actor_id = draft
+        .original_actor_id
+        .as_deref()
+        .unwrap_or(context.importer_actor_id);
+    let event_ids =
+        write_document_decision_events(ledger, draft, &identities, actor_id, &source_ref)?;
+    setup.conflict.resolved_decision_id = Some(resolved_decision_id);
+    conflict_block_report(
+        draft,
+        existing_decision_id,
+        ConflictBlockOutcome::new(
+            DocumentBlockImportStatus::ConflictSuperseded,
+            "captured proposed update as a superseding decision",
         ),
-        DocumentConflictResolutionAction::Supersede => {
-            let identities = DocumentImportIdentities::new_conflict_supersession(
-                draft,
-                context.canonical_path,
-                context.source_hash,
-                context.namespace,
-                existing_decision_id,
-            )?;
-            if let Some(missing_decision_id) = missing_superseded_decision(ledger, &identities)? {
-                return conflict_block_report(
-                    draft,
-                    existing_decision_id,
-                    ConflictBlockOutcome::new(
-                        DocumentBlockImportStatus::ValidationError,
-                        &format!("superseded decision does not exist: {missing_decision_id}"),
-                    ),
-                    Vec::new(),
-                    ConflictBlockReportDetails {
-                        reviewer_action: None,
-                        similarity_matches,
-                        conflict,
-                    },
-                );
-            }
-            let resolved_decision_id = identities.decision_id.clone();
-            let source_ref = document_source_ref(
-                draft,
-                context.canonical_path,
-                context.source_hash,
-                context.importer_actor_id,
-                context.import_run_id,
-                Some(DocumentConflictSourceRefResolution {
-                    action: selected_action,
-                    existing_decision_id: existing_decision_id.to_owned(),
-                    resolved_decision_id: Some(resolved_decision_id.clone()),
-                }),
-            )?;
-            let actor_id = draft
-                .original_actor_id
-                .as_deref()
-                .unwrap_or(context.importer_actor_id);
-            let event_ids =
-                write_document_decision_events(ledger, draft, &identities, actor_id, &source_ref)?;
-            conflict.resolved_decision_id = Some(resolved_decision_id);
-            conflict_block_report(
-                draft,
-                existing_decision_id,
-                ConflictBlockOutcome::new(
-                    DocumentBlockImportStatus::ConflictSuperseded,
-                    "captured proposed update as a superseding decision",
-                ),
-                event_ids,
-                ConflictBlockReportDetails {
-                    reviewer_action: None,
-                    similarity_matches,
-                    conflict,
-                },
-            )
+        event_ids,
+        ConflictBlockReportDetails {
+            reviewer_action: None,
+            similarity_matches,
+            conflict: setup.conflict,
+        },
+    )
+}
+
+fn apply_conflict_contest<L: EventLedger>(
+    ledger: &L,
+    draft: &DocumentDecisionDraft,
+    existing_decision_id: &str,
+    context: &DocumentImportContext<'_>,
+    setup: ConflictDetectionSetup,
+    similarity_matches: Vec<DocumentSimilarityMatch>,
+) -> Result<DocumentBlockImportReport> {
+    let source_ref = document_source_ref(
+        draft,
+        context.canonical_path,
+        context.source_hash,
+        context.importer_actor_id,
+        context.import_run_id,
+        Some(DocumentConflictSourceRefResolution {
+            action: DocumentConflictResolutionAction::Contest,
+            existing_decision_id: existing_decision_id.to_owned(),
+            resolved_decision_id: None,
+        }),
+    )?;
+    let commands = Commands::new_with_provenance(ledger, EventProvenance::document(source_ref));
+    let event_uuid = conflict_resolution_uuid(
+        DocumentConflictResolutionAction::Contest,
+        context.canonical_path,
+        context.source_hash,
+        draft,
+        "decision.rejected",
+        0,
+    );
+    let event_ids = if event_uuid_exists(ledger, event_uuid)? {
+        Vec::new()
+    } else {
+        vec![commands.reject_decision_with_uuid(
+            existing_decision_id,
+            context.importer_actor_id,
+            event_uuid,
+        )?]
+    };
+    conflict_block_report(
+        draft,
+        existing_decision_id,
+        ConflictBlockOutcome::new(
+            DocumentBlockImportStatus::ConflictContested,
+            "contested existing decision with an explicit rejection event",
+        ),
+        event_ids,
+        ConflictBlockReportDetails {
+            reviewer_action: None,
+            similarity_matches,
+            conflict: setup.conflict,
+        },
+    )
+}
+
+fn apply_conflict_add_context<L: EventLedger>(
+    ledger: &L,
+    draft: &DocumentDecisionDraft,
+    existing_decision_id: &str,
+    context: &DocumentImportContext<'_>,
+    setup: ConflictDetectionSetup,
+    similarity_matches: Vec<DocumentSimilarityMatch>,
+) -> Result<DocumentBlockImportReport> {
+    let event_ids = add_conflict_context_events(
+        ledger,
+        draft,
+        existing_decision_id,
+        context.canonical_path,
+        context.source_hash,
+        context.namespace,
+        context.importer_actor_id,
+        context.import_run_id,
+    )?;
+    let status = if draft.evidence.is_empty() && draft.hypotheses.is_empty() {
+        DocumentBlockImportStatus::ValidationError
+    } else {
+        DocumentBlockImportStatus::ConflictContextAdded
+    };
+    let message = if draft.evidence.is_empty() && draft.hypotheses.is_empty() {
+        "add_context requires at least one evidence or hypothesis item"
+    } else if event_ids.is_empty() {
+        "proposed evidence and hypotheses were already attached"
+    } else {
+        "added proposed evidence and hypotheses to the existing decision"
+    };
+    conflict_block_report(
+        draft,
+        existing_decision_id,
+        ConflictBlockOutcome::new(status, message),
+        event_ids,
+        ConflictBlockReportDetails {
+            reviewer_action: None,
+            similarity_matches,
+            conflict: setup.conflict,
+        },
+    )
+}
+
+fn resolve_document_import_conflict<L: EventLedger>(
+    ledger: &L,
+    draft: &DocumentDecisionDraft,
+    existing_decision_id: &str,
+    context: &DocumentImportContext<'_>,
+    selected_action: DocumentConflictResolutionAction,
+    similarity_matches: Vec<DocumentSimilarityMatch>,
+) -> Result<DocumentBlockImportReport> {
+    let setup = conflict_detection_setup(
+        ledger,
+        draft,
+        existing_decision_id,
+        context,
+        selected_action,
+        &similarity_matches,
+    )?;
+    match selected_action {
+        DocumentConflictResolutionAction::Report => {
+            apply_conflict_report(draft, existing_decision_id, setup, similarity_matches)
         }
-        DocumentConflictResolutionAction::Contest => {
-            let source_ref = document_source_ref(
-                draft,
-                context.canonical_path,
-                context.source_hash,
-                context.importer_actor_id,
-                context.import_run_id,
-                Some(DocumentConflictSourceRefResolution {
-                    action: selected_action,
-                    existing_decision_id: existing_decision_id.to_owned(),
-                    resolved_decision_id: None,
-                }),
-            )?;
-            let commands =
-                Commands::new_with_provenance(ledger, EventProvenance::document(source_ref));
-            let event_uuid = conflict_resolution_uuid(
-                selected_action,
-                context.canonical_path,
-                context.source_hash,
-                draft,
-                "decision.rejected",
-                0,
-            );
-            let event_ids = if event_uuid_exists(ledger, event_uuid)? {
-                Vec::new()
-            } else {
-                vec![commands.reject_decision_with_uuid(
-                    existing_decision_id,
-                    context.importer_actor_id,
-                    event_uuid,
-                )?]
-            };
-            conflict_block_report(
-                draft,
-                existing_decision_id,
-                ConflictBlockOutcome::new(
-                    DocumentBlockImportStatus::ConflictContested,
-                    "contested existing decision with an explicit rejection event",
-                ),
-                event_ids,
-                ConflictBlockReportDetails {
-                    reviewer_action: None,
-                    similarity_matches,
-                    conflict,
-                },
-            )
+        DocumentConflictResolutionAction::KeepExisting => {
+            apply_conflict_keep_existing(draft, existing_decision_id, setup, similarity_matches)
         }
-        DocumentConflictResolutionAction::AddContext => {
-            let event_ids = add_conflict_context_events(
-                ledger,
-                draft,
-                existing_decision_id,
-                context.canonical_path,
-                context.source_hash,
-                context.namespace,
-                context.importer_actor_id,
-                context.import_run_id,
-            )?;
-            let status = if draft.evidence.is_empty() && draft.hypotheses.is_empty() {
-                DocumentBlockImportStatus::ValidationError
-            } else {
-                DocumentBlockImportStatus::ConflictContextAdded
-            };
-            let message = if draft.evidence.is_empty() && draft.hypotheses.is_empty() {
-                "add_context requires at least one evidence or hypothesis item"
-            } else if event_ids.is_empty() {
-                "proposed evidence and hypotheses were already attached"
-            } else {
-                "added proposed evidence and hypotheses to the existing decision"
-            };
-            conflict_block_report(
-                draft,
-                existing_decision_id,
-                ConflictBlockOutcome::new(status, message),
-                event_ids,
-                ConflictBlockReportDetails {
-                    reviewer_action: None,
-                    similarity_matches,
-                    conflict,
-                },
-            )
-        }
+        DocumentConflictResolutionAction::Supersede => apply_conflict_supersede(
+            ledger,
+            draft,
+            existing_decision_id,
+            context,
+            setup,
+            similarity_matches,
+        ),
+        DocumentConflictResolutionAction::Contest => apply_conflict_contest(
+            ledger,
+            draft,
+            existing_decision_id,
+            context,
+            setup,
+            similarity_matches,
+        ),
+        DocumentConflictResolutionAction::AddContext => apply_conflict_add_context(
+            ledger,
+            draft,
+            existing_decision_id,
+            context,
+            setup,
+            similarity_matches,
+        ),
     }
 }
 
@@ -2713,7 +2808,7 @@ fn source_lines(input: &str) -> Vec<SourceLine> {
     lines
 }
 
-fn parse_document_decision_block(raw: &RawDocumentDecisionBlock) -> Result<DocumentDecisionDraft> {
+fn scan_decision_block_markers(raw: &RawDocumentDecisionBlock) -> Result<ParsedDecisionFields> {
     let mut fields = ParsedDecisionFields::default();
     let mut active_list: Option<ListField> = None;
     let mut active_scalar: Option<ScalarField> = None;
@@ -2828,6 +2923,13 @@ fn parse_document_decision_block(raw: &RawDocumentDecisionBlock) -> Result<Docum
         }
     }
 
+    Ok(fields)
+}
+
+fn assemble_decision_draft(
+    mut fields: ParsedDecisionFields,
+    raw: &RawDocumentDecisionBlock,
+) -> Result<DocumentDecisionDraft> {
     let block_id = required_field(fields.block_id, "id")?;
     let title = required_field(fields.title, "title")?;
     let status = ImportedDecisionStatus::parse(&required_field(fields.status, "status")?)?;
@@ -2844,7 +2946,6 @@ fn parse_document_decision_block(raw: &RawDocumentDecisionBlock) -> Result<Docum
     if fields.topic_keys.is_empty() {
         fields.topic_keys.push("document".to_owned());
     }
-
     Ok(DocumentDecisionDraft {
         block_id,
         title,
@@ -2861,6 +2962,11 @@ fn parse_document_decision_block(raw: &RawDocumentDecisionBlock) -> Result<Docum
         snippet: compact_snippet(&raw.text),
         prepared_source_ref: raw.prepared_source_ref.clone(),
     })
+}
+
+fn parse_document_decision_block(raw: &RawDocumentDecisionBlock) -> Result<DocumentDecisionDraft> {
+    let fields = scan_decision_block_markers(raw)?;
+    assemble_decision_draft(fields, raw)
 }
 
 #[derive(Default)]
