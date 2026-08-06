@@ -1167,18 +1167,12 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         let mut proposals = HashMap::new();
         let mut superseded_events = Vec::new();
         let mut relation_event_ids_by_causation: HashMap<EventId, Vec<EventId>> = HashMap::new();
-        let mut offset = 0;
-        const PAGE_SIZE: usize = 1024;
 
-        loop {
-            let events = self
-                .ledger
-                .read_for_tenant(&self.context.tenant_id, offset, PAGE_SIZE)?;
-            if events.is_empty() {
-                break;
-            }
-
-            for event in &events {
+        // Single streaming pass — this function must collect all DecisionProposed,
+        // DecisionSuperseded, and RelationAdded events before it can reason about
+        // supersede idempotency, so there is no early-exit opportunity.
+        self.ledger
+            .replay_from_for_tenant(&self.context.tenant_id, 0, &mut |event| {
                 match event.event_type {
                     EventType::DecisionProposed => {
                         if let Some(snapshot) = decision_proposal_snapshot_from_event(event) {
@@ -1187,13 +1181,13 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                     }
                     EventType::DecisionSuperseded => {
                         let Some(event_id) = event.event_id else {
-                            continue;
+                            return Ok(());
                         };
                         let Some(old_id) = payload_value_as_str(event, "old_decision_id") else {
-                            continue;
+                            return Ok(());
                         };
                         let Some(new_id) = payload_value_as_str(event, "new_decision_id") else {
-                            continue;
+                            return Ok(());
                         };
                         // ubs:ignore: actor and decision IDs are public graph IDs.
                         if same_identifier(event.actor_id.as_str(), props.actor_id)
@@ -1214,14 +1208,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                     }
                     _ => {}
                 }
-            }
-
-            if let Some(last_event_id) = events.last().and_then(|event| event.event_id) {
-                offset = last_event_id;
-            } else {
-                break;
-            }
-        }
+                Ok(())
+            })?;
 
         for (superseded_event_id, new_decision_id) in superseded_events {
             let Some(proposal) = proposals.get(&new_decision_id) else {

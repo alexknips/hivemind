@@ -1084,8 +1084,11 @@ fn project_capture(
             );
             graph.upsert_node(NodeKind::Notification, node_id, &props)?;
         }
-        _ => {
-            // Unknown kind — silently skip; classifier may produce unknown kinds in future schemas.
+        kind => {
+            tracing::debug!(
+                target: "hivemind::projector",
+                "skipping capture with unrecognised kind: {kind}"
+            );
         }
     }
     Ok(())

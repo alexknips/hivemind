@@ -401,6 +401,12 @@ fn find_unclassified_batches(
                             event.payload.get("batch_id").and_then(|v| v.as_str())
                         {
                             let batch_text = render_batch_text(event);
+                            if batch_text.is_empty() {
+                                debug!(
+                                    target: "hivemind::classifier",
+                                    "batch {batch_id} has no renderable turns; will classify empty text"
+                                );
+                            }
                             let agent_tool = event
                                 .payload
                                 .get("agent_tool")

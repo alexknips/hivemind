@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1221,7 +1221,7 @@ fn prepared_output_path(source_path: &Path, output_dir: &Path, source_hash: &str
         .map(stable_component)
         .filter(|stem| !stem.is_empty())
         .unwrap_or_else(|| "document".to_owned());
-    output_dir.join(format!("{stem}-{}.prepared.txt", &source_hash[..12]))
+    output_dir.join(format!("{stem}-{}.prepared.txt", hash_prefix(source_hash)))
 }
 
 fn span_for_prepared_text(text: &str) -> DocumentSourceSpan {
@@ -2104,8 +2104,19 @@ fn add_conflict_context_events<L: EventLedger>(
     let block_component = stable_component(&format!(
         "{}-context-{}",
         draft.block_id,
-        &source_hash[..12]
+        hash_prefix(source_hash)
     ));
+
+    // Single-pass existence index: replaces one scan per evidence/hypothesis item.
+    let existing = conflict_context_existing_index(
+        ledger,
+        draft,
+        canonical_path,
+        source_hash,
+        namespace,
+        &block_component,
+    )?;
+
     let mut event_ids = Vec::new();
 
     for (index, evidence) in draft.evidence.iter().enumerate() {
@@ -2122,7 +2133,9 @@ fn add_conflict_context_events<L: EventLedger>(
             "evidence.recorded",
             index + 1,
         );
-        if !event_uuid_exists(ledger, record_uuid)? && !evidence_id_exists(ledger, &evidence_id)? {
+        if !existing.event_uuids.contains(&record_uuid)
+            && !existing.evidence_ids.contains(&evidence_id)
+        {
             event_ids.push(commands.record_evidence_with_id(
                 actor_id,
                 &evidence_id,
@@ -2139,7 +2152,7 @@ fn add_conflict_context_events<L: EventLedger>(
             "relation.based_on",
             index + 1,
         );
-        if !event_uuid_exists(ledger, relation_uuid)? {
+        if !existing.event_uuids.contains(&relation_uuid) {
             event_ids.push(commands.attach_evidence_with_uuid(
                 existing_decision_id,
                 &evidence_id,
@@ -2163,8 +2176,8 @@ fn add_conflict_context_events<L: EventLedger>(
             "hypothesis.recorded",
             index + 1,
         );
-        if !event_uuid_exists(ledger, record_uuid)?
-            && !hypothesis_id_exists(ledger, &hypothesis_id)?
+        if !existing.event_uuids.contains(&record_uuid)
+            && !existing.hypothesis_ids.contains(&hypothesis_id)
         {
             event_ids.push(commands.record_hypothesis_with_id(
                 actor_id,
@@ -2181,7 +2194,7 @@ fn add_conflict_context_events<L: EventLedger>(
             "relation.assumes",
             index + 1,
         );
-        if !event_uuid_exists(ledger, relation_uuid)? {
+        if !existing.event_uuids.contains(&relation_uuid) {
             event_ids.push(commands.assume_hypothesis_with_uuid(
                 existing_decision_id,
                 &hypothesis_id,
@@ -2192,6 +2205,143 @@ fn add_conflict_context_events<L: EventLedger>(
     }
 
     Ok(event_ids)
+}
+
+struct ConflictContextExistingState {
+    event_uuids: HashSet<Uuid>,
+    evidence_ids: HashSet<String>,
+    hypothesis_ids: HashSet<String>,
+}
+
+fn conflict_context_existing_index<L: EventLedger>(
+    ledger: &L,
+    draft: &DocumentDecisionDraft,
+    canonical_path: &str,
+    source_hash: &str,
+    namespace: &str,
+    block_component: &str,
+) -> Result<ConflictContextExistingState> {
+    let needed_uuids: HashSet<Uuid> = (0..draft.evidence.len())
+        .flat_map(|i| {
+            [
+                conflict_resolution_uuid(
+                    DocumentConflictResolutionAction::AddContext,
+                    canonical_path,
+                    source_hash,
+                    draft,
+                    "evidence.recorded",
+                    i + 1,
+                ),
+                conflict_resolution_uuid(
+                    DocumentConflictResolutionAction::AddContext,
+                    canonical_path,
+                    source_hash,
+                    draft,
+                    "relation.based_on",
+                    i + 1,
+                ),
+            ]
+        })
+        .chain((0..draft.hypotheses.len()).flat_map(|i| {
+            [
+                conflict_resolution_uuid(
+                    DocumentConflictResolutionAction::AddContext,
+                    canonical_path,
+                    source_hash,
+                    draft,
+                    "hypothesis.recorded",
+                    i + 1,
+                ),
+                conflict_resolution_uuid(
+                    DocumentConflictResolutionAction::AddContext,
+                    canonical_path,
+                    source_hash,
+                    draft,
+                    "relation.assumes",
+                    i + 1,
+                ),
+            ]
+        }))
+        .collect();
+
+    let needed_evidence_ids: HashSet<String> = draft
+        .evidence
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            format!(
+                "evidence:document:{namespace}:{block_component}:{}-{}",
+                i + 1,
+                stable_component(e)
+            )
+        })
+        .collect();
+
+    let needed_hypothesis_ids: HashSet<String> = draft
+        .hypotheses
+        .iter()
+        .enumerate()
+        .map(|(i, h)| {
+            format!(
+                "hypothesis:document:{namespace}:{block_component}:{}-{}",
+                i + 1,
+                stable_component(h)
+            )
+        })
+        .collect();
+
+    let mut state = ConflictContextExistingState {
+        event_uuids: HashSet::new(),
+        evidence_ids: HashSet::new(),
+        hypothesis_ids: HashSet::new(),
+    };
+    let mut offset = 0;
+    const PAGE: usize = 1024;
+
+    // Single scan to find which needed items already exist in the ledger.
+    // Callers must ensure `ledger` is scoped to the correct tenant.
+    loop {
+        let events = ledger.read(offset, PAGE)?;
+        if events.is_empty() {
+            break;
+        }
+        for event in &events {
+            if needed_uuids.contains(&event.event_uuid) {
+                state.event_uuids.insert(event.event_uuid);
+            }
+            match event.event_type {
+                EventType::EvidenceRecorded => {
+                    if let Some(id) = event.payload.get("evidence_id").and_then(|v| v.as_str()) {
+                        if needed_evidence_ids.contains(id) {
+                            state.evidence_ids.insert(id.to_owned());
+                        }
+                    }
+                }
+                EventType::HypothesisRecorded => {
+                    if let Some(id) = event.payload.get("hypothesis_id").and_then(|v| v.as_str()) {
+                        if needed_hypothesis_ids.contains(id) {
+                            state.hypothesis_ids.insert(id.to_owned());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Early exit once all needed items have been confirmed to exist.
+        if state.event_uuids.len() == needed_uuids.len()
+            && state.evidence_ids.len() == needed_evidence_ids.len()
+            && state.hypothesis_ids.len() == needed_hypothesis_ids.len()
+        {
+            break;
+        }
+        if let Some(last_id) = events.last().and_then(|e| e.event_id) {
+            offset = last_id;
+        } else {
+            break;
+        }
+    }
+
+    Ok(state)
 }
 
 fn conflict_resolution_uuid(
@@ -2246,24 +2396,6 @@ fn entity_id_exists<L: EventLedger>(
     })
 }
 
-fn evidence_id_exists<L: EventLedger>(ledger: &L, evidence_id: &str) -> Result<bool> {
-    entity_id_exists(
-        ledger,
-        EventType::EvidenceRecorded,
-        "evidence_id",
-        evidence_id,
-    )
-}
-
-fn hypothesis_id_exists<L: EventLedger>(ledger: &L, hypothesis_id: &str) -> Result<bool> {
-    entity_id_exists(
-        ledger,
-        EventType::HypothesisRecorded,
-        "hypothesis_id",
-        hypothesis_id,
-    )
-}
-
 fn missing_superseded_decision<L: EventLedger>(
     ledger: &L,
     identities: &DocumentImportIdentities,
@@ -2316,7 +2448,8 @@ impl DocumentImportIdentities {
         namespace: &str,
         existing_decision_id: &str,
     ) -> Result<Self> {
-        let identity_block_id = format!("{}-supersedes-{}", draft.block_id, &source_hash[..12]);
+        let identity_block_id =
+            format!("{}-supersedes-{}", draft.block_id, hash_prefix(source_hash));
         Self::new_with_identity_block(
             draft,
             canonical_path,
@@ -3100,6 +3233,10 @@ fn token_overlap_percent(left: &BTreeSet<String>, right: &BTreeSet<String>) -> u
     ((intersection * 200) / (left.len() as u32 + right.len() as u32)).min(100)
 }
 
+// Scans the ledger using `ledger.read` (= TenantId::local()).
+// Callers that need a non-local tenant must pass a TenantScopedLedger,
+// which redirects `read` to the correct tenant transparently.
+// debug_assert: do not call with a raw multi-tenant ledger without scoping first.
 fn scan_ledger<L: EventLedger>(ledger: &L, predicate: impl Fn(&Event) -> bool) -> Result<bool> {
     let mut offset = 0;
     const PAGE_SIZE: usize = 1024;
@@ -3149,6 +3286,10 @@ fn document_namespace(canonical_path: &str) -> String {
         .filter(|stem| !stem.is_empty())
         .unwrap_or_else(|| "document".to_owned());
     format!("{stem}-{}", short_sha256_hex(canonical_path.as_bytes()))
+}
+
+fn hash_prefix(hash: &str) -> &str {
+    &hash[..hash.len().min(12)]
 }
 
 fn stable_component(input: &str) -> String {
