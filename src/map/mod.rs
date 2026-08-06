@@ -2,16 +2,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use nalgebra::{DMatrix, DVector};
+#[cfg(feature = "semantic")]
 use rusqlite::params;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::embedding::{cosine_sim, Embedder, EmbeddingStore, SemanticEmbedder, SEMANTIC_MODEL_ID};
+#[cfg(feature = "semantic")]
+use crate::embedding::{
+    Embedder, EmbeddingStore, SemanticEmbedder, SEMANTIC_DIMS, SEMANTIC_MODEL_ID,
+};
 use crate::error::LedgerError;
 use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::queries::derive_decision_status;
 use crate::Result;
 
+#[cfg(feature = "semantic")]
 const K_NEIGHBORS_DEFAULT: usize = 5;
 
 #[derive(Clone, Debug, Serialize)]
@@ -54,6 +59,7 @@ pub struct MapResult {
 struct DecisionRecord {
     id: String,
     title: String,
+    #[cfg_attr(not(feature = "semantic"), allow(dead_code))]
     rationale: String,
     topic_keys: Vec<String>,
     event_origin: i64,
@@ -76,9 +82,15 @@ pub fn compute_map(graph: &impl GraphView, hivemind_dir: &Path, alpha: f64) -> R
         });
     }
 
-    // Build embeddings for all decisions
+    // Build embeddings: read from store first, only embed new decisions with the ONNX model.
+    #[cfg(feature = "semantic")]
     let store = EmbeddingStore::open(hivemind_dir)?;
+    #[cfg(feature = "semantic")]
     let embeddings = build_embeddings(&decisions, &store, hivemind_dir)?;
+    #[cfg(not(feature = "semantic"))]
+    let embeddings: Vec<Vec<f32>> = vec![vec![]; n];
+    #[cfg(not(feature = "semantic"))]
+    let _ = hivemind_dir;
 
     // Build blended adjacency matrix
     let structural = build_structural_edges(graph, &decisions)?;
@@ -111,40 +123,43 @@ pub fn compute_map(graph: &impl GraphView, hivemind_dir: &Path, alpha: f64) -> R
     // Density bands from topic clustering on Y axis
     let bands = density_bands(&decisions, &y_spectral);
 
-    // Persist generation and points
+    // Persist generation and point coordinates to the embedding store
     let gen_id = Uuid::new_v4().to_string();
-    store
-        .conn
-        .execute(
-            "INSERT INTO projection_generation (gen_id, alpha, k_neighbors, model_id, n_decisions)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                &gen_id,
-                alpha,
-                K_NEIGHBORS_DEFAULT as i64,
-                SEMANTIC_MODEL_ID,
-                n as i64
-            ],
-        )
-        .map_err(|e| LedgerError::Storage(e.to_string()))?; // ubs:ignore: error conversion at boundary
-
-    for (d, ((xt, ys), yr)) in decisions
-        .iter()
-        .zip(x_time.iter().zip(y_spectral.iter()).zip(y_raw.iter()))
+    #[cfg(feature = "semantic")]
     {
         store
             .conn
             .execute(
-                "INSERT INTO decision_map_point \
-                 (decision_id, gen_id, x_time_ordinal, y_spectral, y_fiedler_raw) \
-                 VALUES (?1, ?2, ?3, ?4, ?5) \
-                 ON CONFLICT(decision_id, gen_id) DO UPDATE SET \
-                     x_time_ordinal = excluded.x_time_ordinal, \
-                     y_spectral = excluded.y_spectral, \
-                     y_fiedler_raw = excluded.y_fiedler_raw",
-                params![&d.id, &gen_id, xt, ys, yr],
+                "INSERT INTO projection_generation (gen_id, alpha, k_neighbors, model_id, n_decisions)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    &gen_id,
+                    alpha,
+                    K_NEIGHBORS_DEFAULT as i64,
+                    SEMANTIC_MODEL_ID,
+                    n as i64
+                ],
             )
             .map_err(|e| LedgerError::Storage(e.to_string()))?; // ubs:ignore: error conversion at boundary
+
+        for (d, ((xt, ys), yr)) in decisions
+            .iter()
+            .zip(x_time.iter().zip(y_spectral.iter()).zip(y_raw.iter()))
+        {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO decision_map_point \
+                     (decision_id, gen_id, x_time_ordinal, y_spectral, y_fiedler_raw) \
+                     VALUES (?1, ?2, ?3, ?4, ?5) \
+                     ON CONFLICT(decision_id, gen_id) DO UPDATE SET \
+                         x_time_ordinal = excluded.x_time_ordinal, \
+                         y_spectral = excluded.y_spectral, \
+                         y_fiedler_raw = excluded.y_fiedler_raw",
+                    params![&d.id, &gen_id, xt, ys, yr],
+                )
+                .map_err(|e| LedgerError::Storage(e.to_string()))?; // ubs:ignore: error conversion at boundary
+        }
     }
 
     let points: Vec<MapPoint> = decisions
@@ -229,22 +244,41 @@ fn load_decisions(graph: &impl GraphView) -> Result<Vec<DecisionRecord>> {
     Ok(decisions)
 }
 
+/// Read already-stored embeddings from the store; only invoke the ONNX model for new decisions.
+#[cfg(feature = "semantic")]
 fn build_embeddings(
     decisions: &[DecisionRecord],
     store: &EmbeddingStore,
     hivemind_dir: &Path,
 ) -> Result<Vec<Vec<f32>>> {
-    let texts: Vec<String> = decisions
-        .iter()
-        .map(|d| format!("{} {}", d.title, d.rationale)) // ubs:ignore: format! outside inner loop — one allocation per decision, not per token
-        .collect();
-    let mut embedder = SemanticEmbedder::try_new(Some(hivemind_dir))?;
-    let slices: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    let embeddings = embedder.embed_batch(&slices);
-    for (d, emb) in decisions.iter().zip(&embeddings) {
-        store.upsert(&d.id, SEMANTIC_MODEL_ID, emb)?;
+    let mut embeddings: Vec<Option<Vec<f32>>> = vec![None; decisions.len()];
+    let mut new_indices: Vec<usize> = Vec::new();
+
+    for (i, d) in decisions.iter().enumerate() {
+        match store.get(&d.id, SEMANTIC_MODEL_ID)? {
+            Some(emb) => embeddings[i] = Some(emb), // ubs:ignore: i bounded by 0..decisions.len() == embeddings.len()
+            None => new_indices.push(i),
+        }
     }
-    Ok(embeddings)
+
+    if !new_indices.is_empty() {
+        let texts: Vec<String> = new_indices
+            .iter()
+            .map(|&i| format!("{} {}", decisions[i].title, decisions[i].rationale)) // ubs:ignore: format! outside inner loop — one allocation per new decision
+            .collect();
+        let mut embedder = SemanticEmbedder::try_new(Some(hivemind_dir))?;
+        let slices: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let new_embs = embedder.embed_batch(&slices);
+        for (&idx, emb) in new_indices.iter().zip(&new_embs) {
+            store.upsert(&decisions[idx].id, SEMANTIC_MODEL_ID, emb)?; // ubs:ignore: idx ∈ new_indices ⊆ 0..decisions.len(), both vecs sized identically
+            embeddings[idx] = Some(emb.clone()); // ubs:ignore: clone necessary — emb borrowed from new_embs slice, embeddings needs owned Vec
+        }
+    }
+
+    Ok(embeddings
+        .into_iter()
+        .map(|e| e.unwrap_or_else(|| vec![0.0f32; SEMANTIC_DIMS])) // ubs:ignore: safe fallback for store-miss after upsert attempt
+        .collect())
 }
 
 fn build_structural_edges(
@@ -318,24 +352,32 @@ fn build_blended_matrix(
     n: usize,
     alpha: f64,
 ) -> DMatrix<f64> {
-    let k = K_NEIGHBORS_DEFAULT.min(n.saturating_sub(1));
     let mut w = DMatrix::<f64>::zeros(n, n);
 
-    // Semantic kNN
-    for i in 0..n {
-        let mut sims: Vec<(usize, f32)> = (0..n)
-            .filter(|&j| j != i)
-            .map(|j| (j, cosine_sim(&embeddings[i], &embeddings[j]))) // ubs:ignore: i,j bounded by 0..n loop invariant; slice len = n
-            .collect();
-        sims.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal) // ubs:ignore: unwrap_or on partial_cmp — NaN safety for f32
-        });
-        for (j, sim) in sims.into_iter().take(k) {
-            let sem = f64::from(sim).max(0.0);
-            let existing = w[(i, j)]; // ubs:ignore: nalgebra matrix; i,j bounded by 0..n loop invariant
-            w[(i, j)] = existing.max(sem); // ubs:ignore: nalgebra matrix; i,j bounded by 0..n loop invariant
-            w[(j, i)] = w[(j, i)].max(sem); // ubs:ignore: nalgebra matrix; i,j bounded by 0..n loop invariant
+    // Semantic kNN — only compiled when the semantic feature is enabled
+    #[cfg(feature = "semantic")]
+    {
+        use crate::embedding::cosine_sim;
+        let k = K_NEIGHBORS_DEFAULT.min(n.saturating_sub(1));
+        for i in 0..n {
+            let mut sims: Vec<(usize, f32)> = (0..n)
+                .filter(|&j| j != i)
+                .map(|j| (j, cosine_sim(&embeddings[i], &embeddings[j]))) // ubs:ignore: i,j bounded by 0..n loop invariant; slice len = n
+                .collect();
+            sims.sort_by(|a, b| {
+                b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal) // ubs:ignore: unwrap_or on partial_cmp — NaN safety for f32
+            });
+            for (j, sim) in sims.into_iter().take(k) {
+                let sem = f64::from(sim).max(0.0);
+                let existing = w[(i, j)]; // ubs:ignore: nalgebra matrix; i,j bounded by 0..n loop invariant
+                w[(i, j)] = existing.max(sem); // ubs:ignore: nalgebra matrix; i,j bounded by 0..n loop invariant
+                w[(j, i)] = w[(j, i)].max(sem); // ubs:ignore: nalgebra matrix; i,j bounded by 0..n loop invariant
+            }
         }
+    }
+    #[cfg(not(feature = "semantic"))]
+    {
+        let _ = embeddings;
     }
 
     // Blend structural edges
