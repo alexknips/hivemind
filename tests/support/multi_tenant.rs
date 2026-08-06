@@ -1,4 +1,4 @@
-use hivemind::commands::{CommandContext, Commands};
+use hivemind::commands::{CommandContext, Commands, DecisionProposalInput};
 use hivemind::events::{EventProvenance, TenantId};
 use hivemind::ledger::EventLedger;
 use hivemind::projector::memory::MemoryGraph;
@@ -59,16 +59,16 @@ pub fn seed_tenant<L: EventLedger>(ledger: &L, name: &'static str) -> TestResult
             (vec![], vec![])
         };
 
-        let decision_id = commands.propose_decision(
-            &planner,
-            &format!("{name}: choice #{i:02} — {topic}"),
-            &format!("Rationale for {name} decision {i}: {topic} tradeoff evaluated"),
-            &[topic.to_owned()],
-            &[opt_a, opt_b.clone()],
-            Some(&opt_b),
-            &hyp_refs,
-            &ev_refs,
-        )?;
+        let decision_id = commands.propose_decision(DecisionProposalInput {
+            actor_id: &planner,
+            title: &format!("{name}: choice #{i:02} — {topic}"),
+            rationale: &format!("Rationale for {name} decision {i}: {topic} tradeoff evaluated"),
+            topic_keys: &[topic.to_owned()],
+            option_ids: &[opt_a, opt_b.clone()],
+            chosen_option_id: Some(&opt_b),
+            hypothesis_ids: &hyp_refs,
+            evidence_ids: &ev_refs,
+        })?;
         decision_ids.push(decision_id);
     }
 

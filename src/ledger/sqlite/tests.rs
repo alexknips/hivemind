@@ -9,7 +9,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::OptionalExtension;
 use uuid::Uuid;
 
-use crate::commands::{CommandContext, Commands, DecisionProposalEventUuids, DecisionProposalInput};
+use crate::commands::{
+    CommandContext, Commands, DecisionProposalEventUuids, DecisionProposalInput,
+};
 use crate::error::CommandError;
 use crate::events::{Event, EventProvenance, TenantId};
 use crate::ledger::contract_tests::{

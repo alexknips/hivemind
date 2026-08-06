@@ -6,7 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use hivemind::commands::Commands;
+use hivemind::commands::{Commands, DecisionProposalInput};
 use hivemind::events::EventType;
 use hivemind::ledger::{EventLedger, SqliteEventLedger};
 
@@ -186,16 +186,16 @@ fn run_worker() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let topic_key = format!("shared-ledger-worker-{worker_index}");
         let title = format!("Shared ledger write {worker_index}/{decision_index}");
 
-        commands.propose_decision(
-            &actor_id,
-            &title,
-            "Exercise concurrent writes from independent HiveMind processes.",
-            &[topic_key],
-            &[option_id],
-            None,
-            &[],
-            &[],
-        )?;
+        commands.propose_decision(DecisionProposalInput {
+            actor_id: &actor_id,
+            title: &title,
+            rationale: "Exercise concurrent writes from independent HiveMind processes.",
+            topic_keys: &[topic_key],
+            option_ids: &[option_id],
+            chosen_option_id: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })?;
     }
 
     Ok(())

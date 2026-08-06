@@ -312,10 +312,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         Ok(option_id.to_owned())
     }
 
-    pub fn propose_decision(
-        &self,
-        input: DecisionProposalInput<'_>,
-    ) -> Result<DecisionId> {
+    pub fn propose_decision(&self, input: DecisionProposalInput<'_>) -> Result<DecisionId> {
         require_non_empty("actor_id", input.actor_id)?;
         require_non_empty("title", input.title)?;
         require_non_empty("rationale", input.rationale)?;
@@ -769,8 +766,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             })?;
         let effective_topic_keys =
             effective_topic_keys(input.topic_keys, old_decision.topic_keys.as_slice())?;
-        let option_labels =
-            effective_option_labels(input.new_title, input.option_labels, input.chosen_option_label)?;
+        let option_labels = effective_option_labels(
+            input.new_title,
+            input.option_labels,
+            input.chosen_option_label,
+        )?;
         let option_ids = deterministic_supersede_option_ids(
             input.actor_id,
             input.old_decision_id,
@@ -803,7 +803,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             hypothesis_ids: input.hypothesis_ids,
             evidence_ids: input.evidence_ids,
         };
-        if let Some(existing) = self.find_matching_supersede(input.old_decision_id, &proposal_props)? {
+        if let Some(existing) =
+            self.find_matching_supersede(input.old_decision_id, &proposal_props)?
+        {
             return Ok(existing);
         }
 

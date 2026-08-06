@@ -129,7 +129,7 @@ fn tenant_ids_are_distinct() -> TestResult<()> {
 
 #[test]
 fn local_tenant_is_isolated_from_named_tenants() -> TestResult<()> {
-    use hivemind::commands::{CommandContext, Commands};
+    use hivemind::commands::{CommandContext, Commands, DecisionProposalInput};
     use hivemind::events::{EventProvenance, TenantId};
 
     let ledger = InMemoryEventLedger::new();
@@ -148,16 +148,16 @@ fn local_tenant_is_isolated_from_named_tenants() -> TestResult<()> {
         "Local option B",
         "Local decision option B",
     )?;
-    local_cmds.propose_decision(
-        "human:local-planner",
-        "Local decision: pick infra",
-        "Only the local tenant should see this",
-        &["architecture".to_owned()],
-        &[local_opt, local_opt_b.clone()],
-        Some(&local_opt_b),
-        &[],
-        &[],
-    )?;
+    local_cmds.propose_decision(DecisionProposalInput {
+        actor_id: "human:local-planner",
+        title: "Local decision: pick infra",
+        rationale: "Only the local tenant should see this",
+        topic_keys: &["architecture".to_owned()],
+        option_ids: &[local_opt, local_opt_b.clone()],
+        chosen_option_id: Some(&local_opt_b),
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+    })?;
 
     let local_dataset = multi_tenant::TenantDataset {
         tenant_id: TenantId::local(),

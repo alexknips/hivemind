@@ -9,7 +9,9 @@ use uuid::Uuid;
 use crate::events::{EventProvenance, EventSource, EventType, RelationKind};
 use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
-use super::{normalize_topic_key, Commands, DecisionProposalInput, SupersedeInput, MAX_TOPIC_KEY_LEN};
+use super::{
+    normalize_topic_key, Commands, DecisionProposalInput, SupersedeInput, MAX_TOPIC_KEY_LEN,
+};
 
 #[test]
 fn record_evidence_appends_evidence_recorded_event() {
