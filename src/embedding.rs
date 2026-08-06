@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "semantic")]
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -8,19 +9,24 @@ use crate::error::LedgerError;
 use crate::Result;
 
 const MAP_DB_NAME: &str = "map.sqlite";
+#[cfg(feature = "semantic")]
 pub const SEMANTIC_MODEL_ID: &str = "bge-small-en-v1.5";
+#[cfg(feature = "semantic")]
 pub const SEMANTIC_DIMS: usize = 384;
 
+#[cfg(feature = "semantic")]
 pub trait Embedder {
     fn embed_batch(&mut self, texts: &[&str]) -> Vec<Vec<f32>>;
     fn dims(&self) -> usize;
     fn model_id(&self) -> &str;
 }
 
+#[cfg(feature = "semantic")]
 pub struct SemanticEmbedder {
     inner: TextEmbedding,
 }
 
+#[cfg(feature = "semantic")]
 impl SemanticEmbedder {
     pub fn try_new(cache_dir: Option<&Path>) -> Result<Self> {
         let mut opts =
@@ -34,6 +40,7 @@ impl SemanticEmbedder {
     }
 }
 
+#[cfg(feature = "semantic")]
 impl Embedder for SemanticEmbedder {
     fn embed_batch(&mut self, texts: &[&str]) -> Vec<Vec<f32>> {
         self.inner

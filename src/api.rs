@@ -42,8 +42,9 @@
 //! `/auth/*`) take priority. Unknown paths fall back to the SPA's `index.html`
 //! for client-side routing (same-origin, no CORS needed).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, Path, Query, State};
@@ -81,6 +82,9 @@ use crate::queries::{
 };
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
+/// Cache key: (tenant_id, ledger_offset, alpha.to_bits())
+type MapCacheKey = (String, u64, u64);
+type MapCache = Arc<Mutex<HashMap<MapCacheKey, crate::map::MapResult>>>;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -300,6 +304,9 @@ pub struct AppState {
     spa_dir: Option<PathBuf>,
     /// Allowed CORS origins — empty means no CORS headers (same-origin only).
     cors_origins: Vec<String>,
+    /// In-memory cache for GET /v1/decisions/map. Key: (tenant_id, ledger_offset, alpha.to_bits()).
+    /// Invalidated automatically when the offset advances (new key → cache miss → recompute).
+    map_cache: MapCache,
 }
 
 impl AppState {
@@ -321,6 +328,7 @@ impl AppState {
                 workos_jwks,
                 spa_dir: config.spa_dir.clone(),
                 cors_origins: config.cors_origins.clone(),
+                map_cache: Arc::new(Mutex::new(HashMap::new())),
             });
         }
 
@@ -339,6 +347,7 @@ impl AppState {
             workos_jwks,
             spa_dir: config.spa_dir.clone(),
             cors_origins: config.cors_origins.clone(),
+            map_cache: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }
@@ -1518,6 +1527,7 @@ async fn map_handler(
     };
 
     let backend = Arc::clone(&state.backend);
+    let map_cache = Arc::clone(&state.map_cache);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let dir = backend
             .sqlite_dir()
@@ -1528,17 +1538,39 @@ async fn map_handler(
 
         let alphas = parse_alpha_list(params.alpha.as_deref())?;
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
-        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
+
+        // Cheap offset read used as cache key — avoids rebuilding the graph on repeated calls.
+        let offset = ledger
+            .latest_offset_for_tenant(&ctx.tenant_id)
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let tenant_key = ctx.tenant_id.to_string();
 
         if alphas.len() == 1 {
-            let r = crate::map::compute_map(&graph, &dir, alphas[0]) // ubs:ignore: alphas[0] guarded by len()==1 check above
+            let alpha = alphas[0]; // ubs:ignore: alphas[0] guarded by len()==1 check above
+            let cache_key = (tenant_key, offset, alpha.to_bits());
+            // Lock is released immediately after .cloned() — graph build happens outside the lock.
+            let hit = map_cache.lock().unwrap().get(&cache_key).cloned(); // ubs:ignore: Mutex::lock().unwrap() — non-panicking path; .cloned() releases lock before any compute
+            if let Some(cached) = hit {
+                return Ok(serde_json::to_value(&cached).unwrap_or_default());
+            }
+            let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
+            let r = crate::map::compute_map(&graph, &dir, alpha)
                 .map_err(|e| ApiError::internal(e.to_string()))?; // ubs:ignore: error conversion at handler boundary
+            map_cache.lock().unwrap().insert(cache_key, r.clone()); // ubs:ignore: Mutex::lock().unwrap() — non-panicking path; clone necessary — r moved into cache, also returned
             Ok(serde_json::to_value(&r).unwrap_or_default())
         } else {
+            let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
             let mut results = Vec::new();
             for &alpha in &alphas {
+                let cache_key = (tenant_key.clone(), offset, alpha.to_bits()); // ubs:ignore: clone necessary — cache_key moved into map_cache per iteration
+                let hit = map_cache.lock().unwrap().get(&cache_key).cloned(); // ubs:ignore: Mutex::lock().unwrap() — non-panicking path; .cloned() releases lock before compute
+                if let Some(cached) = hit {
+                    results.push(cached);
+                    continue;
+                }
                 let r = crate::map::compute_map(&graph, &dir, alpha)
                     .map_err(|e| ApiError::internal(e.to_string()))?; // ubs:ignore: error conversion at handler boundary
+                map_cache.lock().unwrap().insert(cache_key, r.clone()); // ubs:ignore: Mutex::lock().unwrap() — non-panicking path; clone necessary — r moved into cache, also pushed to results
                 results.push(r);
             }
             Ok(serde_json::to_value(&results).unwrap_or_default())

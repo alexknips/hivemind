@@ -35,7 +35,7 @@ path = "benchmarks/misalignment/main.rs"
 [features]
 default = []
 graph-kuzu = ["dep:kuzu", "dep:cxx-build"]
-semantic = []
+semantic = ["dep:fastembed"]
 shared-backend-postgres = ["dep:postgres", "dep:r2d2", "dep:r2d2_postgres", "dep:native-tls", "dep:postgres-native-tls"]
 tui = ["dep:crossterm", "dep:ratatui"]
 
@@ -70,7 +70,7 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 uuid = { version = "1.23.1", features = ["serde", "v4", "v5"] }
 nalgebra = "0.33"
-fastembed = { version = "5.17.2", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"] }
+fastembed = { version = "5.17.2", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"], optional = true }
 
 [dev-dependencies]
 http-body-util = "0.1"
