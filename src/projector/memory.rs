@@ -19,6 +19,15 @@ pub struct MemoryGraph {
     edges: Mutex<BTreeSet<MemoryEdge>>,
 }
 
+impl Clone for MemoryGraph {
+    fn clone(&self) -> Self {
+        MemoryGraph {
+            nodes: Mutex::new(self.nodes_snapshot().unwrap_or_default()),
+            edges: Mutex::new(self.edges_snapshot().unwrap_or_default()),
+        }
+    }
+}
+
 impl GraphView for MemoryGraph {
     fn upsert_node(&self, kind: NodeKind, id: &str, properties: &GraphProperties) -> Result<()> {
         let key = (kind, id.to_owned());
