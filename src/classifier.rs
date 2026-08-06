@@ -577,3 +577,6 @@ pub fn try_spawn(hivemind_dir: Arc<PathBuf>, tenant_id: TenantId) -> Option<()> 
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

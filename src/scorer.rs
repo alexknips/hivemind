@@ -325,6 +325,22 @@ async fn call_scorer(
     .await
 }
 
+fn clamp01(v: f64, field: &str) -> crate::Result<f64> {
+    if v.is_nan() {
+        return Err(crate::CommandError::Validation(format!("scorer: {field} is NaN")).into());
+    }
+    Ok(v.clamp(0.0, 1.0))
+}
+
+fn validate_stakes(v: f64) -> crate::Result<f64> {
+    if v.is_nan() || v < 0.0 {
+        return Err(
+            crate::CommandError::Validation(format!("scorer: stakes is invalid ({v})")).into(),
+        );
+    }
+    Ok(v)
+}
+
 fn write_score(
     hivemind_dir: &PathBuf,
     tenant_id: &TenantId,
@@ -334,41 +350,44 @@ fn write_score(
 ) -> crate::Result<()> {
     let quality_dims = QualityDims {
         framing: QualityDim {
-            score: output.quality_dims.framing.score,
+            score: clamp01(output.quality_dims.framing.score, "framing")?,
             explanation: output.quality_dims.framing.explanation,
         },
         alternatives: QualityDim {
-            score: output.quality_dims.alternatives.score,
+            score: clamp01(output.quality_dims.alternatives.score, "alternatives")?,
             explanation: output.quality_dims.alternatives.explanation,
         },
         information: QualityDim {
-            score: output.quality_dims.information.score,
+            score: clamp01(output.quality_dims.information.score, "information")?,
             explanation: output.quality_dims.information.explanation,
         },
         reasoning: QualityDim {
-            score: output.quality_dims.reasoning.score,
+            score: clamp01(output.quality_dims.reasoning.score, "reasoning")?,
             explanation: output.quality_dims.reasoning.explanation,
         },
         values_tradeoffs: QualityDim {
-            score: output.quality_dims.values_tradeoffs.score,
+            score: clamp01(
+                output.quality_dims.values_tradeoffs.score,
+                "values_tradeoffs",
+            )?,
             explanation: output.quality_dims.values_tradeoffs.explanation,
         },
         bias_exposure: QualityDim {
-            score: output.quality_dims.bias_exposure.score,
+            score: clamp01(output.quality_dims.bias_exposure.score, "bias_exposure")?,
             explanation: output.quality_dims.bias_exposure.explanation,
         },
         calibration: QualityDim {
-            score: output.quality_dims.calibration.score,
+            score: clamp01(output.quality_dims.calibration.score, "calibration")?,
             explanation: output.quality_dims.calibration.explanation,
         },
     };
 
     let importance = ImportanceFactors {
-        stakes: output.importance.stakes,
+        stakes: validate_stakes(output.importance.stakes)?,
         stakes_explanation: output.importance.stakes_explanation,
-        irreversibility: output.importance.irreversibility,
+        irreversibility: clamp01(output.importance.irreversibility, "irreversibility")?,
         irreversibility_explanation: output.importance.irreversibility_explanation,
-        actionability: output.importance.actionability,
+        actionability: clamp01(output.importance.actionability, "actionability")?,
         actionability_explanation: output.importance.actionability_explanation,
     };
 
@@ -407,3 +426,6 @@ pub fn try_spawn(hivemind_dir: Arc<PathBuf>, tenant_id: TenantId) -> Option<()> 
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
