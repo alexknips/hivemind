@@ -23,6 +23,7 @@ path = "src/main.rs"
 [[bin]]
 name = "fidelity-eval"
 path = "benchmarks/fidelity/main.rs"
+required-features = ["eval-tools"]
 
 [[bin]]
 name = "ab-eval"
@@ -31,9 +32,11 @@ path = "benchmarks/fidelity/ab-eval/main.rs"
 [[bin]]
 name = "misalignment-eval"
 path = "benchmarks/misalignment/main.rs"
+required-features = ["eval-tools"]
 
 [features]
 default = []
+eval-tools = ["dep:serde_yaml"]
 graph-kuzu = ["dep:kuzu", "dep:cxx-build"]
 semantic = ["dep:fastembed"]
 shared-backend-postgres = ["dep:postgres", "dep:r2d2", "dep:r2d2_postgres", "dep:native-tls", "dep:postgres-native-tls"]
@@ -61,7 +64,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
-serde_yaml = "0.9"
+serde_yaml = { version = "0.9", optional = true }
 sha2 = "0.10.9"
 thiserror = "2.0.17"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
