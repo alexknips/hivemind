@@ -14,37 +14,37 @@ env:
 
 jobs:
   rust:
-    name: Rust checks (${{ matrix.os }})
+    name: Rust checks (${{ matrix.os }})${{ matrix.features && format(' +{0}', matrix.features) || '' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
+        include:
+          - os: ubuntu-latest
+            features: ''
+          - os: macos-latest
+            features: ''
+          - os: ubuntu-latest
+            features: tui
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
         with:
-          components: clippy, rustfmt
-
-      - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+          components: ${{ matrix.features == '' && 'clippy, rustfmt' || 'clippy' }}
 
       - name: Check formatting
+        if: matrix.features == ''
         run: cargo fmt --check
 
       - name: Run clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets${{ matrix.features && format(' --features {0}', matrix.features) || '' }} -- -D warnings
 
       - name: Run tests
-        run: cargo test --locked
+        run: cargo test --locked${{ matrix.features && format(' --features {0}', matrix.features) || '' }}
 
       - name: Build release binary
+        if: matrix.features == ''
         run: cargo build --release --locked
 
   docker:
@@ -65,41 +65,13 @@ jobs:
           push: false
           tags: hivemind:ci
 
-  tui-feature:
-    name: Optional TUI feature
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run TUI clippy
-        run: cargo clippy --locked --all-targets --features tui -- -D warnings
-
-      - name: Run TUI tests
-        run: cargo test --locked --features tui
-
   dependency-audit:
     name: Dependency audit
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
@@ -107,31 +79,7 @@ jobs:
       - name: Run cargo audit
         run: cargo audit
 
-  # The graph-kuzu CI job is disabled until the native link issue (tracked in
-  # bead hivemind-oj7qr) is resolved. With the current bundled C++ build, the
-  # job exceeds the 20-minute timeout on GitHub-hosted runners, and a timeout
-  # cancellation bypasses `continue-on-error`, causing the whole workflow to
-  # surface as failing. Re-enable when the link issue is fixed or once we
-  # decide on a faster build path.
-  #
-  # kuzu-feature:
-  #   name: Optional Kuzu feature (non-blocking)
-  #   runs-on: ubuntu-latest
-  #   continue-on-error: true
-  #   timeout-minutes: 20
-  #
-  #   steps:
-  #     - name: Check out repository
-  #       uses: actions/checkout@v4
-  #
-  #     - name: Install Rust toolchain
-  #       uses: dtolnay/rust-toolchain@stable
-  #
-  #     - name: Cache cargo artifacts
-  #       uses: Swatinem/rust-cache@v2
-  #
-  #     - name: Run Kuzu feature tests
-  #       run: cargo test --locked --features graph-kuzu kuzu -- --nocapture
+  # kuzu-feature disabled; see hivemind-oj7qr for re-enable plan.
 
   ubs:
     name: UBS critical scan

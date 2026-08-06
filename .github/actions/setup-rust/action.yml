@@ -1,0 +1,23 @@
+name: Setup Rust
+description: Checkout, install Rust toolchain, and restore cargo cache
+inputs:
+  components:
+    description: Comma-separated Rust components (e.g. clippy, rustfmt)
+    default: ''
+  targets:
+    description: Comma-separated compilation targets
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Check out repository
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+
+    - name: Cache cargo artifacts
+      uses: Swatinem/rust-cache@v2
