@@ -14,11 +14,14 @@
 //!  * Summarization tools delegate to [`crate::summarize`] (layer 3, swappable).
 //!  * No additional inference happens here — the server is a thin transport.
 
-use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write};
+
+use args::{
+    default_option_description, optional_datetime, optional_option_labels, optional_string,
+    optional_string_array, optional_usize, require_string, require_string_array,
+};
 use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tracing::{debug, warn};
@@ -623,12 +626,7 @@ fn tool_capture_decision(args: Value, config: &McpConfig) -> std::result::Result
             .and_then(Value::as_str)
             .filter(|s| !s.trim().is_empty())
             .map(|s| s.to_owned())
-            .unwrap_or_else(|| {
-                let mut description =
-                    String::with_capacity("Option generated from MCP value ''".len() + label.len());
-                let _ = write!(description, "Option generated from MCP value '{label}'");
-                description
-            });
+            .unwrap_or_else(|| default_option_description(&label));
 
         let option_id = commands.record_option(&actor_id, &label, &description)?;
         if chosen_label.as_deref() == Some(label.as_str()) {
@@ -953,128 +951,8 @@ fn actor_id_or_default(
     args: &Map<String, Value>,
     config: &McpConfig,
 ) -> std::result::Result<String, RpcError> {
-    optional_string(args, "actor_id").map(|actor_id| {
-        actor_id.unwrap_or_else(|| agent_actor_id(&config.agent_tool, &config.session_id))
-    })
-}
-
-fn require_string(args: &Map<String, Value>, field: &str) -> std::result::Result<String, RpcError> {
-    match args.get(field) {
-        Some(Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
-        Some(Value::String(_)) => Err(RpcError::invalid_params(format!(
-            "`{field}` must be a non-empty string"
-        ))),
-        Some(_) => Err(RpcError::invalid_params(format!(
-            "`{field}` must be a string"
-        ))),
-        None => Err(RpcError::invalid_params(format!("missing `{field}`"))),
-    }
-}
-
-fn optional_string(
-    args: &Map<String, Value>,
-    field: &str,
-) -> std::result::Result<Option<String>, RpcError> {
-    match args.get(field) {
-        Some(Value::String(s)) if !s.trim().is_empty() => Ok(Some(s.clone())),
-        Some(Value::String(_)) | None | Some(Value::Null) => Ok(None),
-        Some(_) => Err(RpcError::invalid_params(format!(
-            "`{field}` must be a string"
-        ))),
-    }
-}
-
-fn require_string_array(
-    args: &Map<String, Value>,
-    field: &str,
-) -> std::result::Result<Vec<String>, RpcError> {
-    match args.get(field) {
-        Some(Value::Array(items)) => collect_strings(items, field),
-        Some(_) => Err(RpcError::invalid_params(format!(
-            "`{field}` must be an array of strings"
-        ))),
-        None => Err(RpcError::invalid_params(format!("missing `{field}`"))),
-    }
-}
-
-fn optional_string_array(
-    args: &Map<String, Value>,
-    field: &str,
-) -> std::result::Result<Vec<String>, RpcError> {
-    match args.get(field) {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::Array(items)) => collect_strings(items, field),
-        Some(_) => Err(RpcError::invalid_params(format!(
-            "`{field}` must be an array of strings"
-        ))),
-    }
-}
-
-fn optional_datetime(
-    args: &Map<String, Value>,
-    field: &str,
-) -> std::result::Result<Option<DateTime<Utc>>, RpcError> {
-    let Some(value) = optional_string(args, field)? else {
-        return Ok(None);
-    };
-    DateTime::parse_from_rfc3339(&value)
-        .map(|value| Some(value.with_timezone(&Utc)))
-        .map_err(|error| RpcError::invalid_params(format!("`{field}` must be RFC3339: {error}")))
-}
-
-fn optional_usize(
-    args: &Map<String, Value>,
-    field: &str,
-) -> std::result::Result<Option<usize>, RpcError> {
-    match args.get(field) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(number)) => {
-            let Some(value) = number.as_u64() else {
-                return Err(RpcError::invalid_params(format!(
-                    "`{field}` must be a non-negative integer"
-                )));
-            };
-            usize::try_from(value).map(Some).map_err(|error| {
-                RpcError::invalid_params(format!("`{field}` is too large: {error}"))
-            })
-        }
-        Some(_) => Err(RpcError::invalid_params(format!(
-            "`{field}` must be an integer"
-        ))),
-    }
-}
-
-fn optional_option_labels(
-    args: &Map<String, Value>,
-    field: &str,
-) -> std::result::Result<Vec<String>, RpcError> {
-    match args.get(field) {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::Array(items)) => items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| match item {
-                Value::String(s) if !s.trim().is_empty() => Ok(s.clone()),
-                Value::Object(map) => map
-                    .get("label")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|label| !label.is_empty())
-                    .map(str::to_owned)
-                    .ok_or_else(|| {
-                        RpcError::invalid_params(format!(
-                            "`{field}[{index}].label` must be a non-empty string"
-                        ))
-                    }),
-                _ => Err(RpcError::invalid_params(format!(
-                    "`{field}[{index}]` must be a non-empty string or an object with a non-empty label"
-                ))),
-            })
-            .collect(),
-        Some(_) => Err(RpcError::invalid_params(format!(
-            "`{field}` must be an array"
-        ))),
-    }
+    Ok(optional_string(args, "actor_id")?
+        .unwrap_or_else(|| agent_actor_id(&config.agent_tool, &config.session_id)))
 }
 
 fn parse_decision_status(value: &str) -> std::result::Result<DecisionStatus, RpcError> {
@@ -1102,19 +980,6 @@ fn mcp_actor_id(
     } else {
         Ok(format!("agent:codex:{}", config.session_id))
     }
-}
-
-fn collect_strings(items: &[Value], field: &str) -> std::result::Result<Vec<String>, RpcError> {
-    items
-        .iter()
-        .enumerate()
-        .map(|(index, item)| match item {
-            Value::String(s) if !s.trim().is_empty() => Ok(s.clone()),
-            _ => Err(RpcError::invalid_params(format!(
-                "`{field}[{index}]` must be a non-empty string"
-            ))),
-        })
-        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1187,6 +1052,14 @@ impl From<serde_json::Error> for RpcError {
         RpcError::internal(format!("serialization failed: {error}"))
     }
 }
+
+impl From<(i32, String)> for RpcError {
+    fn from((code, message): (i32, String)) -> Self {
+        Self { code, message }
+    }
+}
+
+pub(crate) mod args;
 
 #[cfg(test)]
 mod tests;

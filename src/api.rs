@@ -65,6 +65,11 @@ use crate::events::{EventProvenance, IngestTurn, TenantId};
 use crate::ledger::{EventLedger, SqliteEventLedger, SqliteUserStore};
 #[cfg(feature = "shared-backend-postgres")]
 use crate::ledger::{PostgresEventLedger, ProvisionedUser, ResolvedToken, TenantStore, UserInfo};
+use crate::mcp::args::{
+    default_option_description, optional_option_labels as mcp_opt_option_labels,
+    optional_string as mcp_opt_str, optional_string_array as mcp_opt_str_array,
+    require_string as mcp_req_str, require_string_array as mcp_req_str_array,
+};
 use crate::projector::{
     memory::MemoryGraph, rebuild_graph_for_tenant, GraphParams, GraphRow, GraphValue, GraphView,
     NodeKind, RelationKind,
@@ -2468,7 +2473,7 @@ fn mcp_capture_decision(
             .and_then(|v| v.as_str())
             .filter(|s| !s.trim().is_empty())
             .map(|s| s.to_owned())
-            .unwrap_or_else(|| format!("Option generated from MCP value '{label}'"));
+            .unwrap_or_else(|| default_option_description(&label));
         let oid = commands
             .record_option(actor_id, &label, &description)
             .map_err(|e| (-32603i32, e.to_string()))?;
@@ -2822,100 +2827,9 @@ fn mcp_summarize(
 }
 
 // ---------------------------------------------------------------------------
-// Arg-parsing helpers for MCP tool arguments (JSON → typed values)
-// ---------------------------------------------------------------------------
-
-fn mcp_req_str(
-    args: &serde_json::Map<String, serde_json::Value>,
-    field: &str,
-) -> std::result::Result<String, (i32, String)> {
-    match args.get(field) {
-        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Ok(s.clone()),
-        Some(serde_json::Value::String(_)) => {
-            Err((-32602, format!("`{field}` must be a non-empty string")))
-        }
-        Some(_) => Err((-32602, format!("`{field}` must be a string"))),
-        None => Err((-32602, format!("missing `{field}`"))),
-    }
-}
-
-fn mcp_opt_str(
-    args: &serde_json::Map<String, serde_json::Value>,
-    field: &str,
-) -> std::result::Result<Option<String>, (i32, String)> {
-    match args.get(field) {
-        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Ok(Some(s.clone())),
-        Some(serde_json::Value::String(_)) | None | Some(serde_json::Value::Null) => Ok(None),
-        Some(_) => Err((-32602, format!("`{field}` must be a string"))),
-    }
-}
-
-fn mcp_req_str_array(
-    args: &serde_json::Map<String, serde_json::Value>,
-    field: &str,
-) -> std::result::Result<Vec<String>, (i32, String)> {
-    match args.get(field) {
-        Some(serde_json::Value::Array(items)) => mcp_collect_strings(items, field),
-        Some(_) => Err((-32602, format!("`{field}` must be an array of strings"))),
-        None => Err((-32602, format!("missing `{field}`"))),
-    }
-}
-
-fn mcp_opt_str_array(
-    args: &serde_json::Map<String, serde_json::Value>,
-    field: &str,
-) -> std::result::Result<Vec<String>, (i32, String)> {
-    match args.get(field) {
-        None | Some(serde_json::Value::Null) => Ok(Vec::new()),
-        Some(serde_json::Value::Array(items)) => mcp_collect_strings(items, field),
-        Some(_) => Err((-32602, format!("`{field}` must be an array of strings"))),
-    }
-}
-
-fn mcp_opt_option_labels(
-    args: &serde_json::Map<String, serde_json::Value>,
-    field: &str,
-) -> std::result::Result<Vec<String>, (i32, String)> {
-    match args.get(field) {
-        None | Some(serde_json::Value::Null) => Ok(Vec::new()),
-        Some(serde_json::Value::Array(items)) => items
-            .iter()
-            .enumerate()
-            .map(|(i, item)| match item {
-                serde_json::Value::String(s) if !s.trim().is_empty() => Ok(s.clone()),
-                serde_json::Value::Object(map) => map
-                    .get("label")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .map(str::to_owned)
-                    .ok_or_else(|| (-32602i32, format!("`{field}[{i}].label` must be non-empty"))),
-                _ => Err((
-                    -32602i32,
-                    format!("`{field}[{i}]` must be a string or object with `label`"),
-                )),
-            })
-            .collect(),
-        Some(_) => Err((-32602, format!("`{field}` must be an array"))),
-    }
-}
-
-fn mcp_collect_strings(
-    items: &[serde_json::Value],
-    field: &str,
-) -> std::result::Result<Vec<String>, (i32, String)> {
-    items
-        .iter()
-        .enumerate()
-        .map(|(i, v)| match v {
-            serde_json::Value::String(s) if !s.trim().is_empty() => Ok(s.clone()),
-            _ => Err((
-                -32602i32,
-                format!("`{field}[{i}]` must be a non-empty string"),
-            )),
-        })
-        .collect()
-}
+// Arg-parsing helpers for MCP tool arguments (JSON → typed values) live in
+// `crate::mcp::args`; imported at the top of this file under their original
+// names so all call sites below are unchanged.
 
 // ---------------------------------------------------------------------------
 // OAuth resource/authorization server metadata (MCP auth spec, Nov-2025)
