@@ -47,6 +47,31 @@ pub struct SupersedeOutcome {
     pub superseded_event_id: EventId,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct DecisionProposalInput<'a> {
+    pub actor_id: &'a str,
+    pub title: &'a str,
+    pub rationale: &'a str,
+    pub topic_keys: &'a [String],
+    pub option_ids: &'a [String],
+    pub chosen_option_id: Option<&'a str>,
+    pub hypothesis_ids: &'a [String],
+    pub evidence_ids: &'a [String],
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SupersedeInput<'a> {
+    pub actor_id: &'a str,
+    pub old_decision_id: &'a str,
+    pub new_title: &'a str,
+    pub new_rationale: &'a str,
+    pub topic_keys: &'a [String],
+    pub option_labels: &'a [String],
+    pub chosen_option_label: Option<&'a str>,
+    pub hypothesis_ids: &'a [String],
+    pub evidence_ids: &'a [String],
+}
+
 pub struct Commands<'a, L: EventLedger> {
     ledger: &'a L,
     context: CommandContext,
@@ -287,27 +312,20 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         Ok(option_id.to_owned())
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn propose_decision(
         &self,
-        actor_id: &str,
-        title: &str,
-        rationale: &str,
-        topic_keys: &[String],
-        option_ids: &[String],
-        chosen_option_id: Option<&str>,
-        hypothesis_ids: &[String],
-        evidence_ids: &[String],
+        input: DecisionProposalInput<'_>,
     ) -> Result<DecisionId> {
-        require_non_empty("actor_id", actor_id)?;
-        require_non_empty("title", title)?;
-        require_non_empty("rationale", rationale)?;
+        require_non_empty("actor_id", input.actor_id)?;
+        require_non_empty("title", input.title)?;
+        require_non_empty("rationale", input.rationale)?;
 
-        if option_ids.is_empty() {
+        if input.option_ids.is_empty() {
             return Err(CommandError::Validation("option_ids must not be empty".to_owned()).into());
         }
 
-        let normalized_topic_keys: Vec<String> = topic_keys
+        let normalized_topic_keys: Vec<String> = input
+            .topic_keys
             .iter()
             .map(|topic| normalize_topic_key(topic))
             .filter(|topic| !topic.is_empty())
@@ -322,7 +340,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
         {
             let state = self.lock_state()?;
-            for option_id in option_ids {
+            for option_id in input.option_ids {
                 if !state.option_ids.contains(option_id) {
                     return Err(CommandError::Invariant(format!(
                         "option does not exist: {option_id}"
@@ -332,8 +350,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }
         }
 
-        if let Some(chosen_option_id) = chosen_option_id {
-            let chosen_option_is_candidate = option_ids.iter().any(|option_id| {
+        if let Some(chosen_option_id) = input.chosen_option_id {
+            let chosen_option_is_candidate = input.option_ids.iter().any(|option_id| {
                 // ubs:ignore: option IDs are public decision graph IDs, not secrets.
                 same_identifier(option_id, chosen_option_id)
             });
@@ -345,7 +363,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }
         }
 
-        for hypothesis_id in hypothesis_ids {
+        for hypothesis_id in input.hypothesis_ids {
             if !self.hypothesis_exists(hypothesis_id)? {
                 return Err(CommandError::Invariant(format!(
                     "hypothesis does not exist: {hypothesis_id}"
@@ -354,7 +372,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }
         }
 
-        for evidence_id in evidence_ids {
+        for evidence_id in input.evidence_ids {
             if !self.evidence_exists(evidence_id)? {
                 return Err(CommandError::Invariant(format!(
                     "evidence does not exist: {evidence_id}"
@@ -365,74 +383,55 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
         let event_uuids = DecisionProposalEventUuids {
             proposal: Uuid::new_v4(),
-            has_option: repeat_uuid(option_ids.len()),
-            chose: chosen_option_id.map(|_| Uuid::new_v4()),
-            assumes: repeat_uuid(hypothesis_ids.len()),
-            based_on: repeat_uuid(evidence_ids.len()),
+            has_option: repeat_uuid(input.option_ids.len()),
+            chose: input.chosen_option_id.map(|_| Uuid::new_v4()),
+            assumes: repeat_uuid(input.hypothesis_ids.len()),
+            based_on: repeat_uuid(input.evidence_ids.len()),
         };
         let decision_id = generate_entity_id("decision");
 
-        self.propose_decision_with_id(
-            actor_id,
-            &decision_id,
-            title,
-            rationale,
-            topic_keys,
-            option_ids,
-            chosen_option_id,
-            hypothesis_ids,
-            evidence_ids,
-            event_uuids,
-        )?;
+        self.propose_decision_with_id(input, &decision_id, event_uuids)?;
 
         Ok(decision_id)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn propose_decision_with_id(
         &self,
-        actor_id: &str,
+        input: DecisionProposalInput<'_>,
         decision_id: &str,
-        title: &str,
-        rationale: &str,
-        topic_keys: &[String],
-        option_ids: &[String],
-        chosen_option_id: Option<&str>,
-        hypothesis_ids: &[String],
-        evidence_ids: &[String],
         event_uuids: DecisionProposalEventUuids,
     ) -> Result<DecisionProposalEventIds> {
-        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("actor_id", input.actor_id)?;
         require_non_empty("decision_id", decision_id)?;
-        require_non_empty("title", title)?;
-        require_non_empty("rationale", rationale)?;
+        require_non_empty("title", input.title)?;
+        require_non_empty("rationale", input.rationale)?;
 
-        if option_ids.is_empty() {
+        if input.option_ids.is_empty() {
             return Err(CommandError::Validation("option_ids must not be empty".to_owned()).into());
         }
 
-        if event_uuids.has_option.len() != option_ids.len() {
+        if event_uuids.has_option.len() != input.option_ids.len() {
             return Err(CommandError::Validation(
                 "has_option event UUID count must match option_ids".to_owned(),
             )
             .into());
         }
 
-        if event_uuids.assumes.len() != hypothesis_ids.len() {
+        if event_uuids.assumes.len() != input.hypothesis_ids.len() {
             return Err(CommandError::Validation(
                 "assumes event UUID count must match hypothesis_ids".to_owned(),
             )
             .into());
         }
 
-        if event_uuids.based_on.len() != evidence_ids.len() {
+        if event_uuids.based_on.len() != input.evidence_ids.len() {
             return Err(CommandError::Validation(
                 "based_on event UUID count must match evidence_ids".to_owned(),
             )
             .into());
         }
 
-        if chosen_option_id.is_some() != event_uuids.chose.is_some() {
+        if input.chosen_option_id.is_some() != event_uuids.chose.is_some() {
             return Err(CommandError::Validation(
                 "chose event UUID must be present exactly when chosen_option_id is present"
                     .to_owned(),
@@ -440,7 +439,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
-        let normalized_topic_keys: Vec<String> = topic_keys
+        let normalized_topic_keys: Vec<String> = input
+            .topic_keys
             .iter()
             .map(|topic| normalize_topic_key(topic))
             .filter(|topic| !topic.is_empty())
@@ -455,7 +455,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
         {
             let state = self.lock_state()?;
-            for option_id in option_ids {
+            for option_id in input.option_ids {
                 if !state.option_ids.contains(option_id) {
                     return Err(CommandError::Invariant(format!(
                         "option does not exist: {option_id}"
@@ -465,8 +465,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }
         }
 
-        if let Some(chosen_option_id) = chosen_option_id {
-            let chosen_option_is_candidate = option_ids.iter().any(|option_id| {
+        if let Some(chosen_option_id) = input.chosen_option_id {
+            let chosen_option_is_candidate = input.option_ids.iter().any(|option_id| {
                 // ubs:ignore: option IDs are public decision graph IDs, not secrets.
                 same_identifier(option_id, chosen_option_id)
             });
@@ -478,7 +478,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }
         }
 
-        for hypothesis_id in hypothesis_ids {
+        for hypothesis_id in input.hypothesis_ids {
             if !self.hypothesis_exists(hypothesis_id)? {
                 return Err(CommandError::Invariant(format!(
                     "hypothesis does not exist: {hypothesis_id}"
@@ -487,7 +487,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }
         }
 
-        for evidence_id in evidence_ids {
+        for evidence_id in input.evidence_ids {
             if !self.evidence_exists(evidence_id)? {
                 return Err(CommandError::Invariant(format!(
                     "evidence does not exist: {evidence_id}"
@@ -497,16 +497,16 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
 
         let root_event = self.event_with_uuid(
-            actor_id,
+            input.actor_id,
             EventPayload::DecisionProposed(DecisionProposedPayload {
                 decision_id: decision_id.to_owned(),
-                title: title.to_owned(),
-                rationale: rationale.to_owned(),
+                title: input.title.to_owned(),
+                rationale: input.rationale.to_owned(),
                 topic_keys: normalized_topic_keys,
-                option_ids: option_ids.to_vec(),
-                chosen_option_id: chosen_option_id.map(ToOwned::to_owned),
-                hypothesis_ids: hypothesis_ids.to_vec(),
-                evidence_ids: evidence_ids.to_vec(),
+                option_ids: input.option_ids.to_vec(),
+                chosen_option_id: input.chosen_option_id.map(ToOwned::to_owned),
+                hypothesis_ids: input.hypothesis_ids.to_vec(),
+                evidence_ids: input.evidence_ids.to_vec(),
                 expressed_confidence: None,
             }),
             None,
@@ -516,9 +516,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         let root_event_id = self.append_event(root_event)?;
         let mut relation_event_ids = Vec::new();
 
-        for (option_id, event_uuid) in option_ids.iter().zip(event_uuids.has_option) {
+        for (option_id, event_uuid) in input.option_ids.iter().zip(event_uuids.has_option) {
             relation_event_ids.push(self.append_relation_event_with_uuid(
-                actor_id,
+                input.actor_id,
                 root_event_id,
                 RelationKind::HasOption,
                 decision_id,
@@ -527,9 +527,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             )?);
         }
 
-        if let (Some(chosen_option_id), Some(event_uuid)) = (chosen_option_id, event_uuids.chose) {
+        if let (Some(chosen_option_id), Some(event_uuid)) =
+            (input.chosen_option_id, event_uuids.chose)
+        {
             relation_event_ids.push(self.append_relation_event_with_uuid(
-                actor_id,
+                input.actor_id,
                 root_event_id,
                 RelationKind::Chose,
                 decision_id,
@@ -538,10 +540,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             )?);
         }
 
-        let assumes_from_id = chosen_option_id.unwrap_or(decision_id);
-        for (hypothesis_id, event_uuid) in hypothesis_ids.iter().zip(event_uuids.assumes) {
+        let assumes_from_id = input.chosen_option_id.unwrap_or(decision_id);
+        for (hypothesis_id, event_uuid) in input.hypothesis_ids.iter().zip(event_uuids.assumes) {
             relation_event_ids.push(self.append_relation_event_with_uuid(
-                actor_id,
+                input.actor_id,
                 root_event_id,
                 RelationKind::Assumes,
                 assumes_from_id,
@@ -550,9 +552,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             )?);
         }
 
-        for (evidence_id, event_uuid) in evidence_ids.iter().zip(event_uuids.based_on) {
+        for (evidence_id, event_uuid) in input.evidence_ids.iter().zip(event_uuids.based_on) {
             relation_event_ids.push(self.append_relation_event_with_uuid(
-                actor_id,
+                input.actor_id,
                 root_event_id,
                 RelationKind::BasedOn,
                 decision_id,
@@ -750,41 +752,33 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         self.append_event(event)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn supersede(
-        &self,
-        actor_id: &str,
-        old_decision_id: &str,
-        new_title: &str,
-        new_rationale: &str,
-        topic_keys: &[String],
-        option_labels: &[String],
-        chosen_option_label: Option<&str>,
-        hypothesis_ids: &[String],
-        evidence_ids: &[String],
-    ) -> Result<SupersedeOutcome> {
-        require_non_empty("actor_id", actor_id)?;
-        require_non_empty("old_decision_id", old_decision_id)?;
-        require_non_empty("new_title", new_title)?;
-        require_non_empty("new_rationale", new_rationale)?;
-        require_optional_non_empty("chosen_option_label", chosen_option_label)?;
+    pub fn supersede(&self, input: SupersedeInput<'_>) -> Result<SupersedeOutcome> {
+        require_non_empty("actor_id", input.actor_id)?;
+        require_non_empty("old_decision_id", input.old_decision_id)?;
+        require_non_empty("new_title", input.new_title)?;
+        require_non_empty("new_rationale", input.new_rationale)?;
+        require_optional_non_empty("chosen_option_label", input.chosen_option_label)?;
 
         let old_decision = self
-            .decision_proposal_snapshot(old_decision_id)?
+            .decision_proposal_snapshot(input.old_decision_id)?
             .ok_or_else(|| {
-                CommandError::Invariant(format!("decision does not exist: {old_decision_id}"))
+                CommandError::Invariant(format!(
+                    "decision does not exist: {}",
+                    input.old_decision_id
+                ))
             })?;
         let effective_topic_keys =
-            effective_topic_keys(topic_keys, old_decision.topic_keys.as_slice())?;
-        let option_labels = effective_option_labels(new_title, option_labels, chosen_option_label)?;
+            effective_topic_keys(input.topic_keys, old_decision.topic_keys.as_slice())?;
+        let option_labels =
+            effective_option_labels(input.new_title, input.option_labels, input.chosen_option_label)?;
         let option_ids = deterministic_supersede_option_ids(
-            actor_id,
-            old_decision_id,
-            new_title,
-            new_rationale,
+            input.actor_id,
+            input.old_decision_id,
+            input.new_title,
+            input.new_rationale,
             &option_labels,
         );
-        let chosen_label = chosen_option_label.map(str::trim);
+        let chosen_label = input.chosen_option_label.map(str::trim);
         let chosen_option_id = chosen_label
             .map(|label| {
                 option_labels
@@ -799,17 +793,17 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             })
             .transpose()?;
 
-        if let Some(existing) = self.find_matching_supersede(
-            actor_id,
-            old_decision_id,
-            new_title,
-            new_rationale,
-            &effective_topic_keys,
-            &option_ids,
-            chosen_option_id.as_deref(),
-            hypothesis_ids,
-            evidence_ids,
-        )? {
+        let proposal_props = DecisionProposalInput {
+            actor_id: input.actor_id,
+            title: input.new_title,
+            rationale: input.new_rationale,
+            topic_keys: &effective_topic_keys,
+            option_ids: &option_ids,
+            chosen_option_id: chosen_option_id.as_deref(),
+            hypothesis_ids: input.hypothesis_ids,
+            evidence_ids: input.evidence_ids,
+        };
+        if let Some(existing) = self.find_matching_supersede(input.old_decision_id, &proposal_props)? {
             return Ok(existing);
         }
 
@@ -821,32 +815,30 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 option_description,
                 "Option generated from supersede value '{option_label}'"
             );
-            self.record_option_with_id(actor_id, option_id, option_label, &option_description)?;
+            self.record_option_with_id(
+                input.actor_id,
+                option_id,
+                option_label,
+                &option_description,
+            )?;
         }
 
         let new_decision_id = generate_entity_id("decision");
         let proposal_event_ids = self.propose_decision_with_id(
-            actor_id,
+            proposal_props,
             &new_decision_id,
-            new_title,
-            new_rationale,
-            &effective_topic_keys,
-            &option_ids,
-            chosen_option_id.as_deref(),
-            hypothesis_ids,
-            evidence_ids,
             DecisionProposalEventUuids {
                 proposal: Uuid::new_v4(),
                 has_option: repeat_uuid(option_ids.len()),
                 chose: chosen_option_id.as_ref().map(|_| Uuid::new_v4()),
-                assumes: repeat_uuid(hypothesis_ids.len()),
-                based_on: repeat_uuid(evidence_ids.len()),
+                assumes: repeat_uuid(input.hypothesis_ids.len()),
+                based_on: repeat_uuid(input.evidence_ids.len()),
             },
         )?;
         let superseded_event_id = self.supersede_decision_with_uuid(
-            old_decision_id,
+            input.old_decision_id,
             &new_decision_id,
-            actor_id,
+            input.actor_id,
             Uuid::new_v4(),
         )?;
 
@@ -1165,18 +1157,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .and_then(|s| s.chosen_option_id))
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn find_matching_supersede(
         &self,
-        actor_id: &str,
         old_decision_id: &str,
-        new_title: &str,
-        new_rationale: &str,
-        topic_keys: &[String],
-        option_ids: &[String],
-        chosen_option_id: Option<&str>,
-        hypothesis_ids: &[String],
-        evidence_ids: &[String],
+        props: &DecisionProposalInput<'_>,
     ) -> Result<Option<SupersedeOutcome>> {
         let mut proposals = HashMap::new();
         let mut superseded_events = Vec::new();
@@ -1210,7 +1194,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                             continue;
                         };
                         // ubs:ignore: actor and decision IDs are public graph IDs.
-                        if same_identifier(event.actor_id.as_str(), actor_id)
+                        if same_identifier(event.actor_id.as_str(), props.actor_id)
                             && same_identifier(old_id, old_decision_id)
                         {
                             superseded_events.push((event_id, new_id.to_owned()));
@@ -1242,16 +1226,16 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 continue;
             };
             // ubs:ignore: actor and decision IDs are public graph IDs.
-            if !same_identifier(proposal.actor_id.as_str(), actor_id) {
+            if !same_identifier(proposal.actor_id.as_str(), props.actor_id) {
                 continue;
             }
-            if proposal.title == new_title
-                && proposal.rationale == new_rationale
-                && proposal.topic_keys == topic_keys
-                && proposal.option_ids == option_ids
-                && proposal.chosen_option_id.as_deref() == chosen_option_id
-                && proposal.hypothesis_ids == hypothesis_ids
-                && proposal.evidence_ids == evidence_ids
+            if proposal.title == props.title
+                && proposal.rationale == props.rationale
+                && proposal.topic_keys == props.topic_keys
+                && proposal.option_ids == props.option_ids
+                && proposal.chosen_option_id.as_deref() == props.chosen_option_id
+                && proposal.hypothesis_ids == props.hypothesis_ids
+                && proposal.evidence_ids == props.evidence_ids
             {
                 let relation_event_ids = relation_event_ids_by_causation
                     .get(&proposal.event_id)

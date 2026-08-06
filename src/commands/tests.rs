@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::events::{EventProvenance, EventSource, EventType, RelationKind};
 use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
-use super::{normalize_topic_key, Commands, MAX_TOPIC_KEY_LEN};
+use super::{normalize_topic_key, Commands, DecisionProposalInput, SupersedeInput, MAX_TOPIC_KEY_LEN};
 
 #[test]
 fn record_evidence_appends_evidence_recorded_event() {
@@ -103,16 +103,16 @@ fn propose_decision_fans_out_relation_events_with_causation_linkage() {
         .expect("hypothesis");
 
     let decision_id = commands
-        .propose_decision(
-            "actor:alice",
-            "Pick queue strategy",
-            "Need robust ingestion",
-            &["Infra / Queue".to_owned()],
-            &[option_a.clone(), option_b.clone()],
-            Some(option_b.as_str()),
-            std::slice::from_ref(&hypothesis_id),
-            std::slice::from_ref(&evidence_id),
-        )
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Pick queue strategy",
+            rationale: "Need robust ingestion",
+            topic_keys: &["Infra / Queue".to_owned()],
+            option_ids: &[option_a.clone(), option_b.clone()],
+            chosen_option_id: Some(option_b.as_str()),
+            hypothesis_ids: std::slice::from_ref(&hypothesis_id),
+            evidence_ids: std::slice::from_ref(&evidence_id),
+        })
         .expect("propose decision");
 
     let events = ledger.read(0, 20).expect("read events");
@@ -174,16 +174,16 @@ fn direct_agent_decision_persists_agent_provenance() {
             .record_option(actor_id, "Keep substrate small", "Add source fields only")
             .expect("option recorded");
         commands
-            .propose_decision(
+            .propose_decision(DecisionProposalInput {
                 actor_id,
-                "Record direct agent provenance",
-                "Agent-written decisions must be distinguishable from CLI writes",
-                &["Integrations".to_owned()],
-                &[option_id],
-                None,
-                &[],
-                &[],
-            )
+                title: "Record direct agent provenance",
+                rationale: "Agent-written decisions must be distinguishable from CLI writes",
+                topic_keys: &["Integrations".to_owned()],
+                option_ids: &[option_id],
+                chosen_option_id: None,
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+            })
             .expect("agent decision proposed")
     };
 
@@ -220,16 +220,16 @@ fn accept_and_reject_invariant_for_same_actor_is_enforced() {
         .record_option("actor:alice", "A", "Option A")
         .expect("option");
     let decision_id = commands
-        .propose_decision(
-            "actor:alice",
-            "Pick one",
-            "Need progress",
-            &["Core".to_owned()],
-            &[option_id],
-            None,
-            &[],
-            &[],
-        )
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Pick one",
+            rationale: "Need progress",
+            topic_keys: &["Core".to_owned()],
+            option_ids: &[option_id],
+            chosen_option_id: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
         .expect("propose");
 
     commands
@@ -253,29 +253,29 @@ fn supersede_requires_both_decisions_to_exist() {
         .expect("option b");
 
     let decision_a = commands
-        .propose_decision(
-            "actor:alice",
-            "Decision A",
-            "rationale",
-            &["Core".to_owned()],
-            &[option_a],
-            None,
-            &[],
-            &[],
-        )
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Decision A",
+            rationale: "rationale",
+            topic_keys: &["Core".to_owned()],
+            option_ids: &[option_a],
+            chosen_option_id: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
         .expect("decision a");
 
     let decision_b = commands
-        .propose_decision(
-            "actor:alice",
-            "Decision B",
-            "rationale",
-            &["Core".to_owned()],
-            &[option_b],
-            None,
-            &[],
-            &[],
-        )
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Decision B",
+            rationale: "rationale",
+            topic_keys: &["Core".to_owned()],
+            option_ids: &[option_b],
+            chosen_option_id: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
         .expect("decision b");
 
     commands
@@ -296,16 +296,16 @@ fn disagree_records_reason_and_is_idempotent_for_same_actor() {
         .record_option("actor:alice", "A", "Option A")
         .expect("option");
     let decision_id = commands
-        .propose_decision(
-            "actor:alice",
-            "Decision A",
-            "rationale",
-            &["Core".to_owned()],
-            &[option_id],
-            None,
-            &[],
-            &[],
-        )
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Decision A",
+            rationale: "rationale",
+            topic_keys: &["Core".to_owned()],
+            option_ids: &[option_id],
+            chosen_option_id: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
         .expect("decision");
 
     commands
@@ -350,44 +350,44 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
         .record_option("actor:alice", "A", "Option A")
         .expect("option");
     let old_decision_id = commands
-        .propose_decision(
-            "actor:alice",
-            "Decision A",
-            "rationale",
-            &["Core".to_owned()],
-            &[option_id],
-            None,
-            &[],
-            &[],
-        )
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Decision A",
+            rationale: "rationale",
+            topic_keys: &["Core".to_owned()],
+            option_ids: &[option_id],
+            chosen_option_id: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
         .expect("decision");
 
     let first = commands
-        .supersede(
-            "actor:alice",
-            &old_decision_id,
-            "Decision B",
-            "New rationale",
-            &[],
-            &["Replacement".to_owned()],
-            None,
-            &[],
-            &[],
-        )
+        .supersede(SupersedeInput {
+            actor_id: "actor:alice",
+            old_decision_id: &old_decision_id,
+            new_title: "Decision B",
+            new_rationale: "New rationale",
+            topic_keys: &[],
+            option_labels: &["Replacement".to_owned()],
+            chosen_option_label: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
         .expect("supersede succeeds");
     let latest_after_first = ledger.latest_offset().expect("latest offset");
     let second = commands
-        .supersede(
-            "actor:alice",
-            &old_decision_id,
-            "Decision B",
-            "New rationale",
-            &[],
-            &["Replacement".to_owned()],
-            None,
-            &[],
-            &[],
-        )
+        .supersede(SupersedeInput {
+            actor_id: "actor:alice",
+            old_decision_id: &old_decision_id,
+            new_title: "Decision B",
+            new_rationale: "New rationale",
+            topic_keys: &[],
+            option_labels: &["Replacement".to_owned()],
+            chosen_option_label: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
         .expect("retry succeeds");
 
     assert_eq!(second, first);
@@ -428,17 +428,17 @@ fn first_class_disagree_and_supersede_require_existing_targets() {
         .disagree("actor:alice", "decision-missing", "reason")
         .is_err());
     assert!(commands
-        .supersede(
-            "actor:alice",
-            "decision-missing",
-            "Decision B",
-            "New rationale",
-            &["Core".to_owned()],
-            &["Replacement".to_owned()],
-            None,
-            &[],
-            &[],
-        )
+        .supersede(SupersedeInput {
+            actor_id: "actor:alice",
+            old_decision_id: "decision-missing",
+            new_title: "Decision B",
+            new_rationale: "New rationale",
+            topic_keys: &["Core".to_owned()],
+            option_labels: &["Replacement".to_owned()],
+            chosen_option_label: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
         .is_err());
 }
 
@@ -451,16 +451,16 @@ fn attach_evidence_requires_existing_endpoints() {
         .record_option("actor:alice", "A", "Option A")
         .expect("option");
     let decision_id = commands
-        .propose_decision(
-            "actor:alice",
-            "Decision A",
-            "rationale",
-            &["Core".to_owned()],
-            &[option_id],
-            None,
-            &[],
-            &[],
-        )
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Decision A",
+            rationale: "rationale",
+            topic_keys: &["Core".to_owned()],
+            option_ids: &[option_id],
+            chosen_option_id: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
         .expect("decision");
     let evidence_id = commands
         .record_evidence("actor:alice", "evidence")
@@ -534,19 +534,19 @@ fn propose_decision_normalizes_topic_keys() {
         .record_option("actor:alice", "A", "Option A")
         .expect("option");
     let decision_id = commands
-        .propose_decision(
-            "actor:alice",
-            "Normalize topics",
-            "Keep consistent filters",
-            &[
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Normalize topics",
+            rationale: "Keep consistent filters",
+            topic_keys: &[
                 "  Crème brûlée API!!  ".to_owned(),
                 "Ops___SRE   Alerts".to_owned(),
             ],
-            &[option_id],
-            None,
-            &[],
-            &[],
-        )
+            option_ids: &[option_id],
+            chosen_option_id: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
         .expect("propose");
 
     let events = ledger.read(0, 10).expect("read events");

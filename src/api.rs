@@ -59,7 +59,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
 
-use crate::commands::{CommandContext, Commands};
+use crate::commands::{CommandContext, Commands, DecisionProposalInput, SupersedeInput};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, IngestTurn, TenantId};
 use crate::ledger::{EventLedger, SqliteEventLedger, SqliteUserStore};
@@ -1231,16 +1231,16 @@ fn capture_decision_blocking(
     }
 
     let decision_id = commands
-        .propose_decision(
-            &ctx.actor_id,
-            &req.title,
-            &req.rationale,
-            &req.topic_keys,
-            &option_ids,
-            chosen_option_id.as_deref(),
-            &req.hypothesis_ids,
-            &req.evidence_ids,
-        )
+        .propose_decision(DecisionProposalInput {
+            actor_id: &ctx.actor_id,
+            title: &req.title,
+            rationale: &req.rationale,
+            topic_keys: &req.topic_keys,
+            option_ids: &option_ids,
+            chosen_option_id: chosen_option_id.as_deref(),
+            hypothesis_ids: &req.hypothesis_ids,
+            evidence_ids: &req.evidence_ids,
+        })
         .map_err(to_api_error)?;
 
     Ok(serde_json::json!({
@@ -1402,17 +1402,17 @@ async fn supersede_handler(
             ),
         );
         let outcome = commands
-            .supersede(
-                &ctx.actor_id,
-                &old_decision_id,
-                &req.title,
-                &req.rationale,
-                &req.topic_keys,
-                &req.options,
-                req.chosen_option_label.as_deref(),
-                &req.hypothesis_ids,
-                &req.evidence_ids,
-            )
+            .supersede(SupersedeInput {
+                actor_id: &ctx.actor_id,
+                old_decision_id: &old_decision_id,
+                new_title: &req.title,
+                new_rationale: &req.rationale,
+                topic_keys: &req.topic_keys,
+                option_labels: &req.options,
+                chosen_option_label: req.chosen_option_label.as_deref(),
+                hypothesis_ids: &req.hypothesis_ids,
+                evidence_ids: &req.evidence_ids,
+            })
             .map_err(to_api_error)?;
 
         let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
@@ -2490,16 +2490,16 @@ fn mcp_capture_decision(
         ));
     }
     let decision_id = commands
-        .propose_decision(
+        .propose_decision(DecisionProposalInput {
             actor_id,
-            &title,
-            &rationale,
-            &topic_keys,
-            &option_ids,
-            chosen_option_id.as_deref(),
-            &hypothesis_ids,
-            &evidence_ids,
-        )
+            title: &title,
+            rationale: &rationale,
+            topic_keys: &topic_keys,
+            option_ids: &option_ids,
+            chosen_option_id: chosen_option_id.as_deref(),
+            hypothesis_ids: &hypothesis_ids,
+            evidence_ids: &evidence_ids,
+        })
         .map_err(|e| (-32603i32, e.to_string()))?;
     Ok(serde_json::json!({
         "decision_id": decision_id,
@@ -2613,17 +2613,17 @@ fn mcp_supersede(
         ),
     );
     let outcome = commands
-        .supersede(
+        .supersede(SupersedeInput {
             actor_id,
-            &old_id,
-            &title,
-            &rationale,
-            &topic_keys,
-            &option_labels,
-            chosen_label.as_deref(),
-            &hypothesis_ids,
-            &evidence_ids,
-        )
+            old_decision_id: &old_id,
+            new_title: &title,
+            new_rationale: &rationale,
+            topic_keys: &topic_keys,
+            option_labels: &option_labels,
+            chosen_option_label: chosen_label.as_deref(),
+            hypothesis_ids: &hypothesis_ids,
+            evidence_ids: &evidence_ids,
+        })
         .map_err(|e| (-32603i32, e.to_string()))?;
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &ctx.tenant_id, &graph)

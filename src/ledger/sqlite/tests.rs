@@ -9,7 +9,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::OptionalExtension;
 use uuid::Uuid;
 
-use crate::commands::{CommandContext, Commands, DecisionProposalEventUuids};
+use crate::commands::{CommandContext, Commands, DecisionProposalEventUuids, DecisionProposalInput};
 use crate::error::CommandError;
 use crate::events::{Event, EventProvenance, TenantId};
 use crate::ledger::contract_tests::{
@@ -216,15 +216,17 @@ fn write_shared_decision(
         "Shared option label across tenants",
     )?;
     commands.propose_decision_with_id(
-        "actor:test",
+        DecisionProposalInput {
+            actor_id: "actor:test",
+            title,
+            rationale: "Tenant-specific rationale",
+            topic_keys: &["tenant-isolation".to_owned()],
+            option_ids: &["option-shared".to_owned()],
+            chosen_option_id: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        },
         "decision-shared",
-        title,
-        "Tenant-specific rationale",
-        &["tenant-isolation".to_owned()],
-        &["option-shared".to_owned()],
-        None,
-        &[],
-        &[],
         DecisionProposalEventUuids {
             proposal: Uuid::from_u128(1),
             has_option: vec![Uuid::from_u128(2)],

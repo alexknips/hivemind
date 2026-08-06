@@ -8,7 +8,7 @@ use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::commands::{CommandContext, Commands};
+use crate::commands::{CommandContext, Commands, DecisionProposalInput, SupersedeInput};
 use crate::error::{CliError, CommandError};
 use crate::events::{
     BlockerPriority, CaptureItem, Event, EventId, EventPayload, EventProvenance, EventType,
@@ -2029,17 +2029,17 @@ fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
         &ledger,
         CommandContext::new(tenant_id.clone(), EventProvenance::human(cli.actor.clone())),
     );
-    let outcome = commands.supersede(
-        &cli.actor,
-        &args.old_decision_id,
-        &args.title,
-        &args.rationale,
-        &args.topic_keys,
-        &args.option_labels,
-        args.chosen_option_label.as_deref(),
-        &args.hypothesis_ids,
-        &args.evidence_ids,
-    )?;
+    let outcome = commands.supersede(SupersedeInput {
+        actor_id: &cli.actor,
+        old_decision_id: &args.old_decision_id,
+        new_title: &args.title,
+        new_rationale: &args.rationale,
+        topic_keys: &args.topic_keys,
+        option_labels: &args.option_labels,
+        chosen_option_label: args.chosen_option_label.as_deref(),
+        hypothesis_ids: &args.hypothesis_ids,
+        evidence_ids: &args.evidence_ids,
+    })?;
     let old_decision_status =
         decision_status_after_write(&ledger, &tenant_id, &args.old_decision_id)?;
     let new_decision_status =
@@ -2205,17 +2205,17 @@ fn run_review_session<R: BufRead, W: IoWrite>(
                     )?
                     .and_then(|line| non_empty_owned(&line));
 
-                    let outcome = commands.supersede(
-                        &cli.actor,
-                        &item.decision_id,
-                        &title,
-                        &rationale,
-                        &item.topic_keys,
-                        &option_labels,
-                        chosen_option_label.as_deref(),
-                        &item.hypothesis_ids,
-                        &item.evidence_ids,
-                    )?;
+                    let outcome = commands.supersede(SupersedeInput {
+                        actor_id: &cli.actor,
+                        old_decision_id: &item.decision_id,
+                        new_title: &title,
+                        new_rationale: &rationale,
+                        topic_keys: &item.topic_keys,
+                        option_labels: &option_labels,
+                        chosen_option_label: chosen_option_label.as_deref(),
+                        hypothesis_ids: &item.hypothesis_ids,
+                        evidence_ids: &item.evidence_ids,
+                    })?;
                     let old_status =
                         decision_status_after_write(&ledger, &tenant_id, &item.decision_id)?;
                     let new_status =
@@ -2461,16 +2461,16 @@ fn propose_decision_from_option_labels<L: EventLedger>(
         .into());
     }
 
-    commands.propose_decision(
+    commands.propose_decision(DecisionProposalInput {
         actor_id,
-        &args.title,
-        &args.rationale,
-        &args.topic_keys,
-        &option_ids,
-        chosen_option_id.as_deref(),
-        &args.hypothesis_ids,
-        &args.evidence_ids,
-    )
+        title: &args.title,
+        rationale: &args.rationale,
+        topic_keys: &args.topic_keys,
+        option_ids: &option_ids,
+        chosen_option_id: chosen_option_id.as_deref(),
+        hypothesis_ids: &args.hypothesis_ids,
+        evidence_ids: &args.evidence_ids,
+    })
 }
 
 fn emit_actor_and_commands<'a>(

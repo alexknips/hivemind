@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::commands::{Commands, DecisionProposalEventUuids};
+use crate::commands::{Commands, DecisionProposalEventUuids, DecisionProposalInput};
 use crate::error::{CliError, CommandError};
 use crate::events::{self, Event, EventPayload, EventProvenance, EventSource, EventType};
 use crate::ledger::EventLedger;
@@ -277,16 +277,16 @@ pub fn import_slack_thread<L: EventLedger>(
         .into());
     }
 
-    let decision_id = commands.propose_decision(
-        &draft.actor_id,
-        &draft.title,
-        &draft.rationale,
-        &draft.topic_keys,
-        &option_ids,
-        chosen_option_id.as_deref(),
-        &[],
-        std::slice::from_ref(&evidence_id),
-    )?;
+    let decision_id = commands.propose_decision(DecisionProposalInput {
+        actor_id: &draft.actor_id,
+        title: &draft.title,
+        rationale: &draft.rationale,
+        topic_keys: &draft.topic_keys,
+        option_ids: &option_ids,
+        chosen_option_id: chosen_option_id.as_deref(),
+        hypothesis_ids: &[],
+        evidence_ids: std::slice::from_ref(&evidence_id),
+    })?;
 
     Ok(SlackIngestOutcome::Imported {
         decision_id,
@@ -1595,15 +1595,17 @@ fn write_document_decision_events<L: EventLedger>(
     }
 
     let proposal_events = commands.propose_decision_with_id(
-        actor_id,
+        DecisionProposalInput {
+            actor_id,
+            title: &draft.title,
+            rationale: &draft.rationale,
+            topic_keys: &draft.topic_keys,
+            option_ids: &identities.option_ids,
+            chosen_option_id: identities.chosen_option_id.as_deref(),
+            hypothesis_ids: &identities.hypothesis_ids,
+            evidence_ids: &identities.evidence_ids,
+        },
         &identities.decision_id,
-        &draft.title,
-        &draft.rationale,
-        &draft.topic_keys,
-        &identities.option_ids,
-        identities.chosen_option_id.as_deref(),
-        &identities.hypothesis_ids,
-        &identities.evidence_ids,
         identities.proposal_event_uuids.clone(),
     )?;
     event_ids.push(proposal_events.proposal_event_id);

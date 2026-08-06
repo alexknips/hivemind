@@ -715,7 +715,7 @@ fn render_digest_text(
 #[cfg(test)]
 mod tests {
     use super::*; // ubs:ignore: test-only glob import; standard Rust test module idiom
-    use crate::commands::Commands;
+    use crate::commands::{Commands, DecisionProposalInput, SupersedeInput};
     use crate::events::TenantId;
     use crate::ledger::InMemoryEventLedger;
     use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
@@ -748,17 +748,16 @@ mod tests {
                 .map(|i| option_ids[i].clone()) // ubs:ignore: test-only; index bounds safe (position returns valid index)
         });
         commands // ubs:ignore: test-only; panicking is correct in tests
-            .propose_decision(
-                // ubs:ignore: test-only; many args is expected for decision capture
-                actor,                // ubs:ignore: test-only args
-                title,                // ubs:ignore: test-only args
-                rationale,            // ubs:ignore: test-only args
-                &topic_keys,          // ubs:ignore: test-only args
-                &option_ids,          // ubs:ignore: test-only args
-                chosen_id.as_deref(), // ubs:ignore: test-only args
-                &[],                  // ubs:ignore: test-only args
-                &[],                  // ubs:ignore: test-only args
-            ) // ubs:ignore: test-only args
+            .propose_decision(DecisionProposalInput {
+                actor_id: actor,
+                title,
+                rationale,
+                topic_keys: &topic_keys,
+                option_ids: &option_ids,
+                chosen_option_id: chosen_id.as_deref(),
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+            })
             .unwrap() // ubs:ignore: test-only helper; panicking is correct in tests
     }
 
@@ -850,18 +849,17 @@ mod tests {
             None,
         );
         let outcome = commands // ubs:ignore: test-only; panicking is correct in tests
-            .supersede(
-                // ubs:ignore: test-only; many args is expected for supersession
-                "test-actor",                   // ubs:ignore: test-only args
-                &old_id,                        // ubs:ignore: test-only args
-                "New Decision",                 // ubs:ignore: test-only args
-                "New rationale supersedes old", // ubs:ignore: test-only args
-                &["api".to_string()],           // ubs:ignore: test-only args
-                &[],                            // ubs:ignore: test-only args
-                None,                           // ubs:ignore: test-only args
-                &[],                            // ubs:ignore: test-only args
-                &[],                            // ubs:ignore: test-only args
-            ) // ubs:ignore: test-only args
+            .supersede(SupersedeInput {
+                actor_id: "test-actor",
+                old_decision_id: &old_id,
+                new_title: "New Decision",
+                new_rationale: "New rationale supersedes old",
+                topic_keys: &["api".to_string()],
+                option_labels: &[],
+                chosen_option_label: None,
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+            })
             .unwrap(); // ubs:ignore: test-only; panicking is correct in tests
         let new_id = outcome.new_decision_id;
         let graph = make_graph(&ledger);
