@@ -4,7 +4,11 @@ use serde::Serialize;
 
 use crate::error::ProjectorError;
 use crate::events::{
-    self, CaptureItem, Event, EventId, EventPayload, RelationKind as EventRelationKind, TenantId,
+    self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionProposedPayload,
+    DecisionRequestedPayload, DecisionScoredPayload, Event, EventId, EventPayload,
+    EvidenceRecordedPayload, HypothesisRecordedPayload, IngestBatchClassifiedPayload,
+    NotificationAcknowledgedPayload, NotificationSentPayload, RelationKind as EventRelationKind,
+    TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -205,146 +209,10 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
 
     match payload {
         EventPayload::DecisionProposed(payload) => {
-            let mut decision_properties = origin_properties.clone();
-            decision_properties.insert(
-                "title".to_owned(),
-                GraphValue::String(payload.title.clone()),
-            );
-            decision_properties.insert(
-                "rationale".to_owned(),
-                GraphValue::String(payload.rationale.clone()),
-            );
-            decision_properties.insert(
-                "topic_keys".to_owned(),
-                GraphValue::StringList(payload.topic_keys.clone()),
-            );
-            decision_properties.insert(
-                "expressed_confidence".to_owned(),
-                payload
-                    .expressed_confidence
-                    .as_deref()
-                    .map_or(GraphValue::Null, |c| GraphValue::String(c.to_owned())),
-            );
-            graph.upsert_node(
-                NodeKind::Decision,
-                &payload.decision_id,
-                &decision_properties,
-            )?;
-            graph.upsert_edge(
-                RelationKind::ProposedBy,
-                &payload.decision_id,
-                &event.actor_id,
-                &origin_properties,
-            )?;
-
-            for option_id in &payload.option_ids {
-                graph.upsert_node(NodeKind::Option, option_id, &origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::HasOption,
-                    &payload.decision_id,
-                    option_id,
-                    &origin_properties,
-                )?;
-            }
-
-            if let Some(chosen_option_id) = &payload.chosen_option_id {
-                graph.upsert_node(NodeKind::Option, chosen_option_id, &origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::Chose,
-                    &payload.decision_id,
-                    chosen_option_id,
-                    &origin_properties,
-                )?;
-            }
-
-            let (premised_on_kind, premised_on_from) =
-                if let Some(opt_id) = &payload.chosen_option_id {
-                    (RelationKind::PremisedOn, opt_id.as_str())
-                } else {
-                    (RelationKind::PremisedOnDirect, payload.decision_id.as_str())
-                };
-            for hypothesis_id in &payload.hypothesis_ids {
-                graph.upsert_edge(
-                    premised_on_kind,
-                    premised_on_from,
-                    hypothesis_id,
-                    &origin_properties,
-                )?;
-            }
-
-            for evidence_id in &payload.evidence_ids {
-                graph.upsert_edge(
-                    RelationKind::BasedOn,
-                    &payload.decision_id,
-                    evidence_id,
-                    &origin_properties,
-                )?;
-            }
+            project_decision_proposed(graph, &event.actor_id, &payload, &origin_properties)?
         }
         EventPayload::DecisionRequested(payload) => {
-            let request_id = event.event_uuid.to_string();
-            let mut request_properties = origin_properties.clone();
-            request_properties.insert(
-                "decision_id".to_owned(),
-                optional_string_value(payload.decision_id.as_deref()),
-            );
-            request_properties.insert(
-                "topic_keys".to_owned(),
-                GraphValue::StringList(payload.topic_keys.clone()),
-            );
-            request_properties.insert(
-                "reason".to_owned(),
-                GraphValue::String(payload.reason.clone()),
-            );
-            request_properties.insert(
-                "priority".to_owned(),
-                GraphValue::String(payload.priority.as_str().to_owned()),
-            );
-            request_properties.insert(
-                "required_owner_id".to_owned(),
-                optional_string_value(payload.required_owner_id.as_deref()),
-            );
-            request_properties.insert(
-                "authority_class".to_owned(),
-                GraphValue::String(payload.authority_class.clone()),
-            );
-            request_properties.insert(
-                "requested_by".to_owned(),
-                GraphValue::String(payload.requested_by.clone()),
-            );
-            request_properties.insert(
-                "client_request_id".to_owned(),
-                GraphValue::String(payload.client_request_id.clone()),
-            );
-            graph.upsert_node(NodeKind::DecisionRequest, &request_id, &request_properties)?;
-
-            upsert_actor(graph, &payload.requested_by, &origin_properties)?;
-            graph.upsert_edge(
-                RelationKind::DecisionRequestedBy,
-                &request_id,
-                &payload.requested_by,
-                &origin_properties,
-            )?;
-
-            if let Some(required_owner_id) = &payload.required_owner_id {
-                upsert_actor(graph, required_owner_id, &origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::DecisionRequestRequiredOwner,
-                    &request_id,
-                    required_owner_id,
-                    &origin_properties,
-                )?;
-            }
-
-            if let Some(decision_id) = &payload.decision_id {
-                ensure_node_reference(graph, NodeKind::Decision, decision_id, &origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::DecisionRequestForDecision,
-                    &request_id,
-                    decision_id,
-                    &origin_properties,
-                )?;
-            }
+            project_decision_requested(graph, event, &payload, &origin_properties)?
         }
         EventPayload::DecisionAccepted(payload) => graph.upsert_edge(
             RelationKind::AcceptedBy,
@@ -365,28 +233,10 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
             &origin_properties,
         )?,
         EventPayload::EvidenceRecorded(payload) => {
-            let mut evidence_properties = origin_properties.clone();
-            evidence_properties.insert(
-                "content".to_owned(),
-                GraphValue::String(payload.content.clone()),
-            );
-            graph.upsert_node(
-                NodeKind::Evidence,
-                &payload.evidence_id,
-                &evidence_properties,
-            )?;
+            project_evidence_recorded(graph, &payload, &origin_properties)?
         }
         EventPayload::HypothesisRecorded(payload) => {
-            let mut hypothesis_properties = origin_properties.clone();
-            hypothesis_properties.insert(
-                "statement".to_owned(),
-                GraphValue::String(payload.statement.clone()),
-            );
-            graph.upsert_node(
-                NodeKind::Hypothesis,
-                &payload.hypothesis_id,
-                &hypothesis_properties,
-            )?;
+            project_hypothesis_recorded(graph, &payload, &origin_properties)?
         }
         EventPayload::RelationAdded(payload) => {
             let kind = if payload.relation == EventRelationKind::Assumes {
@@ -404,247 +254,25 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
             graph.upsert_edge(kind, &payload.from_id, &payload.to_id, &origin_properties)?;
         }
         EventPayload::BlockerReported(payload) => {
-            let mut blocker_properties = origin_properties.clone();
-            blocker_properties.insert(
-                "blocked_actor_id".to_owned(),
-                GraphValue::String(payload.blocked_actor_id.clone()),
-            );
-            blocker_properties.insert(
-                "decision_id".to_owned(),
-                optional_string_value(payload.decision_id.as_deref()),
-            );
-            blocker_properties.insert(
-                "topic_keys".to_owned(),
-                GraphValue::StringList(payload.topic_keys.clone()),
-            );
-            blocker_properties.insert(
-                "blocked_ref".to_owned(),
-                GraphValue::String(payload.blocked_ref.clone()),
-            );
-            blocker_properties.insert(
-                "blocked_ref_type".to_owned(),
-                GraphValue::String(payload.blocked_ref_type.clone()),
-            );
-            blocker_properties.insert(
-                "reason".to_owned(),
-                GraphValue::String(payload.reason.clone()),
-            );
-            blocker_properties.insert(
-                "priority".to_owned(),
-                GraphValue::String(payload.priority.as_str().to_owned()),
-            );
-            blocker_properties.insert(
-                "last_progress_at".to_owned(),
-                payload
-                    .last_progress_at
-                    .map(|timestamp| GraphValue::String(timestamp.to_rfc3339()))
-                    .unwrap_or(GraphValue::Null),
-            );
-            blocker_properties.insert(
-                "required_owner_id".to_owned(),
-                optional_string_value(payload.required_owner_id.as_deref()),
-            );
-            blocker_properties.insert("reported_at".to_owned(), event_timestamp(event));
-            blocker_properties.insert(
-                "reported_event_origin".to_owned(),
-                GraphValue::Int(event_origin),
-            );
-            graph.upsert_node(NodeKind::Blocker, &payload.blocker_id, &blocker_properties)?;
-
-            upsert_actor(graph, &payload.blocked_actor_id, &origin_properties)?;
-            graph.upsert_edge(
-                RelationKind::BlockedActor,
-                &payload.blocker_id,
-                &payload.blocked_actor_id,
-                &origin_properties,
-            )?;
-
-            if let Some(required_owner_id) = &payload.required_owner_id {
-                upsert_actor(graph, required_owner_id, &origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::BlockerRequiredOwner,
-                    &payload.blocker_id,
-                    required_owner_id,
-                    &origin_properties,
-                )?;
-            }
-
-            if let Some(decision_id) = &payload.decision_id {
-                ensure_node_reference(graph, NodeKind::Decision, decision_id, &origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::BlockerForDecision,
-                    &payload.blocker_id,
-                    decision_id,
-                    &origin_properties,
-                )?;
-            }
+            project_blocker_reported(graph, event, event_origin, &payload, &origin_properties)?
         }
         EventPayload::BlockerResolved(payload) => {
-            let mut blocker_properties = origin_properties.clone();
-            blocker_properties.insert("resolved_at".to_owned(), event_timestamp(event));
-            blocker_properties.insert(
-                "resolution_event_id".to_owned(),
-                payload
-                    .resolution_event_id
-                    .and_then(|id| i64::try_from(id).ok())
-                    .map_or(GraphValue::Null, GraphValue::Int),
-            );
-            blocker_properties.insert(
-                "resolution_reason".to_owned(),
-                payload
-                    .resolution_reason
-                    .map_or(GraphValue::Null, GraphValue::String),
-            );
-            blocker_properties.insert(
-                "resolved_event_origin".to_owned(),
-                GraphValue::Int(event_origin),
-            );
-            graph.upsert_node(NodeKind::Blocker, &payload.blocker_id, &blocker_properties)?;
+            project_blocker_resolved(graph, event, event_origin, &payload, &origin_properties)?
         }
         EventPayload::NotificationSent(payload) => {
-            let notification_id = event.event_uuid.to_string();
-            let mut notification_properties = origin_properties.clone();
-            notification_properties.insert(
-                "blocker_id".to_owned(),
-                GraphValue::String(payload.blocker_id.clone()),
-            );
-            notification_properties.insert(
-                "recipient_actor_id".to_owned(),
-                GraphValue::String(payload.recipient_actor_id.clone()),
-            );
-            notification_properties.insert(
-                "channel".to_owned(),
-                GraphValue::String(payload.channel.clone()),
-            );
-            notification_properties.insert(
-                "threshold_rule".to_owned(),
-                GraphValue::String(payload.threshold_rule.clone()),
-            );
-            notification_properties.insert(
-                "source_event_ids".to_owned(),
-                GraphValue::StringList(
-                    payload
-                        .source_event_ids
-                        .iter()
-                        .map(|event_id| event_id.to_string())
-                        .collect(),
-                ),
-            );
-            notification_properties.insert(
-                "dedupe_key".to_owned(),
-                GraphValue::String(payload.dedupe_key.clone()),
-            );
-            notification_properties.insert(
-                "sent_at".to_owned(),
-                GraphValue::String(payload.sent_at.to_rfc3339()),
-            );
-            graph.upsert_node(
-                NodeKind::Notification,
-                &notification_id,
-                &notification_properties,
-            )?;
-
-            ensure_node_reference(
-                graph,
-                NodeKind::Blocker,
-                &payload.blocker_id,
-                &origin_properties,
-            )?;
-            graph.upsert_edge(
-                RelationKind::NotificationForBlocker,
-                &notification_id,
-                &payload.blocker_id,
-                &origin_properties,
-            )?;
-
-            upsert_actor(graph, &payload.recipient_actor_id, &origin_properties)?;
-            graph.upsert_edge(
-                RelationKind::NotificationRecipient,
-                &notification_id,
-                &payload.recipient_actor_id,
-                &origin_properties,
-            )?;
+            project_notification_sent(graph, event, &payload, &origin_properties)?
         }
         EventPayload::NotificationAcknowledged(payload) => {
-            let mut notification_properties = origin_properties.clone();
-            notification_properties.insert(
-                "ack_at".to_owned(),
-                GraphValue::String(payload.ack_at.to_rfc3339()),
-            );
-            notification_properties.insert(
-                "snooze_until".to_owned(),
-                payload
-                    .snooze_until
-                    .map(|value| GraphValue::String(value.to_rfc3339()))
-                    .unwrap_or(GraphValue::Null),
-            );
-            graph.upsert_node(
-                NodeKind::Notification,
-                &payload.notification_id,
-                &notification_properties,
-            )?;
+            project_notification_acknowledged(graph, &payload, &origin_properties)?
         }
         EventPayload::IngestBatchReceived(_) => {
             // Raw transcript batches are ledger-only; they do not project to the graph.
         }
         EventPayload::IngestBatchClassified(payload) => {
-            for (idx, capture) in payload.captures.iter().enumerate() {
-                let node_id = format!("capture:{event_origin}:{idx}");
-                project_capture(graph, capture, &node_id, &origin_properties)?;
-            }
+            project_ingest_batch_classified(graph, event_origin, &payload, &origin_properties)?
         }
         EventPayload::DecisionScored(payload) => {
-            // Annotate the capture node with per-dimension Quality scores and
-            // Importance factors. Upsert merges onto the existing node without
-            // overwriting any decision fields.
-            let mut props = origin_properties.clone();
-            let dims = &payload.quality_dims;
-            props.insert(
-                "score_framing".to_owned(),
-                GraphValue::Float(dims.framing.score),
-            );
-            props.insert(
-                "score_alternatives".to_owned(),
-                GraphValue::Float(dims.alternatives.score),
-            );
-            props.insert(
-                "score_information".to_owned(),
-                GraphValue::Float(dims.information.score),
-            );
-            props.insert(
-                "score_reasoning".to_owned(),
-                GraphValue::Float(dims.reasoning.score),
-            );
-            props.insert(
-                "score_values_tradeoffs".to_owned(),
-                GraphValue::Float(dims.values_tradeoffs.score),
-            );
-            props.insert(
-                "score_bias_exposure".to_owned(),
-                GraphValue::Float(dims.bias_exposure.score),
-            );
-            props.insert(
-                "score_calibration".to_owned(),
-                GraphValue::Float(dims.calibration.score),
-            );
-            props.insert(
-                "score_weight_version".to_owned(),
-                GraphValue::String(payload.weight_version.clone()),
-            );
-            let imp = &payload.importance;
-            props.insert(
-                "importance_stakes".to_owned(),
-                GraphValue::Float(imp.stakes),
-            );
-            props.insert(
-                "importance_irreversibility".to_owned(),
-                GraphValue::Float(imp.irreversibility),
-            );
-            props.insert(
-                "importance_actionability".to_owned(),
-                GraphValue::Float(imp.actionability),
-            );
-            graph.upsert_node(NodeKind::Decision, &payload.capture_node_id, &props)?;
+            project_decision_scored(graph, &payload, &origin_properties)?
         }
         EventPayload::RelationRemoved(_) => {
             // GraphView has no remove_edge; retraction is recorded in the ledger only
@@ -839,6 +467,466 @@ fn relation_kind(kind: EventRelationKind) -> RelationKind {
         EventRelationKind::Refutes => RelationKind::Refutes,
         EventRelationKind::SameAs => RelationKind::SameAs,
     }
+}
+
+fn props_extend(
+    origin: &GraphProperties,
+    pairs: impl IntoIterator<Item = (&'static str, GraphValue)>,
+) -> GraphProperties {
+    let mut props = origin.clone();
+    for (k, v) in pairs {
+        props.insert(k.to_owned(), v);
+    }
+    props
+}
+
+fn project_decision_proposed(
+    graph: &impl GraphView,
+    actor_id: &str,
+    payload: &DecisionProposedPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let decision_properties = props_extend(
+        origin_properties,
+        [
+            ("title", GraphValue::String(payload.title.clone())),
+            ("rationale", GraphValue::String(payload.rationale.clone())),
+            (
+                "topic_keys",
+                GraphValue::StringList(payload.topic_keys.clone()),
+            ),
+            (
+                "expressed_confidence",
+                payload
+                    .expressed_confidence
+                    .as_deref()
+                    .map_or(GraphValue::Null, |c| GraphValue::String(c.to_owned())),
+            ),
+        ],
+    );
+    graph.upsert_node(
+        NodeKind::Decision,
+        &payload.decision_id,
+        &decision_properties,
+    )?;
+    graph.upsert_edge(
+        RelationKind::ProposedBy,
+        &payload.decision_id,
+        actor_id,
+        origin_properties,
+    )?;
+
+    for option_id in &payload.option_ids {
+        graph.upsert_node(NodeKind::Option, option_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::HasOption,
+            &payload.decision_id,
+            option_id,
+            origin_properties,
+        )?;
+    }
+
+    if let Some(chosen_option_id) = &payload.chosen_option_id {
+        graph.upsert_node(NodeKind::Option, chosen_option_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::Chose,
+            &payload.decision_id,
+            chosen_option_id,
+            origin_properties,
+        )?;
+    }
+
+    let (premised_on_kind, premised_on_from) = if let Some(opt_id) = &payload.chosen_option_id {
+        (RelationKind::PremisedOn, opt_id.as_str())
+    } else {
+        (RelationKind::PremisedOnDirect, payload.decision_id.as_str())
+    };
+    for hypothesis_id in &payload.hypothesis_ids {
+        graph.upsert_edge(
+            premised_on_kind,
+            premised_on_from,
+            hypothesis_id,
+            origin_properties,
+        )?;
+    }
+
+    for evidence_id in &payload.evidence_ids {
+        graph.upsert_edge(
+            RelationKind::BasedOn,
+            &payload.decision_id,
+            evidence_id,
+            origin_properties,
+        )?;
+    }
+    Ok(())
+}
+
+fn project_decision_requested(
+    graph: &impl GraphView,
+    event: &Event,
+    payload: &DecisionRequestedPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let request_id = event.event_uuid.to_string();
+    let mut request_properties = origin_properties.clone();
+    request_properties.insert(
+        "decision_id".to_owned(),
+        optional_string_value(payload.decision_id.as_deref()),
+    );
+    request_properties.insert(
+        "topic_keys".to_owned(),
+        GraphValue::StringList(payload.topic_keys.clone()),
+    );
+    request_properties.insert(
+        "reason".to_owned(),
+        GraphValue::String(payload.reason.clone()),
+    );
+    request_properties.insert(
+        "priority".to_owned(),
+        GraphValue::String(payload.priority.as_str().to_owned()),
+    );
+    request_properties.insert(
+        "required_owner_id".to_owned(),
+        optional_string_value(payload.required_owner_id.as_deref()),
+    );
+    request_properties.insert(
+        "authority_class".to_owned(),
+        GraphValue::String(payload.authority_class.clone()),
+    );
+    request_properties.insert(
+        "requested_by".to_owned(),
+        GraphValue::String(payload.requested_by.clone()),
+    );
+    request_properties.insert(
+        "client_request_id".to_owned(),
+        GraphValue::String(payload.client_request_id.clone()),
+    );
+    graph.upsert_node(NodeKind::DecisionRequest, &request_id, &request_properties)?;
+
+    upsert_actor(graph, &payload.requested_by, origin_properties)?;
+    graph.upsert_edge(
+        RelationKind::DecisionRequestedBy,
+        &request_id,
+        &payload.requested_by,
+        origin_properties,
+    )?;
+
+    if let Some(required_owner_id) = &payload.required_owner_id {
+        upsert_actor(graph, required_owner_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::DecisionRequestRequiredOwner,
+            &request_id,
+            required_owner_id,
+            origin_properties,
+        )?;
+    }
+
+    if let Some(decision_id) = &payload.decision_id {
+        ensure_node_reference(graph, NodeKind::Decision, decision_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::DecisionRequestForDecision,
+            &request_id,
+            decision_id,
+            origin_properties,
+        )?;
+    }
+    Ok(())
+}
+
+fn project_evidence_recorded(
+    graph: &impl GraphView,
+    payload: &EvidenceRecordedPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let props = props_extend(
+        origin_properties,
+        [("content", GraphValue::String(payload.content.clone()))],
+    );
+    graph.upsert_node(NodeKind::Evidence, &payload.evidence_id, &props)
+}
+
+fn project_hypothesis_recorded(
+    graph: &impl GraphView,
+    payload: &HypothesisRecordedPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let props = props_extend(
+        origin_properties,
+        [("statement", GraphValue::String(payload.statement.clone()))],
+    );
+    graph.upsert_node(NodeKind::Hypothesis, &payload.hypothesis_id, &props)
+}
+
+fn project_blocker_reported(
+    graph: &impl GraphView,
+    event: &Event,
+    event_origin: i64,
+    payload: &BlockerReportedPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let mut blocker_properties = origin_properties.clone();
+    blocker_properties.insert(
+        "blocked_actor_id".to_owned(),
+        GraphValue::String(payload.blocked_actor_id.clone()),
+    );
+    blocker_properties.insert(
+        "decision_id".to_owned(),
+        optional_string_value(payload.decision_id.as_deref()),
+    );
+    blocker_properties.insert(
+        "topic_keys".to_owned(),
+        GraphValue::StringList(payload.topic_keys.clone()),
+    );
+    blocker_properties.insert(
+        "blocked_ref".to_owned(),
+        GraphValue::String(payload.blocked_ref.clone()),
+    );
+    blocker_properties.insert(
+        "blocked_ref_type".to_owned(),
+        GraphValue::String(payload.blocked_ref_type.clone()),
+    );
+    blocker_properties.insert(
+        "reason".to_owned(),
+        GraphValue::String(payload.reason.clone()),
+    );
+    blocker_properties.insert(
+        "priority".to_owned(),
+        GraphValue::String(payload.priority.as_str().to_owned()),
+    );
+    blocker_properties.insert(
+        "last_progress_at".to_owned(),
+        payload
+            .last_progress_at
+            .map(|timestamp| GraphValue::String(timestamp.to_rfc3339()))
+            .unwrap_or(GraphValue::Null),
+    );
+    blocker_properties.insert(
+        "required_owner_id".to_owned(),
+        optional_string_value(payload.required_owner_id.as_deref()),
+    );
+    blocker_properties.insert("reported_at".to_owned(), event_timestamp(event));
+    blocker_properties.insert(
+        "reported_event_origin".to_owned(),
+        GraphValue::Int(event_origin),
+    );
+    graph.upsert_node(NodeKind::Blocker, &payload.blocker_id, &blocker_properties)?;
+
+    upsert_actor(graph, &payload.blocked_actor_id, origin_properties)?;
+    graph.upsert_edge(
+        RelationKind::BlockedActor,
+        &payload.blocker_id,
+        &payload.blocked_actor_id,
+        origin_properties,
+    )?;
+
+    if let Some(required_owner_id) = &payload.required_owner_id {
+        upsert_actor(graph, required_owner_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::BlockerRequiredOwner,
+            &payload.blocker_id,
+            required_owner_id,
+            origin_properties,
+        )?;
+    }
+
+    if let Some(decision_id) = &payload.decision_id {
+        ensure_node_reference(graph, NodeKind::Decision, decision_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::BlockerForDecision,
+            &payload.blocker_id,
+            decision_id,
+            origin_properties,
+        )?;
+    }
+    Ok(())
+}
+
+fn project_blocker_resolved(
+    graph: &impl GraphView,
+    event: &Event,
+    event_origin: i64,
+    payload: &BlockerResolvedPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let mut blocker_properties = origin_properties.clone();
+    blocker_properties.insert("resolved_at".to_owned(), event_timestamp(event));
+    blocker_properties.insert(
+        "resolution_event_id".to_owned(),
+        payload
+            .resolution_event_id
+            .and_then(|id| i64::try_from(id).ok())
+            .map_or(GraphValue::Null, GraphValue::Int),
+    );
+    blocker_properties.insert(
+        "resolution_reason".to_owned(),
+        payload
+            .resolution_reason
+            .clone()
+            .map_or(GraphValue::Null, GraphValue::String),
+    );
+    blocker_properties.insert(
+        "resolved_event_origin".to_owned(),
+        GraphValue::Int(event_origin),
+    );
+    graph.upsert_node(NodeKind::Blocker, &payload.blocker_id, &blocker_properties)
+}
+
+fn project_notification_sent(
+    graph: &impl GraphView,
+    event: &Event,
+    payload: &NotificationSentPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let notification_id = event.event_uuid.to_string();
+    let mut notification_properties = origin_properties.clone();
+    notification_properties.insert(
+        "blocker_id".to_owned(),
+        GraphValue::String(payload.blocker_id.clone()),
+    );
+    notification_properties.insert(
+        "recipient_actor_id".to_owned(),
+        GraphValue::String(payload.recipient_actor_id.clone()),
+    );
+    notification_properties.insert(
+        "channel".to_owned(),
+        GraphValue::String(payload.channel.clone()),
+    );
+    notification_properties.insert(
+        "threshold_rule".to_owned(),
+        GraphValue::String(payload.threshold_rule.clone()),
+    );
+    notification_properties.insert(
+        "source_event_ids".to_owned(),
+        GraphValue::StringList(
+            payload
+                .source_event_ids
+                .iter()
+                .map(|event_id| event_id.to_string())
+                .collect(),
+        ),
+    );
+    notification_properties.insert(
+        "dedupe_key".to_owned(),
+        GraphValue::String(payload.dedupe_key.clone()),
+    );
+    notification_properties.insert(
+        "sent_at".to_owned(),
+        GraphValue::String(payload.sent_at.to_rfc3339()),
+    );
+    graph.upsert_node(
+        NodeKind::Notification,
+        &notification_id,
+        &notification_properties,
+    )?;
+
+    ensure_node_reference(
+        graph,
+        NodeKind::Blocker,
+        &payload.blocker_id,
+        origin_properties,
+    )?;
+    graph.upsert_edge(
+        RelationKind::NotificationForBlocker,
+        &notification_id,
+        &payload.blocker_id,
+        origin_properties,
+    )?;
+
+    upsert_actor(graph, &payload.recipient_actor_id, origin_properties)?;
+    graph.upsert_edge(
+        RelationKind::NotificationRecipient,
+        &notification_id,
+        &payload.recipient_actor_id,
+        origin_properties,
+    )?;
+    Ok(())
+}
+
+fn project_notification_acknowledged(
+    graph: &impl GraphView,
+    payload: &NotificationAcknowledgedPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let props = props_extend(
+        origin_properties,
+        [
+            ("ack_at", GraphValue::String(payload.ack_at.to_rfc3339())),
+            (
+                "snooze_until",
+                payload
+                    .snooze_until
+                    .map(|value| GraphValue::String(value.to_rfc3339()))
+                    .unwrap_or(GraphValue::Null),
+            ),
+        ],
+    );
+    graph.upsert_node(NodeKind::Notification, &payload.notification_id, &props)
+}
+
+fn project_ingest_batch_classified(
+    graph: &impl GraphView,
+    event_origin: i64,
+    payload: &IngestBatchClassifiedPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    for (idx, capture) in payload.captures.iter().enumerate() {
+        let node_id = format!("capture:{event_origin}:{idx}");
+        project_capture(graph, capture, &node_id, origin_properties)?;
+    }
+    Ok(())
+}
+
+fn project_decision_scored(
+    graph: &impl GraphView,
+    payload: &DecisionScoredPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    // Annotate the capture node with per-dimension Quality scores and
+    // Importance factors. Upsert merges onto the existing node without
+    // overwriting any decision fields.
+    let dims = &payload.quality_dims;
+    let imp = &payload.importance;
+    let props = props_extend(
+        origin_properties,
+        [
+            ("score_framing", GraphValue::Float(dims.framing.score)),
+            (
+                "score_alternatives",
+                GraphValue::Float(dims.alternatives.score),
+            ),
+            (
+                "score_information",
+                GraphValue::Float(dims.information.score),
+            ),
+            ("score_reasoning", GraphValue::Float(dims.reasoning.score)),
+            (
+                "score_values_tradeoffs",
+                GraphValue::Float(dims.values_tradeoffs.score),
+            ),
+            (
+                "score_bias_exposure",
+                GraphValue::Float(dims.bias_exposure.score),
+            ),
+            (
+                "score_calibration",
+                GraphValue::Float(dims.calibration.score),
+            ),
+            (
+                "score_weight_version",
+                GraphValue::String(payload.weight_version.clone()),
+            ),
+            ("importance_stakes", GraphValue::Float(imp.stakes)),
+            (
+                "importance_irreversibility",
+                GraphValue::Float(imp.irreversibility),
+            ),
+            (
+                "importance_actionability",
+                GraphValue::Float(imp.actionability),
+            ),
+        ],
+    );
+    graph.upsert_node(NodeKind::Decision, &payload.capture_node_id, &props)
 }
 
 fn project_capture(
