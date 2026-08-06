@@ -40,3 +40,4 @@ src/tui/tests.rs
 src/projector/kuzu/tests.rs
 src/projector/postgres/tests.rs
 src/error/tests.rs
+src/map/tests.rs

@@ -372,8 +372,22 @@ fn normalized_laplacian(w: &DMatrix<f64>) -> DMatrix<f64> {
 
 fn fiedler_vector(laplacian: &DMatrix<f64>) -> Result<DVector<f64>> {
     let sym = laplacian.clone().symmetric_eigen();
-    // eigenvalues sorted ascending; index 1 is the Fiedler vector
-    let col = if sym.eigenvalues.len() > 1 { 1 } else { 0 };
+    // nalgebra does NOT guarantee sorted eigenvalues; sort eigenpairs ascending
+    // so .get(1) gives the 2nd-smallest (Fiedler) eigenvector, not an arbitrary column.
+    let mut pairs: Vec<(f64, usize)> = sym
+        .eigenvalues
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (v, i))
+        .collect();
+    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let col = pairs
+        .get(1)
+        .or_else(|| pairs.first())
+        .map(|p| p.1)
+        .ok_or_else(|| {
+            LedgerError::Storage("empty Laplacian has no eigenvectors".to_string())
+        })?;
     Ok(sym.eigenvectors.column(col).clone_owned())
 }
 
@@ -486,3 +500,6 @@ fn median(values: &[f64]) -> f64 {
         sorted[n / 2] // ubs:ignore: n is sorted.len(); n/2 < n for n >= 1; n==0 returns early above
     }
 }
+
+#[cfg(test)]
+mod tests;
