@@ -67,7 +67,7 @@ use tracing::warn;
 
 use crate::commands::{CommandContext, Commands, DecisionProposalInput, SupersedeInput};
 use crate::error::{CliError, CommandError, HivemindError};
-use crate::events::{EventProvenance, IngestTurn, TenantId};
+use crate::events::{EventId, EventProvenance, IngestTurn, TenantId};
 use crate::ledger::{EventLedger, SqliteEventLedger, SqliteUserStore};
 #[cfg(feature = "shared-backend-postgres")]
 use crate::ledger::{PostgresEventLedger, ProvisionedUser, ResolvedToken, TenantStore, UserInfo};
@@ -77,8 +77,8 @@ use crate::mcp::args::{
     require_string as mcp_req_str, require_string_array as mcp_req_str_array,
 };
 use crate::projector::{
-    memory::MemoryGraph, rebuild_graph_for_tenant, GraphParams, GraphRow, GraphValue, GraphView,
-    NodeKind, RelationKind,
+    memory::MemoryGraph, project_from_ledger_for_tenant, GraphParams, GraphRow, GraphValue,
+    GraphView, NodeKind, RelationKind,
 };
 use crate::queries::{
     derive_decision_status, get_compact_view, get_decision, get_relevant_decisions,
@@ -90,6 +90,7 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
 /// Cache key: (tenant_id, ledger_offset, alpha.to_bits())
 type MapCacheKey = (String, u64, u64);
 type MapCache = Arc<Mutex<HashMap<MapCacheKey, crate::map::MapResult>>>;
+type GraphCache = RwLock<HashMap<TenantId, (EventId, Arc<MemoryGraph>)>>;
 
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 const MAX_CONCURRENT_REQUESTS: usize = 200;
@@ -330,6 +331,8 @@ pub struct AppState {
     workos_config: Option<WorkosConfig>,
     /// Pre-computed WorkOS signing keys; refreshed on unknown-kid. Empty if WorkOS not configured.
     workos_jwks: Arc<RwLock<CachedJwks>>,
+    /// Offset-keyed projected graph cache; avoids full ledger replay per request.
+    graph_cache: Arc<GraphCache>,
     /// Pre-built SPA directory to serve at `/`. None = no SPA serving.
     spa_dir: Option<PathBuf>,
     /// Allowed CORS origins — empty means no CORS headers (same-origin only).
@@ -357,6 +360,7 @@ impl AppState {
                 tenant_store: Some(Arc::new(store)),
                 workos_config: workos_config.clone(),
                 workos_jwks: Arc::clone(&workos_jwks),
+                graph_cache: Arc::new(RwLock::new(HashMap::new())),
                 spa_dir: config.spa_dir.clone(),
                 cors_origins: config.cors_origins.clone(),
                 map_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -376,6 +380,7 @@ impl AppState {
             tenant_store: None,
             workos_config,
             workos_jwks,
+            graph_cache: Arc::new(RwLock::new(HashMap::new())),
             spa_dir: config.spa_dir.clone(),
             cors_origins: config.cors_origins.clone(),
             map_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -914,7 +919,8 @@ async fn graph_handler(State(state): State<AppState>, headers: HeaderMap) -> Res
         Err(e) => return e.into_response(),
     };
     let backend = Arc::clone(&state.backend);
-    let result = tokio::task::spawn_blocking(move || graph_blocking(&backend, &ctx)).await;
+    let cache = Arc::clone(&state.graph_cache);
+    let result = tokio::task::spawn_blocking(move || graph_blocking(&backend, &ctx, &cache)).await;
     respond(result, StatusCode::OK)
 }
 
@@ -922,10 +928,13 @@ fn graph_err(e: impl std::fmt::Display) -> ApiError {
     ApiError::internal(e.to_string())
 }
 
-fn graph_blocking(backend: &ApiBackend, ctx: &ApiRequestCtx) -> ApiResult<serde_json::Value> {
+fn graph_blocking(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    cache: &GraphCache,
+) -> ApiResult<serde_json::Value> {
     let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
-    let graph = MemoryGraph::default();
-    rebuild_graph_for_tenant(&ledger, &ctx.tenant_id, &graph).map_err(graph_err)?;
+    let graph = get_cached_graph(&ledger, &ctx.tenant_id, cache)?;
 
     let mut nodes: Vec<GraphNode> = Vec::new();
     let mut decisions: Vec<serde_json::Value> = Vec::new();
@@ -1434,6 +1443,7 @@ async fn disagree_handler(
     };
 
     let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
     let result = tokio::task::spawn_blocking(move || {
         if req.reason.trim().is_empty() {
             return Err(ApiError::validation("reason must not be empty"));
@@ -1450,8 +1460,9 @@ async fn disagree_handler(
             .disagree(&ctx.actor_id, &decision_id, &req.reason)
             .map_err(to_api_error)?;
 
-        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
-        let decision_status = derive_decision_status(&graph, &decision_id).map_err(to_api_error)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let graph = &*graph;
+        let decision_status = derive_decision_status(graph, &decision_id).map_err(to_api_error)?;
 
         Ok(serde_json::json!({
             "decision_id": decision_id,
@@ -1480,6 +1491,7 @@ async fn supersede_handler(
     };
 
     let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
     let result = tokio::task::spawn_blocking(move || {
         if req.title.trim().is_empty() {
             return Err(ApiError::validation("title must not be empty"));
@@ -1509,10 +1521,11 @@ async fn supersede_handler(
             })
             .map_err(to_api_error)?;
 
-        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
-        let old_status = derive_decision_status(&graph, &old_decision_id).map_err(to_api_error)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let graph = &*graph;
+        let old_status = derive_decision_status(graph, &old_decision_id).map_err(to_api_error)?;
         let new_status =
-            derive_decision_status(&graph, &outcome.new_decision_id).map_err(to_api_error)?;
+            derive_decision_status(graph, &outcome.new_decision_id).map_err(to_api_error)?;
 
         Ok(serde_json::json!({
             "old_decision_id": old_decision_id,
@@ -1540,10 +1553,11 @@ async fn get_decision_handler(
     };
 
     let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
-        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
-        let view = get_decision(&graph, &decision_id).map_err(to_api_error)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let view = get_decision(&*graph, &decision_id).map_err(to_api_error)?;
         Ok(view)
     })
     .await;
@@ -1562,16 +1576,18 @@ async fn supersession_chain_handler(
     };
 
     let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
-        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
-        let exists = get_decision(&graph, &decision_id).map_err(to_api_error)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let graph = &*graph;
+        let exists = get_decision(graph, &decision_id).map_err(to_api_error)?;
         if exists.data.is_none() {
             return Err(ApiError::not_found(format!(
                 "decision not found: {decision_id}"
             )));
         }
-        let response = get_supersession_chain(&graph, &decision_id).map_err(to_api_error)?;
+        let response = get_supersession_chain(graph, &decision_id).map_err(to_api_error)?;
         Ok(response)
     })
     .await;
@@ -1590,10 +1606,11 @@ async fn compact_view_handler(
     };
 
     let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
-        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
-        let response = get_compact_view(&graph, &decision_id).map_err(to_api_error)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let response = get_compact_view(&*graph, &decision_id).map_err(to_api_error)?;
         Ok(response)
     })
     .await;
@@ -1613,6 +1630,7 @@ async fn map_handler(
 
     let backend = Arc::clone(&state.backend);
     let map_cache = Arc::clone(&state.map_cache);
+    let cache = Arc::clone(&state.graph_cache);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let dir = backend
             .sqlite_dir()
@@ -1630,6 +1648,9 @@ async fn map_handler(
             .map_err(|e| ApiError::internal(e.to_string()))?;
         let tenant_key = ctx.tenant_id.to_string();
 
+        // Build or reuse cached MemoryGraph (avoids full ledger replay on each request).
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+
         if alphas.len() == 1 {
             let alpha = alphas[0]; // ubs:ignore: alphas[0] guarded by len()==1 check above
             let cache_key = (tenant_key, offset, alpha.to_bits());
@@ -1638,13 +1659,11 @@ async fn map_handler(
             if let Some(cached) = hit {
                 return Ok(serde_json::to_value(&cached).unwrap_or_default());
             }
-            let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
-            let r = crate::map::compute_map(&graph, &dir, alpha)
+            let r = crate::map::compute_map(&*graph, &dir, alpha)
                 .map_err(|e| ApiError::internal(e.to_string()))?; // ubs:ignore: error conversion at handler boundary
             map_cache.lock().unwrap().insert(cache_key, r.clone()); // ubs:ignore: Mutex::lock().unwrap() — non-panicking path; clone necessary — r moved into cache, also returned
             Ok(serde_json::to_value(&r).unwrap_or_default())
         } else {
-            let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
             let mut results = Vec::new();
             for &alpha in &alphas {
                 let cache_key = (tenant_key.clone(), offset, alpha.to_bits()); // ubs:ignore: clone necessary — cache_key moved into map_cache per iteration
@@ -1653,7 +1672,7 @@ async fn map_handler(
                     results.push(cached);
                     continue;
                 }
-                let r = crate::map::compute_map(&graph, &dir, alpha)
+                let r = crate::map::compute_map(&*graph, &dir, alpha)
                     .map_err(|e| ApiError::internal(e.to_string()))?; // ubs:ignore: error conversion at handler boundary
                 map_cache.lock().unwrap().insert(cache_key, r.clone()); // ubs:ignore: Mutex::lock().unwrap() — non-panicking path; clone necessary — r moved into cache, also pushed to results
                 results.push(r);
@@ -1701,6 +1720,7 @@ async fn search_handler(
     };
 
     let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let statuses = match params.status.as_deref() {
             None => Vec::new(),
@@ -1767,16 +1787,24 @@ async fn search_handler(
         };
 
         match backend.as_ref() {
-            ApiBackend::Sqlite(dir) => {
-                let ledger = SqliteEventLedger::open(dir.as_ref())
-                    .map_err(|e| ApiError::internal(e.to_string()))?;
-                let graph = MemoryGraph::default();
-                rebuild_graph_for_tenant(&ledger, &ctx.tenant_id, &graph)
-                    .map_err(|e| ApiError::internal(e.to_string()))?;
+            ApiBackend::Sqlite(_dir) => {
+                let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+                let graph = get_cached_graph(&ledger, &ctx.tenant_id, &cache)?;
+                // FTS requires a concrete SqliteEventLedger.
+                #[allow(clippy::infallible_destructuring_match)]
+                let sqlite_ledger = match ledger {
+                    ApiLedger::Sqlite(l) => l,
+                    #[cfg(feature = "shared-backend-postgres")]
+                    ApiLedger::Postgres(_) => unreachable!(), // ubs:ignore: cfg-gated arm; unreachable when only sqlite feature is active
+                };
                 let query_ctx = QueryContext::new(ctx.tenant_id);
-                let response =
-                    search_decisions_fts_with_context(&query_ctx, &ledger, &graph, &request)
-                        .map_err(to_api_error)?;
+                let response = search_decisions_fts_with_context(
+                    &query_ctx,
+                    &sqlite_ledger,
+                    &*graph,
+                    &request,
+                )
+                .map_err(to_api_error)?;
                 Ok(response)
             }
             #[cfg(feature = "shared-backend-postgres")]
@@ -1802,12 +1830,13 @@ async fn relevant_handler(
     };
 
     let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
         let status_filter = params.status.as_deref().map(parse_status).transpose()?;
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
-        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
         let response =
-            get_relevant_decisions(&graph, &params.topic, status_filter).map_err(to_api_error)?;
+            get_relevant_decisions(&*graph, &params.topic, status_filter).map_err(to_api_error)?;
         Ok(response)
     })
     .await;
@@ -2248,11 +2277,56 @@ async fn revoke_token_handler(
 // Helpers shared across blocking closures
 // ---------------------------------------------------------------------------
 
-fn open_graph_from_ledger(ledger: &ApiLedger, tenant_id: &TenantId) -> ApiResult<MemoryGraph> {
-    let graph = MemoryGraph::default();
-    rebuild_graph_for_tenant(ledger, tenant_id, &graph)
-        .map_err(|e| ApiError::internal(e.to_string()))?;
-    Ok(graph)
+/// Return a projected graph for `tenant_id`, served from the in-memory cache
+/// when the ledger offset is unchanged, or rebuilt incrementally otherwise.
+fn get_cached_graph(
+    ledger: &ApiLedger,
+    tenant_id: &TenantId,
+    cache: &GraphCache,
+) -> ApiResult<Arc<MemoryGraph>> {
+    let latest = ledger
+        .latest_offset_for_tenant(tenant_id)
+        .map_err(graph_err)?;
+
+    // Fast path: read lock — no allocation when the offset matches.
+    {
+        let guard = cache
+            .read()
+            .map_err(|_| graph_err("graph cache poisoned"))?;
+        if let Some((cached_offset, graph)) = guard.get(tenant_id) {
+            if *cached_offset >= latest {
+                return Ok(Arc::clone(graph));
+            }
+        }
+    }
+
+    // Slow path: acquire write lock, double-check, then project.
+    let mut guard = cache
+        .write()
+        .map_err(|_| graph_err("graph cache poisoned"))?;
+    if let Some((cached_offset, graph)) = guard.get(tenant_id) {
+        if *cached_offset >= latest {
+            return Ok(Arc::clone(graph));
+        }
+    }
+
+    let (base_graph, base_offset) = match guard.get(tenant_id) {
+        Some((cached_offset, cached_graph)) => (cached_graph.as_ref().clone(), *cached_offset),
+        None => (MemoryGraph::default(), 0),
+    };
+    project_from_ledger_for_tenant(ledger, tenant_id, &base_graph, base_offset)
+        .map_err(graph_err)?;
+    let new_graph = Arc::new(base_graph);
+    guard.insert(tenant_id.clone(), (latest, Arc::clone(&new_graph)));
+    Ok(new_graph)
+}
+
+fn open_graph_from_ledger(
+    ledger: &ApiLedger,
+    tenant_id: &TenantId,
+    cache: &GraphCache,
+) -> ApiResult<Arc<MemoryGraph>> {
+    get_cached_graph(ledger, tenant_id, cache)
 }
 
 fn parse_status(value: &str) -> ApiResult<DecisionStatus> {
@@ -2404,8 +2478,9 @@ async fn mcp_http_handler(
         "tools/list" => mcp_success_response(id, crate::mcp::tools_list_result()),
         "tools/call" => {
             let backend = Arc::clone(&state.backend);
+            let cache = Arc::clone(&state.graph_cache);
             let result = tokio::task::spawn_blocking(move || {
-                mcp_tools_call_blocking(&backend, &ctx, &session_id, params)
+                mcp_tools_call_blocking(&backend, &ctx, &session_id, params, &cache)
             })
             .await;
             match result {
@@ -2439,6 +2514,7 @@ fn mcp_tools_call_blocking(
     ctx: &ApiRequestCtx,
     session_id: &str,
     params: serde_json::Value,
+    cache: &Arc<GraphCache>,
 ) -> McpToolResult {
     let mut obj = match params {
         serde_json::Value::Object(map) => map,
@@ -2462,15 +2538,15 @@ fn mcp_tools_call_blocking(
         "capture_decision" => mcp_capture_decision(backend, ctx, &actor_id, args),
         "capture_evidence" => mcp_capture_evidence(backend, ctx, &actor_id, args),
         "capture_hypothesis" => mcp_capture_hypothesis(backend, ctx, &actor_id, args),
-        "disagree_decision" => mcp_disagree(backend, ctx, &actor_id, args),
-        "supersede_decision" => mcp_supersede(backend, ctx, &actor_id, args),
-        "get_decision" => mcp_get_decision(backend, ctx, args),
-        "get_relevant_decisions" => mcp_get_relevant_decisions(backend, ctx, args),
-        "get_supersession_chain" => mcp_get_supersession_chain(backend, ctx, args),
-        "search_decisions" => mcp_search_decisions(backend, ctx, args),
-        "dump_graph" => mcp_dump_graph(backend, ctx),
-        "hivemind_compact_view" => mcp_compact_view(backend, ctx, args),
-        "summarize_decisions" => mcp_summarize(backend, ctx, args),
+        "disagree_decision" => mcp_disagree(backend, ctx, &actor_id, args, cache),
+        "supersede_decision" => mcp_supersede(backend, ctx, &actor_id, args, cache),
+        "get_decision" => mcp_get_decision(backend, ctx, args, cache),
+        "get_relevant_decisions" => mcp_get_relevant_decisions(backend, ctx, args, cache),
+        "get_supersession_chain" => mcp_get_supersession_chain(backend, ctx, args, cache),
+        "search_decisions" => mcp_search_decisions(backend, ctx, args, cache),
+        "dump_graph" => mcp_dump_graph(backend, ctx, cache),
+        "hivemind_compact_view" => mcp_compact_view(backend, ctx, args, cache),
+        "summarize_decisions" => mcp_summarize(backend, ctx, args, cache),
         other => return Err((-32602, format!("unknown tool: {other}"))),
     };
 
@@ -2503,14 +2579,12 @@ fn mcp_resolve_actor(
 fn mcp_open_graph(
     backend: &ApiBackend,
     ctx: &ApiRequestCtx,
-) -> std::result::Result<MemoryGraph, (i32, String)> {
+    cache: &Arc<GraphCache>,
+) -> std::result::Result<Arc<MemoryGraph>, (i32, String)> {
     let ledger = backend
         .open_ledger_for_tenant(&ctx.tenant_id)
         .map_err(|e| (-32603i32, e.to_string()))?;
-    let graph = MemoryGraph::default();
-    rebuild_graph_for_tenant(&ledger, &ctx.tenant_id, &graph)
-        .map_err(|e| (-32603i32, e.to_string()))?;
-    Ok(graph)
+    get_cached_graph(&ledger, &ctx.tenant_id, cache).map_err(|e| (-32603i32, e.to_string()))
 }
 
 fn mcp_tool_ok(payload: serde_json::Value) -> serde_json::Value {
@@ -2676,6 +2750,7 @@ fn mcp_disagree(
     ctx: &ApiRequestCtx,
     actor_id: &str,
     args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
 ) -> McpToolResult {
     let decision_id = mcp_req_str(&args, "decision_id")?;
     let reason = mcp_req_str(&args, "reason")?;
@@ -2692,11 +2767,10 @@ fn mcp_disagree(
     let event_id = commands
         .disagree(actor_id, &decision_id, &reason)
         .map_err(|e| (-32603i32, e.to_string()))?;
-    let graph = MemoryGraph::default();
-    rebuild_graph_for_tenant(&ledger, &ctx.tenant_id, &graph)
-        .map_err(|e| (-32603i32, e.to_string()))?;
+    let graph =
+        get_cached_graph(&ledger, &ctx.tenant_id, cache).map_err(|e| (-32603i32, e.to_string()))?;
     let status =
-        derive_decision_status(&graph, &decision_id).map_err(|e| (-32603i32, e.to_string()))?;
+        derive_decision_status(&*graph, &decision_id).map_err(|e| (-32603i32, e.to_string()))?;
     Ok(serde_json::json!({
         "decision_id": decision_id,
         "event_id": event_id,
@@ -2709,6 +2783,7 @@ fn mcp_supersede(
     ctx: &ApiRequestCtx,
     actor_id: &str,
     args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
 ) -> McpToolResult {
     let old_id = mcp_req_str(&args, "old_decision_id")?;
     let title = mcp_req_str(&args, "title")?;
@@ -2742,12 +2817,11 @@ fn mcp_supersede(
             evidence_ids: &evidence_ids,
         })
         .map_err(|e| (-32603i32, e.to_string()))?;
-    let graph = MemoryGraph::default();
-    rebuild_graph_for_tenant(&ledger, &ctx.tenant_id, &graph)
-        .map_err(|e| (-32603i32, e.to_string()))?;
+    let graph =
+        get_cached_graph(&ledger, &ctx.tenant_id, cache).map_err(|e| (-32603i32, e.to_string()))?;
     let old_status =
-        derive_decision_status(&graph, &old_id).map_err(|e| (-32603i32, e.to_string()))?;
-    let new_status = derive_decision_status(&graph, &outcome.new_decision_id)
+        derive_decision_status(&*graph, &old_id).map_err(|e| (-32603i32, e.to_string()))?;
+    let new_status = derive_decision_status(&*graph, &outcome.new_decision_id)
         .map_err(|e| (-32603i32, e.to_string()))?;
     Ok(serde_json::json!({
         "old_decision_id": old_id,
@@ -2764,10 +2838,11 @@ fn mcp_get_decision(
     backend: &ApiBackend,
     ctx: &ApiRequestCtx,
     args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
 ) -> McpToolResult {
     let decision_id = mcp_req_str(&args, "decision_id")?;
-    let graph = mcp_open_graph(backend, ctx)?;
-    let response = get_decision(&graph, &decision_id).map_err(|e| (-32603i32, e.to_string()))?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let response = get_decision(&*graph, &decision_id).map_err(|e| (-32603i32, e.to_string()))?;
     serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
 }
 
@@ -2775,6 +2850,7 @@ fn mcp_get_relevant_decisions(
     backend: &ApiBackend,
     ctx: &ApiRequestCtx,
     args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
 ) -> McpToolResult {
     let topic = mcp_req_str(&args, "topic")?;
     let status_filter = match args
@@ -2790,8 +2866,8 @@ fn mcp_get_relevant_decisions(
         Some("superseded") => Some(DecisionStatus::Superseded),
         Some(other) => return Err((-32602, format!("unknown status `{other}`"))),
     };
-    let graph = mcp_open_graph(backend, ctx)?;
-    let response = get_relevant_decisions(&graph, &topic, status_filter)
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let response = get_relevant_decisions(&*graph, &topic, status_filter)
         .map_err(|e| (-32603i32, e.to_string()))?;
     serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
 }
@@ -2800,11 +2876,12 @@ fn mcp_get_supersession_chain(
     backend: &ApiBackend,
     ctx: &ApiRequestCtx,
     args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
 ) -> McpToolResult {
     let decision_id = mcp_req_str(&args, "decision_id")?;
-    let graph = mcp_open_graph(backend, ctx)?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
     let response =
-        get_supersession_chain(&graph, &decision_id).map_err(|e| (-32603i32, e.to_string()))?;
+        get_supersession_chain(&*graph, &decision_id).map_err(|e| (-32603i32, e.to_string()))?;
     serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
 }
 
@@ -2812,6 +2889,7 @@ fn mcp_search_decisions(
     backend: &ApiBackend,
     ctx: &ApiRequestCtx,
     args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
 ) -> McpToolResult {
     // FTS is SQLite-only; Postgres returns a clear error.
     #[cfg(feature = "shared-backend-postgres")]
@@ -2827,9 +2905,8 @@ fn mcp_search_decisions(
     let ledger = backend
         .open_ledger_for_tenant(&ctx.tenant_id)
         .map_err(|e| (-32603i32, e.to_string()))?;
-    let graph = MemoryGraph::default();
-    rebuild_graph_for_tenant(&ledger, &ctx.tenant_id, &graph)
-        .map_err(|e| (-32603i32, e.to_string()))?;
+    let graph =
+        get_cached_graph(&ledger, &ctx.tenant_id, cache).map_err(|e| (-32603i32, e.to_string()))?;
     // The cfg guard above guarantees Sqlite when Postgres feature is enabled;
     // without the feature there is only one variant (Sqlite), hence the allow.
     #[allow(clippy::infallible_destructuring_match)]
@@ -2880,14 +2957,18 @@ fn mcp_search_decisions(
         cursor: mcp_opt_str(&args, "cursor")?,
     };
     let query_ctx = QueryContext::new(ctx.tenant_id.clone());
-    let response = search_decisions_fts_with_context(&query_ctx, sqlite_ledger, &graph, &request)
+    let response = search_decisions_fts_with_context(&query_ctx, sqlite_ledger, &*graph, &request)
         .map_err(|e| (-32603i32, e.to_string()))?;
     serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
 }
 
-fn mcp_dump_graph(backend: &ApiBackend, ctx: &ApiRequestCtx) -> McpToolResult {
-    let graph = mcp_open_graph(backend, ctx)?;
-    let dot = crate::cli::render_decision_dot(&graph).map_err(|e| (-32603i32, e.to_string()))?;
+fn mcp_dump_graph(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    cache: &Arc<GraphCache>,
+) -> McpToolResult {
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let dot = crate::cli::render_decision_dot(&*graph).map_err(|e| (-32603i32, e.to_string()))?;
     Ok(serde_json::json!({ "format": "dot", "content": dot }))
 }
 
@@ -2895,11 +2976,12 @@ fn mcp_compact_view(
     backend: &ApiBackend,
     ctx: &ApiRequestCtx,
     args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
 ) -> McpToolResult {
     let decision_id = mcp_req_str(&args, "decision_id")?;
-    let graph = mcp_open_graph(backend, ctx)?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
     let response =
-        get_compact_view(&graph, &decision_id).map_err(|e| (-32603i32, e.to_string()))?;
+        get_compact_view(&*graph, &decision_id).map_err(|e| (-32603i32, e.to_string()))?;
     serde_json::to_value(&response).map_err(|e| (-32603i32, e.to_string()))
 }
 
@@ -2907,6 +2989,7 @@ fn mcp_summarize(
     backend: &ApiBackend,
     ctx: &ApiRequestCtx,
     args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
 ) -> McpToolResult {
     use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 
@@ -2937,9 +3020,10 @@ fn mcp_summarize(
             ))
         }
     };
-    let graph = mcp_open_graph(backend, ctx)?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
     let request = SummarizeRequest { decision_ids, mode };
-    let response = summarize_decisions(&graph, &request).map_err(|e| (-32603i32, e.to_string()))?;
+    let response =
+        summarize_decisions(&*graph, &request).map_err(|e| (-32603i32, e.to_string()))?;
     serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
 }
 
