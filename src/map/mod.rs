@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use tracing::warn;
+
 use nalgebra::{DMatrix, DVector};
 #[cfg(feature = "semantic")]
 use rusqlite::params;
@@ -174,7 +176,10 @@ pub fn compute_map(graph: &impl GraphView, hivemind_dir: &Path, alpha: f64) -> R
         .map(|(d, (((xt, ys), yr), ic))| {
             let status = derive_decision_status(graph, &d.id)
                 .map(|s| format!("{s:?}").to_ascii_lowercase()) // ubs:ignore: format! for status serialization
-                .unwrap_or_else(|_| "unknown".to_owned()); // ubs:ignore: safe default for missing status
+                .unwrap_or_else(|e| {
+                    warn!(target: "hivemind::map", "derive_decision_status failed for {}: {e}; defaulting to unknown", d.id);
+                    "unknown".to_owned() // ubs:ignore: safe default for missing status
+                });
             MapPoint {
                 id: d.id.clone(), // ubs:ignore: clone necessary — building owned MapPoint from borrowed DecisionRecord
                 title: d.title.clone(), // ubs:ignore: clone necessary — building owned MapPoint from borrowed DecisionRecord
