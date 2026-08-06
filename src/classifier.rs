@@ -23,8 +23,6 @@ const ACTOR_ID: &str = "agent:hivemind:classifier";
 const POLL_INTERVAL: Duration = Duration::from_secs(10);
 const HAIKU_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_TOKENS: u32 = 1200;
-const HAIKU_API_URL: &str = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 // Classifier prompt from CAPTURE_CLASSIFIER.md
 const CLASSIFIER_PROMPT: &str = r#"You are the HiveMind capture classifier.
@@ -156,44 +154,6 @@ fn capture_schema() -> serde_json::Value {
         "required": ["captures"],
         "additionalProperties": false
     })
-}
-
-#[derive(Debug, Serialize)]
-struct HaikuRequest {
-    model: &'static str,
-    max_tokens: u32,
-    output_config: HaikuOutputConfig,
-    messages: Vec<HaikuMessage>,
-}
-
-#[derive(Debug, Serialize)]
-struct HaikuOutputConfig {
-    format: HaikuFormat,
-}
-
-#[derive(Debug, Serialize)]
-struct HaikuFormat {
-    #[serde(rename = "type")]
-    format_type: &'static str,
-    schema: serde_json::Value,
-}
-
-#[derive(Debug, Serialize)]
-struct HaikuMessage {
-    role: &'static str,
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct HaikuResponse {
-    content: Vec<HaikuContentBlock>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HaikuContentBlock {
-    #[serde(rename = "type")]
-    block_type: String,
-    text: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -516,55 +476,21 @@ fn render_batch_text(event: &crate::events::Event) -> String {
     out
 }
 
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-
 async fn call_haiku(
     client: &reqwest::Client,
     api_key: &str,
     batch_text: &str,
-) -> Result<ClassifierOutput, BoxError> {
+) -> Result<ClassifierOutput, crate::anthropic::BoxError> {
     let user_content = format!("{CLASSIFIER_PROMPT}\n\n---BATCH---\n{batch_text}");
-
-    let request = HaikuRequest {
-        model: CLASSIFIER_MODEL,
-        max_tokens: MAX_TOKENS,
-        output_config: HaikuOutputConfig {
-            format: HaikuFormat {
-                format_type: "json_schema",
-                schema: capture_schema(),
-            },
-        },
-        messages: vec![HaikuMessage {
-            role: "user",
-            content: user_content,
-        }],
-    };
-
-    let response = client
-        .post(HAIKU_API_URL)
-        .header("x-api-key", api_key)
-        .header("anthropic-version", ANTHROPIC_VERSION)
-        .header("content-type", "application/json")
-        .json(&request)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("haiku returned {status}: {body}").into());
-    }
-
-    let haiku_resp: HaikuResponse = response.json().await?;
-    let text = haiku_resp
-        .content
-        .into_iter()
-        .find(|b| b.block_type == "text")
-        .and_then(|b| b.text)
-        .ok_or("no text block in haiku response")?;
-
-    let output: ClassifierOutput = serde_json::from_str(&text)?;
-    Ok(output)
+    crate::anthropic::call_json_schema(
+        client,
+        api_key,
+        CLASSIFIER_MODEL,
+        MAX_TOKENS,
+        user_content,
+        capture_schema(),
+    )
+    .await
 }
 
 fn write_classification(

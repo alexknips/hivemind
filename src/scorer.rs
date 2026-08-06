@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{debug, info, warn};
 
 use crate::commands::{CommandContext, Commands};
@@ -29,8 +29,6 @@ const ACTOR_ID: &str = "agent:hivemind:scorer";
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
 const API_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_TOKENS: u32 = 2000;
-const HAIKU_API_URL: &str = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 const SCORER_PROMPT: &str = r#"You are the HiveMind decision scorer.
 
@@ -105,44 +103,6 @@ fn scorer_schema() -> serde_json::Value {
             }
         }
     })
-}
-
-#[derive(Debug, Serialize)]
-struct ApiRequest {
-    model: &'static str,
-    max_tokens: u32,
-    output_config: ApiOutputConfig,
-    messages: Vec<ApiMessage>,
-}
-
-#[derive(Debug, Serialize)]
-struct ApiOutputConfig {
-    format: ApiFormat,
-}
-
-#[derive(Debug, Serialize)]
-struct ApiFormat {
-    #[serde(rename = "type")]
-    format_type: &'static str,
-    schema: serde_json::Value,
-}
-
-#[derive(Debug, Serialize)]
-struct ApiMessage {
-    role: &'static str,
-    content: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiResponse {
-    content: Vec<ApiContentBlock>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApiContentBlock {
-    #[serde(rename = "type")]
-    block_type: String,
-    text: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -348,55 +308,21 @@ fn render_decision_text(capture: &serde_json::Value) -> String {
     out
 }
 
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-
 async fn call_scorer(
     client: &reqwest::Client,
     api_key: &str,
     decision_text: &str,
-) -> Result<ScorerOutput, BoxError> {
+) -> Result<ScorerOutput, crate::anthropic::BoxError> {
     let user_content = format!("{SCORER_PROMPT}\n\n---DECISION---\n{decision_text}");
-
-    let request = ApiRequest {
-        model: SCORER_MODEL,
-        max_tokens: MAX_TOKENS,
-        output_config: ApiOutputConfig {
-            format: ApiFormat {
-                format_type: "json_schema",
-                schema: scorer_schema(),
-            },
-        },
-        messages: vec![ApiMessage {
-            role: "user",
-            content: user_content,
-        }],
-    };
-
-    let response = client
-        .post(HAIKU_API_URL)
-        .header("x-api-key", api_key)
-        .header("anthropic-version", ANTHROPIC_VERSION)
-        .header("content-type", "application/json")
-        .json(&request)
-        .send()
-        .await?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("scorer API returned {status}: {body}").into());
-    }
-
-    let api_resp: ApiResponse = response.json().await?;
-    let text = api_resp
-        .content
-        .into_iter()
-        .find(|b| b.block_type == "text")
-        .and_then(|b| b.text)
-        .ok_or("no text block in scorer API response")?;
-
-    let output: ScorerOutput = serde_json::from_str(&text)?;
-    Ok(output)
+    crate::anthropic::call_json_schema(
+        client,
+        api_key,
+        SCORER_MODEL,
+        MAX_TOKENS,
+        user_content,
+        scorer_schema(),
+    )
+    .await
 }
 
 fn write_score(

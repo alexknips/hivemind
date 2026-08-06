@@ -1,3 +1,4 @@
+pub(crate) mod anthropic;
 pub mod api;
 pub mod classifier;
 pub mod cli;
