@@ -2313,7 +2313,7 @@ fn conflict_context_existing_index<L: EventLedger>(
                 EventType::EvidenceRecorded => {
                     if let Some(id) = event.payload.get("evidence_id").and_then(|v| v.as_str()) {
                         if needed_evidence_ids.contains(id) {
-                            state.evidence_ids.insert(id.to_owned());
+                            state.evidence_ids.insert(id.to_owned()); // ubs:ignore: allocates only on match (≤evidence.len() times per scan)
                         }
                     }
                 }
