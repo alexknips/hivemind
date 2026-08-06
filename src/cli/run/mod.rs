@@ -9,34 +9,31 @@ use uuid::Uuid;
 use crate::commands::{CommandContext, Commands, DecisionProposalInput, SupersedeInput};
 use crate::error::CliError;
 use crate::events::{
-    CaptureItem, Event, EventPayload, EventProvenance,
-    RelationKind as EventRelationKind, TenantId,
+    CaptureItem, Event, EventPayload, EventProvenance, RelationKind as EventRelationKind, TenantId,
 };
 use crate::identity::{
     agent_actor_id, default_agent_session, default_agent_tool, default_human_actor_id,
 };
 use crate::ingest::{
     extract_slack_decision_draft, import_documents, import_slack_thread,
-    parse_slack_thread_fixture, prepare_document_texts, DocumentImportRequest, DocumentPreparationRequest, SlackIngestOutcome,
+    parse_slack_thread_fixture, prepare_document_texts, DocumentImportRequest,
+    DocumentPreparationRequest, SlackIngestOutcome,
 };
 #[cfg(feature = "shared-backend-postgres")]
 use crate::ledger::PostgresEventLedger;
 use crate::ledger::{EventLedger, SqliteEventLedger, TenantScopedLedger};
-use crate::projector::{
-    memory::MemoryGraph, rebuild_graph_for_tenant, GraphView,
-};
+use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
-    derive_decision_status, export_read_only_summary,
-    get_active_decision_blockers, get_blocker_notification_candidates, get_compact_view,
-    get_decision, get_decision_neighborhood, get_decisions_added_since,
-    get_decisions_changed_since, get_recent_activity, get_recent_decisions, get_relevant_decisions,
-    get_supersession_chain, search_decisions, search_decisions_fts_with_context,
-    ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest, ChangedSinceRequest,
-    DecisionBlockerFilters, DecisionStatus,
-    DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
+    derive_decision_status, export_read_only_summary, get_active_decision_blockers,
+    get_blocker_notification_candidates, get_compact_view, get_decision, get_decision_neighborhood,
+    get_decisions_added_since, get_decisions_changed_since, get_recent_activity,
+    get_recent_decisions, get_relevant_decisions, get_supersession_chain, search_decisions,
+    search_decisions_fts_with_context, ActiveDecisionBlockersRequest,
+    BlockerNotificationCandidatesRequest, ChangedSinceRequest, DecisionBlockerFilters,
+    DecisionStatus, DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
     HistoryFilterRequest, NeighborhoodRequest, QueryContext, ReadOnlyExportQuery,
-    ReadOnlyExportRequest, RecentActivityRequest, RecentDecisionEntry,
-    RecentDecisionFilterRequest, RecentDecisionsRequest, SearchDecisionRequest,
+    ReadOnlyExportRequest, RecentActivityRequest, RecentDecisionEntry, RecentDecisionFilterRequest,
+    RecentDecisionsRequest, SearchDecisionRequest,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -47,41 +44,35 @@ use crate::suggest::{
     DocumentCandidateExtractor, DocumentCandidateMaterializationRequest, DocumentCandidateRequest,
 };
 use crate::summarize::{
-    recall_decisions, weekly_digest, DigestRequest, RecallRequest,
-    RECALL_MAX_LIMIT,
+    recall_decisions, weekly_digest, DigestRequest, RecallRequest, RECALL_MAX_LIMIT,
 };
 use crate::{HivemindError, Result};
 
 use super::args::{
-    Cli, ClassifyQueueArgs, ClassifyQueueCommand, ClassifyQueueListArgs, ClassifyQueueSubmitArgs,
-    Command, ConnectorArgs, ConnectorAuthArgs, ConnectorCommand, DigestArgs,
-    DecisionCaptureSource, DisagreeArgs, DumpArgs, DumpFormat,
-    EmitArgs, EmitCaptureProvenanceArgs, EmitCommand, EmitDecisionProposedArgs, EmitRelationKind, GraphBackend, ImportArgs,
-    ImportCommand, ImportConnectorCommand, IngestArgs, IngestCommand, IngestSlackThreadArgs,
-    MapArgs, McpArgs, QueryAddedSinceArgs,
-    QueryArgs, QueryBlockerPriority,
-    QueryChangedSinceArgs, QueryCommand,
-    QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs,
-    QueryHistoryFilterArgs, QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
-    QuerySearchDecisionsArgs, QuickstartArgs,
-    ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand, SuggestArgs, SuggestCommand, SuggestDocumentCandidatesArgs,
-    SupersedeArgs, TuiArgs,
+    ClassifyQueueArgs, ClassifyQueueCommand, ClassifyQueueListArgs, ClassifyQueueSubmitArgs, Cli,
+    Command, ConnectorArgs, ConnectorAuthArgs, ConnectorCommand, DecisionCaptureSource, DigestArgs,
+    DisagreeArgs, DumpArgs, DumpFormat, EmitArgs, EmitCaptureProvenanceArgs, EmitCommand,
+    EmitDecisionProposedArgs, EmitRelationKind, GraphBackend, ImportArgs, ImportCommand,
+    ImportConnectorCommand, IngestArgs, IngestCommand, IngestSlackThreadArgs, MapArgs, McpArgs,
+    QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand,
+    QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs,
+    QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
+    QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand, SuggestArgs,
+    SuggestCommand, SuggestDocumentCandidatesArgs, SupersedeArgs, TuiArgs,
 };
 use super::render::{
     append_truncation_notice, decision_status_label, format_disagree_output, format_import_output,
     format_json_value, format_output, format_prepare_documents_output, format_query_response,
     format_review_output, format_supersede_output, render_active_blockers_summary,
     render_added_since_summary, render_blocker_notifications_summary, render_changed_since_summary,
-    render_compact_view_summary, render_decision_list_summary, render_decision_summary,
-    render_dot, render_neighborhood_summary, render_read_only_export_summary,
-    render_recent_activity_summary, render_recent_decisions_summary, render_recall_summary,
-    render_search_summary, render_supersession_summary,
-    DisagreeCommandOutput, OutputEnvelope, ReviewActionOutput,
+    render_compact_view_summary, render_decision_list_summary, render_decision_summary, render_dot,
+    render_neighborhood_summary, render_read_only_export_summary, render_recall_summary,
+    render_recent_activity_summary, render_recent_decisions_summary, render_search_summary,
+    render_supersession_summary, DisagreeCommandOutput, OutputEnvelope, ReviewActionOutput,
     ReviewCommandOutput, SupersedeCommandOutput,
 };
 #[cfg(feature = "shared-backend-postgres")]
 use super::render::{MigrateReport, ParityCheckResult};
-
 
 pub fn run(cli: &Cli) -> Result<String> {
     validate_global_flags(cli)?;
@@ -1249,7 +1240,6 @@ impl QueryCommand {
     }
 }
 
-
 fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result<String> {
     let output = match &query.command {
         QueryCommand::RecentDecisions(args) => {
@@ -1552,7 +1542,9 @@ fn cli_io_error(error: io::Error) -> HivemindError {
     CliError::InvalidInput(format!("interactive review I/O failed: {error}")).into()
 }
 
-pub(crate) fn added_since_request(args: &QueryAddedSinceArgs) -> Result<DecisionsAddedSinceRequest> {
+pub(crate) fn added_since_request(
+    args: &QueryAddedSinceArgs,
+) -> Result<DecisionsAddedSinceRequest> {
     let now = parse_utc_timestamp("--now", &args.now)?;
     let timezone = TimeZoneSpec::parse(&args.timezone)?;
     let since_timestamp = resolve_diff_bound(
@@ -1594,7 +1586,9 @@ pub(crate) fn added_since_request(args: &QueryAddedSinceArgs) -> Result<Decision
     })
 }
 
-pub(crate) fn recent_decisions_request(args: &QueryRecentDecisionsArgs) -> Result<RecentDecisionsRequest> {
+pub(crate) fn recent_decisions_request(
+    args: &QueryRecentDecisionsArgs,
+) -> Result<RecentDecisionsRequest> {
     let now = parse_utc_timestamp("--now", &args.now)?;
     let timezone = TimeZoneSpec::parse(&args.timezone)?;
     let since_timestamp =
@@ -1621,29 +1615,6 @@ pub(crate) fn recent_decisions_request(args: &QueryRecentDecisionsArgs) -> Resul
         cursor: args.cursor.clone(),
     })
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum TimeZoneSpec {
@@ -2168,11 +2139,6 @@ fn run_dump_with_kuzu(
     .into())
 }
 
-
-
-
-
-
 fn decision_status_after_write(
     ledger: &impl EventLedger,
     tenant_id: &TenantId,
@@ -2197,10 +2163,6 @@ fn parse_actor_mappings(values: &[String]) -> Result<BTreeMap<String, String>> {
     }
     Ok(mappings)
 }
-
-
-
-
 
 fn validate_global_flags(cli: &Cli) -> Result<()> {
     if cli.actor.trim().is_empty() {
@@ -2254,22 +2216,6 @@ pub(crate) fn parse_graph_backend(value: &str) -> Result<GraphBackend> {
 /// server). Delegates to the same internal implementation `hivemind dump`
 /// uses so output stays identical across transports.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #[derive(Debug, Serialize)]
 struct QuickstartReport {
     ledger_dir: String,
@@ -2286,17 +2232,9 @@ struct QuickstartQueryReport {
     first_result_id: Option<String>,
 }
 
-
-
-
-
-
-
 // ---------------------------------------------------------------------------
 // migrate subcommand
 // ---------------------------------------------------------------------------
-
-
 
 #[cfg(feature = "shared-backend-postgres")]
 fn run_migrate(cli: &Cli, args: &MigrateArgs) -> Result<String> {
@@ -2382,4 +2320,3 @@ fn run_migrate(cli: &Cli, args: &MigrateArgs) -> Result<String> {
         ))
     }
 }
-

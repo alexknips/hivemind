@@ -11,10 +11,10 @@ use crate::projector::{
     RelationKind as GraphRelationKind,
 };
 use crate::queries::{
-    derive_decision_status, derive_hypothesis_status,
-    BlockerNotificationCandidates, CompactView, DecisionBlockerResults, DecisionSearchResults,
-    DecisionStatus, DecisionView, DecisionsAddedSinceResults, DecisionsChangedSinceResults,
-    HistoryChangeKind, HypothesisStatus, NeighborhoodView, QueryResponse, ReadOnlyExport,
+    derive_decision_status, derive_hypothesis_status, BlockerNotificationCandidates, CompactView,
+    DecisionBlockerResults, DecisionSearchResults, DecisionStatus, DecisionView,
+    DecisionsAddedSinceResults, DecisionsChangedSinceResults, HistoryChangeKind, HypothesisStatus,
+    NeighborhoodView, QueryResponse, ReadOnlyExport,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
     RecentActivityResults, RecentDecisionsResults, SupersessionChain,
 };
@@ -184,7 +184,11 @@ pub(crate) fn format_query_response<T: Serialize>(
     Ok(output.trim_end().to_owned())
 }
 
-pub(crate) fn append_truncation_notice(output: &mut String, truncated: bool, next_cursor: Option<&str>) {
+pub(crate) fn append_truncation_notice(
+    output: &mut String,
+    truncated: bool,
+    next_cursor: Option<&str>,
+) {
     if !truncated {
         return;
     }
@@ -364,7 +368,9 @@ pub(crate) fn render_active_blockers_summary(results: &DecisionBlockerResults) -
     output.trim_end().to_owned()
 }
 
-pub(crate) fn render_blocker_notifications_summary(candidates: &BlockerNotificationCandidates) -> String {
+pub(crate) fn render_blocker_notifications_summary(
+    candidates: &BlockerNotificationCandidates,
+) -> String {
     if candidates.items.is_empty() {
         return "No blocker notification candidates found".to_owned();
     }
@@ -485,7 +491,10 @@ pub(crate) fn format_output(as_json: bool, envelope: &OutputEnvelope) -> Result<
     }
 }
 
-pub(crate) fn format_disagree_output(as_json: bool, output: &DisagreeCommandOutput) -> Result<String> {
+pub(crate) fn format_disagree_output(
+    as_json: bool,
+    output: &DisagreeCommandOutput,
+) -> Result<String> {
     if as_json {
         return format_json_value(true, output);
     }
@@ -498,7 +507,10 @@ pub(crate) fn format_disagree_output(as_json: bool, output: &DisagreeCommandOutp
     ))
 }
 
-pub(crate) fn format_supersede_output(as_json: bool, output: &SupersedeCommandOutput) -> Result<String> {
+pub(crate) fn format_supersede_output(
+    as_json: bool,
+    output: &SupersedeCommandOutput,
+) -> Result<String> {
     if as_json {
         return format_json_value(true, output);
     }
