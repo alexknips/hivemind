@@ -41,3 +41,5 @@ src/projector/kuzu/tests.rs
 src/projector/postgres/tests.rs
 src/error/tests.rs
 src/map/tests.rs
+src/classifier/tests.rs
+src/scorer/tests.rs
