@@ -42,9 +42,12 @@
 //! `/auth/*`) take priority. Unknown paths fall back to the SPA's `index.html`
 //! for client-side routing (same-origin, no CORS needed).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
+use axum::error_handling::HandleErrorLayer;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, Path, Query, State};
 use axum::http::{header, HeaderMap, Method, StatusCode};
@@ -55,6 +58,9 @@ use chrono::{DateTime, Utc};
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
+use tower::limit::GlobalConcurrencyLimitLayer;
+use tower::timeout::TimeoutLayer;
+use tower::ServiceBuilder;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::warn;
@@ -81,6 +87,9 @@ use crate::queries::{
 };
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
+
+const REQUEST_TIMEOUT_SECS: u64 = 30;
+const MAX_CONCURRENT_REQUESTS: usize = 200;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -267,6 +276,8 @@ struct WorkosConfig {
     issuer: String,
     /// Accepted JWT `aud` values. `None` disables audience validation (DCR mode).
     audience: Option<Vec<String>>,
+    /// JWKS endpoint — stored for refresh-on-unknown-kid.
+    jwks_url: Option<String>,
 }
 
 /// Claims extracted from a validated WorkOS access token.
@@ -278,6 +289,26 @@ struct WorkosClaims {
     /// WorkOS organization ID — used as tenant key in SQLite mode.
     #[serde(default)]
     org_id: Option<String>,
+}
+
+/// Pre-computed JWKS state: one DecodingKey per kid, built from the raw JwkSet
+/// at startup and rebuilt on refresh-on-unknown-kid.
+struct CachedJwks {
+    keys: HashMap<String, DecodingKey>,
+}
+
+impl CachedJwks {
+    fn build(jwks: &JwkSet) -> Self {
+        let keys = jwks
+            .keys
+            .iter()
+            .filter_map(|jwk| {
+                let kid = jwk.common.key_id.clone().unwrap_or_default();
+                DecodingKey::from_jwk(jwk).ok().map(|k| (kid, k))
+            })
+            .collect();
+        CachedJwks { keys }
+    }
 }
 
 #[derive(Clone)]
@@ -294,8 +325,8 @@ pub struct AppState {
     tenant_store: Option<Arc<TenantStore>>,
     /// WorkOS OAuth resource-server config (set when WORKOS_DOMAIN is configured).
     workos_config: Option<WorkosConfig>,
-    /// Cached WorkOS JWKS, fetched at startup. Empty if WorkOS not configured.
-    workos_jwks: Arc<JwkSet>,
+    /// Pre-computed WorkOS signing keys; refreshed on unknown-kid. Empty if WorkOS not configured.
+    workos_jwks: Arc<RwLock<CachedJwks>>,
     /// Pre-built SPA directory to serve at `/`. None = no SPA serving.
     spa_dir: Option<PathBuf>,
     /// Allowed CORS origins — empty means no CORS headers (same-origin only).
@@ -305,7 +336,8 @@ pub struct AppState {
 impl AppState {
     pub fn from_config(config: &ApiConfig) -> crate::Result<Self> {
         // Fetch WorkOS config and JWKS once at startup (blocking I/O, pre-tokio).
-        let (workos_config, workos_jwks) = build_workos_state(config);
+        let (workos_config, cached_jwks) = build_workos_state(config);
+        let workos_jwks = Arc::new(RwLock::new(cached_jwks));
 
         #[cfg(feature = "shared-backend-postgres")]
         if let Some(ref url) = config.database_url {
@@ -317,8 +349,8 @@ impl AppState {
                 admin_key: config.admin_key.clone(),
                 sqlite_user_store: None,
                 tenant_store: Some(Arc::new(store)),
-                workos_config,
-                workos_jwks,
+                workos_config: workos_config.clone(),
+                workos_jwks: Arc::clone(&workos_jwks),
                 spa_dir: config.spa_dir.clone(),
                 cors_origins: config.cors_origins.clone(),
             });
@@ -345,7 +377,7 @@ impl AppState {
 
 /// Build WorkOS resource-server config and pre-fetch JWKS.
 /// Called before the tokio runtime starts, so blocking I/O is safe.
-fn build_workos_state(config: &ApiConfig) -> (Option<WorkosConfig>, Arc<JwkSet>) {
+fn build_workos_state(config: &ApiConfig) -> (Option<WorkosConfig>, CachedJwks) {
     let (Some(domain), Some(issuer), Some(jwks_url)) = (
         config.workos_domain.as_deref(),
         config
@@ -363,8 +395,9 @@ fn build_workos_state(config: &ApiConfig) -> (Option<WorkosConfig>, Arc<JwkSet>)
                     .clone()
                     .unwrap_or_else(|| domain.to_owned()),
                 audience: config.workos_audience.clone(),
+                jwks_url: config.workos_jwks_url.clone(),
             }),
-            Arc::new(JwkSet { keys: vec![] }),
+            CachedJwks::build(&JwkSet { keys: vec![] }),
         );
     };
 
@@ -372,16 +405,20 @@ fn build_workos_state(config: &ApiConfig) -> (Option<WorkosConfig>, Arc<JwkSet>)
         domain: domain.to_owned(),
         issuer: issuer.to_owned(),
         audience: config.workos_audience.clone(),
+        jwks_url: Some(jwks_url.to_owned()),
     };
 
     match reqwest::blocking::get(jwks_url).and_then(|r| r.json::<JwkSet>()) {
         Ok(jwks) => {
             tracing::info!(target: "hivemind::api", keys = jwks.keys.len(), "WorkOS JWKS loaded");
-            (Some(workos_cfg), Arc::new(jwks))
+            (Some(workos_cfg), CachedJwks::build(&jwks))
         }
         Err(e) => {
             tracing::warn!(target: "hivemind::api", error = %e, "WorkOS JWKS fetch failed — JWT auth disabled");
-            (Some(workos_cfg), Arc::new(JwkSet { keys: vec![] }))
+            (
+                Some(workos_cfg),
+                CachedJwks::build(&JwkSet { keys: vec![] }),
+            )
         }
     }
 }
@@ -482,18 +519,7 @@ async fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequ
     #[cfg(feature = "shared-backend-postgres")]
     if bearer.starts_with("ey") {
         if let (Some(ref workos), Some(ref store)) = (&state.workos_config, &state.tenant_store) {
-            if state.workos_jwks.keys.is_empty() {
-                return Err(ApiError::unauthorized(
-                    "WorkOS JWKS not loaded — cannot validate JWT",
-                ));
-            }
-            let claims = validate_workos_jwt(
-                bearer,
-                &state.workos_jwks,
-                &workos.issuer,
-                workos.audience.as_deref(),
-            )
-            .map_err(ApiError::unauthorized)?;
+            let claims = workos_validate_token(state, workos, bearer).await?;
 
             // resolve_or_create_oidc_user calls r2d2 pool.get() which blocks.
             // Must run on a blocking thread — calling it directly on the async
@@ -556,18 +582,7 @@ async fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequ
         if let Some(ref workos) = state.workos_config {
             #[cfg(not(feature = "shared-backend-postgres"))]
             {
-                if state.workos_jwks.keys.is_empty() {
-                    return Err(ApiError::unauthorized(
-                        "WorkOS JWKS not loaded — cannot validate JWT",
-                    ));
-                }
-                let claims = validate_workos_jwt(
-                    bearer,
-                    &state.workos_jwks,
-                    &workos.issuer,
-                    workos.audience.as_deref(),
-                )
-                .map_err(ApiError::unauthorized)?;
+                let claims = workos_validate_token(state, workos, bearer).await?;
 
                 let tenant_raw = claims.org_id.as_deref().unwrap_or(claims.sub.as_str());
                 let tenant_id = TenantId::new(tenant_raw)
@@ -633,7 +648,65 @@ async fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequ
     })
 }
 
-/// Validate a WorkOS JWT access token against the cached JWKS.
+/// Check the JWKS cache for the kid in `bearer`, refresh from `workos.jwks_url`
+/// on cache miss (key rotation), then validate the JWT against the current keys.
+async fn workos_validate_token(
+    state: &AppState,
+    workos: &WorkosConfig,
+    bearer: &str,
+) -> ApiResult<WorkosClaims> {
+    let kid = decode_header(bearer)
+        .ok()
+        .and_then(|h| h.kid)
+        .unwrap_or_default();
+
+    let need_refresh = {
+        let guard = state.workos_jwks.read().unwrap(); // ubs:ignore: RwLock poisoned iff a prior thread panicked — propagate the panic
+        guard.keys.is_empty() || (!kid.is_empty() && !guard.keys.contains_key(&kid))
+    };
+
+    if need_refresh {
+        if let Some(ref url) = workos.jwks_url {
+            let url = url.clone();
+            let result =
+                tokio::task::spawn_blocking(move || reqwest::blocking::get(&url)?.json::<JwkSet>())
+                    .await;
+            match result {
+                Ok(Ok(jwks)) => {
+                    tracing::info!(target: "hivemind::api", keys = jwks.keys.len(), "WorkOS JWKS refreshed on unknown kid");
+                    let mut w = state.workos_jwks.write().unwrap(); // ubs:ignore: RwLock poisoned iff a prior thread panicked — propagate the panic
+                    *w = CachedJwks::build(&jwks);
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(target: "hivemind::api", error = %e, "WorkOS JWKS refresh failed");
+                }
+                Err(e) => {
+                    tracing::warn!(target: "hivemind::api", error = %e, "WorkOS JWKS refresh task panicked");
+                }
+            }
+        }
+    }
+
+    let snapshot = {
+        let guard = state.workos_jwks.read().unwrap(); // ubs:ignore: RwLock poisoned iff a prior thread panicked — propagate the panic
+        if guard.keys.is_empty() {
+            return Err(ApiError::unauthorized(
+                "WorkOS JWKS not loaded — cannot validate JWT",
+            ));
+        }
+        guard.keys.clone()
+    };
+
+    validate_workos_jwt(
+        bearer,
+        &snapshot,
+        &workos.issuer,
+        workos.audience.as_deref(),
+    )
+    .map_err(ApiError::unauthorized)
+}
+
+/// Validate a WorkOS JWT access token against the pre-computed key map.
 ///
 /// Validates signature (RS256/ES256), issuer, and expiry. When `audience` is
 /// `Some`, the JWT `aud` claim must match at least one value — set
@@ -641,22 +714,20 @@ async fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiResult<ApiRequ
 /// + MCP confidential app) for strict enforcement. Omit for DCR environments.
 fn validate_workos_jwt(
     token: &str,
-    jwks: &JwkSet,
+    keys: &HashMap<String, DecodingKey>,
     issuer: &str,
     audience: Option<&[String]>,
 ) -> Result<WorkosClaims, String> {
     let header = decode_header(token).map_err(|_| "invalid token")?;
 
-    // Find the JWK by kid, or fall back to the first key if kid is absent.
+    // Look up the pre-computed DecodingKey by kid; fall back to any key when kid absent.
     let kid = header.kid.as_deref().unwrap_or("");
-    let jwk = if kid.is_empty() {
-        jwks.keys.first()
+    let decoding_key = if kid.is_empty() {
+        keys.values().next()
     } else {
-        jwks.find(kid)
+        keys.get(kid)
     }
     .ok_or("no matching signing key")?;
-
-    let decoding_key = DecodingKey::from_jwk(jwk).map_err(|_| "invalid signing key")?;
 
     let alg = match header.alg {
         Algorithm::RS256 => Algorithm::RS256,
@@ -677,7 +748,7 @@ fn validate_workos_jwt(
     }
 
     // ubs:ignore: sig+iss+exp always validated; aud validated when WORKOS_AUDIENCE set
-    decode::<WorkosClaims>(token, &decoding_key, &validation)
+    decode::<WorkosClaims>(token, decoding_key, &validation)
         .map(|d| d.claims)
         .map_err(|_| "token validation failed".to_owned())
 }
@@ -1053,11 +1124,26 @@ fn build_router(state: AppState) -> Router {
         router.with_state(state)
     };
 
-    if let Some(cors) = cors {
+    let router = if let Some(cors) = cors {
         router.layer(cors)
     } else {
         router
-    }
+    };
+
+    // HandleError (outermost) → Timeout (covers queue + processing) → ConcurrencyLimit (innermost).
+    // ServiceBuilder stacks outermost-first so HandleError catches Elapsed from inner layers.
+    router.layer(
+        ServiceBuilder::new()
+            .layer(HandleErrorLayer::new(|err: tower::BoxError| async move {
+                if err.is::<tower::timeout::error::Elapsed>() {
+                    (StatusCode::REQUEST_TIMEOUT, "request timed out")
+                } else {
+                    (StatusCode::SERVICE_UNAVAILABLE, "service unavailable")
+                }
+            }))
+            .layer(TimeoutLayer::new(Duration::from_secs(REQUEST_TIMEOUT_SECS)))
+            .layer(GlobalConcurrencyLimitLayer::new(MAX_CONCURRENT_REQUESTS)),
+    )
 }
 
 /// Bind to `config.port` and serve until SIGINT/SIGTERM.
