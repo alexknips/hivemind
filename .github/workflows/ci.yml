@@ -103,8 +103,10 @@ jobs:
 
       - name: Run UBS critical scan
         # Runtime panic-surface signal should exclude test assertions, which are
-        # test oracles rather than production invariants.
-        run: ~/.local/share/ubs/modules/ubs-rust.sh . --format=json --quiet --ci --no-cargo --exclude=worktrees --exclude-tests --fail-critical=1
+        # test oracles rather than production invariants. benchmarks/ excluded per
+        # the same policy as .ubsignore line 21 (hivemind-21zi): benchmark/eval
+        # tooling is not production runtime code.
+        run: ~/.local/share/ubs/modules/ubs-rust.sh . --format=json --quiet --ci --no-cargo --exclude=benchmarks,worktrees --exclude-tests --fail-critical=1
 
       # UBS warning baseline established by hivemind-ubs-warning-triage-baseline-h4p2m and
       # tightened by hivemind-41n8s on 2026-05-22 with `ubs --ci --only=rust .`.
