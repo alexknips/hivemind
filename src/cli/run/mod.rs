@@ -48,6 +48,8 @@ use crate::summarize::{
 };
 use crate::{HivemindError, Result};
 
+#[cfg(feature = "shared-backend-postgres")]
+use super::args::MigrateArgs;
 use super::args::{
     ClassifyQueueArgs, ClassifyQueueCommand, ClassifyQueueListArgs, ClassifyQueueSubmitArgs, Cli,
     Command, ConnectorArgs, ConnectorAuthArgs, ConnectorCommand, DecisionCaptureSource, DigestArgs,
