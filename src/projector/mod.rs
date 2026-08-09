@@ -475,7 +475,7 @@ fn props_extend(
 ) -> GraphProperties {
     let mut props = origin.clone();
     for (k, v) in pairs {
-        props.insert(k.to_owned(), v);
+        props.insert(k.to_owned(), v); // ubs:ignore: &'static str key must become owned String for HashMap; not perf-sensitive (small fixed set of pairs per call)
     }
     props
 }
