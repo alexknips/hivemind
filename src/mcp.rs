@@ -321,7 +321,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
 // Tool descriptors
 // ---------------------------------------------------------------------------
 
-fn tool_definitions() -> Vec<Value> {
+pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "capture_decision",
