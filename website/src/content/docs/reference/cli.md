@@ -10,7 +10,7 @@ description: Complete reference for the hivemind command-line interface.
 | `--actor <id>` | Actor making this request. Format: `human:<id>` or `agent:<tool>:<session>` |
 | `--hivemind-dir <path>` | Ledger directory (default: `./hivemind/`). Created on first write. |
 | `--json` | Emit structured JSON output |
-| `--graph-backend <kuzu\|sqlite>` | Graph projection backend (default: `sqlite` in-memory) |
+| `--graph-backend <memory\|kuzu>` | Graph projection backend (default: `memory`) |
 
 ## Emit commands
 
@@ -74,6 +74,19 @@ hivemind emit evidence.recorded --content <text> [--url <url>] [--for <decision-
 hivemind emit hypothesis.recorded --statement <text> [--for <decision-id>]
 ```
 
+### `emit ingest.batch_classified`
+
+Keyless batch path: submit pre-classified captures from a plugin or edge session
+directly — no `ANTHROPIC_API_KEY` needed. The server classifier skips this batch
+because no companion `IngestBatchReceived` event exists for the batch ID.
+
+```
+hivemind emit ingest.batch_classified
+  --captures <path>              # JSON file: array of CaptureItem objects
+  [--classifier-model <name>]    # default: claude-haiku-4-5-20251001
+  [--schema-version <n>]         # must be "2"; default: 2
+```
+
 ## Query commands
 
 All `query` commands return JSON. They never write to the ledger.
@@ -101,6 +114,25 @@ hivemind query search_decisions
 
 Returns `{ decisions: [...], truncated: bool, total: n }`.
 
+To list all `contested` decisions (note: `disagree` is a top-level write command,
+not a query subcommand):
+
+```
+hivemind query search_decisions --status contested
+```
+
+### `query recall`
+
+Layer-3 search + summarise in one call. Answers "what was decided about X?".
+
+```
+hivemind query recall [<free-text query>]
+  [--topic <key,...>]
+  [--status <status,...>]
+  [--since <duration>]
+  [--limit <n>]          # default 5
+```
+
 ### `query recent`
 
 ```
@@ -119,13 +151,77 @@ hivemind query get_supersession_chain --id <decision-id>
 
 Returns the full chain from the given decision back to the original proposal.
 
-### `query disagree`
+### `query compact-view`
+
+Layer-3 signal/noise filter over a decision's subgraph.
 
 ```
-hivemind query disagree [--since <duration>]
+hivemind query compact-view --id <decision-id>
 ```
 
-Returns all decisions with `contested` status.
+### `query get_decision_neighborhood`
+
+```
+hivemind query get_decision_neighborhood --id <decision-id>
+  [--depth <n>]            # default 1
+  [--relations <kind,...>]
+  [--compact]              # return a compact-view instead of the raw neighborhood
+```
+
+### `query get_relevant_decisions`
+
+```
+hivemind query get_relevant_decisions --topic <key> [--status <status>]
+```
+
+### `query get_active_decision_blockers`
+
+```
+hivemind query get_active_decision_blockers
+  [--decision-id <id,...>]
+  [--topic <key,...>]
+  [--owner <actor-id,...>]
+  [--blocked-actor <actor-id,...>]
+  [--priority <level,...>]
+  [--limit <n>]
+```
+
+### `query get_recent_activity`
+
+```
+hivemind query get_recent_activity
+  [--actor-id <id,...>]
+  [--topic <key,...>]
+  [--status <status,...>]
+  [--limit <n>]
+```
+
+### `query get_decisions_changed_since`
+
+```
+hivemind query get_decisions_changed_since
+  [--since-offset <ledger-offset>]
+  [--since-ts <timestamp>]
+  [--until-offset <ledger-offset>]
+  [--until-ts <timestamp>]
+  [--limit <n>]
+```
+
+### `query get_decisions_added_since`
+
+```
+hivemind query get_decisions_added_since
+  [--since <duration>]
+  [--since-offset <ledger-offset>]
+  [--since-ts <timestamp>]
+  [--limit <n>]
+```
+
+### `query export_read_only_summary`
+
+```
+hivemind query export_read_only_summary
+```
 
 ## Other commands
 
@@ -202,6 +298,6 @@ Requires build with `--features tui`.
 |----------|-------------|
 | `HIVEMIND_DIR` | Default ledger directory |
 | `HIVEMIND_ACTOR` | Default actor if `--actor` is omitted |
-| `HIVEMIND_GRAPH_BACKEND` | Graph backend: `sqlite` (default) or `kuzu` |
+| `HIVEMIND_GRAPH_BACKEND` | Graph backend: `memory` (default) or `kuzu` |
 | `HIVEMIND_VERSION` | Pin version for the installer script |
 | `HIVEMIND_INSTALL_DIR` | Install destination for the installer script |
