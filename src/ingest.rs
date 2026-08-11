@@ -1,3 +1,5 @@
+//! Document and local-file ingestion: parsing, conflict resolution, and materialization of import candidates into ledger events.
+
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::Write as _;
 use std::fs;

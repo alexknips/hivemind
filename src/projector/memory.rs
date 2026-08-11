@@ -1,3 +1,5 @@
+//! In-memory graph projector: builds and caches the decision graph from replayed ledger events.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, MutexGuard};
 

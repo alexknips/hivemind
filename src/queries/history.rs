@@ -1,3 +1,5 @@
+//! Temporal decision history: diffs, weekly summaries, and slot-keyed temporal query output.
+
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;

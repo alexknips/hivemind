@@ -1,3 +1,5 @@
+//! Projector trait and graph types: replays ledger events into a live in-memory graph view.
+
 use std::collections::BTreeMap;
 
 use serde::Serialize;

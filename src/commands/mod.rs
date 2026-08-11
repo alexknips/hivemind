@@ -1,3 +1,5 @@
+//! Write-layer commands: validate invariants and append events to the ledger; the sole entry point for all mutations.
+
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};

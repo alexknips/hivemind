@@ -1,3 +1,5 @@
+//! Query layer entry point: pure deterministic reads over the projected graph; no LLMs, no writes.
+
 mod active_blockers;
 mod compact_view;
 mod decision;

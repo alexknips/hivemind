@@ -1,3 +1,5 @@
+//! Decision status derivation: computes proposed/accepted/contested/superseded from graph edges.
+
 use serde::Serialize;
 
 use crate::projector::{GraphView, NodeKind, RelationKind};

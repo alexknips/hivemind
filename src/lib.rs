@@ -1,3 +1,5 @@
+//! HiveMind library root: re-exports the public API surface and wires submodule visibility.
+
 pub(crate) mod anthropic;
 pub mod api;
 pub mod classifier;

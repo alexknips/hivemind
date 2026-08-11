@@ -1,3 +1,5 @@
+//! Decision map: DOT-format graph export and graph traversal helpers used by queries and the dump command.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 

@@ -1,3 +1,5 @@
+//! Ledger trait and backend selection: append-only event store backed by SQLite, in-memory, or Postgres.
+
 mod backend_error;
 mod memory;
 #[cfg(feature = "shared-backend-postgres")]
