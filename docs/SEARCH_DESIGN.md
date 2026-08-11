@@ -27,7 +27,7 @@ Good search must:
   evidence, hypothesis, supersession, and stale or blocker context.
 - Preserve disagreement. `contested` is a first-class status filter and result
   status, never a hidden annotation.
-- Surface staleness. A decision that assumes a refuted hypothesis, or depends
+- Surface staleness. A decision that is premised on a refuted hypothesis, or depends
   on superseded context, must carry that state in search results by default.
 - Return bounded pages. Every limit hit returns `truncated: true` and an opaque
   continuation cursor.

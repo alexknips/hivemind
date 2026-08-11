@@ -1,3 +1,5 @@
+//! Single-decision retrieval with full provenance, status derivation, and related-node expansion.
+
 use std::time::Instant;
 
 use serde::Serialize;

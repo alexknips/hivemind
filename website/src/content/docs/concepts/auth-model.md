@@ -28,7 +28,7 @@ Beyond `actor_id`, each event carries:
 
 | Field | Description |
 |-------|-------------|
-| `source` | `human` or `agent` — how the write was made |
+| `source` | `cli`, `agent`, `human`, `slack`, `document`, or `api` — channel through which the write was made |
 | `source_ref` | Tool that made the write (e.g., `claude-code`, `mcp`, `cli`) |
 | `session_id` | Per-session identifier for grouping related writes |
 | `event_origin` | Ledger offset of the event that created this node/edge |

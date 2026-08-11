@@ -75,7 +75,7 @@ Direct notifications should be terse and actionable:
 
 ```text
 Decision blocker: Agent buildbot is blocked on D-184 "Choose rollback vs hotfix".
-Why: accepted incident decision assumes H-77, now refuted by E-231.
+Why: accepted incident decision is premised on H-77, now refuted by E-231.
 Impact: 2 actors and 4 work refs are blocked.
 Needed from: oncall-lead by 2026-05-19T11:30:00Z.
 Sources: event 812 blocker.reported, event 819 hypothesis.refuted.

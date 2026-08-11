@@ -1,3 +1,5 @@
+//! One-hop neighborhood queries: returns a decision with its immediate graph context.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 

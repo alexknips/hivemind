@@ -1,3 +1,5 @@
+//! Shared query result types, pagination helpers, and cross-query utilities.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 

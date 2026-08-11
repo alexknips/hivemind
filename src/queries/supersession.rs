@@ -1,3 +1,5 @@
+//! Supersession chain traversal: walks the SUPERSEDES edge graph with cycle protection.
+
 use std::collections::BTreeSet;
 
 use serde::Serialize;

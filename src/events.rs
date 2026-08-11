@@ -1,3 +1,5 @@
+//! All event types, payload variants, actor/source/relation enums, and the event builder — the vocabulary of the append-only ledger.
+
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;

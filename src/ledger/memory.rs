@@ -1,3 +1,5 @@
+//! In-memory ledger backend for tests and ephemeral sessions.
+
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 

@@ -1,3 +1,5 @@
+//! Relevant-decision lookup: returns decisions matching a topic, actor, or status filter.
+
 use std::time::Instant;
 
 use crate::projector::{GraphParams, GraphValue, GraphView};

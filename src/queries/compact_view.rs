@@ -1,3 +1,5 @@
+//! Compact decision summaries for agent consumption: bounded, provenance-stripped view.
+
 use std::collections::BTreeSet;
 use std::time::Instant;
 

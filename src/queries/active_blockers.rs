@@ -1,3 +1,5 @@
+//! Active blocker queries: surfaces decisions blocking actors or work, with SLA context.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 

@@ -1,3 +1,5 @@
+//! Postgres-backed graph projector for the shared-backend deployment.
+
 use std::str::FromStr;
 
 use postgres::{Client, Config};

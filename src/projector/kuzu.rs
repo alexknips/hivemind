@@ -1,3 +1,5 @@
+//! Kuzu-backed graph projector: persists the decision graph in a Kuzu native graph database.
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;

@@ -1,3 +1,5 @@
+//! Full-text and filter search over decisions via SQLite FTS and graph predicate evaluation.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
