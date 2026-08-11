@@ -1,32 +1,37 @@
 ---
 title: Decision Graph
-description: The five node types, typed edges, and how status is derived.
+description: The four node types, typed edges, and how status is derived.
 ---
 
-HiveMind's ledger is projected into a graph. The graph has five node types and several
+HiveMind's ledger is projected into a graph. The graph has four content node types and several
 typed edge kinds. Status is always derived from edges — never stored, never overwritten.
 
 ## Node types
 
 | Type | Description |
 |------|-------------|
-| `Decision` | A specific choice made by a specific actor |
-| `Actor` | A human, agent, or system that took an action |
+| `Decision` | A specific choice made by one or more actors |
+| `Option` | An alternative that was considered |
 | `Evidence` | A factual observation the decision rests on |
-| `Option` | An alternative considered but not chosen |
 | `Hypothesis` | A belief still in flight — not yet refuted or confirmed |
+
+`Actor` (a human, agent, or system) is provenance metadata — every node and edge carries an
+actor as attribution, but `Actor` is not a content node in the decision graph.
 
 ## Edge kinds
 
-| Edge | Meaning |
-|------|---------|
-| `PROPOSED_BY` | Actor who proposed the decision |
-| `ACCEPTED_BY` | Actor who accepted the decision |
-| `REJECTED_BY` | Actor who rejected the decision |
-| `SUPERSEDES` | This decision replaces an older one |
-| `PREMISED_ON` | Decision depends on a hypothesis being true |
-| `SUPPORTED_BY` | Decision is supported by this evidence |
-| `OPTION_OF` | Option was considered for this decision |
+| Edge | From → To | Meaning |
+|------|-----------|---------|
+| `PROPOSED_BY` | Decision → Actor | Actor who proposed the decision |
+| `ACCEPTED_BY` | Decision → Actor | Actor who accepted the decision |
+| `REJECTED_BY` | Decision → Actor | Actor who rejected the decision |
+| `SUPERSEDES` | Decision → Decision | This decision replaces an older one |
+| `HAS_OPTION` | Decision → Option | An option that was considered |
+| `CHOSE` | Decision → Option | The option that was selected |
+| `BASED_ON` | Decision → Evidence | Evidence the decision rests on |
+| `ASSUMES` | Decision → Hypothesis | Hypothesis this decision depends on being true |
+| `SUPPORTS` | Evidence → Hypothesis | Evidence that corroborates a hypothesis |
+| `REFUTES` | Evidence → Hypothesis | Evidence that contradicts a hypothesis |
 
 ## Status derivation
 
@@ -45,7 +50,7 @@ eventually resolvable through explicit action.
 
 ## Staleness propagation
 
-When a `Hypothesis` is refuted, every `Decision` that `PREMISED_ON` it surfaces
+When a `Hypothesis` is refuted, every `Decision` that `ASSUMES` it surfaces
 `hypothesis_refuted: true` in queries. Staleness is visible by default — not hidden.
 
 ## Supersession chains
@@ -64,10 +69,12 @@ hivemind query get_supersession_chain --id decision:abc123
 Decision: "Use SQLite for local prototype"
   PROPOSED_BY → Actor: human:alice
   ACCEPTED_BY → Actor: human:alice
-  SUPPORTED_BY → Evidence: "SQLite WAL is sufficient for current local writes"
-  PREMISED_ON → Hypothesis: "Single-node deployments are the primary case for 2026"
-  OPTION_OF → Option: "Postgres"
-  OPTION_OF → Option: "DuckDB"
+  BASED_ON    → Evidence: "SQLite WAL is sufficient for current local writes"
+  ASSUMES     → Hypothesis: "Single-node deployments are the primary case for 2026"
+  HAS_OPTION  → Option: "Postgres"
+  HAS_OPTION  → Option: "DuckDB"
+  HAS_OPTION  → Option: "SQLite"
+  CHOSE       → Option: "SQLite"
 ```
 
 If the hypothesis is later refuted, the decision surfaces `hypothesis_refuted: true`.
