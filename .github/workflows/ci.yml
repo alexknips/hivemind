@@ -85,6 +85,20 @@ jobs:
       - name: Run cargo audit
         run: cargo audit
 
+  reference-docs:
+    name: Reference docs in sync
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+
+      - name: Check reference docs match source
+        run: cargo run --locked --bin generate-reference -- --check
+
   # kuzu-feature disabled; see hivemind-oj7qr for re-enable plan.
 
   ubs:

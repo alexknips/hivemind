@@ -3,8 +3,9 @@ title: MCP Tools
 description: Reference for all 14 tools exposed by the HiveMind MCP server.
 ---
 
-The HiveMind MCP server exposes 14 tools. All write tools require an explicit
-`actor_id`. All read tools return JSON responses.
+The HiveMind MCP server exposes 14 tools. Write tools append events to the
+ledger and require an explicit `actor_id`. Read tools query the graph and never
+write. Layer-3 tools add ranked summaries or compact views.
 
 See [MCP Setup](/guides/mcp-setup/) to configure your client.
 
@@ -14,101 +15,80 @@ See [MCP Setup](/guides/mcp-setup/) to configure your client.
 
 ### `capture_decision`
 
-Capture a decision to the ledger. Equivalent to `emit decision.proposed`.
+Record a proposed decision with rationale, topic keys, and at least one option. Defaults actor_id to agent:<tool>:<session> and writes source=agent.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `actor_id` | string | ✓ | Actor making this decision. Format: `agent:<tool>:<session>` |
-| `title` | string | ✓ | Short, imperative title for the decision |
-| `rationale` | string | ✓ | Why this option was chosen |
-| `topic_keys` | string[] | — | Topic labels for search and grouping |
-| `options` | string[] | — | Alternatives that were considered |
-| `chosen` | string | — | The option that was chosen |
-| `supersedes_id` | string | — | ID of a decision this supersedes |
-
-**Returns:**
-
-```json
-{
-  "decision_id": "decision:abc123",
-  "status": "proposed"
-}
-```
+| `options` | object[] | ✓ |  |
+| `rationale` | string | ✓ |  |
+| `title` | string | ✓ |  |
+| `topic_keys` | string[] | ✓ |  |
+| `actor_id` | string | — | Optional capturing actor override. Defaults to `agent:<tool>:<session>`. |
+| `chosen_option_label` | string | — | Label of the option that was accepted; must match one of `options[].label`. |
+| `evidence_ids` | string[] | — |  |
+| `hypothesis_ids` | string[] | — |  |
 
 ---
 
 ### `capture_evidence`
 
-Record an evidence node. Equivalent to `emit evidence.recorded`.
+Record an evidence item that can be attached to decisions or hypotheses. Defaults actor_id to agent:<tool>:<session> and writes source=agent.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `actor_id` | string | ✓ | Actor recording this evidence |
-| `content` | string | ✓ | The evidence content |
-| `url` | string | — | Source URL |
-| `for_decision_id` | string | — | Decision this evidence supports |
+| `content` | string | ✓ |  |
+| `actor_id` | string | — | Optional capturing actor override. Defaults to `agent:<tool>:<session>`. |
 
 ---
 
 ### `capture_hypothesis`
 
-Record a hypothesis still in flight. Equivalent to `emit hypothesis.recorded`.
+Record a hypothesis. Defaults actor_id to agent:<tool>:<session> and writes source=agent.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `actor_id` | string | ✓ | Actor stating this hypothesis |
-| `statement` | string | ✓ | The hypothesis statement |
-| `for_decision_id` | string | — | Decision this hypothesis underlies |
+| `statement` | string | ✓ |  |
+| `actor_id` | string | — | Optional capturing actor override. Defaults to `agent:<tool>:<session>`. |
 
 ---
 
 ### `disagree_decision`
 
-Contest a decision as an actor. Records a disagreement edge on the decision.
+Record an actor disagreement with a decision and return the resulting derived status. Wraps `hivemind disagree`.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `actor_id` | string | ✓ | Actor registering the disagreement |
-| `decision_id` | string | ✓ | ID of the decision to contest |
-| `rationale` | string | ✓ | Why the actor disagrees |
-
-**Returns:** The decision node with `status` updated to `contested`.
+| `decision_id` | string | ✓ |  |
+| `reason` | string | ✓ |  |
+| `actor_id` | string | — | Disagreeing actor. Defaults to `agent:codex:<session>` when omitted. |
 
 ---
 
 ### `supersede_decision`
 
-Supersede a prior decision with a new one. Creates a `SUPERSEDES` edge between them.
+Propose a replacement decision and mark it as superseding an old decision. Wraps `hivemind supersede`.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `actor_id` | string | ✓ | Actor making the new decision |
-| `title` | string | ✓ | Title of the new decision |
-| `rationale` | string | ✓ | Why this supersedes the prior decision |
-| `supersedes_id` | string | ✓ | ID of the decision being superseded |
-| `topic_keys` | string[] | — | Topic labels for the new decision |
-| `options` | string[] | — | Alternatives that were considered |
-| `chosen` | string | — | The option that was chosen |
-
-**Returns:**
-
-```json
-{
-  "decision_id": "decision:new123",
-  "supersedes": "decision:old456",
-  "status": "proposed"
-}
-```
+| `old_decision_id` | string | ✓ |  |
+| `rationale` | string | ✓ |  |
+| `title` | string | ✓ |  |
+| `actor_id` | string | — | Superseding actor. Defaults to `agent:codex:<session>` when omitted. |
+| `chosen_option_label` | string | — |  |
+| `evidence_ids` | string[] | — |  |
+| `hypothesis_ids` | string[] | — |  |
+| `options` | any[] | — |  |
+| `topic_keys` | string[] | — |  |
 
 ---
 
@@ -116,186 +96,128 @@ Supersede a prior decision with a new one. Creates a `SUPERSEDES` edge between t
 
 ### `get_decision`
 
-Retrieve a specific decision by ID with its current derived status.
+Fetch a single decision by id. Returns null when absent.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `id` | string | ✓ | Decision ID (e.g., `decision:abc123`) |
-
-**Returns:** Full decision node including `status`, `actors`, `evidence`, `options`,
-`supersedes`, `superseded_by`, and `hypothesis_refuted`.
+| `decision_id` | string | ✓ |  |
 
 ---
 
 ### `get_relevant_decisions`
 
-Search decisions by topic, status, actor, or time window.
+List decisions whose topic_keys contain the given topic. Optional status filter.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `topic` | string | — | Topic key to filter by |
-| `status` | string | — | `proposed`, `accepted`, `contested`, or `superseded` |
-| `actor` | string | — | Actor pattern (supports `agent:*` glob) |
-| `since` | string | — | Duration string: `7d`, `30d`, `1h` |
-| `limit` | integer | — | Max results (default: 20) |
-| `offset` | integer | — | Pagination offset |
-
-**Returns:**
-
-```json
-{
-  "decisions": [...],
-  "truncated": false,
-  "total": 12
-}
-```
-
-When `truncated` is `true`, increment `offset` by `limit` to fetch the next page.
+| `topic` | string | ✓ |  |
+| `status` | string | — |  |
 
 ---
 
 ### `get_supersession_chain`
 
-Walk the full supersession chain backward from a given decision.
+Return the linear supersession chain a decision sits in, oldest first.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `id` | string | ✓ | Starting decision ID |
-
-**Returns:** Ordered list of decisions from newest to the original proposal.
+| `decision_id` | string | ✓ |  |
 
 ---
 
 ### `search_decisions`
 
-Full-text search across the decision ledger.
+Full-text search over decisions. Equivalent to `hivemind query search`.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `query` | string | ✓ | Search terms |
-| `limit` | integer | — | Max results (default: 20) |
-| `offset` | integer | — | Pagination offset |
-
-**Returns:**
-
-```json
-{
-  "decisions": [...],
-  "truncated": false,
-  "total": 5
-}
-```
-
----
-
-### `recent_decisions`
-
-List recently proposed decisions within a time window.
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `since` | string | ✓ | RFC3339 lower bound for proposal time |
-| `until` | string | — | RFC3339 upper bound for proposal time |
-| `actor` | string[] | — | Actor id patterns |
-| `topic` | string[] | — | Topic key filters |
-| `status` | string[] | — | `proposed`, `accepted`, `rejected`, `contested`, or `superseded` |
-| `source` | string[] | — | Source filters |
-| `limit` | integer | — | Max results (max 1000) |
-| `cursor` | string | — | Pagination cursor |
-
-**Returns:** List of decision nodes in reverse-chronological order.
-
----
-
-### `dump_graph`
-
-Export the full projected graph in DOT or JSON format.
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `format` | string | — | `dot` (default) or `json` |
-
-**Returns:** DOT string or JSON graph object.
-
----
-
-### `hivemind_compact_view`
-
-Return a compact, human-readable summary of a decision and its immediate context
-(evidence, hypotheses, supersession chain). Useful for agents that need a quick
-read on a specific decision without walking the full graph.
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `id` | string | ✓ | Decision ID to summarize |
-
-**Returns:** Compact JSON object with decision, linked evidence, hypotheses, and
-chain summary.
-
----
-
-### `summarize_decisions`
-
-Return an LLM-friendly natural language summary of a set of decisions matching
-the given filter criteria. Useful for giving agents a high-level picture before
-they query specifics.
-
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `topic` | string | — | Topic key to scope the summary |
-| `status` | string | — | Filter by status |
-| `limit` | integer | — | Max decisions to include (default: 20) |
-
-**Returns:** A structured summary string suitable for injection into agent context.
+| `actor_id` | string[] | — |  |
+| `cursor` | string | — |  |
+| `limit` | integer | — |  |
+| `q` | string | — | Full-text query. |
+| `since` | string | — | RFC3339 lower bound for decision proposal time. |
+| `source` | string[] | — |  |
+| `status` | string[] | — |  |
+| `topic` | string[] | — |  |
+| `until` | string | — | RFC3339 upper bound for decision proposal time. |
 
 ---
 
 ### `recall_decisions`
 
-Layer-3: search for decisions matching a query and return them ranked alongside
-a concise text digest. One call answers "what was decided about X?". The rank
-comes from FTS scoring (ordinal, not a confidence score). The digest is
-deterministic template rendering sourced from decision fields only.
+Layer-3: search for decisions matching a query and return them ranked alongside a concise text digest — one call answers 'what was decided about X?'. The rank comes from FTS scoring (ordinal, not a confidence score). The digest is deterministic template rendering sourced from decision fields only; every contributing decision ID is listed in digest.cited_decision_ids. Returns: { query, ranked: { items, total_matches, truncated }, digest: { summary, cited_decision_ids } }.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `q` | string | — | Free-text search query |
-| `topic` | string[] | — | Filter by topic keys |
-| `status` | string[] | — | `proposed`, `accepted`, `rejected`, `contested`, or `superseded` |
-| `actor_id` | string[] | — | Actor id filters |
-| `source` | string[] | — | Source filters |
-| `since` | string | — | RFC3339 lower bound for proposal time |
-| `until` | string | — | RFC3339 upper bound for proposal time |
-| `limit` | integer | — | Max results to return and summarize (default 5, max 10) |
-| `cursor` | string | — | Pagination cursor |
+| `actor_id` | string[] | — |  |
+| `cursor` | string | — |  |
+| `limit` | integer | — | Max results to return and summarize (default 5, max 10). |
+| `q` | string | — | Free-text search query. |
+| `since` | string | — | RFC3339 lower bound for decision proposal time. |
+| `source` | string[] | — |  |
+| `status` | string[] | — |  |
+| `topic` | string[] | — | Filter by topic keys. |
+| `until` | string | — | RFC3339 upper bound for decision proposal time. |
 
-**Returns:**
+---
 
-```json
-{
-  "query": "...",
-  "ranked": { "items": [...], "total_matches": 3, "truncated": false },
-  "digest": { "summary": "...", "cited_decision_ids": ["decision:abc123"] }
-}
-```
+### `recent_decisions`
+
+List recently proposed decisions. Equivalent to `hivemind query recent_decisions`.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `since` | string | ✓ | RFC3339 lower bound for decision proposal time. |
+| `actor` | string[] | — | Actor id patterns, matching the CLI --actor filter. |
+| `cursor` | string | — |  |
+| `limit` | integer | — |  |
+| `source` | string[] | — |  |
+| `status` | string[] | — |  |
+| `topic` | string[] | — |  |
+| `until` | string | — | RFC3339 upper bound for decision proposal time. |
+
+---
+
+### `dump_graph`
+
+Render the current decision graph as Graphviz DOT.
+
+---
+
+### `hivemind_compact_view`
+
+Layer-3 compact view of a decision subgraph. Applies signal/noise semantics: terminal decision is fully preserved; superseded predecessors, unchosen options, and resolved blockers are elided and counted. Contested decisions are never compacted. Returns null when the decision_id is not found.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `decision_id` | string | ✓ | The decision to compact. If mid-chain, the terminal (newest) decision in the supersession chain is used as the focal node. |
+
+---
+
+### `summarize_decisions`
+
+Layer-3: produce a concise text summary of one or more decisions. All content is sourced from decision record fields — no invented content. Every decision that contributed to the summary is listed in cited_decision_ids. Modes: single (one decision), cluster (multi-decision synthesis), chain (follows the supersession chain from the given decision_id).
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `decision_ids` | string[] | ✓ | IDs of decisions to summarize (1–10). |
+| `mode` | string | — | single = one decision digest; cluster = multi-decision synthesis; chain = supersession chain evolution. Defaults to single when one ID is given, cluster when multiple. |
 
 ---
 

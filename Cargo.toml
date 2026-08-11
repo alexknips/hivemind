@@ -21,6 +21,10 @@ name = "hivemind"
 path = "src/main.rs"
 
 [[bin]]
+name = "generate-reference"
+path = "src/bin/generate_reference.rs"
+
+[[bin]]
 name = "fidelity-eval"
 path = "benchmarks/fidelity/main.rs"
 required-features = ["eval-tools"]
