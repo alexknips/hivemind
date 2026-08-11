@@ -29,7 +29,8 @@ actor as attribution, but `Actor` is not a content node in the decision graph.
 | `HAS_OPTION` | Decision → Option | An option that was considered |
 | `CHOSE` | Decision → Option | The option that was selected |
 | `BASED_ON` | Decision → Evidence | Evidence the decision rests on |
-| `ASSUMES` | Decision → Hypothesis | Hypothesis this decision depends on being true |
+| `PREMISED_ON` | Option → Hypothesis | Hypothesis the chosen option depends on being true |
+| `PREMISED_ON_DIRECT` | Decision → Hypothesis | Hypothesis a decision depends on directly (not via an option) |
 | `SUPPORTS` | Evidence → Hypothesis | Evidence that corroborates a hypothesis |
 | `REFUTES` | Evidence → Hypothesis | Evidence that contradicts a hypothesis |
 
@@ -50,8 +51,9 @@ eventually resolvable through explicit action.
 
 ## Staleness propagation
 
-When a `Hypothesis` is refuted, every `Decision` that `ASSUMES` it surfaces
-`hypothesis_refuted: true` in queries. Staleness is visible by default — not hidden.
+When a `Hypothesis` is refuted, every `Decision` premised on it (through a chosen option's
+`PREMISED_ON` edge or a direct `PREMISED_ON_DIRECT` edge) surfaces `hypothesis_refuted: true`
+in queries. Staleness is visible by default — not hidden.
 
 ## Supersession chains
 
@@ -70,11 +72,11 @@ Decision: "Use SQLite for local prototype"
   PROPOSED_BY → Actor: human:alice
   ACCEPTED_BY → Actor: human:alice
   BASED_ON    → Evidence: "SQLite WAL is sufficient for current local writes"
-  ASSUMES     → Hypothesis: "Single-node deployments are the primary case for 2026"
   HAS_OPTION  → Option: "Postgres"
   HAS_OPTION  → Option: "DuckDB"
   HAS_OPTION  → Option: "SQLite"
   CHOSE       → Option: "SQLite"
+        PREMISED_ON → Hypothesis: "Single-node deployments are the primary case for 2026"
 ```
 
 If the hypothesis is later refuted, the decision surfaces `hypothesis_refuted: true`.
