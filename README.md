@@ -336,6 +336,9 @@ Cursor uses the same shape under `mcp.servers`. The server exposes these tools:
 | `search_decisions` | read | `query search_decisions` |
 | `recent_decisions` | read | `query recent_decisions` |
 | `dump_graph` | read | `dump --format dot` |
+| `recall_decisions` | layer-3 | search + ranked digest |
+| `hivemind_compact_view` | layer-3 | compact subgraph projection |
+| `summarize_decisions` | layer-3 | decision digest |
 
 Every capture requires an explicit `actor_id`. Prefix it with the originating
 tool, e.g. `agent:claude:<session>`, so provenance stays readable. The server

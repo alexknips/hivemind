@@ -1,9 +1,9 @@
 ---
 title: MCP Tools
-description: Reference for all 12 tools exposed by the HiveMind MCP server.
+description: Reference for all 14 tools exposed by the HiveMind MCP server.
 ---
 
-The HiveMind MCP server exposes 12 tools. All write tools require an explicit
+The HiveMind MCP server exposes 14 tools. All write tools require an explicit
 `actor_id`. All read tools return JSON responses.
 
 See [MCP Setup](/guides/mcp-setup/) to configure your client.
@@ -196,6 +196,27 @@ Full-text search across the decision ledger.
 
 ---
 
+### `recent_decisions`
+
+List recently proposed decisions within a time window.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `since` | string | ✓ | RFC3339 lower bound for proposal time |
+| `until` | string | — | RFC3339 upper bound for proposal time |
+| `actor` | string[] | — | Actor id patterns |
+| `topic` | string[] | — | Topic key filters |
+| `status` | string[] | — | `proposed`, `accepted`, `rejected`, `contested`, or `superseded` |
+| `source` | string[] | — | Source filters |
+| `limit` | integer | — | Max results (max 1000) |
+| `cursor` | string | — | Pagination cursor |
+
+**Returns:** List of decision nodes in reverse-chronological order.
+
+---
+
 ### `dump_graph`
 
 Export the full projected graph in DOT or JSON format.
@@ -242,6 +263,39 @@ they query specifics.
 | `limit` | integer | — | Max decisions to include (default: 20) |
 
 **Returns:** A structured summary string suitable for injection into agent context.
+
+---
+
+### `recall_decisions`
+
+Layer-3: search for decisions matching a query and return them ranked alongside
+a concise text digest. One call answers "what was decided about X?". The rank
+comes from FTS scoring (ordinal, not a confidence score). The digest is
+deterministic template rendering sourced from decision fields only.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `q` | string | — | Free-text search query |
+| `topic` | string[] | — | Filter by topic keys |
+| `status` | string[] | — | `proposed`, `accepted`, `rejected`, `contested`, or `superseded` |
+| `actor_id` | string[] | — | Actor id filters |
+| `source` | string[] | — | Source filters |
+| `since` | string | — | RFC3339 lower bound for proposal time |
+| `until` | string | — | RFC3339 upper bound for proposal time |
+| `limit` | integer | — | Max results to return and summarize (default 5, max 10) |
+| `cursor` | string | — | Pagination cursor |
+
+**Returns:**
+
+```json
+{
+  "query": "...",
+  "ranked": { "items": [...], "total_matches": 3, "truncated": false },
+  "digest": { "summary": "...", "cited_decision_ids": ["decision:abc123"] }
+}
+```
 
 ---
 
