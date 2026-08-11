@@ -37,8 +37,10 @@ fn main() {
     let mcp_path = "website/src/content/docs/reference/mcp-tools.md";
 
     if check_mode {
-        let current = std::fs::read_to_string(mcp_path)
-            .unwrap_or_else(|e| panic!("Cannot read {mcp_path}: {e}"));
+        let current = std::fs::read_to_string(mcp_path).unwrap_or_else(|e| {
+            eprintln!("Cannot read {mcp_path}: {e}");
+            std::process::exit(1)
+        });
         let mut failed = false;
 
         if current != mcp_md {
@@ -72,8 +74,10 @@ fn main() {
             std::process::exit(1);
         }
     } else {
-        std::fs::write(mcp_path, &mcp_md)
-            .unwrap_or_else(|e| panic!("Cannot write {mcp_path}: {e}"));
+        std::fs::write(mcp_path, &mcp_md).unwrap_or_else(|e| {
+            eprintln!("Cannot write {mcp_path}: {e}");
+            std::process::exit(1)
+        });
         println!("Generated: {mcp_path}");
 
         if !cli_missing.is_empty() {
@@ -290,7 +294,10 @@ fn check_cli_completeness() -> Vec<String> {
         let top_cmd = root
             .get_subcommands()
             .find(|c| c.get_name() == top_name)
-            .unwrap_or_else(|| panic!("toplevel '{top_name}' subcommand not found"));
+            .unwrap_or_else(|| {
+                eprintln!("toplevel '{top_name}' subcommand not found");
+                std::process::exit(1)
+            });
 
         for sub in top_cmd.get_subcommands() {
             let name = sub.get_name();
