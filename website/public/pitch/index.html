@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HiveMind — Why decision memory</title>
+<meta name="description" content="Teams don't lose code — they lose the reasons. HiveMind is decision memory for the age of coding agents: a provable, queryable record of why decisions were made, captured by agents and humans as they work.">
+<meta property="og:title" content="HiveMind — the record of why">
+<meta property="og:description" content="Teams don't lose code, they lose the reasons. HiveMind captures decision rationale — for coding agents and humans — as an append-only, queryable record.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://alexknips.github.io/hivemind/pitch/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="HiveMind — the record of why">
+<meta name="twitter:description" content="Teams don't lose code, they lose the reasons. Decision memory for the age of coding agents.">
+<link rel="icon" type="image/svg+xml" href="/hivemind/favicon.svg">
+<style>*{margin:0}ul{list-style:none;padding:0}</style>
+</head>
+<body>
+<style>
+  :root{
+    --bg:#EAEBEE; --card:#F4F5F7; --fg:#14161C; --fg-dim:#565B67;
+    --rule:#CDD0D7; --accent:#2A47DF; --accent-soft:#2A47DF1a; --stale:#A2660F;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --edge:1px solid var(--rule);
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#101219; --card:#161922; --fg:#ECEDF0; --fg-dim:#9BA1AE;
+      --rule:#2A2F3B; --accent:#7E93FF; --accent-soft:#7E93ff1f; --stale:#E0A64A;
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#EAEBEE; --card:#F4F5F7; --fg:#14161C; --fg-dim:#565B67;
+    --rule:#CDD0D7; --accent:#2A47DF; --accent-soft:#2A47DF1a; --stale:#A2660F;
+  }
+  :root[data-theme="dark"]{
+    --bg:#101219; --card:#161922; --fg:#ECEDF0; --fg-dim:#9BA1AE;
+    --rule:#2A2F3B; --accent:#7E93FF; --accent-soft:#7E93ff1f; --stale:#E0A64A;
+  }
+
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--fg); font-family:var(--sans);
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+  }
+
+  /* ---- top rail ---- */
+  .rail{
+    position:fixed; inset:0 0 auto 0; height:44px; z-index:30;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 clamp(16px,4vw,44px); font-family:var(--mono);
+    font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--fg-dim); background:linear-gradient(var(--bg),var(--bg) 60%,transparent);
+  }
+  .rail .mark{color:var(--fg); font-weight:700; letter-spacing:.22em}
+  .rail .mark b{color:var(--accent)}
+  .rail .prog{display:flex; align-items:center; gap:10px}
+  .rail .bar{width:120px; height:2px; background:var(--rule); position:relative}
+  .rail .bar i{position:absolute; inset:0 auto 0 0; width:10%; background:var(--accent); transition:width .4s ease}
+
+  /* ---- deck ---- */
+  .deck{
+    display:flex; height:100%; overflow-x:auto; overflow-y:hidden;
+    scroll-snap-type:x mandatory; scroll-behavior:smooth;
+    scrollbar-width:none;
+  }
+  .deck::-webkit-scrollbar{display:none}
+  .slide{
+    flex:0 0 100vw; height:100svh; min-height:100%;
+    scroll-snap-align:start; scroll-snap-stop:always;
+    display:flex; align-items:center;
+    padding:64px clamp(20px,7vw,120px) 96px;
+    position:relative;
+  }
+  .wrap{width:min(1040px,100%); position:relative}
+
+  /* entry number, big + faint, top-right of frame */
+  .entry{
+    position:absolute; top:clamp(52px,9vh,96px); right:clamp(20px,7vw,120px);
+    font-family:var(--mono); font-size:clamp(3rem,9vw,7rem); font-weight:700;
+    line-height:.8; color:var(--rule); letter-spacing:-.03em; user-select:none;
+    z-index:0;
+  }
+  .eyebrow{
+    font-family:var(--mono); font-size:clamp(.68rem,1.5vw,.82rem);
+    letter-spacing:.24em; text-transform:uppercase; color:var(--accent);
+    display:flex; align-items:center; gap:12px; margin:0 0 22px;
+  }
+  .eyebrow::before{content:""; width:26px; height:0; border-top:2px solid var(--accent)}
+  .eyebrow .dim{color:var(--fg-dim)}
+
+  h1.claim,h2.claim{
+    font-family:var(--mono); font-weight:700; letter-spacing:-.02em;
+    line-height:1.04; margin:0; text-wrap:balance;
+    font-size:clamp(1.9rem,5.4vw,4.15rem);
+    position:relative; z-index:1;
+  }
+  .claim .hl{color:var(--accent)}
+  .claim .stale{color:var(--stale)}
+  .lede{
+    font-size:clamp(1.02rem,2.1vw,1.4rem); line-height:1.5; color:var(--fg-dim);
+    max-width:60ch; margin:26px 0 0; position:relative; z-index:1;
+  }
+  .lede b{color:var(--fg); font-weight:600}
+
+  /* cover */
+  .cover .wordmark{
+    font-family:var(--mono); font-weight:700; font-size:clamp(2.4rem,7vw,5rem);
+    letter-spacing:-.02em; margin:0; line-height:1;
+  }
+  .cover .wordmark b{color:var(--accent)}
+  .cover .caret{color:var(--accent); animation:blink 1.15s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .cover .sub{
+    font-family:var(--sans); font-size:clamp(1.05rem,2.4vw,1.6rem);
+    color:var(--fg-dim); margin:28px 0 0; max-width:32ch; line-height:1.4;
+  }
+  .cover .meta{
+    margin-top:46px; padding-top:18px; border-top:var(--edge);
+    display:flex; flex-wrap:wrap; gap:10px 26px; font-family:var(--mono);
+    font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--fg-dim);
+  }
+  .cover .meta b{color:var(--fg); font-weight:600}
+
+  /* ledger list */
+  .ledger{margin:34px 0 0; padding:0; list-style:none; position:relative; z-index:1;
+    display:grid; gap:0; max-width:74ch}
+  .ledger li{
+    display:grid; grid-template-columns:auto 1fr; gap:16px; align-items:baseline;
+    padding:15px 0; border-top:var(--edge); font-size:clamp(.98rem,1.7vw,1.16rem);
+    color:var(--fg);
+  }
+  .ledger li:last-child{border-bottom:var(--edge)}
+  .ledger .k{
+    font-family:var(--mono); font-size:.74em; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--accent); white-space:nowrap; padding-top:.15em;
+  }
+  .ledger .v b{font-weight:600}
+  .ledger .v small{display:block; color:var(--fg-dim); font-size:.82em; margin-top:3px; letter-spacing:0; text-transform:none; font-family:var(--sans)}
+
+  /* pending entry (honest placeholder) */
+  .pending{
+    margin-top:30px; padding:18px 20px; border:1px dashed var(--accent);
+    background:var(--accent-soft); border-radius:2px; max-width:60ch;
+    font-family:var(--mono); font-size:.86rem; line-height:1.55; color:var(--fg);
+    position:relative; z-index:1;
+  }
+  .pending .tag{
+    color:var(--accent); letter-spacing:.16em; text-transform:uppercase; font-size:.72rem;
+    display:block; margin-bottom:7px;
+  }
+  .pending .tag::before{content:"▮ "}
+
+  /* mechanism graph */
+  .mech{display:grid; grid-template-columns:1.15fr .85fr; gap:40px; align-items:center}
+  @media (max-width:820px){ .mech{grid-template-columns:1fr; gap:26px} .mech .fig{order:-1} }
+  .fig{width:100%; max-width:470px}
+  .fig text{font-family:var(--mono)}
+
+  .kick{
+    margin-top:30px; font-family:var(--mono); font-size:clamp(.92rem,1.7vw,1.1rem);
+    color:var(--fg); border-left:3px solid var(--accent); padding:4px 0 4px 16px;
+    position:relative; z-index:1; max-width:56ch; line-height:1.5;
+  }
+
+  /* ask slide */
+  .ask{display:grid; gap:0; margin-top:30px; max-width:70ch; position:relative; z-index:1}
+  .ask .row{display:grid; grid-template-columns:auto 1fr; gap:16px; padding:14px 0; border-top:var(--edge); align-items:baseline}
+  .ask .row:last-child{border-bottom:var(--edge)}
+  .ask .n{font-family:var(--mono); color:var(--accent); font-size:.82em}
+  .swap{margin-top:20px; font-family:var(--mono); font-size:.78rem; color:var(--fg-dim); letter-spacing:.04em}
+
+  /* ---- nav ---- */
+  .nav{
+    position:fixed; inset:auto 0 0 0; height:56px; z-index:30;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 clamp(16px,4vw,44px);
+    background:linear-gradient(transparent,var(--bg) 45%);
+    font-family:var(--mono); font-size:12px; color:var(--fg-dim); letter-spacing:.1em;
+  }
+  .dots{display:flex; gap:9px}
+  .dots button{
+    width:9px; height:9px; padding:0; border:1px solid var(--rule); background:transparent;
+    border-radius:50%; cursor:pointer; transition:all .25s;
+  }
+  .dots button[aria-current="true"]{background:var(--accent); border-color:var(--accent); transform:scale(1.15)}
+  .arrows{display:flex; gap:8px}
+  .arrows button{
+    font-family:var(--mono); font-size:13px; color:var(--fg); background:var(--card);
+    border:var(--edge); border-radius:2px; width:38px; height:32px; cursor:pointer;
+    transition:.2s; letter-spacing:0;
+  }
+  .arrows button:hover{border-color:var(--accent); color:var(--accent)}
+  .arrows button:disabled{opacity:.35; cursor:default}
+  .count b{color:var(--fg)}
+
+  a.tlink{color:var(--accent); text-decoration:none; border-bottom:1px solid var(--accent-soft)}
+  :focus-visible{outline:2px solid var(--accent); outline-offset:3px}
+
+  @media (prefers-reduced-motion:no-preference){
+    .reveal>*{opacity:0; transform:translateY(14px); animation:rise .6s cubic-bezier(.2,.7,.3,1) forwards}
+    .slide.on .reveal>*{}
+    .reveal>*:nth-child(1){animation-delay:.05s}
+    .reveal>*:nth-child(2){animation-delay:.13s}
+    .reveal>*:nth-child(3){animation-delay:.21s}
+    .reveal>*:nth-child(4){animation-delay:.29s}
+    .reveal>*:nth-child(5){animation-delay:.37s}
+    @keyframes rise{to{opacity:1; transform:none}}
+  }
+
+  @media (max-width:560px){
+    .entry{opacity:.6}
+    .rail .bar{width:72px}
+    .ledger li{grid-template-columns:1fr; gap:4px}
+    .ledger .k{padding-top:0}
+  }
+</style>
+
+<div class="rail">
+  <span class="mark">HIVE<b>MIND</b></span>
+  <span class="prog"><span id="railnum">00 / 09</span><span class="bar"><i id="railbar"></i></span></span>
+</div>
+
+<main class="deck" id="deck" tabindex="0" aria-label="HiveMind pitch deck, use arrow keys to navigate">
+
+  <!-- 0 cover -->
+  <section class="slide cover on" aria-label="Cover">
+    <div class="wrap reveal">
+      <p class="eyebrow">A record of decisions</p>
+      <h1 class="wordmark">Hive<b>Mind</b><span class="caret">_</span></h1>
+      <p class="sub">Decision memory for the age of coding agents.</p>
+      <div class="meta">
+        <span><b>Open source</b></span>
+        <span><b>Open beta</b> · hosted</span>
+        <span>MCP-native</span>
+        <span class="tnav">→ arrow keys to read</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 1 -->
+  <section class="slide" aria-label="The problem">
+    <span class="entry">01</span>
+    <div class="wrap reveal">
+      <p class="eyebrow">The problem <span class="dim">/ what breaks</span></p>
+      <h2 class="claim">Teams don't lose code.<br>They lose the <span class="hl">reasons.</span></h2>
+      <p class="lede">Six months after a decision the code is still there, but the <i>why</i> is gone — a Slack thread nobody can find, a doc that got overwritten, the head of someone who left. So the team has the same argument again, or quietly reverses a call that was right for reasons they no longer remember.</p>
+    </div>
+  </section>
+
+  <!-- 2 -->
+  <section class="slide" aria-label="Why now">
+    <span class="entry">02</span>
+    <div class="wrap reveal">
+      <p class="eyebrow">Why now <span class="dim">/ the shift</span></p>
+      <h2 class="claim">The faster they go,<br>the less we can <span class="hl">see.</span></h2>
+      <p class="lede">That agents make us faster is settled. The cost rides along with the speed — more decisions, and more messages, agent to agent and human to agent, than any team can read. Right when the work needs more <b>governance and observability</b>, it gets less.</p>
+      <p class="kick">Hundreds of choices a day, buried in traffic nobody has time to open — moving faster than anyone can account for.</p>
+    </div>
+  </section>
+
+  <!-- 3 -->
+  <section class="slide" aria-label="Why existing tools fail">
+    <span class="entry">03</span>
+    <div class="wrap reveal">
+      <p class="eyebrow">The status quo <span class="dim">/ why it fails</span></p>
+      <h2 class="claim">Wikis are documents<br>pretending to be <span class="hl">records.</span></h2>
+      <p class="lede">A wiki page is whatever the last person typed. It can't tell you a decision is disputed, can't tell you it went stale because the assumption under it turned out false, can't prove who decided what.</p>
+    </div>
+  </section>
+
+  <!-- 4 -->
+  <section class="slide" aria-label="The product">
+    <span class="entry">04</span>
+    <div class="wrap reveal">
+      <p class="eyebrow">The product <span class="dim">/ what it is</span></p>
+      <h2 class="claim">HiveMind is<br>the <span class="hl">record.</span></h2>
+      <p class="lede">It captures a decision the moment it's made — as structured data, not prose — in an append-only ledger that can't be quietly edited later. Every decision carries the options that lost, the evidence it stood on, and the assumptions it bet on.</p>
+    </div>
+  </section>
+
+  <!-- 5 mechanism -->
+  <section class="slide" aria-label="How it works">
+    <span class="entry">05</span>
+    <div class="wrap reveal">
+      <p class="eyebrow">How it works <span class="dim">/ the mechanism</span></p>
+      <div class="mech">
+        <div>
+          <h2 class="claim">Status you<br>can't <span class="hl">fake.</span></h2>
+          <ul class="ledger" style="margin-top:26px">
+            <li><span class="k">Derived</span><span class="v">Status falls out of the graph, not a field someone sets.</span></li>
+            <li><span class="k">Contested</span><span class="v">Push back and both sides are kept — disagreement is a state, not a comment.</span></li>
+            <li><span class="k">Stale</span><span class="v">Disprove an assumption and every decision leaning on it flags itself.</span></li>
+            <li><span class="k">Signed</span><span class="v">Every entry attributed. Supersession keeps the old version too.</span></li>
+          </ul>
+        </div>
+        <svg class="fig" viewBox="0 0 460 286" role="img" aria-label="Time runs left to right along the bottom axis. A decision sits at 'now', with the option it weighed at the same moment shown above it, and the evidence it cited — a document that already existed — back in the past. A later decision, still to come, will supersede it.">
+          <defs>
+            <marker id="ah" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--accent)"/></marker>
+            <marker id="ahd" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" fill="var(--fg-dim)"/></marker>
+            <marker id="ahn" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--fg-dim)"/></marker>
+          </defs>
+
+          <!-- option: weighed at the SAME time as the decision (above 'now') -->
+          <line x1="250" y1="152" x2="250" y2="108" stroke="var(--accent)" stroke-width="1.6" marker-end="url(#ah)"/>
+          <text x="259" y="132" font-size="8.5" fill="var(--fg-dim)" letter-spacing=".6">HAS_OPTION</text>
+          <g>
+            <circle cx="250" cy="88" r="20" fill="var(--card)" stroke="var(--fg)" stroke-width="1.6"/>
+            <text x="250" y="91" font-size="7.6" fill="var(--fg)" text-anchor="middle">Option</text>
+          </g>
+
+          <!-- evidence: a document that already existed, cited from the PAST -->
+          <line x1="222" y1="180" x2="137" y2="180" stroke="var(--accent)" stroke-width="1.6" marker-end="url(#ah)"/>
+          <text x="178" y="166" font-size="8.5" fill="var(--fg-dim)" text-anchor="middle" letter-spacing=".6">BASED_ON</text>
+          <g>
+            <path d="M88,162 H123 L133,172 V197 H88 Z" fill="var(--card)" stroke="var(--fg)" stroke-width="1.6" stroke-linejoin="round"/>
+            <path d="M123,162 V172 H133" fill="none" stroke="var(--fg)" stroke-width="1.3"/>
+            <text x="108" y="184" font-size="7" fill="var(--fg)" text-anchor="middle">Evidence</text>
+          </g>
+
+          <!-- the current decision will itself be superseded by a later one -->
+          <line x1="375" y1="180" x2="281" y2="180" stroke="var(--fg-dim)" stroke-width="1.4" stroke-dasharray="4 4" marker-end="url(#ahd)"/>
+          <text x="333" y="166" font-size="8" fill="var(--fg-dim)" text-anchor="middle" letter-spacing=".4">superseded by…</text>
+
+          <!-- decision at NOW -->
+          <circle cx="250" cy="180" r="35" fill="var(--accent-soft)"/>
+          <g>
+            <circle cx="250" cy="180" r="28" fill="var(--accent)"/>
+            <text x="250" y="184" font-size="9" fill="#fff" text-anchor="middle" font-weight="700">Decision</text>
+          </g>
+          <!-- later decision (still to come) -->
+          <g>
+            <circle cx="390" cy="180" r="15" fill="var(--card)" stroke="var(--fg-dim)" stroke-width="1.3" stroke-dasharray="3 3"/>
+            <text x="390" y="182" font-size="5.6" fill="var(--fg-dim)" text-anchor="middle">Decision</text>
+          </g>
+
+          <!-- time axis (the only thing carrying time) -->
+          <line x1="28" y1="248" x2="440" y2="248" stroke="var(--fg-dim)" stroke-width="1.25" marker-end="url(#ahn)"/>
+          <text x="416" y="242" font-size="8" fill="var(--fg-dim)" letter-spacing="1.5">time</text>
+          <line x1="108" y1="203" x2="108" y2="240" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2 4"/>
+          <line x1="250" y1="218" x2="250" y2="240" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2 4"/>
+          <line x1="390" y1="198" x2="390" y2="240" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2 4"/>
+          <circle cx="108" cy="248" r="2.3" fill="var(--fg-dim)"/>
+          <circle cx="250" cy="248" r="2.6" fill="var(--fg-dim)"/>
+          <circle cx="390" cy="248" r="2.3" fill="var(--fg-dim)"/>
+          <text x="108" y="266" font-size="8.5" fill="var(--fg-dim)" text-anchor="middle" letter-spacing=".5">past</text>
+          <text x="250" y="266" font-size="8.5" fill="var(--fg)" text-anchor="middle" letter-spacing=".5" font-weight="600">now</text>
+          <text x="390" y="266" font-size="8.5" fill="var(--fg-dim)" text-anchor="middle" letter-spacing=".5">later</text>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 wedge -->
+  <section class="slide" aria-label="The wedge">
+    <span class="entry">06</span>
+    <div class="wrap reveal">
+      <p class="eyebrow">The wedge <span class="dim">/ how it gets in</span></p>
+      <h2 class="claim">The agents capture<br>it <span class="hl">themselves.</span></h2>
+      <p class="lede">HiveMind speaks MCP, so <b>Claude Code, Codex, and Cursor</b> write their decisions down as they work — no extra step, no context switch, every entry signed. Humans come in too: import their decisions, and pull in the documents behind them as <b>evidence</b> — your existing docs get referenced, not replaced.</p>
+      <p class="kick">The thing making the problem worse becomes the thing that fixes it.</p>
+    </div>
+  </section>
+
+  <!-- 7 moat -->
+  <section class="slide" aria-label="Defensibility">
+    <span class="entry">07</span>
+    <div class="wrap reveal">
+      <p class="eyebrow">Defensibility <span class="dim">/ the moat</span></p>
+      <h2 class="claim">Hard to copy,<br>on <span class="hl">purpose.</span></h2>
+      <p class="lede">Immutability, derived status, staleness, required provenance — these are structural. A general-purpose workspace optimizes for flexibility; provenance needs constraint. You can't bolt one onto the other.</p>
+    </div>
+  </section>
+
+  <!-- 8 origin -->
+  <section class="slide" aria-label="Origin — why this is real">
+    <span class="entry">08</span>
+    <div class="wrap reveal">
+      <p class="eyebrow">Origin <span class="dim">/ why this is real</span></p>
+      <h2 class="claim">I asked why.<br>They sent the whole <span class="hl">transcript.</span></h2>
+      <p class="lede">We were migrating a big, highly entangled Scala monolith after a model change — dozens of small, load-bearing decisions a week. I'd ask an engineer why they'd done something, and they'd hand over the entire Claude Code session. Thousands of lines: everything that happened, and nothing about <i>why</i>.</p>
+      <p class="kick">Then I realized I was no better. On my own hard calls, I couldn't say when I'd changed my mind, or what changed it. A transcript isn't reasoning — and that gap is the product: decision memory, not another log.</p>
+    </div>
+  </section>
+
+  <!-- 9 traction + ask -->
+  <section class="slide" aria-label="Where we are and the ask">
+    <span class="entry">09</span>
+    <div class="wrap reveal">
+      <p class="eyebrow">Where we are <span class="dim">/ the ask</span></p>
+      <h2 class="claim">Built and dogfooded.<br>A few prospects <span class="hl">so far.</span></h2>
+      <ul class="ledger" style="margin-top:24px">
+        <li><span class="k">Shipping</span><span class="v"><b>Open source, open beta, hosted.</b> MCP server + CLI, plugins for the major coding agents.</span></li>
+        <li><span class="k">Dogfooded</span><span class="v"><b>It records its own construction</b> — every decision behind HiveMind is captured in HiveMind.</span></li>
+        <li><span class="k">Honest</span><span class="v">A few prospects so far. The hard risk — can this be built, does it work — is behind us; what's open is adoption. That's the ask.</span></li>
+      </ul>
+      <div class="ask">
+        <div class="row"><span class="n">ASK</span><span>A few teams already living in coding agents, willing to capture for a few weeks and tell me where it breaks. The first proof — built with you, not shown to you.</span></div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<nav class="nav" aria-label="Deck controls">
+  <span class="count">ENTRY <b id="cur">00</b> / 09</span>
+  <div class="dots" id="dots" role="tablist" aria-label="Slides"></div>
+  <div class="arrows">
+    <button id="prev" aria-label="Previous slide">←</button>
+    <button id="next" aria-label="Next slide">→</button>
+  </div>
+</nav>
+
+<script>
+  const deck=document.getElementById('deck');
+  const slides=[...deck.querySelectorAll('.slide')];
+  const dotsWrap=document.getElementById('dots');
+  const cur=document.getElementById('cur'), railnum=document.getElementById('railnum'), railbar=document.getElementById('railbar');
+  const prev=document.getElementById('prev'), next=document.getElementById('next');
+  const N=slides.length; let i=0;
+
+  slides.forEach((s,n)=>{
+    const b=document.createElement('button');
+    b.setAttribute('role','tab'); b.setAttribute('aria-label','Go to entry '+String(n).padStart(2,'0'));
+    b.addEventListener('click',()=>go(n));
+    dotsWrap.appendChild(b);
+  });
+  const dots=[...dotsWrap.children];
+
+  function pad(n){return String(n).padStart(2,'0')}
+  function paint(){
+    cur.textContent=pad(i);
+    railnum.textContent=pad(i)+' / 09';
+    railbar.style.width=(N<2?100:(i/(N-1))*100)+'%';
+    dots.forEach((d,n)=>d.setAttribute('aria-current',n===i?'true':'false'));
+    prev.disabled=i===0; next.disabled=i===N-1;
+    slides.forEach((s,n)=>s.classList.toggle('on',n===i));
+  }
+  function go(n){ i=Math.max(0,Math.min(N-1,n)); slides[i].scrollIntoView({behavior:'smooth',inline:'start',block:'nearest'}); paint(); }
+
+  next.addEventListener('click',()=>go(i+1));
+  prev.addEventListener('click',()=>go(i-1));
+
+  addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key==='PageDown'||e.key===' '){e.preventDefault();go(i+1);}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();go(i-1);}
+    else if(e.key==='Home'){e.preventDefault();go(0);}
+    else if(e.key==='End'){e.preventDefault();go(N-1);}
+  });
+
+  let t; deck.addEventListener('scroll',()=>{
+    clearTimeout(t); t=setTimeout(()=>{
+      const n=Math.round(deck.scrollLeft/deck.clientWidth);
+      if(n!==i){ i=n; paint(); }
+    },90);
+  },{passive:true});
+
+  deck.focus({preventScroll:true}); paint();
+</script>
+</body>
+</html>
