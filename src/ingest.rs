@@ -904,7 +904,7 @@ pub struct ProseImportCandidate {
 pub fn import_prose_file_candidates<L: EventLedger>(
     ledger: &L,
     source: &ProseImportSource,
-    candidates: &[ProseImportCandidate],
+    candidates: Vec<ProseImportCandidate>,
     importer_actor_id: &str,
     import_run_id: &str,
 ) -> Result<DocumentFileImportReport> {
@@ -932,21 +932,21 @@ pub fn import_prose_file_candidates<L: EventLedger>(
     for candidate in candidates {
         let status = ImportedDecisionStatus::parse(&candidate.status_str)?;
         let draft = DocumentDecisionDraft {
-            block_id: candidate.candidate_id.clone(),
-            title: candidate.title.clone(),
+            block_id: candidate.candidate_id,
+            title: candidate.title,
             status,
             original_actor_id: None,
-            topic_keys: candidate.topic_keys.clone(),
-            rationale: candidate.rationale.clone(),
-            option_labels: candidate.option_labels.clone(),
-            chosen_option_label: candidate.chosen_option_label.clone(),
-            evidence: candidate.evidence.clone(),
-            hypotheses: candidate.hypotheses.clone(),
+            topic_keys: candidate.topic_keys,
+            rationale: candidate.rationale,
+            option_labels: candidate.option_labels,
+            chosen_option_label: candidate.chosen_option_label,
+            evidence: candidate.evidence,
+            hypotheses: candidate.hypotheses,
             supersedes: Vec::new(),
             span: candidate.source_span,
-            snippet: candidate.source_snippet.clone(),
+            snippet: candidate.source_snippet,
             prepared_source_ref: None,
-            extractor_explanation: Some(candidate.explanation.clone()),
+            extractor_explanation: Some(candidate.explanation),
         };
         let block_report = import_document_decision_block(
             ledger,
