@@ -42,8 +42,7 @@ use crate::slack_app::{
     SlackCaptureRequest, SlackCommandRequest, SlackWorkspaceInstall,
 };
 use crate::suggest::{
-    materialize_document_extraction_candidates, propose_document_extraction_candidates,
-    DocumentCandidateExtractor, DocumentCandidateMaterializationRequest, DocumentCandidateRequest,
+    propose_document_extraction_candidates, DocumentCandidateExtractor, DocumentCandidateRequest,
     DocumentExtractionSourceDocument,
 };
 use crate::summarize::{
@@ -63,7 +62,7 @@ use super::args::{
     QueryCommand, QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs,
     QueryHistoryFilterArgs, QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
     QuerySearchDecisionsArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
-    SuggestArgs, SuggestCommand, SuggestDocumentCandidatesArgs, SupersedeArgs, TuiArgs,
+    SupersedeArgs, TuiArgs,
 };
 use super::render::{
     append_truncation_notice, decision_status_label, format_disagree_output, format_import_output,
@@ -89,7 +88,6 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Supersede(args) => run_supersede(cli, args),
         Command::Review(args) => run_review(cli, args),
         Command::Import(import) => run_import(cli, import),
-        Command::Suggest(suggest) => run_suggest(cli, suggest),
         Command::Query(query) => run_query(cli, query),
         Command::Dump(dump) => run_dump(cli, dump),
         Command::Tui(args) => run_tui(cli, args),
@@ -1171,59 +1169,6 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
                 }
             }
         }
-    }
-}
-
-fn run_suggest(cli: &Cli, suggest: &SuggestArgs) -> Result<String> {
-    match &suggest.command {
-        SuggestCommand::DocumentCandidates(args) => {
-            let mut paths = args.files.clone();
-            paths.extend(args.paths.clone());
-            let report = propose_document_extraction_candidates(&DocumentCandidateRequest {
-                paths,
-                format: args.format.as_ingest_format(),
-                extractor: document_candidate_extractor(args)?,
-            })?;
-            format_json_value(cli.json, &report)
-        }
-        SuggestCommand::MaterializeDocumentCandidates(args) => {
-            let report = materialize_document_extraction_candidates(
-                &DocumentCandidateMaterializationRequest {
-                    input: args.input.clone(),
-                    candidate_ids: args.candidate_ids.clone(),
-                    output: args.output.clone(),
-                    reviewed_by: cli.actor.clone(),
-                },
-            )?;
-            format_json_value(cli.json, &report)
-        }
-    }
-}
-
-fn document_candidate_extractor(
-    args: &SuggestDocumentCandidatesArgs,
-) -> Result<DocumentCandidateExtractor> {
-    match (&args.extractor_command, &args.llm_response) {
-        (Some(_), Some(_)) => Err(CliError::InvalidInput(
-            "use either --extractor-command or --llm-response, not both".to_owned(),
-        )
-        .into()),
-        (Some(_), None) => Ok(DocumentCandidateExtractor::Command {
-            args: args.extractor_args.clone(),
-        }),
-        (None, Some(path)) => {
-            if !args.extractor_args.is_empty() {
-                return Err(CliError::InvalidInput(
-                    "--extractor-arg requires --extractor-command".to_owned(),
-                )
-                .into());
-            }
-            Ok(DocumentCandidateExtractor::ResponseFile(path.clone()))
-        }
-        (None, None) => Err(CliError::InvalidInput(
-            "document-candidates requires --extractor-command or --llm-response".to_owned(),
-        )
-        .into()),
     }
 }
 

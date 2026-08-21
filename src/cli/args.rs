@@ -65,7 +65,6 @@ pub enum Command {
     Supersede(SupersedeArgs),
     Review(ReviewArgs),
     Import(ImportArgs),
-    Suggest(SuggestArgs),
     /// Run deterministic read queries. JSON is the default; pass --summary for compact text.
     Query(Box<QueryArgs>),
     Dump(DumpArgs),
@@ -841,53 +840,6 @@ impl PrepareDocumentFormat {
             Self::OcrText => DocumentPreparationFormat::OcrText,
         }
     }
-}
-
-#[derive(Debug, Clone, Args)]
-pub struct SuggestArgs {
-    #[command(subcommand)]
-    pub command: SuggestCommand,
-}
-
-#[derive(Debug, Clone, Subcommand)]
-pub enum SuggestCommand {
-    #[command(name = "document-candidates")]
-    DocumentCandidates(SuggestDocumentCandidatesArgs),
-    #[command(name = "materialize-document-candidates")]
-    MaterializeDocumentCandidates(MaterializeDocumentCandidatesArgs),
-}
-
-#[derive(Debug, Clone, Args)]
-pub struct SuggestDocumentCandidatesArgs {
-    #[arg(long = "file", value_name = "PATH")]
-    pub files: Vec<PathBuf>,
-
-    #[arg(value_name = "PATH")]
-    pub paths: Vec<PathBuf>,
-
-    #[arg(long = "format", value_enum, default_value_t = ImportDocumentFormat::Auto)]
-    pub format: ImportDocumentFormat,
-
-    #[arg(long = "extractor-command", value_enum)]
-    pub extractor_command: Option<DocumentExtractorCommandArg>,
-
-    #[arg(long = "extractor-arg", value_name = "ARG")]
-    pub extractor_args: Vec<String>,
-
-    #[arg(long = "llm-response", value_name = "PATH")]
-    pub llm_response: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Args)]
-pub struct MaterializeDocumentCandidatesArgs {
-    #[arg(long = "input", value_name = "PATH")]
-    pub input: PathBuf,
-
-    #[arg(long = "candidate-id", value_name = "ID")]
-    pub candidate_ids: Vec<String>,
-
-    #[arg(long = "output", value_name = "PATH")]
-    pub output: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

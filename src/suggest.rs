@@ -27,14 +27,6 @@ pub enum DocumentCandidateExtractor {
     ResponseFile(PathBuf),
 }
 
-#[derive(Debug, Clone)]
-pub struct DocumentCandidateMaterializationRequest {
-    pub input: PathBuf,
-    pub candidate_ids: Vec<String>,
-    pub output: PathBuf,
-    pub reviewed_by: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentExtractionCandidateReport {
     pub workflow: String,
@@ -69,7 +61,6 @@ pub struct DocumentExtractionCandidate {
     pub explanation: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence_explanation: Option<String>,
-    pub materialize: DocumentCandidateMaterializationHint,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,23 +83,6 @@ pub struct DocumentExtractionCandidateSource {
     pub sha256: String,
     pub span: DocumentSourceSpan,
     pub snippet: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DocumentCandidateMaterializationHint {
-    pub review_required: bool,
-    pub command: String,
-    pub import_command_after_review: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DocumentCandidateMaterializationReport {
-    pub workflow: String,
-    pub reviewed_by: String,
-    pub output_path: String,
-    pub candidates_materialized: usize,
-    pub candidate_ids: Vec<String>,
-    pub import_command_after_review: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -211,77 +185,6 @@ pub fn propose_document_extraction_candidates(
         },
         files: public_files,
         candidates,
-    })
-}
-
-pub fn materialize_document_extraction_candidates(
-    request: &DocumentCandidateMaterializationRequest,
-) -> Result<DocumentCandidateMaterializationReport> {
-    let reviewed_by = request.reviewed_by.trim();
-    if reviewed_by.is_empty() {
-        return Err(
-            CommandError::Validation("reviewed_by actor must not be empty".to_owned()).into(),
-        );
-    }
-    if request.candidate_ids.is_empty() {
-        return Err(CliError::InvalidInput(
-            "materialize-document-candidates requires at least one --candidate-id".to_owned(),
-        )
-        .into());
-    }
-
-    let input = fs::read_to_string(&request.input).map_err(|error| {
-        CliError::InvalidInput(format!(
-            "cannot read candidate report {}: {error}",
-            request.input.display()
-        ))
-    })?;
-    let report =
-        serde_json::from_str::<DocumentExtractionCandidateReport>(&input).map_err(|error| {
-            CliError::InvalidInput(format!(
-                "candidate report {} is not valid JSON: {error}",
-                request.input.display()
-            ))
-        })?;
-
-    let mut candidates_by_id = report
-        .candidates
-        .into_iter()
-        .map(|candidate| (candidate.candidate_id.clone(), candidate))
-        .collect::<HashMap<_, _>>();
-
-    let mut rendered = String::new();
-    let mut materialized_ids = Vec::with_capacity(request.candidate_ids.len());
-    for candidate_id in &request.candidate_ids {
-        let candidate = candidates_by_id.remove(candidate_id).ok_or_else(|| {
-            CliError::InvalidInput(format!(
-                "candidate report does not contain candidate_id '{candidate_id}'"
-            ))
-        })?;
-        if !rendered.is_empty() {
-            rendered.push('\n');
-        }
-        rendered.push_str(&render_candidate_block(&candidate, reviewed_by));
-        materialized_ids.push(candidate.candidate_id);
-    }
-
-    fs::write(&request.output, rendered).map_err(|error| {
-        CliError::InvalidInput(format!(
-            "cannot write materialized candidates to {}: {error}",
-            request.output.display()
-        ))
-    })?;
-
-    Ok(DocumentCandidateMaterializationReport {
-        workflow: "hivemind.document_candidate_materialization.v1".to_owned(),
-        reviewed_by: reviewed_by.to_owned(),
-        output_path: request.output.display().to_string(),
-        candidates_materialized: materialized_ids.len(),
-        candidate_ids: materialized_ids,
-        import_command_after_review: format!(
-            "hivemind --actor {reviewed_by} import documents --file {}",
-            shell_hint(&request.output.display().to_string())
-        ),
     })
 }
 
@@ -539,90 +442,7 @@ fn normalize_candidate(
         },
         explanation,
         confidence_explanation: normalize_optional(raw.confidence_explanation),
-        materialize: DocumentCandidateMaterializationHint {
-            review_required: true,
-            command: format!(
-                "hivemind suggest materialize-document-candidates --input <candidate-report.json> --candidate-id {candidate_id} --output reviewed-document-candidates.md"
-            ),
-            import_command_after_review:
-                "hivemind --actor <reviewer> import documents --file reviewed-document-candidates.md"
-                    .to_owned(),
-        },
     })
-}
-
-fn render_candidate_block(candidate: &DocumentExtractionCandidate, reviewed_by: &str) -> String {
-    let mut output = String::new();
-    output.push_str("# HiveMind reviewed document extraction candidate\n");
-    output.push_str(&format!("# candidate_id: {}\n", candidate.candidate_id));
-    output.push_str(&format!("# reviewed_by: {}\n", reviewed_by));
-    output.push_str(&format!("# source_path: {}\n", candidate.source.path));
-    output.push_str(&format!("# source_sha256: {}\n", candidate.source.sha256));
-    output.push_str(&format!(
-        "# source_span: bytes {}-{}, lines {}-{}\n",
-        candidate.source.span.byte_start,
-        candidate.source.span.byte_end,
-        candidate.source.span.line_start,
-        candidate.source.span.line_end
-    ));
-    output.push_str(&format!(
-        "# extraction_explanation: {}\n",
-        one_line(&candidate.explanation)
-    ));
-    if let Some(confidence_explanation) = &candidate.confidence_explanation {
-        output.push_str(&format!(
-            "# confidence_explanation: {}\n",
-            one_line(confidence_explanation)
-        ));
-    }
-    output.push_str("Decision:\n");
-    output.push_str(&format!("  id: {}\n", one_line(&candidate.decision.id)));
-    output.push_str(&format!(
-        "  title: {}\n",
-        one_line(&candidate.decision.title)
-    ));
-    output.push_str(&format!("  status: {}\n", candidate.decision.status));
-    output.push_str(&format!(
-        "  topic_keys: {}\n",
-        candidate.decision.topic_keys.join(",")
-    ));
-    output.push_str(&format!(
-        "  rationale: {}\n",
-        one_line(&candidate.decision.rationale)
-    ));
-    output.push_str("  options:\n");
-    for option in &candidate.decision.options {
-        output.push_str(&format!("    - {}\n", one_line(option)));
-    }
-    if let Some(chose) = &candidate.decision.chose {
-        output.push_str(&format!("  chose: {}\n", one_line(chose)));
-    }
-    let evidence = materialized_evidence(candidate);
-    if !evidence.is_empty() {
-        output.push_str("  evidence:\n");
-        for item in evidence {
-            output.push_str(&format!("    - {}\n", one_line(&item)));
-        }
-    }
-    if !candidate.decision.hypotheses.is_empty() {
-        output.push_str("  hypotheses:\n");
-        for hypothesis in &candidate.decision.hypotheses {
-            output.push_str(&format!("    - {}\n", one_line(hypothesis)));
-        }
-    }
-    output
-}
-
-fn materialized_evidence(candidate: &DocumentExtractionCandidate) -> Vec<String> {
-    let mut evidence = candidate.decision.evidence.clone();
-    evidence.push(format!(
-        "Source document {} lines {}-{}: {}",
-        candidate.source.path,
-        candidate.source.span.line_start,
-        candidate.source.span.line_end,
-        candidate.source.snippet
-    ));
-    evidence
 }
 
 fn validate_span(document: &SourceDocument, span: DocumentSourceSpan) -> Result<()> {
@@ -739,16 +559,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn shell_hint(value: &str) -> String {
-    if value.chars().all(|character| {
-        character.is_ascii_alphanumeric() || matches!(character, '/' | '.' | '-' | '_')
-    }) {
-        value.to_owned()
-    } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    }
-}
-
 fn default_candidate_status() -> String {
     "proposed".to_owned()
 }
@@ -757,51 +567,6 @@ fn default_candidate_status() -> String {
 mod tests {
     use super::*;
     use uuid::Uuid;
-
-    #[test]
-    fn materializes_reviewed_candidate_as_importable_decision_block() {
-        let candidate = DocumentExtractionCandidate {
-            candidate_id: "candidate:document:abc123".to_owned(),
-            review_status: "pending_review".to_owned(),
-            decision: DocumentExtractionCandidateDecision {
-                id: "llm-candidate-abc123".to_owned(),
-                title: "Adopt reviewed imports".to_owned(),
-                status: "proposed".to_owned(),
-                topic_keys: vec!["documents".to_owned(), "review".to_owned()],
-                rationale: "The source memo says review must happen before import.".to_owned(),
-                options: vec!["review first".to_owned(), "auto import".to_owned()],
-                chose: Some("review first".to_owned()),
-                evidence: vec!["The memo rejects automatic import.".to_owned()],
-                hypotheses: vec!["Reviewers can inspect candidates quickly.".to_owned()],
-            },
-            source: DocumentExtractionCandidateSource {
-                path: "/tmp/source.txt".to_owned(),
-                sha256: "abc".to_owned(),
-                span: DocumentSourceSpan {
-                    byte_start: 0,
-                    byte_end: 50,
-                    line_start: 1,
-                    line_end: 3,
-                },
-                snippet: "We decided to review first because auto import is risky.".to_owned(),
-            },
-            explanation: "The prose contains a decision and a rationale.".to_owned(),
-            confidence_explanation: Some("It names the chosen option.".to_owned()),
-            materialize: DocumentCandidateMaterializationHint {
-                review_required: true,
-                command: "hivemind suggest materialize-document-candidates".to_owned(),
-                import_command_after_review: "hivemind import documents --file reviewed.md"
-                    .to_owned(),
-            },
-        };
-
-        let block = render_candidate_block(&candidate, "reviewer:alice");
-
-        assert!(block.contains("reviewed_by: reviewer:alice"));
-        assert!(block.contains("Decision:"));
-        assert!(block.contains("id: llm-candidate-abc123"));
-        assert!(block.contains("Source document /tmp/source.txt lines 1-3"));
-    }
 
     #[test]
     fn response_file_candidates_carry_source_provenance_without_ledger_access() {
