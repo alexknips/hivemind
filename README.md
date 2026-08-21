@@ -352,15 +352,21 @@ shared `kuzu` projection works under MCP when the `graph-kuzu` feature is
 compiled in.
 
 Local markdown or text decision notes can be imported without network access.
-Only explicit `Decision:` blocks are imported, and re-importing identical input
-is reported as a no-op. Changed same-id re-imports report conflicts by default;
-reviewers can resolve them explicitly with `--on-conflict keep_existing`,
-`supersede`, `contest`, or `add_context`:
+All imported decisions land in the ledger as **unreviewed** (proposed, not
+auto-accepted) and flow into `hivemind review --unreviewed-only`.
+
+Auto-detection: files containing explicit `Decision:` blocks use the
+deterministic block parser. Files without them are treated as prose and the
+extractor supplied via `--extractor-command` extracts candidate decisions
+inline. Re-importing identical input is a no-op. Conflicts are reported by
+default; resolve with `--on-conflict keep_existing`, `supersede`, `contest`,
+or `add_context`:
 
 ```bash
 hivemind --actor alice --json import documents --file ./notes/decision.md
 hivemind --actor alice --json import documents --on-conflict supersede ./notes/
-hivemind --actor alice import documents ./notes/
+# Prose extraction via extractor command:
+hivemind --actor alice import documents --extractor-command hivemind-extractor ./notes/memo.txt
 ```
 
 PDFs and OCR-backed text are prepared before import. The preparation command
@@ -376,27 +382,6 @@ hivemind --actor alice --json import documents ./prepared
 
 OCR text files such as `scan.ocr.txt` are marked `review_required`, and that
 uncertainty is preserved in the final imported source reference.
-
-LLM-assisted document extraction stays in the layer-3 suggestion path. It can
-read an unstructured local document and an external extractor response without
-writing ledger events:
-
-```bash
-hivemind --json suggest document-candidates \
-  --file ./notes/memo.txt \
-  --llm-response ./llm-candidates.json > candidates.json
-```
-
-After review, materialize selected candidates into ordinary `Decision:` blocks,
-then import that reviewed file explicitly:
-
-```bash
-hivemind --actor alice --json suggest materialize-document-candidates \
-  --input candidates.json \
-  --candidate-id candidate:document:abc123 \
-  --output reviewed.md
-hivemind --actor alice --json import documents --file reviewed.md
-```
 
 The emit commands print the new entity id or event id. Add `--json` for a
 structured output envelope.

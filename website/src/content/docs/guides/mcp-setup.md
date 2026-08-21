@@ -152,7 +152,7 @@ Or set `HIVEMIND_DIR` and omit `--hivemind-dir`:
 
 ## Available tools
 
-The HiveMind MCP server exposes 12 tools. See [MCP Tools reference](/reference/mcp-tools/)
+The HiveMind MCP server exposes 14 tools. See [MCP Tools reference](/reference/mcp-tools/)
 for full parameter documentation.
 
 | Tool | Type | Description |
@@ -166,9 +166,11 @@ for full parameter documentation.
 | `get_relevant_decisions` | read | Search by topic, status, actor, or time window |
 | `get_supersession_chain` | read | Walk the full supersession history backward |
 | `search_decisions` | read | Full-text search across the ledger |
+| `recent_decisions` | read | List recently proposed decisions |
 | `dump_graph` | read | Export the full projected graph (DOT or JSON) |
-| `hivemind_compact_view` | read | Compact summary of a decision and its context |
-| `summarize_decisions` | read | LLM-friendly summary of a decision set |
+| `hivemind_compact_view` | layer-3 | Compact summary of a decision and its context |
+| `recall_decisions` | layer-3 | Search + ranked digest — answers "what was decided about X?" |
+| `summarize_decisions` | layer-3 | Concise text summary of one or more decisions |
 
 ---
 
@@ -188,6 +190,6 @@ The server records `source=agent` and a per-session `source_ref` for every write
 
 ## Next steps
 
-- [MCP Tools reference](/reference/mcp-tools/) — full parameter documentation for all 12 tools
+- [MCP Tools reference](/reference/mcp-tools/) — full parameter documentation for all 14 tools
 - [Agent Capture guide](/guides/agent-capture/) — how agents capture decisions automatically
 - [Self-host install](/getting-started/install/) — install the binary and run your own server

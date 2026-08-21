@@ -150,9 +150,10 @@ The capture classifier (layer 3) distinguishes signal from noise. In practice:
 The classifier measures ~92% of agent activity as noise in production. The 8%
 that becomes a captured decision is the part that matters six months later.
 
-## Reviewing agent decisions
+## Reviewing agent and document decisions
 
-Humans review recent agent decisions in a guided terminal flow:
+Agent captures and document imports both land as unreviewed. Humans review
+them in the same guided terminal flow:
 
 ```bash
 hivemind --actor human:lead --hivemind-dir ./hivemind review \

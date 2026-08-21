@@ -50,7 +50,7 @@ A/B-tested, swapped, or removed without touching ingest or queries.
 - Compactification (removing safely-redundant events)
 - Similarity search and ranking
 - Capture classification (signal vs. noise)
-- Document candidate extraction
+- Prose import extraction (when `--extractor-command` is provided to `import documents`)
 
 **Key property:** The rest of the system must remain functional and correct without layer 3.
 If a smart feature requires reaching back into layers 1 or 2 from this layer, the feature

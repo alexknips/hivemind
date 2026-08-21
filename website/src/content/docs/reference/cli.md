@@ -266,22 +266,24 @@ Export the current projected graph as DOT (Graphviz) or JSON.
 ```
 hivemind --actor <id> import documents [--file <path> | <directory>]
   [--on-conflict <keep_existing|supersede|contest|add_context>]
+  [--extractor-command <command>]
+  [--extractor-arg <arg>]
+  [--llm-response <path>]
   [--json]
 ```
 
-Import structured decision notes from markdown or text files. Only explicit
-`Decision:` blocks are imported. Re-importing identical input is a no-op.
+Import decisions from markdown or text files. All imported decisions land in
+the ledger immediately as **unreviewed** (proposed, not auto-accepted) and flow
+into the review step (`hivemind review --unreviewed-only`).
 
-### `suggest document-candidates`
+Auto-detection: if a file contains explicit `Decision:` blocks, the
+deterministic block parser runs. If it does not, the file is treated as prose
+and the extractor configured via `--extractor-command` (or a pre-computed
+`--llm-response`) is used to extract candidate decisions. Prose extraction
+requires one of those two flags; without them a prose file produces no output.
 
-```
-hivemind suggest document-candidates
-  --file <path>
-  [--llm-response <path>]
-```
-
-Layer-3 command. Reads an unstructured document and optional LLM response to
-produce pending-review decision candidates. Does not write ledger events.
+Re-importing identical input is a no-op. Changed same-id re-imports report
+conflicts by default; resolve with `--on-conflict`.
 
 ### `tui`
 

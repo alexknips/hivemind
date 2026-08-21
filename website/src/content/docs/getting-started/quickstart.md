@@ -114,7 +114,7 @@ No files are left behind.
 5. **Review all recent decisions**
 
    ```bash
-   hivemind --hivemind-dir ./hivemind query decisions_list --limit 10
+   hivemind --hivemind-dir ./hivemind query recent --limit 10
    ```
 
 </Steps>
