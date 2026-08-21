@@ -1679,7 +1679,7 @@ fn import_documents_cli_imports_queryable_document_decisions_and_reimport_noops(
     .expect("document import succeeds");
     let output: serde_json::Value = serde_json::from_str(&output).expect("valid import json");
     assert_eq!(output["summary"]["blocks_imported"], serde_json::json!(2));
-    assert_eq!(output["summary"]["events_written"].as_u64(), Some(15));
+    assert_eq!(output["summary"]["events_written"].as_u64(), Some(14));
 
     let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
     let latest_after_first = ledger.latest_offset().expect("latest offset");
@@ -1700,7 +1700,7 @@ fn import_documents_cli_imports_queryable_document_decisions_and_reimport_noops(
     assert_eq!(search["result_count"], serde_json::json!(1));
     assert_eq!(
         search["data"]["items"][0]["decision"]["status"],
-        serde_json::json!("accepted")
+        serde_json::json!("proposed")
     );
 
     let events = ledger.read(0, 100).expect("events read");
@@ -1802,6 +1802,138 @@ fn import_documents_cli_imports_queryable_document_decisions_and_reimport_noops(
     );
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn import_documents_cli_lands_as_unreviewed_and_review_flow_works() {
+    let hivemind_dir = unique_test_dir("import-documents-unreviewed");
+    let scratch_dir = unique_test_dir("import-documents-unreviewed-doc");
+    std::fs::create_dir_all(&scratch_dir).expect("scratch dir");
+    let doc_path = scratch_dir.join("decision.md");
+    std::fs::write(
+        &doc_path,
+        "Decision:\n  id: unreviewed-test\n  title: Use reviewed import flow\n  status: accepted\n  actor: actor:alice\n  topic_keys: import, review\n  rationale: Importers must not auto-accept; humans review first.\n  options:\n    - require review\n    - auto-accept\n  chose: require review\n",
+    )
+    .expect("write test document");
+
+    let import_output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:test",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "import",
+        "documents",
+        "--file",
+        doc_path.to_str().expect("utf-8 doc path"),
+    ]))
+    .expect("document import succeeds");
+    let import_output: serde_json::Value =
+        serde_json::from_str(&import_output).expect("valid import json");
+    assert_eq!(
+        import_output["summary"]["blocks_imported"],
+        serde_json::json!(1)
+    );
+
+    // Decision must land as proposed (unreviewed) even though the document says status: accepted.
+    let unreviewed_cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "reviewer:human",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "review",
+        "--actor",
+        "actor:alice",
+        "--since",
+        "2000-01-01",
+        "--unreviewed-only",
+    ]);
+    let Command::Review(unreviewed_args) = &unreviewed_cli.command else {
+        panic!("expected review command");
+    };
+    let mut empty_input = std::io::Cursor::new(Vec::<u8>::new());
+    let mut prompts = Vec::new();
+    let before_review = run_review_session(
+        &unreviewed_cli,
+        unreviewed_args,
+        &mut empty_input,
+        &mut prompts,
+    )
+    .expect("review session succeeds");
+    let before_review: serde_json::Value =
+        serde_json::from_str(&before_review).expect("valid review json");
+    assert_eq!(
+        before_review["matched_count"],
+        serde_json::json!(1),
+        "imported decision must appear as unreviewed"
+    );
+
+    // Approve the decision in a review session.
+    let review_cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "reviewer:human",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "review",
+        "--actor",
+        "actor:alice",
+        "--since",
+        "2000-01-01",
+        "--unreviewed-only",
+    ]);
+    let Command::Review(review_args) = &review_cli.command else {
+        panic!("expected review command");
+    };
+    let mut approve_input = std::io::Cursor::new("a\n".as_bytes());
+    let mut prompts2 = Vec::new();
+    let after_approve =
+        run_review_session(&review_cli, review_args, &mut approve_input, &mut prompts2)
+            .expect("review approval succeeds");
+    let after_approve: serde_json::Value =
+        serde_json::from_str(&after_approve).expect("valid review json");
+    assert_eq!(
+        after_approve["reviewed_count"],
+        serde_json::json!(1),
+        "decision must be accepted by reviewer"
+    );
+
+    // After review, must not appear as unreviewed.
+    let post_cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "reviewer:human",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "review",
+        "--actor",
+        "actor:alice",
+        "--since",
+        "2000-01-01",
+        "--unreviewed-only",
+    ]);
+    let Command::Review(post_args) = &post_cli.command else {
+        panic!("expected review command");
+    };
+    let mut empty_input2 = std::io::Cursor::new(Vec::<u8>::new());
+    let mut prompts3 = Vec::new();
+    let post_review = run_review_session(&post_cli, post_args, &mut empty_input2, &mut prompts3)
+        .expect("post-review session succeeds");
+    let post_review: serde_json::Value =
+        serde_json::from_str(&post_review).expect("valid review json");
+    assert_eq!(
+        post_review["matched_count"],
+        serde_json::json!(0),
+        "reviewed decision must not appear as unreviewed after accept"
+    );
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    let _ = std::fs::remove_dir_all(&scratch_dir);
 }
 
 #[test]
@@ -2234,7 +2366,7 @@ fn import_documents_cli_can_resolve_conflict_as_supersession() {
     ]))
     .expect("new decision query succeeds");
     let new_view: serde_json::Value = serde_json::from_str(&new_view).expect("valid json");
-    assert_eq!(new_view["data"]["status"], serde_json::json!("accepted"));
+    assert_eq!(new_view["data"]["status"], serde_json::json!("proposed"));
     assert_eq!(
         new_view["data"]["title"],
         serde_json::json!("Superseding title")
@@ -2256,10 +2388,11 @@ fn import_documents_cli_can_resolve_conflict_by_contesting_existing_decision() {
     )
     .expect("write initial doc");
 
-    run(&Cli::parse_from([
+    let first_import = run(&Cli::parse_from([
         "hivemind",
         "--actor",
         "importer:local",
+        "--json",
         "--hivemind-dir",
         hivemind_dir.to_str().expect("utf-8 temp path"),
         "import",
@@ -2268,6 +2401,25 @@ fn import_documents_cli_can_resolve_conflict_by_contesting_existing_decision() {
         document_path.to_str().expect("utf-8 doc path"),
     ]))
     .expect("initial import succeeds");
+    let first_import: serde_json::Value =
+        serde_json::from_str(&first_import).expect("valid import json");
+    let decision_id = first_import["files"][0]["blocks"][0]["decision_id"]
+        .as_str()
+        .expect("decision id from first import");
+
+    // Explicitly accept the decision so that a contest can produce a "contested" status.
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "reviewer:local",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.accepted",
+        "--decision-id",
+        decision_id,
+    ]))
+    .expect("explicit acceptance succeeds");
 
     std::fs::write(
         &document_path,
@@ -2275,10 +2427,11 @@ fn import_documents_cli_can_resolve_conflict_by_contesting_existing_decision() {
     )
     .expect("write changed doc");
 
+    // Use a different actor to reject (contest) — same actor cannot both accept and reject.
     let output = run(&Cli::parse_from([
         "hivemind",
         "--actor",
-        "reviewer:local",
+        "dissenter:local",
         "--json",
         "--hivemind-dir",
         hivemind_dir.to_str().expect("utf-8 temp path"),

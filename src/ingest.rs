@@ -1613,24 +1613,6 @@ fn write_document_decision_events<L: EventLedger>(
     event_ids.push(proposal_events.proposal_event_id);
     event_ids.extend(proposal_events.relation_event_ids);
 
-    match draft.status {
-        ImportedDecisionStatus::Proposed => {}
-        ImportedDecisionStatus::Accepted => {
-            event_ids.push(commands.accept_decision_with_uuid(
-                &identities.decision_id,
-                actor_id,
-                identities.status_event_uuid,
-            )?);
-        }
-        ImportedDecisionStatus::Rejected => {
-            event_ids.push(commands.reject_decision_with_uuid(
-                &identities.decision_id,
-                actor_id,
-                identities.status_event_uuid,
-            )?);
-        }
-    }
-
     for (superseded_decision_id, event_uuid) in identities
         .supersedes_decision_ids
         .iter()
@@ -2517,7 +2499,6 @@ struct DocumentImportIdentities {
     evidence_event_uuids: Vec<Uuid>,
     hypothesis_event_uuids: Vec<Uuid>,
     proposal_event_uuids: DecisionProposalEventUuids,
-    status_event_uuid: Uuid,
     supersedes_event_uuids: Vec<Uuid>,
 }
 
@@ -2691,7 +2672,6 @@ impl DocumentImportIdentities {
                     draft.evidence.len(),
                 ),
             },
-            status_event_uuid: import_uuid(&format!("{role_prefix}:decision.status")),
             supersedes_event_uuids: repeated_role_uuids(
                 &role_prefix,
                 "decision.superseded",
