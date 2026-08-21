@@ -3,6 +3,47 @@
 All notable changes to HiveMind are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.5.0 — 2026-08-21 — Import unification: prose extraction and clean CLI
+
+`hivemind import` now works end-to-end for real documents. The command
+auto-detects whether input is raw prose or a pre-structured block list and
+extracts decision candidates inline — no pre-processing step required.
+Imported decisions land as **unreviewed** (status `proposed`) and are
+surfaced by `hivemind review --unreviewed-only`, closing the review loop.
+The experimental `suggest document-candidates` and `materialize-document-candidates`
+sub-commands, superseded by this flow, are retired.
+
+### Added
+- **Prose-aware import.** `hivemind import` auto-detects prose vs block input
+  and runs inline extraction when prose is supplied, eliminating the separate
+  `suggest → materialize` step. (`src/import.rs`, 21a2368, f90992c)
+- **Unreviewed landing.** All imported decisions land with status `proposed`
+  (unreviewed), surfaced by `hivemind review --unreviewed-only`.
+  (21a2368)
+
+### Removed
+- **`hivemind suggest document-candidates`** — superseded by auto-detection in
+  `hivemind import`. (2268b1e)
+- **`hivemind materialize-document-candidates`** — superseded by inline
+  extraction in `hivemind import`. (2268b1e)
+
+### Changed
+- **README install snippet.** `HIVEMIND_VERSION` example updated to `v0.5.0`.
+- **Docs.** Import/review flow docs updated to reflect the new single-command
+  path; stale `suggest`/`materialize` references removed. (7f05a18)
+
+### Improved
+- **Hosted server hardening.** Per-request timeouts, concurrency limits, and
+  JWKS refresh robustness. (hivemind-u6uu)
+- **Graph caching.** Projected graph cached in `AppState` with incremental
+  offset-keyed invalidation — reduces per-request rebuild latency.
+  (94717be)
+- **`premised_on` edge origin.** Phase 2: `PREMISED_ON` edges now originate
+  from the chosen `Option` node rather than the `Decision`, matching the
+  semantic intent. (hivemind-1ysb)
+- **Website.** Added "Use cases" (Shipped vs Planned) and "Why HiveMind"
+  narrative pages. (96f911a, cd6103e)
+
 ## v0.4.1 — 2026-07-21 — Self-host server image on ghcr
 
 A packaging release that completes the self-hosting deployment path. No
