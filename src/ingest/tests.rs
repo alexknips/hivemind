@@ -67,6 +67,7 @@ fn minimal_draft(block_id: &str) -> DocumentDecisionDraft {
         },
         snippet: "snippet".to_owned(),
         prepared_source_ref: None,
+        extractor_explanation: None,
     }
 }
 

@@ -600,7 +600,7 @@ pub(crate) fn format_import_output(as_json: bool, report: &DocumentImportReport)
             CliError::InvalidInput(format!("json serialization failed: {error}")).into()
         })
     } else {
-        Ok(format!(
+        let mut out = format!(
             "import_run_id={} files_seen={} blocks_imported={} no_op={} conflicts={} resolved={} duplicate_candidates={} validation_errors={} events_written={}",
             report.import_run_id,
             report.summary.files_seen,
@@ -611,7 +611,16 @@ pub(crate) fn format_import_output(as_json: bool, report: &DocumentImportReport)
             report.summary.duplicate_candidates,
             report.summary.validation_errors,
             report.summary.events_written
-        ))
+        );
+        if report.summary.prose_candidates_proposed > 0 {
+            use std::fmt::Write as _;
+            let _ = write!(
+                out,
+                " prose_candidates_proposed={}",
+                report.summary.prose_candidates_proposed
+            );
+        }
+        Ok(out)
     }
 }
 

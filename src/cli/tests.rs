@@ -3519,3 +3519,216 @@ fn emit_ingest_batch_classified_plugin_path_round_trip() {
     let _ = std::fs::remove_file(&captures_path);
     let _ = std::fs::remove_dir_all(&hivemind_dir);
 }
+
+#[test]
+fn import_documents_cli_prose_extraction_writes_candidates_as_unreviewed() {
+    // Prose file with no Decision: blocks → extractor path → UNREVIEWED in ledger.
+    let root = unique_test_dir("import-prose-extraction");
+    let hivemind_dir = root.join("hive");
+    std::fs::create_dir_all(&root).expect("scratch dir");
+
+    let prose = "Engineering memo\nThe team selected Rust as the implementation language for performance reasons. Options considered were Rust and Go. The assumption is that async Rust compile times remain acceptable.\n";
+    let document = root.join("memo.txt");
+    std::fs::write(&document, prose).expect("write prose document");
+
+    let excerpt = "The team selected Rust as the implementation language for performance reasons.";
+    let byte_start = prose.find(excerpt).expect("excerpt start");
+    let byte_end = byte_start + excerpt.len();
+
+    let response_path = root.join("response.json");
+    std::fs::write(
+        &response_path,
+        serde_json::json!({
+            "candidates": [{
+                "file_index": 0,
+                "source_span": {
+                    "byte_start": byte_start,
+                    "byte_end": byte_end,
+                    "line_start": 2,
+                    "line_end": 2
+                },
+                "title": "Use Rust as implementation language",
+                "status": "proposed",
+                "topic_keys": ["lang", "perf"],
+                "rationale": "Performance requirements favour Rust.",
+                "option_labels": ["Rust", "Go"],
+                "chosen_option_label": "Rust",
+                "evidence": ["async Rust compile times remain acceptable"],
+                "hypotheses": ["Rust compile times will stay acceptable"],
+                "explanation": "The excerpt names a clear choice between Rust and Go with a rationale."
+            }]
+        })
+        .to_string(),
+    )
+    .expect("write LLM response");
+
+    let import_output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:test",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 hivemind dir"),
+        "import",
+        "documents",
+        "--file",
+        document.to_str().expect("utf-8 document path"),
+        "--format",
+        "text",
+        "--llm-response",
+        response_path.to_str().expect("utf-8 response path"),
+    ]))
+    .expect("prose import succeeds");
+
+    let import_json: serde_json::Value =
+        serde_json::from_str(&import_output).expect("valid import json");
+
+    // One candidate proposed via prose extraction.
+    assert_eq!(
+        import_json["summary"]["prose_candidates_proposed"],
+        serde_json::json!(1),
+        "prose extraction must record candidates_proposed"
+    );
+    // The candidate was written (blocks_imported counts both block and prose paths).
+    assert_eq!(
+        import_json["summary"]["blocks_imported"],
+        serde_json::json!(1),
+        "prose candidate must land as imported block"
+    );
+    // The file status reflects prose extraction.
+    assert_eq!(
+        import_json["files"][0]["status"],
+        serde_json::json!("prose_extracted"),
+        "file status must be prose_extracted"
+    );
+    // The decision_id must be present in the block report.
+    let decision_id = import_json["files"][0]["blocks"][0]["decision_id"]
+        .as_str()
+        .expect("decision_id in json output");
+    assert!(!decision_id.is_empty(), "decision_id must be non-empty");
+
+    // Verify the source_ref carries the extractor explanation.
+    let ledger = crate::ledger::SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let events = ledger.read(0, 100).expect("events read");
+    let proposal = events
+        .iter()
+        .find(|e| {
+            e.event_type == crate::events::EventType::DecisionProposed
+                && e.payload.get("title").and_then(|v| v.as_str())
+                    == Some("Use Rust as implementation language")
+        })
+        .expect("decision proposal event");
+    assert_eq!(
+        proposal.source,
+        crate::events::EventSource::Document,
+        "prose candidate must have document source"
+    );
+    let source_ref: serde_json::Value =
+        serde_json::from_str(proposal.source_ref.as_deref().expect("source_ref present"))
+            .expect("source_ref is valid json");
+    assert_eq!(source_ref["source"], serde_json::json!("document"));
+    assert!(
+        source_ref["extractor_explanation"]
+            .as_str()
+            .expect("extractor_explanation in source_ref")
+            .contains("choice between Rust and Go"),
+        "extractor_explanation must appear in source_ref"
+    );
+    // The event_type itself proves this is a proposal (no accept/reject = UNREVIEWED).
+    assert_eq!(
+        proposal.event_type,
+        crate::events::EventType::DecisionProposed,
+        "prose candidate must be a proposal event (UNREVIEWED)"
+    );
+
+    // Must appear in review --unreviewed-only.
+    let review_cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "reviewer:human",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 hivemind dir"),
+        "review",
+        "--since",
+        "2000-01-01",
+        "--unreviewed-only",
+    ]);
+    let crate::cli::args::Command::Review(review_args) = &review_cli.command else {
+        panic!("expected review command");
+    };
+    let mut empty_input = std::io::Cursor::new(Vec::<u8>::new());
+    let mut prompts = Vec::new();
+    let review_result =
+        run_review_session(&review_cli, review_args, &mut empty_input, &mut prompts)
+            .expect("review session succeeds");
+    let review_json: serde_json::Value =
+        serde_json::from_str(&review_result).expect("valid review json");
+    assert_eq!(
+        review_json["matched_count"],
+        serde_json::json!(1),
+        "prose candidate must appear as unreviewed in review"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn import_documents_cli_blocks_path_used_when_extractor_present() {
+    // A file WITH Decision: blocks uses the deterministic path even when extractor args supplied.
+    let root = unique_test_dir("import-blocks-with-extractor");
+    let hivemind_dir = root.join("hive");
+    std::fs::create_dir_all(&root).expect("scratch dir");
+
+    let doc_path = root.join("decision.md");
+    std::fs::write(
+        &doc_path,
+        "Decision:\n  id: lang-choice\n  title: Choose Rust for the CLI\n  status: accepted\n  topic_keys: lang\n  rationale: Performance matters.\n  options:\n    - Rust\n    - Python\n  chose: Rust\n",
+    )
+    .expect("write decision block");
+
+    // Supply an extractor response (would be used for prose, but this file has explicit blocks).
+    let response_path = root.join("response.json");
+    std::fs::write(
+        &response_path,
+        serde_json::json!({"candidates": []}).to_string(),
+    )
+    .expect("write empty response");
+
+    let import_output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "importer:test",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 hivemind dir"),
+        "import",
+        "documents",
+        "--file",
+        doc_path.to_str().expect("utf-8 doc path"),
+        "--llm-response",
+        response_path.to_str().expect("utf-8 response path"),
+    ]))
+    .expect("block import with extractor args succeeds");
+
+    let import_json: serde_json::Value =
+        serde_json::from_str(&import_output).expect("valid import json");
+    // Block file → processed via deterministic path, no prose candidates.
+    assert_eq!(
+        import_json["summary"]["blocks_imported"],
+        serde_json::json!(1),
+        "block file must use deterministic import path"
+    );
+    assert_eq!(
+        import_json["summary"]["prose_candidates_proposed"],
+        serde_json::json!(0),
+        "block file must not trigger prose extraction"
+    );
+    assert_eq!(
+        import_json["files"][0]["status"],
+        serde_json::json!("processed"),
+        "block file status must be processed, not prose_extracted"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}

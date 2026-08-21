@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::io::{self, BufRead, Write as IoWrite};
 
@@ -15,9 +15,11 @@ use crate::identity::{
     agent_actor_id, default_agent_session, default_agent_tool, default_human_actor_id,
 };
 use crate::ingest::{
-    extract_slack_decision_draft, import_documents, import_slack_thread,
-    parse_slack_thread_fixture, prepare_document_texts, DocumentImportRequest,
-    DocumentPreparationRequest, SlackIngestOutcome,
+    accumulate_file_summary_pub, extract_slack_decision_draft, import_documents,
+    import_prose_file_candidates, import_slack_thread, parse_slack_thread_fixture,
+    prepare_document_texts, DocumentFileImportStatus, DocumentImportFormat, DocumentImportRequest,
+    DocumentImportSummary, DocumentPreparationRequest, ProseImportCandidate, ProseImportSource,
+    SlackIngestOutcome,
 };
 #[cfg(feature = "shared-backend-postgres")]
 use crate::ledger::PostgresEventLedger;
@@ -42,6 +44,7 @@ use crate::slack_app::{
 use crate::suggest::{
     materialize_document_extraction_candidates, propose_document_extraction_candidates,
     DocumentCandidateExtractor, DocumentCandidateMaterializationRequest, DocumentCandidateRequest,
+    DocumentExtractionSourceDocument,
 };
 use crate::summarize::{
     recall_decisions, weekly_digest, DigestRequest, RecallRequest, RECALL_MAX_LIMIT,
@@ -55,12 +58,12 @@ use super::args::{
     Command, ConnectorArgs, ConnectorAuthArgs, ConnectorCommand, DecisionCaptureSource, DigestArgs,
     DisagreeArgs, DumpArgs, DumpFormat, EmitArgs, EmitCaptureProvenanceArgs, EmitCommand,
     EmitDecisionProposedArgs, EmitRelationKind, GraphBackend, ImportArgs, ImportCommand,
-    ImportConnectorCommand, IngestArgs, IngestCommand, IngestSlackThreadArgs, MapArgs, McpArgs,
-    QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand,
-    QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs,
-    QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
-    QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand, SuggestArgs,
-    SuggestCommand, SuggestDocumentCandidatesArgs, SupersedeArgs, TuiArgs,
+    ImportConnectorCommand, ImportDocumentsArgs, IngestArgs, IngestCommand, IngestSlackThreadArgs,
+    MapArgs, McpArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs,
+    QueryCommand, QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs,
+    QueryHistoryFilterArgs, QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
+    QuerySearchDecisionsArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
+    SuggestArgs, SuggestCommand, SuggestDocumentCandidatesArgs, SupersedeArgs, TuiArgs,
 };
 use super::render::{
     append_truncation_notice, decision_status_label, format_disagree_output, format_import_output,
@@ -931,6 +934,146 @@ pub(crate) fn run_review_session<R: BufRead, W: IoWrite>(
     )
 }
 
+fn build_import_extractor(
+    args: &ImportDocumentsArgs,
+) -> Result<Option<DocumentCandidateExtractor>> {
+    match (&args.extractor_command, &args.llm_response) {
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => Err(CliError::InvalidInput(
+            "use either --extractor-command or --llm-response, not both".to_owned(),
+        )
+        .into()),
+        (Some(_), None) => Ok(Some(DocumentCandidateExtractor::Command {
+            args: args.extractor_args.clone(),
+        })),
+        (None, Some(path)) => {
+            if !args.extractor_args.is_empty() {
+                return Err(CliError::InvalidInput(
+                    "--extractor-arg requires --extractor-command".to_owned(),
+                )
+                .into());
+            }
+            Ok(Some(DocumentCandidateExtractor::ResponseFile(path.clone())))
+        }
+    }
+}
+
+fn apply_prose_extraction<L: crate::ledger::EventLedger>(
+    ledger: &L,
+    report: &mut crate::ingest::DocumentImportReport,
+    format: DocumentImportFormat,
+    extractor: &DocumentCandidateExtractor,
+    importer_actor_id: &str,
+) -> Result<()> {
+    let prose_indices: Vec<usize> = report
+        .files
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.status == DocumentFileImportStatus::SkippedUnmarked)
+        .map(|(i, _)| i)
+        .collect();
+
+    if prose_indices.is_empty() {
+        return Ok(());
+    }
+
+    let prose_paths: Vec<std::path::PathBuf> = prose_indices
+        .iter()
+        .filter_map(|&i| {
+            report.files[i]
+                .canonical_path
+                .as_deref()
+                .map(std::path::PathBuf::from)
+        })
+        .collect();
+
+    if prose_paths.is_empty() {
+        return Ok(());
+    }
+
+    let extraction = propose_document_extraction_candidates(&DocumentCandidateRequest {
+        paths: prose_paths,
+        format,
+        extractor: extractor.clone(),
+    })?;
+
+    // Index candidates by canonical source path
+    let mut candidates_by_canonical: HashMap<String, Vec<_>> = HashMap::new();
+    for candidate in extraction.candidates {
+        candidates_by_canonical
+            .entry(candidate.source.path.clone())
+            .or_default()
+            .push(candidate);
+    }
+
+    // Index extraction source files by canonical_path → sha256 and display path
+    let source_by_canonical: HashMap<String, &DocumentExtractionSourceDocument> = extraction
+        .files
+        .iter()
+        .map(|f| (f.canonical_path.clone(), f))
+        .collect();
+
+    let import_run_id = report.import_run_id.clone();
+
+    for &idx in &prose_indices {
+        let canonical = match report.files[idx].canonical_path.as_deref() {
+            Some(c) => c.to_owned(),
+            None => continue,
+        };
+        let src = match source_by_canonical.get(&canonical) {
+            Some(s) => *s,
+            None => continue,
+        };
+        let raw_candidates = candidates_by_canonical
+            .remove(&canonical)
+            .unwrap_or_default();
+        let prose_candidates: Vec<ProseImportCandidate> = raw_candidates
+            .into_iter()
+            .map(|c| ProseImportCandidate {
+                candidate_id: c.candidate_id,
+                title: c.decision.title,
+                status_str: c.decision.status,
+                topic_keys: c.decision.topic_keys,
+                rationale: c.decision.rationale,
+                option_labels: c.decision.options,
+                chosen_option_label: c.decision.chose,
+                evidence: c.decision.evidence,
+                hypotheses: c.decision.hypotheses,
+                source_span: c.source.span,
+                source_snippet: c.source.snippet,
+                explanation: c.explanation,
+            })
+            .collect();
+
+        let prose_source = ProseImportSource {
+            path: report.files[idx].path.clone(),
+            canonical_path: canonical.clone(),
+            sha256: src.sha256.clone(),
+        };
+
+        let prose_report = import_prose_file_candidates(
+            ledger,
+            &prose_source,
+            &prose_candidates,
+            importer_actor_id,
+            &import_run_id,
+        )?;
+        report.files[idx] = prose_report;
+    }
+
+    // Re-compute summary over updated file reports
+    let mut new_summary = DocumentImportSummary {
+        files_seen: report.summary.files_seen,
+        ..DocumentImportSummary::default()
+    };
+    for file in &report.files {
+        accumulate_file_summary_pub(&mut new_summary, file);
+    }
+    report.summary = new_summary;
+
+    Ok(())
+}
+
 fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
     match &import.command {
         ImportCommand::Documents(args) => {
@@ -938,7 +1081,7 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
             let scoped_ledger = TenantScopedLedger::new(&ledger, cli_tenant(cli)?);
             let mut paths = args.files.clone();
             paths.extend(args.paths.clone());
-            let report = import_documents(
+            let mut report = import_documents(
                 &scoped_ledger,
                 &DocumentImportRequest {
                     paths,
@@ -947,6 +1090,15 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
                     conflict_resolution: args.on_conflict.as_ingest_action(),
                 },
             )?;
+            if let Some(extractor) = build_import_extractor(args)? {
+                apply_prose_extraction(
+                    &scoped_ledger,
+                    &mut report,
+                    args.format.as_ingest_format(),
+                    &extractor,
+                    &cli.actor,
+                )?;
+            }
             format_import_output(cli.json, &report)
         }
         ImportCommand::PrepareDocuments(args) => {

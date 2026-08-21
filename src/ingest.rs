@@ -526,6 +526,7 @@ pub struct DocumentImportSummary {
     pub duplicate_candidates: usize,
     pub validation_errors: usize,
     pub events_written: usize,
+    pub prose_candidates_proposed: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -547,6 +548,7 @@ pub enum DocumentFileImportStatus {
     Processed,
     SkippedUnsupported,
     SkippedUnmarked,
+    ProseExtracted,
     ValidationError,
 }
 
@@ -748,6 +750,8 @@ struct DocumentSourceRef {
     conflict_resolution: Option<DocumentConflictSourceRefResolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prepared_from: Option<DocumentPreparedSourceRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extractor_explanation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -773,6 +777,7 @@ struct DocumentDecisionDraft {
     span: DocumentSourceSpan,
     snippet: String,
     prepared_source_ref: Option<DocumentPreparedSourceRef>,
+    extractor_explanation: Option<String>,
 }
 
 struct DocumentImportContext<'a> {
@@ -865,6 +870,109 @@ pub fn import_documents<L: EventLedger>(
         import_run_id,
         summary,
         files: file_reports,
+    })
+}
+
+/// Source file metadata for the prose extraction import path.
+pub struct ProseImportSource {
+    pub path: String,
+    pub canonical_path: String,
+    pub sha256: String,
+}
+
+/// A single decision candidate extracted from free-prose text by an LLM extractor.
+pub struct ProseImportCandidate {
+    pub candidate_id: String,
+    pub title: String,
+    pub status_str: String,
+    pub topic_keys: Vec<String>,
+    pub rationale: String,
+    pub option_labels: Vec<String>,
+    pub chosen_option_label: Option<String>,
+    pub evidence: Vec<String>,
+    pub hypotheses: Vec<String>,
+    pub source_span: DocumentSourceSpan,
+    pub source_snippet: String,
+    pub explanation: String,
+}
+
+/// Write LLM-extracted prose candidates to the ledger as UNREVIEWED decisions.
+///
+/// Each candidate is written using the same block-import machinery as explicit
+/// `Decision:` blocks, with `candidate_id` as the stable block identifier and
+/// the extractor explanation recorded in `source_ref`.
+pub fn import_prose_file_candidates<L: EventLedger>(
+    ledger: &L,
+    source: &ProseImportSource,
+    candidates: &[ProseImportCandidate],
+    importer_actor_id: &str,
+    import_run_id: &str,
+) -> Result<DocumentFileImportReport> {
+    if candidates.is_empty() {
+        return Ok(DocumentFileImportReport {
+            path: source.path.clone(),
+            canonical_path: Some(source.canonical_path.clone()),
+            source_hash: Some(source.sha256.clone()),
+            status: DocumentFileImportStatus::SkippedUnmarked,
+            message: Some("extractor returned no candidates".to_owned()),
+            blocks: Vec::new(),
+        });
+    }
+
+    let namespace = document_namespace(&source.canonical_path);
+    let context = DocumentImportContext {
+        canonical_path: &source.canonical_path,
+        source_hash: &source.sha256,
+        namespace: &namespace,
+        importer_actor_id,
+        import_run_id,
+    };
+
+    let mut block_reports = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let status = ImportedDecisionStatus::parse(&candidate.status_str)?;
+        let draft = DocumentDecisionDraft {
+            block_id: candidate.candidate_id.clone(),
+            title: candidate.title.clone(),
+            status,
+            original_actor_id: None,
+            topic_keys: candidate.topic_keys.clone(),
+            rationale: candidate.rationale.clone(),
+            option_labels: candidate.option_labels.clone(),
+            chosen_option_label: candidate.chosen_option_label.clone(),
+            evidence: candidate.evidence.clone(),
+            hypotheses: candidate.hypotheses.clone(),
+            supersedes: Vec::new(),
+            span: candidate.source_span,
+            snippet: candidate.source_snippet.clone(),
+            prepared_source_ref: None,
+            extractor_explanation: Some(candidate.explanation.clone()),
+        };
+        let block_report = import_document_decision_block(
+            ledger,
+            &draft,
+            &context,
+            DocumentConflictResolutionAction::Report,
+        )?;
+        block_reports.push(block_report);
+    }
+
+    let all_errors = block_reports
+        .iter()
+        .all(|b| b.status == DocumentBlockImportStatus::ValidationError);
+    let status = if all_errors {
+        DocumentFileImportStatus::ValidationError
+    } else {
+        DocumentFileImportStatus::ProseExtracted
+    };
+
+    Ok(DocumentFileImportReport {
+        path: source.path.clone(),
+        canonical_path: Some(source.canonical_path.clone()),
+        source_hash: Some(source.sha256.clone()),
+        status,
+        message: None,
+        blocks: block_reports,
     })
 }
 
@@ -1540,6 +1648,7 @@ fn document_source_ref(
         provisional_actor: draft.original_actor_id.is_none(),
         conflict_resolution,
         prepared_from: draft.prepared_source_ref.clone(),
+        extractor_explanation: draft.extractor_explanation.clone(),
     })
     .map_err(|error| {
         CommandError::Validation(format!("source_ref serialization failed: {error}")).into()
@@ -2943,6 +3052,7 @@ fn assemble_decision_draft(
         span: raw.span,
         snippet: compact_snippet(&raw.text),
         prepared_source_ref: raw.prepared_source_ref.clone(),
+        extractor_explanation: None,
     })
 }
 
@@ -3036,6 +3146,13 @@ fn compact_snippet(input: &str) -> String {
     snippet.trim().to_owned()
 }
 
+pub fn accumulate_file_summary_pub(
+    summary: &mut DocumentImportSummary,
+    file: &DocumentFileImportReport,
+) {
+    accumulate_file_summary(summary, file);
+}
+
 fn accumulate_file_summary(summary: &mut DocumentImportSummary, file: &DocumentFileImportReport) {
     if matches!(
         file.status,
@@ -3057,6 +3174,9 @@ fn accumulate_file_summary(summary: &mut DocumentImportSummary, file: &DocumentF
             DocumentBlockImportStatus::DuplicateCandidate => summary.duplicate_candidates += 1,
             DocumentBlockImportStatus::ValidationError => summary.validation_errors += 1,
         }
+    }
+    if file.status == DocumentFileImportStatus::ProseExtracted {
+        summary.prose_candidates_proposed += file.blocks.len();
     }
 }
 

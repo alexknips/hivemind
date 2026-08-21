@@ -701,6 +701,18 @@ pub struct ImportDocumentsArgs {
 
     #[arg(long = "on-conflict", value_enum, default_value_t = ImportDocumentConflictAction::Report)]
     pub on_conflict: ImportDocumentConflictAction,
+
+    /// Extractor command to use for prose documents (auto-detection: no Decision: blocks).
+    #[arg(long = "extractor-command", value_enum)]
+    pub extractor_command: Option<DocumentExtractorCommandArg>,
+
+    /// Extra arguments forwarded to the extractor command.
+    #[arg(long = "extractor-arg", value_name = "ARG")]
+    pub extractor_args: Vec<String>,
+
+    /// Path to a pre-computed LLM response file for prose extraction (mutually exclusive with --extractor-command).
+    #[arg(long = "llm-response", value_name = "PATH")]
+    pub llm_response: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
