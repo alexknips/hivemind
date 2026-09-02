@@ -38,3 +38,6 @@ snapshots/golden/
 
 # br doctor per-run artifacts
 .doctor/
+
+# Dogfood session scratch — not source, should not be committed
+/dogfood/
