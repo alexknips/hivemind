@@ -212,12 +212,13 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Build hivemind binary
-        run: cargo build --locked --bin hivemind
+      - name: Build hivemind + fidelity-eval binaries
+        run: cargo build --locked --bin hivemind --bin fidelity-eval
 
       - name: Run E2E smoke (SQLite)
         env:
           HIVEMIND_BIN: ./target/debug/hivemind
+          FIDELITY_BIN: ./target/debug/fidelity-eval
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: bash scripts/e2e_smoke.sh
 

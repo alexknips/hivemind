@@ -1,0 +1,51 @@
+# HiveMind capture-fidelity benchmark — smoke subset (2 cases)
+# Used by scripts/e2e_smoke.sh for the LLM-gated fidelity smoke:
+# runs the real Haiku classifier on 2 simple cases to verify the pipeline
+# is wired end-to-end without the cost of the full 39-case corpus.
+#
+# Cases: A1-ledger-store, A2-frontend-framework (both archetype A: clean-multi-option)
+
+cases:
+
+  - id: A1-ledger-store
+    archetype: clean-multi-option
+    domain: infrastructure
+    difficulty: clean
+    project_id: default
+    input: >
+      Decision: use Postgres for the ledger store. We weighed Postgres vs SQLite.
+      Chose Postgres — we need concurrent multi-tenant writes with row-level
+      security; SQLite is single-writer, so rejected. Backed by a load test
+      showing 200 concurrent tenants sustained.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "use Postgres for the ledger store", status: accepted, confidence: high}
+        - {kind: Option, key: pg, text: "Postgres", chosen: true}
+        - {kind: Option, key: sqlite, text: "SQLite", chosen: false}
+        - {kind: Evidence, key: ev, text: "load test: 200 concurrent tenants sustained"}
+      edges:
+        - {kind: HAS_OPTION, from: d, to: pg}
+        - {kind: HAS_OPTION, from: d, to: sqlite}
+        - {kind: CHOSE, from: d, to: pg}
+        - {kind: BASED_ON, from: d, to: ev}
+
+  - id: A2-frontend-framework
+    archetype: clean-multi-option
+    domain: frontend-eng
+    difficulty: clean
+    project_id: default
+    input: >
+      We picked React for the console over Svelte and SolidJS. React won mainly
+      on hiring pool and ecosystem; Svelte was the runner-up on bundle size.
+      No hard data, just team experience.
+    expected:
+      nodes:
+        - {kind: Decision, key: d, text: "use React for the console", status: accepted, confidence: high}
+        - {kind: Option, key: react, text: "React", chosen: true}
+        - {kind: Option, key: svelte, text: "Svelte", chosen: false}
+        - {kind: Option, key: solid, text: "SolidJS", chosen: false}
+      edges:
+        - {kind: HAS_OPTION, from: d, to: react}
+        - {kind: HAS_OPTION, from: d, to: svelte}
+        - {kind: HAS_OPTION, from: d, to: solid}
+        - {kind: CHOSE, from: d, to: react}

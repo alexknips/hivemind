@@ -16,7 +16,7 @@ over TCP.
 |-------|------|----------|-----------|--------|
 | 1a | `scripts/e2e_smoke.sh` | SQLite | No (key-gated) | **Implemented** |
 | 1b | `scripts/e2e_smoke.sh --skip-map` + Postgres compose profile | SQLite + Postgres | No | **Implemented** |
-| 2 | LLM-gated extensions in `e2e_smoke.sh` | Both | Yes | Planned (hivemind-fabq.3, after key lands) |
+| 2 | LLM-gated extensions in `e2e_smoke.sh` | Both | Yes (optional) | **Implemented** (hivemind-fabq.3) |
 | 3 | WorkOS-auth compose profile | Postgres + WorkOS JWT | Test creds | Planned (hivemind-fabq.4) |
 
 ---
@@ -28,11 +28,12 @@ over TCP.
 - Docker and Docker Compose v2
 - `curl` and `jq`
 - A built `hivemind` binary (for CLI + MCP legs) — see below
+- A built `fidelity-eval` binary (for fidelity ceiling-mode smoke) — optional
 
 ```bash
-# 1. Build the image and the binary
+# 1. Build the image and the binaries
 docker compose build
-cargo build --locked --bin hivemind
+cargo build --locked --bin hivemind --bin fidelity-eval
 
 # 2. Start the server (SQLite, no auth)
 docker compose up -d hivemind
@@ -42,25 +43,36 @@ until curl -sf http://localhost:8080/v1/health | grep -q '"ok"'; do sleep 1; don
 
 # 4. Run the smoke suite
 HIVEMIND_BIN=./target/debug/hivemind \
+FIDELITY_BIN=./target/debug/fidelity-eval \
   bash scripts/e2e_smoke.sh
 
 # 5. Tear down
 docker compose down -v
 ```
 
-### LLM-gated assertions
+### LLM-gated assertions (Slice 2)
 
-Set `ANTHROPIC_API_KEY` before running the script to enable the classifier and
-summarizer assertions (cheap model: `claude-haiku-4-5-20251001`):
+Set `ANTHROPIC_API_KEY` before running the script to enable the Slice 2
+LLM-gated assertions (cheap model: `claude-haiku-4-5-20251001`, ~2 API calls):
+
+- Capture a rich decision and wait 20s for the background classifier to process it.
+- Verify the decision is retrievable and rule-based quality score is returned.
+- Run `fidelity-eval` against `benchmarks/fidelity/corpus-smoke.yaml` (2 cases)
+  using the real Haiku classifier and report Macro-F1.
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-... \
 HIVEMIND_BIN=./target/debug/hivemind \
+FIDELITY_BIN=./target/debug/fidelity-eval \
   bash scripts/e2e_smoke.sh
 ```
 
 When the key is absent, those assertions are marked `SKIP` and the suite still
 exits `0` — keyless CI remains green.
+
+**Note:** The `fidelity-eval --ceiling` (Slice 2 infra smoke, no LLM) runs
+unconditionally when the binary is available, validating the binary + projector
+machinery without any API calls.
 
 ### Postgres backend
 
@@ -127,7 +139,7 @@ The script exercises these paths in order:
 | Health | `GET /v1/health` |
 | Capture — HTTP | `POST /v1/decisions`, `/v1/evidence`, `/v1/hypotheses` |
 | Capture — CLI | `hivemind emit decision.proposed` (local dir) |
-| Capture — MCP stdio | MCP `capture_decision` tool (local dir) |
+| Capture — MCP HTTP | MCP `capture_decision` tool (HTTP) |
 | Query / projection | `GET /v1/decisions/{id}`, `/{id}/compact-view`, `/v1/graph` |
 | Search | `GET /v1/decisions/search`, `/v1/decisions/relevant` |
 | Spectral map | `GET /v1/decisions/map` (skipped on Postgres) |
@@ -135,7 +147,9 @@ The script exercises these paths in order:
 | Supersession chain | `GET /v1/decisions/{id}/supersession-chain` |
 | Multi-tenant isolation | Two-tenant capture + graph cross-check |
 | Quality scan | MCP `scan_decision_quality` tool |
-| LLM-gated | Capture with classifier enabled (key-gated) |
+| Quality score + summarize | MCP `score_decision`, `summarize_decisions` (rule-based) |
+| Fidelity binary (ceiling) | `fidelity-eval --ceiling` (no LLM; validates binary + projector) |
+| LLM-gated (Slice 2) | Classifier enrichment + quality score + fidelity-eval 2-case smoke (key-gated) |
 
 Exit code `0` = all non-skipped assertions passed.
 Exit code `1` = at least one assertion failed.
@@ -150,8 +164,11 @@ Exit code `1` = at least one assertion failed.
 | `HIVEMIND_E2E_TENANT` | `e2e-test` | Tenant ID used for most requests |
 | `HIVEMIND_E2E_SKIP_MAP` | `false` | Set `true` to skip spectral-map assertion (Postgres backends) |
 | `HIVEMIND_E2E_SKIP_SEARCH` | `false` | Set `true` to skip FTS search assertion (Postgres backends) |
-| `ANTHROPIC_API_KEY` | *(empty)* | When set, LLM-gated assertions are enabled |
+| `ANTHROPIC_API_KEY` | *(empty)* | When set, LLM-gated (Slice 2) assertions are enabled |
 | `HIVEMIND_BIN` | `hivemind` | Path to the `hivemind` binary |
+| `FIDELITY_BIN` | `fidelity-eval` | Path to the `fidelity-eval` binary (Slice 2 ceiling smoke) |
+| `FIDELITY_CORPUS` | `benchmarks/fidelity/corpus.yaml` | Full corpus for ceiling mode |
+| `FIDELITY_CORPUS_SMOKE` | `benchmarks/fidelity/corpus-smoke.yaml` | 2-case corpus for LLM smoke |
 
 ### Flags
 
@@ -174,9 +191,10 @@ every PR and `master` push:
 
 1. Builds the Docker image (`hivemind:e2e`).
 2. Starts `hivemind` (SQLite, no-deps) via Docker Compose and waits for `/v1/health`.
-3. Builds the `hivemind` binary (for CLI + MCP legs).
-4. Runs `scripts/e2e_smoke.sh` (LLM assertions skipped unless
-   `ANTHROPIC_API_KEY` secret is set).
+3. Builds `hivemind` and `fidelity-eval` binaries.
+4. Runs `scripts/e2e_smoke.sh` (Slice 2 LLM assertions skipped unless
+   the `ANTHROPIC_API_KEY` GitHub Actions secret is set; ceiling-mode fidelity
+   smoke always runs when the binary is available).
 5. Tears down with `docker compose down -v`.
 
 **`e2e-compose-postgres` (Postgres):**
@@ -191,8 +209,8 @@ every PR and `master` push:
 
 `ANTHROPIC_API_KEY` is an optional GitHub Actions secret (name:
 `ANTHROPIC_API_KEY`). When absent from the repo secrets the LLM assertions
-are skipped; CI stays green. When Alex provisions the key, the full LLM
-slice activates automatically.
+are skipped; CI stays green. When Alex provisions the key, the full Slice 2
+LLM assertions activate automatically.
 
 ---
 

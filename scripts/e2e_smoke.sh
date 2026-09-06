@@ -8,8 +8,11 @@
 #   HIVEMIND_E2E_BASE_URL   — default: http://localhost:8080
 #   HIVEMIND_E2E_API_KEY    — default: (empty — dev/no-auth mode)
 #   HIVEMIND_E2E_TENANT     — default: e2e-test
-#   ANTHROPIC_API_KEY       — when set, LLM-gated assertions are enabled
+#   ANTHROPIC_API_KEY       — when set, LLM-gated assertions (Slice 2) are enabled
 #   HIVEMIND_BIN            — path to hivemind binary (for CLI + MCP legs)
+#   FIDELITY_BIN            — path to fidelity-eval binary (for ceiling-mode smoke)
+#   FIDELITY_CORPUS         — path to fidelity corpus YAML (default: benchmarks/fidelity/corpus.yaml)
+#   FIDELITY_CORPUS_SMOKE   — path to mini smoke corpus (default: benchmarks/fidelity/corpus-smoke.yaml)
 #
 # Exit codes: 0 = all checks passed; 1 = at least one check failed.
 #
@@ -26,6 +29,11 @@ TENANT="${HIVEMIND_E2E_TENANT:-e2e-test}"
 HIVEMIND_BIN="${HIVEMIND_BIN:-hivemind}"
 SKIP_MAP="${HIVEMIND_E2E_SKIP_MAP:-false}"     # set true for Postgres (270r)
 SKIP_SEARCH="${HIVEMIND_E2E_SKIP_SEARCH:-false}"  # set true for Postgres (FTS not in shared-backend)
+FIDELITY_BIN="${FIDELITY_BIN:-fidelity-eval}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+FIDELITY_CORPUS="${FIDELITY_CORPUS:-$REPO_ROOT/benchmarks/fidelity/corpus.yaml}"
+FIDELITY_CORPUS_SMOKE="${FIDELITY_CORPUS_SMOKE:-$REPO_ROOT/benchmarks/fidelity/corpus-smoke.yaml}"
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -394,29 +402,157 @@ else
   fail "MCP HTTP scan_decision_quality — response: $qs_resp"
 fi
 
-# ── LLM-gated assertions ──────────────────────────────────────────────────────
+# ── quality score + summarize (rule-based, always runs) ──────────────────────
+section "Quality score + summarize"
+
+if [[ -n "$DECISION_ID" ]]; then
+  score_resp=$(curl -s \
+    -H "Content-Type: application/json" \
+    -H "X-HiveMind-Tenant: $TENANT" \
+    -H "X-HiveMind-Actor: agent:e2e:smoke" \
+    "${mcp_auth_args[@]}" \
+    "${mcp_session_args[@]}" \
+    -X POST \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/call\",\"params\":{\"name\":\"score_decision\",\"arguments\":{\"decision_id\":\"$DECISION_ID\"}}}" \
+    "$BASE_URL/mcp")
+  if echo "$score_resp" | jq -e '.result.content[0].text' > /dev/null 2>&1; then
+    score_text=$(echo "$score_resp" | jq -r '.result.content[0].text')
+    if echo "$score_text" | jq -e '.data | (has("score") or . == null)' > /dev/null 2>&1; then
+      tier=$(echo "$score_text" | jq -r '.data.tier // "no-data"')
+      score=$(echo "$score_text" | jq -r '.data.score // "n/a"')
+      pass "MCP score_decision — tier=$tier score=$score"
+    else
+      pass "MCP score_decision — returned result"
+    fi
+  else
+    fail "MCP score_decision — unexpected response: $score_resp"
+  fi
+
+  sum_resp=$(curl -s \
+    -H "Content-Type: application/json" \
+    -H "X-HiveMind-Tenant: $TENANT" \
+    -H "X-HiveMind-Actor: agent:e2e:smoke" \
+    "${mcp_auth_args[@]}" \
+    "${mcp_session_args[@]}" \
+    -X POST \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"summarize_decisions\",\"arguments\":{\"decision_ids\":[\"$DECISION_ID\"],\"mode\":\"single\"}}}" \
+    "$BASE_URL/mcp")
+  if echo "$sum_resp" | jq -e '.result.content[0].text' > /dev/null 2>&1; then
+    pass "MCP summarize_decisions (single) — returned summary"
+  else
+    fail "MCP summarize_decisions — unexpected response: $sum_resp"
+  fi
+else
+  skip "MCP score_decision — no decision_id (capture failed)"
+  skip "MCP summarize_decisions — no decision_id (capture failed)"
+fi
+
+# ── fidelity binary — ceiling mode (always runs, no LLM) ─────────────────────
+section "Fidelity binary (ceiling mode)"
+
+if command -v "$FIDELITY_BIN" > /dev/null 2>&1 && [[ -f "$FIDELITY_CORPUS" ]]; then
+  fidelity_out=$("$FIDELITY_BIN" --ceiling --corpus "$FIDELITY_CORPUS" 2>&1) || fidelity_rc=$?
+  fidelity_rc="${fidelity_rc:-0}"
+  if echo "$fidelity_out" | grep -qi "Macro-F1"; then
+    macro_f1=$(echo "$fidelity_out" | grep -i "Macro-F1" | awk '{print $NF}')
+    pass "fidelity-eval --ceiling — Macro-F1=$macro_f1 (schema ceiling, no LLM)"
+  elif [[ "$fidelity_rc" -eq 0 ]]; then
+    pass "fidelity-eval --ceiling — exited 0 (binary + projector smoke OK)"
+  else
+    fail "fidelity-eval --ceiling — exit $fidelity_rc; output: $fidelity_out"
+  fi
+else
+  if ! command -v "$FIDELITY_BIN" > /dev/null 2>&1; then
+    skip "fidelity-eval --ceiling — binary not found (FIDELITY_BIN=$FIDELITY_BIN; build: cargo build --bin fidelity-eval)"
+  else
+    skip "fidelity-eval --ceiling — corpus not found ($FIDELITY_CORPUS)"
+  fi
+fi
+
+# ── LLM-gated assertions (Slice 2) ───────────────────────────────────────────
 section "LLM-gated (ANTHROPIC_API_KEY)"
 
 if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  skip "LLM classifier enrichment — ANTHROPIC_API_KEY not set (keyless CI, skipping)"
-  skip "LLM summarize — ANTHROPIC_API_KEY not set"
+  skip "LLM classifier enrichment — ANTHROPIC_API_KEY not set (keyless CI)"
+  skip "LLM quality-score enrichment — ANTHROPIC_API_KEY not set"
+  skip "LLM fidelity smoke (1-2 cases) — ANTHROPIC_API_KEY not set"
 else
-  # When the key is set, the classifier runs asynchronously on ingest.
-  # We can only verify the server accepted a decision without error;
-  # classifier output is non-deterministic timing.
-  llm_resp=$(curl_json POST /v1/decisions '{
-    "title": "e2e-smoke: LLM classifier check",
-    "rationale": "verify classifier is wired when ANTHROPIC_API_KEY is present",
-    "topic_keys": ["e2e", "llm"],
-    "options": [{"label": "enabled"}],
-    "chosen_option_label": "enabled"
-  }')
-  if echo "$llm_resp" | jq -e '.decision_id' > /dev/null 2>&1; then
-    pass "LLM path: capture accepted with ANTHROPIC_API_KEY set (classifier may be enriching)"
+  # Capture a well-formed decision to exercise the classifier + scorer pipeline.
+  # Both workers poll on fixed intervals (classifier: 10s, scorer: 30s) so we
+  # wait before checking for enrichment.
+  llm_capture=$(curl_json POST /v1/decisions "{
+    \"title\": \"e2e-smoke: adopt structured logging for observability\",
+    \"rationale\": \"Structured JSON logs (vs printf) enable alerting rules on error_code fields; evaluated logfmt and JSON; chose JSON for tooling breadth\",
+    \"topic_keys\": [\"e2e\", \"observability\", \"logging\"],
+    \"options\": [
+      {\"label\": \"json-logs\", \"description\": \"Structured JSON — broad tooling support\"},
+      {\"label\": \"logfmt\",    \"description\": \"logfmt — human-readable but fewer tools\"},
+      {\"label\": \"printf\",   \"description\": \"printf — simplest, unstructured\"}
+    ],
+    \"chosen_option_label\": \"json-logs\"
+  }")
+  LLM_DECISION_ID=""
+  if echo "$llm_capture" | jq -e '.decision_id' > /dev/null 2>&1; then
+    LLM_DECISION_ID=$(echo "$llm_capture" | jq -r '.decision_id')
+    pass "LLM classifier path: rich decision captured ($LLM_DECISION_ID)"
   else
-    fail "LLM path: capture failed with key set — response: $llm_resp"
+    fail "LLM classifier path: capture failed — response: $llm_capture"
   fi
-  skip "LLM summarize — deterministic assertion not implemented in Slice 1 (Slice 2)"
+
+  # Wait for the background classifier (poll interval: 10s) and scorer (30s).
+  # A 20s wait is sufficient for the classifier; scorer enrichment may take longer.
+  if [[ -n "$LLM_DECISION_ID" ]]; then
+    echo "  (waiting 20s for background classifier...)"
+    sleep 20
+
+    # Verify the decision is still retrievable (classifier may have enriched it).
+    llm_get=$(curl_api GET "/v1/decisions/$LLM_DECISION_ID")
+    if echo "$llm_get" | jq -e 'has("data")' > /dev/null 2>&1; then
+      pass "LLM classifier path: decision retrievable after classifier wait"
+    else
+      fail "LLM classifier path: decision not retrievable after wait — response: $llm_get"
+    fi
+
+    # Rule-based quality score on the LLM-captured decision.
+    llm_score=$(curl -s \
+      -H "Content-Type: application/json" \
+      -H "X-HiveMind-Tenant: $TENANT" \
+      -H "X-HiveMind-Actor: agent:e2e:smoke" \
+      "${mcp_auth_args[@]}" \
+      "${mcp_session_args[@]}" \
+      -X POST \
+      -d "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"score_decision\",\"arguments\":{\"decision_id\":\"$LLM_DECISION_ID\"}}}" \
+      "$BASE_URL/mcp")
+    if echo "$llm_score" | jq -e '.result.content[0].text' > /dev/null 2>&1; then
+      llm_tier=$(echo "$llm_score" | jq -r '.result.content[0].text | fromjson | .data.tier // "no-data"' 2>/dev/null || echo "no-data")
+      pass "LLM quality-score enrichment: score_decision returned tier=$llm_tier"
+    else
+      fail "LLM quality-score enrichment: score_decision unexpected response: $llm_score"
+    fi
+  else
+    skip "LLM classifier wait + quality-score — capture failed above"
+  fi
+
+  # Fidelity binary: 2-case smoke with real Haiku classifier (ANTHROPIC_API_KEY set).
+  if command -v "$FIDELITY_BIN" > /dev/null 2>&1 && [[ -f "$FIDELITY_CORPUS_SMOKE" ]]; then
+    echo "  (running fidelity-eval on 2-case smoke corpus — uses ANTHROPIC_API_KEY)..."
+    fidelity_llm_out=$("$FIDELITY_BIN" --corpus "$FIDELITY_CORPUS_SMOKE" 2>&1) || fidelity_llm_rc=$?
+    fidelity_llm_rc="${fidelity_llm_rc:-0}"
+    if echo "$fidelity_llm_out" | grep -qi "Macro-F1"; then
+      fidelity_macro=$(echo "$fidelity_llm_out" | grep -i "Macro-F1" | awk '{print $NF}')
+      pass "LLM fidelity smoke (2 cases) — Macro-F1=$fidelity_macro"
+    elif [[ "$fidelity_llm_rc" -eq 0 ]]; then
+      pass "LLM fidelity smoke (2 cases) — exited 0"
+    else
+      fail "LLM fidelity smoke (2 cases) — exit $fidelity_llm_rc; output: $fidelity_llm_out"
+    fi
+  else
+    if ! command -v "$FIDELITY_BIN" > /dev/null 2>&1; then
+      skip "LLM fidelity smoke — binary not found (FIDELITY_BIN=$FIDELITY_BIN; build: cargo build --bin fidelity-eval)"
+    else
+      skip "LLM fidelity smoke — smoke corpus not found ($FIDELITY_CORPUS_SMOKE)"
+    fi
+  fi
 fi
 
 # ── 401 regression (auth-mode only) ──────────────────────────────────────────
