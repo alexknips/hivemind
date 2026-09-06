@@ -2557,11 +2557,10 @@ fn run_quality_scan(cli: &Cli, args: &QualityScanArgs) -> Result<String> {
                 "description": issue_body,
             }));
         } else {
-            let created =
-                client
-                    .as_ref()
-                    .unwrap()
-                    .create_issue(&team_id, &issue_title, &issue_body)?;
+            let created = client
+                .as_ref()
+                .ok_or_else(|| CliError::InvalidInput("Linear client not initialized".to_owned()))?
+                .create_issue(&team_id, &issue_title, &issue_body)?;
             results.push(serde_json::json!({
                 "decision_id": scored.decision_id,
                 "tier": tier,
