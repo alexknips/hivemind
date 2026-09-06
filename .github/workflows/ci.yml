@@ -191,14 +191,6 @@ jobs:
           done
           curl -sf http://localhost:8080/v1/health | grep '"ok"'
 
-      - name: Dump server logs on failure
-        if: failure()
-        run: |
-          docker compose \
-            -f docker-compose.yml \
-            -f docker-compose.e2e-sqlite.yml \
-            logs hivemind
-
       - name: Install Rust toolchain (for hivemind binary)
         uses: dtolnay/rust-toolchain@stable
 
@@ -213,6 +205,14 @@ jobs:
           HIVEMIND_BIN: ./target/debug/hivemind
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: bash scripts/e2e_smoke.sh
+
+      - name: Dump server logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.e2e-sqlite.yml \
+            logs hivemind
 
       - name: Stop compose
         if: always()

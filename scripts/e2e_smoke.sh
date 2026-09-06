@@ -127,8 +127,7 @@ else
 fi
 
 hypothesis_resp=$(curl_json POST /v1/hypotheses '{
-  "content": "e2e smoke: Postgres connection pool handles burst load without queueing",
-  "source": "e2e-smoke"
+  "statement": "e2e smoke: Postgres connection pool handles burst load without queueing"
 }')
 if echo "$hypothesis_resp" | jq -e '.hypothesis_id' > /dev/null 2>&1; then
   HYPOTHESIS_ID=$(echo "$hypothesis_resp" | jq -r '.hypothesis_id')
@@ -200,14 +199,14 @@ section "Query — projection"
 
 if [[ -n "$DECISION_ID" ]]; then
   get_resp=$(curl_api GET "/v1/decisions/$DECISION_ID")
-  if echo "$get_resp" | jq -e '.decision_id' > /dev/null 2>&1; then
+  if echo "$get_resp" | jq -e 'has("data")' > /dev/null 2>&1; then
     pass "GET /v1/decisions/{id} — retrieved $DECISION_ID"
   else
     fail "GET /v1/decisions/{id} — response: $get_resp"
   fi
 
   compact_resp=$(curl_api GET "/v1/decisions/$DECISION_ID/compact-view")
-  if echo "$compact_resp" | jq -e '.decision_id' > /dev/null 2>&1; then
+  if echo "$compact_resp" | jq -e 'has("data")' > /dev/null 2>&1; then
     pass "GET /v1/decisions/{id}/compact-view"
   else
     fail "GET /v1/decisions/{id}/compact-view — response: $compact_resp"
@@ -218,7 +217,7 @@ else
 fi
 
 graph_resp=$(curl_api GET /v1/graph)
-if echo "$graph_resp" | jq -e '.nodes' > /dev/null 2>&1; then
+if echo "$graph_resp" | jq -e 'has("nodes")' > /dev/null 2>&1; then
   node_count=$(echo "$graph_resp" | jq '.nodes | length')
   pass "GET /v1/graph — $node_count nodes"
 else
@@ -229,15 +228,15 @@ fi
 section "Search"
 
 search_resp=$(curl_api GET "/v1/decisions/search?q=postgres")
-if echo "$search_resp" | jq -e 'type == "array"' > /dev/null 2>&1; then
-  count=$(echo "$search_resp" | jq 'length')
+if echo "$search_resp" | jq -e 'has("data")' > /dev/null 2>&1; then
+  count=$(echo "$search_resp" | jq '.data.total_matches // (.data.items | length) // 0')
   pass "GET /v1/decisions/search?q=postgres — $count result(s)"
 else
   fail "GET /v1/decisions/search — response: $search_resp"
 fi
 
 relevant_resp=$(curl_api GET "/v1/decisions/relevant?topics=storage")
-if echo "$relevant_resp" | jq -e 'type == "array" or has("decisions")' > /dev/null 2>&1; then
+if echo "$relevant_resp" | jq -e 'has("data")' > /dev/null 2>&1; then
   pass "GET /v1/decisions/relevant?topics=storage"
 else
   fail "GET /v1/decisions/relevant — response: $relevant_resp"
@@ -250,7 +249,7 @@ if [[ "$SKIP_MAP" == "true" ]]; then
   skip "GET /v1/decisions/map — skipped on Postgres backend (hivemind-270r: SQLite only)"
 else
   map_resp=$(curl_api GET "/v1/decisions/map" 2>&1 || true)
-  if echo "$map_resp" | jq -e '.points // .error' > /dev/null 2>&1; then
+  if echo "$map_resp" | jq -e 'has("points")' > /dev/null 2>&1; then
     pass "GET /v1/decisions/map"
   else
     fail "GET /v1/decisions/map — response: $map_resp"
@@ -261,11 +260,12 @@ fi
 section "Review — disagree + supersede"
 
 if [[ -n "$DECISION_ID" ]]; then
-  # Capture a second decision to supersede
+  # Capture a second decision to supersede (options required and must be non-empty)
   d2_resp=$(curl_json POST /v1/decisions '{
     "title": "e2e-smoke: use MySQL instead (superseded)",
     "rationale": "Initial idea before Postgres was chosen",
-    "topic_keys": ["storage", "e2e"]
+    "topic_keys": ["storage", "e2e"],
+    "options": [{"label": "mysql"}]
   }')
   D2_ID=$(echo "$d2_resp" | jq -r '.decision_id // empty')
 
@@ -278,13 +278,14 @@ if [[ -n "$DECISION_ID" ]]; then
   fi
 
   if [[ -n "$D2_ID" ]]; then
+    # Supersede D2 by creating a new replacement decision (title+rationale for the NEW decision)
     supersede_resp=$(curl_json POST "/v1/decisions/$D2_ID/supersessions" \
-      "{\"superseded_by_id\": \"$DECISION_ID\", \"rationale\": \"e2e smoke: Postgres chosen over MySQL\"}")
-    if echo "$supersede_resp" | jq -e '.event_id' > /dev/null 2>&1; then
+      '{"title": "e2e-smoke: Postgres selected over MySQL", "rationale": "e2e smoke: Postgres chosen over MySQL after evaluation"}')
+    if echo "$supersede_resp" | jq -e '.new_decision_id' > /dev/null 2>&1; then
       pass "POST /v1/decisions/{id}/supersessions"
 
-      chain_resp=$(curl_api GET "/v1/decisions/$DECISION_ID/supersession-chain")
-      if echo "$chain_resp" | jq -e '. | type == "array" or has("chain")' > /dev/null 2>&1; then
+      chain_resp=$(curl_api GET "/v1/decisions/$D2_ID/supersession-chain")
+      if echo "$chain_resp" | jq -e 'has("data")' > /dev/null 2>&1; then
         pass "GET /v1/decisions/{id}/supersession-chain"
       else
         fail "GET /v1/decisions/{id}/supersession-chain — response: $chain_resp"
@@ -323,7 +324,7 @@ curl_json_tenant_b() {
 }
 
 tb_resp=$(curl_json_tenant_b POST /v1/decisions \
-  '{"title": "e2e-smoke tenant-B only decision", "rationale": "should not appear in tenant A", "topic_keys":["e2e"]}')
+  '{"title": "e2e-smoke tenant-B only decision", "rationale": "should not appear in tenant A", "topic_keys":["e2e"], "options":[{"label":"opt-b"}]}')
 if echo "$tb_resp" | jq -e '.decision_id' > /dev/null 2>&1; then
   TB_DECISION_ID=$(echo "$tb_resp" | jq -r '.decision_id')
   # Verify it's invisible from tenant A's graph
