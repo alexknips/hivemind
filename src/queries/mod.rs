@@ -5,6 +5,7 @@ mod compact_view;
 mod decision;
 mod history;
 mod neighborhood;
+mod outcome;
 mod relevant;
 mod search;
 mod shared;
@@ -34,6 +35,10 @@ pub use history::*;
 pub use neighborhood::{
     get_decision_neighborhood, NeighborEdge, NeighborNode, NeighborhoodRequest, NeighborhoodRoot,
     NeighborhoodView,
+};
+pub use outcome::{
+    get_decision_outcome, get_decision_quality_candidates, outcome_next_cursor, DecisionOutcome,
+    DecisionQualityCandidatesRequest, OutcomeReason,
 };
 pub use relevant::get_relevant_decisions;
 pub use search::{

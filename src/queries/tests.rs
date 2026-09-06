@@ -1516,3 +1516,353 @@ fn compact_view_supported_hypothesis_exposes_supporting_evidence_ids() -> Result
     assert!(supporting.contains(&"ev:metrics".to_owned()));
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// OutcomeGraph — minimal test double for outcome.rs
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct OutcomeGraph {
+    nodes: BTreeSet<(NodeKind, String)>,
+    edges: BTreeSet<(RelationKind, String, String)>,
+    node_origins: BTreeMap<String, i64>,
+    edge_origins: BTreeMap<(String, String, String), i64>,
+    mutation_calls: Cell<usize>,
+}
+
+impl OutcomeGraph {
+    fn add_decision(mut self, id: &str, event_origin: i64) -> Self {
+        self.nodes.insert((NodeKind::Decision, id.to_owned()));
+        self.node_origins.insert(id.to_owned(), event_origin);
+        self
+    }
+    fn add_edge(mut self, kind: RelationKind, from: &str, to: &str) -> Self {
+        self.edges.insert((kind, from.to_owned(), to.to_owned()));
+        self
+    }
+    fn add_edge_with_origin(
+        mut self,
+        kind: RelationKind,
+        from: &str,
+        to: &str,
+        origin: i64,
+    ) -> Self {
+        self.edges.insert((kind, from.to_owned(), to.to_owned()));
+        self.edge_origins.insert(
+            (kind.table_name().to_owned(), from.to_owned(), to.to_owned()),
+            origin,
+        );
+        self
+    }
+}
+
+impl GraphView for OutcomeGraph {
+    fn upsert_node(&self, _: NodeKind, _: &str, _: &GraphProperties) -> Result<()> {
+        self.mutation_calls.set(self.mutation_calls.get() + 1);
+        Ok(())
+    }
+    fn upsert_edge(&self, _: RelationKind, _: &str, _: &str, _: &GraphProperties) -> Result<()> {
+        self.mutation_calls.set(self.mutation_calls.get() + 1);
+        Ok(())
+    }
+    fn wipe(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn query(&self, cypher: &str, params: &GraphParams) -> Result<Vec<GraphRow>> {
+        let id = params
+            .get("id")
+            .and_then(|v| {
+                if let GraphValue::String(s) = v {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or("");
+
+        if cypher.contains("RETURN d.id AS id, d.event_origin AS event_origin LIMIT 1") {
+            if self.nodes.contains(&(NodeKind::Decision, id.to_owned())) {
+                let origin = self.node_origins.get(id).copied().unwrap_or(0);
+                return Ok(vec![GraphRow::from([
+                    ("id".to_owned(), GraphValue::String(id.to_owned())),
+                    ("event_origin".to_owned(), GraphValue::Int(origin)),
+                ])]);
+            }
+            return Ok(vec![]);
+        }
+
+        if cypher.contains("SUPERSEDES") && cypher.contains("superseder_id") {
+            let superseder = self
+                .edges
+                .iter()
+                .find(|(k, _, to)| *k == RelationKind::Supersedes && to == id);
+            if let Some((_, from, to)) = superseder {
+                let edge_origin = self
+                    .edge_origins
+                    .get(&(
+                        RelationKind::Supersedes.table_name().to_owned(),
+                        from.clone(),
+                        to.clone(),
+                    ))
+                    .copied();
+                let mut row = GraphRow::from([(
+                    "superseder_id".to_owned(),
+                    GraphValue::String(from.clone()),
+                )]);
+                if let Some(eo) = edge_origin {
+                    row.insert("edge_origin".to_owned(), GraphValue::Int(eo));
+                }
+                return Ok(vec![row]);
+            }
+            return Ok(vec![]);
+        }
+
+        if cypher.contains("REFUTES") {
+            let mut ids = Vec::new();
+            for (kind, from, to) in &self.edges {
+                if *kind == RelationKind::PremisedOnDirect && from == id {
+                    let is_refuted = self
+                        .edges
+                        .iter()
+                        .any(|(k, _, t)| *k == RelationKind::Refutes && t == to);
+                    if is_refuted {
+                        ids.push(GraphRow::from([(
+                            "hypothesis_id".to_owned(),
+                            GraphValue::String(to.clone()),
+                        )]));
+                    }
+                }
+            }
+            return Ok(ids);
+        }
+
+        if cypher.contains("accepted_count") && cypher.contains("rejected_count") {
+            let accepted = self
+                .edges
+                .iter()
+                .filter(|(k, from, _)| *k == RelationKind::AcceptedBy && from == id)
+                .count() as i64;
+            let rejected = self
+                .edges
+                .iter()
+                .filter(|(k, from, _)| *k == RelationKind::RejectedBy && from == id)
+                .count() as i64;
+            return Ok(vec![GraphRow::from([
+                ("accepted_count".to_owned(), GraphValue::Int(accepted)),
+                ("rejected_count".to_owned(), GraphValue::Int(rejected)),
+            ])]);
+        }
+
+        if cypher.contains("HAS_OPTION") {
+            let cnt = self
+                .edges
+                .iter()
+                .filter(|(k, from, _)| *k == RelationKind::HasOption && from == id)
+                .count() as i64;
+            return Ok(vec![GraphRow::from([(
+                "cnt".to_owned(),
+                GraphValue::Int(cnt),
+            )])]);
+        }
+
+        if cypher.contains("BASED_ON") {
+            let cnt = self
+                .edges
+                .iter()
+                .filter(|(k, from, _)| *k == RelationKind::BasedOn && from == id)
+                .count() as i64;
+            return Ok(vec![GraphRow::from([(
+                "cnt".to_owned(),
+                GraphValue::Int(cnt),
+            )])]);
+        }
+
+        if cypher.contains("MATCH (d:`Decision`)")
+            && cypher.contains("d.event_origin")
+            && !cypher.contains("{id:")
+        {
+            let mut rows: Vec<GraphRow> = self
+                .nodes
+                .iter()
+                .filter(|(k, _)| *k == NodeKind::Decision)
+                .map(|(_, nid)| {
+                    let origin = self.node_origins.get(nid).copied().unwrap_or(0);
+                    GraphRow::from([
+                        ("id".to_owned(), GraphValue::String(nid.clone())),
+                        ("event_origin".to_owned(), GraphValue::Int(origin)),
+                    ])
+                })
+                .collect();
+            rows.sort_by_key(|r| {
+                if let Some(GraphValue::Int(o)) = r.get("event_origin") {
+                    *o
+                } else {
+                    0
+                }
+            });
+            return Ok(rows);
+        }
+
+        Ok(vec![])
+    }
+}
+
+#[test]
+fn clean_decision_holds_up() -> Result<()> {
+    let graph = OutcomeGraph::default()
+        .add_decision("d:1", 10)
+        .add_edge(RelationKind::AcceptedBy, "d:1", "actor:alice")
+        .add_edge(RelationKind::HasOption, "d:1", "opt:1")
+        .add_edge(RelationKind::BasedOn, "d:1", "ev:1");
+
+    let result = get_decision_outcome(&graph, "d:1")?;
+    let outcome = result.data.unwrap();
+
+    assert!(outcome.held_up);
+    assert!(!outcome.superseded);
+    assert!(!outcome.stale_premises);
+    assert!(!outcome.contested);
+    assert!(outcome.has_options);
+    assert!(outcome.has_evidence);
+    assert!(outcome.reasons.is_empty());
+    Ok(())
+}
+
+#[test]
+fn superseded_decision_does_not_hold_up() -> Result<()> {
+    let graph = OutcomeGraph::default()
+        .add_decision("d:old", 10)
+        .add_decision("d:new", 50)
+        .add_edge_with_origin(RelationKind::Supersedes, "d:new", "d:old", 55)
+        .add_edge(RelationKind::HasOption, "d:old", "opt:1")
+        .add_edge(RelationKind::BasedOn, "d:old", "ev:1");
+
+    let result = get_decision_outcome(&graph, "d:old")?;
+    let outcome = result.data.unwrap();
+
+    assert!(!outcome.held_up);
+    assert!(outcome.superseded);
+    assert_eq!(outcome.superseded_by.as_deref(), Some("d:new"));
+    assert_eq!(outcome.supersession_gap_events, Some(45)); // 55 - 10
+    assert!(!outcome.reasons.is_empty());
+    assert!(matches!(
+        outcome.reasons[0],
+        OutcomeReason::SupersededBy { .. }
+    ));
+    Ok(())
+}
+
+#[test]
+fn stale_premise_does_not_hold_up() -> Result<()> {
+    let graph = OutcomeGraph::default()
+        .add_decision("d:1", 10)
+        .add_edge(RelationKind::PremisedOnDirect, "d:1", "hyp:1")
+        .add_edge(RelationKind::Refutes, "ev:refutation", "hyp:1")
+        .add_edge(RelationKind::HasOption, "d:1", "opt:1")
+        .add_edge(RelationKind::BasedOn, "d:1", "ev:1");
+
+    let result = get_decision_outcome(&graph, "d:1")?;
+    let outcome = result.data.unwrap();
+
+    assert!(!outcome.held_up);
+    assert!(outcome.stale_premises);
+    assert_eq!(outcome.refuted_hypothesis_ids, vec!["hyp:1"]);
+    assert!(outcome
+        .reasons
+        .iter()
+        .any(|r| matches!(r, OutcomeReason::PremisedOnRefuted { .. })));
+    Ok(())
+}
+
+#[test]
+fn contested_decision_does_not_hold_up() -> Result<()> {
+    let graph = OutcomeGraph::default()
+        .add_decision("d:1", 10)
+        .add_edge(RelationKind::AcceptedBy, "d:1", "actor:alice")
+        .add_edge(RelationKind::RejectedBy, "d:1", "actor:bob")
+        .add_edge(RelationKind::HasOption, "d:1", "opt:1")
+        .add_edge(RelationKind::BasedOn, "d:1", "ev:1");
+
+    let result = get_decision_outcome(&graph, "d:1")?;
+    let outcome = result.data.unwrap();
+
+    assert!(!outcome.held_up);
+    assert!(outcome.contested);
+    assert!(outcome
+        .reasons
+        .iter()
+        .any(|r| matches!(r, OutcomeReason::Contested)));
+    Ok(())
+}
+
+#[test]
+fn thin_structure_still_holds_up_but_has_reason() -> Result<()> {
+    let graph = OutcomeGraph::default().add_decision("d:1", 10).add_edge(
+        RelationKind::AcceptedBy,
+        "d:1",
+        "actor:alice",
+    );
+
+    let result = get_decision_outcome(&graph, "d:1")?;
+    let outcome = result.data.unwrap();
+
+    assert!(outcome.held_up);
+    assert!(!outcome.has_options);
+    assert!(!outcome.has_evidence);
+    assert!(outcome.reasons.iter().any(|r| matches!(
+        r,
+        OutcomeReason::ThinStructure {
+            no_options: true,
+            no_evidence: true
+        }
+    )));
+    Ok(())
+}
+
+#[test]
+fn missing_decision_returns_none() -> Result<()> {
+    let graph = OutcomeGraph::default();
+    let result = get_decision_outcome(&graph, "d:missing")?;
+    assert!(result.data.is_none());
+    Ok(())
+}
+
+#[test]
+fn bulk_query_returns_all_decisions() -> Result<()> {
+    let graph = OutcomeGraph::default()
+        .add_decision("d:1", 10)
+        .add_decision("d:2", 20)
+        .add_edge(RelationKind::HasOption, "d:1", "opt:1")
+        .add_edge(RelationKind::BasedOn, "d:1", "ev:1");
+
+    let req = DecisionQualityCandidatesRequest {
+        limit: 10,
+        ..Default::default()
+    };
+    let result = get_decision_quality_candidates(&graph, &req)?;
+
+    assert_eq!(result.result_count, 2);
+    assert!(!result.truncated);
+    Ok(())
+}
+
+#[test]
+fn bulk_query_only_with_signals_filters_clean_decisions() -> Result<()> {
+    let graph = OutcomeGraph::default()
+        .add_decision("d:clean", 10)
+        .add_decision("d:thin", 20)
+        .add_edge(RelationKind::AcceptedBy, "d:clean", "actor:alice")
+        .add_edge(RelationKind::HasOption, "d:clean", "opt:1")
+        .add_edge(RelationKind::BasedOn, "d:clean", "ev:1");
+
+    let req = DecisionQualityCandidatesRequest {
+        limit: 10,
+        only_with_signals: true,
+        ..Default::default()
+    };
+    let result = get_decision_quality_candidates(&graph, &req)?;
+
+    assert!(result.data.iter().all(|o| o.decision_id == "d:thin"));
+    Ok(())
+}

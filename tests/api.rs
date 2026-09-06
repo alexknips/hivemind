@@ -923,7 +923,7 @@ async fn mcp_http_initialize_returns_session_id() {
 }
 
 #[tokio::test]
-async fn mcp_http_tools_list_returns_14_tools() {
+async fn mcp_http_tools_list_returns_16_tools() {
     let dir = test_ledger_dir();
     let (status, body) = call(
         app(dir),
@@ -936,10 +936,12 @@ async fn mcp_http_tools_list_returns_14_tools() {
     .await;
     assert_eq!(status, StatusCode::OK); // ubs:ignore
     let tools = body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 14); // ubs:ignore
+    assert_eq!(tools.len(), 16); // ubs:ignore
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"capture_decision")); // ubs:ignore
     assert!(names.contains(&"get_decision")); // ubs:ignore
+    assert!(names.contains(&"get_decision_outcome")); // ubs:ignore
+    assert!(names.contains(&"decision_quality_candidates")); // ubs:ignore
     assert!(names.contains(&"recall_decisions")); // ubs:ignore
     assert!(names.contains(&"summarize_decisions")); // ubs:ignore
 }
