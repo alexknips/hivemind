@@ -150,3 +150,66 @@ jobs:
             exit 1
           fi
           echo "UBS warning count ${warnings} is within baseline ${baseline_warnings}."
+
+  # Smoke-tests the full HTTP server path against a real Docker Compose cell
+  # (SQLite backend, no LLM key required). Covers: capture via HTTP + CLI + MCP
+  # stdio, query, search, review, disagree, supersede, supersession chain,
+  # multi-tenant isolation, quality-scan via MCP, and spectral map. LLM-gated
+  # assertions are skipped when ANTHROPIC_API_KEY is absent.
+  e2e-compose:
+    name: E2E compose smoke (SQLite)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: hivemind:e2e
+
+      - name: Start HiveMind (SQLite, no auth)
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.e2e-sqlite.yml \
+            up -d hivemind
+          echo "Waiting for /v1/health..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/v1/health | grep -q '"ok"'; then
+              echo "Server ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://localhost:8080/v1/health | grep '"ok"'
+
+      - name: Install Rust toolchain (for hivemind binary)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build hivemind binary
+        run: cargo build --locked --bin hivemind
+
+      - name: Run E2E smoke (SQLite)
+        env:
+          HIVEMIND_BIN: ./target/debug/hivemind
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: bash scripts/e2e_smoke.sh
+
+      - name: Stop compose
+        if: always()
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.e2e-sqlite.yml \
+            down -v

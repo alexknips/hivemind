@@ -1,0 +1,10 @@
+# Compose override for E2E SQLite smoke tests.
+# Removes the Postgres dependency and DATABASE_URL so the server uses its
+# bundled SQLite backend. Use together with the base compose file:
+#   docker compose -f docker-compose.yml -f docker-compose.e2e-sqlite.yml up -d hivemind
+services:
+  hivemind:
+    image: hivemind:e2e
+    environment:
+      HIVEMIND_DATABASE_URL: ""
+    depends_on: {}
