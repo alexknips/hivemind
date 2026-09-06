@@ -12,6 +12,7 @@ pub mod events;
 pub mod identity;
 pub mod ingest;
 pub mod ledger;
+pub mod linear;
 pub mod map;
 pub mod mcp;
 pub mod projector;

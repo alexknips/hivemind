@@ -102,6 +102,12 @@ pub enum Command {
     /// Manage connector authentication (e.g., Google Docs OAuth).
     /// Set HIVEMIND_GOOGLE_CLIENT_ID and HIVEMIND_GOOGLE_CLIENT_SECRET before running.
     Connector(ConnectorArgs),
+    /// Scan recent decisions for quality concerns and file Linear tickets for human review.
+    /// Precision-biased: only files tickets on strong signals (high_concern tier by default).
+    /// Set HIVEMIND_LINEAR_API_KEY and HIVEMIND_LINEAR_TEAM_ID before running.
+    /// Pass --dry-run to preview what would be filed without calling Linear.
+    #[command(name = "quality-scan")]
+    QualityScan(QualityScanArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -124,6 +130,34 @@ pub enum ConnectorCommand {
 pub struct ConnectorAuthArgs {
     /// Connector to authenticate. Currently supported: gdocs (Google Docs).
     pub connector: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QualityScanArgs {
+    /// Minimum quality tier to flag. Defaults to high_concern (precision-biased).
+    #[arg(long, value_enum, default_value = "high_concern")]
+    pub min_tier: QueryQualityTier,
+
+    /// Maximum decisions to file tickets for per run (1–50). Prevents flooding Linear.
+    #[arg(long, default_value_t = 10)]
+    pub limit: usize,
+
+    /// Minimum ledger event offset (inclusive). Use to restrict the scan to recent decisions.
+    #[arg(long)]
+    pub since_event_origin: Option<i64>,
+
+    /// Preview mode: show what would be filed without calling the Linear API.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Linear team ID to file tickets under. Overrides HIVEMIND_LINEAR_TEAM_ID.
+    #[arg(long, env = "HIVEMIND_LINEAR_TEAM_ID")]
+    pub linear_team_id: Option<String>,
+
+    /// Public base URL of this HiveMind instance, included in ticket descriptions.
+    /// E.g. https://hivemind.example.com. Overrides HIVEMIND_PUBLIC_URL.
+    #[arg(long, env = "HIVEMIND_PUBLIC_URL")]
+    pub hivemind_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]

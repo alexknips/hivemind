@@ -36,7 +36,7 @@ use crate::queries::{
     DecisionsAddedSinceRequest, HistoryFilterRequest, NeighborhoodRequest, QualityTier,
     QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest, RecentActivityRequest,
     RecentDecisionEntry, RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest,
-    ScorerConfig, SearchDecisionRequest,
+    ScorerConfig, ScorerReason, SearchDecisionRequest, SupersessionSpeed,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -59,11 +59,11 @@ use super::args::{
     DisagreeArgs, DumpArgs, DumpFormat, EmitArgs, EmitCaptureProvenanceArgs, EmitCommand,
     EmitDecisionProposedArgs, EmitRelationKind, GraphBackend, ImportArgs, ImportCommand,
     ImportConnectorCommand, ImportDocumentsArgs, IngestArgs, IngestCommand, IngestSlackThreadArgs,
-    MapArgs, McpArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs,
-    QueryCommand, QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs,
-    QueryHistoryFilterArgs, QueryQualityTier, QueryRecentActivityArgs, QueryRecentDecisionsArgs,
-    QueryRelationKind, QuerySearchDecisionsArgs, QuickstartArgs, ReviewArgs, ServeArgs,
-    SlackAppArgs, SlackAppCommand, SupersedeArgs, TuiArgs,
+    MapArgs, McpArgs, QualityScanArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority,
+    QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus, QueryExportKind,
+    QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs, QueryQualityTier,
+    QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
+    QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand, SupersedeArgs, TuiArgs,
 };
 use super::render::{
     append_truncation_notice, decision_status_label, format_disagree_output, format_import_output,
@@ -103,6 +103,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Digest(args) => run_digest(cli, args),
         Command::ClassifyQueue(args) => run_classify_queue(cli, args),
         Command::Connector(args) => run_connector(cli, args),
+        Command::QualityScan(args) => run_quality_scan(cli, args),
     }
 }
 
@@ -2466,5 +2467,169 @@ fn run_migrate(cli: &Cli, args: &MigrateArgs) -> Result<String> {
              Parity check: OK ({pg_count} events in destination)",
             report.source_dir, report.source_tenant, report.destination_tenant
         ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// quality-scan command
+// ---------------------------------------------------------------------------
+
+fn run_quality_scan(cli: &Cli, args: &QualityScanArgs) -> Result<String> {
+    use crate::linear::{format_issue_description, format_issue_title, LinearClient};
+
+    let tenant_id = cli_tenant(cli)?;
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
+
+    let limit = args.limit.clamp(1, 50);
+    let request = ScanQualityRequest {
+        since_event_origin: args.since_event_origin,
+        limit,
+        cursor: None,
+        min_tier: Some(query_quality_tier_to_tier(args.min_tier)),
+    };
+    let scan = scan_decision_quality(&graph, &request, &ScorerConfig::default())?;
+
+    if scan.data.is_empty() {
+        return Ok("quality-scan: no decisions above threshold — nothing to file".to_owned());
+    }
+
+    // Resolve Linear API key from env (not a CLI flag to avoid accidental exposure).
+    let api_key = if args.dry_run {
+        String::new()
+    } else {
+        std::env::var("HIVEMIND_LINEAR_API_KEY").map_err(|_| {
+            CliError::InvalidInput(
+                "HIVEMIND_LINEAR_API_KEY is not set; pass --dry-run to preview without filing"
+                    .to_owned(),
+            )
+        })?
+    };
+
+    let team_id = if args.dry_run {
+        args.linear_team_id.clone().unwrap_or_default()
+    } else {
+        args.linear_team_id.clone().ok_or_else(|| {
+            CliError::InvalidInput(
+                "HIVEMIND_LINEAR_TEAM_ID is not set and --linear-team-id was not passed".to_owned(),
+            )
+        })?
+    };
+
+    let client = if args.dry_run {
+        None
+    } else {
+        Some(LinearClient::new(&api_key))
+    };
+
+    let base_url = args.hivemind_base_url.as_deref();
+
+    let mut results: Vec<serde_json::Value> = Vec::new();
+
+    for scored in &scan.data {
+        // Look up the decision title for a friendlier ticket subject.
+        let title_lookup = get_decision(&graph, &scored.decision_id)
+            .ok()
+            .and_then(|r| r.data)
+            .map(|d| d.title);
+
+        let reasons: Vec<String> = scored.reasons.iter().map(format_reason).collect();
+        let tier = scored.tier.as_str();
+
+        let issue_title = format_issue_title(&scored.decision_id, tier, title_lookup.as_deref());
+        let issue_body = format_issue_description(
+            &scored.decision_id,
+            scored.score,
+            tier,
+            &reasons,
+            &scored.contributing_ids,
+            base_url,
+        );
+
+        if args.dry_run {
+            results.push(serde_json::json!({
+                "dry_run": true,
+                "decision_id": scored.decision_id,
+                "tier": tier,
+                "score": scored.score,
+                "title": issue_title,
+                "description": issue_body,
+            }));
+        } else {
+            let created =
+                client
+                    .as_ref()
+                    .unwrap()
+                    .create_issue(&team_id, &issue_title, &issue_body)?;
+            results.push(serde_json::json!({
+                "decision_id": scored.decision_id,
+                "tier": tier,
+                "score": scored.score,
+                "linear_identifier": created.identifier,
+                "linear_url": created.url,
+            }));
+        }
+    }
+
+    let truncated = scan.truncated;
+    let output = serde_json::json!({
+        "dry_run": args.dry_run,
+        "scanned": scan.result_count,
+        "filed": results.len(),
+        "truncated": truncated,
+        "issues": results,
+    });
+
+    format_json_value(cli.json || true, &output)
+}
+
+/// Convert a `ScorerReason` to a human-readable one-liner for Linear tickets.
+fn format_reason(reason: &ScorerReason) -> String {
+    match reason {
+        ScorerReason::SupersededBy {
+            by_id,
+            gap_events,
+            speed,
+            deduction,
+        } => {
+            let speed_label = match speed {
+                SupersessionSpeed::Rapid => "rapidly",
+                SupersessionSpeed::Quick => "quickly",
+                SupersessionSpeed::Normal => "",
+            };
+            let gap_note = gap_events
+                .map(|g| format!(" ({g} ledger events later)"))
+                .unwrap_or_default();
+            format!("Superseded {speed_label} by `{by_id}`{gap_note} (deduction: -{deduction:.2})",)
+        }
+        ScorerReason::PremisedOnRefuted {
+            hypothesis_ids,
+            deduction,
+        } => {
+            format!(
+                "Premised on refuted hypothesis: {} (deduction: -{deduction:.2})",
+                hypothesis_ids.join(", ")
+            )
+        }
+        ScorerReason::Contested { deduction } => {
+            format!("Contested (accepted + rejected actors disagree) (deduction: -{deduction:.2})")
+        }
+        ScorerReason::ThinStructure {
+            no_options,
+            no_evidence,
+            deduction,
+        } => {
+            let detail = match (no_options, no_evidence) {
+                (true, true) => "no options and no evidence attached",
+                (true, false) => "no options attached",
+                (false, true) => "no evidence attached",
+                (false, false) => "thin structure",
+            };
+            format!("Thin structure: {detail} (deduction: -{deduction:.2})")
+        }
+        ScorerReason::AgentOnlyUnreviewed { deduction } => {
+            format!("Agent-only authorship with no human review (deduction: -{deduction:.2})")
+        }
     }
 }
