@@ -231,6 +231,17 @@
         <div class="cmd"><span class="p">hivemind</span> <span class="k">import documents</span> ./notes/</div>
       </article>
 
+      <!-- 7 import from living docs (experimental connector) -->
+      <article class="card">
+        <div class="ct">
+          <div class="ic"><svg viewBox="0 0 24 24"><path d="M14 4H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8z"/><path d="M14 4v4h4"/><path d="M9.5 14.5a2 2 0 0 1 2-2h1m1 4a2 2 0 0 1-2 2h-1"/><path d="M11 15h3"/></svg></div>
+          <span class="badge ship">Shipped · experimental</span>
+        </div>
+        <h3>Import decisions from living documents</h3>
+        <p><span class="who">Human</span><br>Pull decision candidates from Google Docs or git history — each import captures the source at the revision it was read, so the citation stays honest as the doc moves. Google Docs only; Confluence is not yet supported.</p>
+        <div class="cmd"><span class="p">hivemind</span> <span class="k">import connector run</span> --url &lt;gdocs-url&gt;</div>
+      </article>
+
     </div>
   </section>
 
@@ -240,16 +251,6 @@
     <p class="sec-note">On the roadmap, in the open. Shown here as intent, not as something that exists yet.</p>
 
     <div class="grid">
-
-      <!-- P1 cite living docs -->
-      <article class="card plan">
-        <div class="ct">
-          <div class="ic"><svg viewBox="0 0 24 24"><path d="M14 4H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8z"/><path d="M14 4v4h4"/><path d="M9.5 14.5a2 2 0 0 1 2-2h1m1 4a2 2 0 0 1-2 2h-1"/><path d="M11 15h3"/></svg></div>
-          <span class="badge plan">Planned · M4</span>
-        </div>
-        <h3>Cite living documents as evidence</h3>
-        <p>Link decisions to Confluence and Google Docs, resolved to the version at citation time — so evidence stays honest as the source moves.</p>
-      </article>
 
       <!-- P2 projects diverging unintentionally (cross-track / multi-project, M5 + hmd-4tf) -->
       <article class="card plan">
