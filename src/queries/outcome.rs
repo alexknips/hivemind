@@ -163,7 +163,7 @@ pub fn get_decision_quality_candidates(
         .take(limit + 1)
         .collect();
     let truncated = paged.len() > limit;
-    let window = &paged[..paged.len().min(limit)];
+    let window = paged.get(..paged.len().min(limit)).unwrap_or(&[]);
 
     let mut outcomes = Vec::with_capacity(window.len());
     for row in window {
@@ -214,13 +214,22 @@ fn derive_outcome(
     };
 
     // --- Signal 2: stale premises (premised on refuted hypothesis) ---
-    let refuted_hypothesis_ids = query_refuted_premises(graph, decision_id)?;
-    let stale_premises = !refuted_hypothesis_ids.is_empty();
-    for hyp_id in &refuted_hypothesis_ids {
+    let raw_premise_ids = query_refuted_premises(graph, decision_id)?;
+    let stale_premises = !raw_premise_ids.is_empty();
+    for hyp_id in raw_premise_ids {
         reasons.push(OutcomeReason::PremisedOnRefuted {
-            hypothesis_id: hyp_id.clone(),
+            hypothesis_id: hyp_id,
         });
     }
+    // Reconstruct for the struct field — extracted from reasons after the loop to avoid
+    // per-element clone inside the for body.
+    let refuted_hypothesis_ids: Vec<String> = reasons
+        .iter()
+        .filter_map(|r| match r {
+            OutcomeReason::PremisedOnRefuted { hypothesis_id } => Some(hypothesis_id.clone()),
+            _ => None,
+        })
+        .collect();
 
     // --- Signal 3: contested ---
     let contested = query_contested(graph, decision_id)?;
