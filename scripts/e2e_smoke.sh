@@ -155,7 +155,10 @@ if command -v "$HIVEMIND_BIN" > /dev/null 2>&1; then
     --options semver,calver \
     --chose semver \
     --topic-keys e2e,versioning 2>&1) || true
-  if echo "$cli_out" | jq -e '.decision_id' > /dev/null 2>&1; then
+  if echo "$cli_out" | jq -e 'select(.kind=="decision_id" and (.value | startswith("decision-")))' > /dev/null 2>&1; then
+    CLI_DECISION_ID=$(echo "$cli_out" | jq -r '.value')
+    pass "CLI (local ledger): emit decision.proposed — $CLI_DECISION_ID"
+  elif echo "$cli_out" | jq -e '.decision_id' > /dev/null 2>&1; then
     CLI_DECISION_ID=$(echo "$cli_out" | jq -r '.decision_id')
     pass "CLI (local ledger): emit decision.proposed — $CLI_DECISION_ID"
   else
