@@ -1,0 +1,8 @@
+# Compose override for E2E Postgres smoke tests.
+# Overrides the image to the locally-built hivemind:e2e tag.
+# HIVEMIND_DATABASE_URL is inherited from docker-compose.yml (Postgres URL).
+# Both postgres and hivemind start; hivemind waits for postgres to be healthy
+# before accepting connections (depends_on: condition: service_healthy in base).
+services:
+  hivemind:
+    image: hivemind:e2e

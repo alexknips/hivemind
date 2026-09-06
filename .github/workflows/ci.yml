@@ -221,3 +221,77 @@ jobs:
             -f docker-compose.yml \
             -f docker-compose.e2e-sqlite.yml \
             down -v
+
+  # Smoke-tests the full HTTP server path against a real Docker Compose cell
+  # (Postgres backend, no LLM key required). Spectral-map endpoint skipped per
+  # hivemind-270r (SQLite only). Covers the same paths as e2e-compose but exercises
+  # the Postgres storage path end-to-end.
+  e2e-compose-postgres:
+    name: E2E compose smoke (Postgres)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: hivemind:e2e
+
+      - name: Start HiveMind (Postgres)
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.e2e-postgres.yml \
+            up -d
+          echo "Waiting for /v1/health..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/v1/health | grep -q '"ok"'; then
+              echo "Server ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://localhost:8080/v1/health | grep '"ok"'
+
+      - name: Install Rust toolchain (for hivemind binary)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build hivemind binary
+        run: cargo build --locked --bin hivemind
+
+      - name: Run E2E smoke (Postgres)
+        env:
+          HIVEMIND_BIN: ./target/debug/hivemind
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: bash scripts/e2e_smoke.sh --skip-map
+
+      - name: Dump server logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.e2e-postgres.yml \
+            logs hivemind
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.e2e-postgres.yml \
+            logs postgres
+
+      - name: Stop compose
+        if: always()
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.e2e-postgres.yml \
+            down -v
