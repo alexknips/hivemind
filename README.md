@@ -167,7 +167,6 @@ The release asset names are:
 | --- | --- |
 | Linux x86_64 | `hivemind-linux-x86_64.tar.gz` |
 | Linux ARM64 | `hivemind-linux-arm64.tar.gz` |
-| macOS x86_64 | `hivemind-macos-x86_64.tar.gz` |
 | macOS ARM64 | `hivemind-macos-arm64.tar.gz` |
 
 Kuzu support and the terminal UI are optional and not part of the default
