@@ -95,7 +95,11 @@
   .card p{margin:0;color:var(--dim);font-size:.95rem;flex:1}
   .card p b{color:var(--fg);font-weight:600}
   .cmd{font-family:var(--mono);font-size:.78rem;color:#c7d0ea;background:#060a14;
-    border:1px solid var(--line);border-radius:8px;padding:9px 11px;overflow-x:auto;white-space:nowrap}
+    border:1px solid var(--line);border-radius:8px;padding:9px 11px;overflow-x:auto;white-space:nowrap;
+    scrollbar-width:none;
+    -webkit-mask-image:linear-gradient(to right,#000 calc(100% - 24px),transparent 100%);
+    mask-image:linear-gradient(to right,#000 calc(100% - 24px),transparent 100%)}
+  .cmd::-webkit-scrollbar{display:none}
   .cmd .p{color:var(--faint)}
   .cmd .k{color:var(--indigo)}
   .who{font-family:var(--mono);font-size:.7rem;letter-spacing:.06em;color:var(--faint);text-transform:uppercase}
