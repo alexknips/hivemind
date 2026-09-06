@@ -65,6 +65,26 @@ original proposal with:
 hivemind query get_supersession_chain --id decision:abc123
 ```
 
+## Decision Quality Signals (Planned)
+
+*This section describes a planned roadmap capability, not shipped functionality.*
+
+The graph already encodes enough structure to derive whether a decision held up
+over time. A planned quality-signal layer will read existing edges — no LLM, no
+external calls — to produce per-decision outcome records.
+
+| Signal | Derived from | What it flags |
+|--------|-------------|---------------|
+| `superseded_fast` | `SUPERSEDES` edge + timestamps | Decision replaced shortly after acceptance |
+| `premised_on_refuted` | `PREMISED_ON` + refuted `Hypothesis` | Decision rested on a belief later contradicted by evidence |
+| `contested_unresolved` | Concurrent `ACCEPTED_BY` + `REJECTED_BY` | Active disagreement with no resolution |
+| `thin_structure` | Absent `HAS_OPTION` or `BASED_ON` edges | Decision captured without options considered or evidence attached |
+
+These signals will feed an in-house explainable scorer that always attaches its
+reasons and contributing decision IDs to any score — never a bare number.
+Scores apply to decisions and the patterns in which they cluster, never to
+individual people or agents.
+
 ## Example graph
 
 ```

@@ -71,6 +71,36 @@ hivemind --hivemind-dir ./hivemind query search_decisions \
   plus the bundled MCP stdio server, let agents capture decisions in-flow
   with auto-populated actor and provenance defaults.
 
+## Decision Quality — Where HiveMind is Heading
+
+*This section describes the planned roadmap direction, not shipped capability.*
+
+Recording decisions is the foundation. The next layer is measuring whether
+they held up — and feeding that signal back so organizations can improve how
+they make decisions.
+
+**Decision-quality signals (planned).** HiveMind will derive per-decision
+outcome signals directly from graph structure — how quickly a decision was
+superseded, whether it was premised on a hypothesis later refuted by evidence,
+whether it remains contested and unresolved, and whether it was recorded with
+thin structure (no options considered, no evidence attached). All signals are
+derivable from existing edges. No LLM required; works self-hosted.
+
+**Explainable in-house scoring (planned).** Those signals will feed a
+decision-quality scorer that lives inside HiveMind and always ships a score
+*with* its reasons and the contributing decision IDs — never a bare number.
+Scores are auditable by the same standard as every other HiveMind claim.
+Scores apply to decisions and interaction patterns, never to individual people.
+
+**Failure-mode attribution and organizational self-improvement (planned).**
+The goal is understanding *how* mistakes happen in an organization — by
+condition and pattern (model choice, context sufficiency, presence and quality
+of review, evidence thinness, human/AI/joint authorship), not by assigning
+blame to individuals. Engineers are becoming decision engineers; HiveMind aims
+to give that discipline measurable metrics and a structured feedback loop.
+External consumers — dashboards, automation, factory loops — will pull scores
+and signals via MCP.
+
 The default CLI stores events in SQLite at `./hivemind/ledger.sqlite` or the
 directory passed with `--hivemind-dir`. Queries and DOT dumps replay the
 ledger into an in-memory graph view by default. A Kuzu-backed projection is
