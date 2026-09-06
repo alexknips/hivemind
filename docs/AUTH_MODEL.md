@@ -35,7 +35,7 @@ free-form tenant id and expect the commands or query layer to trust it.
 
 | Credential | Use | Decision |
 | --- | --- | --- |
-| Opaque bearer token | Agents, services, remote CLI, MCP server processes. | Adopt as the default machine credential. Tokens are random secrets with display prefixes such as `hm_sk_live_...`, stored server-side only as hashes, and logged only by token id. |
+| Opaque bearer token | Agents, services, remote CLI, MCP server processes. | Adopt as the default machine credential. Tokens are random secrets with display prefixes such as `hm_tk_...`, stored server-side only as hashes, and logged only by token id. |
 | OIDC login/session | Human web UI and future interactive product flows. | Adopt for humans. OIDC resolves a stable `principal_id`; HiveMind still maps that principal to tenant, actor, and capabilities before calling commands or queries. |
 | Ed25519 signing key | Write integrity and audit hardening. | Require for remote writes in multi-organization deployments. Signing proves the accepted request or event envelope was bound to an authorized credential; it does not by itself choose tenant or capability. |
 | mTLS client identity | Deployment hardening between trusted services. | Allow as an infrastructure control, but do not make it the product auth model. It can resolve a `principal_id` in private deployments. |
@@ -179,7 +179,7 @@ HTTP write:
 
 ```http
 POST /v1/decisions HTTP/1.1
-Authorization: Bearer hm_sk_live_<secret>
+Authorization: Bearer hm_tk_<secret>
 X-HiveMind-Tenant: tenant:acme
 X-HiveMind-Actor: agent:codex:gc-47745
 X-HiveMind-Signature-Key: key_2026_05_codex

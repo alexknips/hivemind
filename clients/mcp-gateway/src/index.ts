@@ -8,7 +8,7 @@
  *
  * Required env vars:
  *   HIVEMIND_URL      Base URL of the HiveMind HTTP service (no trailing slash)
- *   HIVEMIND_API_KEY  Bearer token (hm_sk_live_...)
+ *   HIVEMIND_API_KEY  Bearer token (hm_tk_...)
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";

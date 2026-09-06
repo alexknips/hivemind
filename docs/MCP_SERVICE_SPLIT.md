@@ -29,7 +29,7 @@ property.
 
 While MCP was local JSON-RPC over stdio against an in-process `EventLedger`, it
 stayed in Rust. At multi-tenancy, MCP changes kind: it becomes a **networked,
-authenticated, tenant-scoped service** (opaque bearer tokens `hm_sk_live_…`,
+authenticated, tenant-scoped service** (opaque bearer tokens `hm_tk_…`,
 remote MCP server processes, tenant-scoped capabilities). That is the one corner
 where TypeScript genuinely beats Rust: the MCP SDK is TS-first, and the
 streamable-HTTP / session / auth plumbing is more mature there.
@@ -85,7 +85,7 @@ The TS MCP must **not**:
 
 ```
 HIVEMIND_URL      Base URL of the HiveMind HTTP service (no trailing slash)
-HIVEMIND_API_KEY  Bearer token (hm_sk_live_...)
+HIVEMIND_API_KEY  Bearer token (hm_tk_...)
 ```
 
 Run:
@@ -106,7 +106,7 @@ Or wire it into an MCP client via `mcp.json`:
       "args": ["/path/to/clients/mcp-gateway/dist/index.js"],
       "env": {
         "HIVEMIND_URL": "https://your-hivemind-server",
-        "HIVEMIND_API_KEY": "hm_sk_live_..."
+        "HIVEMIND_API_KEY": "hm_tk_..."
       }
     }
   }

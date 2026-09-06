@@ -199,7 +199,7 @@ each one when picked up.
 Resolved as of M2:
 - The HTTP REST API as the third transport is shipped (`src/api.rs`, `/v1/*`).
 - Multi-tenant Postgres backend with RLS isolation is shipped (bearer-auth
-  `hm_sk_live_…` tokens, `tenant_id`-scoped Postgres RLS, `/v1/tenants`
+  `hm_tk_…` tokens, `tenant_id`-scoped Postgres RLS, `/v1/tenants`
   provisioning endpoint).
 - The TypeScript MCP gateway over the service API is shipped
   (`clients/mcp-gateway/`). See [`MCP_SERVICE_SPLIT.md`](MCP_SERVICE_SPLIT.md).

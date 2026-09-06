@@ -3,7 +3,7 @@
 #
 # Usage:
 #   HIVEMIND_URL=https://your-server \
-#   HIVEMIND_API_KEY=hm_sk_live_... \
+#   HIVEMIND_API_KEY=hm_tk_... \
 #   ./scripts/install-mcp.sh
 #
 # Optional env vars:
@@ -17,7 +17,7 @@ target="${HIVEMIND_MCP_TARGET:-.mcp.json}"
 
 # Validate required env vars
 : "${HIVEMIND_URL:?HIVEMIND_URL is required (e.g. https://your-server)}"
-: "${HIVEMIND_API_KEY:?HIVEMIND_API_KEY is required (e.g. hm_sk_live_...)}"
+: "${HIVEMIND_API_KEY:?HIVEMIND_API_KEY is required (e.g. hm_tk_...)}"
 
 # Build the gateway if dist/index.js is absent
 dist="$gateway_dir/dist/index.js"

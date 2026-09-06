@@ -41,7 +41,7 @@ beforeEach(() => {
 });
 
 const BASE = "http://hm.test";
-const KEY = "hm_sk_live_test";
+const KEY = "hm_tk_test";
 
 // ---------------------------------------------------------------------------
 // Tests

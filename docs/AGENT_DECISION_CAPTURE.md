@@ -182,7 +182,7 @@ Both clients configure the server URL and auth token via environment:
 
 ```
 HIVEMIND_API_URL    Base URL of the HiveMind server (default: http://localhost:8080)
-HIVEMIND_API_KEY    Bearer token hm_sk_live_... (optional in dev mode)
+HIVEMIND_API_KEY    Bearer token hm_tk_... (optional in dev mode)
 HIVEMIND_AGENT_TOOL Override agent_tool field (default: claude)
 ```
 

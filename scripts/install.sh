@@ -26,6 +26,15 @@ case "$arch" in
     ;;
 esac
 
+# Prebuilt binaries are only published for Linux (x86_64, ARM64) and macOS ARM64.
+# macOS x86_64 (Intel) has no release asset — install from source instead.
+if [ "$platform" = "macos" ] && [ "$cpu" = "x86_64" ]; then
+  echo "No prebuilt binary for macOS Intel (x86_64)." >&2
+  echo "Install from source with:" >&2
+  echo "  cargo install --git https://github.com/${repo} --locked hivemind" >&2
+  exit 1
+fi
+
 asset="hivemind-${platform}-${cpu}.tar.gz"
 if [ -n "$version" ]; then
   base_url="https://github.com/${repo}/releases/download/${version}"
