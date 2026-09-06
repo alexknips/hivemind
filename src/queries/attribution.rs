@@ -189,7 +189,7 @@ pub fn get_failure_attribution(
     // 3. Join by decision_id → Vec<(outcome, context)>.
     let context_map: HashMap<String, DecisionContext> = contexts
         .into_iter()
-        .map(|c| (c.decision_id.clone(), c))
+        .map(|c| (c.decision_id.clone(), c)) // ubs:ignore: key must be owned; value moves c
         .collect();
 
     // Pairs we can analyse (only decisions that appear in both outcome and context sets).
@@ -236,7 +236,7 @@ pub fn get_failure_attribution(
         authorship_label(c.authorship)
     });
     let by_review = breakdown_by(&pairs, baseline, "review", |_, c| review_label(c.review));
-    let by_source = breakdown_by(&pairs, baseline, "source", |_, c| c.source.clone());
+    let by_source = breakdown_by(&pairs, baseline, "source", |_, c| c.source.clone()); // ubs:ignore: owned String required by F: Fn(…) -> String
     let by_context_richness = context_richness_breakdown(&pairs, baseline);
 
     // 6. Findings: top patterns by |effect_size|, filtered by min_sample_size.
@@ -251,8 +251,8 @@ pub fn get_failure_attribution(
         .into_iter()
         .filter(|g| g.total >= min_sample)
         .map(|g| AttributionFinding {
-            dimension: g.dimension.clone(),
-            group_label: g.group_label.clone(),
+            dimension: g.dimension.clone(), // ubs:ignore: g is &&AttributionGroup; owned field required
+            group_label: g.group_label.clone(), // ubs:ignore: same — owned field required
             finding: describe_finding(g, baseline),
             effect_size: g.effect_vs_baseline,
             confidence: g.confidence,
@@ -320,7 +320,7 @@ where
     labels
         .into_iter()
         .map(|label| {
-            let (total, failed) = buckets[&label];
+            let (total, failed) = buckets.get(&label).copied().unwrap_or((0, 0));
             let failure_rate = if total == 0 {
                 0.0
             } else {
@@ -350,54 +350,54 @@ fn context_richness_breakdown(
 ) -> Vec<AttributionGroup> {
     let dimension = "context_richness";
 
-    // Three orthogonal richness flags as group labels.
-    let mut buckets: HashMap<String, (usize, usize)> = HashMap::new();
+    // Three orthogonal richness flags as group labels. Static str keys avoid per-iteration allocs.
+    let mut buckets: HashMap<&'static str, (usize, usize)> = HashMap::new();
 
     for (outcome, context) in pairs {
         // Evidence present / absent.
-        let evidence_label = if context.evidence_count == 0 {
+        let evidence_label: &'static str = if context.evidence_count == 0 {
             "no_evidence"
         } else {
             "has_evidence"
         };
-        let e = buckets.entry(evidence_label.to_owned()).or_insert((0, 0));
+        let e = buckets.entry(evidence_label).or_insert((0, 0));
         e.0 += 1;
         if !outcome.held_up {
             e.1 += 1;
         }
 
         // Options present / absent.
-        let options_label = if context.options_count == 0 {
+        let options_label: &'static str = if context.options_count == 0 {
             "no_options"
         } else {
             "has_options"
         };
-        let o = buckets.entry(options_label.to_owned()).or_insert((0, 0));
+        let o = buckets.entry(options_label).or_insert((0, 0));
         o.0 += 1;
         if !outcome.held_up {
             o.1 += 1;
         }
 
         // Rationale thin / rich: threshold at 100 chars as a proxy.
-        let rationale_label = if context.rationale_chars < 100 {
+        let rationale_label: &'static str = if context.rationale_chars < 100 {
             "thin_rationale"
         } else {
             "rich_rationale"
         };
-        let r = buckets.entry(rationale_label.to_owned()).or_insert((0, 0));
+        let r = buckets.entry(rationale_label).or_insert((0, 0));
         r.0 += 1;
         if !outcome.held_up {
             r.1 += 1;
         }
     }
 
-    let mut labels: Vec<_> = buckets.keys().cloned().collect();
-    labels.sort();
+    let mut labels: Vec<&'static str> = buckets.keys().copied().collect();
+    labels.sort_unstable();
 
     labels
         .into_iter()
         .map(|label| {
-            let (total, failed) = buckets[&label];
+            let (total, failed) = buckets.get(label).copied().unwrap_or((0, 0));
             let failure_rate = if total == 0 {
                 0.0
             } else {
@@ -406,7 +406,7 @@ fn context_richness_breakdown(
             let effect_vs_baseline = failure_rate - baseline;
             AttributionGroup {
                 dimension: dimension.to_owned(),
-                group_label: label,
+                group_label: label.to_owned(),
                 total,
                 failed,
                 failure_rate,
@@ -449,9 +449,9 @@ fn describe_finding(group: &AttributionGroup, baseline: f64) -> String {
     } else {
         "lower"
     };
-    let pct_group = (group.failure_rate * 100.0).round() as i64;
-    let pct_baseline = (baseline * 100.0).round() as i64;
-    let abs_effect = (group.effect_vs_baseline.abs() * 100.0).round() as i64;
+    let pct_group = (group.failure_rate * 100.0).round() as i64; // ubs:ignore: bounded 0-100 percentage
+    let pct_baseline = (baseline * 100.0).round() as i64; // ubs:ignore: bounded 0-100 percentage
+    let abs_effect = (group.effect_vs_baseline.abs() * 100.0).round() as i64; // ubs:ignore: bounded percentage difference
     let confidence_note = match group.confidence {
         ConfidenceLevel::High => "".to_owned(),
         ConfidenceLevel::Medium => " (medium confidence — interpret with caution)".to_owned(),

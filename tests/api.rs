@@ -936,7 +936,7 @@ async fn mcp_http_tools_list_returns_18_tools() {
     .await;
     assert_eq!(status, StatusCode::OK); // ubs:ignore
     let tools = body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 20); // ubs:ignore
+    assert_eq!(tools.len(), 21); // ubs:ignore
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"capture_decision")); // ubs:ignore
     assert!(names.contains(&"get_decision")); // ubs:ignore
@@ -946,6 +946,7 @@ async fn mcp_http_tools_list_returns_18_tools() {
     assert!(names.contains(&"decision_context_candidates")); // ubs:ignore
     assert!(names.contains(&"score_decision")); // ubs:ignore
     assert!(names.contains(&"scan_decision_quality")); // ubs:ignore
+    assert!(names.contains(&"analyze_failure_modes")); // ubs:ignore
     assert!(names.contains(&"recall_decisions")); // ubs:ignore
     assert!(names.contains(&"summarize_decisions")); // ubs:ignore
 }
