@@ -1866,3 +1866,432 @@ fn bulk_query_only_with_signals_filters_clean_decisions() -> Result<()> {
     assert!(result.data.iter().all(|o| o.decision_id == "d:thin"));
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// ContextGraph — minimal test double for context.rs
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct ContextGraph {
+    /// decision_id -> (source, source_ref, rationale, event_origin)
+    decisions: BTreeMap<String, (String, Option<String>, String, i64)>,
+    /// actor_id -> kind ("human" | "agent" | "unknown")
+    actors: BTreeMap<String, String>,
+    /// decision_id -> actor_id (at most one proposer per decision)
+    proposed_by: BTreeMap<String, String>,
+    /// decision_id -> [actor_id]
+    accepted_by: BTreeMap<String, Vec<String>>,
+    /// decision_id -> [actor_id]
+    rejected_by: BTreeMap<String, Vec<String>>,
+    evidence_count: BTreeMap<String, i64>,
+    hypothesis_ids: BTreeMap<String, Vec<String>>,
+    options_count: BTreeMap<String, i64>,
+}
+
+impl ContextGraph {
+    fn add_decision(
+        mut self,
+        id: &str,
+        source: &str,
+        source_ref: Option<&str>,
+        rationale: &str,
+        event_origin: i64,
+    ) -> Self {
+        self.decisions.insert(
+            id.to_owned(),
+            (
+                source.to_owned(),
+                source_ref.map(str::to_owned),
+                rationale.to_owned(),
+                event_origin,
+            ),
+        );
+        self
+    }
+    fn add_actor(mut self, id: &str, kind: &str) -> Self {
+        self.actors.insert(id.to_owned(), kind.to_owned());
+        self
+    }
+    fn set_proposer(mut self, decision_id: &str, actor_id: &str) -> Self {
+        self.proposed_by
+            .insert(decision_id.to_owned(), actor_id.to_owned());
+        self
+    }
+    fn add_acceptor(mut self, decision_id: &str, actor_id: &str) -> Self {
+        self.accepted_by
+            .entry(decision_id.to_owned())
+            .or_default()
+            .push(actor_id.to_owned());
+        self
+    }
+    fn add_rejector(mut self, decision_id: &str, actor_id: &str) -> Self {
+        self.rejected_by
+            .entry(decision_id.to_owned())
+            .or_default()
+            .push(actor_id.to_owned());
+        self
+    }
+    fn set_evidence(mut self, decision_id: &str, count: i64) -> Self {
+        self.evidence_count.insert(decision_id.to_owned(), count);
+        self
+    }
+    fn add_hypothesis(mut self, decision_id: &str, hypothesis_id: &str) -> Self {
+        self.hypothesis_ids
+            .entry(decision_id.to_owned())
+            .or_default()
+            .push(hypothesis_id.to_owned());
+        self
+    }
+    fn set_options(mut self, decision_id: &str, count: i64) -> Self {
+        self.options_count.insert(decision_id.to_owned(), count);
+        self
+    }
+}
+
+impl GraphView for ContextGraph {
+    fn upsert_node(&self, _: NodeKind, _: &str, _: &GraphProperties) -> Result<()> {
+        Ok(())
+    }
+    fn upsert_edge(&self, _: RelationKind, _: &str, _: &str, _: &GraphProperties) -> Result<()> {
+        Ok(())
+    }
+    fn wipe(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn query(&self, cypher: &str, params: &GraphParams) -> Result<Vec<GraphRow>> {
+        let id = params
+            .get("id")
+            .and_then(|v| {
+                if let GraphValue::String(s) = v {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or("");
+        let since = params.get("since").and_then(|v| {
+            if let GraphValue::Int(n) = v {
+                Some(*n)
+            } else {
+                None
+            }
+        });
+
+        // Single decision base info: contains d.rationale and {id: param but no PROPOSED_BY/ACCEPTED_BY
+        if cypher.contains("d.rationale") && cypher.contains("{id:") {
+            if let Some((source, source_ref, rationale, _)) = self.decisions.get(id) {
+                let mut row = GraphRow::from([
+                    ("id".to_owned(), GraphValue::String(id.to_owned())),
+                    ("source".to_owned(), GraphValue::String(source.clone())),
+                    (
+                        "rationale".to_owned(),
+                        GraphValue::String(rationale.clone()),
+                    ),
+                ]);
+                if let Some(sr) = source_ref {
+                    row.insert("source_ref".to_owned(), GraphValue::String(sr.clone()));
+                }
+                return Ok(vec![row]);
+            }
+            return Ok(vec![]);
+        }
+
+        // Bulk decision list: contains d.rationale but no {id:
+        if cypher.contains("d.rationale") && !cypher.contains("{id:") {
+            let mut rows: Vec<GraphRow> = self
+                .decisions
+                .iter()
+                .filter(|(_, (_, _, _, origin))| since.is_none_or(|s| *origin >= s))
+                .map(|(did, (source, source_ref, rationale, origin))| {
+                    let mut row = GraphRow::from([
+                        ("id".to_owned(), GraphValue::String(did.clone())),
+                        ("source".to_owned(), GraphValue::String(source.clone())),
+                        (
+                            "rationale".to_owned(),
+                            GraphValue::String(rationale.clone()),
+                        ),
+                        ("event_origin".to_owned(), GraphValue::Int(*origin)),
+                    ]);
+                    if let Some(sr) = source_ref {
+                        row.insert("source_ref".to_owned(), GraphValue::String(sr.clone()));
+                    }
+                    row
+                })
+                .collect();
+            rows.sort_by_key(|r| {
+                let o = if let Some(GraphValue::Int(o)) = r.get("event_origin") {
+                    *o
+                } else {
+                    0
+                };
+                let d = if let Some(GraphValue::String(d)) = r.get("id") {
+                    d.clone()
+                } else {
+                    String::new()
+                };
+                (o, d)
+            });
+            return Ok(rows);
+        }
+
+        // Proposer: PROPOSED_BY + actor_id + kind + LIMIT 1
+        if cypher.contains("PROPOSED_BY") && cypher.contains("actor_id") {
+            if let Some(actor_id) = self.proposed_by.get(id) {
+                let kind = self.actors.get(actor_id).cloned().unwrap_or_default();
+                return Ok(vec![GraphRow::from([
+                    ("actor_id".to_owned(), GraphValue::String(actor_id.clone())),
+                    ("kind".to_owned(), GraphValue::String(kind)),
+                ])]);
+            }
+            return Ok(vec![]);
+        }
+
+        // Acceptors: ACCEPTED_BY + actor_id + kind
+        if cypher.contains("ACCEPTED_BY") && cypher.contains("actor_id") {
+            let mut rows = Vec::new();
+            if let Some(acceptors) = self.accepted_by.get(id) {
+                let mut sorted = acceptors.clone();
+                sorted.sort();
+                for actor_id in sorted {
+                    let kind = self.actors.get(&actor_id).cloned().unwrap_or_default();
+                    rows.push(GraphRow::from([
+                        ("actor_id".to_owned(), GraphValue::String(actor_id)),
+                        ("kind".to_owned(), GraphValue::String(kind)),
+                    ]));
+                }
+            }
+            return Ok(rows);
+        }
+
+        // Rejected count: REJECTED_BY + cnt
+        if cypher.contains("REJECTED_BY") && cypher.contains("cnt") {
+            let cnt = self.rejected_by.get(id).map_or(0, |v| v.len() as i64);
+            return Ok(vec![GraphRow::from([(
+                "cnt".to_owned(),
+                GraphValue::Int(cnt),
+            )])]);
+        }
+
+        // Evidence count: BASED_ON + cnt
+        if cypher.contains("BASED_ON") && cypher.contains("cnt") {
+            let cnt = self.evidence_count.get(id).copied().unwrap_or(0);
+            return Ok(vec![GraphRow::from([(
+                "cnt".to_owned(),
+                GraphValue::Int(cnt),
+            )])]);
+        }
+
+        // Hypothesis ids: hid column
+        if cypher.contains("hid") {
+            let rows: Vec<GraphRow> = self
+                .hypothesis_ids
+                .get(id)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .map(|hid| GraphRow::from([("hid".to_owned(), GraphValue::String(hid.clone()))]))
+                .collect();
+            return Ok(rows);
+        }
+
+        // Options count: HAS_OPTION + cnt
+        if cypher.contains("HAS_OPTION") && cypher.contains("cnt") {
+            let cnt = self.options_count.get(id).copied().unwrap_or(0);
+            return Ok(vec![GraphRow::from([(
+                "cnt".to_owned(),
+                GraphValue::Int(cnt),
+            )])]);
+        }
+
+        Ok(vec![])
+    }
+}
+
+#[test]
+fn human_authored_decision_context() -> Result<()> {
+    let graph = ContextGraph::default()
+        .add_decision("d:1", "human", None, "We chose X because Y", 10)
+        .add_actor("human:alice", "human")
+        .set_proposer("d:1", "human:alice")
+        .set_evidence("d:1", 2)
+        .set_options("d:1", 1);
+
+    let result = get_decision_context(&graph, "d:1")?;
+    let ctx = result.data.unwrap();
+
+    assert_eq!(ctx.decision_id, "d:1");
+    assert_eq!(ctx.authorship, AuthorshipShape::HumanAuthored);
+    assert_eq!(ctx.proposer_id.as_deref(), Some("human:alice"));
+    assert_eq!(ctx.source, "human");
+    assert_eq!(ctx.review, ReviewShape::Unreviewed);
+    assert_eq!(ctx.accepted_count, 0);
+    assert_eq!(ctx.rejected_count, 0);
+    assert_eq!(ctx.evidence_count, 2);
+    assert_eq!(ctx.options_count, 1);
+    assert_eq!(ctx.rationale_chars, "We chose X because Y".len() as i64);
+    Ok(())
+}
+
+#[test]
+fn agent_proposed_human_accepted_context() -> Result<()> {
+    let graph = ContextGraph::default()
+        .add_decision(
+            "d:1",
+            "agent",
+            Some("claude:opus:sess-abc"),
+            "Rationale text",
+            5,
+        )
+        .add_actor("agent:claude:sess-abc", "agent")
+        .add_actor("human:bob", "human")
+        .set_proposer("d:1", "agent:claude:sess-abc")
+        .add_acceptor("d:1", "human:bob")
+        .set_evidence("d:1", 1)
+        .set_options("d:1", 2);
+
+    let result = get_decision_context(&graph, "d:1")?;
+    let ctx = result.data.unwrap();
+
+    assert_eq!(ctx.authorship, AuthorshipShape::AgentProposedHumanAccepted);
+    assert_eq!(ctx.source_ref.as_deref(), Some("claude:opus:sess-abc"));
+    assert_eq!(ctx.review, ReviewShape::PeerReviewed);
+    assert_eq!(ctx.accepted_count, 1);
+    assert_eq!(ctx.evidence_count, 1);
+    assert_eq!(ctx.options_count, 2);
+    assert_eq!(ctx.hypothesis_count, 0);
+    Ok(())
+}
+
+#[test]
+fn context_hypothesis_count_includes_direct_and_via_option() -> Result<()> {
+    let graph = ContextGraph::default()
+        .add_decision("d:1", "human", None, "Rationale", 10)
+        .add_hypothesis("d:1", "hyp:1")
+        .add_hypothesis("d:1", "hyp:2");
+
+    let result = get_decision_context(&graph, "d:1")?;
+    let ctx = result.data.unwrap();
+
+    assert_eq!(ctx.hypothesis_count, 2);
+    Ok(())
+}
+
+#[test]
+fn agent_only_decision_context() -> Result<()> {
+    let graph = ContextGraph::default()
+        .add_decision(
+            "d:1",
+            "agent",
+            Some("claude:haiku:sess-xyz"),
+            "Agent rationale",
+            15,
+        )
+        .add_actor("agent:claude:sess-xyz", "agent")
+        .set_proposer("d:1", "agent:claude:sess-xyz")
+        .add_acceptor("d:1", "agent:claude:sess-xyz"); // self-acceptance by agent
+
+    let result = get_decision_context(&graph, "d:1")?;
+    let ctx = result.data.unwrap();
+
+    assert_eq!(ctx.authorship, AuthorshipShape::AgentOnly);
+    assert_eq!(ctx.review, ReviewShape::SelfAccepted);
+    Ok(())
+}
+
+#[test]
+fn disputed_decision_context() -> Result<()> {
+    let graph = ContextGraph::default()
+        .add_decision("d:1", "human", None, "Rationale", 20)
+        .add_actor("human:alice", "human")
+        .add_actor("human:bob", "human")
+        .set_proposer("d:1", "human:alice")
+        .add_acceptor("d:1", "human:alice")
+        .add_rejector("d:1", "human:bob");
+
+    let result = get_decision_context(&graph, "d:1")?;
+    let ctx = result.data.unwrap();
+
+    assert_eq!(ctx.review, ReviewShape::Disputed);
+    assert_eq!(ctx.accepted_count, 1);
+    assert_eq!(ctx.rejected_count, 1);
+    Ok(())
+}
+
+#[test]
+fn self_accepted_decision_context() -> Result<()> {
+    let graph = ContextGraph::default()
+        .add_decision("d:1", "human", None, "Rationale", 20)
+        .add_actor("human:alice", "human")
+        .set_proposer("d:1", "human:alice")
+        .add_acceptor("d:1", "human:alice");
+
+    let result = get_decision_context(&graph, "d:1")?;
+    let ctx = result.data.unwrap();
+
+    assert_eq!(ctx.review, ReviewShape::SelfAccepted);
+    assert_eq!(ctx.authorship, AuthorshipShape::HumanAuthored);
+    Ok(())
+}
+
+#[test]
+fn unknown_authorship_when_no_proposer() -> Result<()> {
+    let graph = ContextGraph::default().add_decision("d:1", "cli", None, "", 5);
+
+    let result = get_decision_context(&graph, "d:1")?;
+    let ctx = result.data.unwrap();
+
+    assert_eq!(ctx.authorship, AuthorshipShape::Unknown);
+    assert!(ctx.proposer_id.is_none());
+    assert_eq!(ctx.review, ReviewShape::Unreviewed);
+    Ok(())
+}
+
+#[test]
+fn missing_decision_context_returns_none() -> Result<()> {
+    let graph = ContextGraph::default();
+    let result = get_decision_context(&graph, "d:missing")?;
+    assert!(result.data.is_none());
+    Ok(())
+}
+
+#[test]
+fn context_bulk_query_returns_all_decisions() -> Result<()> {
+    let graph = ContextGraph::default()
+        .add_decision("d:1", "human", None, "R1", 10)
+        .add_decision("d:2", "agent", Some("claude:opus:s1"), "R2", 20)
+        .add_actor("human:alice", "human")
+        .add_actor("agent:claude:s1", "agent")
+        .set_proposer("d:1", "human:alice")
+        .set_proposer("d:2", "agent:claude:s1");
+
+    let req = DecisionContextRequest {
+        limit: 10,
+        ..Default::default()
+    };
+    let result = get_decision_context_candidates(&graph, &req)?;
+
+    assert_eq!(result.result_count, 2);
+    assert!(!result.truncated);
+    let shapes: Vec<_> = result.data.iter().map(|c| c.authorship).collect();
+    assert!(shapes.contains(&AuthorshipShape::HumanAuthored));
+    assert!(shapes.contains(&AuthorshipShape::AgentOnly));
+    Ok(())
+}
+
+#[test]
+fn context_bulk_query_since_filter() -> Result<()> {
+    let graph = ContextGraph::default()
+        .add_decision("d:old", "human", None, "Old", 5)
+        .add_decision("d:new", "agent", None, "New", 50);
+
+    let req = DecisionContextRequest {
+        since_event_origin: Some(20),
+        limit: 10,
+        ..Default::default()
+    };
+    let result = get_decision_context_candidates(&graph, &req)?;
+
+    assert_eq!(result.result_count, 1);
+    assert_eq!(result.data[0].decision_id, "d:new");
+    Ok(())
+}

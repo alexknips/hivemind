@@ -42,7 +42,7 @@ fn initialize_reports_server_metadata() {
 }
 
 #[test]
-fn tools_list_includes_all_sixteen_tools() {
+fn tools_list_includes_all_eighteen_tools() {
     let dir = unique_dir("list");
     let config = McpConfig::new(&dir).with_session_id("test-session");
     let responses = drive(
@@ -51,7 +51,7 @@ fn tools_list_includes_all_sixteen_tools() {
     );
     assert_eq!(responses.len(), 1); // ubs:ignore: test-only; index guaranteed by test setup
     let tools = responses[0]["result"]["tools"].as_array().expect("array"); // ubs:ignore: test-only; panicking is correct in tests
-    assert_eq!(tools.len(), 16, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
+    assert_eq!(tools.len(), 18, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("string name")) // ubs:ignore: test-only; panicking is correct in tests
@@ -65,6 +65,8 @@ fn tools_list_includes_all_sixteen_tools() {
         "get_decision",
         "get_decision_outcome",
         "decision_quality_candidates",
+        "get_decision_context",
+        "decision_context_candidates",
         "get_relevant_decisions",
         "get_supersession_chain",
         "search_decisions",

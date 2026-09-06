@@ -2,6 +2,7 @@
 
 mod active_blockers;
 mod compact_view;
+mod context;
 mod decision;
 mod history;
 mod neighborhood;
@@ -29,6 +30,10 @@ pub use active_blockers::{
 pub use compact_view::{
     get_compact_view, BlockerSummary, CompactView, ContestView, ElidedSummary,
     HypothesisSummaryView, SupersessionSummary,
+};
+pub use context::{
+    context_next_cursor, get_decision_context, get_decision_context_candidates, AuthorshipShape,
+    DecisionContext, DecisionContextRequest, ReviewShape,
 };
 pub use decision::{get_decision, get_hypothesis_statement, DecisionView, HypothesisContext};
 pub use history::*;

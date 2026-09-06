@@ -33,11 +33,12 @@ use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool
 use crate::ledger::SqliteEventLedger;
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
-    derive_decision_status, get_compact_view, get_decision, get_decision_outcome,
+    context_next_cursor, derive_decision_status, get_compact_view, get_decision,
+    get_decision_context, get_decision_context_candidates, get_decision_outcome,
     get_decision_quality_candidates, get_recent_decisions, get_relevant_decisions,
     get_supersession_chain, outcome_next_cursor, search_decisions_fts_with_context,
-    DecisionQualityCandidatesRequest, DecisionStatus, QueryContext, RecentDecisionFilterRequest,
-    RecentDecisionsRequest, SearchDecisionRequest,
+    DecisionContextRequest, DecisionQualityCandidatesRequest, DecisionStatus, QueryContext,
+    RecentDecisionFilterRequest, RecentDecisionsRequest, SearchDecisionRequest,
 };
 use crate::summarize::{
     recall_decisions, summarize_decisions, RecallRequest, SummarizeMode, SummarizeRequest,
@@ -303,6 +304,8 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "get_decision" => tool_get_decision(arguments, config),
         "get_decision_outcome" => tool_get_decision_outcome(arguments, config),
         "decision_quality_candidates" => tool_decision_quality_candidates(arguments, config),
+        "get_decision_context" => tool_get_decision_context(arguments, config),
+        "decision_context_candidates" => tool_decision_context_candidates(arguments, config),
         "get_relevant_decisions" => tool_get_relevant_decisions(arguments, config),
         "get_supersession_chain" => tool_get_supersession_chain(arguments, config),
         "search_decisions" => tool_search_decisions(arguments, config),
@@ -595,6 +598,38 @@ pub fn tool_definitions() -> Vec<Value> {
                     "only_with_signals": {
                         "type": "boolean",
                         "description": "When true, only decisions with at least one quality signal are returned. Default false."
+                    }
+                }
+            }
+        }),
+        json!({
+            "name": "get_decision_context",
+            "description": "Derive the context record for a single decision: the conditions under which it was made. Returns five feature groups — authorship shape (human-authored / agent-proposed+human-accepted / agent-only / unknown), source system and model/session reference, review depth (unreviewed / self_accepted / peer_reviewed / disputed), evidence and hypothesis counts, and context richness proxies (options count, rationale character count). No LLM involved; derived purely from graph edges. Pair with get_decision_outcome for causal attribution. Returns null when the decision_id is not found.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["decision_id"],
+                "properties": {
+                    "decision_id": { "type": "string", "description": "The decision to evaluate." }
+                }
+            }
+        }),
+        json!({
+            "name": "decision_context_candidates",
+            "description": "Bulk context-feature pull: returns context records for all decisions (or a filtered subset), each with authorship shape, source, review depth, evidence/hypothesis counts, and rationale richness proxies. Designed to complement decision_quality_candidates — context is the independent variable side of the causal pair. No LLM involved.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "since_event_origin": {
+                        "type": "integer",
+                        "description": "Minimum ledger event offset (inclusive). Filter to decisions proposed at or after this offset. Use 0 or omit for all."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results to return (1–1000, default 25)."
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Pagination cursor from a previous response's `next_cursor` field."
                     }
                 }
             }
@@ -1023,6 +1058,56 @@ fn tool_decision_quality_candidates(
     let skip: usize = cursor.as_deref().and_then(|c| c.parse().ok()).unwrap_or(0);
     let next_cursor = if response.truncated {
         outcome_next_cursor(skip, response.result_count)
+    } else {
+        None
+    };
+
+    Ok(json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "next_cursor": next_cursor,
+        "data": response.data,
+    }))
+}
+
+fn tool_get_decision_context(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let decision_id = require_string(&args, "decision_id")?;
+    let graph = open_memory_graph(config)?;
+    let response = get_decision_context(&graph, &decision_id)?;
+    Ok(json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "data": response.data,
+    }))
+}
+
+fn tool_decision_context_candidates(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let since_event_origin = args.get("since_event_origin").and_then(Value::as_i64);
+    let limit = optional_usize(&args, "limit")?.unwrap_or(25);
+    let cursor = optional_string(&args, "cursor")?;
+
+    let request = DecisionContextRequest {
+        since_event_origin,
+        limit,
+        cursor: cursor.clone(),
+    };
+
+    let graph = open_memory_graph(config)?;
+    let response = get_decision_context_candidates(&graph, &request)?;
+
+    let skip: usize = cursor.as_deref().and_then(|c| c.parse().ok()).unwrap_or(0);
+    let next_cursor = if response.truncated {
+        context_next_cursor(skip, response.result_count)
     } else {
         None
     };
