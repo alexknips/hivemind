@@ -180,7 +180,7 @@ jobs:
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.e2e-sqlite.yml \
-            up -d hivemind
+            up -d --no-deps hivemind
           echo "Waiting for /v1/health..."
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8080/v1/health | grep -q '"ok"'; then
@@ -190,6 +190,14 @@ jobs:
             sleep 1
           done
           curl -sf http://localhost:8080/v1/health | grep '"ok"'
+
+      - name: Dump server logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.e2e-sqlite.yml \
+            logs hivemind
 
       - name: Install Rust toolchain (for hivemind binary)
         uses: dtolnay/rust-toolchain@stable

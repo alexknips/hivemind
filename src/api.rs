@@ -140,7 +140,9 @@ impl ApiConfig {
             hivemind_dir: hivemind_dir.into(),
             port: 8080,
             api_key: std::env::var("HIVEMIND_API_KEY").ok(),
-            database_url: std::env::var("HIVEMIND_DATABASE_URL").ok(),
+            database_url: std::env::var("HIVEMIND_DATABASE_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
             admin_key: std::env::var("HIVEMIND_ADMIN_KEY").ok(),
             workos_domain: std::env::var("WORKOS_DOMAIN").ok(),
             workos_issuer: std::env::var("WORKOS_ISSUER").ok(),
