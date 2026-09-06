@@ -288,7 +288,11 @@ pub(crate) fn render_scored_decision_summary(scored: &Option<ScoredDecision>) ->
         quality_tier_label(s.tier)
     );
     for reason in &s.reasons {
-        let _ = writeln!(output, "reason\t{}", summary_cell(&format!("{reason:?}"))); // ubs:ignore: format!("{reason:?}") is the only way to get a &str from a Debug value; unavoidable per-reason alloc
+        let _ = writeln!(
+            output,
+            "reason\t{}",
+            summary_cell(&format!("{reason:?}")), // ubs:ignore: Debug-format alloc in loop; no &str alternative
+        );
     }
     if !s.contributing_ids.is_empty() {
         let _ = writeln!(output, "contributing\t{}", s.contributing_ids.join(","));
