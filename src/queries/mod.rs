@@ -5,6 +5,7 @@ mod compact_view;
 mod context;
 mod decision;
 mod history;
+mod inhouse_scorer;
 mod neighborhood;
 mod outcome;
 mod relevant;
@@ -37,6 +38,10 @@ pub use context::{
 };
 pub use decision::{get_decision, get_hypothesis_statement, DecisionView, HypothesisContext};
 pub use history::*;
+pub use inhouse_scorer::{
+    get_decision_quality_score, scan_decision_quality, scorer_next_cursor, QualityTier,
+    ScanQualityRequest, ScoredDecision, ScorerConfig, ScorerReason, SupersessionSpeed,
+};
 pub use neighborhood::{
     get_decision_neighborhood, NeighborEdge, NeighborNode, NeighborhoodRequest, NeighborhoodRoot,
     NeighborhoodView,

@@ -35,10 +35,12 @@ use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
     context_next_cursor, derive_decision_status, get_compact_view, get_decision,
     get_decision_context, get_decision_context_candidates, get_decision_outcome,
-    get_decision_quality_candidates, get_recent_decisions, get_relevant_decisions,
-    get_supersession_chain, outcome_next_cursor, search_decisions_fts_with_context,
-    DecisionContextRequest, DecisionQualityCandidatesRequest, DecisionStatus, QueryContext,
-    RecentDecisionFilterRequest, RecentDecisionsRequest, SearchDecisionRequest,
+    get_decision_quality_candidates, get_decision_quality_score, get_recent_decisions,
+    get_relevant_decisions, get_supersession_chain, outcome_next_cursor, scan_decision_quality,
+    scorer_next_cursor, search_decisions_fts_with_context, DecisionContextRequest,
+    DecisionQualityCandidatesRequest, DecisionStatus, QualityTier, QueryContext,
+    RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest, ScorerConfig,
+    SearchDecisionRequest,
 };
 use crate::summarize::{
     recall_decisions, summarize_decisions, RecallRequest, SummarizeMode, SummarizeRequest,
@@ -306,6 +308,8 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "decision_quality_candidates" => tool_decision_quality_candidates(arguments, config),
         "get_decision_context" => tool_get_decision_context(arguments, config),
         "decision_context_candidates" => tool_decision_context_candidates(arguments, config),
+        "score_decision" => tool_score_decision(arguments, config),
+        "scan_decision_quality" => tool_scan_decision_quality(arguments, config),
         "get_relevant_decisions" => tool_get_relevant_decisions(arguments, config),
         "get_supersession_chain" => tool_get_supersession_chain(arguments, config),
         "search_decisions" => tool_search_decisions(arguments, config),
@@ -630,6 +634,46 @@ pub fn tool_definitions() -> Vec<Value> {
                     "cursor": {
                         "type": "string",
                         "description": "Pagination cursor from a previous response's `next_cursor` field."
+                    }
+                }
+            }
+        }),
+        json!({
+            "name": "score_decision",
+            "description": "In-house explainable quality score for a single decision. Combines outcome signals (superseded, stale premises, contested, thin structure) with context features (authorship, review depth) into a score in [0,1] and a quality tier. ALWAYS returns the full list of contributing reasons with their deductions and contributing node IDs — never a bare number. No LLM involved; works self-hosted. Returns null when decision_id is not found.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["decision_id"],
+                "properties": {
+                    "decision_id": {
+                        "type": "string",
+                        "description": "The decision to score."
+                    }
+                }
+            }
+        }),
+        json!({
+            "name": "scan_decision_quality",
+            "description": "Bulk in-house quality scan: scores all decisions (or a filtered subset) using the same explainable graph-signal engine as score_decision. Each result carries score, tier, reasons, and contributing node IDs. Designed for the scheduled quality-scan loop and for the MCP surface. No LLM involved. Precision-biased: use min_tier to surface only significant or high-concern decisions.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "since_event_origin": {
+                        "type": "integer",
+                        "description": "Minimum ledger event offset (inclusive). Filter to decisions proposed at or after this offset. Use 0 or omit for all."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results to return (1–1000, default 25)."
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Pagination cursor from a previous response's `next_cursor` field."
+                    },
+                    "min_tier": {
+                        "type": "string",
+                        "enum": ["clean", "minor_concerns", "significant_concerns", "high_concern"],
+                        "description": "Only return decisions at this tier or worse. Omit for all. Use 'significant_concerns' or 'high_concern' for precision-biased alerting."
                     }
                 }
             }
@@ -1121,6 +1165,60 @@ fn tool_decision_context_candidates(
     }))
 }
 
+fn tool_score_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let decision_id = require_string(&args, "decision_id")?;
+    let graph = open_memory_graph(config)?;
+    let scorer_config = ScorerConfig::default();
+    let response = get_decision_quality_score(&graph, &decision_id, &scorer_config)?;
+    Ok(json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "data": response.data,
+    }))
+}
+
+fn tool_scan_decision_quality(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let since_event_origin = args.get("since_event_origin").and_then(Value::as_i64);
+    let limit = optional_usize(&args, "limit")?.unwrap_or(25);
+    let cursor = optional_string(&args, "cursor")?;
+    let min_tier = match optional_string(&args, "min_tier")? {
+        None => None,
+        Some(s) => Some(parse_quality_tier(&s)?),
+    };
+
+    let request = ScanQualityRequest {
+        since_event_origin,
+        limit,
+        cursor: cursor.clone(),
+        min_tier,
+    };
+
+    let graph = open_memory_graph(config)?;
+    let scorer_config = ScorerConfig::default();
+    let response = scan_decision_quality(&graph, &request, &scorer_config)?;
+
+    let skip: usize = cursor.as_deref().and_then(|c| c.parse().ok()).unwrap_or(0);
+    let next_cursor = if response.truncated {
+        scorer_next_cursor(skip, response.result_count)
+    } else {
+        None
+    };
+
+    Ok(json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "next_cursor": next_cursor,
+        "data": response.data,
+    }))
+}
+
 fn actor_id_or_default(
     args: &Map<String, Value>,
     config: &McpConfig,
@@ -1138,6 +1236,18 @@ fn parse_decision_status(value: &str) -> std::result::Result<DecisionStatus, Rpc
         "superseded" => Ok(DecisionStatus::Superseded),
         other => Err(RpcError::invalid_params(format!(
             "unknown status `{other}`"
+        ))),
+    }
+}
+
+fn parse_quality_tier(value: &str) -> std::result::Result<QualityTier, RpcError> {
+    match value {
+        "clean" => Ok(QualityTier::Clean),
+        "minor_concerns" => Ok(QualityTier::MinorConcerns),
+        "significant_concerns" => Ok(QualityTier::SignificantConcerns),
+        "high_concern" => Ok(QualityTier::HighConcern),
+        other => Err(RpcError::invalid_params(format!(
+            "unknown quality tier `{other}`; expected clean, minor_concerns, significant_concerns, or high_concern"
         ))),
     }
 }

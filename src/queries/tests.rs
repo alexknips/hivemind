@@ -2295,3 +2295,334 @@ fn context_bulk_query_since_filter() -> Result<()> {
     assert_eq!(result.data[0].decision_id, "d:new");
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// In-house scorer: score_from_signals unit tests
+// ---------------------------------------------------------------------------
+
+use super::context::{AuthorshipShape, DecisionContext, ReviewShape};
+use super::inhouse_scorer::{score_from_signals, QualityTier, ScorerConfig, SupersessionSpeed};
+use super::outcome::{DecisionOutcome, OutcomeReason};
+
+fn clean_outcome(id: &str) -> DecisionOutcome {
+    DecisionOutcome {
+        decision_id: id.to_owned(),
+        held_up: true,
+        superseded: false,
+        superseded_by: None,
+        supersession_gap_events: None,
+        stale_premises: false,
+        refuted_hypothesis_ids: vec![],
+        contested: false,
+        has_options: true,
+        has_evidence: true,
+        reasons: vec![],
+    }
+}
+
+fn peer_reviewed_context(id: &str) -> DecisionContext {
+    DecisionContext {
+        decision_id: id.to_owned(),
+        authorship: AuthorshipShape::HumanAuthored,
+        proposer_id: Some("human:alice".to_owned()),
+        source: "human".to_owned(),
+        source_ref: None,
+        review: ReviewShape::PeerReviewed,
+        accepted_count: 2,
+        rejected_count: 0,
+        evidence_count: 3,
+        hypothesis_count: 1,
+        options_count: 2,
+        rationale_chars: 120,
+    }
+}
+
+#[test]
+fn clean_decision_scores_clean() {
+    let outcome = clean_outcome("d:1");
+    let context = peer_reviewed_context("d:1");
+    let config = ScorerConfig::default();
+    let scored = score_from_signals(&outcome, &context, &config);
+
+    assert_eq!(scored.decision_id, "d:1");
+    assert!((scored.score - 1.0).abs() < f64::EPSILON);
+    assert_eq!(scored.tier, QualityTier::Clean);
+    assert!(scored.reasons.is_empty());
+    assert!(scored.contributing_ids.is_empty());
+}
+
+#[test]
+fn superseded_normally_scores_minor_concerns() {
+    let outcome = DecisionOutcome {
+        held_up: false,
+        superseded: true,
+        superseded_by: Some("d:new".to_owned()),
+        supersession_gap_events: Some(50),
+        reasons: vec![OutcomeReason::SupersededBy {
+            by_id: "d:new".to_owned(),
+            gap_events: Some(50),
+        }],
+        ..clean_outcome("d:old")
+    };
+    let context = peer_reviewed_context("d:old");
+    let config = ScorerConfig::default();
+    let scored = score_from_signals(&outcome, &context, &config);
+
+    // gap=50 → Normal speed → deduct 0.30 → score=0.70 → MinorConcerns
+    assert!((scored.score - 0.70).abs() < 1e-9);
+    assert_eq!(scored.tier, QualityTier::MinorConcerns);
+    assert_eq!(scored.contributing_ids, vec!["d:new"]);
+    assert!(scored.reasons.iter().any(|r| matches!(
+        r,
+        super::inhouse_scorer::ScorerReason::SupersededBy {
+            speed: SupersessionSpeed::Normal,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn superseded_rapidly_scores_significant_concerns() {
+    let outcome = DecisionOutcome {
+        held_up: false,
+        superseded: true,
+        superseded_by: Some("d:fix".to_owned()),
+        supersession_gap_events: Some(3),
+        reasons: vec![OutcomeReason::SupersededBy {
+            by_id: "d:fix".to_owned(),
+            gap_events: Some(3),
+        }],
+        ..clean_outcome("d:mistake")
+    };
+    let context = peer_reviewed_context("d:mistake");
+    let config = ScorerConfig::default();
+    let scored = score_from_signals(&outcome, &context, &config);
+
+    // gap=3 → Rapid → deduct 0.50 → score=0.50 → SignificantConcerns
+    assert!((scored.score - 0.50).abs() < 1e-9);
+    assert_eq!(scored.tier, QualityTier::SignificantConcerns);
+    assert!(scored.reasons.iter().any(|r| matches!(
+        r,
+        super::inhouse_scorer::ScorerReason::SupersededBy {
+            speed: SupersessionSpeed::Rapid,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn stale_premises_scores_significant_concerns() {
+    let outcome = DecisionOutcome {
+        held_up: false,
+        stale_premises: true,
+        refuted_hypothesis_ids: vec!["hyp:1".to_owned()],
+        reasons: vec![OutcomeReason::PremisedOnRefuted {
+            hypothesis_id: "hyp:1".to_owned(),
+        }],
+        ..clean_outcome("d:stale")
+    };
+    let context = peer_reviewed_context("d:stale");
+    let config = ScorerConfig::default();
+    let scored = score_from_signals(&outcome, &context, &config);
+
+    // stale premises → deduct 0.50 → score=0.50 → SignificantConcerns
+    assert!((scored.score - 0.50).abs() < 1e-9);
+    assert_eq!(scored.tier, QualityTier::SignificantConcerns);
+    assert!(scored.contributing_ids.contains(&"hyp:1".to_owned()));
+    assert!(scored.reasons.iter().any(|r| matches!(
+        r,
+        super::inhouse_scorer::ScorerReason::PremisedOnRefuted { .. }
+    )));
+}
+
+#[test]
+fn contested_scores_minor_concerns() {
+    let outcome = DecisionOutcome {
+        held_up: false,
+        contested: true,
+        reasons: vec![OutcomeReason::Contested],
+        ..clean_outcome("d:contest")
+    };
+    let context = peer_reviewed_context("d:contest");
+    let config = ScorerConfig::default();
+    let scored = score_from_signals(&outcome, &context, &config);
+
+    // contested → deduct 0.25 → score=0.75 → MinorConcerns
+    assert!((scored.score - 0.75).abs() < 1e-9);
+    assert_eq!(scored.tier, QualityTier::MinorConcerns);
+    assert!(scored
+        .reasons
+        .iter()
+        .any(|r| matches!(r, super::inhouse_scorer::ScorerReason::Contested { .. })));
+}
+
+#[test]
+fn thin_structure_both_stays_clean() {
+    let outcome = DecisionOutcome {
+        has_options: false,
+        has_evidence: false,
+        reasons: vec![OutcomeReason::ThinStructure {
+            no_options: true,
+            no_evidence: true,
+        }],
+        ..clean_outcome("d:thin")
+    };
+    let context = peer_reviewed_context("d:thin");
+    let config = ScorerConfig::default();
+    let scored = score_from_signals(&outcome, &context, &config);
+
+    // thin both → deduct 0.15 → score=0.85 → Clean (precision-biased: thin alone is not flagged)
+    assert!((scored.score - 0.85).abs() < 1e-9);
+    assert_eq!(scored.tier, QualityTier::Clean);
+    assert!(scored.reasons.iter().any(|r| matches!(
+        r,
+        super::inhouse_scorer::ScorerReason::ThinStructure {
+            no_options: true,
+            no_evidence: true,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn agent_only_unreviewed_stays_clean() {
+    let outcome = clean_outcome("d:agent");
+    let context = DecisionContext {
+        authorship: AuthorshipShape::AgentOnly,
+        review: ReviewShape::Unreviewed,
+        accepted_count: 0,
+        ..peer_reviewed_context("d:agent")
+    };
+    let config = ScorerConfig::default();
+    let scored = score_from_signals(&outcome, &context, &config);
+
+    // agent_only + unreviewed → deduct 0.10 → score=0.90 → Clean (precision: mild alone)
+    assert!((scored.score - 0.90).abs() < 1e-9);
+    assert_eq!(scored.tier, QualityTier::Clean);
+    assert!(scored.reasons.iter().any(|r| matches!(
+        r,
+        super::inhouse_scorer::ScorerReason::AgentOnlyUnreviewed { .. }
+    )));
+}
+
+#[test]
+fn compound_stale_and_contested_scores_high_concern() {
+    let outcome = DecisionOutcome {
+        held_up: false,
+        stale_premises: true,
+        contested: true,
+        refuted_hypothesis_ids: vec!["hyp:x".to_owned()],
+        reasons: vec![
+            OutcomeReason::PremisedOnRefuted {
+                hypothesis_id: "hyp:x".to_owned(),
+            },
+            OutcomeReason::Contested,
+        ],
+        ..clean_outcome("d:compound")
+    };
+    let context = peer_reviewed_context("d:compound");
+    let config = ScorerConfig::default();
+    let scored = score_from_signals(&outcome, &context, &config);
+
+    // stale -0.50 + contested -0.25 = -0.75 → score=0.25 → HighConcern
+    assert!((scored.score - 0.25).abs() < 1e-9);
+    assert_eq!(scored.tier, QualityTier::HighConcern);
+}
+
+#[test]
+fn custom_config_changes_tier_cutoff() {
+    let outcome = DecisionOutcome {
+        has_options: false,
+        has_evidence: false,
+        reasons: vec![OutcomeReason::ThinStructure {
+            no_options: true,
+            no_evidence: true,
+        }],
+        ..clean_outcome("d:thin")
+    };
+    let context = peer_reviewed_context("d:thin");
+    // Raise clean_threshold so thin structure triggers MinorConcerns.
+    let config = ScorerConfig {
+        clean_threshold: 0.90,
+        ..ScorerConfig::default()
+    };
+    let scored = score_from_signals(&outcome, &context, &config);
+
+    // thin both → score=0.85 → now below 0.90 threshold → MinorConcerns
+    assert_eq!(scored.tier, QualityTier::MinorConcerns);
+}
+
+#[test]
+fn reasons_carry_deduction_and_contributing_ids() {
+    let outcome = DecisionOutcome {
+        held_up: false,
+        superseded: true,
+        superseded_by: Some("d:newer".to_owned()),
+        supersession_gap_events: Some(15),
+        reasons: vec![OutcomeReason::SupersededBy {
+            by_id: "d:newer".to_owned(),
+            gap_events: Some(15),
+        }],
+        ..clean_outcome("d:old")
+    };
+    let context = peer_reviewed_context("d:old");
+    let config = ScorerConfig::default();
+    let scored = score_from_signals(&outcome, &context, &config);
+
+    // Verify reason details are present
+    assert!(!scored.reasons.is_empty(), "reasons must be populated");
+    assert!(scored.contributing_ids.contains(&"d:newer".to_owned()));
+
+    // gap=15 → Quick speed → deduct 0.40
+    if let super::inhouse_scorer::ScorerReason::SupersededBy {
+        deduction, speed, ..
+    } = &scored.reasons[0]
+    {
+        assert!((deduction - 0.40).abs() < 1e-9);
+        assert_eq!(*speed, SupersessionSpeed::Quick);
+    } else {
+        panic!("expected SupersededBy reason");
+    }
+}
+
+#[test]
+fn score_is_clamped_at_zero_on_extreme_compounding() {
+    // Force a score that would go negative without clamping.
+    let outcome = DecisionOutcome {
+        held_up: false,
+        superseded: true,
+        superseded_by: Some("d:x".to_owned()),
+        supersession_gap_events: Some(2),
+        stale_premises: true,
+        refuted_hypothesis_ids: vec!["hyp:a".to_owned()],
+        contested: true,
+        has_options: false,
+        has_evidence: false,
+        reasons: vec![
+            OutcomeReason::SupersededBy {
+                by_id: "d:x".to_owned(),
+                gap_events: Some(2),
+            },
+            OutcomeReason::PremisedOnRefuted {
+                hypothesis_id: "hyp:a".to_owned(),
+            },
+            OutcomeReason::Contested,
+            OutcomeReason::ThinStructure {
+                no_options: true,
+                no_evidence: true,
+            },
+        ],
+        ..clean_outcome("d:worst")
+    };
+    let context = DecisionContext {
+        authorship: AuthorshipShape::AgentOnly,
+        review: ReviewShape::Unreviewed,
+        accepted_count: 0,
+        ..peer_reviewed_context("d:worst")
+    };
+    let config = ScorerConfig::default();
+    let scored = score_from_signals(&outcome, &context, &config);
+
+    assert!(scored.score >= 0.0, "score must not go below 0");
+    assert_eq!(scored.tier, QualityTier::HighConcern);
+}
