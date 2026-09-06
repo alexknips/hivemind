@@ -35,12 +35,12 @@ use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
     context_next_cursor, derive_decision_status, get_compact_view, get_decision,
     get_decision_context, get_decision_context_candidates, get_decision_outcome,
-    get_decision_quality_candidates, get_decision_quality_score, get_recent_decisions,
-    get_relevant_decisions, get_supersession_chain, outcome_next_cursor, scan_decision_quality,
-    scorer_next_cursor, search_decisions_fts_with_context, DecisionContextRequest,
-    DecisionQualityCandidatesRequest, DecisionStatus, QualityTier, QueryContext,
-    RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest, ScorerConfig,
-    SearchDecisionRequest,
+    get_decision_quality_candidates, get_decision_quality_score, get_failure_attribution,
+    get_recent_decisions, get_relevant_decisions, get_supersession_chain, outcome_next_cursor,
+    scan_decision_quality, scorer_next_cursor, search_decisions_fts_with_context,
+    DecisionContextRequest, DecisionQualityCandidatesRequest, DecisionStatus,
+    FailureAttributionRequest, QualityTier, QueryContext, RecentDecisionFilterRequest,
+    RecentDecisionsRequest, ScanQualityRequest, ScorerConfig, SearchDecisionRequest,
 };
 use crate::summarize::{
     recall_decisions, summarize_decisions, RecallRequest, SummarizeMode, SummarizeRequest,
@@ -310,6 +310,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "decision_context_candidates" => tool_decision_context_candidates(arguments, config),
         "score_decision" => tool_score_decision(arguments, config),
         "scan_decision_quality" => tool_scan_decision_quality(arguments, config),
+        "analyze_failure_modes" => tool_analyze_failure_modes(arguments, config),
         "get_relevant_decisions" => tool_get_relevant_decisions(arguments, config),
         "get_supersession_chain" => tool_get_supersession_chain(arguments, config),
         "search_decisions" => tool_search_decisions(arguments, config),
@@ -674,6 +675,23 @@ pub fn tool_definitions() -> Vec<Value> {
                         "type": "string",
                         "enum": ["clean", "minor_concerns", "significant_concerns", "high_concern"],
                         "description": "Only return decisions at this tier or worse. Omit for all. Use 'significant_concerns' or 'high_concern' for precision-biased alerting."
+                    }
+                }
+            }
+        }),
+        json!({
+            "name": "analyze_failure_modes",
+            "description": "Failure-mode attribution: which conditions predict decisions that do not hold up? Joins outcome signals (superseded / stale-premises / contested) with context features (authorship shape, review depth, source, evidence/options richness) and computes AGGREGATE failure-rate patterns across each dimension. Reports effect sizes (failure-rate delta vs corpus baseline) and honest confidence flags based on sample size. Never returns per-person rankings — all findings are aggregate patterns. Use to answer: does agent-only authorship predict failure? Does peer review improve outcomes? Does thin context predict failure? Works on any deployment, no LLM.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "since_event_origin": {
+                        "type": "integer",
+                        "description": "Minimum ledger event offset (inclusive). Filter to decisions proposed at or after this offset. Use 0 or omit for all."
+                    },
+                    "min_sample_size": {
+                        "type": "integer",
+                        "description": "Minimum group size required for a group to appear in top findings (default 3). Groups smaller than this are still included in breakdowns."
                     }
                 }
             }
@@ -1215,6 +1233,30 @@ fn tool_scan_decision_quality(
         "truncated": response.truncated,
         "latency_ms": response.latency_ms,
         "next_cursor": next_cursor,
+        "data": response.data,
+    }))
+}
+
+fn tool_analyze_failure_modes(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let since_event_origin = args.get("since_event_origin").and_then(Value::as_i64);
+    let min_sample_size = optional_usize(&args, "min_sample_size")?.unwrap_or(3);
+
+    let request = FailureAttributionRequest {
+        since_event_origin,
+        min_sample_size,
+    };
+
+    let graph = open_memory_graph(config)?;
+    let response = get_failure_attribution(&graph, &request)?;
+
+    Ok(json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
         "data": response.data,
     }))
 }
