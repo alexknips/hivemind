@@ -13,6 +13,7 @@ Run this full gate set before submitting a polecat branch to refinery:
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+cargo run --locked --bin generate-reference -- --check
 "${GC_CITY:?GC_CITY must point at the city root}/assets/scripts/ubs-rig-scan.sh" "$(pwd)"
 ```
 
@@ -44,6 +45,7 @@ The `MERGE_READY` comment and BR notes must include one proof line per gate:
 fmt: PASS (cargo fmt --check)
 clippy: PASS (cargo clippy --locked --all-targets -- -D warnings)
 test: PASS (cargo test --locked)
+reference-docs: PASS (cargo run --locked --bin generate-reference -- --check)
 ubs-critical: PASS (<wrapper command>; 0 criticals)
 ubs-warnings: PASS (baseline=<n>, branch=<n>, no growth)
 ```
