@@ -28,14 +28,15 @@ use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView}
 use crate::queries::{
     derive_decision_status, export_read_only_summary, get_active_decision_blockers,
     get_blocker_notification_candidates, get_compact_view, get_decision, get_decision_neighborhood,
-    get_decisions_added_since, get_decisions_changed_since, get_recent_activity,
-    get_recent_decisions, get_relevant_decisions, get_supersession_chain, search_decisions,
-    search_decisions_fts_with_context, ActiveDecisionBlockersRequest,
-    BlockerNotificationCandidatesRequest, ChangedSinceRequest, DecisionBlockerFilters,
-    DecisionStatus, DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
-    HistoryFilterRequest, NeighborhoodRequest, QueryContext, ReadOnlyExportQuery,
-    ReadOnlyExportRequest, RecentActivityRequest, RecentDecisionEntry, RecentDecisionFilterRequest,
-    RecentDecisionsRequest, SearchDecisionRequest,
+    get_decision_quality_score, get_decisions_added_since, get_decisions_changed_since,
+    get_recent_activity, get_recent_decisions, get_relevant_decisions, get_supersession_chain,
+    scan_decision_quality, scorer_next_cursor, search_decisions, search_decisions_fts_with_context,
+    ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest, ChangedSinceRequest,
+    DecisionBlockerFilters, DecisionStatus, DecisionsAddedSinceFilterRequest,
+    DecisionsAddedSinceRequest, HistoryFilterRequest, NeighborhoodRequest, QualityTier,
+    QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest, RecentActivityRequest,
+    RecentDecisionEntry, RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest,
+    ScorerConfig, SearchDecisionRequest,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -60,9 +61,9 @@ use super::args::{
     ImportConnectorCommand, ImportDocumentsArgs, IngestArgs, IngestCommand, IngestSlackThreadArgs,
     MapArgs, McpArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs,
     QueryCommand, QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs,
-    QueryHistoryFilterArgs, QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
-    QuerySearchDecisionsArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
-    SupersedeArgs, TuiArgs,
+    QueryHistoryFilterArgs, QueryQualityTier, QueryRecentActivityArgs, QueryRecentDecisionsArgs,
+    QueryRelationKind, QuerySearchDecisionsArgs, QuickstartArgs, ReviewArgs, ServeArgs,
+    SlackAppArgs, SlackAppCommand, SupersedeArgs, TuiArgs,
 };
 use super::render::{
     append_truncation_notice, decision_status_label, format_disagree_output, format_import_output,
@@ -71,9 +72,10 @@ use super::render::{
     render_added_since_summary, render_blocker_notifications_summary, render_changed_since_summary,
     render_compact_view_summary, render_decision_list_summary, render_decision_summary, render_dot,
     render_neighborhood_summary, render_read_only_export_summary, render_recall_summary,
-    render_recent_activity_summary, render_recent_decisions_summary, render_search_summary,
-    render_supersession_summary, DisagreeCommandOutput, OutputEnvelope, ReviewActionOutput,
-    ReviewCommandOutput, SupersedeCommandOutput,
+    render_recent_activity_summary, render_recent_decisions_summary, render_scan_quality_summary,
+    render_scored_decision_summary, render_search_summary, render_supersession_summary,
+    DisagreeCommandOutput, OutputEnvelope, ReviewActionOutput, ReviewCommandOutput,
+    SupersedeCommandOutput,
 };
 #[cfg(feature = "shared-backend-postgres")]
 use super::render::{MigrateReport, ParityCheckResult};
@@ -1397,7 +1399,9 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
         | QueryCommand::SearchDecisions(_)
         | QueryCommand::Recall(_)
         | QueryCommand::GetActiveDecisionBlockers(_)
-        | QueryCommand::GetBlockerNotificationCandidates(_) => {
+        | QueryCommand::GetBlockerNotificationCandidates(_)
+        | QueryCommand::ScoreDecision(_)
+        | QueryCommand::ScanDecisionQuality(_) => {
             return Err(
                 CliError::InvalidInput("query requires graph-backed execution".to_owned()).into(),
             )
@@ -2051,6 +2055,41 @@ fn run_query_with_graph(
                 response.data.next_cursor.as_deref(),
             )?
         }
+        QueryCommand::ScoreDecision(args) => {
+            let response =
+                get_decision_quality_score(graph, &args.decision_id, &ScorerConfig::default())?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_scored_decision_summary,
+                None,
+            )?
+        }
+        QueryCommand::ScanDecisionQuality(args) => {
+            let request = ScanQualityRequest {
+                since_event_origin: args.since_event_origin,
+                limit: args.limit,
+                cursor: args.cursor.clone(),
+                min_tier: args.min_tier.map(query_quality_tier_to_tier),
+            };
+            let response = scan_decision_quality(graph, &request, &ScorerConfig::default())?;
+            let skip: usize = args
+                .cursor
+                .as_deref()
+                .and_then(|c| c.parse().ok())
+                .unwrap_or(0);
+            let next_cursor = if response.truncated {
+                scorer_next_cursor(skip, response.result_count)
+            } else {
+                None
+            };
+            format_query_response(
+                query.summary,
+                &response,
+                |d: &Vec<_>| render_scan_quality_summary(d),
+                next_cursor.as_deref(),
+            )?
+        }
         QueryCommand::RecentDecisions(_)
         | QueryCommand::GetRecentActivity(_)
         | QueryCommand::GetDecisionsChangedSince(_)
@@ -2063,6 +2102,15 @@ fn run_query_with_graph(
     };
 
     Ok(output)
+}
+
+fn query_quality_tier_to_tier(t: QueryQualityTier) -> QualityTier {
+    match t {
+        QueryQualityTier::Clean => QualityTier::Clean,
+        QueryQualityTier::MinorConcerns => QualityTier::MinorConcerns,
+        QueryQualityTier::SignificantConcerns => QualityTier::SignificantConcerns,
+        QueryQualityTier::HighConcern => QualityTier::HighConcern,
+    }
 }
 
 fn parse_query_datetime(value: Option<&str>, flag: &str) -> Result<Option<DateTime<Utc>>> {

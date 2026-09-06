@@ -898,6 +898,12 @@ pub enum QueryCommand {
     GetDecisionsAddedSince(QueryAddedSinceArgs),
     #[command(name = "export_read_only_summary")]
     ExportReadOnlySummary(QueryExportReadOnlySummaryArgs),
+    /// In-house explainable quality score for a single decision.
+    #[command(name = "score_decision")]
+    ScoreDecision(QueryScoreDecisionArgs),
+    /// Bulk in-house quality scan: scores all decisions (or a filtered subset).
+    #[command(name = "scan_decision_quality")]
+    ScanDecisionQuality(QueryScanDecisionQualityArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1329,6 +1335,41 @@ pub struct DumpArgs {
 #[serde(rename_all = "lowercase")]
 pub enum DumpFormat {
     Dot,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryScoreDecisionArgs {
+    /// Decision ID to score.
+    #[arg(long = "id")]
+    pub decision_id: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryScanDecisionQualityArgs {
+    /// Minimum ledger event offset (inclusive). Filters to decisions proposed at or after this offset.
+    #[arg(long = "since-event-origin")]
+    pub since_event_origin: Option<i64>,
+
+    /// Maximum results to return (1–1000, default 25).
+    #[arg(long, default_value_t = 25)]
+    pub limit: usize,
+
+    /// Pagination cursor from a previous response.
+    #[arg(long)]
+    pub cursor: Option<String>,
+
+    /// Only return decisions at this tier or worse.
+    #[arg(long, value_enum)]
+    pub min_tier: Option<QueryQualityTier>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum QueryQualityTier {
+    Clean,
+    MinorConcerns,
+    SignificantConcerns,
+    HighConcern,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

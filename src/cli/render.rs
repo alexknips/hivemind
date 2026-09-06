@@ -14,9 +14,9 @@ use crate::queries::{
     derive_decision_status, derive_hypothesis_status, BlockerNotificationCandidates, CompactView,
     DecisionBlockerResults, DecisionSearchResults, DecisionStatus, DecisionView,
     DecisionsAddedSinceResults, DecisionsChangedSinceResults, HistoryChangeKind, HypothesisStatus,
-    NeighborhoodView, QueryResponse, ReadOnlyExport,
+    NeighborhoodView, QualityTier, QueryResponse, ReadOnlyExport,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
-    RecentActivityResults, RecentDecisionsResults, SupersessionChain,
+    RecentActivityResults, RecentDecisionsResults, ScoredDecision, SupersessionChain,
 };
 use crate::{HivemindError, Result};
 
@@ -273,6 +273,49 @@ pub(crate) fn render_recall_summary(response: &crate::summarize::RecallResponse)
         );
     }
     output.trim_end().to_owned()
+}
+
+pub(crate) fn render_scored_decision_summary(scored: &Option<ScoredDecision>) -> String {
+    let Some(s) = scored else {
+        return "No decision found".to_owned();
+    };
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "scored\t{}\tscore={:.3}\ttier={}",
+        s.decision_id,
+        s.score,
+        quality_tier_label(s.tier)
+    );
+    for reason in &s.reasons {
+        let _ = writeln!(output, "reason\t{}", summary_cell(&format!("{reason:?}"))); // ubs:ignore: format!("{reason:?}") is the only way to get a &str from a Debug value; unavoidable per-reason alloc
+    }
+    if !s.contributing_ids.is_empty() {
+        let _ = writeln!(output, "contributing\t{}", s.contributing_ids.join(","));
+    }
+    output.trim_end().to_owned()
+}
+
+pub(crate) fn render_scan_quality_summary(decisions: &[ScoredDecision]) -> String {
+    if decisions.is_empty() {
+        return "No decisions found".to_owned();
+    }
+    let mut output = String::new();
+    for s in decisions {
+        let _ = writeln!(
+            output,
+            "scored\t{}\tscore={:.3}\ttier={}\treasons={}",
+            s.decision_id,
+            s.score,
+            quality_tier_label(s.tier),
+            s.reasons.len()
+        );
+    }
+    output.trim_end().to_owned()
+}
+
+fn quality_tier_label(tier: QualityTier) -> &'static str {
+    tier.as_str()
 }
 
 pub(crate) fn render_supersession_summary(chain: &SupersessionChain) -> String {

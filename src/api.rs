@@ -74,16 +74,18 @@ use crate::ledger::{PostgresEventLedger, ProvisionedUser, ResolvedToken, TenantS
 use crate::mcp::args::{
     default_option_description, optional_option_labels as mcp_opt_option_labels,
     optional_string as mcp_opt_str, optional_string_array as mcp_opt_str_array,
-    require_string as mcp_req_str, require_string_array as mcp_req_str_array,
+    optional_usize as mcp_opt_usize, require_string as mcp_req_str,
+    require_string_array as mcp_req_str_array,
 };
 use crate::projector::{
     memory::MemoryGraph, project_from_ledger_for_tenant, GraphParams, GraphRow, GraphValue,
     GraphView, NodeKind, RelationKind,
 };
 use crate::queries::{
-    derive_decision_status, get_compact_view, get_decision, get_relevant_decisions,
-    get_supersession_chain, search_decisions_fts_with_context, DecisionStatus, QueryContext,
-    QueryResponse, SearchDecisionRequest,
+    derive_decision_status, get_compact_view, get_decision, get_decision_quality_score,
+    get_relevant_decisions, get_supersession_chain, scan_decision_quality, scorer_next_cursor,
+    search_decisions_fts_with_context, DecisionStatus, QualityTier, QueryContext, QueryResponse,
+    ScanQualityRequest, ScorerConfig, SearchDecisionRequest,
 };
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
@@ -2544,6 +2546,8 @@ fn mcp_tools_call_blocking(
         "get_relevant_decisions" => mcp_get_relevant_decisions(backend, ctx, args, cache),
         "get_supersession_chain" => mcp_get_supersession_chain(backend, ctx, args, cache),
         "search_decisions" => mcp_search_decisions(backend, ctx, args, cache),
+        "score_decision" => mcp_score_decision(backend, ctx, args, cache),
+        "scan_decision_quality" => mcp_scan_decision_quality(backend, ctx, args, cache),
         "dump_graph" => mcp_dump_graph(backend, ctx, cache),
         "hivemind_compact_view" => mcp_compact_view(backend, ctx, args, cache),
         "summarize_decisions" => mcp_summarize(backend, ctx, args, cache),
@@ -2960,6 +2964,67 @@ fn mcp_search_decisions(
     let response = search_decisions_fts_with_context(&query_ctx, sqlite_ledger, &*graph, &request)
         .map_err(|e| (-32603i32, e.to_string()))?;
     serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
+}
+
+fn mcp_score_decision(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
+) -> McpToolResult {
+    let decision_id = mcp_req_str(&args, "decision_id")?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let config = ScorerConfig::default();
+    let response = get_decision_quality_score(&*graph, &decision_id, &config)
+        .map_err(|e| (-32603i32, e.to_string()))?;
+    serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
+}
+
+fn mcp_scan_decision_quality(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
+) -> McpToolResult {
+    let since_event_origin = args.get("since_event_origin").and_then(|v| v.as_i64());
+    let limit = mcp_opt_usize(&args, "limit")?.unwrap_or(25);
+    let cursor = mcp_opt_str(&args, "cursor")?;
+    let min_tier = match mcp_opt_str(&args, "min_tier")? {
+        None => None,
+        Some(s) => Some(parse_quality_tier_http(&s)?),
+    };
+    let request = ScanQualityRequest {
+        since_event_origin,
+        limit,
+        cursor: cursor.clone(),
+        min_tier,
+    };
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let config = ScorerConfig::default();
+    let response = scan_decision_quality(&*graph, &request, &config)
+        .map_err(|e| (-32603i32, e.to_string()))?;
+    let skip: usize = cursor.as_deref().and_then(|c| c.parse().ok()).unwrap_or(0);
+    let next_cursor = if response.truncated {
+        scorer_next_cursor(skip, response.result_count)
+    } else {
+        None
+    };
+    let mut value =
+        serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))?;
+    if let (Some(nc), Some(obj)) = (next_cursor, value.as_object_mut()) {
+        obj.insert("next_cursor".to_owned(), serde_json::Value::String(nc));
+    }
+    Ok(value)
+}
+
+fn parse_quality_tier_http(s: &str) -> std::result::Result<QualityTier, (i32, String)> {
+    match s {
+        "clean" => Ok(QualityTier::Clean),
+        "minor_concerns" => Ok(QualityTier::MinorConcerns),
+        "significant_concerns" => Ok(QualityTier::SignificantConcerns),
+        "high_concern" => Ok(QualityTier::HighConcern),
+        other => Err((-32602, format!("unknown quality tier `{other}`; expected clean, minor_concerns, significant_concerns, or high_concern"))),
+    }
 }
 
 fn mcp_dump_graph(
