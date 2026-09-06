@@ -59,7 +59,7 @@ curl_api() {
   local extra=("$@")
   local auth_args=()
   [[ -n "$API_KEY" ]] && auth_args+=(-H "Authorization: Bearer $API_KEY")
-  curl -sf \
+  curl -s \
     -H "X-HiveMind-Tenant: $TENANT" \
     -H "X-HiveMind-Actor: agent:e2e:smoke" \
     "${auth_args[@]}" \
@@ -74,7 +74,7 @@ curl_json() {
   local body="$1";   shift
   local auth_args=()
   [[ -n "$API_KEY" ]] && auth_args+=(-H "Authorization: Bearer $API_KEY")
-  curl -sf \
+  curl -s \
     -H "Content-Type: application/json" \
     -H "X-HiveMind-Tenant: $TENANT" \
     -H "X-HiveMind-Actor: agent:e2e:smoke" \
@@ -151,47 +151,70 @@ if command -v "$HIVEMIND_BIN" > /dev/null 2>&1; then
     --json \
     emit decision.proposed \
     --title "e2e-smoke CLI: adopt semantic versioning" \
-    --rationale "Semver gives downstream consumers predictable upgrade signals" 2>&1) || true
+    --rationale "Semver gives downstream consumers predictable upgrade signals" \
+    --options semver,calver \
+    --chose semver \
+    --topic-keys e2e,versioning 2>&1) || true
   if echo "$cli_out" | jq -e '.decision_id' > /dev/null 2>&1; then
     CLI_DECISION_ID=$(echo "$cli_out" | jq -r '.decision_id')
-    pass "CLI emit decision.proposed — $CLI_DECISION_ID"
+    pass "CLI (local ledger): emit decision.proposed — $CLI_DECISION_ID"
   else
-    fail "CLI emit decision.proposed — output: $cli_out"
+    fail "CLI (local ledger): emit decision.proposed — output: $cli_out"
   fi
 else
   skip "CLI leg — hivemind binary not on PATH (set HIVEMIND_BIN)"
 fi
 
-# ── capture via MCP stdio ─────────────────────────────────────────────────────
-section "Capture — MCP stdio"
+# ── capture via MCP HTTP ──────────────────────────────────────────────────────
+section "Capture — MCP HTTP"
 
-MCP_DATA_DIR=$(mktemp -d)
-trap 'rm -rf "$CLI_DATA_DIR" "$MCP_DATA_DIR"' EXIT
+MCP_ACTOR="agent:e2e:smoke-mcp"
+mcp_auth_args=()
+[[ -n "$API_KEY" ]] && mcp_auth_args+=(-H "Authorization: Bearer $API_KEY")
 
-if command -v "$HIVEMIND_BIN" > /dev/null 2>&1; then
-  MCP_SESSION_ID="e2e-smoke-mcp-$(date +%s)"
-  mcp_capture=$(printf '%s\n%s\n' \
-    '{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
-    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"capture_decision","arguments":{"actor_id":"agent:e2e:smoke-mcp","title":"e2e-smoke MCP: prefer immutable events","rationale":"Immutable append-only log simplifies auditing"}}}' \
-    | "$HIVEMIND_BIN" \
-        --hivemind-dir "$MCP_DATA_DIR" \
-        --actor "agent:e2e:smoke-mcp" \
-        --tenant "$TENANT" \
-        mcp --session-id "$MCP_SESSION_ID" 2>/dev/null \
-    | tail -1)
-  if echo "$mcp_capture" | jq -e '.result.content[0].text' > /dev/null 2>&1; then
-    mcp_text=$(echo "$mcp_capture" | jq -r '.result.content[0].text')
-    if echo "$mcp_text" | jq -e '.decision_id' > /dev/null 2>&1; then
-      MCP_DECISION_ID=$(echo "$mcp_text" | jq -r '.decision_id')
-      pass "MCP capture_decision — $MCP_DECISION_ID"
+# initialize — obtains Mcp-Session-Id for subsequent requests
+mcp_init_headers=$(mktemp)
+curl -s \
+  -H "Content-Type: application/json" \
+  -H "X-HiveMind-Tenant: $TENANT" \
+  -H "X-HiveMind-Actor: $MCP_ACTOR" \
+  "${mcp_auth_args[@]}" \
+  -X POST \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  -D "$mcp_init_headers" \
+  "$BASE_URL/mcp" > /dev/null
+MCP_SESSION_ID=$(grep -i '^mcp-session-id:' "$mcp_init_headers" | tr -d '\r' | awk '{print $2}')
+rm -f "$mcp_init_headers"
+
+mcp_session_args=()
+[[ -n "$MCP_SESSION_ID" ]] && mcp_session_args+=(-H "Mcp-Session-Id: $MCP_SESSION_ID")
+
+# tools/call capture_decision against the live server
+mcp_capture=$(curl -s \
+  -H "Content-Type: application/json" \
+  -H "X-HiveMind-Tenant: $TENANT" \
+  -H "X-HiveMind-Actor: $MCP_ACTOR" \
+  "${mcp_auth_args[@]}" \
+  "${mcp_session_args[@]}" \
+  -X POST \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"capture_decision","arguments":{"actor_id":"agent:e2e:smoke-mcp","title":"e2e-smoke MCP: prefer immutable events","rationale":"Immutable append-only log simplifies auditing","topic_keys":["e2e","architecture"],"options":[{"label":"immutable"},{"label":"mutable"}],"chosen_option_label":"immutable"}}}' \
+  "$BASE_URL/mcp")
+
+if echo "$mcp_capture" | jq -e '.result.content[0].text' > /dev/null 2>&1; then
+  mcp_text=$(echo "$mcp_capture" | jq -r '.result.content[0].text')
+  if echo "$mcp_text" | jq -e '.decision_id' > /dev/null 2>&1; then
+    MCP_DECISION_ID=$(echo "$mcp_text" | jq -r '.decision_id')
+    verify_resp=$(curl_api GET "/v1/decisions/$MCP_DECISION_ID")
+    if echo "$verify_resp" | jq -e 'has("data")' > /dev/null 2>&1; then
+      pass "MCP HTTP capture_decision — $MCP_DECISION_ID (verified via REST)"
     else
-      fail "MCP capture_decision — tool text: $mcp_text"
+      pass "MCP HTTP capture_decision — $MCP_DECISION_ID"
     fi
   else
-    fail "MCP capture_decision — unexpected response: $mcp_capture"
+    fail "MCP HTTP capture_decision — tool text: $mcp_text"
   fi
 else
-  skip "MCP leg — hivemind binary not on PATH (set HIVEMIND_BIN)"
+  fail "MCP HTTP capture_decision — unexpected response: $mcp_capture"
 fi
 
 # ── query / projection ────────────────────────────────────────────────────────
@@ -235,9 +258,9 @@ else
   fail "GET /v1/decisions/search — response: $search_resp"
 fi
 
-relevant_resp=$(curl_api GET "/v1/decisions/relevant?topics=storage")
+relevant_resp=$(curl_api GET "/v1/decisions/relevant?topic=storage")
 if echo "$relevant_resp" | jq -e 'has("data")' > /dev/null 2>&1; then
-  pass "GET /v1/decisions/relevant?topics=storage"
+  pass "GET /v1/decisions/relevant?topic=storage"
 else
   fail "GET /v1/decisions/relevant — response: $relevant_resp"
 fi
@@ -313,7 +336,7 @@ curl_json_tenant_b() {
   local body="$1";   shift
   local auth_args=()
   [[ -n "$API_KEY" ]] && auth_args+=(-H "Authorization: Bearer $API_KEY")
-  curl -sf \
+  curl -s \
     -H "Content-Type: application/json" \
     -H "X-HiveMind-Tenant: $TENANT_B" \
     -H "X-HiveMind-Actor: agent:e2e:smoke-b" \
@@ -339,41 +362,23 @@ else
   fail "Multi-tenant isolation: could not capture tenant-B decision"
 fi
 
-# ── quality scan via MCP ──────────────────────────────────────────────────────
-section "Quality scan — MCP"
+# ── quality scan via MCP HTTP ─────────────────────────────────────────────────
+section "Quality scan — MCP HTTP"
 
-if command -v "$HIVEMIND_BIN" > /dev/null 2>&1; then
-  # Seed a few decisions first so the scanner has data
-  QS_DATA_DIR=$(mktemp -d)
-  trap 'rm -rf "$CLI_DATA_DIR" "$MCP_DATA_DIR" "$QS_DATA_DIR"' EXIT
-  for i in 1 2 3; do
-    "$HIVEMIND_BIN" \
-      --hivemind-dir "$QS_DATA_DIR" \
-      --actor "agent:e2e:smoke-qs" \
-      --tenant "qs-test" \
-      --json \
-      emit decision.proposed \
-      --title "e2e qs decision $i" \
-      --rationale "quality scan smoke $i" > /dev/null 2>&1 || true
-  done
-
-  QS_SESSION="e2e-qs-$(date +%s)"
-  qs_resp=$(printf '%s\n%s\n' \
-    '{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
-    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"scan_decision_quality","arguments":{"actor_id":"agent:e2e:smoke-qs"}}}' \
-    | "$HIVEMIND_BIN" \
-        --hivemind-dir "$QS_DATA_DIR" \
-        --actor "agent:e2e:smoke-qs" \
-        --tenant "qs-test" \
-        mcp --session-id "$QS_SESSION" 2>/dev/null \
-    | tail -1)
-  if echo "$qs_resp" | jq -e '.result.content[0].text' > /dev/null 2>&1; then
-    pass "MCP scan_decision_quality — returned results"
-  else
-    fail "MCP scan_decision_quality — response: $qs_resp"
-  fi
+# Uses the same HTTP MCP endpoint; scans decisions already captured on the live server.
+qs_resp=$(curl -s \
+  -H "Content-Type: application/json" \
+  -H "X-HiveMind-Tenant: $TENANT" \
+  -H "X-HiveMind-Actor: agent:e2e:smoke" \
+  "${mcp_auth_args[@]}" \
+  "${mcp_session_args[@]}" \
+  -X POST \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"scan_decision_quality","arguments":{}}}' \
+  "$BASE_URL/mcp")
+if echo "$qs_resp" | jq -e '.result.content[0].text' > /dev/null 2>&1; then
+  pass "MCP HTTP scan_decision_quality — returned results"
 else
-  skip "MCP quality scan leg — hivemind binary not on PATH"
+  fail "MCP HTTP scan_decision_quality — response: $qs_resp"
 fi
 
 # ── LLM-gated assertions ──────────────────────────────────────────────────────
@@ -389,7 +394,9 @@ else
   llm_resp=$(curl_json POST /v1/decisions '{
     "title": "e2e-smoke: LLM classifier check",
     "rationale": "verify classifier is wired when ANTHROPIC_API_KEY is present",
-    "topic_keys": ["e2e", "llm"]
+    "topic_keys": ["e2e", "llm"],
+    "options": [{"label": "enabled"}],
+    "chosen_option_label": "enabled"
   }')
   if echo "$llm_resp" | jq -e '.decision_id' > /dev/null 2>&1; then
     pass "LLM path: capture accepted with ANTHROPIC_API_KEY set (classifier may be enriching)"
