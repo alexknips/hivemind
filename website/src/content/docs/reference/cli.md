@@ -223,6 +223,32 @@ hivemind query get_decisions_added_since
 hivemind query export_read_only_summary
 ```
 
+### `query score_decision`
+
+In-house explainable quality score for a single decision.
+
+```
+hivemind query score_decision --id <decision-id>
+```
+
+Returns a score, quality tier, list of reasons, and contributing node IDs.
+No LLM involved; pure graph-signal heuristics.
+
+### `query scan_decision_quality`
+
+Bulk in-house quality scan: scores all decisions (or a filtered subset) using
+the same explainable graph-signal engine as `score_decision`. Designed for
+scheduled quality-scan loops. Precision-biased: use `--min-tier` to surface
+only significant or high-concern decisions.
+
+```
+hivemind query scan_decision_quality
+  [--since-event-origin <offset>]   # filter to decisions proposed at or after this ledger offset
+  [--limit <n>]                     # 1–1000, default 25
+  [--cursor <token>]                # pagination cursor from a previous response
+  [--min-tier <tier>]               # clean|minor_concerns|significant_concerns|high_concern
+```
+
 ## Other commands
 
 ### `quickstart`

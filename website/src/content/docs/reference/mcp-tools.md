@@ -1,9 +1,9 @@
 ---
 title: MCP Tools
-description: Reference for all 14 tools exposed by the HiveMind MCP server.
+description: Reference for all 21 tools exposed by the HiveMind MCP server.
 ---
 
-The HiveMind MCP server exposes 14 tools. Write tools append events to the
+The HiveMind MCP server exposes 21 tools. Write tools append events to the
 ledger and require an explicit `actor_id`. Read tools query the graph and never
 write. Layer-3 tools add ranked summaries or compact views.
 
@@ -218,6 +218,99 @@ Layer-3: produce a concise text summary of one or more decisions. All content is
 |-----------|------|----------|-------------|
 | `decision_ids` | string[] | ✓ | IDs of decisions to summarize (1–10). |
 | `mode` | string | — | single = one decision digest; cluster = multi-decision synthesis; chain = supersession chain evolution. Defaults to single when one ID is given, cluster when multiple. |
+
+---
+
+### `get_decision_outcome`
+
+Derive the outcome record for a single decision: did it hold up? Returns four quality signals — superseded (and how fast), stale premises (premised on a refuted hypothesis), contested (unresolved disagreement), thin structure (no options/evidence) — each with its contributing reasons attached. No LLM involved; derived purely from graph edges. Returns null when the decision_id is not found.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `decision_id` | string | ✓ | The decision to evaluate. |
+
+---
+
+### `decision_quality_candidates`
+
+Bulk quality-signal pull for external scorers: returns outcome records for all decisions (or a filtered subset), each with the four quality signals and their contributing reasons. Designed for Mechanism A — the factory loop calls this to pull recent decisions and their signals, then defines its own scoring logic. No LLM involved.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `cursor` | string | — | Pagination cursor from a previous response's `next_cursor` field. |
+| `limit` | integer | — | Maximum results to return (1–1000, default 25). |
+| `only_with_signals` | boolean | — | When true, only decisions with at least one quality signal are returned. Default false. |
+| `since_event_origin` | integer | — | Minimum ledger event offset (inclusive). Filter to decisions proposed at or after this offset. Use 0 or omit for all. |
+
+---
+
+### `get_decision_context`
+
+Derive the context record for a single decision: the conditions under which it was made. Returns five feature groups — authorship shape (human-authored / agent-proposed+human-accepted / agent-only / unknown), source system and model/session reference, review depth (unreviewed / self_accepted / peer_reviewed / disputed), evidence and hypothesis counts, and context richness proxies (options count, rationale character count). No LLM involved; derived purely from graph edges. Pair with get_decision_outcome for causal attribution. Returns null when the decision_id is not found.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `decision_id` | string | ✓ | The decision to evaluate. |
+
+---
+
+### `decision_context_candidates`
+
+Bulk context-feature pull: returns context records for all decisions (or a filtered subset), each with authorship shape, source, review depth, evidence/hypothesis counts, and rationale richness proxies. Designed to complement decision_quality_candidates — context is the independent variable side of the causal pair. No LLM involved.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `cursor` | string | — | Pagination cursor from a previous response's `next_cursor` field. |
+| `limit` | integer | — | Maximum results to return (1–1000, default 25). |
+| `since_event_origin` | integer | — | Minimum ledger event offset (inclusive). Filter to decisions proposed at or after this offset. Use 0 or omit for all. |
+
+---
+
+### `score_decision`
+
+In-house explainable quality score for a single decision. Combines outcome signals (superseded, stale premises, contested, thin structure) with context features (authorship, review depth) into a score in [0,1] and a quality tier. ALWAYS returns the full list of contributing reasons with their deductions and contributing node IDs — never a bare number. No LLM involved; works self-hosted. Returns null when decision_id is not found.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `decision_id` | string | ✓ | The decision to score. |
+
+---
+
+### `scan_decision_quality`
+
+Bulk in-house quality scan: scores all decisions (or a filtered subset) using the same explainable graph-signal engine as score_decision. Each result carries score, tier, reasons, and contributing node IDs. Designed for the scheduled quality-scan loop and for the MCP surface. No LLM involved. Precision-biased: use min_tier to surface only significant or high-concern decisions.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `cursor` | string | — | Pagination cursor from a previous response's `next_cursor` field. |
+| `limit` | integer | — | Maximum results to return (1–1000, default 25). |
+| `min_tier` | string | — | Only return decisions at this tier or worse. Omit for all. Use 'significant_concerns' or 'high_concern' for precision-biased alerting. |
+| `since_event_origin` | integer | — | Minimum ledger event offset (inclusive). Filter to decisions proposed at or after this offset. Use 0 or omit for all. |
+
+---
+
+### `analyze_failure_modes`
+
+Failure-mode attribution: which conditions predict decisions that do not hold up? Joins outcome signals (superseded / stale-premises / contested) with context features (authorship shape, review depth, source, evidence/options richness) and computes AGGREGATE failure-rate patterns across each dimension. Reports effect sizes (failure-rate delta vs corpus baseline) and honest confidence flags based on sample size. Never returns per-person rankings — all findings are aggregate patterns. Use to answer: does agent-only authorship predict failure? Does peer review improve outcomes? Does thin context predict failure? Works on any deployment, no LLM.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `min_sample_size` | integer | — | Minimum group size required for a group to appear in top findings (default 3). Groups smaller than this are still included in breakdowns. |
+| `since_event_origin` | integer | — | Minimum ledger event offset (inclusive). Filter to decisions proposed at or after this offset. Use 0 or omit for all. |
 
 ---
 
