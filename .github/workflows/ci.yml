@@ -246,6 +246,8 @@ jobs:
           tags: hivemind:e2e
 
       - name: Start HiveMind (Postgres)
+        env:
+          HIVEMIND_ADMIN_KEY: e2e-admin-key-ci
         run: |
           docker compose \
             -f docker-compose.yml \
@@ -270,11 +272,36 @@ jobs:
       - name: Build hivemind binary
         run: cargo build --locked --bin hivemind
 
-      - name: Run E2E smoke (Postgres)
+      - name: Provision Postgres tenants and run E2E smoke
         env:
           HIVEMIND_BIN: ./target/debug/hivemind
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: bash scripts/e2e_smoke.sh --skip-map
+        run: |
+          # Provision tenant A (e2e-test)
+          prov_a=$(curl -sf -X POST http://localhost:8080/v1/tenants \
+            -H "Authorization: Bearer e2e-admin-key-ci" \
+            -H "Content-Type: application/json" \
+            -d '{"tenant_id":"e2e-test","display_name":"E2E Test Tenant A"}')
+          TOKEN_A=$(echo "$prov_a" | jq -r '.token_secret')
+          if [ -z "$TOKEN_A" ] || [ "$TOKEN_A" = "null" ]; then
+            echo "ERROR: failed to provision tenant A: $prov_a"; exit 1
+          fi
+          echo "Tenant A provisioned: ${TOKEN_A:0:12}..."
+
+          # Provision tenant B (e2e-test-other) for multi-tenant isolation test
+          prov_b=$(curl -sf -X POST http://localhost:8080/v1/tenants \
+            -H "Authorization: Bearer e2e-admin-key-ci" \
+            -H "Content-Type: application/json" \
+            -d '{"tenant_id":"e2e-test-other","display_name":"E2E Test Tenant B"}')
+          TOKEN_B=$(echo "$prov_b" | jq -r '.token_secret')
+          if [ -z "$TOKEN_B" ] || [ "$TOKEN_B" = "null" ]; then
+            echo "ERROR: failed to provision tenant B: $prov_b"; exit 1
+          fi
+          echo "Tenant B provisioned: ${TOKEN_B:0:12}..."
+
+          HIVEMIND_E2E_API_KEY="$TOKEN_A" \
+          HIVEMIND_E2E_API_KEY_B="$TOKEN_B" \
+            bash scripts/e2e_smoke.sh --skip-map --skip-search
 
       - name: Dump server logs on failure
         if: failure()

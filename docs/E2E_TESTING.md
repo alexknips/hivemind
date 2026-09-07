@@ -64,14 +64,17 @@ exits `0` — keyless CI remains green.
 
 ### Postgres backend
 
-Run against the local Postgres container using the provided compose override:
+The Postgres backend enables mandatory bearer-token auth.  You need to set
+`HIVEMIND_ADMIN_KEY` before starting the containers, then provision two tenants
+(one for the main test, one for the multi-tenant isolation assertion).
 
 ```bash
 # 1. Build the image and the binary
 docker compose build
 cargo build --locked --bin hivemind
 
-# 2. Start postgres + hivemind (Postgres backend)
+# 2. Start postgres + hivemind (Postgres backend) with an admin key
+HIVEMIND_ADMIN_KEY=my-local-admin-key \
 docker compose \
   -f docker-compose.yml \
   -f docker-compose.e2e-postgres.yml \
@@ -80,11 +83,26 @@ docker compose \
 # 3. Wait for health
 until curl -sf http://localhost:8080/v1/health | grep -q '"ok"'; do sleep 1; done
 
-# 4. Run the smoke suite (spectral map skipped — SQLite only per hivemind-270r)
-HIVEMIND_BIN=./target/debug/hivemind \
-  bash scripts/e2e_smoke.sh --skip-map
+# 4. Provision tenants A and B via the admin API
+TOKEN_A=$(curl -sf -X POST http://localhost:8080/v1/tenants \
+  -H "Authorization: Bearer my-local-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"e2e-test","display_name":"E2E Test Tenant A"}' \
+  | jq -r '.token_secret')
 
-# 5. Tear down
+TOKEN_B=$(curl -sf -X POST http://localhost:8080/v1/tenants \
+  -H "Authorization: Bearer my-local-admin-key" \
+  -H "Content-Type: application/json" \
+  -d '{"tenant_id":"e2e-test-other","display_name":"E2E Test Tenant B"}' \
+  | jq -r '.token_secret')
+
+# 5. Run the smoke suite (spectral map skipped — SQLite only per hivemind-270r)
+HIVEMIND_BIN=./target/debug/hivemind \
+HIVEMIND_E2E_API_KEY="$TOKEN_A" \
+HIVEMIND_E2E_API_KEY_B="$TOKEN_B" \
+  bash scripts/e2e_smoke.sh --skip-map --skip-search
+
+# 6. Tear down
 docker compose \
   -f docker-compose.yml \
   -f docker-compose.e2e-postgres.yml \
@@ -93,6 +111,10 @@ docker compose \
 
 `--skip-map` is required because `GET /v1/decisions/map` is SQLite-only
 (tracked in hivemind-270r).
+
+`HIVEMIND_E2E_API_KEY_B` carries the bearer token for the second tenant used in
+the multi-tenant isolation assertion.  Without it, the assertion skips gracefully
+in SQLite no-auth mode but is required for Postgres.
 
 ---
 
@@ -123,9 +145,11 @@ Exit code `1` = at least one assertion failed.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HIVEMIND_E2E_BASE_URL` | `http://localhost:8080` | Server URL |
-| `HIVEMIND_E2E_API_KEY` | *(empty)* | Bearer token (empty = dev mode, no auth) |
+| `HIVEMIND_E2E_API_KEY` | *(empty)* | Bearer token for tenant A (empty = dev/no-auth mode) |
+| `HIVEMIND_E2E_API_KEY_B` | *(falls back to `API_KEY`)* | Bearer token for tenant B in the multi-tenant isolation test; required in Postgres auth mode to produce real isolation |
 | `HIVEMIND_E2E_TENANT` | `e2e-test` | Tenant ID used for most requests |
 | `HIVEMIND_E2E_SKIP_MAP` | `false` | Set `true` to skip spectral-map assertion (Postgres backends) |
+| `HIVEMIND_E2E_SKIP_SEARCH` | `false` | Set `true` to skip FTS search assertion (Postgres backends) |
 | `ANTHROPIC_API_KEY` | *(empty)* | When set, LLM-gated assertions are enabled |
 | `HIVEMIND_BIN` | `hivemind` | Path to the `hivemind` binary |
 
@@ -137,6 +161,7 @@ Exit code `1` = at least one assertion failed.
 | `--api-key KEY` | Override `HIVEMIND_E2E_API_KEY` |
 | `--tenant TENANT` | Override `HIVEMIND_E2E_TENANT` |
 | `--skip-map` | Skip `GET /v1/decisions/map` (Postgres backends, hivemind-270r) |
+| `--skip-search` | Skip `GET /v1/decisions/search` (Postgres backends, FTS not in shared-backend) |
 
 ---
 
@@ -157,12 +182,12 @@ every PR and `master` push:
 **`e2e-compose-postgres` (Postgres):**
 
 1. Builds the Docker image (`hivemind:e2e`).
-2. Starts both `postgres` and `hivemind` (Postgres backend) and waits up to 60s
-   for `/v1/health`.
+2. Starts both `postgres` and `hivemind` (Postgres backend, `HIVEMIND_ADMIN_KEY=e2e-admin-key-ci`) and waits up to 60s for `/v1/health`.
 3. Builds the `hivemind` binary (for CLI leg).
-4. Runs `scripts/e2e_smoke.sh --skip-map` (spectral-map skipped per hivemind-270r).
-5. Dumps `hivemind` and `postgres` logs on failure.
-6. Tears down with `docker compose down -v`.
+4. Provisions two tenants via the admin API (`e2e-test`, `e2e-test-other`) and captures their bearer tokens.
+5. Runs `scripts/e2e_smoke.sh --skip-map --skip-search` with both tokens (`HIVEMIND_E2E_API_KEY` / `HIVEMIND_E2E_API_KEY_B`); spectral-map and FTS search skipped (Postgres limitations); 401 regression assertion included.
+6. Dumps `hivemind` and `postgres` logs on failure.
+7. Tears down with `docker compose down -v`.
 
 `ANTHROPIC_API_KEY` is an optional GitHub Actions secret (name:
 `ANTHROPIC_API_KEY`). When absent from the repo secrets the LLM assertions
@@ -175,6 +200,9 @@ slice activates automatically.
 
 - `GET /v1/decisions/map` is SQLite-only (hivemind-270r). The `--skip-map`
   flag suppresses it for Postgres runs.
+- `GET /v1/decisions/search` (full-text search) is SQLite-only; the shared-backend
+  returns a validation error. Use `--skip-search` for Postgres runs; topic-based
+  queries via `GET /v1/decisions/relevant` work on all backends.
 - The Neon-hosted DB (`hivemind-5r6q`) is currently down and excluded from
   PR CI. It may be added as a non-blocking nightly job after hivemind-5r6q
   is resolved.

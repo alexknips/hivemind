@@ -21,9 +21,11 @@ set -euo pipefail
 # ── defaults ──────────────────────────────────────────────────────────────────
 BASE_URL="${HIVEMIND_E2E_BASE_URL:-http://localhost:8080}"
 API_KEY="${HIVEMIND_E2E_API_KEY:-}"
+API_KEY_B="${HIVEMIND_E2E_API_KEY_B:-}"  # separate token for tenant-B in auth mode
 TENANT="${HIVEMIND_E2E_TENANT:-e2e-test}"
 HIVEMIND_BIN="${HIVEMIND_BIN:-hivemind}"
-SKIP_MAP="${HIVEMIND_E2E_SKIP_MAP:-false}"   # set true for Postgres (270r)
+SKIP_MAP="${HIVEMIND_E2E_SKIP_MAP:-false}"     # set true for Postgres (270r)
+SKIP_SEARCH="${HIVEMIND_E2E_SKIP_SEARCH:-false}"  # set true for Postgres (FTS not in shared-backend)
 
 # ── arg parsing ───────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -31,7 +33,8 @@ while [[ $# -gt 0 ]]; do
     --base-url)  BASE_URL="$2";  shift 2 ;;
     --api-key)   API_KEY="$2";   shift 2 ;;
     --tenant)    TENANT="$2";    shift 2 ;;
-    --skip-map)  SKIP_MAP=true;  shift   ;;
+    --skip-map)    SKIP_MAP=true;    shift ;;
+    --skip-search) SKIP_SEARCH=true; shift ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
 done
@@ -253,12 +256,16 @@ fi
 # ── search ────────────────────────────────────────────────────────────────────
 section "Search"
 
-search_resp=$(curl_api GET "/v1/decisions/search?q=postgres")
-if echo "$search_resp" | jq -e 'has("data")' > /dev/null 2>&1; then
-  count=$(echo "$search_resp" | jq '.data.total_matches // (.data.items | length) // 0')
-  pass "GET /v1/decisions/search?q=postgres — $count result(s)"
+if [[ "$SKIP_SEARCH" == "true" ]]; then
+  skip "GET /v1/decisions/search — skipped on Postgres backend (FTS not in shared-backend mode)"
 else
-  fail "GET /v1/decisions/search — response: $search_resp"
+  search_resp=$(curl_api GET "/v1/decisions/search?q=postgres")
+  if echo "$search_resp" | jq -e 'has("data")' > /dev/null 2>&1; then
+    count=$(echo "$search_resp" | jq '.data.total_matches // (.data.items | length) // 0')
+    pass "GET /v1/decisions/search?q=postgres — $count result(s)"
+  else
+    fail "GET /v1/decisions/search — response: $search_resp"
+  fi
 fi
 
 relevant_resp=$(curl_api GET "/v1/decisions/relevant?topic=storage")
@@ -338,7 +345,10 @@ curl_json_tenant_b() {
   local path="$1";   shift
   local body="$1";   shift
   local auth_args=()
-  [[ -n "$API_KEY" ]] && auth_args+=(-H "Authorization: Bearer $API_KEY")
+  # In auth mode, use tenant-B's own token so Postgres RLS isolates correctly.
+  # Falls back to API_KEY in SQLite mode where the header drives isolation.
+  local key_b="${API_KEY_B:-$API_KEY}"
+  [[ -n "$key_b" ]] && auth_args+=(-H "Authorization: Bearer $key_b")
   curl -s \
     -H "Content-Type: application/json" \
     -H "X-HiveMind-Tenant: $TENANT_B" \
@@ -407,6 +417,25 @@ else
     fail "LLM path: capture failed with key set — response: $llm_resp"
   fi
   skip "LLM summarize — deterministic assertion not implemented in Slice 1 (Slice 2)"
+fi
+
+# ── 401 regression (auth-mode only) ──────────────────────────────────────────
+section "401 regression"
+
+if [[ -n "$API_KEY" ]]; then
+  unauth_status=$(curl -s -o /dev/null -w "%{http_code}" \
+    -X POST "$BASE_URL/v1/decisions" \
+    -H "Content-Type: application/json" \
+    -H "X-HiveMind-Tenant: $TENANT" \
+    -H "X-HiveMind-Actor: agent:e2e:smoke" \
+    -d '{"title":"401-regression","rationale":"test","topic_keys":[],"options":[{"label":"x"}]}')
+  if [[ "$unauth_status" == "401" ]]; then
+    pass "POST /v1/decisions without bearer → 401 (server enforces auth)"
+  else
+    fail "POST /v1/decisions without bearer → expected 401, got $unauth_status"
+  fi
+else
+  skip "401 regression — no-auth mode (dev/SQLite without API_KEY)"
 fi
 
 # ── summary ───────────────────────────────────────────────────────────────────
