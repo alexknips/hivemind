@@ -938,250 +938,292 @@ fn project_capture(
     origin_properties: &GraphProperties,
 ) -> Result<()> {
     match capture.kind.as_str() {
-        "decision" => {
-            let mut props = origin_properties.clone();
-            props.insert(
-                "title".to_owned(),
-                GraphValue::String(capture.title.clone()),
-            );
-            props.insert(
-                "rationale".to_owned(),
-                GraphValue::String(capture.rationale.clone()),
-            );
-            props.insert(
-                "topic_keys".to_owned(),
-                GraphValue::StringList(capture.topic_keys.clone()),
-            );
-            props.insert(
-                "expressed_confidence".to_owned(),
-                capture
-                    .expressed_confidence
-                    .as_deref()
-                    .map_or(GraphValue::Null, |c| GraphValue::String(c.to_owned())),
-            );
-            graph.upsert_node(NodeKind::Decision, node_id, &props)?;
-
-            if let Some(actor_id) = &capture.actor_id {
-                upsert_actor(graph, actor_id, origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::ProposedBy,
-                    node_id,
-                    actor_id,
-                    origin_properties,
-                )?;
-            }
-            if let Some(accepted_by) = &capture.accepted_by {
-                upsert_actor(graph, accepted_by, origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::AcceptedBy,
-                    node_id,
-                    accepted_by,
-                    origin_properties,
-                )?;
-            }
-            if let Some(rejected_by) = &capture.rejected_by {
-                upsert_actor(graph, rejected_by, origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::RejectedBy,
-                    node_id,
-                    rejected_by,
-                    origin_properties,
-                )?;
-            }
-            if let Some(supersedes_id) = &capture.supersedes_id {
-                ensure_node_reference(graph, NodeKind::Decision, supersedes_id, origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::Supersedes,
-                    node_id,
-                    supersedes_id,
-                    origin_properties,
-                )?;
-            }
-            let (premised_on_kind, premised_on_from) = if let Some(chosen) = &capture.chosen_option
-            {
-                (RelationKind::PremisedOn, option_node_id(node_id, chosen))
-            } else {
-                (RelationKind::PremisedOnDirect, node_id.to_owned())
-            };
-            for hypothesis_id in &capture.premised_on_ids {
-                ensure_node_reference(
-                    graph,
-                    NodeKind::Hypothesis,
-                    hypothesis_id,
-                    origin_properties,
-                )?;
-                graph.upsert_edge(
-                    premised_on_kind,
-                    &premised_on_from,
-                    hypothesis_id,
-                    origin_properties,
-                )?;
-            }
-            for evidence_id in &capture.evidence_ids {
-                ensure_node_reference(graph, NodeKind::Evidence, evidence_id, origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::BasedOn,
-                    node_id,
-                    evidence_id,
-                    origin_properties,
-                )?;
-            }
-            for participant_id in &capture.participants {
-                upsert_actor(graph, participant_id, origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::ParticipatedBy,
-                    node_id,
-                    participant_id,
-                    origin_properties,
-                )?;
-            }
-            if let Some(initiator_id) = &capture.session_initiator {
-                upsert_actor(graph, initiator_id, origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::InitiatedBy,
-                    node_id,
-                    initiator_id,
-                    origin_properties,
-                )?;
-            }
-            // Options: project Option nodes + HAS_OPTION/CHOSE edges.
-            if let Some(options) = &capture.options {
-                for option_label in options {
-                    let opt_id = option_node_id(node_id, option_label);
-                    let mut opt_props = origin_properties.clone(); // ubs:ignore: per-option props copy; each Option node needs a fresh map with a distinct "label" entry
-                    opt_props.insert("label".to_owned(), GraphValue::String(option_label.clone())); // ubs:ignore: per-option label; key alloc + value clone differ per iteration — unavoidable with BTreeMap<String,…>
-                    graph.upsert_node(NodeKind::Option, &opt_id, &opt_props)?;
-                    graph.upsert_edge(
-                        RelationKind::HasOption,
-                        node_id,
-                        &opt_id,
-                        origin_properties,
-                    )?;
-                }
-            }
-            if let Some(chosen) = &capture.chosen_option {
-                let opt_id = option_node_id(node_id, chosen);
-                graph.upsert_edge(RelationKind::Chose, node_id, &opt_id, origin_properties)?;
-            }
-        }
-        "evidence" => {
-            let mut props = origin_properties.clone();
-            props.insert(
-                "content".to_owned(),
-                GraphValue::String(capture.title.clone()),
-            );
-            props.insert(
-                "topic_keys".to_owned(),
-                GraphValue::StringList(capture.topic_keys.clone()),
-            );
-            graph.upsert_node(NodeKind::Evidence, node_id, &props)?;
-
-            for hypothesis_id in &capture.supports_ids {
-                ensure_node_reference(
-                    graph,
-                    NodeKind::Hypothesis,
-                    hypothesis_id,
-                    origin_properties,
-                )?;
-                graph.upsert_edge(
-                    RelationKind::Supports,
-                    node_id,
-                    hypothesis_id,
-                    origin_properties,
-                )?;
-            }
-            for hypothesis_id in &capture.refutes_ids {
-                ensure_node_reference(
-                    graph,
-                    NodeKind::Hypothesis,
-                    hypothesis_id,
-                    origin_properties,
-                )?;
-                graph.upsert_edge(
-                    RelationKind::Refutes,
-                    node_id,
-                    hypothesis_id,
-                    origin_properties,
-                )?;
-            }
-        }
-        "hypothesis" => {
-            let mut props = origin_properties.clone();
-            props.insert(
-                "statement".to_owned(),
-                GraphValue::String(capture.title.clone()),
-            );
-            graph.upsert_node(NodeKind::Hypothesis, node_id, &props)?;
-        }
-        "blocker" => {
-            let mut props = origin_properties.clone();
-            props.insert(
-                "reason".to_owned(),
-                GraphValue::String(capture.title.clone()),
-            );
-            props.insert(
-                "topic_keys".to_owned(),
-                GraphValue::StringList(capture.topic_keys.clone()),
-            );
-            graph.upsert_node(NodeKind::Blocker, node_id, &props)?;
-
-            if let Some(blocked_actor_id) = &capture.blocked_actor_id {
-                upsert_actor(graph, blocked_actor_id, origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::BlockedActor,
-                    node_id,
-                    blocked_actor_id,
-                    origin_properties,
-                )?;
-            }
-            if let Some(decision_id) = &capture.decision_id {
-                ensure_node_reference(graph, NodeKind::Decision, decision_id, origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::BlockerForDecision,
-                    node_id,
-                    decision_id,
-                    origin_properties,
-                )?;
-            }
-        }
+        "decision" => project_capture_decision(graph, capture, node_id, origin_properties),
+        "evidence" => project_capture_evidence(graph, capture, node_id, origin_properties),
+        "hypothesis" => project_capture_hypothesis(graph, capture, node_id, origin_properties),
+        "blocker" => project_capture_blocker(graph, capture, node_id, origin_properties),
         "decision-request" => {
-            let mut props = origin_properties.clone();
-            props.insert(
-                "reason".to_owned(),
-                GraphValue::String(capture.title.clone()),
-            );
-            props.insert(
-                "topic_keys".to_owned(),
-                GraphValue::StringList(capture.topic_keys.clone()),
-            );
-            graph.upsert_node(NodeKind::DecisionRequest, node_id, &props)?;
-
-            if let Some(actor_id) = &capture.actor_id {
-                upsert_actor(graph, actor_id, origin_properties)?;
-                graph.upsert_edge(
-                    RelationKind::DecisionRequestedBy,
-                    node_id,
-                    actor_id,
-                    origin_properties,
-                )?;
-            }
+            project_capture_decision_request(graph, capture, node_id, origin_properties)
         }
-        "notification" => {
-            let mut props = origin_properties.clone();
-            props.insert(
-                "channel".to_owned(),
-                GraphValue::String(capture.title.clone()),
-            );
-            graph.upsert_node(NodeKind::Notification, node_id, &props)?;
-        }
+        "notification" => project_capture_notification(graph, capture, node_id, origin_properties),
         kind => {
             tracing::debug!(
                 target: "hivemind::projector",
                 "skipping capture with unrecognised kind: {kind}"
             );
+            Ok(())
         }
     }
+}
+
+fn project_capture_decision(
+    graph: &impl GraphView,
+    capture: &CaptureItem,
+    node_id: &str,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let mut props = origin_properties.clone();
+    props.insert(
+        "title".to_owned(),
+        GraphValue::String(capture.title.clone()),
+    );
+    props.insert(
+        "rationale".to_owned(),
+        GraphValue::String(capture.rationale.clone()),
+    );
+    props.insert(
+        "topic_keys".to_owned(),
+        GraphValue::StringList(capture.topic_keys.clone()),
+    );
+    props.insert(
+        "expressed_confidence".to_owned(),
+        capture
+            .expressed_confidence
+            .as_deref()
+            .map_or(GraphValue::Null, |c| GraphValue::String(c.to_owned())),
+    );
+    graph.upsert_node(NodeKind::Decision, node_id, &props)?;
+
+    if let Some(actor_id) = &capture.actor_id {
+        upsert_actor(graph, actor_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::ProposedBy,
+            node_id,
+            actor_id,
+            origin_properties,
+        )?;
+    }
+    if let Some(accepted_by) = &capture.accepted_by {
+        upsert_actor(graph, accepted_by, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::AcceptedBy,
+            node_id,
+            accepted_by,
+            origin_properties,
+        )?;
+    }
+    if let Some(rejected_by) = &capture.rejected_by {
+        upsert_actor(graph, rejected_by, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::RejectedBy,
+            node_id,
+            rejected_by,
+            origin_properties,
+        )?;
+    }
+    if let Some(supersedes_id) = &capture.supersedes_id {
+        ensure_node_reference(graph, NodeKind::Decision, supersedes_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::Supersedes,
+            node_id,
+            supersedes_id,
+            origin_properties,
+        )?;
+    }
+    let (premised_on_kind, premised_on_from) = if let Some(chosen) = &capture.chosen_option {
+        (RelationKind::PremisedOn, option_node_id(node_id, chosen))
+    } else {
+        (RelationKind::PremisedOnDirect, node_id.to_owned())
+    };
+    for hypothesis_id in &capture.premised_on_ids {
+        ensure_node_reference(
+            graph,
+            NodeKind::Hypothesis,
+            hypothesis_id,
+            origin_properties,
+        )?;
+        graph.upsert_edge(
+            premised_on_kind,
+            &premised_on_from,
+            hypothesis_id,
+            origin_properties,
+        )?;
+    }
+    for evidence_id in &capture.evidence_ids {
+        ensure_node_reference(graph, NodeKind::Evidence, evidence_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::BasedOn,
+            node_id,
+            evidence_id,
+            origin_properties,
+        )?;
+    }
+    for participant_id in &capture.participants {
+        upsert_actor(graph, participant_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::ParticipatedBy,
+            node_id,
+            participant_id,
+            origin_properties,
+        )?;
+    }
+    if let Some(initiator_id) = &capture.session_initiator {
+        upsert_actor(graph, initiator_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::InitiatedBy,
+            node_id,
+            initiator_id,
+            origin_properties,
+        )?;
+    }
+    // Options: project Option nodes + HAS_OPTION/CHOSE edges.
+    if let Some(options) = &capture.options {
+        for option_label in options {
+            let opt_id = option_node_id(node_id, option_label);
+            let mut opt_props = origin_properties.clone(); // ubs:ignore: per-option props copy; each Option node needs a fresh map with a distinct "label" entry
+            opt_props.insert("label".to_owned(), GraphValue::String(option_label.clone())); // ubs:ignore: per-option label; key alloc + value clone differ per iteration — unavoidable with BTreeMap<String,…>
+            graph.upsert_node(NodeKind::Option, &opt_id, &opt_props)?;
+            graph.upsert_edge(RelationKind::HasOption, node_id, &opt_id, origin_properties)?;
+        }
+    }
+    if let Some(chosen) = &capture.chosen_option {
+        let opt_id = option_node_id(node_id, chosen);
+        graph.upsert_edge(RelationKind::Chose, node_id, &opt_id, origin_properties)?;
+    }
     Ok(())
+}
+
+fn project_capture_evidence(
+    graph: &impl GraphView,
+    capture: &CaptureItem,
+    node_id: &str,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let mut props = origin_properties.clone();
+    props.insert(
+        "content".to_owned(),
+        GraphValue::String(capture.title.clone()),
+    );
+    props.insert(
+        "topic_keys".to_owned(),
+        GraphValue::StringList(capture.topic_keys.clone()),
+    );
+    graph.upsert_node(NodeKind::Evidence, node_id, &props)?;
+
+    for hypothesis_id in &capture.supports_ids {
+        ensure_node_reference(
+            graph,
+            NodeKind::Hypothesis,
+            hypothesis_id,
+            origin_properties,
+        )?;
+        graph.upsert_edge(
+            RelationKind::Supports,
+            node_id,
+            hypothesis_id,
+            origin_properties,
+        )?;
+    }
+    for hypothesis_id in &capture.refutes_ids {
+        ensure_node_reference(
+            graph,
+            NodeKind::Hypothesis,
+            hypothesis_id,
+            origin_properties,
+        )?;
+        graph.upsert_edge(
+            RelationKind::Refutes,
+            node_id,
+            hypothesis_id,
+            origin_properties,
+        )?;
+    }
+    Ok(())
+}
+
+fn project_capture_hypothesis(
+    graph: &impl GraphView,
+    capture: &CaptureItem,
+    node_id: &str,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let mut props = origin_properties.clone();
+    props.insert(
+        "statement".to_owned(),
+        GraphValue::String(capture.title.clone()),
+    );
+    graph.upsert_node(NodeKind::Hypothesis, node_id, &props)
+}
+
+fn project_capture_blocker(
+    graph: &impl GraphView,
+    capture: &CaptureItem,
+    node_id: &str,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let mut props = origin_properties.clone();
+    props.insert(
+        "reason".to_owned(),
+        GraphValue::String(capture.title.clone()),
+    );
+    props.insert(
+        "topic_keys".to_owned(),
+        GraphValue::StringList(capture.topic_keys.clone()),
+    );
+    graph.upsert_node(NodeKind::Blocker, node_id, &props)?;
+
+    if let Some(blocked_actor_id) = &capture.blocked_actor_id {
+        upsert_actor(graph, blocked_actor_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::BlockedActor,
+            node_id,
+            blocked_actor_id,
+            origin_properties,
+        )?;
+    }
+    if let Some(decision_id) = &capture.decision_id {
+        ensure_node_reference(graph, NodeKind::Decision, decision_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::BlockerForDecision,
+            node_id,
+            decision_id,
+            origin_properties,
+        )?;
+    }
+    Ok(())
+}
+
+fn project_capture_decision_request(
+    graph: &impl GraphView,
+    capture: &CaptureItem,
+    node_id: &str,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let mut props = origin_properties.clone();
+    props.insert(
+        "reason".to_owned(),
+        GraphValue::String(capture.title.clone()),
+    );
+    props.insert(
+        "topic_keys".to_owned(),
+        GraphValue::StringList(capture.topic_keys.clone()),
+    );
+    graph.upsert_node(NodeKind::DecisionRequest, node_id, &props)?;
+
+    if let Some(actor_id) = &capture.actor_id {
+        upsert_actor(graph, actor_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::DecisionRequestedBy,
+            node_id,
+            actor_id,
+            origin_properties,
+        )?;
+    }
+    Ok(())
+}
+
+fn project_capture_notification(
+    graph: &impl GraphView,
+    capture: &CaptureItem,
+    node_id: &str,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let mut props = origin_properties.clone();
+    props.insert(
+        "channel".to_owned(),
+        GraphValue::String(capture.title.clone()),
+    );
+    graph.upsert_node(NodeKind::Notification, node_id, &props)
 }
 
 fn projector_error(error: impl std::fmt::Display) -> ProjectorError {
