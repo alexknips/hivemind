@@ -647,6 +647,35 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
             )?;
             OutputEnvelope::new("emit", "batch_id", batch_id)
         }
+        EmitCommand::DecisionScored(args) => {
+            let (actor_id, provenance) = capture_actor_and_provenance(&args.provenance)?;
+            let commands =
+                Commands::new_with_context(&ledger, cli_command_context(cli, provenance)?);
+            let tenant_id = cli_tenant(cli)?;
+            let (capture_node_id, causation_event_id) = crate::scorer::resolve_capture_node_id(
+                &ledger,
+                &tenant_id,
+                &args.batch_id,
+                args.capture_index,
+            )?;
+            let json_text = std::fs::read_to_string(&args.scores_file).map_err(|e| {
+                CliError::InvalidInput(format!(
+                    "cannot read scores file {:?}: {e}",
+                    args.scores_file
+                ))
+            })?;
+            let scores: crate::scorer::ScorerOutput = serde_json::from_str(&json_text)
+                .map_err(|e| CliError::InvalidInput(format!("scores JSON parse error: {e}")))?;
+            let payload = crate::scorer::build_scored_payload(
+                &capture_node_id,
+                &args.scorer_model,
+                &args.weight_version,
+                scores,
+            )?;
+            let event_id =
+                commands.record_decision_scored(&actor_id, payload, Some(causation_event_id))?;
+            OutputEnvelope::new("emit", "event_id", event_id.to_string())
+        }
     };
 
     format_output(cli.json, &output)

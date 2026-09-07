@@ -3817,6 +3817,270 @@ fn emit_ingest_batch_classified_plugin_path_round_trip() {
 }
 
 #[test]
+fn emit_decision_scored_plugin_path_round_trip() {
+    use crate::events::EventType;
+    use crate::ledger::SqliteEventLedger;
+
+    // This test covers the keyless plugin-edge scoring path (hivemind-wi3u):
+    // the plugin submits a batch via `emit ingest.batch_classified`, then
+    // spawns a Haiku subagent to score the decision capture and submits the
+    // result via `emit decision.scored` — no server API key needed, and no
+    // caller-constructed `capture:{event_id}:{idx}` node id.
+
+    let hivemind_dir = unique_test_dir("emit-decision-scored-plugin");
+    let captures_file = unique_test_dir("emit-decision-scored-captures");
+    let captures_path = captures_file.with_extension("json");
+
+    let captures_json = serde_json::json!([
+        {
+            "kind": "decision",
+            "title": "Use Postgres for the shared event ledger",
+            "rationale": "Concurrent multi-tenant writes are a day-one requirement; SQLite's single-writer model would bottleneck immediately",
+            "topic_keys": ["storage", "architecture"],
+            "evidence_ids": [],
+            "options": ["sqlite", "postgres"],
+            "chosen_option": "postgres",
+            "extraction_confidence": 0.9,
+            "expressed_confidence": null,
+            "supersedes_id": null,
+            "assumes_ids": [],
+            "supports_ids": [],
+            "refutes_ids": [],
+            "actor_id": null,
+            "accepted_by": null,
+            "rejected_by": null,
+            "blocked_actor_id": null,
+            "decision_id": null
+        }
+    ]);
+    std::fs::write(&captures_path, captures_json.to_string()).expect("write captures file");
+
+    let batch_output = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "ingest.batch_classified",
+        "--captures",
+        captures_path.to_str().expect("utf-8 captures path"),
+        "--agent-tool",
+        "claude",
+        "--agent-session",
+        "plugin-session-score",
+        "--classifier-model",
+        "claude-haiku-4-5-20251001",
+    ]))
+    .expect("edge batch submit succeeds");
+    let batch_output: serde_json::Value =
+        serde_json::from_str(&batch_output).expect("valid json output");
+    let batch_id = batch_output
+        .get("value")
+        .and_then(|v| v.as_str())
+        .expect("batch_id in output")
+        .to_owned();
+
+    // Scores JSON as a Haiku subagent would return, with one score
+    // deliberately out of range to exercise server-side clamping.
+    let scores_file = unique_test_dir("emit-decision-scored-scores");
+    let scores_path = scores_file.with_extension("json");
+    let scores_json = serde_json::json!({
+        "quality_dims": {
+            "framing": {"score": 0.8, "explanation": "Framed against a stated concurrency requirement."},
+            "alternatives": {"score": 0.7, "explanation": "sqlite and postgres both named and compared."},
+            "information": {"score": 1.5, "explanation": "Out-of-range on purpose to exercise clamping."},
+            "reasoning": {"score": 0.75, "explanation": "Chosen option follows from the stated requirement."},
+            "values_tradeoffs": {"score": 0.5, "explanation": "Operational cost not explicitly weighed."},
+            "bias_exposure": {"score": 0.8, "explanation": "No evidence of anchoring."},
+            "calibration": {"score": 0.5, "explanation": "No expressed confidence to check against."}
+        },
+        "importance": {
+            "stakes": 8.0,
+            "stakes_explanation": "Affects the shared ledger used by every tenant.",
+            "irreversibility": 0.6,
+            "irreversibility_explanation": "Migrating engines later is possible but costly.",
+            "actionability": 1.0,
+            "actionability_explanation": "Directly determines what gets built next."
+        }
+    });
+    std::fs::write(&scores_path, scores_json.to_string()).expect("write scores file");
+
+    let score_output = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.scored",
+        "--batch-id",
+        &batch_id,
+        "--capture-index",
+        "0",
+        "--scores",
+        scores_path.to_str().expect("utf-8 scores path"),
+        "--agent-tool",
+        "claude",
+        "--agent-session",
+        "plugin-session-score",
+        "--scorer-model",
+        "claude-haiku-4-5-20251001",
+    ]))
+    .expect("edge decision.scored submit succeeds");
+    let score_output: serde_json::Value =
+        serde_json::from_str(&score_output).expect("valid json output");
+    assert_eq!(
+        score_output.get("kind").and_then(|v| v.as_str()),
+        Some("event_id")
+    );
+
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let events = ledger.read(0, 50).expect("events read");
+
+    let classified_event = events
+        .iter()
+        .find(|e| e.event_type == EventType::IngestBatchClassified)
+        .expect("IngestBatchClassified event written");
+    let classified_event_id = classified_event.event_id.expect("event id assigned");
+
+    let scored_event = events
+        .iter()
+        .find(|e| e.event_type == EventType::DecisionScored)
+        .expect("DecisionScored event written");
+    assert_eq!(scored_event.actor_id, "agent:claude:plugin-session-score");
+    assert_eq!(
+        scored_event
+            .payload
+            .get("capture_node_id")
+            .and_then(|v| v.as_str()),
+        Some(format!("capture:{classified_event_id}:0").as_str()),
+        "capture_node_id derived from batch-id + capture-index, not caller-supplied"
+    );
+    assert_eq!(
+        scored_event.causation_event_id,
+        Some(classified_event_id),
+        "decision.scored is causally linked to the batch it scores"
+    );
+    // The out-of-range information score was clamped to 1.0, same as the
+    // server-side scorer worker's own validation.
+    assert_eq!(
+        scored_event
+            .payload
+            .get("quality_dims")
+            .and_then(|v| v.get("information"))
+            .and_then(|v| v.get("score"))
+            .and_then(|v| v.as_f64()),
+        Some(1.0)
+    );
+
+    let _ = std::fs::remove_file(&captures_path);
+    let _ = std::fs::remove_file(&scores_path);
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn emit_decision_scored_rejects_non_decision_capture() {
+    let hivemind_dir = unique_test_dir("emit-decision-scored-non-decision");
+    let captures_file = unique_test_dir("emit-decision-scored-non-decision-captures");
+    let captures_path = captures_file.with_extension("json");
+
+    let captures_json = serde_json::json!([
+        {
+            "kind": "evidence",
+            "title": "Latency measurement",
+            "rationale": "p95 improved after the change",
+            "topic_keys": [],
+            "evidence_ids": [],
+            "options": null,
+            "chosen_option": null,
+            "extraction_confidence": 0.9,
+            "expressed_confidence": null,
+            "supersedes_id": null,
+            "assumes_ids": [],
+            "supports_ids": [],
+            "refutes_ids": [],
+            "actor_id": null,
+            "accepted_by": null,
+            "rejected_by": null,
+            "blocked_actor_id": null,
+            "decision_id": null
+        }
+    ]);
+    std::fs::write(&captures_path, captures_json.to_string()).expect("write captures file");
+
+    let batch_output = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "ingest.batch_classified",
+        "--captures",
+        captures_path.to_str().expect("utf-8 captures path"),
+        "--agent-tool",
+        "claude",
+        "--agent-session",
+        "plugin-session-non-decision",
+        "--classifier-model",
+        "claude-haiku-4-5-20251001",
+    ]))
+    .expect("edge batch submit succeeds");
+    let batch_output: serde_json::Value =
+        serde_json::from_str(&batch_output).expect("valid json output");
+    let batch_id = batch_output
+        .get("value")
+        .and_then(|v| v.as_str())
+        .expect("batch_id in output")
+        .to_owned();
+
+    let scores_file = unique_test_dir("emit-decision-scored-non-decision-scores");
+    let scores_path = scores_file.with_extension("json");
+    let scores_json = serde_json::json!({
+        "quality_dims": {
+            "framing": {"score": 0.5, "explanation": "n/a"},
+            "alternatives": {"score": 0.5, "explanation": "n/a"},
+            "information": {"score": 0.5, "explanation": "n/a"},
+            "reasoning": {"score": 0.5, "explanation": "n/a"},
+            "values_tradeoffs": {"score": 0.5, "explanation": "n/a"},
+            "bias_exposure": {"score": 0.5, "explanation": "n/a"},
+            "calibration": {"score": 0.5, "explanation": "n/a"}
+        },
+        "importance": {
+            "stakes": 1.0,
+            "stakes_explanation": "n/a",
+            "irreversibility": 0.5,
+            "irreversibility_explanation": "n/a",
+            "actionability": 0.5,
+            "actionability_explanation": "n/a"
+        }
+    });
+    std::fs::write(&scores_path, scores_json.to_string()).expect("write scores file");
+
+    let err = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.scored",
+        "--batch-id",
+        &batch_id,
+        "--capture-index",
+        "0",
+        "--scores",
+        scores_path.to_str().expect("utf-8 scores path"),
+    ]))
+    .expect_err("scoring a non-decision capture must fail");
+    assert!(
+        err.to_string().contains("not \"decision\""),
+        "error should explain the capture kind mismatch: {err}"
+    );
+
+    let _ = std::fs::remove_file(&captures_path);
+    let _ = std::fs::remove_file(&scores_path);
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
 fn import_documents_cli_prose_extraction_writes_candidates_as_unreviewed() {
     // Prose file with no Decision: blocks → extractor path → UNREVIEWED in ledger.
     let root = unique_test_dir("import-prose-extraction");

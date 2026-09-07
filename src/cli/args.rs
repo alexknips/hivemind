@@ -563,6 +563,8 @@ pub enum EmitCommand {
     AttachEvidence(EmitAttachEvidenceArgs),
     #[command(name = "ingest.batch_classified")]
     IngestBatchClassified(EmitIngestBatchClassifiedArgs),
+    #[command(name = "decision.scored")]
+    DecisionScored(EmitDecisionScoredArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -704,6 +706,48 @@ pub struct EmitIngestBatchClassifiedArgs {
     /// Schema version; must be "2" for downstream schema parity.
     #[arg(long = "schema-version", default_value = "2")]
     pub schema_version: String,
+
+    #[command(flatten)]
+    pub provenance: EmitCaptureProvenanceArgs,
+}
+
+/// Submit a pre-scored decision quality/importance assessment from a
+/// plugin/edge session.
+///
+/// The scores JSON must match the schema produced by src/scorer.rs's
+/// SCORER_PROMPT (quality_dims + importance) — the same contract the
+/// server-side scorer's Haiku call produces. This path writes
+/// DecisionScored directly — no ANTHROPIC_API_KEY needed. The target
+/// capture node is resolved from a prior `ingest.batch_classified` batch
+/// via `--batch-id` + `--capture-index`, so callers never construct the
+/// `capture:{event_id}:{idx}` node-id format themselves — only the server
+/// knows that shape.
+#[derive(Debug, Clone, Args)]
+pub struct EmitDecisionScoredArgs {
+    /// batch_id returned by a prior `emit ingest.batch_classified` call.
+    #[arg(long = "batch-id")]
+    pub batch_id: String,
+
+    /// Index of the decision capture within that batch's captures array
+    /// (0-based, matching its position in the JSON array submitted to
+    /// ingest.batch_classified).
+    #[arg(long = "capture-index")]
+    pub capture_index: usize,
+
+    /// Path to a JSON file with `{"quality_dims": {...}, "importance": {...}}`
+    /// matching the SCORER_PROMPT schema in src/scorer.rs.
+    #[arg(long = "scores")]
+    pub scores_file: PathBuf,
+
+    /// Scorer model name (e.g. "claude-haiku-4-5-20251001"). Records which
+    /// model the plugin ran in-session.
+    #[arg(long = "scorer-model", default_value = "claude-haiku-4-5-20251001")]
+    pub scorer_model: String,
+
+    /// Quality-dimension weight version tag (e.g. "v1") so composites can
+    /// recompute if weights change later.
+    #[arg(long = "weight-version", default_value = "v1")]
+    pub weight_version: String,
 
     #[command(flatten)]
     pub provenance: EmitCaptureProvenanceArgs,

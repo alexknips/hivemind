@@ -303,6 +303,154 @@ All fields listed in step 2 are required. Use empty arrays for `evidence_ids`,
 `assumes_ids`, `supports_ids`, `refutes_ids`. Use `null` for all optional
 string fields unless the input text explicitly names them. Do not invent ids.
 
+## Batch Score via Haiku Subagent (Keyless)
+
+When you want to assess the Quality and Importance of a decision capture
+without a server-side `ANTHROPIC_API_KEY`, spawn a Haiku subagent inside your
+own session — same idea as batch capture above. The subagent runs the scorer
+prompt against one decision capture and writes the result directly to the
+ledger using `emit decision.scored`. No HiveMind-held key is required — it
+rides the user's own Claude subscription.
+
+Score a decision capture right after submitting it via
+`emit ingest.batch_classified` (or `emit decision.capture`), while its
+`batch_id` and its position in the captures array are still at hand. This
+mirrors the server's own Layer-3 scorer (`src/scorer.rs`), which runs the same
+prompt against `ANTHROPIC_API_KEY`-backed batches — the two paths never
+double-score the same capture (the background scorer skips node ids that
+already carry a `decision.scored` event).
+
+### Scoring Workflow
+
+1. **Collect the decision text** — title, rationale, options considered,
+   chosen option, expressed confidence — whichever fields the capture actually
+   has. This is the same content submitted in the capture.
+
+2. **Spawn a Haiku subagent** (keeps scoring off your main context) with the
+   following prompt, substituting `<DECISION_TEXT>`:
+
+   ```
+   You are the HiveMind decision scorer.
+
+   HiveMind stores organizational decision memory. Your job is to score a captured
+   decision on two independent axes, assessed EX ANTE — only from what was knowable
+   at decision time. Never penalise or reward a decision for its outcomes.
+
+   AXIS 1 — Quality [0.0,1.0]: How well-made was the decision?
+   Score each of the 7 dimensions from 0.0 (absent/poor) to 1.0 (excellent):
+     framing        — Was the right problem/question framed?
+     alternatives   — Were genuine alternatives generated and considered?
+     information    — Was relevant information gathered and used?
+     reasoning      — Is the inference from information to choice sound?
+     values_tradeoffs — Were values and tradeoffs made explicit and weighed?
+     bias_exposure  — Exposure to cognitive distortions (anchoring, confirmation,
+                      sunk-cost, framing, motivated reasoning). 1.0=low bias.
+     calibration    — Does expressed confidence match the evidence? 1.0=well-calibrated.
+
+   AXIS 2 — Importance (unbounded magnitude):
+     stakes         — Unbounded positive float, log-scaled. Small decisions: ~1.
+                      Department-level: ~10. Company-level: ~100. Industry-level: ~1000.
+                      Computed as severity × reach.
+     irreversibility — [0.0,1.0]. 0=fully reversible (two-way door), 1=irreversible.
+     actionability  — [0.0,1.0]. 0=not actionable (pure observation), 1=fully actionable.
+
+   For each score, give a short (1-2 sentence) explanation grounded in the decision text.
+   If a dimension cannot be assessed from the available text, score it 0.5 and explain why.
+
+   Return only JSON matching this schema, no other text:
+   {
+     "quality_dims": {
+       "framing": {"score": number, "explanation": string},
+       "alternatives": {"score": number, "explanation": string},
+       "information": {"score": number, "explanation": string},
+       "reasoning": {"score": number, "explanation": string},
+       "values_tradeoffs": {"score": number, "explanation": string},
+       "bias_exposure": {"score": number, "explanation": string},
+       "calibration": {"score": number, "explanation": string}
+     },
+     "importance": {
+       "stakes": number,
+       "stakes_explanation": string,
+       "irreversibility": number,
+       "irreversibility_explanation": string,
+       "actionability": number,
+       "actionability_explanation": string
+     }
+   }
+
+   ---DECISION---
+   <DECISION_TEXT>
+   ```
+
+   The subagent returns JSON like:
+   ```json
+   {
+     "quality_dims": {
+       "framing": {"score": 0.8, "explanation": "The storage-engine question was framed clearly against a stated concurrency requirement."},
+       "alternatives": {"score": 0.7, "explanation": "SQLite and Postgres were both named and compared."},
+       "information": {"score": 0.6, "explanation": "Concurrency need was stated but no measured load data was cited."},
+       "reasoning": {"score": 0.75, "explanation": "The chosen option follows directly from the stated concurrency requirement."},
+       "values_tradeoffs": {"score": 0.5, "explanation": "Operational cost of Postgres was not explicitly weighed."},
+       "bias_exposure": {"score": 0.8, "explanation": "No evidence of anchoring or motivated reasoning."},
+       "calibration": {"score": 0.5, "explanation": "No expressed confidence was stated to check against."}
+     },
+     "importance": {
+       "stakes": 8.0,
+       "stakes_explanation": "Affects the shared event ledger used by every tenant.",
+       "irreversibility": 0.6,
+       "irreversibility_explanation": "Migrating storage engines later is possible but costly.",
+       "actionability": 1.0,
+       "actionability_explanation": "Directly determines what gets built next."
+     }
+   }
+   ```
+
+3. **Write the scores to a file** and submit to the ledger, referencing the
+   `batch_id` and capture index from the earlier `ingest.batch_classified`
+   submission:
+
+   ```bash
+   cat > /tmp/hivemind-scores.json <<'EOF'
+   { ... subagent output ... }
+   EOF
+
+   HIVEMIND_AGENT_SESSION="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}"
+   hivemind --hivemind-dir "$HIVEMIND_DIR" emit decision.scored \
+     --batch-id "$EDGE_BATCH_ID" \
+     --capture-index 0 \
+     --scores /tmp/hivemind-scores.json \
+     --agent-tool claude \
+     --agent-session "$HIVEMIND_AGENT_SESSION" \
+     --scorer-model "claude-haiku-4-5-20251001"
+   ```
+
+   `--capture-index` is the 0-based position of the decision capture within
+   the JSON array you submitted to `ingest.batch_classified` (usually `0` for
+   a single-decision batch). The command resolves `--batch-id` +
+   `--capture-index` to the canonical capture node internally — never
+   construct the `capture:{event_id}:{idx}` node-id format yourself. It fails
+   if the referenced capture is not a `"decision"` (evidence, hypothesis,
+   blocker, and other capture kinds are not scored) or if no matching batch is
+   found.
+
+4. **Verify** the score event landed:
+
+   ```bash
+   hivemind --hivemind-dir "$HIVEMIND_DIR" query get_recent_activity --limit 5
+   ```
+
+   Look for an item with `"event_type": "decision.scored"`.
+
+### Scoring Schema Contract
+
+The scores JSON must match the `quality_dims` + `importance` schema produced
+by `src/scorer.rs`'s `SCORER_PROMPT` (the same shape shown in step 2 above).
+All 7 quality dimensions and all 3 importance factors are required, each with
+an `explanation`. Scores outside `[0,1]` are clamped server-side; `stakes`
+must be non-negative — the server validates and clamps the same way for both
+the keyless plugin path and its own Haiku call. Do not invent a
+`capture_node_id`; it is derived from `--batch-id` + `--capture-index`.
+
 ## Quality Rules
 
 - Use the helper or HiveMind CLI commands; do not write directly to the ledger from this skill.

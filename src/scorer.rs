@@ -18,8 +18,8 @@ use tracing::{debug, info, warn};
 
 use crate::commands::{CommandContext, Commands};
 use crate::events::{
-    DecisionScoredPayload, EventProvenance, EventType, ImportanceFactors, QualityDim, QualityDims,
-    TenantId,
+    DecisionScoredPayload, EventId, EventProvenance, EventType, ImportanceFactors, QualityDim,
+    QualityDims, TenantId,
 };
 use crate::ledger::{EventLedger, SqliteEventLedger};
 
@@ -106,8 +106,11 @@ fn scorer_schema() -> serde_json::Value {
     })
 }
 
+/// Raw scorer output before validation/clamping. Deserialized both from the
+/// server's Haiku call (`call_scorer`) and from a plugin/edge-submitted
+/// scores file (`emit decision.scored`) — the same schema, two producers.
 #[derive(Debug, Deserialize)]
-struct ScorerOutput {
+pub(crate) struct ScorerOutput {
     quality_dims: RawQualityDims,
     importance: RawImportance,
 }
@@ -359,14 +362,17 @@ fn validate_stakes(v: f64) -> crate::Result<f64> {
     Ok(v)
 }
 
-fn write_score(
-    hivemind_dir: &PathBuf,
-    tenant_id: &TenantId,
+/// Validate and clamp raw scorer output into a `DecisionScoredPayload` for a
+/// given capture node. Shared by the background worker (`write_score`) and
+/// the keyless CLI path (`emit decision.scored`) so both enforce the same
+/// invariants — a plugin/edge Haiku call is not trusted any more than the
+/// server's own call.
+pub(crate) fn build_scored_payload(
     capture_node_id: &str,
     model: &str,
+    weight_version: &str,
     output: ScorerOutput,
-    causation_event_id: Option<u64>,
-) -> crate::Result<()> {
+) -> crate::Result<DecisionScoredPayload> {
     let quality_dims = QualityDims {
         framing: QualityDim {
             score: clamp01(output.quality_dims.framing.score, "framing")?,
@@ -410,14 +416,102 @@ fn write_score(
         actionability_explanation: output.importance.actionability_explanation,
     };
 
-    let payload = DecisionScoredPayload {
+    Ok(DecisionScoredPayload {
         capture_node_id: capture_node_id.to_owned(),
         scorer_model: model.to_owned(),
-        weight_version: WEIGHT_VERSION.to_owned(),
+        weight_version: weight_version.to_owned(),
         supersedes_score_id: None,
         quality_dims,
         importance,
-    };
+    })
+}
+
+/// Resolve the canonical `capture:{event_id}:{idx}` node id for a decision
+/// capture inside a prior `ingest.batch_classified` batch, by scanning the
+/// ledger for the event carrying `batch_id`. Used by the keyless CLI path
+/// (`emit decision.scored`) so plugins never construct the node-id format
+/// themselves — only the server knows that shape.
+///
+/// Returns the node id plus the classified-batch event id, for use as the
+/// resulting `decision.scored` event's `causation_event_id`.
+pub(crate) fn resolve_capture_node_id<L: EventLedger>(
+    ledger: &L,
+    tenant_id: &TenantId,
+    batch_id: &str,
+    idx: usize,
+) -> crate::Result<(String, EventId)> {
+    let mut offset = 0u64;
+    const PAGE: usize = 256;
+
+    loop {
+        let events = ledger.read_for_tenant(tenant_id, offset, PAGE)?;
+        if events.is_empty() {
+            break;
+        }
+
+        for event in &events {
+            if event.event_type != EventType::IngestBatchClassified {
+                continue;
+            }
+            let Some(event_id) = event.event_id else {
+                continue;
+            };
+            let Some(this_batch_id) = event.payload.get("batch_id").and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+            if this_batch_id != batch_id {
+                continue;
+            }
+
+            let captures = event
+                .payload
+                .get("captures")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| {
+                    crate::CommandError::Validation(format!(
+                        "batch {batch_id} has no captures array"
+                    ))
+                })?;
+            let capture = captures.get(idx).ok_or_else(|| {
+                crate::CommandError::Validation(format!(
+                    "capture-index {idx} out of range for batch {batch_id} ({} captures)",
+                    captures.len()
+                ))
+            })?;
+            let kind = capture.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            if kind != "decision" {
+                return Err(crate::CommandError::Validation(format!(
+                    "capture at index {idx} in batch {batch_id} is kind={kind:?}, not \"decision\" — only decision captures are scored"
+                ))
+                .into());
+            }
+
+            return Ok((format!("capture:{event_id}:{idx}"), event_id));
+        }
+
+        if let Some(last) = events.last().and_then(|e| e.event_id) {
+            offset = last;
+        } else {
+            break;
+        }
+    }
+
+    Err(crate::CommandError::Validation(format!(
+        "no ingest.batch_classified event found for batch_id {batch_id}"
+    ))
+    .into())
+}
+
+fn write_score(
+    hivemind_dir: &PathBuf,
+    tenant_id: &TenantId,
+    capture_node_id: &str,
+    model: &str,
+    output: ScorerOutput,
+    causation_event_id: Option<u64>,
+) -> crate::Result<()> {
+    let payload = build_scored_payload(capture_node_id, model, WEIGHT_VERSION, output)?;
 
     let ledger = SqliteEventLedger::open(hivemind_dir)?;
     let commands = Commands::new_with_context(
