@@ -317,7 +317,7 @@ jobs:
 
           HIVEMIND_E2E_API_KEY="$TOKEN_A" \
           HIVEMIND_E2E_API_KEY_B="$TOKEN_B" \
-            bash scripts/e2e_smoke.sh --skip-map --skip-search
+            bash scripts/e2e_smoke.sh --skip-search
 
       - name: Dump server logs on failure
         if: failure()

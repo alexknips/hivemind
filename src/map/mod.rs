@@ -69,7 +69,16 @@ struct DecisionRecord {
     event_origin: i64,
 }
 
-pub fn compute_map(graph: &impl GraphView, hivemind_dir: &Path, alpha: f64) -> Result<MapResult> {
+/// Compute the spectral decision map.
+///
+/// `hivemind_dir` is the on-disk directory used by the SQLite backend to store the embedding
+/// cache. Pass `Some(dir)` when the SQLite backend is active. Pass `None` for the Postgres
+/// backend: the computation proceeds without persistent embeddings (structural-only layout).
+pub fn compute_map(
+    graph: &impl GraphView,
+    hivemind_dir: Option<&Path>,
+    alpha: f64,
+) -> Result<MapResult> {
     let alpha = alpha.clamp(0.0, 1.0);
     let decisions = load_decisions(graph)?;
     let n = decisions.len();
@@ -87,10 +96,20 @@ pub fn compute_map(graph: &impl GraphView, hivemind_dir: &Path, alpha: f64) -> R
     }
 
     // Build embeddings: read from store first, only embed new decisions with the ONNX model.
+    // When hivemind_dir is None (Postgres backend), skip the embedding store and fall back to
+    // zero-vectors so the spectral layout is driven purely by structural edges.
     #[cfg(feature = "semantic")]
-    let store = EmbeddingStore::open(hivemind_dir)?;
+    let store = hivemind_dir.map(EmbeddingStore::open).transpose()?;
     #[cfg(feature = "semantic")]
-    let embeddings = build_embeddings(&decisions, &store, hivemind_dir)?;
+    let embeddings = if let Some(ref s) = store {
+        build_embeddings(
+            &decisions,
+            s,
+            hivemind_dir.unwrap_or(std::path::Path::new(".")),
+        )?
+    } else {
+        vec![vec![0.0f32; crate::embedding::SEMANTIC_DIMS]; n]
+    };
     #[cfg(not(feature = "semantic"))]
     let embeddings: Vec<Vec<f32>> = vec![vec![]; n];
     #[cfg(not(feature = "semantic"))]
@@ -127,12 +146,11 @@ pub fn compute_map(graph: &impl GraphView, hivemind_dir: &Path, alpha: f64) -> R
     // Density bands from topic clustering on Y axis
     let bands = density_bands(&decisions, &y_spectral);
 
-    // Persist generation and point coordinates to the embedding store
+    // Persist generation and point coordinates to the embedding store (SQLite only).
     let gen_id = Uuid::new_v4().to_string();
     #[cfg(feature = "semantic")]
-    {
-        store
-            .conn
+    if let Some(ref s) = store {
+        s.conn
             .execute(
                 "INSERT INTO projection_generation (gen_id, alpha, k_neighbors, model_id, n_decisions)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -150,8 +168,7 @@ pub fn compute_map(graph: &impl GraphView, hivemind_dir: &Path, alpha: f64) -> R
             .iter()
             .zip(x_time.iter().zip(y_spectral.iter()).zip(y_raw.iter()))
         {
-            store
-                .conn
+            s.conn
                 .execute(
                     "INSERT INTO decision_map_point \
                      (decision_id, gen_id, x_time_ordinal, y_spectral, y_fiedler_raw) \

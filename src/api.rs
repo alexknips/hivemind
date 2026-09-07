@@ -1636,12 +1636,9 @@ async fn map_handler(
     let map_cache = Arc::clone(&state.map_cache);
     let cache = Arc::clone(&state.graph_cache);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
-        let dir = backend
-            .sqlite_dir()
-            .ok_or_else(|| {
-                ApiError::validation("GET /v1/decisions/map requires the SQLite backend")
-            })?
-            .to_path_buf();
+        // sqlite_dir() returns None for the Postgres backend; compute_map accepts Option<&Path>
+        // and falls back to structural-only layout when no embedding store is available.
+        let dir: Option<std::path::PathBuf> = backend.sqlite_dir().map(|p| p.to_path_buf());
 
         let alphas = parse_alpha_list(params.alpha.as_deref())?;
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
@@ -1663,7 +1660,7 @@ async fn map_handler(
             if let Some(cached) = hit {
                 return Ok(serde_json::to_value(&cached).unwrap_or_default());
             }
-            let r = crate::map::compute_map(&*graph, &dir, alpha)
+            let r = crate::map::compute_map(&*graph, dir.as_deref(), alpha)
                 .map_err(|e| ApiError::internal(e.to_string()))?; // ubs:ignore: error conversion at handler boundary
             map_cache.lock().unwrap().insert(cache_key, r.clone()); // ubs:ignore: Mutex::lock().unwrap() — non-panicking path; clone necessary — r moved into cache, also returned
             Ok(serde_json::to_value(&r).unwrap_or_default())
@@ -1676,7 +1673,7 @@ async fn map_handler(
                     results.push(cached);
                     continue;
                 }
-                let r = crate::map::compute_map(&*graph, &dir, alpha)
+                let r = crate::map::compute_map(&*graph, dir.as_deref(), alpha)
                     .map_err(|e| ApiError::internal(e.to_string()))?; // ubs:ignore: error conversion at handler boundary
                 map_cache.lock().unwrap().insert(cache_key, r.clone()); // ubs:ignore: Mutex::lock().unwrap() — non-panicking path; clone necessary — r moved into cache, also pushed to results
                 results.push(r);

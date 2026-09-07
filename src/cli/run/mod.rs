@@ -245,7 +245,7 @@ fn run_map(cli: &Cli, args: &MapArgs) -> Result<String> {
     };
 
     if alphas.len() == 1 {
-        let result = crate::map::compute_map(&graph, &cli.hivemind_dir, alphas[0]) // ubs:ignore: alphas[0] guarded by len()==1 check above
+        let result = crate::map::compute_map(&graph, Some(cli.hivemind_dir.as_path()), alphas[0]) // ubs:ignore: alphas[0] guarded by len()==1 check above
             .map_err(|e| CliError::InvalidInput(e.to_string()))?; // ubs:ignore: error conversion at CLI boundary
         if args.summary {
             let mut out = format!(
@@ -273,7 +273,7 @@ fn run_map(cli: &Cli, args: &MapArgs) -> Result<String> {
     } else {
         let mut results = Vec::new();
         for &alpha in &alphas {
-            let r = crate::map::compute_map(&graph, &cli.hivemind_dir, alpha)
+            let r = crate::map::compute_map(&graph, Some(cli.hivemind_dir.as_path()), alpha)
                 .map_err(|e| CliError::InvalidInput(e.to_string()))?; // ubs:ignore: error conversion at CLI boundary
             results.push(r);
         }

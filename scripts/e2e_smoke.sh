@@ -27,7 +27,7 @@ API_KEY="${HIVEMIND_E2E_API_KEY:-}"
 API_KEY_B="${HIVEMIND_E2E_API_KEY_B:-}"  # separate token for tenant-B in auth mode
 TENANT="${HIVEMIND_E2E_TENANT:-e2e-test}"
 HIVEMIND_BIN="${HIVEMIND_BIN:-hivemind}"
-SKIP_MAP="${HIVEMIND_E2E_SKIP_MAP:-false}"     # set true for Postgres (270r)
+SKIP_MAP="${HIVEMIND_E2E_SKIP_MAP:-false}"     # flag kept for local convenience; map works on all backends since 270r
 SKIP_SEARCH="${HIVEMIND_E2E_SKIP_SEARCH:-false}"  # set true for Postgres (FTS not in shared-backend)
 FIDELITY_BIN="${FIDELITY_BIN:-fidelity-eval}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -287,7 +287,7 @@ fi
 section "Spectral map"
 
 if [[ "$SKIP_MAP" == "true" ]]; then
-  skip "GET /v1/decisions/map — skipped on Postgres backend (hivemind-270r: SQLite only)"
+  skip "GET /v1/decisions/map — explicitly skipped via --skip-map"
 else
   map_resp=$(curl_api GET "/v1/decisions/map" 2>&1 || true)
   if echo "$map_resp" | jq -e 'has("points")' > /dev/null 2>&1; then
