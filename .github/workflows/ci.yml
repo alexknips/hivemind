@@ -213,7 +213,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build hivemind + fidelity-eval binaries
-        run: cargo build --locked --bin hivemind --bin fidelity-eval
+        run: cargo build --locked --features eval-tools --bin hivemind --bin fidelity-eval
 
       - name: Run E2E smoke (SQLite)
         env:
