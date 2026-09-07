@@ -3,6 +3,75 @@
 All notable changes to HiveMind are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## v0.6.0 — 2026-09-07 — M7: Decision-quality layer
+
+HiveMind now derives whether decisions held up and scores them explainably — entirely
+from graph structure, no LLM, no external calls required. An engineer and their agents
+can see which decisions didn't hold up, why, and what conditions predict failure — without
+any per-person ranking or blame. Scores always ship with their reasons and contributing
+decision IDs. External consumers (factory loops, dashboards) pull the same signal via MCP.
+
+### Added
+
+#### Decision outcome signals (Mechanism foundation)
+- **Decision outcome model.** Layer-2 query (`src/queries/outcome.rs`) derives
+  four per-decision quality signals from existing graph edges — `superseded_fast`
+  (replaced within one sprint), `premised_on_refuted` (rested on a hypothesis
+  later contradicted by evidence), `contested_unresolved` (active disagreement with
+  no resolution), and `thin_structure` (no options considered or evidence attached).
+  No LLM, no external calls; works self-hosted.
+  MCP tools: `get_decision_outcome`, `decision_quality_candidates`.
+  (hivemind-he9a.1, 6085596)
+- **Decision context features.** Layer-2 query (`src/queries/context.rs`) derives
+  the independent-variable side of the causal pair: authorship shape (human/agent/joint),
+  source, model, review depth, evidence and hypothesis counts, rationale richness proxies.
+  MCP tools: `get_decision_context`, `decision_context_candidates`.
+  (hivemind-he9a.2, a779f60)
+
+#### In-house explainable scorer
+- **Decision-quality scorer.** Layer-3 scorer (`src/queries/inhouse_scorer.rs`) combines
+  outcome signals and context features into a `[0,1]` quality score plus a tier label,
+  always with contributing reasons and decision IDs attached — never a bare number.
+  Deterministic; no LLM; self-hosted and hosted. Scores decisions and interaction patterns,
+  never individual people or agents.
+  MCP tools: `score_decision`, `scan_decision_quality`.
+  CLI: `hivemind query scan_decision_quality`.
+  (hivemind-he9a.3, b006942)
+- **Failure-mode attribution.** Layer-2 query (`src/queries/attribution.rs`) reports
+  aggregate condition patterns (model, context sufficiency, review depth, evidence
+  thinness, authorship shape) with effect sizes and honest confidence intervals.
+  Output is aggregate-only — no per-person rankings, no individual identifiers.
+  MCP tool: `analyze_failure_modes`.
+  (hivemind-he9a.4, ba5178a)
+
+#### MCP exposure — Mechanism A
+- **Quality scores over MCP.** External consumers (factory loops, dashboards, other agents)
+  pull decision scores, signals, context features, and failure-mode analysis via the existing
+  MCP auth surface (hosted + self-hosted). Low-effort pull model; no new infrastructure.
+  Adds hosted-mode routing in `src/api.rs` and CLI wiring.
+  (hivemind-he9a.6, 14ae063)
+
+#### Scheduled scan → Linear tickets — Mechanism B
+- **Quality-scan CLI + Linear connector.** `hivemind quality-scan` schedules periodic scans
+  of recent decisions and files Linear tickets for human review on decisions above a
+  configurable badness threshold. Precision-biased (files only on strong signals);
+  human-in-the-loop mandatory; opt-in (requires `HIVEMIND_LINEAR_API_KEY`). Reuses
+  the in-house scorer — no duplicate scoring logic.
+  (`src/linear.rs`, hivemind-he9a.7, be93351)
+
+#### E2E test suite
+- **SQLite smoke suite + CI job.** Compose-based e2e smoke test (SQLite backend) runs
+  in CI on every push. (hivemind-fabq.1, 465277c)
+- **Postgres smoke suite + CI job.** Compose-based e2e smoke test (Postgres backend)
+  with tenant provisioning and bearer-token auth runs in CI. (hivemind-fabq.2, 2024c3e)
+
+### Changed
+- **`docs/DECISION_SCORING.md`** status updated to reflect shipped implementation.
+- **`STRATEGY.md`** gains an 8th active front: Decision quality.
+- **README install snippet.** `HIVEMIND_VERSION` example updated to `v0.6.0`.
+
+---
+
 ## v0.5.0 — 2026-08-21 — Import unification: prose extraction and clean CLI
 
 `hivemind import` now works end-to-end for real documents. The command
