@@ -89,10 +89,18 @@ helper, MCP server defaults, or `decision.capture` `--agent-tool` and
 Install or build the CLI first. Agent capture helpers look for `hivemind` on
 `PATH`, then fall back to a local debug binary or `cargo run` from this checkout.
 
+**Install to PATH (recommended for Gas Town rigs):** After building, copy the
+binary to a directory on `$PATH` so the MCP config, capture scripts, and
+plugin all resolve `hivemind` without a repo-relative path:
+
 ```bash
 cargo build
-./target/debug/hivemind --version
+cp ./target/debug/hivemind ~/.local/bin/hivemind
+hivemind --version  # should print hivemind 0.5.0+
 ```
+
+Replace `~/.local/bin` with any writable directory on your `$PATH`. On a
+shared host, `/usr/local/bin` works if you have write access.
 
 If `hivemind` is not installed on `PATH`, replace `hivemind` in the examples
 below with `./target/debug/hivemind` from the repository root.
@@ -298,6 +306,24 @@ with `--cursor` rather than increasing the query until it dumps the whole graph.
   `query get_decision`; the corrected re-run recorded the loop outcome as
   `evidence.recorded` in the canonical rig ledger; the accepted
   `M1 dogfood loop operational` meta-decision references the new evidence id.
+
+### 2026-09-07T04:40:00Z — M1 regression restored (v0.5.0)
+
+- Actor: `agent:claude:d2202c06-eb41-41f3-931f-21aceac953d3`
+  (Gas Town polecat `hivemind/gastown.furiosa`, bead `hivemind-m306.5`)
+- Regression: `hivemind` binary missing from PATH; debug binary in repo was
+  stale (v0.1.0 from 2026-06-22); ledger dormant since ~2026-08-06.
+- Restoration steps:
+  1. Built debug binary from worktree at v0.5.0.
+  2. Installed to `~/.local/bin/hivemind` (now on `$PATH`).
+  3. Confirmed shared ledger readable: 28 decisions already present.
+  4. Captured dogfood restoration decision:
+     `decision-593fbfe8-fc17-4577-a7b6-efe02e06b447`
+  5. Queried back via `query search_decisions --source agent`.
+- Friction found: `emit decision.capture --options` returns duplicate option
+  IDs in `query get_decision` response — fixed in `src/projector/memory.rs`
+  (neighbor_ids dedup, bead `hivemind-m306.5`).
+- Docs updated: added "Install to PATH" section for rig setup.
 
 ## Troubleshooting
 

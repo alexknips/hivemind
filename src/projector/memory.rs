@@ -327,13 +327,12 @@ impl GraphView for MemoryGraph {
                     memory_error(format!("unknown neighbor alias in query: {cypher}")).into(),
                 );
             };
-            let mut ids = self
+            let ids: BTreeSet<String> = self
                 .edges_snapshot()?
                 .into_iter()
                 .filter(|edge| edge.relation == relation && edge.from_id == decision_id)
                 .map(|edge| edge.to_id)
-                .collect::<Vec<_>>();
-            ids.sort();
+                .collect();
             return Ok(ids
                 .into_iter()
                 .map(|id| GraphRow::from([(alias.to_owned(), GraphValue::String(id))]))
