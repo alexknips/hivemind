@@ -45,24 +45,14 @@ of the record, never inside it.
 
 ## Who it's for
 
-Anyone whose work produces decisions worth remembering, and whose work
-increasingly includes agents acting on their behalf.
+HiveMind is for an engineer and the agents associated with that engineer, and
+the decisions they make together — who actually decided, reviewed vs
+rubber-stamped, where they disagreed, whether it held up.
 
-- **Small teams** — keep decision history alive past the conversation that
-  created it.
-- **Large organizations** — cross-team decision visibility without crawling a
-  wiki.
-- **Technical leaders and their juniors** — review reasoning as structured
-  decisions, not as shared chat URLs.
-- **Operators of agents** — see what your agents decided the same way you see
-  your own choices, and disagree with them when warranted.
-- **Compliance, audit, legal** — a reviewable trail of who chose what, when, and
-  on what evidence.
-- **Beyond engineering** — product, research, operations, policy. Anywhere
-  knowledge work creates choices.
-
-The defining user is the operator of an agent who refuses to abdicate the
-decision to the agent.
+**Later:** Wider audiences are a real aspiration — small teams, large
+organizations, technical leaders, compliance teams, beyond engineering — but
+they are not the current target. VISION and STRATEGY are the filters beads are
+judged against; the wide list invites scope creep.
 
 ## What changes when HiveMind exists
 
