@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::io::{self, BufRead, Write as IoWrite};
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -27,16 +28,18 @@ use crate::ledger::{EventLedger, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
     derive_decision_status, export_read_only_summary, get_active_decision_blockers,
-    get_blocker_notification_candidates, get_compact_view, get_decision, get_decision_neighborhood,
-    get_decision_quality_score, get_decisions_added_since, get_decisions_changed_since,
-    get_recent_activity, get_recent_decisions, get_relevant_decisions, get_supersession_chain,
-    scan_decision_quality, scorer_next_cursor, search_decisions, search_decisions_fts_with_context,
+    get_blocker_notification_candidates, get_compact_view, get_decision, get_decision_brief,
+    get_decision_neighborhood, get_decision_quality_score, get_decisions_added_since,
+    get_decisions_changed_since, get_recent_activity, get_recent_decisions, get_relevant_decisions,
+    get_supersession_chain, resolve_decision_by_description, scan_decision_quality,
+    scorer_next_cursor, search_decisions, search_decisions_fts_with_context,
     ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest, ChangedSinceRequest,
     DecisionBlockerFilters, DecisionStatus, DecisionsAddedSinceFilterRequest,
     DecisionsAddedSinceRequest, HistoryFilterRequest, NeighborhoodRequest, QualityTier,
     QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest, RecentActivityRequest,
-    RecentDecisionEntry, RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest,
-    ScorerConfig, ScorerReason, SearchDecisionRequest, SupersessionSpeed,
+    RecentDecisionEntry, RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome,
+    ResolvedCandidate, ScanQualityRequest, ScorerConfig, ScorerReason, SearchDecisionRequest,
+    SupersessionSpeed,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -70,9 +73,10 @@ use super::render::{
     format_json_value, format_output, format_prepare_documents_output, format_query_response,
     format_review_output, format_supersede_output, render_active_blockers_summary,
     render_added_since_summary, render_blocker_notifications_summary, render_changed_since_summary,
-    render_compact_view_summary, render_decision_list_summary, render_decision_summary, render_dot,
-    render_neighborhood_summary, render_read_only_export_summary, render_recall_summary,
-    render_recent_activity_summary, render_recent_decisions_summary, render_scan_quality_summary,
+    render_compact_view_summary, render_decision_brief_summary, render_decision_list_summary,
+    render_decision_summary, render_dot, render_neighborhood_summary,
+    render_read_only_export_summary, render_recall_summary, render_recent_activity_summary,
+    render_recent_decisions_summary, render_resolve_outcome_summary, render_scan_quality_summary,
     render_scored_decision_summary, render_search_summary, render_supersession_summary,
     DisagreeCommandOutput, OutputEnvelope, ReviewActionOutput, ReviewCommandOutput,
     SupersedeCommandOutput,
@@ -647,20 +651,184 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
     format_output(cli.json, &output)
 }
 
+// ---------------------------------------------------------------------------
+// Fluent resolve-by-description support (hivemind-tenv.1)
+//
+// Every fluent verb (disagree, supersede, get_supersession_chain/chain,
+// get_decision_neighborhood/why, compact-view, get_decision_outcome/verify) resolves its target
+// through `resolve_fluent_target` before doing anything else. `--id` bypasses resolution
+// entirely and is unchanged from today's behavior. See docs/AGENT_FLUENT_QUERYING.md.
+// ---------------------------------------------------------------------------
+
+/// Outcome of resolving a fluent verb's target: either a concrete decision id to proceed with,
+/// or output the caller must return directly (ambiguous/not-found) without proceeding.
+enum FluentResolution {
+    Id(String),
+    Output(String),
+}
+
+fn resolve_fluent_target(
+    hivemind_dir: &Path,
+    summary: bool,
+    graph: &impl GraphView,
+    id: Option<&str>,
+    description: Option<&str>,
+    pick: Option<usize>,
+    topic: Option<&str>,
+) -> Result<FluentResolution> {
+    if let Some(id) = id.map(str::trim).filter(|value| !value.is_empty()) {
+        return Ok(FluentResolution::Id(id.to_owned()));
+    }
+
+    let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Err(CliError::InvalidInput(
+            "one of --id, a free-text description, or #N is required".to_owned(),
+        )
+        .into());
+    };
+
+    if let Some(index) = candidate_handle_index(description) {
+        let candidate = read_continuation_candidate(hivemind_dir, index)?;
+        return Ok(FluentResolution::Id(candidate.decision_id));
+    }
+
+    let response = resolve_decision_by_description(graph, description, topic)?;
+    write_continuation_candidates(hivemind_dir, &candidates_of(&response.data));
+
+    match &response.data {
+        ResolveOutcome::Resolved { candidate } => {
+            Ok(FluentResolution::Id(candidate.decision_id.clone()))
+        }
+        ResolveOutcome::Ambiguous { candidates } => {
+            if let Some(pick) = pick {
+                let index = pick
+                    .checked_sub(1)
+                    .ok_or_else(|| CliError::InvalidInput("--pick must be >= 1".to_owned()))?;
+                match candidates.get(index) {
+                    Some(candidate) => Ok(FluentResolution::Id(candidate.decision_id.clone())),
+                    None => Err(CliError::InvalidInput(format!(
+                        "--pick {pick} is out of range: {} candidate(s) matched",
+                        candidates.len()
+                    ))
+                    .into()),
+                }
+            } else {
+                Ok(FluentResolution::Output(format_query_response(
+                    summary,
+                    &response,
+                    render_resolve_outcome_summary,
+                    None,
+                )?))
+            }
+        }
+        ResolveOutcome::NotFound => Ok(FluentResolution::Output(format_query_response(
+            summary,
+            &response,
+            render_resolve_outcome_summary,
+            None,
+        )?)),
+    }
+}
+
+fn candidates_of(outcome: &ResolveOutcome) -> Vec<ResolvedCandidate> {
+    match outcome {
+        ResolveOutcome::Resolved { candidate } => vec![candidate.clone()],
+        ResolveOutcome::Ambiguous { candidates } => candidates.clone(),
+        ResolveOutcome::NotFound => Vec::new(),
+    }
+}
+
+fn candidate_handle_index(description: &str) -> Option<usize> {
+    description.strip_prefix('#')?.parse::<usize>().ok()
+}
+
+/// CLI-layer UX convenience, not decision memory (AGENTS.md §2): a session-scoped file holding
+/// the most recent resolver candidate set so a later `#N` invocation can address it without
+/// re-running resolution. Scoped by `$HIVEMIND_SESSION` when set (mayor decision, hivemind-tenv.1,
+/// 2026-09-07) so parallel agents sharing one ledger dir don't collide; falls back to a fixed
+/// name otherwise.
+fn continuation_file_path(hivemind_dir: &Path) -> PathBuf {
+    let scope = std::env::var("HIVEMIND_SESSION")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "default".to_owned());
+    let safe_scope: String = scope
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    hivemind_dir.join(format!(".last-candidates-{safe_scope}.json"))
+}
+
+/// Best-effort: a write failure here must never block the underlying query or write. This state
+/// is UI convenience, never authoritative — losing it just means a future `#N` fails cleanly.
+fn write_continuation_candidates(hivemind_dir: &Path, candidates: &[ResolvedCandidate]) {
+    let path = continuation_file_path(hivemind_dir);
+    if let Ok(json) = serde_json::to_vec(candidates) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+fn read_continuation_candidate(hivemind_dir: &Path, index: usize) -> Result<ResolvedCandidate> {
+    let zero_based = index
+        .checked_sub(1)
+        .ok_or_else(|| CliError::InvalidInput("#N must be >= 1".to_owned()))?;
+    let path = continuation_file_path(hivemind_dir);
+    let bytes = std::fs::read(&path).map_err(|error| {
+        CliError::InvalidInput(format!(
+            "no prior resolver candidates at {}: {error}",
+            path.display()
+        ))
+    })?;
+    let candidates: Vec<ResolvedCandidate> = serde_json::from_slice(&bytes).map_err(|error| {
+        CliError::InvalidInput(format!("prior resolver candidates are corrupt: {error}"))
+    })?;
+    candidates.get(zero_based).cloned().ok_or_else(|| {
+        CliError::InvalidInput(format!(
+            "#{index} is out of range: {} prior candidate(s)",
+            candidates.len()
+        ))
+        .into()
+    })
+}
+
 fn run_disagree(cli: &Cli, args: &DisagreeArgs) -> Result<String> {
     let tenant_id = cli_tenant(cli)?;
     let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
+    let target = resolve_fluent_target(
+        &cli.hivemind_dir,
+        !cli.json,
+        &graph,
+        args.decision_id.as_deref(),
+        args.description.as_deref(),
+        args.pick,
+        args.topic.as_deref(),
+    )?;
+    let decision_id = match target {
+        FluentResolution::Id(decision_id) => decision_id,
+        FluentResolution::Output(output) => return Ok(output),
+    };
+
     let commands = Commands::new_with_context(
         &ledger,
         CommandContext::new(tenant_id.clone(), EventProvenance::human(cli.actor.clone())),
     );
-    let event_id = commands.disagree(&cli.actor, &args.decision_id, &args.reason)?;
-    let decision_status = decision_status_after_write(&ledger, &tenant_id, &args.decision_id)?;
+    let event_id = commands.disagree(&cli.actor, &decision_id, &args.reason)?;
+    let decision_status = decision_status_after_write(&ledger, &tenant_id, &decision_id)?;
 
     format_disagree_output(
         cli.json,
         &DisagreeCommandOutput {
-            decision_id: args.decision_id.clone(),
+            decision_id,
             event_id,
             decision_status,
         },
@@ -670,13 +838,30 @@ fn run_disagree(cli: &Cli, args: &DisagreeArgs) -> Result<String> {
 fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
     let tenant_id = cli_tenant(cli)?;
     let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
+    let target = resolve_fluent_target(
+        &cli.hivemind_dir,
+        !cli.json,
+        &graph,
+        args.old_decision_id.as_deref(),
+        args.description.as_deref(),
+        args.pick,
+        args.topic.as_deref(),
+    )?;
+    let old_decision_id = match target {
+        FluentResolution::Id(decision_id) => decision_id,
+        FluentResolution::Output(output) => return Ok(output),
+    };
+
     let commands = Commands::new_with_context(
         &ledger,
         CommandContext::new(tenant_id.clone(), EventProvenance::human(cli.actor.clone())),
     );
     let outcome = commands.supersede(SupersedeInput {
         actor_id: &cli.actor,
-        old_decision_id: &args.old_decision_id,
+        old_decision_id: &old_decision_id,
         new_title: &args.title,
         new_rationale: &args.rationale,
         topic_keys: &args.topic_keys,
@@ -685,15 +870,14 @@ fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
         hypothesis_ids: &args.hypothesis_ids,
         evidence_ids: &args.evidence_ids,
     })?;
-    let old_decision_status =
-        decision_status_after_write(&ledger, &tenant_id, &args.old_decision_id)?;
+    let old_decision_status = decision_status_after_write(&ledger, &tenant_id, &old_decision_id)?;
     let new_decision_status =
         decision_status_after_write(&ledger, &tenant_id, &outcome.new_decision_id)?;
 
     format_supersede_output(
         cli.json,
         &SupersedeCommandOutput {
-            old_decision_id: args.old_decision_id.clone(),
+            old_decision_id,
             new_decision_id: outcome.new_decision_id,
             proposal_event_id: outcome.proposal_event_id,
             relation_event_ids: outcome.relation_event_ids,
@@ -1324,7 +1508,7 @@ fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {
         GraphBackend::Memory => {
             let graph = MemoryGraph::default();
             rebuild_graph_for_tenant(&ledger, &context.tenant_id, &graph)?;
-            run_query_with_graph(&context, &ledger, &graph, query)
+            run_query_with_graph(&context, &ledger, &graph, &cli.hivemind_dir, query)
         }
         GraphBackend::Kuzu => run_query_with_kuzu(&context, &ledger, &cli.hivemind_dir, query),
     }
@@ -1396,6 +1580,7 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
         | QueryCommand::GetSupersessionChain(_)
         | QueryCommand::GetDecisionNeighborhood(_)
         | QueryCommand::GetCompactView(_)
+        | QueryCommand::GetDecisionOutcome(_)
         | QueryCommand::Search(_)
         | QueryCommand::SearchDecisions(_)
         | QueryCommand::Recall(_)
@@ -1919,6 +2104,7 @@ fn run_query_with_graph(
     context: &QueryContext,
     ledger: &SqliteEventLedger,
     graph: &impl GraphView,
+    hivemind_dir: &Path,
     query: &QueryArgs,
 ) -> Result<String> {
     let output = match &query.command {
@@ -1940,12 +2126,38 @@ fn run_query_with_graph(
             )?
         }
         QueryCommand::GetSupersessionChain(args) => {
-            let response = get_supersession_chain(graph, &args.decision_id)?;
+            let target = resolve_fluent_target(
+                hivemind_dir,
+                query.summary,
+                graph,
+                args.decision_id.as_deref(),
+                args.description.as_deref(),
+                args.pick,
+                args.topic.as_deref(),
+            )?;
+            let decision_id = match target {
+                FluentResolution::Id(decision_id) => decision_id,
+                FluentResolution::Output(output) => return Ok(output),
+            };
+            let response = get_supersession_chain(graph, &decision_id)?;
             format_query_response(query.summary, &response, render_supersession_summary, None)?
         }
         QueryCommand::GetDecisionNeighborhood(args) => {
+            let target = resolve_fluent_target(
+                hivemind_dir,
+                query.summary,
+                graph,
+                args.decision_id.as_deref(),
+                args.description.as_deref(),
+                args.pick,
+                args.topic.as_deref(),
+            )?;
+            let decision_id = match target {
+                FluentResolution::Id(decision_id) => decision_id,
+                FluentResolution::Output(output) => return Ok(output),
+            };
             if args.compact {
-                let response = get_compact_view(graph, &args.decision_id)?;
+                let response = get_compact_view(graph, &decision_id)?;
                 format_query_response(query.summary, &response, render_compact_view_summary, None)?
             } else {
                 if args.depth != 1 {
@@ -1965,13 +2177,48 @@ fn run_query_with_graph(
                             .map(QueryRelationKind::as_graph_relation),
                     )
                 };
-                let response = get_decision_neighborhood(graph, &args.decision_id, &request)?;
+                let response = get_decision_neighborhood(graph, &decision_id, &request)?;
                 format_query_response(query.summary, &response, render_neighborhood_summary, None)?
             }
         }
         QueryCommand::GetCompactView(args) => {
-            let response = get_compact_view(graph, &args.decision_id)?;
+            let target = resolve_fluent_target(
+                hivemind_dir,
+                query.summary,
+                graph,
+                args.decision_id.as_deref(),
+                args.description.as_deref(),
+                args.pick,
+                args.topic.as_deref(),
+            )?;
+            let decision_id = match target {
+                FluentResolution::Id(decision_id) => decision_id,
+                FluentResolution::Output(output) => return Ok(output),
+            };
+            let response = get_compact_view(graph, &decision_id)?;
             format_query_response(query.summary, &response, render_compact_view_summary, None)?
+        }
+        QueryCommand::GetDecisionOutcome(args) => {
+            let target = resolve_fluent_target(
+                hivemind_dir,
+                query.summary,
+                graph,
+                args.decision_id.as_deref(),
+                args.description.as_deref(),
+                args.pick,
+                args.topic.as_deref(),
+            )?;
+            let decision_id = match target {
+                FluentResolution::Id(decision_id) => decision_id,
+                FluentResolution::Output(output) => return Ok(output),
+            };
+            let response = get_decision_brief(graph, &decision_id)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_decision_brief_summary,
+                None,
+            )?
         }
         QueryCommand::Search(args) => {
             let request = search_decision_request(args)?;
@@ -2247,7 +2494,7 @@ fn run_query_with_kuzu(
 ) -> Result<String> {
     let graph = crate::projector::kuzu::KuzuGraph::open(hivemind_dir)?;
     rebuild_graph_for_tenant(ledger, &context.tenant_id, &graph)?;
-    run_query_with_graph(context, ledger, &graph, query)
+    run_query_with_graph(context, ledger, &graph, hivemind_dir, query)
 }
 
 #[cfg(not(feature = "graph-kuzu"))]

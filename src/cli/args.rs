@@ -279,8 +279,20 @@ pub struct McpArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct DisagreeArgs {
+    /// Free-text description to resolve to a decision (fluent alternative to --decision).
+    /// A bare `#N` refers to candidate N from the previous ambiguous resolver output.
+    pub description: Option<String>,
+
     #[arg(long = "decision")]
-    pub decision_id: String,
+    pub decision_id: Option<String>,
+
+    /// Select candidate N when a description resolves ambiguously.
+    #[arg(long = "pick")]
+    pub pick: Option<usize>,
+
+    /// Narrow resolution to decisions carrying this topic key.
+    #[arg(long = "topic")]
+    pub topic: Option<String>,
 
     #[arg(long)]
     pub reason: String,
@@ -288,8 +300,20 @@ pub struct DisagreeArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct SupersedeArgs {
+    /// Free-text description to resolve to the decision being superseded (fluent alternative to
+    /// --old). A bare `#N` refers to candidate N from the previous ambiguous resolver output.
+    pub description: Option<String>,
+
     #[arg(long = "old")]
-    pub old_decision_id: String,
+    pub old_decision_id: Option<String>,
+
+    /// Select candidate N when a description resolves ambiguously.
+    #[arg(long = "pick")]
+    pub pick: Option<usize>,
+
+    /// Narrow resolution to decisions carrying this topic key.
+    #[arg(long = "topic")]
+    pub topic: Option<String>,
 
     #[arg(long)]
     pub title: String,
@@ -904,13 +928,19 @@ pub enum QueryCommand {
     GetDecision(QueryDecisionArgs),
     #[command(name = "get_relevant_decisions")]
     GetRelevantDecisions(QueryRelevantDecisionsArgs),
-    #[command(name = "get_supersession_chain")]
-    GetSupersessionChain(QueryDecisionArgs),
-    #[command(name = "get_decision_neighborhood")]
+    /// Friendlier alias: `chain`.
+    #[command(name = "get_supersession_chain", alias = "chain")]
+    GetSupersessionChain(QueryFluentDecisionArgs),
+    /// Friendlier alias: `why`.
+    #[command(name = "get_decision_neighborhood", alias = "why")]
     GetDecisionNeighborhood(QueryDecisionNeighborhoodArgs),
     /// Layer-3 compact view: signal/noise filter over a decision's subgraph.
     #[command(name = "compact-view")]
-    GetCompactView(QueryDecisionArgs),
+    GetCompactView(QueryFluentDecisionArgs),
+    /// "Did this decision hold up?" — leads with the decision, rationale, rejected options,
+    /// who decided, and whether it still holds. Friendlier alias: `verify`.
+    #[command(name = "get_decision_outcome", alias = "verify")]
+    GetDecisionOutcome(QueryFluentDecisionArgs),
     #[command(name = "search")]
     Search(QuerySearchDecisionsArgs),
     #[command(name = "search_decisions")]
@@ -946,6 +976,24 @@ pub struct QueryDecisionArgs {
     pub decision_id: String,
 }
 
+/// Shared arg shape for fluent follow-up verbs: a free-text `description` (resolved via
+/// `resolve_decision_by_description`) with `--id` as the escape hatch, `--pick` to disambiguate,
+/// and `--topic` to narrow. A bare `#N` description refers to candidate N from the previous
+/// ambiguous resolver output. See docs/AGENT_FLUENT_QUERYING.md.
+#[derive(Debug, Clone, Args)]
+pub struct QueryFluentDecisionArgs {
+    pub description: Option<String>,
+
+    #[arg(long = "id")]
+    pub decision_id: Option<String>,
+
+    #[arg(long = "pick")]
+    pub pick: Option<usize>,
+
+    #[arg(long = "topic")]
+    pub topic: Option<String>,
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct QueryRelevantDecisionsArgs {
     #[arg(long = "topic")]
@@ -957,8 +1005,20 @@ pub struct QueryRelevantDecisionsArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct QueryDecisionNeighborhoodArgs {
+    /// Free-text description to resolve to a decision (fluent alternative to --id).
+    /// A bare `#N` refers to candidate N from the previous ambiguous resolver output.
+    pub description: Option<String>,
+
     #[arg(long = "id")]
-    pub decision_id: String,
+    pub decision_id: Option<String>,
+
+    /// Select candidate N when a description resolves ambiguously.
+    #[arg(long = "pick")]
+    pub pick: Option<usize>,
+
+    /// Narrow resolution to decisions carrying this topic key.
+    #[arg(long = "topic")]
+    pub topic: Option<String>,
 
     #[arg(long = "depth", default_value_t = 1)]
     pub depth: u8,

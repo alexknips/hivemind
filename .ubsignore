@@ -28,6 +28,8 @@ src/cli/tests.rs
 src/connector/tests.rs
 src/queries/tests.rs
 src/queries/history/tests.rs
+src/queries/resolve/tests.rs
+src/queries/brief/tests.rs
 src/commands/tests.rs
 src/mcp/tests.rs
 src/events/tests.rs

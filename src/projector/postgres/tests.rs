@@ -11,7 +11,9 @@ use crate::projector::memory::MemoryGraph;
 use crate::projector::{
     project_from_ledger, GraphParams, GraphValue, GraphView, NodeKind, RelationKind,
 };
-use crate::queries::{get_decision, get_supersession_chain, search_decisions};
+use crate::queries::{
+    get_decision, get_supersession_chain, resolve_decision_by_description, search_decisions,
+};
 use crate::Result;
 
 use super::PostgresGraphView;
@@ -217,6 +219,46 @@ fn node_properties_round_trip_through_postgres() -> Result<()> {
             ]))
         {
             return Err(test_error(format!("topic_keys mismatch: {decision:?}")));
+        }
+        Ok(())
+    })
+}
+
+// ── Resolve-by-description parity (hivemind-tenv.1) ────────────────────────────
+//
+// `resolve_decision_by_description` reuses `collect_graph_search_results`'s tier system
+// unmodified (docs/AGENT_FLUENT_QUERYING.md §1.1), so it needs no new Postgres query support —
+// unlike `get_decision_context`/`get_decision_outcome`, whose bespoke query shapes are not
+// covered by `dispatch_query` on either backend (a separate, pre-existing gap; see
+// hivemind-tenv.1's submission notes). No parity test is added here for those two pending that
+// fix, so a future Postgres-available CI run doesn't inherit a test that is known to fail today.
+
+#[test]
+fn resolve_decision_by_description_matches_memory() -> Result<()> {
+    with_postgres_graph("resolve-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = fixture_ledger()?;
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        // "slice 1" uniquely matches decision:1's title ("Use Kuzu for slice 1") — decision:2's
+        // title ("Use Kuzu with conservative Cypher") does not contain "slice".
+        let memory_resolved = resolve_decision_by_description(&memory, "slice 1", None)?.data;
+        let pg_resolved = resolve_decision_by_description(pg, "slice 1", None)?.data;
+        if memory_resolved != pg_resolved {
+            return Err(test_error(format!(
+                "resolve_decision_by_description mismatch: memory={memory_resolved:?} pg={pg_resolved:?}"
+            )));
+        }
+
+        // "Kuzu" alone matches both decisions at the same rank tier: both backends must agree
+        // it is Ambiguous, in the same candidate order (rank asc, event_origin desc, id asc).
+        let memory_ambiguous = resolve_decision_by_description(&memory, "Kuzu", None)?.data;
+        let pg_ambiguous = resolve_decision_by_description(pg, "Kuzu", None)?.data;
+        if memory_ambiguous != pg_ambiguous {
+            return Err(test_error(format!(
+                "resolve_decision_by_description ambiguity mismatch: memory={memory_ambiguous:?} pg={pg_ambiguous:?}"
+            )));
         }
         Ok(())
     })

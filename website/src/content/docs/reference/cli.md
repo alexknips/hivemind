@@ -145,28 +145,65 @@ hivemind query recent
 
 ### `query get_supersession_chain`
 
+Alias: `chain`.
+
 ```
-hivemind query get_supersession_chain --id <decision-id>
+hivemind query get_supersession_chain (<free-text description> | --id <decision-id>)
+  [--pick <n>]             # disambiguate when a description matches more than one decision
+  [--topic <key>]          # narrow description resolution to this topic
 ```
 
-Returns the full chain from the given decision back to the original proposal.
+Returns the full chain from the resolved decision back to the original proposal. A free-text
+`<description>` resolves to a decision the same way `search`/`recall` do (deterministic term +
+topic + recency ranking; see `docs/AGENT_FLUENT_QUERYING.md` in the repo for the full design); if
+it matches more than one decision with no clear best match, the response is `{"outcome":
+"ambiguous", "candidates": [...]}` instead — re-run with `--pick <n>`, a bare `#<n>` referring to
+that candidate list, or `--id`. `--id` bypasses resolution entirely and is unchanged from before.
 
 ### `query compact-view`
 
 Layer-3 signal/noise filter over a decision's subgraph.
 
 ```
-hivemind query compact-view --id <decision-id>
+hivemind query compact-view (<free-text description> | --id <decision-id>)
+  [--pick <n>]
+  [--topic <key>]
 ```
+
+Same fluent resolution as `get_supersession_chain` above.
 
 ### `query get_decision_neighborhood`
 
+Alias: `why`.
+
 ```
-hivemind query get_decision_neighborhood --id <decision-id>
+hivemind query get_decision_neighborhood (<free-text description> | --id <decision-id>)
+  [--pick <n>]
+  [--topic <key>]
   [--depth <n>]            # default 1
   [--relations <kind,...>]
   [--compact]              # return a compact-view instead of the raw neighborhood
 ```
+
+Same fluent resolution as `get_supersession_chain` above.
+
+### `query get_decision_outcome`
+
+Alias: `verify`. "Did this decision hold up?" — leads with the decision, rationale, rejected
+options, who decided, and whether it still holds (superseded / stale premises / contested /
+thin structure), composing `get_decision` + `get_decision_context` + `get_decision_outcome`
+into one `DecisionBrief` answer. Distinct from the bulk `review` command below, which reports
+across many decisions rather than answering this about one.
+
+```
+hivemind query get_decision_outcome (<free-text description> | --id <decision-id>)
+  [--pick <n>]
+  [--topic <key>]
+```
+
+Same fluent resolution as `get_supersession_chain` above. IDs (`decision_id`, chosen/rejected
+`option_id`) appear only as trailing handles for follow-up — never required reading to
+understand the answer.
 
 ### `query get_relevant_decisions`
 

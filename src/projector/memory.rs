@@ -217,6 +217,18 @@ impl GraphView for MemoryGraph {
             return Ok(Vec::new());
         }
 
+        if cypher.contains("MATCH (o:`Option` {id: $id}) RETURN o.label AS label LIMIT 1;") {
+            let id = required_param_string(params, "id")?;
+            let nodes = self.nodes_snapshot()?;
+            if let Some(properties) = nodes.get(&(NodeKind::Option, id.to_owned())) {
+                return Ok(vec![GraphRow::from([(
+                    "label".to_owned(),
+                    graph_property_or_default(properties, "label"),
+                )])]);
+            }
+            return Ok(Vec::new());
+        }
+
         if cypher.contains("MATCH (d:`Decision` {id: $id}) RETURN d.id AS id LIMIT 1;") {
             let decision_id = required_param_string(params, "id")?;
             let nodes = self.nodes_snapshot()?;
@@ -280,6 +292,51 @@ impl GraphView for MemoryGraph {
             decisions.sort_by(|left, right| row_string(left, "id").cmp(row_string(right, "id")));
             decisions.truncate(1000);
             return Ok(decisions);
+        }
+
+        // Checked before the broader "UNION ... hypothesis_id ... $id" branch below: this query
+        // (outcome.rs's query_refuted_premises) also matches that broader condition's substrings
+        // but needs the REFUTES filter applied, so it must win the match first.
+        if cypher.contains("REFUTES") && cypher.contains("hypothesis_id") {
+            let decision_id = required_param_string(params, "id")?;
+            let edges = self.edges_snapshot()?;
+            let refuted_hypotheses: BTreeSet<String> = edges
+                .iter()
+                .filter(|edge| edge.relation == RelationKind::Refutes)
+                .map(|edge| edge.to_id.clone())
+                .collect();
+            let mut ids: BTreeSet<String> = BTreeSet::new();
+            let chosen_options: Vec<String> = edges
+                .iter()
+                .filter(|edge| edge.relation == RelationKind::Chose && edge.from_id == decision_id)
+                .map(|edge| edge.to_id.clone())
+                .collect();
+            for opt_id in &chosen_options {
+                ids.extend(
+                    edges
+                        .iter()
+                        .filter(|edge| {
+                            edge.relation == RelationKind::PremisedOn
+                                && edge.from_id == *opt_id
+                                && refuted_hypotheses.contains(&edge.to_id)
+                        })
+                        .map(|edge| edge.to_id.clone()),
+                );
+            }
+            ids.extend(
+                edges
+                    .iter()
+                    .filter(|edge| {
+                        edge.relation == RelationKind::PremisedOnDirect
+                            && edge.from_id == decision_id
+                            && refuted_hypotheses.contains(&edge.to_id)
+                    })
+                    .map(|edge| edge.to_id.clone()),
+            );
+            return Ok(ids
+                .into_iter()
+                .map(|id| GraphRow::from([("hypothesis_id".to_owned(), GraphValue::String(id))]))
+                .collect());
         }
 
         if cypher.contains("UNION") && cypher.contains("hypothesis_id") && cypher.contains("$id") {
@@ -395,6 +452,208 @@ impl GraphView for MemoryGraph {
             return Ok(newer
                 .into_iter()
                 .map(|value| GraphRow::from([("id".to_owned(), GraphValue::String(value))]))
+                .collect());
+        }
+
+        // ---------------------------------------------------------------------------
+        // Handlers below close a pre-existing gap this bead's queries surfaced:
+        // context.rs (get_decision_context) and outcome.rs (get_decision_outcome) never had
+        // MemoryGraph support for their query shapes — every existing test for those two
+        // functions used a hand-rolled fixture, never the real in-memory backend, so both were
+        // silently broken for the default graph backend (and for their MCP tools) before now.
+        // ---------------------------------------------------------------------------
+
+        // query_hypothesis_count (context.rs): same premised-on-hypothesis computation as the
+        // "hypothesis_id" UNION handler above, under the "hid" alias it actually uses.
+        if cypher.contains("UNION") && cypher.contains(" AS hid") {
+            let decision_id = required_param_string(params, "id")?;
+            let edges = self.edges_snapshot()?;
+            let mut ids: BTreeSet<String> = BTreeSet::new();
+            let chosen_options: Vec<String> = edges
+                .iter()
+                .filter(|edge| edge.relation == RelationKind::Chose && edge.from_id == decision_id)
+                .map(|edge| edge.to_id.clone())
+                .collect();
+            for opt_id in &chosen_options {
+                ids.extend(
+                    edges
+                        .iter()
+                        .filter(|edge| {
+                            edge.relation == RelationKind::PremisedOn && edge.from_id == *opt_id
+                        })
+                        .map(|edge| edge.to_id.clone()),
+                );
+            }
+            ids.extend(
+                edges
+                    .iter()
+                    .filter(|edge| {
+                        edge.relation == RelationKind::PremisedOnDirect
+                            && edge.from_id == decision_id
+                    })
+                    .map(|edge| edge.to_id.clone()),
+            );
+            return Ok(ids
+                .into_iter()
+                .map(|id| GraphRow::from([("hid".to_owned(), GraphValue::String(id))]))
+                .collect());
+        }
+
+        // get_decision_context / get_decision_outcome single-decision lookups: any remaining
+        // "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id, ..." shape returns the id plus
+        // every stored property, same as the bulk `node.id AS id` handler above — the caller
+        // reads only the specific keys it asked for.
+        if cypher.contains("MATCH (d:`Decision` {id: $id})") && cypher.contains("RETURN d.id AS id")
+        {
+            let decision_id = required_param_string(params, "id")?;
+            let nodes = self.nodes_snapshot()?;
+            if let Some(properties) = nodes.get(&(NodeKind::Decision, decision_id.to_owned())) {
+                let mut row =
+                    GraphRow::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]);
+                row.extend(properties.clone());
+                return Ok(vec![row]);
+            }
+            return Ok(Vec::new());
+        }
+
+        // get_decision_context_candidates / get_decision_quality_candidates bulk lookups:
+        // same "return every stored property" treatment as the single-decision case above,
+        // scanning all Decision nodes with an optional `$since` event_origin floor.
+        if cypher.contains("MATCH (d:`Decision`)") && cypher.contains("RETURN d.id AS id") {
+            let since = match params.get("since") {
+                Some(GraphValue::Int(value)) => Some(*value),
+                _ => None,
+            };
+            let nodes = self.nodes_snapshot()?;
+            let mut rows: Vec<GraphRow> = nodes
+                .iter()
+                .filter_map(|((kind, id), properties)| {
+                    if *kind != NodeKind::Decision {
+                        return None;
+                    }
+                    if let Some(since) = since {
+                        let origin = match properties.get("event_origin") {
+                            Some(GraphValue::Int(value)) => *value,
+                            _ => 0,
+                        };
+                        if origin < since {
+                            return None;
+                        }
+                    }
+                    let mut row =
+                        GraphRow::from([("id".to_owned(), GraphValue::String(id.clone()))]);
+                    row.extend(properties.clone());
+                    Some(row)
+                })
+                .collect();
+            rows.sort_by(|left, right| {
+                let origin_of = |row: &GraphRow| match row.get("event_origin") {
+                    Some(GraphValue::Int(value)) => *value,
+                    _ => 0,
+                };
+                (origin_of(left), row_string(left, "id"))
+                    .cmp(&(origin_of(right), row_string(right, "id")))
+            });
+            return Ok(rows);
+        }
+
+        // context.rs's query_proposer / query_actor_ids_by_edge: decision -[relation]-> Actor,
+        // returning the actor id and its "kind" (human/agent/unknown, stamped by upsert_actor).
+        if cypher.contains("RETURN a.id AS actor_id, a.kind AS kind") {
+            let relation = query_relation(cypher)?;
+            let decision_id = required_param_string(params, "id")?;
+            let nodes = self.nodes_snapshot()?;
+            let mut rows: Vec<GraphRow> = self
+                .edges_snapshot()?
+                .into_iter()
+                .filter(|edge| edge.relation == relation && edge.from_id == decision_id)
+                .map(|edge| {
+                    let kind = nodes
+                        .get(&(NodeKind::Actor, edge.to_id.clone()))
+                        .and_then(|properties| properties.get("kind").cloned())
+                        .unwrap_or(GraphValue::Null);
+                    GraphRow::from([
+                        ("actor_id".to_owned(), GraphValue::String(edge.to_id)),
+                        ("kind".to_owned(), kind),
+                    ])
+                })
+                .collect();
+            rows.sort_by(|left, right| {
+                row_string(left, "actor_id").cmp(row_string(right, "actor_id"))
+            });
+            if cypher.contains("LIMIT 1") {
+                rows.truncate(1);
+            }
+            return Ok(rows);
+        }
+
+        // context.rs's query_actor_edge_count / query_edge_count and outcome.rs's
+        // query_has_options / query_has_evidence: all four are "count decision's outgoing
+        // edges of one relation kind", differing only in relation and (unused here) target kind.
+        if cypher.contains("RETURN count(*) AS cnt") {
+            let relation = query_relation(cypher)?;
+            let decision_id = required_param_string(params, "id")?;
+            let count = self
+                .edges_snapshot()?
+                .into_iter()
+                .filter(|edge| edge.relation == relation && edge.from_id == decision_id)
+                .count();
+            let count = i64::try_from(count)
+                .map_err(|error| memory_error(format!("count overflow: {error}")))?;
+            return Ok(vec![GraphRow::from([(
+                "cnt".to_owned(),
+                GraphValue::Int(count),
+            )])]);
+        }
+
+        // outcome.rs's query_contested: Cypher COUNT{} subquery counting ACCEPTED_BY/REJECTED_BY
+        // edges in one call.
+        if cypher.contains("AS accepted_count") {
+            let decision_id = required_param_string(params, "id")?;
+            let edges = self.edges_snapshot()?;
+            let count_of = |relation: RelationKind| {
+                edges
+                    .iter()
+                    .filter(|edge| edge.relation == relation && edge.from_id == decision_id)
+                    .count()
+            };
+            let accepted = i64::try_from(count_of(RelationKind::AcceptedBy))
+                .map_err(|error| memory_error(format!("count overflow: {error}")))?;
+            let rejected = i64::try_from(count_of(RelationKind::RejectedBy))
+                .map_err(|error| memory_error(format!("count overflow: {error}")))?;
+            return Ok(vec![GraphRow::from([
+                ("accepted_count".to_owned(), GraphValue::Int(accepted)),
+                ("rejected_count".to_owned(), GraphValue::Int(rejected)),
+            ])]);
+        }
+
+        // outcome.rs's query_superseder: the newest SUPERSEDES edge pointing at this decision.
+        if cypher.contains("RETURN newer.id AS superseder_id, r.event_origin AS edge_origin") {
+            let decision_id = required_param_string(params, "id")?;
+            let mut matches: Vec<(String, Option<i64>)> = self
+                .edges_snapshot()?
+                .into_iter()
+                .filter(|edge| {
+                    edge.relation == RelationKind::Supersedes && edge.to_id == decision_id
+                })
+                .map(|edge| (edge.from_id, edge._event_origin))
+                .collect();
+            matches.sort_by_key(|(_, edge_origin)| std::cmp::Reverse(*edge_origin));
+            return Ok(matches
+                .into_iter()
+                .take(1)
+                .map(|(superseder_id, edge_origin)| {
+                    GraphRow::from([
+                        (
+                            "superseder_id".to_owned(),
+                            GraphValue::String(superseder_id),
+                        ),
+                        (
+                            "edge_origin".to_owned(),
+                            edge_origin.map_or(GraphValue::Null, GraphValue::Int),
+                        ),
+                    ])
+                })
                 .collect());
         }
 

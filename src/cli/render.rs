@@ -12,11 +12,12 @@ use crate::projector::{
 };
 use crate::queries::{
     derive_decision_status, derive_hypothesis_status, BlockerNotificationCandidates, CompactView,
-    DecisionBlockerResults, DecisionSearchResults, DecisionStatus, DecisionView,
+    DecisionBlockerResults, DecisionBrief, DecisionSearchResults, DecisionStatus, DecisionView,
     DecisionsAddedSinceResults, DecisionsChangedSinceResults, HistoryChangeKind, HypothesisStatus,
-    NeighborhoodView, QualityTier, QueryResponse, ReadOnlyExport,
+    NeighborhoodView, OutcomeReason, QualityTier, QueryResponse, ReadOnlyExport,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
-    RecentActivityResults, RecentDecisionsResults, ScoredDecision, SupersessionChain,
+    RecentActivityResults, RecentDecisionsResults, ResolveOutcome, ScoredDecision,
+    SupersessionChain,
 };
 use crate::{HivemindError, Result};
 
@@ -337,6 +338,113 @@ pub(crate) fn render_supersession_summary(chain: &SupersessionChain) -> String {
         let _ = writeln!(output, "{marker}\t{index}\t{decision_id}");
     }
     output.trim_end().to_owned()
+}
+
+/// Leads with the decision, then why, who decided, and whether it still holds — the shared
+/// output contract for fluent verbs (docs/AGENT_FLUENT_QUERYING.md §4). IDs are a trailing
+/// "ref:" line, present for follow-up, never required reading to understand the answer.
+pub(crate) fn render_decision_brief_summary(brief: &Option<DecisionBrief>) -> String {
+    let Some(brief) = brief else {
+        return "No decision found".to_owned();
+    };
+
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "decision: {} [{}]",
+        summary_cell(&brief.title),
+        decision_status_label(brief.status)
+    );
+    let _ = writeln!(output, "  rationale: {}", summary_cell(&brief.rationale));
+    if let Some(chosen) = &brief.chosen_option {
+        let _ = writeln!(output, "  chose: {}", summary_cell(&chosen.label));
+    }
+    if !brief.rejected_options.is_empty() {
+        let labels: Vec<&str> = brief
+            .rejected_options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect();
+        let _ = writeln!(
+            output,
+            "  rejected: {} (shares the rationale above — no distinct per-option reason is recorded)",
+            labels.join(", ")
+        );
+    }
+    let _ = writeln!(
+        output,
+        "  decided by: {} (source={}, review={:?})",
+        brief.decided_by.proposer_id.as_deref().unwrap_or("unknown"),
+        brief.decided_by.source,
+        brief.decided_by.review
+    );
+    if let Some(occurred_at) = brief.occurred_at {
+        let _ = writeln!(output, "  when: {}", occurred_at.to_rfc3339());
+    }
+    let _ = writeln!(output, "  still holds: {}", brief.still_holds.held_up);
+    for reason in &brief.still_holds.reasons {
+        let _ = writeln!(output, "    - {}", format_outcome_reason(reason));
+    }
+    if !brief.topic_keys.is_empty() {
+        let _ = writeln!(output, "  topics: {}", brief.topic_keys.join(","));
+    }
+    let _ = writeln!(output, "  ref: {}", brief.decision_id);
+    output.trim_end().to_owned()
+}
+
+fn format_outcome_reason(reason: &OutcomeReason) -> String {
+    match reason {
+        OutcomeReason::SupersededBy { by_id, gap_events } => {
+            let gap = gap_events
+                .map(|gap| format!(" ({gap} ledger events later)"))
+                .unwrap_or_default();
+            format!("superseded by {by_id}{gap}")
+        }
+        OutcomeReason::PremisedOnRefuted { hypothesis_id } => {
+            format!("premised on refuted hypothesis {hypothesis_id}")
+        }
+        OutcomeReason::Contested => "contested: accepted and rejected actors disagree".to_owned(),
+        OutcomeReason::ThinStructure {
+            no_options,
+            no_evidence,
+        } => match (no_options, no_evidence) {
+            (true, true) => "thin structure: no options and no evidence attached".to_owned(),
+            (true, false) => "thin structure: no options attached".to_owned(),
+            (false, true) => "thin structure: no evidence attached".to_owned(),
+            (false, false) => "thin structure".to_owned(),
+        },
+    }
+}
+
+/// Renders a resolve-by-description outcome for a fluent verb: an unambiguous match, a numbered
+/// candidate list to disambiguate via `--pick N` / `#N` / `--id`, or a not-found notice.
+pub(crate) fn render_resolve_outcome_summary(outcome: &ResolveOutcome) -> String {
+    match outcome {
+        ResolveOutcome::Resolved { candidate } => format!(
+            "resolved\t{}\t{}",
+            candidate.decision_id,
+            summary_cell(&candidate.title)
+        ),
+        ResolveOutcome::Ambiguous { candidates } => {
+            let mut output = String::new();
+            let _ = writeln!(
+                output,
+                "ambiguous: {} candidates match — resolve with --pick N, #N, or --id",
+                candidates.len()
+            );
+            for (index, candidate) in candidates.iter().enumerate() {
+                let _ = writeln!(
+                    output,
+                    "#{}\t{}\t{}",
+                    index + 1,
+                    candidate.decision_id,
+                    summary_cell(&candidate.title)
+                );
+            }
+            output.trim_end().to_owned()
+        }
+        ResolveOutcome::NotFound => "no decision matches that description".to_owned(),
+    }
 }
 
 pub(crate) fn render_neighborhood_summary(neighborhood: &NeighborhoodView) -> String {

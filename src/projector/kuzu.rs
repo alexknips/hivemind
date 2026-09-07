@@ -19,7 +19,7 @@ const GRAPH_DB_NAME: &str = "graph.kuzu";
 const NODE_DDL: &[(NodeKind, &str)] = &[
     (
         NodeKind::Decision,
-        "CREATE NODE TABLE IF NOT EXISTS `Decision` (id STRING, title STRING, rationale STRING, topic_keys STRING[], tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Decision` (id STRING, title STRING, rationale STRING, topic_keys STRING[], expressed_confidence STRING, occurred_at STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::DecisionRequest,

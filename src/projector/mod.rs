@@ -210,9 +210,13 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
     upsert_actor(graph, &event.actor_id, &origin_properties)?;
 
     match payload {
-        EventPayload::DecisionProposed(payload) => {
-            project_decision_proposed(graph, &event.actor_id, &payload, &origin_properties)?
-        }
+        EventPayload::DecisionProposed(payload) => project_decision_proposed(
+            graph,
+            &event.actor_id,
+            &payload,
+            &origin_properties,
+            event_timestamp(event),
+        )?,
         EventPayload::DecisionRequested(payload) => {
             project_decision_requested(graph, event, &payload, &origin_properties)?
         }
@@ -487,6 +491,7 @@ fn project_decision_proposed(
     actor_id: &str,
     payload: &DecisionProposedPayload,
     origin_properties: &GraphProperties,
+    occurred_at: GraphValue,
 ) -> Result<()> {
     let decision_properties = props_extend(
         origin_properties,
@@ -504,6 +509,9 @@ fn project_decision_proposed(
                     .as_deref()
                     .map_or(GraphValue::Null, |c| GraphValue::String(c.to_owned())),
             ),
+            // Display-only: `event_origin` stays canonical for resolver/search ranking
+            // (SEARCH_DESIGN.md). occurred_at gives DecisionBrief a human-readable "when".
+            ("occurred_at", occurred_at),
         ],
     );
     graph.upsert_node(

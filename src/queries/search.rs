@@ -15,7 +15,7 @@ use crate::Result;
 use super::decision::{DecisionView, HypothesisContext};
 use super::shared::{
     node_rows, normalized_filter_values, normalized_limit, normalized_query, normalized_statuses,
-    optional_string, optional_string_list, parse_cursor, query_error, query_terms,
+    optional_int, optional_string, optional_string_list, parse_cursor, query_error, query_terms,
     relation_edges_by_kind, relation_sources, relation_targets,
 };
 use super::status::{derive_decision_status, derive_hypothesis_status, DecisionStatus};
@@ -623,6 +623,7 @@ fn fts5_query(query: &str) -> Option<String> {
 struct ScoredDecisionSearchResult {
     rank: u8,
     id: String,
+    event_origin: i64,
     result: DecisionSearchResult,
     fields: Vec<SearchField>,
 }
@@ -647,6 +648,7 @@ fn collect_graph_search_results(
     for (id, row) in decision_rows {
         let title = optional_string(&row, "title").unwrap_or_default();
         let rationale = optional_string(&row, "rationale").unwrap_or_default();
+        let event_origin = optional_int(&row, "event_origin").unwrap_or(0);
         let decision_topic_keys = optional_string_list(&row, "topic_keys");
         if !topic_keys.is_empty()
             && !topic_keys.iter().all(|topic| {
@@ -810,6 +812,7 @@ fn collect_graph_search_results(
         scored.push(ScoredDecisionSearchResult {
             rank: match_info.rank,
             id: id.clone(),
+            event_origin,
             fields,
             result: DecisionSearchResult {
                 decision: DecisionView {
@@ -840,6 +843,40 @@ fn collect_graph_search_results(
     }
 
     Ok(scored)
+}
+
+/// One decision candidate for the resolve-by-description primitive (`resolve.rs`): the same
+/// deterministic tier ranking `collect_graph_search_results` already computes, plus the
+/// `event_origin` recency tiebreak. No new ranking logic — see docs/AGENT_FLUENT_QUERYING.md §1.1.
+pub(crate) struct ResolverCandidateRow {
+    pub(crate) decision_id: String,
+    pub(crate) title: String,
+    pub(crate) rank: u8,
+    pub(crate) event_origin: i64,
+    pub(crate) matched_fields: Vec<String>,
+}
+
+/// Backend-agnostic candidate rows for resolve-by-description: reuses
+/// `collect_graph_search_results`'s tier system unmodified (§1.1 of the design), narrowed by an
+/// optional topic hint. `description` is required — an empty resolver query is the caller's bug.
+pub(crate) fn collect_resolver_candidates(
+    graph: &impl GraphView,
+    description: &str,
+    topic_keys: &[String],
+) -> Result<Vec<ResolverCandidateRow>> {
+    let terms = query_terms(Some(description));
+    let scored =
+        collect_graph_search_results(graph, Some(description), &terms, topic_keys, &[], &[], &[])?;
+    Ok(scored
+        .into_iter()
+        .map(|scored| ResolverCandidateRow {
+            decision_id: scored.id,
+            title: scored.result.decision.title,
+            rank: scored.rank,
+            event_origin: scored.event_origin,
+            matched_fields: scored.result.matched_fields,
+        })
+        .collect())
 }
 
 #[derive(Clone, Debug)]

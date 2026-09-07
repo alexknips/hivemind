@@ -2,6 +2,7 @@
 
 mod active_blockers;
 mod attribution;
+mod brief;
 mod compact_view;
 mod context;
 mod decision;
@@ -10,6 +11,7 @@ mod inhouse_scorer;
 mod neighborhood;
 mod outcome;
 mod relevant;
+mod resolve;
 mod search;
 mod shared;
 mod status;
@@ -33,6 +35,7 @@ pub use attribution::{
     get_failure_attribution, AttributionFinding, AttributionGroup, ConfidenceLevel, CorpusStats,
     FailureAttributionRequest, FailureModeReport, SignalBreakdown,
 };
+pub use brief::{get_decision_brief, DecidedBy, DecisionBrief, OptionLabel, StillHolds};
 pub use compact_view::{
     get_compact_view, BlockerSummary, CompactView, ContestView, ElidedSummary,
     HypothesisSummaryView, SupersessionSummary,
@@ -56,6 +59,7 @@ pub use outcome::{
     DecisionQualityCandidatesRequest, OutcomeReason,
 };
 pub use relevant::get_relevant_decisions;
+pub use resolve::{resolve_decision_by_description, ResolveOutcome, ResolvedCandidate};
 pub use search::{
     search_decisions, search_decisions_fts, search_decisions_fts_with_context,
     search_decisions_with_ledger, DecisionSearchResult, DecisionSearchResults,

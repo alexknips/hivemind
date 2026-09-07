@@ -798,6 +798,480 @@ fn supersede_cli_proposes_replacement_marks_old_and_is_idempotent() {
 }
 
 #[test]
+fn disagree_fluent_description_resolves_uniquely_and_records() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("disagree-fluent-resolve");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:alice",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Adopt async billing queue",
+        "--rationale",
+        "Durability beats latency here",
+        "--topic-keys",
+        "billing",
+        "--options",
+        "async",
+    ]))?;
+
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:bob",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "disagree",
+        "async billing queue",
+        "--reason",
+        "underestimates operational cost",
+    ]))?;
+    let output: serde_json::Value = serde_json::from_str(&output)?;
+    ensure_json_eq(
+        &output["decision_id"],
+        serde_json::json!(decision_id),
+        "disagree resolves the unique matching decision",
+    )?;
+    ensure_json_eq(
+        &output["decision_status"],
+        serde_json::json!("rejected"),
+        "disagree flips status to rejected",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn disagree_fluent_ambiguous_description_short_circuits_without_writing() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("disagree-fluent-ambiguous");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    for topic in ["billing", "notifications"] {
+        run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "actor:alice",
+            "--hivemind-dir",
+            dir,
+            "emit",
+            "decision.proposed",
+            "--title",
+            &format!("Adopt async queue for {topic}"),
+            "--rationale",
+            "because reasons",
+            "--topic-keys",
+            topic,
+            "--options",
+            "async",
+        ]))?;
+    }
+
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:bob",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "disagree",
+        "adopt async queue",
+        "--reason",
+        "should not apply to either",
+    ]))?;
+    let output: serde_json::Value = serde_json::from_str(&output)?;
+    ensure_json_eq(
+        &output["data"]["outcome"],
+        serde_json::json!("ambiguous"),
+        "two equally-matching decisions must short-circuit as ambiguous",
+    )?;
+    ensure_eq(
+        output["data"]["candidates"]
+            .as_array()
+            .expect("candidates array")
+            .len(),
+        2,
+        "both decisions are listed as candidates",
+    )?;
+
+    // Neither decision was written to: both remain in their original "proposed" status.
+    let search = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "search_decisions",
+        "--q",
+        "adopt async queue",
+    ]))?;
+    let search: serde_json::Value = serde_json::from_str(&search)?;
+    for item in search["data"]["items"].as_array().expect("items array") {
+        ensure_json_eq(
+            &item["decision"]["status"],
+            serde_json::json!("proposed"),
+            "ambiguous disagree must not mutate either candidate",
+        )?;
+    }
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn disagree_fluent_pick_disambiguates_and_hash_handle_reuses_it() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("disagree-fluent-pick");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let mut decision_ids = Vec::new();
+    for topic in ["billing", "notifications"] {
+        decision_ids.push(run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "actor:alice",
+            "--hivemind-dir",
+            dir,
+            "emit",
+            "decision.proposed",
+            "--title",
+            &format!("Adopt async queue for {topic}"),
+            "--rationale",
+            "because reasons",
+            "--topic-keys",
+            topic,
+            "--options",
+            "async",
+        ]))?);
+    }
+
+    // --pick 1 disambiguates deterministically (newest-first: "notifications" was proposed last).
+    let picked = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:bob",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "disagree",
+        "adopt async queue",
+        "--pick",
+        "1",
+        "--reason",
+        "picked via --pick",
+    ]))?;
+    let picked: serde_json::Value = serde_json::from_str(&picked)?;
+    ensure_json_eq(
+        &picked["decision_id"],
+        serde_json::json!(decision_ids[1]),
+        "--pick 1 selects the newest (notifications) candidate",
+    )?;
+
+    // A later invocation's bare `#2` reads the candidate list this ambiguous-then-picked call
+    // wrote to the continuation file, addressing the older (billing) candidate without
+    // re-resolving the description.
+    let handled = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:carol",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "disagree",
+        "#2",
+        "--reason",
+        "picked via #N handle",
+    ]))?;
+    let handled: serde_json::Value = serde_json::from_str(&handled)?;
+    ensure_json_eq(
+        &handled["decision_id"],
+        serde_json::json!(decision_ids[0]),
+        "#2 addresses the second-listed (billing) candidate from the previous resolver call",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn disagree_fluent_topic_narrows_ambiguous_to_resolved() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("disagree-fluent-topic");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    for topic in ["billing", "notifications"] {
+        run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "actor:alice",
+            "--hivemind-dir",
+            dir,
+            "emit",
+            "decision.proposed",
+            "--title",
+            &format!("Adopt async queue for {topic}"),
+            "--rationale",
+            "because reasons",
+            "--topic-keys",
+            topic,
+            "--options",
+            "async",
+        ]))?;
+    }
+
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:bob",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "disagree",
+        "adopt async queue",
+        "--topic",
+        "billing",
+        "--reason",
+        "narrowed by topic",
+    ]))?;
+    let output: serde_json::Value = serde_json::from_str(&output)?;
+    ensure_json_eq(
+        &output["decision_status"],
+        serde_json::json!("rejected"),
+        "--topic narrows the otherwise-ambiguous match down to one candidate",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn query_chain_and_why_aliases_resolve_by_description() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("query-chain-why-fluent");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let old_decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:alice",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Use shared admin token",
+        "--rationale",
+        "Fastest path",
+        "--topic-keys",
+        "auth",
+        "--options",
+        "shared-token",
+    ]))?;
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:bob",
+        "--hivemind-dir",
+        dir,
+        "supersede",
+        "--old",
+        &old_decision_id,
+        "--title",
+        "Use scoped service tokens",
+        "--rationale",
+        "Scoped tokens preserve audit boundaries",
+        "--options",
+        "scoped-service-tokens",
+        "--chose",
+        "scoped-service-tokens",
+    ]))?;
+
+    let chain = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "chain",
+        "shared admin token",
+    ]))?;
+    let chain: serde_json::Value = serde_json::from_str(&chain)?;
+    ensure_eq(
+        chain["data"]["decision_ids"]
+            .as_array()
+            .expect("chain array")
+            .len(),
+        2,
+        "chain alias resolves the description and walks the supersession chain",
+    )?;
+    ensure_json_eq(
+        &chain["data"]["decision_ids"][0],
+        serde_json::json!(old_decision_id),
+        "chain starts at the resolved (oldest) decision",
+    )?;
+
+    let why = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "why",
+        "shared admin token",
+    ]))?;
+    let why: serde_json::Value = serde_json::from_str(&why)?;
+    ensure_json_eq(
+        &why["data"]["root"]["id"],
+        serde_json::json!(old_decision_id),
+        "why alias resolves the description to the decision's neighborhood root",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn query_verify_alias_returns_decision_brief() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("query-verify-fluent");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Adopt async billing queue",
+        "--rationale",
+        "Durability beats latency here",
+        "--topic-keys",
+        "billing",
+        "--options",
+        "async,sync",
+        "--chose",
+        "async",
+    ]))?;
+
+    let verify = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "verify",
+        "async billing queue",
+    ]))?;
+    let verify: serde_json::Value = serde_json::from_str(&verify)?;
+    ensure_json_eq(
+        &verify["data"]["decision_id"],
+        serde_json::json!(decision_id),
+        "verify resolves the description to a DecisionBrief for the matching decision",
+    )?;
+    ensure_json_eq(
+        &verify["data"]["title"],
+        serde_json::json!("Adopt async billing queue"),
+        "DecisionBrief leads with the decision's title",
+    )?;
+    ensure_json_eq(
+        &verify["data"]["still_holds"]["held_up"],
+        serde_json::json!(true),
+        "a fresh, unsuperseded, uncontested decision still holds",
+    )?;
+    ensure(
+        verify["data"]["chosen_option"]["option_id"]
+            .as_str()
+            .is_some(),
+        "DecisionBrief resolves the chosen option",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn query_compact_view_fluent_resolves_by_description() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("query-compact-view-fluent");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:alice",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Adopt async billing queue",
+        "--rationale",
+        "Durability beats latency here",
+        "--topic-keys",
+        "billing",
+        "--options",
+        "async",
+    ]))?;
+
+    let compact = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "compact-view",
+        "async billing queue",
+    ]))?;
+    let compact: serde_json::Value = serde_json::from_str(&compact)?;
+    ensure_json_eq(
+        &compact["data"]["decision"]["id"],
+        serde_json::json!(decision_id),
+        "compact-view resolves the description before rendering the view",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn query_fluent_verb_reports_not_found_for_no_match() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("query-fluent-not-found");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:alice",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Adopt async billing queue",
+        "--rationale",
+        "Durability beats latency here",
+        "--topic-keys",
+        "billing",
+        "--options",
+        "async",
+    ]))?;
+
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "verify",
+        "nonexistent decision about widgets",
+    ]))?;
+    let output: serde_json::Value = serde_json::from_str(&output)?;
+    ensure_json_eq(
+        &output["data"]["outcome"],
+        serde_json::json!("not_found"),
+        "a fluent verb reports not_found rather than erroring on zero matches",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn review_cli_walkthrough_accepts_disagrees_and_filters_reviewed_decisions() -> CliTestResult {
     let hivemind_dir = unique_test_dir("review-cli");
     let hivemind_dir_arg = hivemind_dir.to_string_lossy().into_owned();
