@@ -95,10 +95,7 @@ pub fn resolve_decision_by_description(
         .collect();
 
     let result_count = candidates.len();
-    let outcome = if candidates.is_empty() {
-        ResolveOutcome::NotFound
-    } else {
-        let best_rank = candidates[0].rank;
+    let outcome = if let Some(best_rank) = candidates.first().map(|candidate| candidate.rank) {
         let best_tier_count = candidates.iter().filter(|c| c.rank == best_rank).count();
         if best_tier_count == 1 {
             ResolveOutcome::Resolved {
@@ -107,6 +104,8 @@ pub fn resolve_decision_by_description(
         } else {
             ResolveOutcome::Ambiguous { candidates }
         }
+    } else {
+        ResolveOutcome::NotFound
     };
 
     Ok(QueryResponse {

@@ -676,7 +676,10 @@ fn resolve_fluent_target(
     pick: Option<usize>,
     topic: Option<&str>,
 ) -> Result<FluentResolution> {
-    if let Some(id) = id.map(str::trim).filter(|value| !value.is_empty()) {
+    // `--id` bypasses resolution entirely, byte-for-byte, including an empty string: existing
+    // scripts and their error messages (e.g. an empty-id validation error from the underlying
+    // verb) must be unaffected by this fluent addition.
+    if let Some(id) = id {
         return Ok(FluentResolution::Id(id.to_owned()));
     }
 

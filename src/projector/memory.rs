@@ -311,18 +311,16 @@ impl GraphView for MemoryGraph {
                 .filter(|edge| edge.relation == RelationKind::Chose && edge.from_id == decision_id)
                 .map(|edge| edge.to_id.clone())
                 .collect();
-            for opt_id in &chosen_options {
-                ids.extend(
-                    edges
-                        .iter()
-                        .filter(|edge| {
-                            edge.relation == RelationKind::PremisedOn
-                                && edge.from_id == *opt_id
-                                && refuted_hypotheses.contains(&edge.to_id)
-                        })
-                        .map(|edge| edge.to_id.clone()),
-                );
-            }
+            ids.extend(chosen_options.iter().flat_map(|opt_id| {
+                edges
+                    .iter()
+                    .filter(|edge| {
+                        edge.relation == RelationKind::PremisedOn
+                            && edge.from_id == *opt_id
+                            && refuted_hypotheses.contains(&edge.to_id)
+                    })
+                    .map(|edge| edge.to_id.clone())
+            }));
             ids.extend(
                 edges
                     .iter()
@@ -474,16 +472,14 @@ impl GraphView for MemoryGraph {
                 .filter(|edge| edge.relation == RelationKind::Chose && edge.from_id == decision_id)
                 .map(|edge| edge.to_id.clone())
                 .collect();
-            for opt_id in &chosen_options {
-                ids.extend(
-                    edges
-                        .iter()
-                        .filter(|edge| {
-                            edge.relation == RelationKind::PremisedOn && edge.from_id == *opt_id
-                        })
-                        .map(|edge| edge.to_id.clone()),
-                );
-            }
+            ids.extend(chosen_options.iter().flat_map(|opt_id| {
+                edges
+                    .iter()
+                    .filter(|edge| {
+                        edge.relation == RelationKind::PremisedOn && edge.from_id == *opt_id
+                    })
+                    .map(|edge| edge.to_id.clone())
+            }));
             ids.extend(
                 edges
                     .iter()
