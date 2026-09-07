@@ -27,19 +27,25 @@ because `--actor` is already the global emitting actor flag.
 
 ## Ranking And Ordering
 
-Ordering is deterministic and starts with SQLite FTS5 `bm25` score:
+Ordering is deterministic and is the same ordinal (rank, decision id) scheme
+on every backend — SQLite (`search_decisions_fts_with_context`) and the
+generic ledger/graph path used by Postgres (`search_decisions_with_ledger`):
 
-1. FTS5 score over the per-decision search document.
+1. Coarse rank basis (lower sorts first):
+   1. Exact decision id or title match.
+   2. Decision title text match.
+   3. Decision rationale text match.
+   4. Graph-context match, including topics, status, actor ids, option ids or
+      labels/descriptions when projected, evidence content, hypothesis
+      statements, and supersession ids.
 2. Stable decision id tie-breaker.
 
-Each result also carries a coarse rank basis:
-
-1. Exact decision id or title match.
-2. Decision title text match.
-3. Decision rationale text match.
-4. Graph-context match, including topics, status, actor ids, option ids or
-   labels/descriptions when projected, evidence content, hypothesis statements,
-   and supersession ids.
+SQLite still rebuilds a `decision_search_fts` FTS5 index and uses its `MATCH`
+clause to select the candidate set for a text query, but the FTS5 `bm25` score
+is a storage-bound retrieval detail (see `docs/SEARCH_DESIGN.md`'s
+Storage-Bound Behaviors) — it is never part of the sort key. This is what
+makes the two backends return identical order for identical fixtures; see
+`tests/search_ranking_parity.rs`.
 
 Each result includes matched fields, short snippets, and graph context ids so a
 TUI can expand into `get_decision` or `get_decision_neighborhood`.

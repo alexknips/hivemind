@@ -183,8 +183,9 @@ pub fn search_decisions_fts(
 /// Search decisions using in-memory graph matching with optional ledger-backed timestamp filtering.
 ///
 /// This is the backend-agnostic search path: it works with any `EventLedger` (SQLite or Postgres)
-/// and uses in-memory term matching rather than SQLite FTS. Ranking is by match rank + decision id.
-/// Use `search_decisions_fts_with_context` for BM25-ranked results when a SQLite ledger is available.
+/// and uses in-memory term matching rather than SQLite FTS. Ranking is by match rank + decision id —
+/// the same ordinal scheme `search_decisions_fts_with_context` uses, so the two backends return
+/// identical order for identical fixtures (see docs/SEARCH_DESIGN.md's Ordering Guarantees).
 pub fn search_decisions_with_ledger(
     context: &QueryContext,
     ledger: &impl EventLedger,
@@ -290,7 +291,7 @@ pub fn search_decisions_fts_with_context(
 
     let documents = collect_graph_search_results(graph, None, &[], &[], &[], &[], &[])?;
     rebuild_decision_search_fts(ledger, &documents)?;
-    let fts_matches = query_decision_search_fts(ledger, query.as_deref())?;
+    let fts_decision_ids = query_decision_search_fts(ledger, query.as_deref())?;
     let proposed_at = decision_proposed_at_by_id(context, ledger)?;
 
     let mut documents_by_id = documents
@@ -298,15 +299,11 @@ pub fn search_decisions_fts_with_context(
         .map(|document| (document.id.clone(), document))
         .collect::<BTreeMap<_, _>>();
     let mut scored = Vec::new();
-    for fts_match in fts_matches {
-        if !date_in_range(
-            proposed_at.get(&fts_match.decision_id).copied(),
-            since,
-            until,
-        ) {
+    for decision_id in fts_decision_ids {
+        if !date_in_range(proposed_at.get(&decision_id).copied(), since, until) {
             continue;
         }
-        let Some(mut document) = documents_by_id.remove(&fts_match.decision_id) else {
+        let Some(mut document) = documents_by_id.remove(&decision_id) else {
             continue;
         };
         if !document_matches_filters(&document, &topic_keys, &statuses, &actor_ids, &sources) {
@@ -333,18 +330,15 @@ pub fn search_decisions_fts_with_context(
         document.result.matched_fields = match_info.matched_fields;
         document.result.snippets = match_info.snippets;
         document.result.graph_context.matched_nodes = match_info.matched_nodes;
-        scored.push(FtsScoredDecisionSearchResult {
-            score: fts_match.score,
-            id: document.id.clone(),
-            result: document.result,
-        });
+        scored.push(document);
     }
 
-    scored.sort_by(|left, right| {
-        left.score
-            .total_cmp(&right.score)
-            .then_with(|| left.id.cmp(&right.id))
-    });
+    // Same ordinal (rank, id) ordering as search_decisions_with_ledger (the Postgres/generic
+    // graph path): FTS5's MATCH clause above only selects the candidate set, never the order.
+    // BM25 values are a SQLite-internal retrieval detail (docs/SEARCH_DESIGN.md's
+    // Storage-Bound Behaviors) — keeping them out of the sort key is what gives both backends
+    // identical order for identical fixtures.
+    scored.sort_by(|left, right| (left.rank, &left.id).cmp(&(right.rank, &right.id)));
 
     let total_matches = scored.len();
     let items: Vec<DecisionSearchResult> = scored
@@ -377,17 +371,6 @@ pub fn search_decisions_fts_with_context(
             items,
         },
     })
-}
-
-struct FtsScoredDecisionSearchResult {
-    score: f64,
-    id: String,
-    result: DecisionSearchResult,
-}
-
-struct FtsDecisionMatch {
-    decision_id: String,
-    score: f64,
 }
 
 // ubs:ignore: This helper only executes static FTS SQL and uses rusqlite params! for document values.
@@ -478,15 +461,18 @@ fn rebuild_decision_search_fts(
     Ok(())
 }
 
+/// Returns the decision ids FTS5 considers a match for `query` (or every indexed decision id
+/// when `query` is `None`), in no particular order — the caller re-ranks by the shared
+/// (rank, id) ordinal scheme, so FTS5 here only selects the candidate set.
 fn query_decision_search_fts(
     // ubs:ignore: FTS query uses static SQL with MATCH bound via rusqlite params.
     ledger: &SqliteEventLedger,
     // ubs:ignore: Caller text is converted to an FTS expression and bound as ?1.
     query: Option<&str>,
     // ubs:ignore: SQL text in this function is static and parameterized.
-) -> Result<Vec<FtsDecisionMatch>> {
+) -> Result<Vec<String>> {
     let connection = open_decision_search_connection(ledger)?;
-    let mut matches = Vec::new();
+    let mut decision_ids = Vec::new();
     // ubs:ignore: Query text is converted to an FTS expression and bound as ?1 below.
     if let Some(query) = query {
         let Some(fts_query) = fts5_query(query) else {
@@ -496,24 +482,19 @@ fn query_decision_search_fts(
         let mut statement = connection
             // ubs:ignore: static SELECT statement; FTS query is bound as parameter ?1.
             .prepare(
-                "SELECT decision_id,
-                        bm25(decision_search_fts, 8.0, 5.0, 3.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0) AS score
+                "SELECT decision_id
                    FROM decision_search_fts
                   WHERE decision_search_fts MATCH ?1
-                  ORDER BY score ASC, decision_id ASC",
+                  ORDER BY decision_id ASC",
             )
             .map_err(|error| query_error(format!("prepare decision search query: {error}")))?;
         let rows = statement
             // ubs:ignore: FTS query value is bound through rusqlite params.
-            .query_map(params![fts_query], |row| {
-                Ok(FtsDecisionMatch {
-                    decision_id: row.get(0)?,
-                    score: row.get(1)?,
-                })
-            })
+            .query_map(params![fts_query], |row| row.get::<_, String>(0))
             .map_err(|error| query_error(format!("execute decision search query: {error}")))?;
         for row in rows {
-            matches.push(row.map_err(|error| query_error(format!("read search row: {error}")))?);
+            decision_ids
+                .push(row.map_err(|error| query_error(format!("read search row: {error}")))?);
         }
     } else {
         // ubs:ignore: SQL statement is static and has no caller-controlled interpolation.
@@ -523,18 +504,14 @@ fn query_decision_search_fts(
             .map_err(|error| query_error(format!("prepare unfiltered decision search: {error}")))?;
         let rows = statement
             // ubs:ignore: static unfiltered SELECT has no user-supplied SQL fragments.
-            .query_map([], |row| {
-                Ok(FtsDecisionMatch {
-                    decision_id: row.get(0)?,
-                    score: 0.0,
-                })
-            })
+            .query_map([], |row| row.get::<_, String>(0))
             .map_err(|error| query_error(format!("execute unfiltered decision search: {error}")))?;
         for row in rows {
-            matches.push(row.map_err(|error| query_error(format!("read search row: {error}")))?);
+            decision_ids
+                .push(row.map_err(|error| query_error(format!("read search row: {error}")))?);
         }
     }
-    Ok(matches)
+    Ok(decision_ids)
 }
 
 fn open_decision_search_connection(ledger: &SqliteEventLedger) -> Result<Connection> {
