@@ -91,8 +91,10 @@ blocked_actor_id: For blockers. The actor being blocked, IF named in the input.
 decision_id: For blockers. The decision being blocked, IF its ID appears in
 the input. Both null if not explicitly stated."#;
 
-// JSON Schema for structured output
-fn capture_schema() -> serde_json::Value {
+/// JSON Schema for the classifier's structured output. Shared across both LLM
+/// backends (the metered Anthropic API and the fidelity evaluator's Claude
+/// Code CLI backend) so their outputs are schema-identical.
+pub fn capture_schema() -> serde_json::Value {
     let nullable_string = serde_json::json!({
         "oneOf": [{ "type": "string" }, { "type": "null" }]
     });
@@ -498,13 +500,26 @@ fn effective_classifier_model() -> String {
     resolve_classifier_model(crate::identity::env_value(CLASSIFIER_MODEL_ENV))
 }
 
+/// Public accessor for [`effective_classifier_model`], for callers (the
+/// fidelity evaluator) that need to record which model `classify_text` used
+/// without duplicating the `HIVEMIND_CLASSIFIER_MODEL` resolution logic.
+pub fn resolved_model() -> String {
+    effective_classifier_model()
+}
+
+/// Compose the full classifier prompt for a given input/batch text. Shared by
+/// both LLM backends so the prompt never drifts between them.
+pub fn build_prompt(input_text: &str) -> String {
+    format!("{CLASSIFIER_PROMPT}\n\n---BATCH---\n{input_text}")
+}
+
 async fn call_haiku(
     client: &reqwest::Client,
     api_key: &str,
     batch_text: &str,
 ) -> Result<(ClassifierOutput, String), crate::anthropic::BoxError> {
     let model = effective_classifier_model();
-    let user_content = format!("{CLASSIFIER_PROMPT}\n\n---BATCH---\n{batch_text}");
+    let user_content = build_prompt(batch_text);
     let output = crate::anthropic::call_json_schema(
         client,
         api_key,
@@ -515,6 +530,46 @@ async fn call_haiku(
     )
     .await?;
     Ok((output, model))
+}
+
+/// Map raw schema-shaped output into the shared `CaptureItem` type, with no
+/// participant/session-initiator provenance (only the ledger-write path in
+/// `classify_pending_batches` has that context).
+fn raw_captures_to_items(captures: Vec<CaptureItemRaw>) -> Vec<CaptureItem> {
+    captures
+        .into_iter()
+        .map(|r| CaptureItem {
+            kind: r.kind,
+            title: r.title,
+            rationale: r.rationale,
+            topic_keys: r.topic_keys,
+            evidence_ids: r.evidence_ids,
+            options: r.options,
+            chosen_option: r.chosen_option,
+            extraction_confidence: r.extraction_confidence,
+            expressed_confidence: r.expressed_confidence,
+            supersedes_id: r.supersedes_id,
+            premised_on_ids: r.premised_on_ids,
+            supports_ids: r.supports_ids,
+            refutes_ids: r.refutes_ids,
+            actor_id: r.actor_id,
+            accepted_by: r.accepted_by,
+            rejected_by: r.rejected_by,
+            blocked_actor_id: r.blocked_actor_id,
+            decision_id: r.decision_id,
+            participants: vec![],
+            session_initiator: None,
+        })
+        .collect()
+}
+
+/// Parse a classifier response body — raw JSON text constrained to
+/// [`capture_schema`], as returned by either LLM backend — into CaptureItems.
+/// Shared so the metered Anthropic API and the fidelity evaluator's Claude
+/// Code CLI backend produce identical CaptureItem shapes from identical text.
+pub fn parse_capture_response(text: &str) -> Result<Vec<CaptureItem>, serde_json::Error> {
+    let output: ClassifierOutput = serde_json::from_str(text)?;
+    Ok(raw_captures_to_items(output.captures))
 }
 
 fn write_classification(
@@ -550,33 +605,7 @@ pub async fn classify_text(
     input: &str,
 ) -> Result<Vec<crate::events::CaptureItem>, Box<dyn std::error::Error + Send + Sync>> {
     let (output, _model) = call_haiku(client, api_key, input).await?;
-    let captures = output
-        .captures
-        .into_iter()
-        .map(|r| crate::events::CaptureItem {
-            kind: r.kind,
-            title: r.title,
-            rationale: r.rationale,
-            topic_keys: r.topic_keys,
-            evidence_ids: r.evidence_ids,
-            options: r.options,
-            chosen_option: r.chosen_option,
-            extraction_confidence: r.extraction_confidence,
-            expressed_confidence: r.expressed_confidence,
-            supersedes_id: r.supersedes_id,
-            premised_on_ids: r.premised_on_ids,
-            supports_ids: r.supports_ids,
-            refutes_ids: r.refutes_ids,
-            actor_id: r.actor_id,
-            accepted_by: r.accepted_by,
-            rejected_by: r.rejected_by,
-            blocked_actor_id: r.blocked_actor_id,
-            decision_id: r.decision_id,
-            participants: vec![],
-            session_initiator: None,
-        })
-        .collect();
-    Ok(captures)
+    Ok(raw_captures_to_items(output.captures))
 }
 
 /// Try to read the API key and spawn the worker. Logs a warning and returns

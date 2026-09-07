@@ -5,15 +5,32 @@
 //! nodes+edges, diffs against the hand-authored gold, and prints per-kind
 //! P/R/F1 + a macro-F1 headline.
 //!
-//! Requires ANTHROPIC_API_KEY. Exits 0 even when scores are low (run as a
-//! scorecard tool, not a pass/fail gate).
+//! Two LLM backends, selected by `HIVEMIND_EVAL_BACKEND`:
+//!   - `anthropic-api` (default when ANTHROPIC_API_KEY is set): metered
+//!     Anthropic API, same path as the production classifier.
+//!   - `claude-cli` (default when no key is set and `claude` is on PATH):
+//!     shells out to the operator's authenticated Claude Code CLI
+//!     subscription (`claude -p`), for keyless local runs. Intended for a
+//!     human developer running an eval from their own agent session.
+//! Both share the exact classifier prompt, schema, and CaptureItem parsing
+//! (`hivemind::classifier::{build_prompt, capture_schema, parse_capture_response}`)
+//! so scores are comparable across backends.
+//!
+//! Exits 0 even when scores are low (run as a scorecard tool, not a
+//! pass/fail gate).
 //!
 //! Usage:
 //!   cargo run --bin fidelity-eval [-- --corpus path/to/corpus.yaml]
-//!   cargo run --bin fidelity-eval -- --ceiling   # schema-ceiling (no API)
+//!   cargo run --bin fidelity-eval -- --ceiling   # schema-ceiling (no LLM)
+//!   HIVEMIND_EVAL_BACKEND=claude-cli cargo run --bin fidelity-eval
+//!   HIVEMIND_EVAL_BACKEND=anthropic-api cargo run --bin fidelity-eval
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -255,6 +272,187 @@ fn convert_to_scored(
 }
 
 // --------------------------------------------------------------------------
+// LLM backend selection: metered Anthropic API vs. the operator's Claude
+// Code CLI subscription (keyless). See module docs above for the contract.
+// --------------------------------------------------------------------------
+
+const CLAUDE_CLI_MODEL: &str = "claude-haiku-4-5-20251001";
+const CLAUDE_CLI_TIMEOUT: Duration = Duration::from_secs(90);
+const EVAL_BACKEND_ENV: &str = "HIVEMIND_EVAL_BACKEND";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    AnthropicApi,
+    ClaudeCli,
+}
+
+impl Backend {
+    fn label(self) -> &'static str {
+        match self {
+            Backend::AnthropicApi => "anthropic-api",
+            Backend::ClaudeCli => "claude-cli",
+        }
+    }
+}
+
+/// True if `claude` resolves on PATH and runs (`claude --version` exits 0).
+fn claude_cli_on_path() -> bool {
+    Command::new("claude")
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Resolve the backend from `HIVEMIND_EVAL_BACKEND`, or auto-detect: prefer
+/// `claude-cli` when no ANTHROPIC_API_KEY is set and `claude` is on PATH,
+/// otherwise `anthropic-api` (the pre-existing default).
+fn resolve_backend() -> Backend {
+    match std::env::var(EVAL_BACKEND_ENV) {
+        Ok(v) => match v.trim() {
+            "claude-cli" => Backend::ClaudeCli,
+            "anthropic-api" => Backend::AnthropicApi,
+            other => {
+                eprintln!(
+                    "error: invalid {EVAL_BACKEND_ENV}={other:?}; expected \"claude-cli\" or \"anthropic-api\""
+                );
+                std::process::exit(1);
+            }
+        },
+        Err(_) => {
+            let has_key = std::env::var("ANTHROPIC_API_KEY")
+                .map(|k| !k.trim().is_empty())
+                .unwrap_or(false);
+            if !has_key && claude_cli_on_path() {
+                Backend::ClaudeCli
+            } else {
+                Backend::AnthropicApi
+            }
+        }
+    }
+}
+
+/// Run `claude` with stdin piped and stdout/stderr captured, enforcing
+/// `timeout` via a watcher thread (no async-process dependency needed: this
+/// tool has no other concurrent work while a case is classifying).
+fn run_claude_cli(
+    args: &[&str],
+    prompt: &str,
+    timeout: Duration,
+) -> Result<std::process::Output, Box<dyn std::error::Error + Send + Sync>> {
+    let mut child = Command::new("claude")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn `claude` CLI: {e}"))?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or("no stdin handle for claude subprocess")?;
+    let prompt_owned = prompt.to_owned();
+    let stdin_writer = std::thread::spawn(move || {
+        // Best-effort: a broken pipe (subprocess exited early) is not fatal.
+        let _ = stdin.write_all(prompt_owned.as_bytes());
+    });
+
+    let pid = child.id();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+
+    let output = match rx.recv_timeout(timeout) {
+        Ok(result) => result.map_err(|e| format!("claude CLI wait failed: {e}"))?,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+            return Err(format!("claude CLI timed out after {timeout:?}").into());
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("claude CLI wait thread ended without a result".into());
+        }
+    };
+    let _ = stdin_writer.join();
+    Ok(output)
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeCliEnvelope {
+    #[serde(default)]
+    result: Option<String>,
+    #[serde(default)]
+    is_error: bool,
+    #[serde(default)]
+    subtype: Option<String>,
+}
+
+/// Classify one case's input text via the operator's Claude Code CLI
+/// subscription (`claude -p`) instead of the metered Anthropic API. Shares
+/// the exact classifier prompt, schema, and CaptureItem parsing with the
+/// production classifier so scores are comparable across backends.
+fn classify_text_cli(
+    input: &str,
+) -> Result<Vec<hivemind::events::CaptureItem>, Box<dyn std::error::Error + Send + Sync>> {
+    let prompt = hivemind::classifier::build_prompt(input);
+    let schema = serde_json::to_string(&hivemind::classifier::capture_schema())?;
+
+    let output = run_claude_cli(
+        &[
+            "-p",
+            "--model",
+            CLAUDE_CLI_MODEL,
+            "--output-format",
+            "json",
+            "--json-schema",
+            &schema,
+            "--tools",
+            "",
+            "--safe-mode",
+        ],
+        &prompt,
+        CLAUDE_CLI_TIMEOUT,
+    )?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "claude CLI exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+
+    let stdout_text = String::from_utf8_lossy(&output.stdout);
+    let envelope: ClaudeCliEnvelope = serde_json::from_str(stdout_text.trim()).map_err(|e| {
+        format!("failed to parse claude CLI output as JSON: {e}\nstdout: {stdout_text}")
+    })?;
+
+    if envelope.is_error || envelope.subtype.as_deref() != Some("success") {
+        return Err(format!(
+            "claude CLI returned an error result: subtype={:?} stderr={}",
+            envelope.subtype,
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+
+    let result_text = envelope
+        .result
+        .ok_or("claude CLI response missing `result` field")?;
+    let captures = hivemind::classifier::parse_capture_response(&result_text).map_err(|e| {
+        format!(
+            "failed to parse CaptureItem schema from claude CLI result: {e}\nresult: {result_text}"
+        )
+    })?;
+    Ok(captures)
+}
+
+// --------------------------------------------------------------------------
 // Scoring
 // --------------------------------------------------------------------------
 
@@ -364,6 +562,10 @@ struct CaseResult {
     case_id: String,
     node_counts: HashMap<String, Counts>,
     edge_counts: HashMap<String, Counts>,
+    /// Provenance: which backend + model produced this case's captures.
+    /// "ceiling" / "n/a" in --ceiling mode (no LLM call was made).
+    backend: String,
+    model: String,
 }
 
 impl CaseResult {
@@ -383,7 +585,7 @@ impl CaseResult {
 }
 
 fn print_case_scorecard(r: &CaseResult) {
-    println!("  Case {}", r.case_id);
+    println!("  Case {} [{}/{}]", r.case_id, r.backend, r.model);
 
     let mut node_kinds: Vec<_> = r.node_counts.keys().cloned().collect();
     node_kinds.sort();
@@ -651,19 +853,40 @@ async fn main() {
     let corpus_path = parse_corpus_arg(&args);
     let ceiling_mode = args.iter().any(|a| a == "--ceiling");
 
-    let api_key = if ceiling_mode {
-        String::new()
+    // (backend, model, api_key) — api_key only populated for the
+    // anthropic-api backend; unused (and unset) in ceiling mode or when the
+    // claude-cli backend is selected.
+    let (backend, model, api_key): (Option<Backend>, String, String) = if ceiling_mode {
+        (None, String::new(), String::new())
     } else {
-        match std::env::var("ANTHROPIC_API_KEY") {
-            Ok(k) if !k.trim().is_empty() => k,
-            _ => {
-                eprintln!(
-                    "error: ANTHROPIC_API_KEY is not set; the fidelity evaluator requires it"
-                );
-                eprintln!(
-                    "hint: pass --ceiling to run a schema-ceiling scorecard without API calls"
-                );
-                std::process::exit(1);
+        let backend = resolve_backend();
+        match backend {
+            Backend::AnthropicApi => match std::env::var("ANTHROPIC_API_KEY") {
+                Ok(k) if !k.trim().is_empty() => {
+                    (Some(backend), hivemind::classifier::resolved_model(), k)
+                }
+                _ => {
+                    eprintln!(
+                        "error: ANTHROPIC_API_KEY is not set; backend={} requires it",
+                        backend.label()
+                    );
+                    eprintln!(
+                        "hint: install/authenticate the `claude` CLI for the keyless claude-cli backend (set {EVAL_BACKEND_ENV}=claude-cli), or pass --ceiling"
+                    );
+                    std::process::exit(1);
+                }
+            },
+            Backend::ClaudeCli => {
+                if !claude_cli_on_path() {
+                    eprintln!(
+                        "error: {EVAL_BACKEND_ENV}=claude-cli but `claude` was not found on PATH (or failed to run)"
+                    );
+                    eprintln!(
+                        "hint: install/authenticate the Claude Code CLI, set ANTHROPIC_API_KEY for the anthropic-api backend, or pass --ceiling"
+                    );
+                    std::process::exit(1);
+                }
+                (Some(backend), CLAUDE_CLI_MODEL.to_owned(), String::new())
             }
         }
     };
@@ -686,6 +909,12 @@ async fn main() {
         println!("(Gold nodes → CaptureItems via real projector; no LLM calls.)");
     } else {
         println!("HiveMind capture-fidelity evaluator (Phase 1)");
+        println!(
+            "Backend: {} (model: {model})",
+            backend
+                .expect("resolved above when not in ceiling mode")
+                .label()
+        );
     }
     println!("Corpus: {} cases", corpus.cases.len());
     if !corpus.org_bundles.is_empty() {
@@ -710,7 +939,13 @@ async fn main() {
         let id_captures: Vec<(String, hivemind::events::CaptureItem)> = if ceiling_mode {
             gold_as_captures(&case.expected)
         } else {
-            match hivemind::classifier::classify_text(&client, &api_key, &case.input).await {
+            let classified = match backend.expect("resolved above when not in ceiling mode") {
+                Backend::AnthropicApi => {
+                    hivemind::classifier::classify_text(&client, &api_key, &case.input).await
+                }
+                Backend::ClaudeCli => classify_text_cli(&case.input),
+            };
+            match classified {
                 Ok(c) => c
                     .into_iter()
                     .enumerate()
@@ -739,6 +974,19 @@ async fn main() {
             case_id: case.id.clone(),
             node_counts,
             edge_counts,
+            backend: if ceiling_mode {
+                "ceiling".to_owned()
+            } else {
+                backend
+                    .expect("resolved above when not in ceiling mode")
+                    .label()
+                    .to_owned()
+            },
+            model: if ceiling_mode {
+                "n/a".to_owned()
+            } else {
+                model.clone()
+            },
         };
 
         print_case_scorecard(&result);
