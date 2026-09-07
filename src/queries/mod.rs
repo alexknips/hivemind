@@ -58,8 +58,9 @@ pub use outcome::{
 pub use relevant::get_relevant_decisions;
 pub use search::{
     search_decisions, search_decisions_fts, search_decisions_fts_with_context,
-    DecisionSearchResult, DecisionSearchResults, SearchDecisionFilters, SearchDecisionRequest,
-    SearchGraphContext, SearchMatchedNode, SearchSnippet,
+    search_decisions_with_ledger, DecisionSearchResult, DecisionSearchResults,
+    SearchDecisionFilters, SearchDecisionRequest, SearchGraphContext, SearchMatchedNode,
+    SearchSnippet,
 };
 pub use status::{
     derive_decision_status, derive_hypothesis_status, DecisionStatus, HypothesisStatus,

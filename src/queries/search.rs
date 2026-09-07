@@ -180,6 +180,90 @@ pub fn search_decisions_fts(
     search_decisions_fts_with_context(&QueryContext::local(), ledger, graph, request)
 }
 
+/// Search decisions using in-memory graph matching with optional ledger-backed timestamp filtering.
+///
+/// This is the backend-agnostic search path: it works with any `EventLedger` (SQLite or Postgres)
+/// and uses in-memory term matching rather than SQLite FTS. Ranking is by match rank + decision id.
+/// Use `search_decisions_fts_with_context` for BM25-ranked results when a SQLite ledger is available.
+pub fn search_decisions_with_ledger(
+    context: &QueryContext,
+    ledger: &impl EventLedger,
+    graph: &impl GraphView,
+    request: &SearchDecisionRequest,
+) -> Result<QueryResponse<DecisionSearchResults>> {
+    let started = Instant::now();
+    let query = normalized_query(request.query.as_deref());
+    let terms = query_terms(query.as_deref());
+    let topic_keys = normalized_filter_values(&request.topic_keys);
+    let statuses = normalized_statuses(&request.statuses);
+    let actor_ids = normalized_filter_values(&request.actor_ids);
+    let sources = normalized_filter_values(&request.sources);
+    let since = request.since;
+    let until = request.until;
+    if let (Some(since), Some(until)) = (since, until) {
+        if since > until {
+            return Err(query_error("--since must be earlier than or equal to --until").into());
+        }
+    }
+    let limit = normalized_limit(request.limit);
+    let cursor = normalized_query(request.cursor.as_deref());
+    let offset = parse_cursor(cursor.as_deref())?;
+
+    let proposed_at = if since.is_some() || until.is_some() {
+        Some(decision_proposed_at_by_id(context, ledger)?)
+    } else {
+        None
+    };
+
+    let mut scored = collect_graph_search_results(
+        graph,
+        query.as_deref(),
+        &terms,
+        &topic_keys,
+        &statuses,
+        &actor_ids,
+        &sources,
+    )?;
+
+    if let Some(ref proposed_at_map) = proposed_at {
+        scored.retain(|doc| date_in_range(proposed_at_map.get(&doc.id).copied(), since, until));
+    }
+
+    scored.sort_by(|left, right| (left.rank, &left.id).cmp(&(right.rank, &right.id)));
+
+    let total_matches = scored.len();
+    let items: Vec<DecisionSearchResult> = scored
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .map(|s| s.result)
+        .collect();
+    let next_offset = offset.saturating_add(items.len());
+    let next_cursor = (next_offset < total_matches).then(|| next_offset.to_string());
+
+    Ok(QueryResponse {
+        result_count: items.len(),
+        truncated: next_cursor.is_some(),
+        latency_ms: started.elapsed().as_millis(),
+        data: DecisionSearchResults {
+            query,
+            filters: SearchDecisionFilters {
+                topic_keys,
+                statuses,
+                actor_ids,
+                sources,
+                since,
+                until,
+            },
+            limit,
+            cursor,
+            next_cursor,
+            total_matches,
+            items,
+        },
+    })
+}
+
 pub fn search_decisions_fts_with_context(
     context: &QueryContext,
     ledger: &SqliteEventLedger,

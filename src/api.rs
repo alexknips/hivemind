@@ -81,6 +81,8 @@ use crate::projector::{
     memory::MemoryGraph, project_from_ledger_for_tenant, GraphParams, GraphRow, GraphValue,
     GraphView, NodeKind, RelationKind,
 };
+#[cfg(feature = "shared-backend-postgres")]
+use crate::queries::search_decisions_with_ledger;
 use crate::queries::{
     derive_decision_status, get_compact_view, get_decision, get_decision_quality_score,
     get_relevant_decisions, get_supersession_chain, scan_decision_quality, scorer_next_cursor,
@@ -1809,10 +1811,21 @@ async fn search_handler(
                 Ok(response)
             }
             #[cfg(feature = "shared-backend-postgres")]
-            ApiBackend::Postgres(_) => Err(ApiError::validation(
-                "full-text search is not available in shared-backend mode; \
-                 use GET /v1/decisions/relevant for topic-based queries",
-            )),
+            ApiBackend::Postgres(_) => {
+                let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+                let graph = get_cached_graph(&ledger, &ctx.tenant_id, &cache)?;
+                #[allow(clippy::infallible_destructuring_match)]
+                let postgres_ledger = match &ledger {
+                    #[cfg(feature = "shared-backend-postgres")]
+                    ApiLedger::Postgres(l) => l,
+                    ApiLedger::Sqlite(_) => unreachable!(), // ubs:ignore: unreachable in Postgres mode
+                };
+                let query_ctx = QueryContext::new(ctx.tenant_id);
+                let response =
+                    search_decisions_with_ledger(&query_ctx, postgres_ledger, &*graph, &request)
+                        .map_err(to_api_error)?;
+                Ok(response)
+            }
         }
     })
     .await;
@@ -2894,35 +2907,11 @@ fn mcp_search_decisions(
     args: serde_json::Map<String, serde_json::Value>,
     cache: &Arc<GraphCache>,
 ) -> McpToolResult {
-    // FTS is SQLite-only; Postgres returns a clear error.
-    #[cfg(feature = "shared-backend-postgres")]
-    if matches!(backend, ApiBackend::Postgres(_)) {
-        return Err((
-            -32602,
-            "full-text search is not available in shared-backend mode; \
-             use get_relevant_decisions instead"
-                .into(),
-        ));
-    }
-
     let ledger = backend
         .open_ledger_for_tenant(&ctx.tenant_id)
         .map_err(|e| (-32603i32, e.to_string()))?;
     let graph =
         get_cached_graph(&ledger, &ctx.tenant_id, cache).map_err(|e| (-32603i32, e.to_string()))?;
-    // The cfg guard above guarantees Sqlite when Postgres feature is enabled;
-    // without the feature there is only one variant (Sqlite), hence the allow.
-    #[allow(clippy::infallible_destructuring_match)]
-    let sqlite_ledger = match &ledger {
-        ApiLedger::Sqlite(l) => l,
-        #[cfg(feature = "shared-backend-postgres")]
-        ApiLedger::Postgres(_) => {
-            return Err((
-                -32602,
-                "full-text search not available in shared-backend mode".into(),
-            ))
-        }
-    };
 
     let query = mcp_opt_str(&args, "q")?;
     let topic_keys = mcp_opt_str_array(&args, "topic")?;
@@ -2960,8 +2949,17 @@ fn mcp_search_decisions(
         cursor: mcp_opt_str(&args, "cursor")?,
     };
     let query_ctx = QueryContext::new(ctx.tenant_id.clone());
-    let response = search_decisions_fts_with_context(&query_ctx, sqlite_ledger, &*graph, &request)
-        .map_err(|e| (-32603i32, e.to_string()))?;
+    let response = match &ledger {
+        ApiLedger::Sqlite(sqlite_ledger) => {
+            search_decisions_fts_with_context(&query_ctx, sqlite_ledger, &*graph, &request)
+                .map_err(|e| (-32603i32, e.to_string()))?
+        }
+        #[cfg(feature = "shared-backend-postgres")]
+        ApiLedger::Postgres(postgres_ledger) => {
+            search_decisions_with_ledger(&query_ctx, postgres_ledger, &*graph, &request)
+                .map_err(|e| (-32603i32, e.to_string()))?
+        }
+    };
     serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
 }
 
