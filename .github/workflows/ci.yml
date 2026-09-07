@@ -180,8 +180,10 @@ jobs:
   # Smoke-tests the full HTTP server path against a real Docker Compose cell
   # (SQLite backend, no LLM key required). Covers: capture via HTTP + CLI + MCP
   # stdio, query, search, review, disagree, supersede, supersession chain,
-  # multi-tenant isolation, quality-scan via MCP, and spectral map. LLM-gated
-  # assertions are skipped when ANTHROPIC_API_KEY is absent.
+  # multi-tenant isolation, quality-scan via MCP, and spectral map. The
+  # subscription/edge LLM legs (claude -p + plugin, hivemind-fabq.3) are
+  # LOCAL-only and SKIP unconditionally here — no Claude subscription on CI
+  # runners.
   e2e-compose:
     name: E2E compose smoke (SQLite)
     runs-on: ubuntu-latest
@@ -230,7 +232,6 @@ jobs:
         env:
           HIVEMIND_BIN: ./target/debug/hivemind
           FIDELITY_BIN: ./target/debug/fidelity-eval
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: bash scripts/e2e_smoke.sh
 
       - name: Dump server logs on failure
@@ -302,7 +303,6 @@ jobs:
       - name: Provision Postgres tenants and run E2E smoke
         env:
           HIVEMIND_BIN: ./target/debug/hivemind
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           # Provision tenant A (e2e-test)
           prov_a=$(curl -sf -X POST http://localhost:8080/v1/tenants \

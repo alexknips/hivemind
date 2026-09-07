@@ -8,11 +8,17 @@
 #   HIVEMIND_E2E_BASE_URL   — default: http://localhost:8080
 #   HIVEMIND_E2E_API_KEY    — default: (empty — dev/no-auth mode)
 #   HIVEMIND_E2E_TENANT     — default: e2e-test
-#   ANTHROPIC_API_KEY       — when set, LLM-gated assertions (Slice 2) are enabled
 #   HIVEMIND_BIN            — path to hivemind binary (for CLI + MCP legs)
 #   FIDELITY_BIN            — path to fidelity-eval binary (for ceiling-mode smoke)
 #   FIDELITY_CORPUS         — path to fidelity corpus YAML (default: benchmarks/fidelity/corpus.yaml)
 #   FIDELITY_CORPUS_SMOKE   — path to mini smoke corpus (default: benchmarks/fidelity/corpus-smoke.yaml)
+#   CLAUDE_BIN              — path to the `claude` CLI (default: claude). Used only by the
+#                             LOCAL-only "LLM-gated (subscription/edge path)" section below.
+#   ANTHROPIC_API_KEY       — if SET, the subscription/edge LLM legs are SKIPPED (they
+#                             specifically test the keyless path; the server-side
+#                             classifier/scorer workers in src/classifier.rs and
+#                             src/scorer.rs are a separate, still-keyed mechanism and are
+#                             not exercised by this script at all — see hivemind-fabq.3).
 #
 # Exit codes: 0 = all checks passed; 1 = at least one check failed.
 #
@@ -152,7 +158,7 @@ fi
 section "Capture — CLI"
 
 CLI_DATA_DIR=$(mktemp -d)
-trap 'rm -rf "$CLI_DATA_DIR"' EXIT
+trap 'rm -rf "$CLI_DATA_DIR" "${EDGE_DIR:-}"' EXIT
 
 if command -v "$HIVEMIND_BIN" > /dev/null 2>&1; then
   cli_out=$("$HIVEMIND_BIN" \
@@ -469,90 +475,141 @@ else
   fi
 fi
 
-# ── LLM-gated assertions (Slice 2) ───────────────────────────────────────────
-section "LLM-gated (ANTHROPIC_API_KEY)"
+# ── LLM-gated (subscription/edge path) ───────────────────────────────────────
+# RE-SCOPED 2026-09-07 (hivemind-fabq.3, subscription-first — no ANTHROPIC_API_KEY).
+# These legs exercise the path a real coding agent actually uses: decision
+# extraction happens IN-SESSION, at the edge, via the hivemind-capture plugin's
+# "Batch Capture via Haiku Subagent (Keyless)" workflow (see
+# plugins/hivemind-capture/skills/hivemind-capture/SKILL.md), riding the
+# operator's own Claude subscription through a headless `claude -p` session —
+# never a HiveMind-held ANTHROPIC_API_KEY (hivemind-mfc7). This is a DIFFERENT
+# mechanism from the server-side classifier/scorer background workers
+# (src/classifier.rs, src/scorer.rs), which stay dark and unexercised here.
+#
+# LOCAL-only by design: CI runners have no Claude subscription, so `claude` is
+# absent/unauthenticated there and every leg below SKIPs cleanly — keyless CI
+# stays green. Run this locally, logged in via `claude auth login`, to
+# exercise the real path.
+section "LLM-gated (subscription/edge path via claude -p)"
 
-if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  skip "LLM classifier enrichment — ANTHROPIC_API_KEY not set (keyless CI)"
-  skip "LLM quality-score enrichment — ANTHROPIC_API_KEY not set"
-  skip "LLM fidelity smoke (1-2 cases) — ANTHROPIC_API_KEY not set"
+CLAUDE_BIN="${CLAUDE_BIN:-claude}"
+claude_subscription_available() {
+  command -v "$CLAUDE_BIN" > /dev/null 2>&1 || return 1
+  "$CLAUDE_BIN" auth status --json 2>/dev/null | jq -e '.loggedIn == true' > /dev/null 2>&1
+}
+
+if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+  skip "LLM classifier enrichment (edge) — ANTHROPIC_API_KEY is set; this leg tests the KEYLESS subscription path only — unset it to run"
+  skip "LLM quality-score enrichment (edge) — ANTHROPIC_API_KEY is set"
+  skip "LLM fidelity smoke (edge/claude-cli) — ANTHROPIC_API_KEY is set"
+elif ! claude_subscription_available; then
+  skip "LLM classifier enrichment (edge) — claude CLI not on PATH or not authenticated (LOCAL-only leg; set CLAUDE_BIN or run 'claude auth login')"
+  skip "LLM quality-score enrichment (edge) — claude CLI not on PATH or not authenticated"
+  skip "LLM fidelity smoke (edge/claude-cli) — claude CLI not on PATH or not authenticated"
 else
-  # Capture a well-formed decision to exercise the classifier + scorer pipeline.
-  # Both workers poll on fixed intervals (classifier: 10s, scorer: 30s) so we
-  # wait before checking for enrichment.
-  llm_capture=$(curl_json POST /v1/decisions "{
-    \"title\": \"e2e-smoke: adopt structured logging for observability\",
-    \"rationale\": \"Structured JSON logs (vs printf) enable alerting rules on error_code fields; evaluated logfmt and JSON; chose JSON for tooling breadth\",
-    \"topic_keys\": [\"e2e\", \"observability\", \"logging\"],
-    \"options\": [
-      {\"label\": \"json-logs\", \"description\": \"Structured JSON — broad tooling support\"},
-      {\"label\": \"logfmt\",    \"description\": \"logfmt — human-readable but fewer tools\"},
-      {\"label\": \"printf\",   \"description\": \"printf — simplest, unstructured\"}
-    ],
-    \"chosen_option_label\": \"json-logs\"
-  }")
-  LLM_DECISION_ID=""
-  if echo "$llm_capture" | jq -e '.decision_id' > /dev/null 2>&1; then
-    LLM_DECISION_ID=$(echo "$llm_capture" | jq -r '.decision_id')
-    pass "LLM classifier path: rich decision captured ($LLM_DECISION_ID)"
+  # Proxy check, not a live log inspection: ANTHROPIC_API_KEY is the same var
+  # docker-compose.yml forwards into the server container. This shell has it
+  # unset (the elif above would have skipped otherwise), which is consistent
+  # with the server's classifier/scorer workers logging themselves disabled
+  # at startup. Corroborate directly with:
+  #   docker compose logs hivemind | grep 'Layer-3 classifier disabled'
+  pass "server-side classifier/scorer dark: ANTHROPIC_API_KEY absent from this shell (proxy check — see comment for the direct log corroboration)"
+
+  # LEG 1: classifier enrichment via the plugin's edge/Haiku-subagent batch
+  # capture workflow, run through a REAL headless claude -p session under the
+  # operator's subscription. The classifier prompt is extracted verbatim from
+  # SKILL.md (single source of truth) rather than duplicated here.
+  EDGE_PLUGIN_DIR="$REPO_ROOT/plugins/hivemind-capture"
+  EDGE_SKILL_FILE="$EDGE_PLUGIN_DIR/skills/hivemind-capture/SKILL.md"
+  EDGE_DIR=$(mktemp -d)
+  EDGE_SESSION="e2e-fabq3-edge-classifier"
+  EDGE_ACTOR="agent:claude:$EDGE_SESSION"
+  EDGE_CAPTURES_FILE="$EDGE_DIR/captures.json"
+
+  EDGE_PROMPT_TEMPLATE=$(awk '
+    /You are the HiveMind capture classifier\.$/ { capture=1 }
+    capture { print }
+    /Return only the JSON array, no other text\.$/ { exit }
+  ' "$EDGE_SKILL_FILE" | sed 's/^   //')
+
+  if [[ -z "$EDGE_PROMPT_TEMPLATE" ]]; then
+    fail "LLM classifier enrichment (edge) — could not extract the classifier prompt template from $EDGE_SKILL_FILE (schema drift? update the awk sentinels)"
   else
-    fail "LLM classifier path: capture failed — response: $llm_capture"
+    # Fixed 4-turn transcript with one unambiguous decision moment.
+    EDGE_TRANSCRIPT=$(cat <<'TRANSCRIPT'
+[user] We need to pick a storage engine for the new event ledger service.
+[assistant] Let's compare SQLite and Postgres for this. SQLite is simpler to
+operate for a single-node prototype but does not support concurrent
+multi-tenant writes well. Postgres adds an operational dependency but scales
+past a single writer.
+[user] We're expecting multiple agents writing concurrently from day one, so
+go with whichever handles that best.
+[assistant] Decided: use Postgres for the shared event ledger. Rationale:
+concurrent multi-tenant writes are a day-one requirement and SQLite's
+single-writer model would bottleneck immediately; Postgres's MVCC handles
+concurrent writers without an external queue. Considered sqlite and postgres;
+chose postgres.
+TRANSCRIPT
+)
+    EDGE_PROMPT="$EDGE_PROMPT_TEMPLATE
+
+Return ONLY the JSON array — no prose, no markdown code fences, no other text.
+
+---BATCH---
+$EDGE_TRANSCRIPT"
+
+    edge_rc=0
+    edge_result=$(env -u ANTHROPIC_API_KEY "$CLAUDE_BIN" -p \
+      --model claude-haiku-4-5-20251001 \
+      --plugin-dir "$EDGE_PLUGIN_DIR" \
+      --tools "" \
+      --output-format json \
+      --no-session-persistence \
+      --max-budget-usd 1.00 \
+      "$EDGE_PROMPT" 2>&1) || edge_rc=$?
+
+    if [[ "$edge_rc" -ne 0 ]]; then
+      fail "LLM classifier enrichment (edge) — claude -p exited $edge_rc: $edge_result"
+    elif ! echo "$edge_result" | jq -e '.is_error == false' > /dev/null 2>&1; then
+      fail "LLM classifier enrichment (edge) — claude -p reported an error: $edge_result"
+    else
+      # Strip a markdown code fence if the model added one despite instructions.
+      edge_json=$(echo "$edge_result" | jq -r '.result' | sed -e '/^```/d')
+      if ! echo "$edge_json" | jq -e 'type == "array"' > /dev/null 2>&1; then
+        fail "LLM classifier enrichment (edge) — claude -p did not return a JSON array: $edge_json"
+      else
+        echo "$edge_json" > "$EDGE_CAPTURES_FILE"
+        edge_emit=$("$HIVEMIND_BIN" --hivemind-dir "$EDGE_DIR" --actor "$EDGE_ACTOR" --json \
+          emit ingest.batch_classified \
+          --captures "$EDGE_CAPTURES_FILE" \
+          --agent-tool claude \
+          --agent-session "$EDGE_SESSION" \
+          --classifier-model claude-haiku-4-5-20251001 2>&1) || true
+        if echo "$edge_emit" | jq -e '.kind == "batch_id"' > /dev/null 2>&1; then
+          EDGE_BATCH_ID=$(echo "$edge_emit" | jq -r '.value')
+          pass "LLM classifier enrichment (edge): claude -p classified the transcript, batch $EDGE_BATCH_ID submitted via ingest.batch_classified"
+
+          edge_activity=$("$HIVEMIND_BIN" --hivemind-dir "$EDGE_DIR" --json query get_recent_activity --actor-id "$EDGE_ACTOR" --limit 10)
+          if echo "$edge_activity" | jq -e '.data.items[] | select(.event_type == "ingest.batch_classified")' > /dev/null 2>&1; then
+            pass "LLM classifier enrichment (edge): ingest.batch_classified event lands in the ledger (schema parity with src/classifier.rs)"
+          else
+            fail "LLM classifier enrichment (edge): batch_id returned but no ingest.batch_classified event found — response: $edge_activity"
+          fi
+        else
+          fail "LLM classifier enrichment (edge): claude -p returned valid captures but ingest.batch_classified emit failed: $edge_emit — captures: $edge_json"
+        fi
+      fi
+    fi
   fi
 
-  # Wait for the background classifier (poll interval: 10s) and scorer (30s).
-  # A 20s wait is sufficient for the classifier; scorer enrichment may take longer.
-  if [[ -n "$LLM_DECISION_ID" ]]; then
-    echo "  (waiting 20s for background classifier...)"
-    sleep 20
+  # LEG 2: quality-score enrichment via the same edge shape. The plugin does
+  # not expose a scorer prompt today — src/scorer.rs is still server-only
+  # (keyed). SKIP honestly rather than fake it; follow-up filed.
+  skip "LLM quality-score enrichment (edge) — plugins/hivemind-capture has no scorer-edge workflow yet (src/scorer.rs is server-only, keyed); follow-up: hivemind-wi3u"
 
-    # Verify the decision is still retrievable (classifier may have enriched it).
-    llm_get=$(curl_api GET "/v1/decisions/$LLM_DECISION_ID")
-    if echo "$llm_get" | jq -e 'has("data")' > /dev/null 2>&1; then
-      pass "LLM classifier path: decision retrievable after classifier wait"
-    else
-      fail "LLM classifier path: decision not retrievable after wait — response: $llm_get"
-    fi
-
-    # Rule-based quality score on the LLM-captured decision.
-    llm_score=$(curl -s \
-      -H "Content-Type: application/json" \
-      -H "X-HiveMind-Tenant: $TENANT" \
-      -H "X-HiveMind-Actor: agent:e2e:smoke" \
-      "${mcp_auth_args[@]}" \
-      "${mcp_session_args[@]}" \
-      -X POST \
-      -d "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"score_decision\",\"arguments\":{\"decision_id\":\"$LLM_DECISION_ID\"}}}" \
-      "$BASE_URL/mcp")
-    if echo "$llm_score" | jq -e '.result.content[0].text' > /dev/null 2>&1; then
-      llm_tier=$(echo "$llm_score" | jq -r '.result.content[0].text | fromjson | .data.tier // "no-data"' 2>/dev/null || echo "no-data")
-      pass "LLM quality-score enrichment: score_decision returned tier=$llm_tier"
-    else
-      fail "LLM quality-score enrichment: score_decision unexpected response: $llm_score"
-    fi
-  else
-    skip "LLM classifier wait + quality-score — capture failed above"
-  fi
-
-  # Fidelity binary: 2-case smoke with real Haiku classifier (ANTHROPIC_API_KEY set).
-  if command -v "$FIDELITY_BIN" > /dev/null 2>&1 && [[ -f "$FIDELITY_CORPUS_SMOKE" ]]; then
-    echo "  (running fidelity-eval on 2-case smoke corpus — uses ANTHROPIC_API_KEY)..."
-    fidelity_llm_out=$("$FIDELITY_BIN" --corpus "$FIDELITY_CORPUS_SMOKE" 2>&1) || fidelity_llm_rc=$?
-    fidelity_llm_rc="${fidelity_llm_rc:-0}"
-    if echo "$fidelity_llm_out" | grep -qi "Macro-F1"; then
-      fidelity_macro=$(echo "$fidelity_llm_out" | grep -i "Macro-F1" | awk '{print $NF}')
-      pass "LLM fidelity smoke (2 cases) — Macro-F1=$fidelity_macro"
-    elif [[ "$fidelity_llm_rc" -eq 0 ]]; then
-      pass "LLM fidelity smoke (2 cases) — exited 0"
-    else
-      fail "LLM fidelity smoke (2 cases) — exit $fidelity_llm_rc; output: $fidelity_llm_out"
-    fi
-  else
-    if ! command -v "$FIDELITY_BIN" > /dev/null 2>&1; then
-      skip "LLM fidelity smoke — binary not found (FIDELITY_BIN=$FIDELITY_BIN; build: cargo build --bin fidelity-eval)"
-    else
-      skip "LLM fidelity smoke — smoke corpus not found ($FIDELITY_CORPUS_SMOKE)"
-    fi
-  fi
+  # LEG 3: fidelity smoke via the evaluator's claude-cli/subscription backend.
+  # Not landed yet — the evaluator only has the x-api-key backend today.
+  skip "LLM fidelity smoke (edge/claude-cli) — fidelity-eval subscription runner not landed yet (hivemind-265w); x-api-key backend only for now"
 fi
 
 # ── 401 regression (auth-mode only) ──────────────────────────────────────────
