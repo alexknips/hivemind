@@ -34,6 +34,21 @@ Any warning-count growth blocks submission or merge unless the warning is fixed
 or the baseline is explicitly updated by a separate bead that explains why the
 new warning is acceptable.
 
+## Workflow Gate (changes touching `.github/workflows/**`)
+
+If the diff touches any file under `.github/workflows/**`, additionally run:
+
+```bash
+./scripts/lint-workflows.sh
+```
+
+This runs `actionlint`, which bundles shellcheck integration for `run:`
+blocks, so it catches bad expressions, invalid runner labels, malformed
+steps, and shell bugs embedded in workflow YAML — none of which the other
+gates above check. The script installs a pinned `actionlint` release on
+demand if it is not already on `PATH`, so it works the same way locally and
+in CI (see the `actionlint` job in `.github/workflows/ci.yml`).
+
 ## Polecat Contract
 
 Polecats run the smallest meaningful test while developing, then run the full
@@ -49,6 +64,9 @@ reference-docs: PASS (cargo run --locked --bin generate-reference -- --check)
 ubs-critical: PASS (<wrapper command>; 0 criticals)
 ubs-warnings: PASS (baseline=<n>, branch=<n>, no growth)
 ```
+
+Add `workflow-lint: PASS (./scripts/lint-workflows.sh)` to that list whenever
+the diff touches `.github/workflows/**`; omit the line otherwise.
 
 Do not submit `verified with <tests>` or another placeholder. If a gate is
 skipped because a tool is unavailable, name the skipped gate and the reason.

@@ -41,3 +41,6 @@ snapshots/golden/
 
 # Dogfood session scratch — not source, should not be committed
 /dogfood/
+
+# Local tool cache (e.g. downloaded actionlint binary from lint-workflows.sh)
+/.cache/

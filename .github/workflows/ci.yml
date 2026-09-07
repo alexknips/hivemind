@@ -99,6 +99,17 @@ jobs:
       - name: Check reference docs match source
         run: cargo run --locked --bin generate-reference -- --check
 
+  actionlint:
+    name: Lint GitHub Actions workflows
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run actionlint
+        run: ./scripts/lint-workflows.sh
+
   # kuzu-feature disabled; see hivemind-oj7qr for re-enable plan.
 
   ubs:
