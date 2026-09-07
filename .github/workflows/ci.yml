@@ -119,8 +119,23 @@ jobs:
         # Runtime panic-surface signal should exclude test assertions, which are
         # test oracles rather than production invariants. benchmarks/ excluded per
         # the same policy as .ubsignore line 21 (hivemind-21zi): benchmark/eval
-        # tooling is not production runtime code.
-        run: ~/.local/share/ubs/modules/ubs-rust.sh . --format=json --quiet --ci --no-cargo --exclude=benchmarks,worktrees --exclude-tests --fail-critical=1
+        # tooling is not production runtime code. Directory exclusions (benchmarks/,
+        # worktrees/, tests/) are already covered by .ubsignore; the meta-runner
+        # picks them up automatically. Uses the ubs meta-runner instead of the
+        # module script directly: newer UBS releases no longer pre-install module
+        # scripts at install time, so ~/.local/share/ubs/modules/ubs-rust.sh is
+        # absent after a fresh install and direct invocation fails with exit 127
+        # (hivemind-13n5). The meta-runner downloads modules on first use.
+        shell: bash
+        run: |
+          set -euo pipefail
+          ubs --ci --only=rust --report-json=/tmp/ubs-critical-summary.json .
+          criticals="$(jq -r '.totals.critical // 0' /tmp/ubs-critical-summary.json)"
+          if [ "${criticals}" -gt 0 ]; then
+            echo "UBS critical count: ${criticals}. Failing."
+            exit 1
+          fi
+          echo "UBS critical count ${criticals} — OK."
 
       # UBS warning baseline established by hivemind-ubs-warning-triage-baseline-h4p2m and
       # tightened by hivemind-41n8s on 2026-05-22 with `ubs --ci --only=rust .`.
