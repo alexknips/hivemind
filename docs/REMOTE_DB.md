@@ -74,8 +74,8 @@ Expose:
 
 - HTTP/JSON commands and queries (`/v1/*`) for UIs and non-coding clients.
   Shipped in `src/api/`.
-- MCP or stdio wrappers as thin clients over the same service API. Shipped as
-  `clients/mcp-gateway/` (TypeScript stdio gateway). See
+- MCP, natively in Rust, over stdio (local self-host) and `POST /mcp`
+  (shared service, same auth path as `/v1/*`). See
   [`MCP_SERVICE_SPLIT.md`](MCP_SERVICE_SPLIT.md).
 - Transcript ingest from agents via `POST /v1/ingest`. Shipped capture clients:
   `capture/hook_ship.py` (Claude Code hook) and `capture/sidecar.py` (poll

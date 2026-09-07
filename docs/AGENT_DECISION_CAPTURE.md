@@ -230,5 +230,6 @@ but they do not guarantee that an agent will call a tool. Hooks are supplemental
 because they can be skipped, disabled, or misinstalled. The sidecar daemon is a
 durability backstop for hook-less harnesses.
 
-MCP via the TypeScript gateway (`clients/mcp-gateway/`) is a read path over
-the HTTP API; see [`MCP_SERVICE_SPLIT.md`](MCP_SERVICE_SPLIT.md).
+MCP (`src/mcp.rs`, native stdio and `POST /mcp` transports) exposes both write
+tools (`capture_decision` and friends) and read/query tools directly against
+the core commands/queries layer; see [`MCP_SERVICE_SPLIT.md`](MCP_SERVICE_SPLIT.md).

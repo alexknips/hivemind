@@ -130,10 +130,11 @@ to change too.
 MCP is one transport HiveMind exposes for agents (and for any MCP-aware client).
 It is not the only one. The CLI is equally valid for agents that prefer to
 shell out. The HTTP REST API (`/v1/*`) is the shared-service transport for
-multi-tenant deployments, and the TypeScript MCP gateway
-(`clients/mcp-gateway/`) is a thin stdio adapter over that API. All transports
+multi-tenant deployments, and MCP itself ships natively in Rust over both
+stdio (local self-host) and `POST /mcp` (the shared service). All transports
 go through the same internal functions per the *Surface Uniformity* commitment
-above.
+above. See [`MCP_SERVICE_SPLIT.md`](MCP_SERVICE_SPLIT.md) for why MCP stayed
+in-process instead of extracting to a separate gateway.
 
 The `/v1/ingest` endpoint accepts transcript batches from the Python hook
 shipper (`capture/hook_ship.py`) or sidecar daemon (`capture/sidecar.py`); the
@@ -201,8 +202,9 @@ Resolved as of M2:
 - Multi-tenant Postgres backend with RLS isolation is shipped (bearer-auth
   `hm_tk_…` tokens, `tenant_id`-scoped Postgres RLS, `/v1/tenants`
   provisioning endpoint).
-- The TypeScript MCP gateway over the service API is shipped
-  (`clients/mcp-gateway/`). See [`MCP_SERVICE_SPLIT.md`](MCP_SERVICE_SPLIT.md).
+- MCP over the service API is shipped natively in Rust (`POST /mcp`,
+  `src/api/mcp_http.rs`); the earlier TypeScript-gateway direction was
+  declined. See [`MCP_SERVICE_SPLIT.md`](MCP_SERVICE_SPLIT.md).
 - Transcript ingest path + Haiku classifier is shipped (`/v1/ingest`,
   `src/classifier.rs`, `capture/hook_ship.py`, `capture/sidecar.py`).
 
