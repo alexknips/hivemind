@@ -15,23 +15,38 @@ the selected capture to the existing explicit HiveMind emit command.
 ## Model Choice
 
 Use Claude Haiku 4.5 as the default classifier model. Prefer the pinned API
-model id `claude-haiku-4-5-20251001`; allow an operator override, but do not
-build multi-model routing into the first implementation.
+model id `claude-haiku-4-5-20251001`. The scorer (see
+[`DECISION_SCORING.md`](DECISION_SCORING.md)) makes the same default choice
+for the same reasons.
 
-As of 2026-06-06, Anthropic's model overview lists the current production
-ladder as Opus 4.8, Sonnet 4.6, and Haiku 4.5. The same page lists Haiku 4.5 as
-the fastest current model, with near-frontier intelligence, a 200k context
-window, 64k max output, and $1 / $5 per million input/output tokens. It lists
-Sonnet 4.6 as the stronger speed-plus-intelligence tier with 1M context and
-$3 / $15 pricing.
+An operator override is implemented, not aspirational: set
+`HIVEMIND_CLASSIFIER_MODEL` (and, independently, `HIVEMIND_SCORER_MODEL` for
+the scorer) to any Anthropic model id to replace the default for that worker.
+An empty or unset value falls back to the pinned default. This is a single
+flat override per worker, not multi-model routing — there is no per-batch or
+per-decision model selection, and the classifier and scorer are configured
+independently of one another. The model id actually used for a given
+classification or scoring call is recorded in that event's provenance
+(`classifier_model` / `scorer_model`), so a changed override is visible in the
+ledger, not just in process environment.
 
-Haiku 4.5 is the right first tier because the classifier task is small,
+As of 2026-09-07, Anthropic's model overview lists the current production
+lineup as Claude Fable 5.1, Claude Opus 5, Claude Sonnet 5, and Claude
+Haiku 4.5. Haiku 4.5 remains the fastest model in the lineup, with
+near-frontier intelligence, a 200k context window, 64k max output, and
+$1 / $5 per million input/output tokens. Sonnet 5 is the next tier up: 1M
+context, 128k max output, and $2 / $10 pricing. Opus 5 and Fable 5.1 are
+priced and positioned for complex agentic coding and demanding long-horizon
+reasoning respectively, well beyond what this classifier needs.
+
+Haiku 4.5 is still the right tier because the classifier task is small,
 latency-sensitive, mostly qualitative, and conservative misses are acceptable.
 The prompt asks for a handful of node-kind decisions over 3 to 5 recent turns,
-not long-horizon planning or full-transcript reasoning. Sonnet 4.6 is the
-fallback choice if real-session tuning shows Haiku missing durable decisions
-that humans and Sonnet consistently catch, but that should be proven with false
-negative samples before paying the extra latency and cost.
+not long-horizon planning or full-transcript reasoning. Sonnet 5 is the
+fallback choice — via the `HIVEMIND_CLASSIFIER_MODEL` override above — if
+real-session tuning shows Haiku missing durable decisions that humans and
+Sonnet consistently catch, but that should be proven with false negative
+samples before paying the extra latency and cost.
 
 Use Claude structured outputs for the API-backed implementation. Anthropic
 documents structured outputs as generally available for Haiku 4.5, and the
@@ -46,8 +61,8 @@ References:
   https://www.anthropic.com/claude/haiku
 - Claude structured outputs:
   https://platform.claude.com/docs/en/build-with-claude/structured-outputs
-- Claude Sonnet 4.6 announcement:
-  https://www.anthropic.com/news/claude-sonnet-4-6
+- Claude Sonnet 5 model page:
+  https://platform.claude.com/docs/en/models/sonnet-5/overview
 
 ## Input
 

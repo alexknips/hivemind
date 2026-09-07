@@ -8,8 +8,8 @@ pub(crate) const API_VERSION: &str = "2023-06-01";
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Debug, Serialize)]
-struct Request {
-    model: &'static str,
+struct Request<'a> {
+    model: &'a str,
     max_tokens: u32,
     output_config: OutputConfig,
     messages: Vec<Message>,
@@ -51,7 +51,7 @@ struct ContentBlock {
 pub(crate) async fn call_json_schema<T>(
     client: &reqwest::Client,
     api_key: &str,
-    model: &'static str,
+    model: &str,
     max_tokens: u32,
     user_content: String,
     schema: serde_json::Value,

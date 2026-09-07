@@ -24,6 +24,7 @@ use crate::events::{
 use crate::ledger::{EventLedger, SqliteEventLedger};
 
 const SCORER_MODEL: &str = "claude-haiku-4-5-20251001";
+const SCORER_MODEL_ENV: &str = "HIVEMIND_SCORER_MODEL";
 const WEIGHT_VERSION: &str = "v1";
 const ACTOR_ID: &str = "agent:hivemind:scorer";
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
@@ -190,11 +191,12 @@ async fn score_pending_captures(
         debug!(target: "hivemind::scorer", node_id = %capture.node_id, "scoring decision capture");
 
         match call_scorer(client, api_key, &capture.decision_text).await {
-            Ok(output) => {
+            Ok((output, model)) => {
                 if let Err(e) = write_score(
                     hivemind_dir,
                     tenant_id,
                     &capture.node_id,
+                    &model,
                     output,
                     Some(capture.event_id),
                 ) {
@@ -308,21 +310,37 @@ fn render_decision_text(capture: &serde_json::Value) -> String {
     out
 }
 
+/// Resolve the scorer model id given an already-read `HIVEMIND_SCORER_MODEL`
+/// value: the override if present, otherwise the pinned default.
+fn resolve_scorer_model(env_override: Option<String>) -> String {
+    env_override.unwrap_or_else(|| SCORER_MODEL.to_owned())
+}
+
+/// Model id actually used for scoring: `HIVEMIND_SCORER_MODEL` if set to a
+/// non-empty value, otherwise the pinned default. Callers that both invoke
+/// the API and record provenance must call this once and reuse the result so
+/// the two agree even if the environment changes between calls.
+fn effective_scorer_model() -> String {
+    resolve_scorer_model(crate::identity::env_value(SCORER_MODEL_ENV))
+}
+
 async fn call_scorer(
     client: &reqwest::Client,
     api_key: &str,
     decision_text: &str,
-) -> Result<ScorerOutput, crate::anthropic::BoxError> {
+) -> Result<(ScorerOutput, String), crate::anthropic::BoxError> {
+    let model = effective_scorer_model();
     let user_content = format!("{SCORER_PROMPT}\n\n---DECISION---\n{decision_text}");
-    crate::anthropic::call_json_schema(
+    let output = crate::anthropic::call_json_schema(
         client,
         api_key,
-        SCORER_MODEL,
+        &model,
         MAX_TOKENS,
         user_content,
         scorer_schema(),
     )
-    .await
+    .await?;
+    Ok((output, model))
 }
 
 fn clamp01(v: f64, field: &str) -> crate::Result<f64> {
@@ -345,6 +363,7 @@ fn write_score(
     hivemind_dir: &PathBuf,
     tenant_id: &TenantId,
     capture_node_id: &str,
+    model: &str,
     output: ScorerOutput,
     causation_event_id: Option<u64>,
 ) -> crate::Result<()> {
@@ -393,7 +412,7 @@ fn write_score(
 
     let payload = DecisionScoredPayload {
         capture_node_id: capture_node_id.to_owned(),
-        scorer_model: SCORER_MODEL.to_owned(),
+        scorer_model: model.to_owned(),
         weight_version: WEIGHT_VERSION.to_owned(),
         supersedes_score_id: None,
         quality_dims,

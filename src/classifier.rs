@@ -18,6 +18,7 @@ use crate::events::{CaptureItem, EventProvenance, EventType, TenantId};
 use crate::ledger::{EventLedger, SqliteEventLedger};
 
 const CLASSIFIER_MODEL: &str = "claude-haiku-4-5-20251001";
+const CLASSIFIER_MODEL_ENV: &str = "HIVEMIND_CLASSIFIER_MODEL";
 pub const SCHEMA_VERSION: &str = "2";
 const ACTOR_ID: &str = "agent:hivemind:classifier";
 const POLL_INTERVAL: Duration = Duration::from_secs(10);
@@ -319,7 +320,7 @@ async fn classify_pending_batches(
         };
 
         match call_haiku(client, api_key, &batch.batch_text).await {
-            Ok(output) => {
+            Ok((output, model)) => {
                 let captures: Vec<CaptureItem> = output
                     .captures
                     .into_iter()
@@ -362,6 +363,7 @@ async fn classify_pending_batches(
                     hivemind_dir,
                     tenant_id,
                     &batch.batch_id,
+                    &model,
                     captures,
                     Some(batch.event_id),
                 ) {
@@ -482,27 +484,44 @@ fn render_batch_text(event: &crate::events::Event) -> String {
     out
 }
 
+/// Resolve the classifier model id given an already-read `HIVEMIND_CLASSIFIER_MODEL`
+/// value: the override if present, otherwise the pinned default.
+fn resolve_classifier_model(env_override: Option<String>) -> String {
+    env_override.unwrap_or_else(|| CLASSIFIER_MODEL.to_owned())
+}
+
+/// Model id actually used for classification: `HIVEMIND_CLASSIFIER_MODEL` if
+/// set to a non-empty value, otherwise the pinned default. Callers that both
+/// invoke the API and record provenance must call this once and reuse the
+/// result so the two agree even if the environment changes between calls.
+fn effective_classifier_model() -> String {
+    resolve_classifier_model(crate::identity::env_value(CLASSIFIER_MODEL_ENV))
+}
+
 async fn call_haiku(
     client: &reqwest::Client,
     api_key: &str,
     batch_text: &str,
-) -> Result<ClassifierOutput, crate::anthropic::BoxError> {
+) -> Result<(ClassifierOutput, String), crate::anthropic::BoxError> {
+    let model = effective_classifier_model();
     let user_content = format!("{CLASSIFIER_PROMPT}\n\n---BATCH---\n{batch_text}");
-    crate::anthropic::call_json_schema(
+    let output = crate::anthropic::call_json_schema(
         client,
         api_key,
-        CLASSIFIER_MODEL,
+        &model,
         MAX_TOKENS,
         user_content,
         capture_schema(),
     )
-    .await
+    .await?;
+    Ok((output, model))
 }
 
 fn write_classification(
     hivemind_dir: &PathBuf,
     tenant_id: &TenantId,
     batch_id: &str,
+    model: &str,
     captures: Vec<CaptureItem>,
     causation_event_id: Option<u64>,
 ) -> crate::Result<()> {
@@ -514,7 +533,7 @@ fn write_classification(
     commands.record_ingest_batch_classified(
         ACTOR_ID,
         batch_id,
-        CLASSIFIER_MODEL,
+        model,
         SCHEMA_VERSION,
         captures,
         causation_event_id,
@@ -530,7 +549,7 @@ pub async fn classify_text(
     api_key: &str,
     input: &str,
 ) -> Result<Vec<crate::events::CaptureItem>, Box<dyn std::error::Error + Send + Sync>> {
-    let output = call_haiku(client, api_key, input).await?;
+    let (output, _model) = call_haiku(client, api_key, input).await?;
     let captures = output
         .captures
         .into_iter()

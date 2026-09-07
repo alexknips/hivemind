@@ -142,6 +142,21 @@ fn pending_batch_filter_all_classified_yields_empty() {
     assert!(pending.is_empty());
 }
 
+// --- classifier model override ---
+
+#[test]
+fn resolve_classifier_model_defaults_when_no_override() {
+    assert_eq!(resolve_classifier_model(None), CLASSIFIER_MODEL);
+}
+
+#[test]
+fn resolve_classifier_model_uses_override_when_present() {
+    assert_eq!(
+        resolve_classifier_model(Some("claude-sonnet-5".to_owned())),
+        "claude-sonnet-5"
+    );
+}
+
 #[test]
 fn pending_batch_filter_no_classified_returns_all() {
     let received = vec![

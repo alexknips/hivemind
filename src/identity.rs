@@ -73,7 +73,7 @@ pub fn agent_actor_id(tool: &str, session: &str) -> String {
     format!("agent:{}:{}", tool.trim(), session.trim())
 }
 
-fn env_value(key: &str) -> Option<String> {
+pub(crate) fn env_value(key: &str) -> Option<String> {
     std::env::var(key)
         .ok()
         .map(|value| value.trim().to_owned())

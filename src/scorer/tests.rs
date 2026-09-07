@@ -50,6 +50,21 @@ fn validate_stakes_nan_rejected() {
     assert!(err.to_string().contains("stakes"));
 }
 
+// --- scorer model override ---
+
+#[test]
+fn resolve_scorer_model_defaults_when_no_override() {
+    assert_eq!(resolve_scorer_model(None), SCORER_MODEL);
+}
+
+#[test]
+fn resolve_scorer_model_uses_override_when_present() {
+    assert_eq!(
+        resolve_scorer_model(Some("claude-sonnet-5".to_owned())),
+        "claude-sonnet-5"
+    );
+}
+
 // --- render_decision_text ---
 
 #[test]
