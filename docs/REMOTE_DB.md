@@ -73,7 +73,7 @@ The service owns writes, reads, auth, tenancy, and schema migration.
 Expose:
 
 - HTTP/JSON commands and queries (`/v1/*`) for UIs and non-coding clients.
-  Shipped in `src/api.rs`.
+  Shipped in `src/api/`.
 - MCP or stdio wrappers as thin clients over the same service API. Shipped as
   `clients/mcp-gateway/` (TypeScript stdio gateway). See
   [`MCP_SERVICE_SPLIT.md`](MCP_SERVICE_SPLIT.md).

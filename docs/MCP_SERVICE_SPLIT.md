@@ -75,7 +75,7 @@ The TS MCP must **not**:
   - Auth: `HIVEMIND_API_KEY` forwarded as `Authorization: Bearer <token>` on
     every request. Tenant scope enforced server-side (RLS).
 
-- `src/api.rs` — HTTP REST API (`/v1/*`), the service the gateway calls. See
+- `src/api/` — HTTP REST API (`/v1/*`), the service the gateway calls. See
   [`REMOTE_DB.md`](REMOTE_DB.md) for the full API boundary description.
 
 - Multi-tenant RLS — Postgres Row-Level Security keyed on `tenant_id`,

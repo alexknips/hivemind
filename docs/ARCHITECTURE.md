@@ -197,7 +197,7 @@ capabilities*). They are not committed direction; specific beads will narrow
 each one when picked up.
 
 Resolved as of M2:
-- The HTTP REST API as the third transport is shipped (`src/api.rs`, `/v1/*`).
+- The HTTP REST API as the third transport is shipped (`src/api/`, `/v1/*`).
 - Multi-tenant Postgres backend with RLS isolation is shipped (bearer-auth
   `hm_tk_…` tokens, `tenant_id`-scoped Postgres RLS, `/v1/tenants`
   provisioning endpoint).
