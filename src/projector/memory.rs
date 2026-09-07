@@ -459,6 +459,8 @@ impl GraphView for MemoryGraph {
         // MemoryGraph support for their query shapes — every existing test for those two
         // functions used a hand-rolled fixture, never the real in-memory backend, so both were
         // silently broken for the default graph backend (and for their MCP tools) before now.
+        // Also serves situational.rs's get_situational_decisions, which reuses
+        // get_decision_outcome directly rather than forking its own STILL-HOLDS check.
         // ---------------------------------------------------------------------------
 
         // query_hypothesis_count (context.rs): same premised-on-hypothesis computation as the
@@ -498,7 +500,9 @@ impl GraphView for MemoryGraph {
         // get_decision_context / get_decision_outcome single-decision lookups: any remaining
         // "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id, ..." shape returns the id plus
         // every stored property, same as the bulk `node.id AS id` handler above — the caller
-        // reads only the specific keys it asked for.
+        // reads only the specific keys it asked for. This also answers get_decision_outcome's
+        // narrower "RETURN d.id AS id, d.event_origin AS event_origin LIMIT 1;" existence check
+        // (a substring of this condition) since event_origin is always a stored node property.
         if cypher.contains("MATCH (d:`Decision` {id: $id})") && cypher.contains("RETURN d.id AS id")
         {
             let decision_id = required_param_string(params, "id")?;

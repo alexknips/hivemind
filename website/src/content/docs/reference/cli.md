@@ -230,6 +230,31 @@ understand the answer.
 hivemind query get_relevant_decisions --topic <key> [--status <status>]
 ```
 
+### `query situational`
+
+"What should I know before I touch this?" — decisions bearing on the working
+situation, no id or hand-typed question needed. Matches by exact `topic_keys`
+membership and by deterministic term overlap against evidence content; each
+result surfaces `get_decision_outcome`'s `held_up`/`reasons` verbatim.
+
+```
+hivemind query situational
+  [--paths <file,dir,...>]     # defaults to the current git diff + staged set
+  [--diff]                     # read a unified diff from stdin instead
+  [--branch]                   # include the current branch name's tokens
+  [--cwd]                      # include the current working directory's path segments
+  [--since-offset <ledger-offset>]
+  [--since-ts <timestamp>]
+  [--since-branch-point]       # resolve --since to this branch's merge-base commit time
+  [--base <ref>]               # base ref for --since-branch-point, default origin/master
+  [--limit <n>]
+```
+
+With no flags at all, defaults to the current git diff/staged set in the
+working directory — the "no question needed" mode. Requires a git repository
+when relying on that default, `--branch`, or `--cwd`; pass `--paths`/`--diff`
+explicitly otherwise.
+
 ### `query get_active_decision_blockers`
 
 ```

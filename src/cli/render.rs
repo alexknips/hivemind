@@ -14,10 +14,10 @@ use crate::queries::{
     derive_decision_status, derive_hypothesis_status, BlockerNotificationCandidates, CompactView,
     DecisionBlockerResults, DecisionBrief, DecisionSearchResults, DecisionStatus, DecisionView,
     DecisionsAddedSinceResults, DecisionsChangedSinceResults, HistoryChangeKind, HypothesisStatus,
-    NeighborhoodView, OutcomeReason, QualityTier, QueryResponse, ReadOnlyExport,
+    MatchReason, NeighborhoodView, OutcomeReason, QualityTier, QueryResponse, ReadOnlyExport,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
     RecentActivityResults, RecentDecisionsResults, ResolveOutcome, ScoredDecision,
-    SupersessionChain,
+    SituationalResults, SupersessionChain,
 };
 use crate::{HivemindError, Result};
 
@@ -247,6 +247,57 @@ pub(crate) fn render_search_summary(results: &DecisionSearchResults) -> String {
             item.decision.topic_keys.join(","),
             item.matched_fields.join(",")
         );
+    }
+    output.trim_end().to_owned()
+}
+
+pub(crate) fn render_situational_summary(results: &SituationalResults) -> String {
+    if results.matches.is_empty() {
+        return format!(
+            "No decisions bear on this situation (terms: {})",
+            results.query_terms.join(",")
+        );
+    }
+
+    let mut output = String::new();
+    let _ = writeln!(output, "terms\t{}", results.query_terms.join(","));
+    for item in &results.matches {
+        let held_up = if item.outcome.held_up {
+            "holds"
+        } else {
+            "STALE"
+        };
+        let changed = match item.changed_since {
+            Some(true) => "changed",
+            Some(false) => "unchanged",
+            None => "-",
+        };
+        let _ = write!(
+            output,
+            "match\tscore={:.2}\t{}\t{}\t{}\t{}\tsince={}\t",
+            item.score,
+            decision_status_label(item.decision.status),
+            item.decision.id,
+            summary_cell(&item.decision.title),
+            held_up,
+            changed,
+        );
+        // Exact topic_keys membership and fuzzy evidence-content overlap are visually
+        // distinguished so an agent doesn't over-trust the fuzzy half (AGENTS.md §6).
+        for (index, reason) in item.matched_via.iter().enumerate() {
+            if index > 0 {
+                output.push(' ');
+            }
+            match reason {
+                MatchReason::TopicKey { topic } => {
+                    let _ = write!(output, "constrains(topic:{topic})");
+                }
+                MatchReason::EvidenceOverlap { terms, .. } => {
+                    let _ = write!(output, "may-relate(evidence:{})", terms.join("+"));
+                }
+            }
+        }
+        output.push('\n');
     }
     output.trim_end().to_owned()
 }

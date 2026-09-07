@@ -1012,6 +1012,10 @@ pub enum QueryCommand {
     /// Bulk in-house quality scan: scores all decisions (or a filtered subset).
     #[command(name = "scan_decision_quality")]
     ScanDecisionQuality(QueryScanDecisionQualityArgs),
+    /// "What should I know before I touch this?" — decisions bearing on the working
+    /// situation (touched paths / a diff / the current branch / cwd), no question needed.
+    #[command(name = "situational")]
+    GetSituationalDecisions(QuerySituationalArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1300,6 +1304,50 @@ pub struct QueryAddedSinceArgs {
 
     #[command(flatten)]
     pub filters: QueryHistoryFilterArgs,
+
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QuerySituationalArgs {
+    /// Explicit files/dirs to treat as the situation. Defaults to the current git
+    /// diff + staged set when omitted (and --diff/--branch/--cwd are not given).
+    #[arg(long = "paths", value_delimiter = ',')]
+    pub paths: Vec<String>,
+
+    /// Read a unified diff from stdin instead of shelling out to `git diff`.
+    #[arg(long = "diff")]
+    pub diff: bool,
+
+    /// Include the current branch name's tokens as part of the situation.
+    #[arg(long = "branch")]
+    pub branch: bool,
+
+    /// Include the current working directory's path segments as situational terms.
+    #[arg(long = "cwd")]
+    pub cwd: bool,
+
+    /// Annotate results with whether they changed since this ledger offset (exclusive).
+    #[arg(long = "since-offset")]
+    pub since_offset: Option<u64>,
+
+    /// Annotate results with whether they changed since this timestamp.
+    #[arg(long = "since-ts", alias = "since-timestamp")]
+    pub since_timestamp: Option<String>,
+
+    /// Resolve the since-boundary to the timestamp of the commit where the current
+    /// branch diverged from --base, so "what changed since I last worked here" is
+    /// one call. Mutually exclusive with --since-offset/--since-ts.
+    #[arg(long = "since-branch-point")]
+    pub since_branch_point: bool,
+
+    /// Base ref for --since-branch-point's merge-base resolution.
+    #[arg(long = "base", default_value = "origin/master")]
+    pub base: String,
 
     #[arg(long = "limit", default_value_t = 25)]
     pub limit: usize,

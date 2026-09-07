@@ -14,8 +14,10 @@ mod relevant;
 mod resolve;
 mod search;
 mod shared;
+mod situational;
 mod status;
 mod supersession;
+mod terms;
 
 use serde::Serialize;
 
@@ -66,10 +68,15 @@ pub use search::{
     SearchDecisionFilters, SearchDecisionRequest, SearchGraphContext, SearchMatchedNode,
     SearchSnippet,
 };
+pub use situational::{
+    get_situational_decisions, MatchReason, SituationalMatch, SituationalRequest,
+    SituationalResults,
+};
 pub use status::{
     derive_decision_status, derive_hypothesis_status, DecisionStatus, HypothesisStatus,
 };
 pub use supersession::{get_supersession_chain, SupersessionChain};
+pub use terms::{overlap_score, overlapping_terms, path_terms, text_terms};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct QueryResponse<T> {

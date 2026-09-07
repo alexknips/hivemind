@@ -993,6 +993,244 @@ fn search_decisions_paginates_in_deterministic_order() -> Result<()> {
 }
 
 #[test]
+fn path_terms_splits_and_lowercases_segments() {
+    assert_eq!(
+        path_terms("src/api/auth.rs"),
+        vec!["api".to_owned(), "auth".to_owned()]
+    );
+}
+
+#[test]
+fn path_terms_drops_stopwords_and_short_segments() {
+    assert_eq!(path_terms("src/lib.rs"), Vec::<String>::new());
+    assert_eq!(path_terms("a/b/c.rs"), Vec::<String>::new());
+}
+
+#[test]
+fn path_terms_handles_branch_like_strings() {
+    assert_eq!(
+        path_terms("feature/auth-bearer-postgres"),
+        vec![
+            "feature".to_owned(),
+            "auth".to_owned(),
+            "bearer".to_owned(),
+            "postgres".to_owned()
+        ]
+    );
+}
+
+#[test]
+fn text_terms_tokenizes_prose_and_drops_stopwords() {
+    let terms = text_terms("Bearer auth on Postgres requires session tokens.");
+    assert!(terms.contains(&"bearer".to_owned()));
+    assert!(terms.contains(&"postgres".to_owned()));
+    assert!(terms.contains(&"tokens".to_owned()));
+    assert!(!terms.contains(&"on".to_owned()));
+}
+
+#[test]
+fn overlap_score_is_fraction_of_query_terms_matched() {
+    let query = vec!["auth".to_owned(), "postgres".to_owned(), "cache".to_owned()];
+    let candidate = vec!["auth".to_owned(), "postgres".to_owned()];
+    assert_eq!(overlap_score(&query, &candidate), 2.0 / 3.0);
+}
+
+#[test]
+fn overlap_score_is_zero_for_empty_query_or_no_overlap() {
+    assert_eq!(overlap_score(&[], &["auth".to_owned()]), 0.0);
+    assert_eq!(
+        overlap_score(&["auth".to_owned()], &["unrelated".to_owned()]),
+        0.0
+    );
+}
+
+#[test]
+fn overlapping_terms_is_sorted_and_deduped() {
+    let query = vec!["postgres".to_owned(), "auth".to_owned(), "auth".to_owned()];
+    let candidate = vec!["auth".to_owned(), "unrelated".to_owned()];
+    assert_eq!(
+        overlapping_terms(&query, &candidate),
+        vec!["auth".to_owned()]
+    );
+}
+
+fn situational_fixture() -> Result<(InMemoryEventLedger, MemoryGraph)> {
+    let ledger = InMemoryEventLedger::new();
+    for event in [
+        test_event(
+            1,
+            EventType::EvidenceRecorded,
+            "actor:analyst",
+            json!({
+                "evidence_id": "evidence:auth-note",
+                "content": "Bearer auth on Postgres requires session tokens for the API layer",
+                "source": "test"
+            }),
+            "2026-01-01T00:00:00Z",
+        ),
+        test_event(
+            2,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:auth",
+                "title": "Adopt bearer auth",
+                "rationale": "Keeps session handling stateless",
+                "topic_keys": ["auth"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": ["evidence:auth-note"]
+            }),
+            "2026-01-01T00:01:00Z",
+        ),
+        test_event(
+            3,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:auth-legacy",
+                "title": "Legacy cookie auth still in place",
+                "rationale": "Predates the bearer migration",
+                "topic_keys": ["auth"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:02:00Z",
+        ),
+        test_event(
+            4,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:cache",
+                "title": "Use Redis for read-through cache",
+                "rationale": "Cuts database load on hot reads",
+                "topic_keys": ["caching"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:03:00Z",
+        ),
+    ] {
+        ledger.append(event)?;
+    }
+    let graph = MemoryGraph::default();
+    rebuild_graph(&ledger, &graph)?;
+    Ok((ledger, graph))
+}
+
+#[test]
+fn situational_decisions_surface_for_a_touched_path_and_rank_by_overlap() -> Result<()> {
+    let (ledger, graph) = situational_fixture()?;
+    let context = QueryContext::local();
+
+    let response = get_situational_decisions(
+        &context,
+        &graph,
+        &ledger,
+        &SituationalRequest {
+            paths: vec!["src/api/auth.rs".to_owned()],
+            limit: 10,
+            ..SituationalRequest::default()
+        },
+    )?;
+
+    assert_eq!(
+        response.data.query_terms,
+        vec!["api".to_owned(), "auth".to_owned()]
+    );
+    assert_eq!(response.data.total_matches, 2);
+    let ids: Vec<&str> = response
+        .data
+        .matches
+        .iter()
+        .map(|m| m.decision.id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["decision:auth", "decision:auth-legacy"]);
+
+    let top = &response.data.matches[0];
+    assert_eq!(top.score, 1.0);
+    assert!(top
+        .matched_via
+        .iter()
+        .any(|reason| matches!(reason, MatchReason::TopicKey { topic } if topic == "auth")));
+    assert!(top.matched_via.iter().any(|reason| matches!(
+        reason,
+        MatchReason::EvidenceOverlap { evidence_id, .. } if evidence_id == "evidence:auth-note"
+    )));
+
+    let second = &response.data.matches[1];
+    assert_eq!(second.decision.id, "decision:auth-legacy");
+    assert!(second.score < top.score);
+    Ok(())
+}
+
+#[test]
+fn situational_decisions_do_not_surface_for_an_unrelated_path() -> Result<()> {
+    let (ledger, graph) = situational_fixture()?;
+    let context = QueryContext::local();
+
+    let response = get_situational_decisions(
+        &context,
+        &graph,
+        &ledger,
+        &SituationalRequest {
+            paths: vec!["src/billing/invoice.rs".to_owned()],
+            limit: 10,
+            ..SituationalRequest::default()
+        },
+    )?;
+
+    assert_eq!(response.data.total_matches, 0);
+    assert!(response.data.matches.is_empty());
+    Ok(())
+}
+
+#[test]
+fn situational_decisions_annotate_changed_since_boundary() -> Result<()> {
+    let (ledger, graph) = situational_fixture()?;
+    let context = QueryContext::local();
+
+    let response = get_situational_decisions(
+        &context,
+        &graph,
+        &ledger,
+        &SituationalRequest {
+            paths: vec!["src/api/auth.rs".to_owned()],
+            since_offset: Some(2),
+            limit: 10,
+            ..SituationalRequest::default()
+        },
+    )?;
+
+    assert!(response.data.since_boundary.is_some());
+    let by_id: BTreeMap<&str, Option<bool>> = response
+        .data
+        .matches
+        .iter()
+        .map(|m| (m.decision.id.as_str(), m.changed_since))
+        .collect();
+    assert_eq!(by_id.get("decision:auth"), Some(&Some(false)));
+    assert_eq!(by_id.get("decision:auth-legacy"), Some(&Some(true)));
+    Ok(())
+}
+
+#[test]
+fn situational_decisions_reject_empty_situation() {
+    let context = QueryContext::local();
+    let graph = MemoryGraph::default();
+    let ledger = InMemoryEventLedger::new();
+    let err = get_situational_decisions(&context, &graph, &ledger, &SituationalRequest::default())
+        .expect_err("empty paths must be rejected");
+    assert!(err.to_string().contains("at least one path"));
+}
+
+#[test]
 fn get_supersession_chain_walks_both_directions() -> Result<()> {
     let mut graph = FixtureGraph::sample();
     graph

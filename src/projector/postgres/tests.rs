@@ -118,6 +118,51 @@ fn search_decisions_returns_same_ids_as_memory() -> Result<()> {
 }
 
 #[test]
+fn situational_decisions_return_same_ids_as_memory() -> Result<()> {
+    with_postgres_graph("situational-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = situational_fixture_ledger()?;
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        let context = crate::queries::QueryContext::local();
+        let request = crate::queries::SituationalRequest {
+            paths: vec!["src/api/auth.rs".to_owned()],
+            limit: 10,
+            ..Default::default()
+        };
+        let memory_matches =
+            crate::queries::get_situational_decisions(&context, &memory, &ledger, &request)?;
+        let pg_matches =
+            crate::queries::get_situational_decisions(&context, pg, &ledger, &request)?;
+
+        let memory_ids: Vec<_> = memory_matches
+            .data
+            .matches
+            .iter()
+            .map(|m| m.decision.id.clone())
+            .collect();
+        let pg_ids: Vec<_> = pg_matches
+            .data
+            .matches
+            .iter()
+            .map(|m| m.decision.id.clone())
+            .collect();
+        if memory_ids != pg_ids {
+            return Err(test_error(format!(
+                "get_situational_decisions id mismatch: memory={memory_ids:?} pg={pg_ids:?}"
+            )));
+        }
+        if memory_ids.is_empty() {
+            return Err(test_error(
+                "fixture should produce at least one situational match",
+            ));
+        }
+        Ok(())
+    })
+}
+
+#[test]
 fn supersession_chain_matches_memory() -> Result<()> {
     with_postgres_graph("supersession-parity", |pg| {
         let memory = MemoryGraph::default();
@@ -372,6 +417,52 @@ fn fixture_ledger() -> Result<InMemoryEventLedger> {
             json!({
                 "old_decision_id": "decision:1",
                 "new_decision_id": "decision:2"
+            }),
+        ),
+    ] {
+        ledger.append(event)?;
+    }
+    Ok(ledger)
+}
+
+fn situational_fixture_ledger() -> Result<InMemoryEventLedger> {
+    let ledger = InMemoryEventLedger::new();
+    for event in [
+        make_event(
+            EventType::EvidenceRecorded,
+            "actor:analyst",
+            json!({
+                "evidence_id": "evidence:auth-note",
+                "content": "Bearer auth on Postgres requires session tokens for the API layer",
+                "source": "test"
+            }),
+        ),
+        make_event(
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:auth",
+                "title": "Adopt bearer auth",
+                "rationale": "Keeps session handling stateless",
+                "topic_keys": ["auth"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": ["evidence:auth-note"]
+            }),
+        ),
+        make_event(
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:cache",
+                "title": "Use Redis for read-through cache",
+                "rationale": "Cuts database load on hot reads",
+                "topic_keys": ["caching"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
             }),
         ),
     ] {

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
-use std::io::{self, BufRead, Write as IoWrite};
+use std::io::{self, BufRead, Read as IoRead, Write as IoWrite};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -31,15 +31,15 @@ use crate::queries::{
     get_blocker_notification_candidates, get_compact_view, get_decision, get_decision_brief,
     get_decision_neighborhood, get_decision_quality_score, get_decisions_added_since,
     get_decisions_changed_since, get_recent_activity, get_recent_decisions, get_relevant_decisions,
-    get_supersession_chain, resolve_decision_by_description, scan_decision_quality,
-    scorer_next_cursor, search_decisions, search_decisions_fts_with_context,
+    get_situational_decisions, get_supersession_chain, resolve_decision_by_description,
+    scan_decision_quality, scorer_next_cursor, search_decisions, search_decisions_fts_with_context,
     ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest, ChangedSinceRequest,
     DecisionBlockerFilters, DecisionStatus, DecisionsAddedSinceFilterRequest,
     DecisionsAddedSinceRequest, HistoryFilterRequest, NeighborhoodRequest, QualityTier,
     QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest, RecentActivityRequest,
     RecentDecisionEntry, RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome,
     ResolvedCandidate, ScanQualityRequest, ScorerConfig, ScorerReason, SearchDecisionRequest,
-    SupersessionSpeed,
+    SituationalRequest, SupersessionSpeed,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -66,7 +66,8 @@ use super::args::{
     QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus, QueryExportKind,
     QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs, QueryQualityTier,
     QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
-    QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand, SupersedeArgs, TuiArgs,
+    QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
+    SupersedeArgs, TuiArgs,
 };
 use super::render::{
     append_truncation_notice, decision_status_label, format_disagree_output, format_import_output,
@@ -77,9 +78,9 @@ use super::render::{
     render_decision_summary, render_dot, render_neighborhood_summary,
     render_read_only_export_summary, render_recall_summary, render_recent_activity_summary,
     render_recent_decisions_summary, render_resolve_outcome_summary, render_scan_quality_summary,
-    render_scored_decision_summary, render_search_summary, render_supersession_summary,
-    DisagreeCommandOutput, OutputEnvelope, ReviewActionOutput, ReviewCommandOutput,
-    SupersedeCommandOutput,
+    render_scored_decision_summary, render_search_summary, render_situational_summary,
+    render_supersession_summary, DisagreeCommandOutput, OutputEnvelope, ReviewActionOutput,
+    ReviewCommandOutput, SupersedeCommandOutput,
 };
 #[cfg(feature = "shared-backend-postgres")]
 use super::render::{MigrateReport, ParityCheckResult};
@@ -1620,7 +1621,8 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
         | QueryCommand::GetActiveDecisionBlockers(_)
         | QueryCommand::GetBlockerNotificationCandidates(_)
         | QueryCommand::ScoreDecision(_)
-        | QueryCommand::ScanDecisionQuality(_) => {
+        | QueryCommand::ScanDecisionQuality(_)
+        | QueryCommand::GetSituationalDecisions(_) => {
             return Err(
                 CliError::InvalidInput("query requires graph-backed execution".to_owned()).into(),
             )
@@ -2371,6 +2373,16 @@ fn run_query_with_graph(
                 next_cursor.as_deref(),
             )?
         }
+        QueryCommand::GetSituationalDecisions(args) => {
+            let request = situational_request(args)?;
+            let response = get_situational_decisions(context, graph, ledger, &request)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_situational_summary,
+                response.data.next_cursor.as_deref(),
+            )?
+        }
         QueryCommand::RecentDecisions(_)
         | QueryCommand::GetRecentActivity(_)
         | QueryCommand::GetDecisionsChangedSince(_)
@@ -2416,6 +2428,194 @@ fn search_decision_request(args: &QuerySearchDecisionsArgs) -> Result<SearchDeci
         until: parse_query_datetime(args.until.as_deref(), "--until")?,
         limit: args.limit,
         cursor: args.cursor.clone(),
+    })
+}
+
+/// Build a `SituationalRequest` from CLI flags, resolving cwd/diff/branch into plain
+/// path-like strings here (the only place in this feature that shells out to `git` —
+/// `queries::situational` itself never touches the process/filesystem, per the
+/// three-layer separation in AGENTS.md).
+fn situational_request(args: &QuerySituationalArgs) -> Result<SituationalRequest> {
+    let paths = resolve_situational_paths(args)?;
+    let (since_offset, since_timestamp) = resolve_situational_since(args)?;
+    Ok(SituationalRequest {
+        paths,
+        since_offset,
+        since_timestamp,
+        limit: args.limit,
+        cursor: args.cursor.clone(),
+    })
+}
+
+fn resolve_situational_paths(args: &QuerySituationalArgs) -> Result<Vec<String>> {
+    let mut paths: Vec<String> = args
+        .paths
+        .iter()
+        .map(|path| path.trim().to_owned())
+        .filter(|path| !path.is_empty())
+        .collect();
+
+    if args.diff {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf).map_err(|error| {
+            CliError::InvalidInput(format!("failed to read diff from stdin: {error}"))
+        })?;
+        paths.extend(diff_touched_paths(&buf));
+    }
+
+    if args.branch {
+        paths.push(git_current_branch()?);
+    }
+
+    if args.cwd {
+        let cwd = std::env::current_dir()
+            .map_err(|error| CliError::InvalidInput(format!("failed to read cwd: {error}")))?;
+        paths.push(cwd.to_string_lossy().into_owned());
+    }
+
+    if paths.is_empty() && !args.diff && !args.branch && !args.cwd {
+        paths = git_default_diff_paths()?;
+    }
+
+    if paths.is_empty() {
+        return Err(CliError::InvalidInput(
+            "situational query found no paths to work from (no --paths given, no local git diff/staged changes); pass --paths or --diff explicitly".to_owned(),
+        )
+        .into());
+    }
+
+    Ok(paths)
+}
+
+/// Extract touched file paths from a unified diff's `+++ b/...` / `--- a/...` headers.
+fn diff_touched_paths(diff_text: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in diff_text.lines() {
+        for prefix in ["+++ b/", "--- a/"] {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                let rest = rest.trim();
+                if !rest.is_empty() {
+                    paths.push(rest.to_owned());
+                }
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn git_current_branch() -> Result<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .map_err(|error| CliError::InvalidInput(format!("failed to run git: {error}")))?;
+    if !output.status.success() {
+        return Err(CliError::InvalidInput(
+            "--branch requires a git repository (git rev-parse failed); pass --paths/--diff explicitly instead".to_owned(),
+        )
+        .into());
+    }
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if branch.is_empty() {
+        return Err(CliError::InvalidInput(
+            "git rev-parse returned an empty branch name".to_owned(),
+        )
+        .into());
+    }
+    Ok(branch)
+}
+
+/// Default "no question needed" path set: the current git diff plus the staged set.
+/// Returns a clear, non-panicking error (not a silent empty result) when this isn't a
+/// git repository, so the caller knows to pass `--paths`/`--diff` explicitly.
+fn git_default_diff_paths() -> Result<Vec<String>> {
+    let Some(mut paths) = run_git_diff_name_only(&[])? else {
+        return Err(CliError::InvalidInput(
+            "situational query defaults to the current git diff/staged set, but this is not a git repository (or git is not on PATH); pass --paths/--diff explicitly".to_owned(),
+        )
+        .into());
+    };
+    if let Some(staged) = run_git_diff_name_only(&["--cached"])? {
+        paths.extend(staged);
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+/// Runs `git diff --name-only [extra_args]`. `Ok(None)` means git itself could not be
+/// invoked or failed (not a git repo, no `git` on PATH) — distinct from `Ok(Some(vec![]))`,
+/// a clean repo with nothing to report.
+fn run_git_diff_name_only(extra_args: &[&str]) -> Result<Option<Vec<String>>> {
+    let mut command = std::process::Command::new("git");
+    command.arg("diff").arg("--name-only").args(extra_args);
+    let output = match command.output() {
+        Ok(output) if output.status.success() => output,
+        _ => return Ok(None),
+    };
+    let paths = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.trim().to_owned())
+        .filter(|line| !line.is_empty())
+        .collect();
+    Ok(Some(paths))
+}
+
+fn resolve_situational_since(
+    args: &QuerySituationalArgs,
+) -> Result<(Option<u64>, Option<DateTime<Utc>>)> {
+    if args.since_branch_point {
+        if args.since_offset.is_some() || args.since_timestamp.is_some() {
+            return Err(CliError::InvalidInput(
+                "--since-branch-point is mutually exclusive with --since-offset/--since-ts"
+                    .to_owned(),
+            )
+            .into());
+        }
+        return Ok((None, Some(git_branch_point_timestamp(&args.base)?)));
+    }
+    Ok((
+        args.since_offset,
+        parse_utc_timestamp("--since-ts", &args.since_timestamp)?,
+    ))
+}
+
+/// Resolves `--since-branch-point` to the timestamp of the commit where the current
+/// branch diverged from `base`, so "what changed since I last worked here" is one call
+/// (`get_decisions_changed_since` resolves that timestamp to a concrete ledger offset —
+/// offset bounds are canonical, per docs/SEARCH_DESIGN.md).
+fn git_branch_point_timestamp(base: &str) -> Result<DateTime<Utc>> {
+    let merge_base = std::process::Command::new("git")
+        .args(["merge-base", "HEAD", base])
+        .output()
+        .map_err(|error| {
+            CliError::InvalidInput(format!("failed to run git merge-base: {error}"))
+        })?;
+    if !merge_base.status.success() {
+        return Err(CliError::InvalidInput(format!(
+            "--since-branch-point requires a git repository and a resolvable base ref '{base}'"
+        ))
+        .into());
+    }
+    let merge_base_sha = String::from_utf8_lossy(&merge_base.stdout)
+        .trim()
+        .to_owned();
+
+    let log = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%aI", &merge_base_sha])
+        .output()
+        .map_err(|error| CliError::InvalidInput(format!("failed to run git log: {error}")))?;
+    if !log.status.success() {
+        return Err(CliError::InvalidInput(format!(
+            "git log failed to resolve the merge-base commit {merge_base_sha}"
+        ))
+        .into());
+    }
+    let timestamp = String::from_utf8_lossy(&log.stdout).trim().to_owned();
+    parse_utc_timestamp("--since-branch-point", &Some(timestamp))?.ok_or_else(|| {
+        CliError::InvalidInput("git log returned an empty merge-base commit timestamp".to_owned())
+            .into()
     })
 }
 

@@ -36,11 +36,12 @@ use crate::queries::{
     context_next_cursor, derive_decision_status, get_compact_view, get_decision,
     get_decision_context, get_decision_context_candidates, get_decision_outcome,
     get_decision_quality_candidates, get_decision_quality_score, get_failure_attribution,
-    get_recent_decisions, get_relevant_decisions, get_supersession_chain, outcome_next_cursor,
-    scan_decision_quality, scorer_next_cursor, search_decisions_fts_with_context,
-    DecisionContextRequest, DecisionQualityCandidatesRequest, DecisionStatus,
-    FailureAttributionRequest, QualityTier, QueryContext, RecentDecisionFilterRequest,
-    RecentDecisionsRequest, ScanQualityRequest, ScorerConfig, SearchDecisionRequest,
+    get_recent_decisions, get_relevant_decisions, get_situational_decisions,
+    get_supersession_chain, outcome_next_cursor, scan_decision_quality, scorer_next_cursor,
+    search_decisions_fts_with_context, DecisionContextRequest, DecisionQualityCandidatesRequest,
+    DecisionStatus, FailureAttributionRequest, QualityTier, QueryContext,
+    RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest, ScorerConfig,
+    SearchDecisionRequest, SituationalRequest,
 };
 use crate::summarize::{
     recall_decisions, summarize_decisions, RecallRequest, SummarizeMode, SummarizeRequest,
@@ -312,6 +313,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "scan_decision_quality" => tool_scan_decision_quality(arguments, config),
         "analyze_failure_modes" => tool_analyze_failure_modes(arguments, config),
         "get_relevant_decisions" => tool_get_relevant_decisions(arguments, config),
+        "get_situational_decisions" => tool_get_situational_decisions(arguments, config),
         "get_supersession_chain" => tool_get_supersession_chain(arguments, config),
         "search_decisions" => tool_search_decisions(arguments, config),
         "recall_decisions" => tool_recall_decisions(arguments, config),
@@ -453,6 +455,21 @@ pub fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "topic": { "type": "string" },
                     "status": { "type": "string", "enum": ["proposed", "accepted", "rejected", "contested", "superseded"] }
+                }
+            }
+        }),
+        json!({
+            "name": "get_situational_decisions",
+            "description": "\"What should I know before I touch this?\" — decisions bearing on the given situation, no id or hand-typed question needed. Matches by exact topic_keys membership and by term overlap against evidence content (deterministic, no LLM); each result names which matched and includes held_up/reasons from get_decision_outcome verbatim. Topic matches are exact; evidence matches are a fuzzy heuristic over free text, not a structural path reference — treat matched_via[].kind accordingly.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["paths"],
+                "properties": {
+                    "paths": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Touched files/dirs and/or a branch name. All entries are tokenized the same way (split on path separators, lowercased, stopwords/extensions dropped)." },
+                    "since_offset": { "type": "integer", "description": "Annotate results with whether they changed since this ledger offset (exclusive)." },
+                    "since_timestamp": { "type": "string", "description": "Annotate results with whether they changed since this RFC3339 timestamp." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                    "cursor": { "type": "string" }
                 }
             }
         }),
@@ -924,6 +941,35 @@ fn tool_get_relevant_decisions(
     };
     let graph = open_memory_graph(config)?;
     let response = get_relevant_decisions(&graph, &topic, status_filter)?;
+    Ok(serde_json::to_value(QueryEnvelope::from(response))?)
+}
+
+fn tool_get_situational_decisions(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let paths = require_string_array(&args, "paths")?;
+    let since_offset = optional_usize(&args, "since_offset")?.map(|value| value as u64);
+    let since_timestamp = optional_datetime(&args, "since_timestamp")?;
+    let limit = optional_usize(&args, "limit")?.unwrap_or(0);
+    let cursor = optional_string(&args, "cursor")?;
+
+    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&ledger, &config.tenant_id, &graph)?;
+    let response = get_situational_decisions(
+        &config.query_context(),
+        &graph,
+        &ledger,
+        &SituationalRequest {
+            paths,
+            since_offset,
+            since_timestamp,
+            limit,
+            cursor,
+        },
+    )?;
     Ok(serde_json::to_value(QueryEnvelope::from(response))?)
 }
 

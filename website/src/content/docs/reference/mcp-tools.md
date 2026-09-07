@@ -1,9 +1,9 @@
 ---
 title: MCP Tools
-description: Reference for all 21 tools exposed by the HiveMind MCP server.
+description: Reference for all 22 tools exposed by the HiveMind MCP server.
 ---
 
-The HiveMind MCP server exposes 21 tools. Write tools append events to the
+The HiveMind MCP server exposes 22 tools. Write tools append events to the
 ledger and require an explicit `actor_id`. Read tools query the graph and never
 write. Layer-3 tools add ranked summaries or compact views.
 
@@ -116,6 +116,22 @@ List decisions whose topic_keys contain the given topic. Optional status filter.
 |-----------|------|----------|-------------|
 | `topic` | string | ✓ |  |
 | `status` | string | — |  |
+
+---
+
+### `get_situational_decisions`
+
+"What should I know before I touch this?" — decisions bearing on the given situation, no id or hand-typed question needed. Matches by exact topic_keys membership and by term overlap against evidence content (deterministic, no LLM); each result names which matched and includes held_up/reasons from get_decision_outcome verbatim. Topic matches are exact; evidence matches are a fuzzy heuristic over free text, not a structural path reference — treat matched_via[].kind accordingly.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `paths` | string[] | ✓ | Touched files/dirs and/or a branch name. All entries are tokenized the same way (split on path separators, lowercased, stopwords/extensions dropped). |
+| `cursor` | string | — |  |
+| `limit` | integer | — |  |
+| `since_offset` | integer | — | Annotate results with whether they changed since this ledger offset (exclusive). |
+| `since_timestamp` | string | — | Annotate results with whether they changed since this RFC3339 timestamp. |
 
 ---
 
