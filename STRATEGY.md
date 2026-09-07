@@ -89,6 +89,33 @@ A bead advances this front if it builds layer-3 behavior that respects the
 boundary. A bead that proposes layer-3 logic embedded in the write or query
 path does not advance this front. It violates the architecture.
 
+### Decision quality
+
+Derive whether decisions held up — from graph facts, never from vibes or opaque
+LLM judgment — and surface those signals in a way that helps organizations
+understand how their decision-making can improve.
+
+Three principles are non-negotiable: (1) signals are **derived** from graph
+structure (superseded-fast, premised-on-refuted-hypothesis, contested-unresolved,
+thin-structure) — never solicited or inferred from conversation tone; (2) any
+score always ships **with its reasons and contributing decision IDs** — never
+a bare number; (3) quality is measured on **decisions and interaction patterns,
+never on individual people or agents** — grading individuals kills capture
+honesty and is often legally regulated.
+
+The failure-mode framing is "which conditions predict decisions that do not hold
+up?" — model choice, context sufficiency, review presence/quality, evidence
+thinness, human/AI/joint authorship — never a per-person error rate.
+
+A bead advances this front if it makes decision-quality signals more accurate,
+more explainable, more accessible to external consumers (via MCP), or more
+actionable as a feedback loop for improving how an organization makes decisions.
+
+A bead violates this front if it: exposes per-person quality rankings; introduces
+opaque LLM-derived confidence without an evidence chain; embeds scoring in the
+write or query path (Layer 3 only); or treats low scores as individual blame
+rather than systemic-condition data.
+
 ---
 
 ## Not active fronts

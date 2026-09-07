@@ -1,10 +1,11 @@
 # Decision Scoring
 
-> **Status: design capture — not implemented, do not implement now.**
-> This is a **Layer-3, post-PoC** design. The PoC milestone (shared backend:
-> `…uuq9.4` / `.6` / `.7` / `.10`) stays the priority. This document records a
-> model that is **locked with the operator** so the design is not lost; it does
-> not authorize implementation.
+> **Status: shipped as of v0.6.0 (decision-quality layer, he9a.3).**
+> The 2-axis scorer described here is implemented in `src/queries/inhouse_scorer.rs`
+> and exposed via MCP tools `score_decision` / `scan_decision_quality` and the
+> `query scan_decision_quality` CLI subcommand. Open questions at the bottom of
+> this file are deferred to post-v0.6.0 follow-ups; this document remains the
+> design reference.
 
 HiveMind records *what* was decided, by whom, with what options and evidence
 ([`ARCHITECTURE.md`](ARCHITECTURE.md)). Decision scoring adds a separate,
