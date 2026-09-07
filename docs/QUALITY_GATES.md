@@ -42,12 +42,15 @@ If the diff touches any file under `.github/workflows/**`, additionally run:
 ./scripts/lint-workflows.sh
 ```
 
-This runs `actionlint`, which bundles shellcheck integration for `run:`
-blocks, so it catches bad expressions, invalid runner labels, malformed
-steps, and shell bugs embedded in workflow YAML — none of which the other
-gates above check. The script installs a pinned `actionlint` release on
-demand if it is not already on `PATH`, so it works the same way locally and
-in CI (see the `actionlint` job in `.github/workflows/ci.yml`).
+This runs `actionlint`, which *integrates with* shellcheck for `run:` blocks
+(it does not bundle it — it execs a `shellcheck` binary and, if none is
+found, silently disables that rule) so it catches bad expressions, invalid
+runner labels, malformed steps, and shell bugs embedded in workflow YAML —
+none of which the other gates above check. The script installs pinned
+releases of both `actionlint` and `shellcheck` on demand if they are not
+already on `PATH`, and fails loudly if actionlint's shellcheck rule ends up
+disabled anyway, so it works the same way locally and in CI (see the
+`actionlint` job in `.github/workflows/ci.yml`).
 
 ## Polecat Contract
 
