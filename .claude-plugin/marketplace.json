@@ -16,6 +16,18 @@
         "provenance",
         "mcp"
       ]
+    },
+    {
+      "name": "hivemind-context",
+      "displayName": "HiveMind Context",
+      "description": "Consult, verify, and contest HiveMind decisions from Claude Code by description, never by id, through the deterministic local CLI.",
+      "source": "./plugins/hivemind-context",
+      "category": "Productivity",
+      "tags": [
+        "decision-memory",
+        "provenance",
+        "fluent-query"
+      ]
     }
   ]
 }

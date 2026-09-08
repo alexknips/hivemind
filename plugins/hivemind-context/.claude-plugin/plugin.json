@@ -1,0 +1,29 @@
+{
+  "name": "hivemind-context",
+  "version": "0.1.0",
+  "description": "Consult, verify, and contest HiveMind decisions from Claude Code by description, never by id, through the deterministic local CLI.",
+  "author": {
+    "name": "HiveMind contributors",
+    "url": "https://github.com/alexknips/hivemind"
+  },
+  "homepage": "https://github.com/alexknips/hivemind/blob/master/docs/AGENT_DECISION_CONTEXT.md",
+  "repository": "https://github.com/alexknips/hivemind",
+  "license": "UNLICENSED",
+  "keywords": [
+    "hivemind",
+    "decision-memory",
+    "claude-code",
+    "fluent-query",
+    "provenance"
+  ],
+  "commands": "./commands/",
+  "skills": "./skills/",
+  "userConfig": {
+    "hivemind_dir": {
+      "type": "directory",
+      "title": "HiveMind ledger directory",
+      "description": "Local or shared HiveMind ledger directory used by slash commands.",
+      "default": "./hivemind/"
+    }
+  }
+}

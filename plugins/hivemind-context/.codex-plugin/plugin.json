@@ -1,0 +1,38 @@
+{
+  "name": "hivemind-context",
+  "version": "0.1.0",
+  "description": "Consult, verify, and contest HiveMind decisions from Codex by description, never by id, through the deterministic local CLI.",
+  "author": {
+    "name": "HiveMind contributors",
+    "url": "https://github.com/alexknips/hivemind"
+  },
+  "homepage": "https://github.com/alexknips/hivemind/blob/master/docs/AGENT_DECISION_CONTEXT.md",
+  "repository": "https://github.com/alexknips/hivemind",
+  "license": "UNLICENSED",
+  "keywords": [
+    "hivemind",
+    "decision-memory",
+    "codex",
+    "fluent-query",
+    "provenance"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "HiveMind Context",
+    "shortDescription": "Consult past decisions before you change something.",
+    "longDescription": "Installs the hivemind-context skill and CLI-only command scripts. The skill teaches Codex when to check HiveMind for standing decisions before touching a module, verify whether an old decision still holds, and push back (disagree) or move on (supersede) by description — never by guessing an id.",
+    "developerName": "HiveMind contributors",
+    "category": "Productivity",
+    "capabilities": [
+      "Skills",
+      "Local CLI"
+    ],
+    "websiteURL": "https://github.com/alexknips/hivemind",
+    "defaultPrompt": [
+      "What should I know before I touch this file?",
+      "What did we decide about X?",
+      "Did that decision hold up?"
+    ],
+    "brandColor": "#2563EB"
+  }
+}

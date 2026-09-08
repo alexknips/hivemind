@@ -4,6 +4,11 @@ Status: shipped. Originally landed under bead `hivemind-claude-codex-agent-captu
 Extended in M2 with HTTP API transcript capture (`/v1/ingest`) and a
 server-side classifier. See the *HTTP API Capture* section below.
 
+This document covers the write path only. For consulting, verifying, and
+contesting decisions that already exist — including the CLI-only
+`hivemind-context` plugin, a second agent interaction model alongside MCP —
+see [`AGENT_DECISION_CONTEXT.md`](AGENT_DECISION_CONTEXT.md).
+
 HiveMind exposes a noninteractive CLI path for Claude, Codex, and similar coding
 agents to record a decision directly into the local ledger:
 
