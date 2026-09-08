@@ -463,8 +463,6 @@ pub(crate) fn resolve_capture_node_id<L: EventLedger>(
                 continue;
             }
 
-            // ubs:ignore: error path — ok_or_else only runs its closure (and allocates) on
-            // the fall-through-to-error branch, which propagates out of the loop via `?`
             let captures = event
                 .payload
                 .get("captures")
@@ -474,7 +472,6 @@ pub(crate) fn resolve_capture_node_id<L: EventLedger>(
                         "batch {batch_id} has no captures array"
                     ))
                 })?;
-            // ubs:ignore: error path — see captures.ok_or_else above
             let capture = captures.get(idx).ok_or_else(|| {
                 crate::CommandError::Validation(format!(
                     "capture-index {idx} out of range for batch {batch_id} ({} captures)",
@@ -483,8 +480,7 @@ pub(crate) fn resolve_capture_node_id<L: EventLedger>(
             })?;
             let kind = capture.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             if kind != "decision" {
-                // ubs:ignore: error path — returns immediately, exits the loop, not a per-iteration allocation
-                return Err(crate::CommandError::Validation(format!(
+                return Err(crate::CommandError::Validation(format!( // ubs:ignore: error path — returns immediately, exits the loop, not a per-iteration allocation
                     "capture at index {idx} in batch {batch_id} is kind={kind:?}, not \"decision\" — only decision captures are scored"
                 ))
                 .into());
