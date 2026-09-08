@@ -152,6 +152,7 @@ fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
         .first()
         .map(|item| item.decision.id.clone());
 
+    // ubs:ignore: decision id equality check, not a secret/token comparison
     if first_result_id.as_deref() != Some(decision_id.as_str()) {
         return Err(CliError::InvalidInput(
             "quickstart query did not return captured decision".to_owned(),
