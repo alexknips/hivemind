@@ -361,6 +361,52 @@ pub struct IngestBatchReceivedPayload {
     pub turns: Vec<IngestTurn>,
 }
 
+/// Deserializes a field that may appear on disk as `null` (none), a bare string
+/// (one actor, the pre-widening shape), or an array of strings (current shape) —
+/// so ledger events written before `accepted_by`/`rejected_by` widened from
+/// `Option<String>` to `Vec<String>` still parse into the same Rust type.
+fn string_or_seq<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct StringOrSeq;
+
+    impl<'de> serde::de::Visitor<'de> for StringOrSeq {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("null, a string, or an array of strings")
+        }
+
+        fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(Vec::new())
+        }
+
+        fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(vec![value.to_owned()])
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element::<String>()? {
+                values.push(value);
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_any(StringOrSeq)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CaptureItem {
@@ -391,12 +437,24 @@ pub struct CaptureItem {
     /// Actor who proposed/made/reported this item, named in the input text. Never infer from context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor_id: Option<String>,
-    /// Actor who accepted this decision, named in the input text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accepted_by: Option<String>,
-    /// Actor who rejected this decision, named in the input text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rejected_by: Option<String>,
+    /// Actors who accepted this decision (or decision request), named in the input text.
+    /// Deserializes `null`, a bare string, or an array from stored ledger events so old and
+    /// new `ingest.batch_classified` payloads both parse into the same shape.
+    #[serde(
+        default,
+        deserialize_with = "string_or_seq",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub accepted_by: Vec<String>,
+    /// Actors who rejected this decision (or decision request), named in the input text.
+    /// Deserializes `null`, a bare string, or an array from stored ledger events so old and
+    /// new `ingest.batch_classified` payloads both parse into the same shape.
+    #[serde(
+        default,
+        deserialize_with = "string_or_seq",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub rejected_by: Vec<String>,
     /// For blocker captures: the actor being blocked, named in the input text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_actor_id: Option<String>,

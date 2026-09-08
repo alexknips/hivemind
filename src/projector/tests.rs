@@ -884,3 +884,268 @@ fn classified_batch_empty_captures_is_no_op() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn classified_batch_decision_request_plain_ask_uses_decision_requested_by() -> Result<()> {
+    // D1/D3 regression guard: a DecisionRequest with an actor_id but no accepted_by/
+    // rejected_by position on record is a plain open ask, not a contested one.
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:dr-plain",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [{
+                "kind": "decision-request",
+                "title": "launch the EU beta",
+                "rationale": "",
+                "topic_keys": [],
+                "evidence_ids": [],
+                "options": null,
+                "chosen_option": null,
+                "extraction_confidence": 0.9,
+                "expressed_confidence": null,
+                "supersedes_id": null,
+                "premised_on_ids": [],
+                "supports_ids": [],
+                "refutes_ids": [],
+                "actor_id": "human:priya",
+                "accepted_by": [],
+                "rejected_by": [],
+                "blocked_actor_id": null,
+                "decision_id": null
+            }]
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    let request_node = nodes
+        .iter()
+        .find(|((kind, _), _)| *kind == NodeKind::DecisionRequest)
+        .map(|((_, id), _)| id.clone())
+        .expect("decision request node from capture"); // ubs:ignore
+    drop(nodes);
+
+    let edges = graph.edges();
+    assert!(
+        // ubs:ignore
+        edges.contains_key(&(
+            RelationKind::DecisionRequestedBy,
+            request_node.clone(),
+            "human:priya".to_owned()
+        )),
+        "plain ask must use DecisionRequestedBy"
+    );
+    assert!(
+        // ubs:ignore
+        !edges.contains_key(&(
+            RelationKind::RequestProposedBy,
+            request_node.clone(),
+            "human:priya".to_owned()
+        )),
+        "plain ask must not use RequestProposedBy"
+    );
+    Ok(())
+}
+
+#[test]
+fn classified_batch_decision_request_contested_uses_request_proposed_by() -> Result<()> {
+    // G1-style contested ask: actor_id (proposer) + one rejecter -> RequestProposedBy /
+    // RequestRejectedBy, and NOT the plain-ask DecisionRequestedBy edge.
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:dr-contested",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [{
+                "kind": "decision-request",
+                "title": "separate data tier for analytics",
+                "rationale": "",
+                "topic_keys": [],
+                "evidence_ids": [],
+                "options": null,
+                "chosen_option": null,
+                "extraction_confidence": 0.9,
+                "expressed_confidence": null,
+                "supersedes_id": null,
+                "premised_on_ids": [],
+                "supports_ids": [],
+                "refutes_ids": [],
+                "actor_id": "human:elena",
+                "accepted_by": [],
+                "rejected_by": ["human:marco"],
+                "blocked_actor_id": null,
+                "decision_id": null
+            }]
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    let request_node = nodes
+        .iter()
+        .find(|((kind, _), _)| *kind == NodeKind::DecisionRequest)
+        .map(|((_, id), _)| id.clone())
+        .expect("decision request node from capture"); // ubs:ignore
+    drop(nodes);
+
+    let edges = graph.edges();
+    assert!(
+        // ubs:ignore
+        edges.contains_key(&(
+            RelationKind::RequestProposedBy,
+            request_node.clone(),
+            "human:elena".to_owned()
+        )),
+        "contested ask must use RequestProposedBy"
+    );
+    assert!(
+        // ubs:ignore
+        edges.contains_key(&(
+            RelationKind::RequestRejectedBy,
+            request_node.clone(),
+            "human:marco".to_owned()
+        )),
+        "RequestRejectedBy edge required"
+    );
+    assert!(
+        // ubs:ignore
+        !edges.contains_key(&(
+            RelationKind::DecisionRequestedBy,
+            request_node.clone(),
+            "human:elena".to_owned()
+        )),
+        "contested ask must not use DecisionRequestedBy"
+    );
+    Ok(())
+}
+
+#[test]
+fn classified_batch_decision_request_multi_actor_accept_reject() -> Result<()> {
+    // G2-style: multiple rejecters on one DecisionRequest, all preserved as
+    // separate RequestRejectedBy edges (cardinality, not last-write-wins).
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:dr-multi",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [{
+                "kind": "decision-request",
+                "title": "pricing model for v2 launch",
+                "rationale": "",
+                "topic_keys": [],
+                "evidence_ids": [],
+                "options": null,
+                "chosen_option": null,
+                "extraction_confidence": 0.9,
+                "expressed_confidence": null,
+                "supersedes_id": null,
+                "premised_on_ids": [],
+                "supports_ids": [],
+                "refutes_ids": [],
+                "actor_id": "human:pat",
+                "accepted_by": [],
+                "rejected_by": ["human:sam", "human:jo"],
+                "blocked_actor_id": null,
+                "decision_id": null
+            }]
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    let request_node = nodes
+        .iter()
+        .find(|((kind, _), _)| *kind == NodeKind::DecisionRequest)
+        .map(|((_, id), _)| id.clone())
+        .expect("decision request node from capture"); // ubs:ignore
+    drop(nodes);
+
+    let edges = graph.edges();
+    for rejecter in ["human:sam", "human:jo"] {
+        assert!(
+            edges.contains_key(&(
+                RelationKind::RequestRejectedBy,
+                request_node.clone(),
+                rejecter.to_owned()
+            )),
+            "RequestRejectedBy edge required for {rejecter}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn classified_batch_decision_multi_actor_accepted_by() -> Result<()> {
+    // G3-style: a Decision accepted by two actors — both AcceptedBy edges must
+    // survive; accepted_by is a Vec, not a last-write-wins scalar.
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:d-multi-accept",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [{
+                "kind": "decision",
+                "title": "migrate to GraphQL",
+                "rationale": "batching cut API calls by 40%",
+                "topic_keys": [],
+                "evidence_ids": [],
+                "options": null,
+                "chosen_option": null,
+                "extraction_confidence": 0.9,
+                "expressed_confidence": "high",
+                "supersedes_id": null,
+                "premised_on_ids": [],
+                "supports_ids": [],
+                "refutes_ids": [],
+                "actor_id": null,
+                "accepted_by": ["human:lena", "human:raj"],
+                "rejected_by": [],
+                "blocked_actor_id": null,
+                "decision_id": null
+            }]
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    let decision_node = nodes
+        .iter()
+        .find(|((kind, _), _)| *kind == NodeKind::Decision)
+        .map(|((_, id), _)| id.clone())
+        .expect("decision node from capture"); // ubs:ignore
+    drop(nodes);
+
+    let edges = graph.edges();
+    for acceptor in ["human:lena", "human:raj"] {
+        assert!(
+            edges.contains_key(&(
+                RelationKind::AcceptedBy,
+                decision_node.clone(),
+                acceptor.to_owned()
+            )),
+            "AcceptedBy edge required for {acceptor}"
+        );
+    }
+    Ok(())
+}

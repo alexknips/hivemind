@@ -187,6 +187,54 @@ fn notification_sent_requires_source_event_ids() {
 }
 
 #[test]
+fn capture_item_decodes_pre_widening_scalar_accepted_rejected_by() {
+    // Real pre-change on-disk shape: `accepted_by`/`rejected_by` were `Option<String>`
+    // before widening to `Vec<String>` (hivemind-j4kw). Every previously-stored
+    // `ingest.batch_classified` event has this shape forever — it must keep decoding.
+    let raw = r#"{
+        "kind": "decision",
+        "title": "Use REST for HTTP API",
+        "rationale": "REST maps naturally to resources.",
+        "topic_keys": ["api-design"],
+        "evidence_ids": [],
+        "options": null,
+        "chosen_option": null,
+        "extraction_confidence": 0.9,
+        "actor_id": "human:alice",
+        "accepted_by": "human:bob",
+        "rejected_by": null
+    }"#;
+
+    let capture: CaptureItem = serde_json::from_str(raw).expect("pre-widening shape decodes");
+    assert_eq!(capture.accepted_by, vec!["human:bob".to_owned()]);
+    assert_eq!(capture.rejected_by, Vec::<String>::new());
+}
+
+#[test]
+fn capture_item_decodes_current_array_accepted_rejected_by() {
+    let raw = r#"{
+        "kind": "decision-request",
+        "title": "full frontend rewrite in Vue 3",
+        "rationale": "",
+        "topic_keys": [],
+        "evidence_ids": [],
+        "options": null,
+        "chosen_option": null,
+        "extraction_confidence": 0.9,
+        "actor_id": "human:kim",
+        "accepted_by": [],
+        "rejected_by": ["human:dev", "human:chen"]
+    }"#;
+
+    let capture: CaptureItem = serde_json::from_str(raw).expect("array shape decodes");
+    assert_eq!(capture.accepted_by, Vec::<String>::new());
+    assert_eq!(
+        capture.rejected_by,
+        vec!["human:dev".to_owned(), "human:chen".to_owned()]
+    );
+}
+
+#[test]
 fn blocker_notification_events_require_source_provenance() {
     let mut event: Event = serde_json::from_str(include_str!(
         "../../tests/fixtures/v0/blocker.reported.json"

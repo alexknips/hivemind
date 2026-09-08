@@ -88,6 +88,16 @@ pub enum RelationKind {
     DecisionRequestRequiredOwner,
     AcceptedBy,
     RejectedBy,
+    /// Actor who proposed a `DecisionRequest` that also has an `accepted_by`/`rejected_by`
+    /// position on record (contested ask). Distinct table from `ProposedBy` because Kuzu rel
+    /// tables are bound to a fixed node-kind pair — see the graph reference doc for why the
+    /// proposer/accepter/rejecter roles split into Decision- and DecisionRequest-scoped
+    /// variants instead of widening the existing tables.
+    RequestProposedBy,
+    /// Actor who accepted a `DecisionRequest`. See `RequestProposedBy`.
+    RequestAcceptedBy,
+    /// Actor who rejected a `DecisionRequest`. See `RequestProposedBy`.
+    RequestRejectedBy,
     Supersedes,
     BlockedActor,
     BlockerForDecision,
@@ -109,13 +119,16 @@ pub enum RelationKind {
 }
 
 impl RelationKind {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 25] = [
         Self::ProposedBy,
         Self::DecisionRequestedBy,
         Self::DecisionRequestForDecision,
         Self::DecisionRequestRequiredOwner,
         Self::AcceptedBy,
         Self::RejectedBy,
+        Self::RequestProposedBy,
+        Self::RequestAcceptedBy,
+        Self::RequestRejectedBy,
         Self::Supersedes,
         Self::BlockedActor,
         Self::BlockerForDecision,
@@ -142,6 +155,9 @@ impl RelationKind {
             Self::DecisionRequestRequiredOwner => "DECISION_REQUEST_REQUIRED_OWNER",
             Self::AcceptedBy => "ACCEPTED_BY",
             Self::RejectedBy => "REJECTED_BY",
+            Self::RequestProposedBy => "REQUEST_PROPOSED_BY",
+            Self::RequestAcceptedBy => "REQUEST_ACCEPTED_BY",
+            Self::RequestRejectedBy => "REQUEST_REJECTED_BY",
             Self::Supersedes => "SUPERSEDES",
             Self::BlockedActor => "BLOCKED_ACTOR",
             Self::BlockerForDecision => "BLOCKER_FOR_DECISION",
@@ -167,6 +183,9 @@ impl RelationKind {
                 (NodeKind::Decision, NodeKind::Actor)
             }
             Self::DecisionRequestedBy | Self::DecisionRequestRequiredOwner => {
+                (NodeKind::DecisionRequest, NodeKind::Actor)
+            }
+            Self::RequestProposedBy | Self::RequestAcceptedBy | Self::RequestRejectedBy => {
                 (NodeKind::DecisionRequest, NodeKind::Actor)
             }
             Self::DecisionRequestForDecision => (NodeKind::DecisionRequest, NodeKind::Decision),
@@ -1001,7 +1020,7 @@ fn project_capture_decision(
             origin_properties,
         )?;
     }
-    if let Some(accepted_by) = &capture.accepted_by {
+    for accepted_by in &capture.accepted_by {
         upsert_actor(graph, accepted_by, origin_properties)?;
         graph.upsert_edge(
             RelationKind::AcceptedBy,
@@ -1010,7 +1029,7 @@ fn project_capture_decision(
             origin_properties,
         )?;
     }
-    if let Some(rejected_by) = &capture.rejected_by {
+    for rejected_by in &capture.rejected_by {
         upsert_actor(graph, rejected_by, origin_properties)?;
         graph.upsert_edge(
             RelationKind::RejectedBy,
@@ -1208,12 +1227,37 @@ fn project_capture_decision_request(
     );
     graph.upsert_node(NodeKind::DecisionRequest, node_id, &props)?;
 
+    // A DecisionRequest with a recorded accept/reject position is a contested ask
+    // ("X proposed Y; Z rejected") rather than a plain open request ("owner raised
+    // the request") — deterministic Layer-2 rule over already-extracted fields, same
+    // pattern as PremisedOn vs PremisedOnDirect above. Picking RequestProposedBy over
+    // DecisionRequestedBy here (rather than always emitting DecisionRequestedBy) keeps
+    // D1/D3 (plain asks, no accepted_by/rejected_by) on their existing edge kind.
+    let contested = !capture.accepted_by.is_empty() || !capture.rejected_by.is_empty();
     if let Some(actor_id) = &capture.actor_id {
         upsert_actor(graph, actor_id, origin_properties)?;
+        let kind = if contested {
+            RelationKind::RequestProposedBy
+        } else {
+            RelationKind::DecisionRequestedBy
+        };
+        graph.upsert_edge(kind, node_id, actor_id, origin_properties)?;
+    }
+    for accepted_by in &capture.accepted_by {
+        upsert_actor(graph, accepted_by, origin_properties)?;
         graph.upsert_edge(
-            RelationKind::DecisionRequestedBy,
+            RelationKind::RequestAcceptedBy,
             node_id,
-            actor_id,
+            accepted_by,
+            origin_properties,
+        )?;
+    }
+    for rejected_by in &capture.rejected_by {
+        upsert_actor(graph, rejected_by, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::RequestRejectedBy,
+            node_id,
+            rejected_by,
             origin_properties,
         )?;
     }

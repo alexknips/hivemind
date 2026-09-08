@@ -59,13 +59,16 @@ const NODE_KINDS: [NodeKind; 8] = [
     NodeKind::Hypothesis,
 ];
 
-const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 22] = [
+const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 25] = [
     ProjectorRelationKind::ProposedBy,
     ProjectorRelationKind::DecisionRequestedBy,
     ProjectorRelationKind::DecisionRequestForDecision,
     ProjectorRelationKind::DecisionRequestRequiredOwner,
     ProjectorRelationKind::AcceptedBy,
     ProjectorRelationKind::RejectedBy,
+    ProjectorRelationKind::RequestProposedBy,
+    ProjectorRelationKind::RequestAcceptedBy,
+    ProjectorRelationKind::RequestRejectedBy,
     ProjectorRelationKind::Supersedes,
     ProjectorRelationKind::BlockedActor,
     ProjectorRelationKind::BlockerForDecision,
@@ -594,8 +597,8 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                     supports_ids: vec![],
                     refutes_ids: vec![],
                     actor_id: None,
-                    accepted_by: None,
-                    rejected_by: None,
+                    accepted_by: vec![],
+                    rejected_by: vec![],
                     blocked_actor_id: None,
                     decision_id: None,
                     participants: vec![],
@@ -791,6 +794,21 @@ fn projector_relation_contract(kind: ProjectorRelationKind) -> (&'static str, No
         ),
         ProjectorRelationKind::AcceptedBy => ("ACCEPTED_BY", NodeKind::Decision, NodeKind::Actor),
         ProjectorRelationKind::RejectedBy => ("REJECTED_BY", NodeKind::Decision, NodeKind::Actor),
+        ProjectorRelationKind::RequestProposedBy => (
+            "REQUEST_PROPOSED_BY",
+            NodeKind::DecisionRequest,
+            NodeKind::Actor,
+        ),
+        ProjectorRelationKind::RequestAcceptedBy => (
+            "REQUEST_ACCEPTED_BY",
+            NodeKind::DecisionRequest,
+            NodeKind::Actor,
+        ),
+        ProjectorRelationKind::RequestRejectedBy => (
+            "REQUEST_REJECTED_BY",
+            NodeKind::DecisionRequest,
+            NodeKind::Actor,
+        ),
         ProjectorRelationKind::Supersedes => ("SUPERSEDES", NodeKind::Decision, NodeKind::Decision),
         ProjectorRelationKind::BlockedActor => {
             ("BLOCKED_ACTOR", NodeKind::Blocker, NodeKind::Actor)

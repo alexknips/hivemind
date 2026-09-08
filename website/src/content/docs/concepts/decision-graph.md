@@ -34,6 +34,28 @@ actor as attribution, but `Actor` is not a content node in the decision graph.
 | `SUPPORTS` | Evidence → Hypothesis | Evidence that corroborates a hypothesis |
 | `REFUTES` | Evidence → Hypothesis | Evidence that contradicts a hypothesis |
 
+## Decision request edges
+
+A `DecisionRequest` (an open ask — "should we do X?" — with no decision made yet)
+carries its own edge kinds to `Actor`, distinct from a `Decision`'s:
+
+| Edge | From → To | Meaning |
+|------|-----------|---------|
+| `DECISION_REQUESTED_BY` | DecisionRequest → Actor | Actor who raised the request, with no accept/reject position on record yet |
+| `REQUEST_PROPOSED_BY` | DecisionRequest → Actor | Actor who proposed the position under a contested request (has at least one `REQUEST_ACCEPTED_BY` or `REQUEST_REJECTED_BY` on the same request) |
+| `REQUEST_ACCEPTED_BY` | DecisionRequest → Actor | Actor who accepted the proposed position |
+| `REQUEST_REJECTED_BY` | DecisionRequest → Actor | Actor who rejected the proposed position |
+| `DECISION_REQUEST_FOR_DECISION` | DecisionRequest → Decision | The decision made in response to this request |
+| `DECISION_REQUEST_REQUIRED_OWNER` | DecisionRequest → Actor | Actor whose sign-off the request is waiting on |
+
+**Implementation detail — why two proposer/acceptor/rejecter edge kinds exist:**
+Kuzu (the graph backend) binds a relationship table to a fixed `(from, to)` node-kind
+pair. `PROPOSED_BY`/`ACCEPTED_BY`/`REJECTED_BY` are bound to `Decision → Actor`, so a
+`DecisionRequest`'s proposer/accepter/rejecter positions use the separate
+`REQUEST_PROPOSED_BY`/`REQUEST_ACCEPTED_BY`/`REQUEST_REJECTED_BY` tables instead of
+widening the existing ones. This is a storage-layer detail, not a semantic
+distinction — "who proposed this" means the same thing on both node kinds.
+
 ## Status derivation
 
 Status is derived from the edges present on a decision node:

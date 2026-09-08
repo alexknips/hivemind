@@ -77,6 +77,18 @@ const RELATION_DDL: &[(RelationKind, &str)] = &[
         "CREATE REL TABLE IF NOT EXISTS `REJECTED_BY` (FROM `Decision` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
+        RelationKind::RequestProposedBy,
+        "CREATE REL TABLE IF NOT EXISTS `REQUEST_PROPOSED_BY` (FROM `DecisionRequest` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::RequestAcceptedBy,
+        "CREATE REL TABLE IF NOT EXISTS `REQUEST_ACCEPTED_BY` (FROM `DecisionRequest` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::RequestRejectedBy,
+        "CREATE REL TABLE IF NOT EXISTS `REQUEST_REJECTED_BY` (FROM `DecisionRequest` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
         RelationKind::Supersedes,
         "CREATE REL TABLE IF NOT EXISTS `SUPERSEDES` (FROM `Decision` TO `Decision`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),

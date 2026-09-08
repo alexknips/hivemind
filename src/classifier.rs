@@ -75,8 +75,10 @@ actor_id: The specific actor who proposed/made/reported this item, IF named in
 the input. Use their ID if present, otherwise null. Never infer a proposer from
 context; only record them when explicitly stated.
 
-accepted_by / rejected_by: For decisions. The specific actor who accepted or
-rejected it, IF explicitly named. null otherwise.
+accepted_by / rejected_by: For decisions and decision-requests. Every actor
+explicitly named as accepting or rejecting it. Populate with every actor
+named in the text, never inferred and never deduplicated to one. Empty array
+if none.
 
 supersedes_id: For decisions that explicitly replace a prior decision. Only use
 an ID that appears verbatim in the input text. null if none.
@@ -137,8 +139,8 @@ pub fn capture_schema() -> serde_json::Value {
                         "supports_ids": string_array.clone(),
                         "refutes_ids": string_array.clone(),
                         "actor_id": nullable_string.clone(),
-                        "accepted_by": nullable_string.clone(),
-                        "rejected_by": nullable_string.clone(),
+                        "accepted_by": string_array.clone(),
+                        "rejected_by": string_array.clone(),
                         "blocked_actor_id": nullable_string.clone(),
                         "decision_id": nullable_string.clone()
                     },
@@ -183,8 +185,10 @@ struct CaptureItemRaw {
     #[serde(default)]
     refutes_ids: Vec<String>,
     actor_id: Option<String>,
-    accepted_by: Option<String>,
-    rejected_by: Option<String>,
+    #[serde(default)]
+    accepted_by: Vec<String>,
+    #[serde(default)]
+    rejected_by: Vec<String>,
     blocked_actor_id: Option<String>,
     decision_id: Option<String>,
 }

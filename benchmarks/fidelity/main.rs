@@ -166,6 +166,9 @@ fn canonical_edge_kind(raw: &str) -> String {
         "AcceptedBy" | "ACCEPTED_BY" => "ACCEPTED_BY",
         "RejectedBy" | "REJECTED_BY" => "REJECTED_BY",
         "DecisionRequestedBy" | "DECISION_REQUESTED_BY" => "DECISION_REQUESTED_BY",
+        "RequestProposedBy" | "REQUEST_PROPOSED_BY" => "REQUEST_PROPOSED_BY",
+        "RequestAcceptedBy" | "REQUEST_ACCEPTED_BY" => "REQUEST_ACCEPTED_BY",
+        "RequestRejectedBy" | "REQUEST_REJECTED_BY" => "REQUEST_REJECTED_BY",
         "BlockerForDecision" | "BLOCKER_FOR_DECISION" => "BLOCKER_FOR_DECISION",
         "BlockerRequiredOwner" | "BLOCKER_REQUIRED_OWNER" => "BLOCKER_REQUIRED_OWNER",
         "BlockedActor" | "BLOCKED_ACTOR" => "BLOCKED_ACTOR",
@@ -928,9 +931,12 @@ fn gold_as_captures(expected: &Expected) -> Vec<(String, hivemind::events::Captu
     let mut premised_on_map: HashMap<&str, Vec<String>> = HashMap::new();
     let mut supports_map: HashMap<&str, Vec<String>> = HashMap::new();
     let mut refutes_map: HashMap<&str, Vec<String>> = HashMap::new();
-    // Actor edge maps (CaptureItem field → Actor node key used as ID).
-    let mut accepted_by_map: HashMap<&str, String> = HashMap::new();
-    let mut rejected_by_map: HashMap<&str, String> = HashMap::new();
+    // Actor edge maps (CaptureItem field → Actor node keys used as IDs). Both
+    // Decision (AcceptedBy/RejectedBy) and DecisionRequest (RequestAcceptedBy/
+    // RequestRejectedBy) route into the same accepted_by/rejected_by Vec fields —
+    // the projector picks the edge kind from the capture's `kind`.
+    let mut accepted_by_map: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut rejected_by_map: HashMap<&str, Vec<String>> = HashMap::new();
     let mut dr_actor_id_map: HashMap<&str, String> = HashMap::new();
 
     for e in &expected.edges {
@@ -982,17 +988,45 @@ fn gold_as_captures(expected: &Expected) -> Vec<(String, hivemind::events::Captu
             }
             // Actor-linking edges — use the target Actor's key as the ID,
             // matching capture_node_text(Actor) which returns the node ID.
+            // Multi-valued: a Decision (or DecisionRequest) may have more than
+            // one acceptor/rejecter on record (e.g. G2/G3/G4).
             "AcceptedBy" => {
-                accepted_by_map.insert(e.from.as_str(), e.to.clone());
+                accepted_by_map
+                    .entry(e.from.as_str())
+                    .or_default()
+                    .push(e.to.clone());
             }
             "RejectedBy" => {
-                rejected_by_map.insert(e.from.as_str(), e.to.clone());
+                rejected_by_map
+                    .entry(e.from.as_str())
+                    .or_default()
+                    .push(e.to.clone());
             }
-            // DecisionRequestedBy: from=DecisionRequest, to=Actor.
-            // ProposedBy/RejectedBy from DecisionRequest need schema changes;
-            // skip here to avoid producing wrong edge kinds.
+            // DecisionRequestedBy: from=DecisionRequest, to=Actor. Plain open ask,
+            // no accepted_by/rejected_by on record (D1/D3).
             "DecisionRequestedBy" => {
                 dr_actor_id_map.insert(e.from.as_str(), e.to.clone());
+            }
+            // RequestProposedBy: from=DecisionRequest, to=Actor. Contested ask —
+            // proposer position, routed the same as DecisionRequestedBy's actor_id;
+            // the projector picks RequestProposedBy vs DecisionRequestedBy from
+            // whether accepted_by/rejected_by are populated.
+            "RequestProposedBy" => {
+                dr_actor_id_map.insert(e.from.as_str(), e.to.clone());
+            }
+            // RequestAcceptedBy/RequestRejectedBy: from=DecisionRequest, to=Actor.
+            // Route into the same Vec fields as Decision's AcceptedBy/RejectedBy.
+            "RequestAcceptedBy" => {
+                accepted_by_map
+                    .entry(e.from.as_str())
+                    .or_default()
+                    .push(e.to.clone());
+            }
+            "RequestRejectedBy" => {
+                rejected_by_map
+                    .entry(e.from.as_str())
+                    .or_default()
+                    .push(e.to.clone());
             }
             _ => {}
         }
@@ -1011,20 +1045,27 @@ fn gold_as_captures(expected: &Expected) -> Vec<(String, hivemind::events::Captu
         };
         let key = node.key.as_str();
         // Wire actor fields for kinds that support them within the current schema:
-        // - Decision: accepted_by and rejected_by wired from gold edges.
-        // - DecisionRequest: actor_id → DecisionRequestedBy where gold has that edge.
-        //   ProposedBy/RejectedBy from a DecisionRequest need a schema extension;
-        //   left as None to avoid producing wrong edge kinds that tank precision.
+        // - Decision: accepted_by and rejected_by wired from gold edges (no gold case
+        //   uses ProposedBy on a Decision node; actor_id stays unwired here).
+        // - DecisionRequest: actor_id from DecisionRequestedBy/RequestProposedBy gold
+        //   edges (whichever is present); accepted_by/rejected_by from
+        //   RequestAcceptedBy/RequestRejectedBy gold edges. The projector derives which
+        //   of DecisionRequestedBy/RequestProposedBy to emit from whether accepted_by/
+        //   rejected_by are populated — both routes are gold-driven here, not guessed.
         // - BlockerForDecision and BlockerRequiredOwner need schema extensions;
         //   decision_id/blocked_actor_id left as None to avoid spurious edges.
         let (actor_id, accepted_by, rejected_by) = match kind {
             "decision" => (
                 None,
-                accepted_by_map.get(key).cloned(),
-                rejected_by_map.get(key).cloned(),
+                accepted_by_map.get(key).cloned().unwrap_or_default(),
+                rejected_by_map.get(key).cloned().unwrap_or_default(),
             ),
-            "decision-request" => (dr_actor_id_map.get(key).cloned(), None, None),
-            _ => (None, None, None),
+            "decision-request" => (
+                dr_actor_id_map.get(key).cloned(),
+                accepted_by_map.get(key).cloned().unwrap_or_default(),
+                rejected_by_map.get(key).cloned().unwrap_or_default(),
+            ),
+            _ => (None, Vec::new(), Vec::new()),
         };
         captures.push((
             key.to_owned(),
@@ -1450,8 +1491,8 @@ mod tests {
             supports_ids: vec![],
             refutes_ids: vec![],
             actor_id: None,
-            accepted_by: None,
-            rejected_by: None,
+            accepted_by: vec![],
+            rejected_by: vec![],
             blocked_actor_id: None,
             decision_id: None,
             participants: vec![],

@@ -277,9 +277,12 @@ cases:
         - {kind: Actor, key: dana, text: "Dana (hiring manager)"}
         - {kind: Actor, key: ravi, text: "Ravi (bar raiser)"}
       edges:
-        - {kind: ProposedBy, from: req, to: dana}
-        - {kind: RejectedBy, from: req, to: ravi}
+        - {kind: RequestProposedBy, from: req, to: dana}
+        - {kind: RequestRejectedBy, from: req, to: ravi}
       # contested = both positions preserved, no CHOSE, no accepted Decision.
+      # RequestProposedBy/RequestRejectedBy (not ProposedBy/RejectedBy): these edges
+      # originate from a DecisionRequest node, which is a separate Kuzu rel-table pair
+      # from Decision's PROPOSED_BY/REJECTED_BY (hivemind-j4kw).
 
   - id: D3-deploy-gate-blocked
     archetype: blocked
@@ -420,9 +423,10 @@ cases:
         - {kind: Actor, key: elena, text: "Elena"}
         - {kind: Actor, key: marco, text: "Marco"}
       edges:
-        - {kind: ProposedBy, from: req, to: elena}
-        - {kind: RejectedBy, from: req, to: marco}
+        - {kind: RequestProposedBy, from: req, to: elena}
+        - {kind: RequestRejectedBy, from: req, to: marco}
       # two opposing positions preserved; no Decision node until resolved.
+      # RequestProposedBy/RequestRejectedBy: see D2's note above (hivemind-j4kw).
 
   - id: G2-pricing-three-way
     archetype: contested
@@ -441,10 +445,11 @@ cases:
         - {kind: Actor, key: sam, text: "Sam"}
         - {kind: Actor, key: jo, text: "Jo"}
       edges:
-        - {kind: ProposedBy, from: req, to: pat}
-        - {kind: RejectedBy, from: req, to: sam}
-        - {kind: RejectedBy, from: req, to: jo}
-      # two separate RejectedBy edges — both Sam and Jo rejected Pat's proposal.
+        - {kind: RequestProposedBy, from: req, to: pat}
+        - {kind: RequestRejectedBy, from: req, to: sam}
+        - {kind: RequestRejectedBy, from: req, to: jo}
+      # two separate RequestRejectedBy edges — both Sam and Jo rejected Pat's
+      # proposal. See D2's note above (hivemind-j4kw).
 
   - id: G3-migration-converge
     archetype: contested
@@ -486,9 +491,10 @@ cases:
         - {kind: Actor, key: dev, text: "Dev"}
         - {kind: Actor, key: chen, text: "Chen"}
       edges:
-        - {kind: ProposedBy, from: req, to: kim}
-        - {kind: RejectedBy, from: req, to: dev}
-        - {kind: RejectedBy, from: req, to: chen}
+        - {kind: RequestProposedBy, from: req, to: kim}
+        - {kind: RequestRejectedBy, from: req, to: dev}
+        - {kind: RequestRejectedBy, from: req, to: chen}
+      # See D2's note above (hivemind-j4kw).
 
   - id: G5-ownership-contested
     archetype: contested
@@ -506,8 +512,9 @@ cases:
         - {kind: Actor, key: platform, text: "team-platform"}
         - {kind: Actor, key: product, text: "team-product"}
       edges:
-        - {kind: ProposedBy, from: req, to: platform}
-        - {kind: RejectedBy, from: req, to: product}
+        - {kind: RequestProposedBy, from: req, to: platform}
+        - {kind: RequestRejectedBy, from: req, to: product}
+      # See D2's note above (hivemind-j4kw).
 
   - id: G6-classic-two-actor
     archetype: contested
@@ -524,8 +531,9 @@ cases:
         - {kind: Actor, key: alice, text: "Alice"}
         - {kind: Actor, key: bob, text: "Bob"}
       edges:
-        - {kind: ProposedBy, from: req, to: alice}
-        - {kind: RejectedBy, from: req, to: bob}
+        - {kind: RequestProposedBy, from: req, to: alice}
+        - {kind: RequestRejectedBy, from: req, to: bob}
+      # See D2's note above (hivemind-j4kw).
 
 # ===== Archetype H: adversarial structural (cross-topic, chains, noise, precision)
   - id: H1-cross-topic-hypothesis
