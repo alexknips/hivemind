@@ -1,0 +1,347 @@
+HiveMind capture-fidelity evaluator (Phase 1) — CEILING MODE
+(Gold nodes → CaptureItems via real projector; no LLM calls.)
+Corpus: 36 cases
+Org bundles: 3 (metadata for hmd-4tf, not scored)
+
+Running case A1-ledger-store ...
+  Case A1-ledger-store [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case A2-frontend-framework ...
+  Case A2-frontend-framework [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case A3-cloud-region ...
+  Case A3-cloud-region [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case B1-pricing-reversal ...
+  Case B1-pricing-reversal [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:SUPERSEDES           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case B2-repo-topology-double ...
+  Case B2-repo-topology-double [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:SUPERSEDES           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case B3-auth-vendor-switch ...
+  Case B3-auth-vendor-switch [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:SUPERSEDES           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case C1-perf-hypothesis-refuted ...
+  Case C1-perf-hypothesis-refuted [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:PREMISED_ON          P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:PREMISED_ON_DIRECT   P=0.00 R=1.00 F1=0.00  (tp=0 fp=1 fn=0)
+    edge:REFUTES              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 0.71
+
+Running case C2-growth-assumption-supported ...
+  Case C2-growth-assumption-supported [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:PREMISED_ON          P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:PREMISED_ON_DIRECT   P=0.00 R=1.00 F1=0.00  (tp=0 fp=1 fn=0)
+    edge:SUPPORTS             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 0.71
+
+Running case C3-threat-model-mixed ...
+  Case C3-threat-model-mixed [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:PREMISED_ON          P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:PREMISED_ON_DIRECT   P=0.00 R=1.00 F1=0.00  (tp=0 fp=1 fn=0)
+    edge:REFUTES              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:SUPPORTS             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 0.75
+
+Running case D1-launch-blocked-legal ...
+  Case D1-launch-blocked-legal [ceiling/n/a]
+    node:Actor                P=1.00 R=0.50 F1=0.67  (tp=1 fp=0 fn=1)
+    node:Blocker              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BLOCKER_FOR_DECISION P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:BLOCKER_REQUIRED_OWNER P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:DECISION_REQUESTED_BY P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 0.61
+
+Running case D2-hiring-contested ...
+  Case D2-hiring-contested [ceiling/n/a]
+    node:Actor                P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REQUEST_PROPOSED_BY  P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REQUEST_REJECTED_BY  P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case D3-deploy-gate-blocked ...
+  Case D3-deploy-gate-blocked [ceiling/n/a]
+    node:Actor                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Blocker              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BLOCKER_FOR_DECISION P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:DECISION_REQUESTED_BY P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 0.80
+
+Running case E1-slack-implicit-option ...
+  Case E1-slack-implicit-option [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case E2-meeting-decision-plus-tangent ...
+  Case E2-meeting-decision-plus-tangent [ceiling/n/a]
+    node:Actor                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:ACCEPTED_BY          P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case E3-tentative-low-confidence-decision ...
+  Case E3-tentative-low-confidence-decision [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:PREMISED_ON          P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+    edge:PREMISED_ON_DIRECT   P=0.00 R=1.00 F1=0.00  (tp=0 fp=1 fn=0)
+    macro-F1: 0.50
+
+Running case F1-unilateral-no-alternatives ...
+  Case F1-unilateral-no-alternatives [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case F2-status-update-non-decision ...
+  Case F2-status-update-non-decision [ceiling/n/a]
+    macro-F1: 1.00
+
+Running case F3-request-only-no-decision ...
+  Case F3-request-only-no-decision [ceiling/n/a]
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case G1-data-tier-contested ...
+  Case G1-data-tier-contested [ceiling/n/a]
+    node:Actor                P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REQUEST_PROPOSED_BY  P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REQUEST_REJECTED_BY  P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case G2-pricing-three-way ...
+  Case G2-pricing-three-way [ceiling/n/a]
+    node:Actor                P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REQUEST_PROPOSED_BY  P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REQUEST_REJECTED_BY  P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case G3-migration-converge ...
+  Case G3-migration-converge [ceiling/n/a]
+    node:Actor                P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:ACCEPTED_BY          P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case G4-rewrite-frontend ...
+  Case G4-rewrite-frontend [ceiling/n/a]
+    node:Actor                P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REQUEST_PROPOSED_BY  P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REQUEST_REJECTED_BY  P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case G5-ownership-contested ...
+  Case G5-ownership-contested [ceiling/n/a]
+    node:Actor                P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REQUEST_PROPOSED_BY  P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REQUEST_REJECTED_BY  P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case G6-classic-two-actor ...
+  Case G6-classic-two-actor [ceiling/n/a]
+    node:Actor                P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REQUEST_PROPOSED_BY  P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:REQUEST_REJECTED_BY  P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case H1-cross-topic-hypothesis ...
+  Case H1-cross-topic-hypothesis [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:PREMISED_ON          P=0.00 R=0.00 F1=0.00  (tp=0 fp=1 fn=1)
+    edge:SUPPORTS             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 0.89
+
+Running case H2-long-chain-five ...
+  Case H2-long-chain-five [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=5 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:SUPERSEDES           P=1.00 R=1.00 F1=1.00  (tp=4 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case H3-two-evidence-conflict ...
+  Case H3-two-evidence-conflict [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    node:Hypothesis           P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:PREMISED_ON          P=0.00 R=0.00 F1=0.00  (tp=0 fp=1 fn=1)
+    edge:REFUTES              P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:SUPPORTS             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 0.90
+
+Running case H4-partial-noisy-input ...
+  Case H4-partial-noisy-input [ceiling/n/a]
+    node:Actor                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:DecisionRequest      P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:ACCEPTED_BY          P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case H5-non-decision-procedural ...
+  Case H5-non-decision-procedural [ceiling/n/a]
+    macro-F1: 1.00
+
+Running case H6-two-decisions-in-blob ...
+  Case H6-two-decisions-in-blob [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case MA1-acme-db ...
+  Case MA1-acme-db [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case MA2-acme-api-format ...
+  Case MA2-acme-api-format [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case MB1-beacon-grpc-spec ...
+  Case MB1-beacon-grpc-spec [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case MB2-beacon-auth ...
+  Case MB2-beacon-auth [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case MC1-cascade-integration ...
+  Case MC1-cascade-integration [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 1.00
+
+Running case MC2-cascade-rollout ...
+  Case MC2-cascade-rollout [ceiling/n/a]
+    node:Decision             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Evidence             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    node:Option               P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    edge:BASED_ON             P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:CHOSE                P=1.00 R=1.00 F1=1.00  (tp=1 fp=0 fn=0)
+    edge:HAS_OPTION           P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+    macro-F1: 1.00
+
+=== AGGREGATE SCORECARD (36 cases) ===
+
+Nodes:
+  Actor                  P=1.00 R=0.95 F1=0.98  (tp=20 fp=0 fn=1)
+  Blocker                P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+  Decision               P=1.00 R=1.00 F1=1.00  (tp=34 fp=0 fn=0)
+  DecisionRequest        P=1.00 R=1.00 F1=1.00  (tp=10 fp=0 fn=0)
+  Evidence               P=1.00 R=1.00 F1=1.00  (tp=21 fp=0 fn=0)
+  Hypothesis             P=1.00 R=1.00 F1=1.00  (tp=6 fp=0 fn=0)
+  Option                 P=1.00 R=1.00 F1=1.00  (tp=31 fp=0 fn=0)
+
+Edges:
+  ACCEPTED_BY            P=1.00 R=1.00 F1=1.00  (tp=4 fp=0 fn=0)
+  BASED_ON               P=1.00 R=1.00 F1=1.00  (tp=20 fp=0 fn=0)
+  BLOCKER_FOR_DECISION   P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=2)
+  BLOCKER_REQUIRED_OWNER P=1.00 R=0.00 F1=0.00  (tp=0 fp=0 fn=1)
+  CHOSE                  P=1.00 R=1.00 F1=1.00  (tp=13 fp=0 fn=0)
+  DECISION_REQUESTED_BY  P=1.00 R=1.00 F1=1.00  (tp=2 fp=0 fn=0)
+  HAS_OPTION             P=1.00 R=1.00 F1=1.00  (tp=31 fp=0 fn=0)
+  PREMISED_ON            P=0.00 R=0.00 F1=0.00  (tp=0 fp=2 fn=6)
+  PREMISED_ON_DIRECT     P=0.00 R=1.00 F1=0.00  (tp=0 fp=4 fn=0)
+  REFUTES                P=1.00 R=1.00 F1=1.00  (tp=3 fp=0 fn=0)
+  REQUEST_PROPOSED_BY    P=1.00 R=1.00 F1=1.00  (tp=6 fp=0 fn=0)
+  REQUEST_REJECTED_BY    P=1.00 R=1.00 F1=1.00  (tp=8 fp=0 fn=0)
+  SUPERSEDES             P=1.00 R=1.00 F1=1.00  (tp=8 fp=0 fn=0)
+  SUPPORTS               P=1.00 R=1.00 F1=1.00  (tp=4 fp=0 fn=0)
+
+Macro-F1 (mean over cases): 0.94

@@ -986,47 +986,67 @@ fn gold_as_captures(expected: &Expected) -> Vec<(String, hivemind::events::Captu
                     .or_default()
                     .push(e.to.clone());
             }
-            // Actor-linking edges — use the target Actor's key as the ID,
-            // matching capture_node_text(Actor) which returns the node ID.
+            // Actor-linking edges — resolve the target Actor's key to its
+            // declared node text (same key_map lookup HAS_OPTION/CHOSE use
+            // above), since that text is what actually flows through as the
+            // real projector's actor_id and is what gold_graph's ScoredNode
+            // compares against. Using the raw key here (as this used to)
+            // silently passed for every case where key happened to equal
+            // lowercase(text), then produced a wrong-text Actor node instead
+            // of the real one for D2/G5, whose gold text carries a
+            // descriptive suffix the key doesn't ("Dana (hiring manager)" /
+            // "team-platform").
             // Multi-valued: a Decision (or DecisionRequest) may have more than
             // one acceptor/rejecter on record (e.g. G2/G3/G4).
             "AcceptedBy" => {
-                accepted_by_map
-                    .entry(e.from.as_str())
-                    .or_default()
-                    .push(e.to.clone());
+                if let Some(&text) = key_map.get(e.to.as_str()) {
+                    accepted_by_map
+                        .entry(e.from.as_str())
+                        .or_default()
+                        .push(text.to_owned());
+                }
             }
             "RejectedBy" => {
-                rejected_by_map
-                    .entry(e.from.as_str())
-                    .or_default()
-                    .push(e.to.clone());
+                if let Some(&text) = key_map.get(e.to.as_str()) {
+                    rejected_by_map
+                        .entry(e.from.as_str())
+                        .or_default()
+                        .push(text.to_owned());
+                }
             }
             // DecisionRequestedBy: from=DecisionRequest, to=Actor. Plain open ask,
             // no accepted_by/rejected_by on record (D1/D3).
             "DecisionRequestedBy" => {
-                dr_actor_id_map.insert(e.from.as_str(), e.to.clone());
+                if let Some(&text) = key_map.get(e.to.as_str()) {
+                    dr_actor_id_map.insert(e.from.as_str(), text.to_owned());
+                }
             }
             // RequestProposedBy: from=DecisionRequest, to=Actor. Contested ask —
             // proposer position, routed the same as DecisionRequestedBy's actor_id;
             // the projector picks RequestProposedBy vs DecisionRequestedBy from
             // whether accepted_by/rejected_by are populated.
             "RequestProposedBy" => {
-                dr_actor_id_map.insert(e.from.as_str(), e.to.clone());
+                if let Some(&text) = key_map.get(e.to.as_str()) {
+                    dr_actor_id_map.insert(e.from.as_str(), text.to_owned());
+                }
             }
             // RequestAcceptedBy/RequestRejectedBy: from=DecisionRequest, to=Actor.
             // Route into the same Vec fields as Decision's AcceptedBy/RejectedBy.
             "RequestAcceptedBy" => {
-                accepted_by_map
-                    .entry(e.from.as_str())
-                    .or_default()
-                    .push(e.to.clone());
+                if let Some(&text) = key_map.get(e.to.as_str()) {
+                    accepted_by_map
+                        .entry(e.from.as_str())
+                        .or_default()
+                        .push(text.to_owned());
+                }
             }
             "RequestRejectedBy" => {
-                rejected_by_map
-                    .entry(e.from.as_str())
-                    .or_default()
-                    .push(e.to.clone());
+                if let Some(&text) = key_map.get(e.to.as_str()) {
+                    rejected_by_map
+                        .entry(e.from.as_str())
+                        .or_default()
+                        .push(text.to_owned());
+                }
             }
             _ => {}
         }
