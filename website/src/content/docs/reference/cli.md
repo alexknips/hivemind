@@ -87,6 +87,25 @@ hivemind emit ingest.batch_classified
   [--schema-version <n>]         # must be "2"; default: 2
 ```
 
+### `emit decision.scored`
+
+Keyless scoring path: submit a pre-scored quality/importance assessment from a
+plugin or edge session directly — no `ANTHROPIC_API_KEY` needed. The target
+capture node is resolved from a prior `ingest.batch_classified` batch via
+`--batch-id` + `--capture-index`, so callers never construct the
+`capture:{event_id}:{idx}` node-id format themselves. Fails if the referenced
+capture is not a `"decision"`. Scores are validated and clamped with the same
+invariants as the server's own Haiku-backed scorer (`src/scorer.rs`).
+
+```
+hivemind emit decision.scored
+  --batch-id <id>                 # batch_id from a prior emit ingest.batch_classified
+  --capture-index <n>              # 0-based index of the decision capture in that batch
+  --scores <path>                  # JSON file: {"quality_dims": {...}, "importance": {...}}
+  [--scorer-model <name>]          # default: claude-haiku-4-5-20251001
+  [--weight-version <tag>]         # default: v1
+```
+
 ## Query commands
 
 All `query` commands return JSON. They never write to the ledger.
