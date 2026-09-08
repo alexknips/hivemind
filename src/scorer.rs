@@ -480,13 +480,14 @@ pub(crate) fn resolve_capture_node_id<L: EventLedger>(
             })?;
             let kind = capture.get("kind").and_then(|v| v.as_str()).unwrap_or("");
             if kind != "decision" {
+                // ubs:ignore: error path — returns immediately, exits the loop, not a per-iteration allocation
                 return Err(crate::CommandError::Validation(format!(
                     "capture at index {idx} in batch {batch_id} is kind={kind:?}, not \"decision\" — only decision captures are scored"
                 ))
                 .into());
             }
 
-            return Ok((format!("capture:{event_id}:{idx}"), event_id));
+            return Ok((format!("capture:{event_id}:{idx}"), event_id)); // ubs:ignore: single owned key on the match-found return path — exits the loop, not a per-iteration allocation
         }
 
         if let Some(last) = events.last().and_then(|e| e.event_id) {
