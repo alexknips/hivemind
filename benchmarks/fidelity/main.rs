@@ -12,6 +12,7 @@
 //!     shells out to the operator's authenticated Claude Code CLI
 //!     subscription (`claude -p`), for keyless local runs. Intended for a
 //!     human developer running an eval from their own agent session.
+//!
 //! Both share the exact classifier prompt, schema, and CaptureItem parsing
 //! (`hivemind::classifier::{build_prompt, capture_schema, parse_capture_response}`)
 //! so scores are comparable across backends.
@@ -32,7 +33,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 // --------------------------------------------------------------------------
 // Corpus types
@@ -493,6 +494,10 @@ impl Counts {
     }
 }
 
+// Kept for the score_nodes_rubric_exact_matches_score_nodes parity test only
+// (Rubric::Exact must reproduce this exactly); the binary's live scoring path
+// now always goes through score_nodes_rubric.
+#[cfg_attr(not(test), allow(dead_code))]
 fn score_nodes(gold: &[ScoredNode], produced: &[ScoredNode]) -> HashMap<String, Counts> {
     let mut by_kind: HashMap<String, Counts> = HashMap::new();
 
@@ -523,6 +528,8 @@ fn score_nodes(gold: &[ScoredNode], produced: &[ScoredNode]) -> HashMap<String, 
     by_kind
 }
 
+// Kept for the score_edges parity test only; see score_nodes's comment above.
+#[cfg_attr(not(test), allow(dead_code))]
 fn score_edges(gold: &[ScoredEdge], produced: &[ScoredEdge]) -> HashMap<String, Counts> {
     let mut by_kind: HashMap<String, Counts> = HashMap::new();
 
@@ -551,6 +558,207 @@ fn score_edges(gold: &[ScoredEdge], produced: &[ScoredEdge]) -> HashMap<String, 
     }
 
     by_kind
+}
+
+// --------------------------------------------------------------------------
+// Phase 2 rubric: deterministic token-similarity matching
+//
+// hivemind-g4ft.1: Phase 1 free-text matching is exact-normalized-text
+// (see `normalize` above and score_nodes/score_edges). That rubric was
+// always documented as provisional — the corpus header has read, since
+// hivemind-21zi, "LLM-judge added only in Phase 2 where phrasing varies".
+// PRINCIPLES 1/7 rule out an LLM in a scoring path, so Phase 2 here is a
+// deterministic similarity measure instead: no model call, fully
+// reproducible, and its basis (token Jaccard over normalized text) is
+// traceable — no invented confidence per AGENTS.md section 6.
+// --------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rubric {
+    /// Phase 1: free-text fields must match exactly after normalization.
+    Exact,
+    /// Phase 2: free-text fields match when token-Jaccard similarity clears
+    /// SIMILARITY_THRESHOLD. Still zero LLM calls in the scoring path.
+    Similarity,
+}
+
+impl Rubric {
+    fn parse(raw: &str) -> Self {
+        match raw {
+            "exact" => Rubric::Exact,
+            "similarity" => Rubric::Similarity,
+            other => {
+                eprintln!(
+                    "error: invalid --rubric={other:?}; expected \"exact\" or \"similarity\""
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Rubric::Exact => "exact",
+            Rubric::Similarity => "similarity",
+        }
+    }
+}
+
+/// Threshold picked from manual adjudication of the 265w claude-cli run
+/// (hivemind-g4ft.1, 2026-09-08) against the 36-case gold corpus: see the
+/// bead notes for the worked true-positive/false-positive pairs that set
+/// this boundary.
+const SIMILARITY_THRESHOLD: f64 = 0.5;
+
+/// Token-Jaccard similarity, normalizing both inputs first (lowercase,
+/// punctuation stripped to spaces — see `normalize`) so callers can pass
+/// either raw or already-normalized text. Deterministic, symmetric, no
+/// external calls. 1.0 for identical text (including identical empty text),
+/// 0.0 when either side is non-empty and they share no tokens.
+fn text_similarity(a: &str, b: &str) -> f64 {
+    if a == b {
+        return 1.0;
+    }
+    let na = normalize(a);
+    let nb = normalize(b);
+    if na == nb {
+        return 1.0;
+    }
+    let ta: std::collections::HashSet<&str> = na.split_whitespace().collect();
+    let tb: std::collections::HashSet<&str> = nb.split_whitespace().collect();
+    if ta.is_empty() || tb.is_empty() {
+        return 0.0;
+    }
+    let intersection = ta.intersection(&tb).count();
+    let union = ta.union(&tb).count();
+    intersection as f64 / union as f64
+}
+
+fn rubric_matches(rubric: Rubric, a: &str, b: &str) -> bool {
+    match rubric {
+        Rubric::Exact => a == b,
+        Rubric::Similarity => a == b || text_similarity(a, b) >= SIMILARITY_THRESHOLD,
+    }
+}
+
+/// Same TP/FP/FN semantics as score_nodes, but the match predicate is
+/// rubric-dependent and, for Similarity, greedily prefers the
+/// highest-similarity unmatched candidate (order-independent) rather than
+/// the first candidate found.
+fn score_nodes_rubric(
+    gold: &[ScoredNode],
+    produced: &[ScoredNode],
+    rubric: Rubric,
+) -> HashMap<String, Counts> {
+    let mut by_kind: HashMap<String, Counts> = HashMap::new();
+    let mut matched_produced: Vec<bool> = vec![false; produced.len()];
+
+    for gn in gold {
+        let counts = by_kind.entry(gn.kind.clone()).or_default();
+        let best = produced
+            .iter()
+            .enumerate()
+            .filter(|(i, pn)| !matched_produced[*i] && pn.kind == gn.kind)
+            .filter(|(_, pn)| rubric_matches(rubric, &gn.text, &pn.text))
+            .max_by(|(_, a), (_, b)| {
+                text_similarity(&gn.text, &a.text)
+                    .partial_cmp(&text_similarity(&gn.text, &b.text))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        if let Some((i, _)) = best {
+            matched_produced[i] = true;
+            counts.tp += 1;
+        } else {
+            counts.fn_ += 1;
+        }
+    }
+
+    for (i, pn) in produced.iter().enumerate() {
+        if !matched_produced[i] {
+            by_kind.entry(pn.kind.clone()).or_default().fp += 1;
+        }
+    }
+
+    by_kind
+}
+
+/// Same TP/FP/FN semantics as score_edges, rubric-dependent on both endpoint
+/// texts (edge kind and endpoint kinds remain exact — only free-text fields
+/// get the fuzzy rubric, per the corpus header's matching rule).
+fn score_edges_rubric(
+    gold: &[ScoredEdge],
+    produced: &[ScoredEdge],
+    rubric: Rubric,
+) -> HashMap<String, Counts> {
+    let mut by_kind: HashMap<String, Counts> = HashMap::new();
+    let mut matched_produced: Vec<bool> = vec![false; produced.len()];
+
+    let edge_sim = |a: &ScoredEdge, b: &ScoredEdge| -> f64 {
+        (text_similarity(&a.from_text, &b.from_text) + text_similarity(&a.to_text, &b.to_text))
+            / 2.0
+    };
+
+    for ge in gold {
+        let counts = by_kind.entry(ge.kind.clone()).or_default();
+        let best = produced
+            .iter()
+            .enumerate()
+            .filter(|(i, pe)| !matched_produced[*i] && pe.kind == ge.kind)
+            .filter(|(_, pe)| {
+                rubric_matches(rubric, &ge.from_text, &pe.from_text)
+                    && rubric_matches(rubric, &ge.to_text, &pe.to_text)
+            })
+            .max_by(|(_, a), (_, b)| {
+                edge_sim(ge, a)
+                    .partial_cmp(&edge_sim(ge, b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        if let Some((i, _)) = best {
+            matched_produced[i] = true;
+            counts.tp += 1;
+        } else {
+            counts.fn_ += 1;
+        }
+    }
+
+    for (i, pe) in produced.iter().enumerate() {
+        if !matched_produced[i] {
+            by_kind.entry(pe.kind.clone()).or_default().fp += 1;
+        }
+    }
+
+    by_kind
+}
+
+/// Prints, for every unmatched (FN) gold node/edge, its nearest produced
+/// candidate of the same kind and the similarity score — the raw material
+/// for manual adjudication (hivemind-g4ft.1 acceptance criterion: adjudicate
+/// a sample before trusting a rubric change). Independent of which rubric
+/// the aggregate scorecard uses.
+fn print_mismatches(case_id: &str, gold_nodes: &[ScoredNode], prod_nodes: &[ScoredNode]) {
+    for gn in gold_nodes {
+        let exact = prod_nodes
+            .iter()
+            .any(|pn| pn.kind == gn.kind && pn.text == gn.text);
+        if exact {
+            continue;
+        }
+        let best = prod_nodes
+            .iter()
+            .filter(|pn| pn.kind == gn.kind)
+            .map(|pn| (pn, text_similarity(&gn.text, &pn.text)))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        match best {
+            Some((pn, sim)) => println!(
+                "  MISMATCH[{case_id}] node:{} gold={:?} nearest_produced={:?} sim={:.2}",
+                gn.kind, gn.text, pn.text, sim
+            ),
+            None => println!(
+                "  MISMATCH[{case_id}] node:{} gold={:?} nearest_produced=<none of this kind>",
+                gn.kind, gn.text
+            ),
+        }
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -852,11 +1060,37 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let corpus_path = parse_corpus_arg(&args);
     let ceiling_mode = args.iter().any(|a| a == "--ceiling");
+    let rubric = parse_flag_value(&args, "--rubric")
+        .map(|v| Rubric::parse(&v))
+        .unwrap_or(Rubric::Exact);
+    let show_mismatches = args.iter().any(|a| a == "--show-mismatches");
+    let save_captures_path = parse_flag_value(&args, "--save-captures");
+    let load_captures_path = parse_flag_value(&args, "--load-captures");
+    let loaded_run: Option<CaptureRun> = load_captures_path.as_ref().map(|p| {
+        let raw = std::fs::read_to_string(p).unwrap_or_else(|e| {
+            eprintln!("error: cannot read --load-captures {p}: {e}");
+            std::process::exit(1);
+        });
+        serde_json::from_str(&raw).unwrap_or_else(|e| {
+            eprintln!("error: --load-captures {p} is not valid capture-cache JSON: {e}");
+            std::process::exit(1);
+        })
+    });
+    let loaded_captures: Option<HashMap<String, Vec<(String, hivemind::events::CaptureItem)>>> =
+        loaded_run.as_ref().map(|run| {
+            run.cases
+                .iter()
+                .cloned()
+                .map(|c| (c.case_id, c.captures))
+                .collect()
+        });
 
     // (backend, model, api_key) — api_key only populated for the
-    // anthropic-api backend; unused (and unset) in ceiling mode or when the
-    // claude-cli backend is selected.
-    let (backend, model, api_key): (Option<Backend>, String, String) = if ceiling_mode {
+    // anthropic-api backend; unused (and unset) in ceiling mode, replay mode
+    // (--load-captures), or when the claude-cli backend is selected.
+    let (backend, model, api_key): (Option<Backend>, String, String) = if ceiling_mode
+        || loaded_captures.is_some()
+    {
         (None, String::new(), String::new())
     } else {
         let backend = resolve_backend();
@@ -891,6 +1125,23 @@ async fn main() {
         }
     };
 
+    // Provenance label used both in the printed scorecard and in the
+    // capture-cache file (AGENTS.md §4: provenance is mandatory) — computed
+    // once so ceiling/replay/live modes agree everywhere it's shown.
+    let (run_backend_label, run_model_label): (String, String) = if ceiling_mode {
+        ("ceiling".to_owned(), "n/a".to_owned())
+    } else if let Some(run) = &loaded_run {
+        (format!("replay:{}", run.backend), run.model.clone())
+    } else {
+        (
+            backend
+                .expect("resolved above when not in ceiling/replay mode")
+                .label()
+                .to_owned(),
+            model.clone(),
+        )
+    };
+
     let corpus_yaml = std::fs::read_to_string(&corpus_path).unwrap_or_else(|e| {
         eprintln!(
             "error: cannot read corpus at {}: {e}",
@@ -905,17 +1156,21 @@ async fn main() {
     });
 
     if ceiling_mode {
-        println!("HiveMind capture-fidelity evaluator (Phase 1) — CEILING MODE");
+        println!("HiveMind capture-fidelity evaluator — CEILING MODE");
         println!("(Gold nodes → CaptureItems via real projector; no LLM calls.)");
+    } else if let Some(p) = &load_captures_path {
+        println!("HiveMind capture-fidelity evaluator — REPLAY MODE");
+        println!("(Captures loaded from {p}; no LLM calls.)");
     } else {
-        println!("HiveMind capture-fidelity evaluator (Phase 1)");
+        println!("HiveMind capture-fidelity evaluator");
         println!(
             "Backend: {} (model: {model})",
             backend
-                .expect("resolved above when not in ceiling mode")
+                .expect("resolved above when not in ceiling/replay mode")
                 .label()
         );
     }
+    println!("Rubric: {}", rubric.label());
     println!("Corpus: {} cases", corpus.cases.len());
     if !corpus.org_bundles.is_empty() {
         println!(
@@ -931,15 +1186,25 @@ async fn main() {
         .expect("reqwest client");
 
     let mut results: Vec<CaseResult> = Vec::new();
+    let mut captures_out: Vec<CaseCaptures> = Vec::new();
 
     for case in &corpus.cases {
         println!("Running case {} ...", case.id);
 
-        // id_captures: (stable_node_id, &CaptureItem) pairs for the projector.
+        // id_captures: (stable_node_id, CaptureItem) pairs for the projector.
         let id_captures: Vec<(String, hivemind::events::CaptureItem)> = if ceiling_mode {
             gold_as_captures(&case.expected)
+        } else if let Some(loaded) = &loaded_captures {
+            loaded.get(&case.id).cloned().unwrap_or_else(|| {
+                eprintln!(
+                    "  warning: no cached captures for case {} in --load-captures file",
+                    case.id
+                );
+                Vec::new()
+            })
         } else {
-            let classified = match backend.expect("resolved above when not in ceiling mode") {
+            let classified = match backend.expect("resolved above when not in ceiling/replay mode")
+            {
                 Backend::AnthropicApi => {
                     hivemind::classifier::classify_text(&client, &api_key, &case.input).await
                 }
@@ -959,6 +1224,13 @@ async fn main() {
             }
         };
 
+        if save_captures_path.is_some() {
+            captures_out.push(CaseCaptures {
+                case_id: case.id.clone(),
+                captures: id_captures.clone(),
+            });
+        }
+
         let id_capture_refs: Vec<(&str, &hivemind::events::CaptureItem)> = id_captures
             .iter()
             .map(|(id, cap)| (id.as_str(), cap))
@@ -967,26 +1239,19 @@ async fn main() {
         let (gold_nodes, gold_edges) = gold_graph(&case.expected);
         let (prod_nodes, prod_edges) = produced_graph(&id_capture_refs);
 
-        let node_counts = score_nodes(&gold_nodes, &prod_nodes);
-        let edge_counts = score_edges(&gold_edges, &prod_edges);
+        if show_mismatches {
+            print_mismatches(&case.id, &gold_nodes, &prod_nodes);
+        }
+
+        let node_counts = score_nodes_rubric(&gold_nodes, &prod_nodes, rubric);
+        let edge_counts = score_edges_rubric(&gold_edges, &prod_edges, rubric);
 
         let result = CaseResult {
             case_id: case.id.clone(),
             node_counts,
             edge_counts,
-            backend: if ceiling_mode {
-                "ceiling".to_owned()
-            } else {
-                backend
-                    .expect("resolved above when not in ceiling mode")
-                    .label()
-                    .to_owned()
-            },
-            model: if ceiling_mode {
-                "n/a".to_owned()
-            } else {
-                model.clone()
-            },
+            backend: run_backend_label.clone(),
+            model: run_model_label.clone(),
         };
 
         print_case_scorecard(&result);
@@ -994,6 +1259,50 @@ async fn main() {
     }
 
     aggregate_scorecard(&results);
+
+    if let Some(path) = &save_captures_path {
+        let run = CaptureRun {
+            backend: run_backend_label,
+            model: run_model_label,
+            cases: captures_out,
+        };
+        let json =
+            serde_json::to_string_pretty(&run).expect("CaptureRun serialization cannot fail");
+        std::fs::write(path, json).unwrap_or_else(|e| {
+            eprintln!("error: cannot write --save-captures {path}: {e}");
+            std::process::exit(1);
+        });
+        println!("\nSaved {} cases' captures to {path}", run.cases.len());
+    }
+}
+
+/// Cached classifier output for a full corpus run — enough to re-score under
+/// a different rubric without another LLM call (hivemind-g4ft.1: isolates
+/// the rubric's effect on Macro-F1 from LLM run-to-run variance), with the
+/// backend+model provenance of the original run preserved for replay.
+#[derive(Debug, Serialize, Deserialize)]
+struct CaptureRun {
+    backend: String,
+    model: String,
+    cases: Vec<CaseCaptures>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CaseCaptures {
+    case_id: String,
+    captures: Vec<(String, hivemind::events::CaptureItem)>,
+}
+
+/// Returns the value following `flag` (e.g. `--rubric similarity` ->
+/// `Some("similarity")`), or None if `flag` is absent.
+fn parse_flag_value(args: &[String], flag: &str) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return iter.next().cloned();
+        }
+    }
+    None
 }
 
 fn parse_corpus_arg(args: &[String]) -> PathBuf {
@@ -1234,5 +1543,147 @@ mod tests {
             fn_: 0,
         };
         assert!((c.recall() - 1.0).abs() < 1e-9);
+    }
+
+    // ----------------------------------------------------------------------
+    // Phase 2 similarity rubric (hivemind-g4ft.1)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn text_similarity_identical_is_one() {
+        assert!((text_similarity("use postgres", "use postgres") - 1.0).abs() < 1e-9);
+        assert!((text_similarity("", "") - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn text_similarity_reworded_but_same_fact_clears_threshold() {
+        // Same fact, LLM reworded it — exactly the case the bead hypothesizes
+        // is tanking Macro-F1 under the Phase 1 exact rubric.
+        let sim = text_similarity(
+            "use postgres for the ledger store",
+            "decided to use postgres as the ledger store",
+        );
+        assert!(
+            sim >= SIMILARITY_THRESHOLD,
+            "expected reworded match to clear threshold, got {sim}"
+        );
+    }
+
+    #[test]
+    fn text_similarity_unrelated_text_stays_below_threshold() {
+        let sim = text_similarity(
+            "use postgres for the ledger store",
+            "hire a backend engineer",
+        );
+        assert!(
+            sim < SIMILARITY_THRESHOLD,
+            "expected unrelated text below threshold, got {sim}"
+        );
+    }
+
+    #[test]
+    fn text_similarity_empty_vs_nonempty_is_zero() {
+        assert!((text_similarity("", "postgres") - 0.0).abs() < 1e-9);
+        assert!((text_similarity("postgres", "") - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn score_nodes_rubric_exact_matches_score_nodes() {
+        // Rubric::Exact must reproduce the legacy score_nodes exactly — no
+        // behavior change for existing ceiling/CI scorecards.
+        let gold = vec![
+            ScoredNode {
+                kind: "Decision".into(),
+                text: "use postgres".into(),
+            },
+            ScoredNode {
+                kind: "Evidence".into(),
+                text: "load test".into(),
+            },
+        ];
+        let produced = vec![ScoredNode {
+            kind: "Decision".into(),
+            text: "use postgres".into(),
+        }];
+        let legacy = score_nodes(&gold, &produced);
+        let rubric = score_nodes_rubric(&gold, &produced, Rubric::Exact);
+        for kind in ["Decision", "Evidence"] {
+            let l = &legacy[kind];
+            let r = &rubric[kind];
+            assert_eq!((l.tp, l.fp, l.fn_), (r.tp, r.fp, r.fn_));
+        }
+    }
+
+    #[test]
+    fn score_nodes_rubric_similarity_recovers_reworded_match() {
+        let gold = vec![ScoredNode {
+            kind: "Decision".into(),
+            text: "use postgres for the ledger store".into(),
+        }];
+        let produced = vec![ScoredNode {
+            kind: "Decision".into(),
+            text: "decided to use postgres as the ledger store".into(),
+        }];
+
+        let exact = score_nodes_rubric(&gold, &produced, Rubric::Exact);
+        assert_eq!(
+            exact["Decision"].tp, 0,
+            "exact rubric should miss the reworded pair"
+        );
+
+        let similarity = score_nodes_rubric(&gold, &produced, Rubric::Similarity);
+        assert_eq!(
+            similarity["Decision"].tp, 1,
+            "similarity rubric should recover the reworded pair"
+        );
+    }
+
+    #[test]
+    fn score_nodes_rubric_similarity_still_penalizes_fabrication() {
+        // A produced node sharing no meaningful tokens with any gold node of
+        // the same kind must still score as a false positive — the fuzzy
+        // rubric must not become a rubber stamp.
+        let gold: Vec<ScoredNode> = vec![];
+        let produced = vec![ScoredNode {
+            kind: "Decision".into(),
+            text: "invented decision nobody made".into(),
+        }];
+        let counts = score_nodes_rubric(&gold, &produced, Rubric::Similarity);
+        assert_eq!(counts["Decision"].fp, 1);
+    }
+
+    #[test]
+    fn score_edges_rubric_similarity_requires_both_endpoints_close() {
+        let gold = vec![ScoredEdge {
+            kind: "HAS_OPTION".into(),
+            from_kind: "Decision".into(),
+            from_text: "use postgres for the ledger store".into(),
+            to_kind: "Option".into(),
+            to_text: "postgres".into(),
+        }];
+        // Right decision (reworded), wrong option entirely — must not match.
+        let produced = vec![ScoredEdge {
+            kind: "HAS_OPTION".into(),
+            from_kind: "Decision".into(),
+            from_text: "decision to use postgres as the ledger store".into(),
+            to_kind: "Option".into(),
+            to_text: "mysql".into(),
+        }];
+        let counts = score_edges_rubric(&gold, &produced, Rubric::Similarity);
+        let c = &counts["HAS_OPTION"];
+        assert_eq!((c.tp, c.fp, c.fn_), (0, 1, 1));
+    }
+
+    #[test]
+    fn parse_flag_value_extracts_following_arg() {
+        let args: Vec<String> = ["bin", "--rubric", "similarity", "--ceiling"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            parse_flag_value(&args, "--rubric"),
+            Some("similarity".to_owned())
+        );
+        assert_eq!(parse_flag_value(&args, "--missing"), None);
     }
 }
