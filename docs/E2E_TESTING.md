@@ -81,12 +81,17 @@ Three legs:
   using the classifier prompt extracted verbatim from SKILL.md. Asserts the
   resulting `ingest.batch_classified` batch lands in a scratch ledger with
   schema parity to `src/classifier.rs`'s `CaptureItem` contract.
-- **LEG 2 (quality-score enrichment)** — `SKIP`: the plugin has no
-  scorer-edge workflow yet (`src/scorer.rs` is still server-only, keyed).
-  Follow-up: hivemind-wi3u.
-- **LEG 3 (fidelity smoke)** — `SKIP`: the fidelity evaluator's
-  subscription/`claude-cli` backend hasn't landed yet (hivemind-265w); only
-  the keyed `x-api-key` backend exists today.
+- **LEG 2 (quality-score enrichment)** — scores the decision capture LEG 1
+  just submitted via the plugin's "Batch Score via Haiku Subagent (Keyless)"
+  workflow, using the scorer prompt extracted verbatim from SKILL.md. Asserts
+  the resulting `decision.scored` event lands with schema parity to
+  `src/scorer.rs` (hivemind-wi3u).
+- **LEG 3 (fidelity smoke)** — runs `fidelity-eval` (no `--ceiling`) against
+  the 2-case smoke corpus. `fidelity-eval` auto-selects its keyless
+  `claude-cli` backend (hivemind-265w) when `ANTHROPIC_API_KEY` is unset and
+  `claude` is on `PATH`, shelling out to a real `claude -p` call per case.
+  Asserts the backend resolved to `claude-cli` and both cases classified
+  without error.
 
 This whole section is **LOCAL-only by design** — CI runners have no Claude
 subscription, so `claude` is absent/unauthenticated there and every leg
@@ -171,7 +176,7 @@ The script exercises these paths in order:
 | Quality scan | MCP `scan_decision_quality` tool |
 | Quality score + summarize | MCP `score_decision`, `summarize_decisions` (rule-based) |
 | Fidelity binary (ceiling) | `fidelity-eval --ceiling` (no LLM; validates binary + projector) |
-| LLM-gated (Slice 2) | Edge classifier enrichment via `claude -p` + plugin (LOCAL-only, subscription); quality-score + fidelity legs SKIP with reason |
+| LLM-gated (Slice 2) | Edge classifier + quality-score enrichment via `claude -p` + plugin, and fidelity smoke via `fidelity-eval`'s claude-cli backend (all LOCAL-only, subscription) |
 
 Exit code `0` = all non-skipped assertions passed.
 Exit code `1` = at least one assertion failed.
@@ -189,7 +194,7 @@ Exit code `1` = at least one assertion failed.
 | `HIVEMIND_BIN` | `hivemind` | Path to the `hivemind` binary |
 | `FIDELITY_BIN` | `fidelity-eval` | Path to the `fidelity-eval` binary (Slice 2 ceiling smoke) |
 | `FIDELITY_CORPUS` | `benchmarks/fidelity/corpus.yaml` | Full corpus for ceiling mode |
-| `FIDELITY_CORPUS_SMOKE` | `benchmarks/fidelity/corpus-smoke.yaml` | 2-case corpus for LLM smoke (unused until hivemind-265w lands) |
+| `FIDELITY_CORPUS_SMOKE` | `benchmarks/fidelity/corpus-smoke.yaml` | 2-case corpus for the LEG 3 LLM fidelity smoke (claude-cli backend) |
 | `CLAUDE_BIN` | `claude` | Path to the `claude` CLI, used only by the LOCAL-only subscription/edge LLM legs |
 | `ANTHROPIC_API_KEY` | *(empty)* | If SET, the subscription/edge LLM legs SKIP — they specifically test the keyless path |
 

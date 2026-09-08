@@ -686,9 +686,31 @@ $EDGE_DECISION_TEXT"
     fi
   fi
 
-  # LEG 3: fidelity smoke via the evaluator's claude-cli/subscription backend.
-  # Not landed yet — the evaluator only has the x-api-key backend today.
-  skip "LLM fidelity smoke (edge/claude-cli) — fidelity-eval subscription runner not landed yet (hivemind-265w); x-api-key backend only for now"
+  # LEG 3: fidelity smoke via the evaluator's claude-cli/subscription backend
+  # (hivemind-265w). fidelity-eval auto-selects the keyless claude-cli backend
+  # when ANTHROPIC_API_KEY is unset and `claude` is on PATH — same resolution
+  # LEG 1/2 rely on. Runs the real Haiku classifier on the 2-case smoke corpus
+  # (not the full 39-case corpus) to prove the pipeline is wired end-to-end.
+  if ! command -v "$FIDELITY_BIN" > /dev/null 2>&1; then
+    skip "LLM fidelity smoke (edge/claude-cli) — fidelity-eval binary not found (FIDELITY_BIN=$FIDELITY_BIN; build: cargo build --bin fidelity-eval)"
+  elif [[ ! -f "$FIDELITY_CORPUS_SMOKE" ]]; then
+    skip "LLM fidelity smoke (edge/claude-cli) — smoke corpus not found ($FIDELITY_CORPUS_SMOKE)"
+  else
+    fidelity_smoke_rc=0
+    fidelity_smoke_out=$(env -u ANTHROPIC_API_KEY "$FIDELITY_BIN" --corpus "$FIDELITY_CORPUS_SMOKE" 2>&1) || fidelity_smoke_rc=$?
+    if [[ "$fidelity_smoke_rc" -ne 0 ]]; then
+      fail "LLM fidelity smoke (edge/claude-cli) — fidelity-eval exited $fidelity_smoke_rc: $fidelity_smoke_out"
+    elif ! echo "$fidelity_smoke_out" | grep -q "Backend: claude-cli"; then
+      fail "LLM fidelity smoke (edge/claude-cli) — fidelity-eval did not select the claude-cli backend: $fidelity_smoke_out"
+    elif echo "$fidelity_smoke_out" | grep -q "classifier error for"; then
+      fail "LLM fidelity smoke (edge/claude-cli) — claude -p classifier call failed for a smoke case: $(echo "$fidelity_smoke_out" | grep "classifier error for")"
+    elif ! echo "$fidelity_smoke_out" | grep -q "Macro-F1"; then
+      fail "LLM fidelity smoke (edge/claude-cli) — no Macro-F1 headline in fidelity-eval output: $fidelity_smoke_out"
+    else
+      fidelity_smoke_f1=$(echo "$fidelity_smoke_out" | grep "Macro-F1" | awk '{print $NF}')
+      pass "LLM fidelity smoke (edge/claude-cli): claude-cli backend ran both smoke cases via claude -p, Macro-F1=$fidelity_smoke_f1"
+    fi
+  fi
 fi
 
 # ── 401 regression (auth-mode only) ──────────────────────────────────────────
