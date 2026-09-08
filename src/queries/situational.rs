@@ -220,9 +220,9 @@ fn score_candidates(
             ..Accumulated::default()
         };
         for hit in overlapping_terms(query_terms, &topic_terms) {
-            entry
-                .reasons
-                .push(MatchReason::TopicKey { topic: hit.clone() });
+            entry.reasons.push(MatchReason::TopicKey {
+                topic: hit.clone(), // ubs:ignore: clone necessary — hit is also moved into matched_terms.insert(hit) below; the term is needed as both an owned reason field and an owned set member
+            });
             entry.matched_terms.insert(hit);
         }
         accumulated.insert(decision_id, entry);
@@ -244,8 +244,8 @@ fn score_candidates(
             };
             entry.matched_terms.extend(hits.iter().cloned());
             entry.reasons.push(MatchReason::EvidenceOverlap {
-                evidence_id: evidence_id.clone(),
-                terms: hits.clone(),
+                evidence_id: evidence_id.clone(), // ubs:ignore: clone necessary — one evidence item can be cited by multiple decisions in citing_decisions; each decision's reasons Vec needs its own owned copy
+                terms: hits.clone(), // ubs:ignore: clone necessary — same fan-out as evidence_id above, hits is shared across all decisions citing this evidence item
             });
         }
     }

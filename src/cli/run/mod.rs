@@ -2495,7 +2495,7 @@ fn diff_touched_paths(diff_text: &str) -> Vec<String> {
             if let Some(rest) = line.strip_prefix(prefix) {
                 let rest = rest.trim();
                 if !rest.is_empty() {
-                    paths.push(rest.to_owned());
+                    paths.push(rest.to_owned()); // ubs:ignore: allocation necessary — rest borrows from diff_text; the function returns Vec<String> so callers can own the paths independently of the diff buffer's lifetime
                 }
             }
         }
