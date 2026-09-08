@@ -463,6 +463,8 @@ pub(crate) fn resolve_capture_node_id<L: EventLedger>(
                 continue;
             }
 
+            // ubs:ignore: error path — ok_or_else only runs its closure (and allocates) on
+            // the fall-through-to-error branch, which propagates out of the loop via `?`
             let captures = event
                 .payload
                 .get("captures")
@@ -472,6 +474,7 @@ pub(crate) fn resolve_capture_node_id<L: EventLedger>(
                         "batch {batch_id} has no captures array"
                     ))
                 })?;
+            // ubs:ignore: error path — see captures.ok_or_else above
             let capture = captures.get(idx).ok_or_else(|| {
                 crate::CommandError::Validation(format!(
                     "capture-index {idx} out of range for batch {batch_id} ({} captures)",
