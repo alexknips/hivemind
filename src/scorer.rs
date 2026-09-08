@@ -456,8 +456,7 @@ pub(crate) fn resolve_capture_node_id<L: EventLedger>(
             let Some(event_id) = event.event_id else {
                 continue;
             };
-            let Some(this_batch_id) = event.payload.get("batch_id").and_then(|v| v.as_str())
-            else {
+            let Some(this_batch_id) = event.payload.get("batch_id").and_then(|v| v.as_str()) else {
                 continue;
             };
             if this_batch_id != batch_id {

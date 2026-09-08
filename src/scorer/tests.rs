@@ -144,8 +144,8 @@ fn valid_scorer_output_json(stakes: f64, information_score: f64) -> serde_json::
 
 #[test]
 fn build_scored_payload_clamps_out_of_range_scores() {
-    let output: ScorerOutput = serde_json::from_value(valid_scorer_output_json(8.0, 1.5))
-        .expect("valid scorer output");
+    let output: ScorerOutput =
+        serde_json::from_value(valid_scorer_output_json(8.0, 1.5)).expect("valid scorer output");
 
     let payload =
         build_scored_payload("capture:1:0", "haiku", "v1", output).expect("payload builds");

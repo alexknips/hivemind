@@ -602,10 +602,89 @@ $EDGE_TRANSCRIPT"
     fi
   fi
 
-  # LEG 2: quality-score enrichment via the same edge shape. The plugin does
-  # not expose a scorer prompt today — src/scorer.rs is still server-only
-  # (keyed). SKIP honestly rather than fake it; follow-up filed.
-  skip "LLM quality-score enrichment (edge) — plugins/hivemind-capture has no scorer-edge workflow yet (src/scorer.rs is server-only, keyed); follow-up: hivemind-wi3u"
+  # LEG 2: quality-score enrichment via the same edge shape, scoring the
+  # decision capture LEG 1 just submitted, through the plugin's "Batch Score
+  # via Haiku Subagent (Keyless)" workflow (SKILL.md). The scorer prompt is
+  # extracted verbatim from SKILL.md (single source of truth) rather than
+  # duplicated here — same pattern as LEG 1's classifier prompt extraction.
+  if [[ -z "${EDGE_BATCH_ID:-}" ]]; then
+    skip "LLM quality-score enrichment (edge) — LEG 1 did not produce a batch_id to score"
+  else
+    EDGE_DECISION_IDX=$(echo "$edge_json" | jq 'map(.kind == "decision") | index(true)')
+    if [[ "$EDGE_DECISION_IDX" == "null" || -z "$EDGE_DECISION_IDX" ]]; then
+      fail "LLM quality-score enrichment (edge) — no decision-kind capture in LEG 1's batch to score"
+    else
+      EDGE_SCORE_PROMPT_TEMPLATE=$(awk '
+        /You are the HiveMind decision scorer\.$/ { capture=1 }
+        /^   ---DECISION---$/ { exit }
+        capture { print }
+      ' "$EDGE_SKILL_FILE" | sed 's/^   //')
+
+      if [[ -z "$EDGE_SCORE_PROMPT_TEMPLATE" ]]; then
+        fail "LLM quality-score enrichment (edge) — could not extract the scorer prompt template from $EDGE_SKILL_FILE (schema drift? update the awk sentinels)"
+      else
+        EDGE_DECISION_CAPTURE=$(echo "$edge_json" | jq ".[$EDGE_DECISION_IDX]")
+        EDGE_DECISION_TEXT=$(echo "$EDGE_DECISION_CAPTURE" | jq -r '
+          "Title: " + .title
+          + "\nRationale: " + .rationale
+          + "\nOptions considered: " + ((.options // []) | join(", "))
+          + "\nChosen option: " + (.chosen_option // "none")
+          + "\nExpressed confidence: " + (.expressed_confidence // "unstated")
+        ')
+
+        EDGE_SCORE_PROMPT="$EDGE_SCORE_PROMPT_TEMPLATE
+
+---DECISION---
+$EDGE_DECISION_TEXT"
+
+        edge_score_rc=0
+        edge_score_result=$(env -u ANTHROPIC_API_KEY "$CLAUDE_BIN" -p \
+          --model claude-haiku-4-5-20251001 \
+          --plugin-dir "$EDGE_PLUGIN_DIR" \
+          --tools "" \
+          --output-format json \
+          --no-session-persistence \
+          --max-budget-usd 1.00 \
+          "$EDGE_SCORE_PROMPT" 2>&1) || edge_score_rc=$?
+
+        if [[ "$edge_score_rc" -ne 0 ]]; then
+          fail "LLM quality-score enrichment (edge) — claude -p exited $edge_score_rc: $edge_score_result"
+        elif ! echo "$edge_score_result" | jq -e '.is_error == false' > /dev/null 2>&1; then
+          fail "LLM quality-score enrichment (edge) — claude -p reported an error: $edge_score_result"
+        else
+          # Strip a markdown code fence if the model added one despite instructions.
+          edge_score_json=$(echo "$edge_score_result" | jq -r '.result' | sed -e '/^```/d')
+          if ! echo "$edge_score_json" | jq -e 'has("quality_dims") and has("importance")' > /dev/null 2>&1; then
+            fail "LLM quality-score enrichment (edge) — claude -p did not return the expected scores schema: $edge_score_json"
+          else
+            EDGE_SCORES_FILE="$EDGE_DIR/scores.json"
+            echo "$edge_score_json" > "$EDGE_SCORES_FILE"
+            edge_score_emit=$("$HIVEMIND_BIN" --hivemind-dir "$EDGE_DIR" --actor "$EDGE_ACTOR" --json \
+              emit decision.scored \
+              --batch-id "$EDGE_BATCH_ID" \
+              --capture-index "$EDGE_DECISION_IDX" \
+              --scores "$EDGE_SCORES_FILE" \
+              --agent-tool claude \
+              --agent-session "$EDGE_SESSION" \
+              --scorer-model claude-haiku-4-5-20251001 2>&1) || true
+            if echo "$edge_score_emit" | jq -e '.kind == "event_id"' > /dev/null 2>&1; then
+              edge_score_event_id=$(echo "$edge_score_emit" | jq -r '.value')
+              pass "LLM quality-score enrichment (edge): claude -p scored the decision, event $edge_score_event_id submitted via decision.scored"
+
+              edge_score_activity=$("$HIVEMIND_BIN" --hivemind-dir "$EDGE_DIR" --json query get_recent_activity --actor-id "$EDGE_ACTOR" --limit 10)
+              if echo "$edge_score_activity" | jq -e '.data.items[] | select(.event_type == "decision.scored")' > /dev/null 2>&1; then
+                pass "LLM quality-score enrichment (edge): decision.scored event lands in the ledger (schema parity with src/scorer.rs)"
+              else
+                fail "LLM quality-score enrichment (edge): event_id returned but no decision.scored event found — response: $edge_score_activity"
+              fi
+            else
+              fail "LLM quality-score enrichment (edge): claude -p returned valid scores but decision.scored emit failed: $edge_score_emit — scores: $edge_score_json"
+            fi
+          fi
+        fi
+      fi
+    fi
+  fi
 
   # LEG 3: fidelity smoke via the evaluator's claude-cli/subscription backend.
   # Not landed yet — the evaluator only has the x-api-key backend today.
