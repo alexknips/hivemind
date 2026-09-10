@@ -1,5 +1,6 @@
 //! Projector trait and graph types: replays ledger events into a live in-memory graph view.
 
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
@@ -348,7 +349,7 @@ pub fn rebuild_graph_for_tenant(
 /// are `(RelationKind, from_id, to_id)`. Notification nodes are excluded.
 pub fn project_captures_in_memory(id_captures: &[(&str, &CaptureItem)]) -> Result<ProjectedGraph> {
     let graph = memory::MemoryGraph::default();
-    let resolved = resolve_batch_local_references(id_captures);
+    let (resolved, _stats) = resolve_batch_local_references(id_captures);
     for (node_id, capture) in &resolved {
         project_capture(&graph, capture, node_id, &GraphProperties::default())?;
     }
@@ -366,6 +367,51 @@ pub fn project_captures_in_memory(id_captures: &[(&str, &CaptureItem)]) -> Resul
     Ok((nodes, edges))
 }
 
+/// Batch-level readout from [`resolve_batch_local_references`]. There is no
+/// metrics system in this codebase (checked: no `metrics`/`prometheus` crate
+/// anywhere) — `tracing` is the existing observability surface, so this
+/// struct is reported via a `tracing::debug!` at the end of the same
+/// function rather than inventing a counters framework. It's also returned
+/// so callers (and tests) can read the numbers directly instead of scraping
+/// logs.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BatchReferenceStats {
+    /// Relational-id values that matched a sibling's title in this batch and
+    /// were rewritten to that sibling's real node id. This is the direct
+    /// readout on whether the title-as-local-key convention (hivemind-o4l6)
+    /// is actually firing.
+    resolved: usize,
+    /// Non-empty relational-id values that did NOT match any sibling title
+    /// and fell through unchanged (the pre-existing verbatim-id pass-through
+    /// behavior). This bucket conflates two very different cases — a
+    /// legitimate reference to a real id from an earlier batch, and a
+    /// near-miss title the model failed to reproduce exactly — so treat it
+    /// as a ceiling on the near-miss rate, not a direct measurement of it.
+    unresolved: usize,
+}
+
+fn resolve_local_reference(
+    title_index: &HashMap<&str, &str>,
+    stats: &mut BatchReferenceStats,
+    node_id: &str,
+    raw: &str,
+) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return raw.to_owned();
+    }
+    match title_index.get(trimmed) {
+        Some(target) if *target != node_id => {
+            stats.resolved += 1;
+            (*target).to_owned()
+        }
+        _ => {
+            stats.unresolved += 1;
+            raw.to_owned()
+        }
+    }
+}
+
 /// Resolve same-batch cross-references in a slice of captures.
 ///
 /// Real HiveMind node ids are assigned post-hoc (ledger offset + array
@@ -378,36 +424,78 @@ pub fn project_captures_in_memory(id_captures: &[(&str, &CaptureItem)]) -> Resul
 /// sibling's real node id before projection; any value that doesn't match a
 /// sibling's title is left untouched (the existing verbatim-id pass-through
 /// behavior, via `ensure_node_reference`, is unchanged).
+///
+/// When two captures in the batch share a title, the title index keeps the
+/// first one (deterministic `or_insert`-style first-wins) and the second
+/// becomes unreferenceable by title. That's safe — it can never corrupt an
+/// edge — but it's also completely silent by default, so a collision logs a
+/// `tracing::warn!` naming the title and both node ids.
 fn resolve_batch_local_references(
     id_captures: &[(&str, &CaptureItem)],
-) -> Vec<(String, CaptureItem)> {
+) -> (Vec<(String, CaptureItem)>, BatchReferenceStats) {
     let mut title_index: HashMap<&str, &str> = HashMap::new();
     for (node_id, capture) in id_captures {
-        title_index.entry(capture.title.trim()).or_insert(*node_id);
+        let title = capture.title.trim();
+        match title_index.entry(title) {
+            Entry::Occupied(existing) => {
+                tracing::warn!(
+                    target: "hivemind::projector",
+                    title,
+                    first_node_id = *existing.get(),
+                    duplicate_node_id = *node_id,
+                    "duplicate capture title within batch: first-wins resolution keeps \
+                     referencing the first capture; the duplicate is unreferenceable by title"
+                );
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(*node_id);
+            }
+        }
     }
 
-    id_captures
+    let mut stats = BatchReferenceStats::default();
+    let resolved = id_captures
         .iter()
         .map(|(node_id, capture)| {
-            let resolve = |raw: &str| -> String {
-                match title_index.get(raw.trim()) {
-                    Some(target) if *target != *node_id => (*target).to_owned(),
-                    _ => raw.to_owned(),
-                }
-            };
             let mut resolved = (*capture).clone();
-            resolved.supersedes_id = resolved.supersedes_id.as_deref().map(resolve);
+            resolved.supersedes_id = resolved
+                .supersedes_id
+                .as_deref()
+                .map(|raw| resolve_local_reference(&title_index, &mut stats, node_id, raw));
             resolved.premised_on_ids = resolved
                 .premised_on_ids
                 .iter()
-                .map(|s| resolve(s))
+                .map(|s| resolve_local_reference(&title_index, &mut stats, node_id, s))
                 .collect();
-            resolved.supports_ids = resolved.supports_ids.iter().map(|s| resolve(s)).collect();
-            resolved.refutes_ids = resolved.refutes_ids.iter().map(|s| resolve(s)).collect();
-            resolved.evidence_ids = resolved.evidence_ids.iter().map(|s| resolve(s)).collect();
+            resolved.supports_ids = resolved
+                .supports_ids
+                .iter()
+                .map(|s| resolve_local_reference(&title_index, &mut stats, node_id, s))
+                .collect();
+            resolved.refutes_ids = resolved
+                .refutes_ids
+                .iter()
+                .map(|s| resolve_local_reference(&title_index, &mut stats, node_id, s))
+                .collect();
+            resolved.evidence_ids = resolved
+                .evidence_ids
+                .iter()
+                .map(|s| resolve_local_reference(&title_index, &mut stats, node_id, s))
+                .collect();
             ((*node_id).to_owned(), resolved)
         })
-        .collect()
+        .collect();
+
+    if stats.resolved > 0 || stats.unresolved > 0 {
+        tracing::debug!(
+            target: "hivemind::projector",
+            resolved = stats.resolved,
+            unresolved = stats.unresolved,
+            "within-batch title reference resolution stats"
+        );
+    }
+
+    (resolved, stats)
 }
 
 fn capture_node_text(kind: NodeKind, id: &str, props: &GraphProperties) -> String {
@@ -951,7 +1039,7 @@ fn project_ingest_batch_classified(
         .map(String::as_str)
         .zip(payload.captures.iter())
         .collect();
-    let resolved = resolve_batch_local_references(&id_captures);
+    let (resolved, _stats) = resolve_batch_local_references(&id_captures);
     for (node_id, capture) in &resolved {
         project_capture(graph, capture, node_id, origin_properties)?;
     }

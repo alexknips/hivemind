@@ -1,6 +1,6 @@
 // Parent module gates this file with #[cfg(test)]; repeat the marker so UBS can filter test-only assertions.
 #[cfg(test)]
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use chrono::Utc;
@@ -1015,6 +1015,150 @@ fn classified_batch_resolves_within_batch_title_references() -> Result<()> {
         "no edge should target a raw title string once same-batch resolution ran"
     );
     Ok(())
+}
+
+// --- resolve_batch_local_references: duplicate-title warning + resolve counter (hivemind-11nl) ---
+
+fn capture_with_title(kind: &str, title: &str) -> CaptureItem {
+    CaptureItem {
+        kind: kind.to_owned(),
+        title: title.to_owned(),
+        rationale: "test rationale".to_owned(),
+        topic_keys: vec![],
+        evidence_ids: vec![],
+        options: None,
+        chosen_option: None,
+        extraction_confidence: 0.9,
+        expressed_confidence: None,
+        supersedes_id: None,
+        premised_on_ids: vec![],
+        supports_ids: vec![],
+        refutes_ids: vec![],
+        actor_id: None,
+        accepted_by: vec![],
+        rejected_by: vec![],
+        blocked_actor_id: None,
+        decision_id: None,
+        participants: vec![],
+        session_initiator: None,
+    }
+}
+
+/// Minimal `tracing::Subscriber` that records every event's fields (including
+/// the format-string `message` field) as debug-formatted strings, so a test
+/// can assert a specific `tracing::warn!`/`tracing::debug!` actually fired
+/// without pulling in a test-only tracing crate for one assertion.
+#[derive(Default)]
+struct CapturingSubscriber {
+    messages: Arc<Mutex<Vec<String>>>,
+}
+
+impl tracing::Subscriber for CapturingSubscriber {
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Formatter(String);
+        impl tracing::field::Visit for Formatter {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!(" {}={:?}", field.name(), value));
+            }
+        }
+        let mut formatter = Formatter(String::new());
+        event.record(&mut formatter);
+        self.messages
+            .lock()
+            .expect("messages lock poisoned")
+            .push(formatter.0);
+    }
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+#[test]
+fn duplicate_title_in_batch_warns_and_keeps_first_wins() {
+    // "id-a" is captured first, "id-b" second; both titled "Same title". A
+    // third capture references that title, which must resolve to "id-a"
+    // (first-wins, unchanged) while the collision also logs a warning naming
+    // the title and both node ids.
+    let first = capture_with_title("decision", "Same title");
+    let duplicate = capture_with_title("decision", "Same title");
+    let mut referencer = capture_with_title("evidence", "Referencer");
+    referencer.supports_ids = vec!["Same title".to_owned()];
+    let id_captures: [(&str, &CaptureItem); 3] = [
+        ("id-a", &first),
+        ("id-b", &duplicate),
+        ("id-c", &referencer),
+    ];
+
+    let subscriber = CapturingSubscriber::default();
+    let sink = subscriber.messages.clone();
+    let (resolved, _stats) = tracing::subscriber::with_default(subscriber, || {
+        resolve_batch_local_references(&id_captures)
+    });
+
+    let referencer_resolved = resolved
+        .iter()
+        .find(|(node_id, _)| node_id == "id-c")
+        .map(|(_, capture)| capture)
+        .expect("referencer capture present");
+    assert_eq!(
+        referencer_resolved.supports_ids,
+        vec!["id-a".to_owned()],
+        "duplicate title must resolve to the FIRST captured node id, not the second"
+    );
+
+    let logged = sink.lock().expect("messages lock poisoned");
+    assert!(
+        logged.iter().any(|m| m.contains("Same title")
+            && m.contains("id-a")
+            && m.contains("id-b")),
+        "duplicate-title collision must log a warning naming the title and both node ids; got: {logged:?}"
+    );
+}
+
+#[test]
+fn resolving_title_reference_increments_resolve_counter() {
+    let sibling = capture_with_title("hypothesis", "Sibling hypothesis");
+    let mut referencer = capture_with_title("evidence", "Supporting evidence");
+    referencer.supports_ids = vec!["Sibling hypothesis".to_owned()];
+    // A non-matching value exercises the unresolved/pass-through counter too.
+    referencer.refutes_ids = vec!["no such title".to_owned()];
+    let id_captures: [(&str, &CaptureItem); 2] =
+        [("id-sibling", &sibling), ("id-referencer", &referencer)];
+
+    let (resolved, stats) = resolve_batch_local_references(&id_captures);
+
+    assert_eq!(
+        stats.resolved, 1,
+        "exactly one relational-id value matched a sibling title and was resolved"
+    );
+    assert_eq!(
+        stats.unresolved, 1,
+        "exactly one relational-id value did not match any sibling title"
+    );
+    let referencer_resolved = resolved
+        .iter()
+        .find(|(node_id, _)| node_id == "id-referencer")
+        .map(|(_, capture)| capture)
+        .expect("referencer capture present");
+    assert_eq!(referencer_resolved.supports_ids, vec!["id-sibling".to_owned()]);
+    assert_eq!(
+        referencer_resolved.refutes_ids,
+        vec!["no such title".to_owned()],
+        "unmatched reference falls through to verbatim pass-through unchanged"
+    );
 }
 
 #[test]
