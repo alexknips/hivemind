@@ -178,8 +178,12 @@ fn dispatch_query(
         return query_topic_count(client, tenant_id, params);
     }
 
-    // ── Decision by id (title/rationale/topic_keys) ──────────────────────────
-    if cypher.contains("d.title AS title") && cypher.contains("LIMIT 1") {
+    // ── Decision by id (title/rationale/topic_keys, or existence+event_origin
+    //    check — outcome.rs's get_decision_outcome existence probe reads only
+    //    id/event_origin but the row carries every stored property either way) ──
+    if cypher.contains("LIMIT 1")
+        && (cypher.contains("d.title AS title") || cypher.contains("d.event_origin AS event_origin"))
+    {
         return query_decision_by_id(client, tenant_id, params);
     }
 
@@ -223,6 +227,37 @@ fn dispatch_query(
     // ── All nodes of a kind (must follow LIMIT 1 / specific checks) ──────────
     if cypher.contains("RETURN node.id AS id") {
         return query_all_nodes(client, tenant_id, cypher, params);
+    }
+
+    // ── outcome.rs's get_decision_outcome query shapes ────────────────────────
+    // Not covered by the handlers above; see hivemind-kj0i.
+
+    // query_superseder: newest SUPERSEDES edge pointing at this decision.
+    if cypher.contains("RETURN newer.id AS superseder_id, r.event_origin AS edge_origin") {
+        return query_superseder(client, tenant_id, params);
+    }
+
+    // query_refuted_premises: hypotheses this decision premises on (via CHOSE->PREMISED_ON
+    // or PREMISED_ON_DIRECT) that have also been REFUTES-ed by some Evidence.
+    if cypher.contains("REFUTES") && cypher.contains("hypothesis_id") {
+        return query_refuted_premises(client, tenant_id, params);
+    }
+
+    // query_contested: ACCEPTED_BY / REJECTED_BY edge counts in one call.
+    if cypher.contains("AS accepted_count") {
+        return query_contested(client, tenant_id, params);
+    }
+
+    // query_has_options / query_has_evidence: outgoing edge count of one relation kind.
+    if cypher.contains("RETURN count(*) AS cnt") {
+        return query_has_relation(client, tenant_id, cypher, params);
+    }
+
+    // get_decision_quality_candidates: bulk decision id + event_origin dump, optionally
+    // floored by $since. Distinct from the title/topic bulk handlers above — different
+    // column set and no id filter.
+    if cypher.contains("ORDER BY d.event_origin, d.id") {
+        return query_decisions_with_origin(client, tenant_id, params);
     }
 
     Err(projection_error(format!("unsupported cypher query: {cypher}")).into())
@@ -537,6 +572,191 @@ fn query_all_nodes(
             &[&tenant_id, &kind.table_name()],
         )
         .map_err(pg_error)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let node_id: String = row.get(0);
+            let props: JsonValue = row.get(1);
+            json_props_to_row(&node_id, &props)
+        })
+        .collect())
+}
+
+// ── outcome.rs query implementations (hivemind-kj0i) ──────────────────────────
+
+fn query_superseder(
+    client: &mut Client,
+    tenant_id: &str,
+    params: &GraphParams,
+) -> Result<Vec<GraphRow>> {
+    let id = required_string_param(params, "id")?;
+    let row = client
+        .query_opt(
+            "SELECT from_id, event_origin FROM hm_edges
+             WHERE tenant_id=$1 AND relation_kind='SUPERSEDES' AND to_id=$2
+             ORDER BY event_origin DESC NULLS LAST
+             LIMIT 1",
+            &[&tenant_id, &id],
+        )
+        .map_err(pg_error)?;
+    Ok(row
+        .map(|row| {
+            let superseder_id: String = row.get(0);
+            let edge_origin: Option<i64> = row.get(1);
+            GraphRow::from([
+                (
+                    "superseder_id".to_owned(),
+                    GraphValue::String(superseder_id),
+                ),
+                (
+                    "edge_origin".to_owned(),
+                    edge_origin.map_or(GraphValue::Null, GraphValue::Int),
+                ),
+            ])
+        })
+        .into_iter()
+        .collect())
+}
+
+/// Hypotheses this decision premises on (via CHOSE->PREMISED_ON or PREMISED_ON_DIRECT)
+/// that have also been REFUTES-ed by some Evidence. Mirrors memory.rs's in-process set
+/// logic rather than a single SQL join — tenant-scoped edge volumes are small and this
+/// keeps the two backends' selection logic easy to compare line-for-line.
+fn query_refuted_premises(
+    client: &mut Client,
+    tenant_id: &str,
+    params: &GraphParams,
+) -> Result<Vec<GraphRow>> {
+    let id = required_string_param(params, "id")?;
+
+    let refuted_hypotheses: std::collections::BTreeSet<String> = client
+        .query(
+            "SELECT DISTINCT to_id FROM hm_edges WHERE tenant_id=$1 AND relation_kind='REFUTES'",
+            &[&tenant_id],
+        )
+        .map_err(pg_error)?
+        .into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect();
+
+    let chosen_options: std::collections::BTreeSet<String> = client
+        .query(
+            "SELECT to_id FROM hm_edges WHERE tenant_id=$1 AND relation_kind='CHOSE' AND from_id=$2",
+            &[&tenant_id, &id],
+        )
+        .map_err(pg_error)?
+        .into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect();
+
+    let mut ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    if !chosen_options.is_empty() {
+        let premised_rows = client
+            .query(
+                "SELECT from_id, to_id FROM hm_edges WHERE tenant_id=$1 AND relation_kind='PREMISED_ON'",
+                &[&tenant_id],
+            )
+            .map_err(pg_error)?;
+        ids.extend(premised_rows.into_iter().filter_map(|row| {
+            let from_id: String = row.get(0);
+            let to_id: String = row.get(1);
+            (chosen_options.contains(&from_id) && refuted_hypotheses.contains(&to_id))
+                .then_some(to_id)
+        }));
+    }
+
+    let direct_rows = client
+        .query(
+            "SELECT to_id FROM hm_edges WHERE tenant_id=$1 AND relation_kind='PREMISED_ON_DIRECT' AND from_id=$2",
+            &[&tenant_id, &id],
+        )
+        .map_err(pg_error)?;
+    ids.extend(direct_rows.into_iter().filter_map(|row| {
+        let to_id: String = row.get(0);
+        refuted_hypotheses.contains(&to_id).then_some(to_id)
+    }));
+
+    Ok(ids
+        .into_iter()
+        .map(|hyp_id| GraphRow::from([("hypothesis_id".to_owned(), GraphValue::String(hyp_id))]))
+        .collect())
+}
+
+fn query_contested(
+    client: &mut Client,
+    tenant_id: &str,
+    params: &GraphParams,
+) -> Result<Vec<GraphRow>> {
+    let id = required_string_param(params, "id")?;
+    let accepted = count_outgoing(client, tenant_id, "ACCEPTED_BY", id)?;
+    let rejected = count_outgoing(client, tenant_id, "REJECTED_BY", id)?;
+    Ok(vec![GraphRow::from([
+        ("accepted_count".to_owned(), GraphValue::Int(accepted)),
+        ("rejected_count".to_owned(), GraphValue::Int(rejected)),
+    ])])
+}
+
+fn query_has_relation(
+    client: &mut Client,
+    tenant_id: &str,
+    cypher: &str,
+    params: &GraphParams,
+) -> Result<Vec<GraphRow>> {
+    let relation = parse_relation(cypher)?;
+    let id = required_string_param(params, "id")?;
+    let count = count_outgoing(client, tenant_id, relation.table_name(), id)?;
+    Ok(vec![GraphRow::from([(
+        "cnt".to_owned(),
+        GraphValue::Int(count),
+    )])])
+}
+
+fn count_outgoing(
+    client: &mut Client,
+    tenant_id: &str,
+    relation: &str,
+    from_id: &str,
+) -> Result<i64> {
+    client
+        .query_one(
+            "SELECT COUNT(*)::bigint FROM hm_edges
+             WHERE tenant_id=$1 AND relation_kind=$2 AND from_id=$3",
+            &[&tenant_id, &relation, &from_id],
+        )
+        .map_err(pg_error)
+        .map(|row| row.get::<_, i64>(0))
+}
+
+fn query_decisions_with_origin(
+    client: &mut Client,
+    tenant_id: &str,
+    params: &GraphParams,
+) -> Result<Vec<GraphRow>> {
+    let since = match params.get("since") {
+        Some(GraphValue::Int(value)) => Some(*value),
+        _ => None,
+    };
+    let rows = if let Some(since) = since {
+        client
+            .query(
+                "SELECT node_id, properties FROM hm_nodes
+                 WHERE tenant_id=$1 AND node_kind='Decision'
+                   AND COALESCE((properties->>'event_origin')::bigint, 0) >= $2
+                 ORDER BY COALESCE((properties->>'event_origin')::bigint, 0), node_id",
+                &[&tenant_id, &since],
+            )
+            .map_err(pg_error)?
+    } else {
+        client
+            .query(
+                "SELECT node_id, properties FROM hm_nodes
+                 WHERE tenant_id=$1 AND node_kind='Decision'
+                 ORDER BY COALESCE((properties->>'event_origin')::bigint, 0), node_id",
+                &[&tenant_id],
+            )
+            .map_err(pg_error)?
+    };
     Ok(rows
         .into_iter()
         .map(|row| {

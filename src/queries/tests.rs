@@ -2106,6 +2106,391 @@ fn bulk_query_only_with_signals_filters_clean_decisions() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// get_decision_outcome / get_decision_quality_candidates against a REAL
+// MemoryGraph (hivemind-kj0i). Every test above this point exercises
+// derive_outcome's logic against OutcomeGraph, a hand-rolled fake — none of
+// them would have caught that the CLI's default GraphView (MemoryGraph) and
+// the shared-backend Postgres GraphView didn't support several of these
+// Cypher query shapes at all (crash) or silently matched the wrong handler
+// (silent-wrong). These rebuild a MemoryGraph from ledger events instead, so
+// a dispatch-table gap in src/projector/memory.rs fails here directly.
+// ---------------------------------------------------------------------------
+
+fn outcome_signals_fixture() -> Result<MemoryGraph> {
+    graph_from_events([
+        test_event(
+            1,
+            EventType::HypothesisRecorded,
+            "actor:analyst",
+            json!({
+                "hypothesis_id": "hypothesis:stale-direct",
+                "statement": "Direct premise holds"
+            }),
+            "2026-01-01T00:00:01Z",
+        ),
+        test_event(
+            2,
+            EventType::HypothesisRecorded,
+            "actor:analyst",
+            json!({
+                "hypothesis_id": "hypothesis:stale-option",
+                "statement": "Option premise holds"
+            }),
+            "2026-01-01T00:00:02Z",
+        ),
+        test_event(
+            3,
+            EventType::EvidenceRecorded,
+            "actor:analyst",
+            json!({
+                "evidence_id": "evidence:refute-direct",
+                "content": "Direct premise was wrong",
+                "source": "test"
+            }),
+            "2026-01-01T00:00:03Z",
+        ),
+        test_event(
+            4,
+            EventType::EvidenceRecorded,
+            "actor:analyst",
+            json!({
+                "evidence_id": "evidence:refute-option",
+                "content": "Option premise was wrong",
+                "source": "test"
+            }),
+            "2026-01-01T00:00:04Z",
+        ),
+        test_event(
+            5,
+            EventType::EvidenceRecorded,
+            "actor:analyst",
+            json!({
+                "evidence_id": "evidence:clean",
+                "content": "Supports the clean decision",
+                "source": "test"
+            }),
+            "2026-01-01T00:00:05Z",
+        ),
+        test_event(
+            6,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:clean",
+                "title": "Clean decision",
+                "rationale": "Well-supported",
+                "topic_keys": ["infra"],
+                "option_ids": ["option:clean"],
+                "chosen_option_id": "option:clean",
+                "hypothesis_ids": [],
+                "evidence_ids": ["evidence:clean"]
+            }),
+            "2026-01-01T00:00:06Z",
+        ),
+        test_event(
+            7,
+            EventType::DecisionAccepted,
+            "actor:alice",
+            json!({"decision_id": "decision:clean"}),
+            "2026-01-01T00:00:07Z",
+        ),
+        test_event(
+            8,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:old",
+                "title": "Superseded decision",
+                "rationale": "Later replaced",
+                "topic_keys": ["infra"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:00:08Z",
+        ),
+        test_event(
+            9,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:new",
+                "title": "Superseding decision",
+                "rationale": "Replaces decision:old",
+                "topic_keys": ["infra"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:00:09Z",
+        ),
+        test_event(
+            10,
+            EventType::DecisionSuperseded,
+            "actor:planner",
+            json!({
+                "old_decision_id": "decision:old",
+                "new_decision_id": "decision:new"
+            }),
+            "2026-01-01T00:00:10Z",
+        ),
+        test_event(
+            11,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:stale-direct",
+                "title": "Directly premised on a refuted hypothesis",
+                "rationale": "No chosen option — PREMISED_ON_DIRECT",
+                "topic_keys": ["infra"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": ["hypothesis:stale-direct"],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:00:11Z",
+        ),
+        test_event(
+            12,
+            EventType::RelationAdded,
+            "actor:analyst",
+            json!({
+                "relation": EventRelationKind::Refutes,
+                "from_id": "evidence:refute-direct",
+                "to_id": "hypothesis:stale-direct"
+            }),
+            "2026-01-01T00:00:12Z",
+        ),
+        test_event(
+            13,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:stale-option",
+                "title": "Premised via a chosen option on a refuted hypothesis",
+                "rationale": "Chosen option — PREMISED_ON",
+                "topic_keys": ["infra"],
+                "option_ids": ["option:stale"],
+                "chosen_option_id": "option:stale",
+                "hypothesis_ids": ["hypothesis:stale-option"],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:00:13Z",
+        ),
+        test_event(
+            14,
+            EventType::RelationAdded,
+            "actor:analyst",
+            json!({
+                "relation": EventRelationKind::Refutes,
+                "from_id": "evidence:refute-option",
+                "to_id": "hypothesis:stale-option"
+            }),
+            "2026-01-01T00:00:14Z",
+        ),
+        test_event(
+            15,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:contested",
+                "title": "Contested decision",
+                "rationale": "Alice and bob disagree",
+                "topic_keys": ["infra"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:00:15Z",
+        ),
+        test_event(
+            16,
+            EventType::DecisionAccepted,
+            "actor:alice",
+            json!({"decision_id": "decision:contested"}),
+            "2026-01-01T00:00:16Z",
+        ),
+        test_event(
+            17,
+            EventType::DecisionRejected,
+            "actor:bob",
+            json!({"decision_id": "decision:contested"}),
+            "2026-01-01T00:00:17Z",
+        ),
+        test_event(
+            18,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:thin",
+                "title": "Thin decision",
+                "rationale": "No options or evidence attached",
+                "topic_keys": ["infra"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:00:18Z",
+        ),
+    ])
+}
+
+#[test]
+fn memory_graph_clean_decision_holds_up() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+    let outcome = get_decision_outcome(&graph, "decision:clean")?
+        .data
+        .expect("decision:clean exists");
+    assert!(outcome.held_up);
+    assert!(outcome.reasons.is_empty());
+    assert!(outcome.has_options);
+    assert!(outcome.has_evidence);
+    Ok(())
+}
+
+#[test]
+fn memory_graph_superseded_decision_does_not_hold_up() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+    let outcome = get_decision_outcome(&graph, "decision:old")?
+        .data
+        .expect("decision:old exists");
+    assert!(!outcome.held_up);
+    assert!(outcome.superseded);
+    assert_eq!(outcome.superseded_by.as_deref(), Some("decision:new"));
+    assert_eq!(outcome.supersession_gap_events, Some(2)); // event_origin 10 - 8
+    Ok(())
+}
+
+#[test]
+fn memory_graph_stale_premise_direct_does_not_hold_up() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+    let outcome = get_decision_outcome(&graph, "decision:stale-direct")?
+        .data
+        .expect("decision:stale-direct exists");
+    assert!(!outcome.held_up);
+    assert!(outcome.stale_premises);
+    assert_eq!(
+        outcome.refuted_hypothesis_ids,
+        vec!["hypothesis:stale-direct".to_owned()]
+    );
+    Ok(())
+}
+
+#[test]
+fn memory_graph_stale_premise_via_chosen_option_does_not_hold_up() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+    let outcome = get_decision_outcome(&graph, "decision:stale-option")?
+        .data
+        .expect("decision:stale-option exists");
+    assert!(!outcome.held_up);
+    assert!(outcome.stale_premises);
+    assert_eq!(
+        outcome.refuted_hypothesis_ids,
+        vec!["hypothesis:stale-option".to_owned()]
+    );
+    Ok(())
+}
+
+#[test]
+fn memory_graph_contested_decision_does_not_hold_up() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+    let outcome = get_decision_outcome(&graph, "decision:contested")?
+        .data
+        .expect("decision:contested exists");
+    assert!(!outcome.held_up);
+    assert!(outcome.contested);
+    assert!(outcome
+        .reasons
+        .iter()
+        .any(|r| matches!(r, OutcomeReason::Contested)));
+    Ok(())
+}
+
+#[test]
+fn memory_graph_thin_structure_still_holds_up() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+    let outcome = get_decision_outcome(&graph, "decision:thin")?
+        .data
+        .expect("decision:thin exists");
+    assert!(outcome.held_up); // thin structure alone does not flip held_up
+    assert!(!outcome.has_options);
+    assert!(!outcome.has_evidence);
+    assert!(outcome.reasons.iter().any(|r| matches!(
+        r,
+        OutcomeReason::ThinStructure {
+            no_options: true,
+            no_evidence: true
+        }
+    )));
+    Ok(())
+}
+
+#[test]
+fn memory_graph_missing_decision_returns_none() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+    assert!(get_decision_outcome(&graph, "decision:does-not-exist")?
+        .data
+        .is_none());
+    Ok(())
+}
+
+#[test]
+fn memory_graph_quality_candidates_bulk_and_since_filter() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+
+    // No filter: every proposed decision comes back.
+    let all = get_decision_quality_candidates(
+        &graph,
+        &DecisionQualityCandidatesRequest {
+            limit: 100,
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(all.result_count, 7);
+    assert!(!all.truncated);
+
+    // since_event_origin floors by the decision node's own event_origin
+    // (decision:thin was proposed by event 18; decision:contested's decision
+    // node is event 15 — both are >= 15, everything proposed earlier is not).
+    let since = get_decision_quality_candidates(
+        &graph,
+        &DecisionQualityCandidatesRequest {
+            since_event_origin: Some(15),
+            limit: 100,
+            ..Default::default()
+        },
+    )?;
+    let ids: BTreeSet<_> = since.data.iter().map(|o| o.decision_id.clone()).collect();
+    assert_eq!(
+        ids,
+        BTreeSet::from([
+            "decision:contested".to_owned(),
+            "decision:thin".to_owned(),
+        ])
+    );
+
+    // only_with_signals excludes decision:clean (no reasons) from the full set.
+    let signals_only = get_decision_quality_candidates(
+        &graph,
+        &DecisionQualityCandidatesRequest {
+            only_with_signals: true,
+            limit: 100,
+            ..Default::default()
+        },
+    )?;
+    assert!(signals_only
+        .data
+        .iter()
+        .all(|o| o.decision_id != "decision:clean"));
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // ContextGraph — minimal test double for context.rs
 // ---------------------------------------------------------------------------
 

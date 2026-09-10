@@ -12,7 +12,9 @@ use crate::projector::{
     project_from_ledger, GraphParams, GraphValue, GraphView, NodeKind, RelationKind,
 };
 use crate::queries::{
-    get_decision, get_supersession_chain, resolve_decision_by_description, search_decisions,
+    get_decision, get_decision_outcome, get_decision_quality_candidates,
+    get_supersession_chain, resolve_decision_by_description, search_decisions,
+    DecisionQualityCandidatesRequest,
 };
 use crate::Result;
 
@@ -272,11 +274,11 @@ fn node_properties_round_trip_through_postgres() -> Result<()> {
 // ── Resolve-by-description parity (hivemind-tenv.1) ────────────────────────────
 //
 // `resolve_decision_by_description` reuses `collect_graph_search_results`'s tier system
-// unmodified (docs/AGENT_FLUENT_QUERYING.md §1.1), so it needs no new Postgres query support —
-// unlike `get_decision_context`/`get_decision_outcome`, whose bespoke query shapes are not
-// covered by `dispatch_query` on either backend (a separate, pre-existing gap; see
-// hivemind-tenv.1's submission notes). No parity test is added here for those two pending that
-// fix, so a future Postgres-available CI run doesn't inherit a test that is known to fail today.
+// unmodified (docs/AGENT_FLUENT_QUERYING.md §1.1), so it needs no new Postgres query support.
+// `get_decision_outcome`'s bespoke query shapes were a separate, pre-existing gap in
+// `dispatch_query` on this backend (hivemind-kj0i; memory.rs was fixed earlier by
+// hivemind-tenv.2) — see the outcome-parity tests below for that coverage.
+// `get_decision_context`'s shapes remain unaudited on this backend; out of scope for kj0i.
 
 #[test]
 fn resolve_decision_by_description_matches_memory() -> Result<()> {
@@ -303,6 +305,90 @@ fn resolve_decision_by_description_matches_memory() -> Result<()> {
         if memory_ambiguous != pg_ambiguous {
             return Err(test_error(format!(
                 "resolve_decision_by_description ambiguity mismatch: memory={memory_ambiguous:?} pg={pg_ambiguous:?}"
+            )));
+        }
+        Ok(())
+    })
+}
+
+// ── get_decision_outcome / get_decision_quality_candidates parity (hivemind-kj0i) ──
+
+#[test]
+fn get_decision_outcome_matches_memory() -> Result<()> {
+    with_postgres_graph("outcome-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = outcome_fixture_ledger()?;
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        for decision_id in [
+            "decision:clean",
+            "decision:old",
+            "decision:new",
+            "decision:stale-direct",
+            "decision:stale-option",
+            "decision:contested",
+            "decision:thin",
+        ] {
+            let memory_result = get_decision_outcome(&memory, decision_id)?.data;
+            let pg_result = get_decision_outcome(pg, decision_id)?.data;
+            if memory_result != pg_result {
+                return Err(test_error(format!(
+                    "get_decision_outcome mismatch for {decision_id}: memory={memory_result:?} pg={pg_result:?}"
+                )));
+            }
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn get_decision_quality_candidates_matches_memory() -> Result<()> {
+    with_postgres_graph("quality-candidates-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = outcome_fixture_ledger()?;
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        let request = DecisionQualityCandidatesRequest {
+            limit: 100,
+            ..Default::default()
+        };
+        let memory_ids: Vec<_> = get_decision_quality_candidates(&memory, &request)?
+            .data
+            .iter()
+            .map(|o| o.decision_id.clone())
+            .collect();
+        let pg_ids: Vec<_> = get_decision_quality_candidates(pg, &request)?
+            .data
+            .iter()
+            .map(|o| o.decision_id.clone())
+            .collect();
+        if memory_ids != pg_ids {
+            return Err(test_error(format!(
+                "get_decision_quality_candidates id mismatch: memory={memory_ids:?} pg={pg_ids:?}"
+            )));
+        }
+
+        // since_event_origin floors by the decision node's own event_origin.
+        let since_request = DecisionQualityCandidatesRequest {
+            since_event_origin: Some(15),
+            limit: 100,
+            ..Default::default()
+        };
+        let memory_since: Vec<_> = get_decision_quality_candidates(&memory, &since_request)?
+            .data
+            .iter()
+            .map(|o| o.decision_id.clone())
+            .collect();
+        let pg_since: Vec<_> = get_decision_quality_candidates(pg, &since_request)?
+            .data
+            .iter()
+            .map(|o| o.decision_id.clone())
+            .collect();
+        if memory_since != pg_since {
+            return Err(test_error(format!(
+                "get_decision_quality_candidates since-filter mismatch: memory={memory_since:?} pg={pg_since:?}"
             )));
         }
         Ok(())
@@ -459,6 +545,200 @@ fn situational_fixture_ledger() -> Result<InMemoryEventLedger> {
                 "title": "Use Redis for read-through cache",
                 "rationale": "Cuts database load on hot reads",
                 "topic_keys": ["caching"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        ),
+    ] {
+        ledger.append(event)?;
+    }
+    Ok(ledger)
+}
+
+/// Exercises every get_decision_outcome signal (superseded, stale_premises via both
+/// PREMISED_ON_DIRECT and CHOSE->PREMISED_ON, contested, thin_structure) plus a clean
+/// decision, so the outcome-parity tests can diff backend behavior signal-by-signal.
+fn outcome_fixture_ledger() -> Result<InMemoryEventLedger> {
+    let ledger = InMemoryEventLedger::new();
+    for event in [
+        make_event(
+            EventType::HypothesisRecorded,
+            "actor:analyst",
+            json!({
+                "hypothesis_id": "hypothesis:direct",
+                "statement": "Direct premise holds"
+            }),
+        ),
+        make_event(
+            EventType::HypothesisRecorded,
+            "actor:analyst",
+            json!({
+                "hypothesis_id": "hypothesis:option",
+                "statement": "Option premise holds"
+            }),
+        ),
+        make_event(
+            EventType::EvidenceRecorded,
+            "actor:analyst",
+            json!({
+                "evidence_id": "evidence:refute-direct",
+                "content": "Direct premise was wrong",
+                "source": "test"
+            }),
+        ),
+        make_event(
+            EventType::EvidenceRecorded,
+            "actor:analyst",
+            json!({
+                "evidence_id": "evidence:refute-option",
+                "content": "Option premise was wrong",
+                "source": "test"
+            }),
+        ),
+        make_event(
+            EventType::EvidenceRecorded,
+            "actor:analyst",
+            json!({
+                "evidence_id": "evidence:clean",
+                "content": "Supports the clean decision",
+                "source": "test"
+            }),
+        ),
+        make_event(
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:clean",
+                "title": "Clean decision",
+                "rationale": "Well-supported",
+                "topic_keys": ["infra"],
+                "option_ids": ["option:clean"],
+                "chosen_option_id": "option:clean",
+                "hypothesis_ids": [],
+                "evidence_ids": ["evidence:clean"]
+            }),
+        ),
+        make_event(
+            EventType::DecisionAccepted,
+            "actor:alice",
+            json!({"decision_id": "decision:clean"}),
+        ),
+        make_event(
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:old",
+                "title": "Superseded decision",
+                "rationale": "Later replaced",
+                "topic_keys": ["infra"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        ),
+        make_event(
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:new",
+                "title": "Superseding decision",
+                "rationale": "Replaces decision:old",
+                "topic_keys": ["infra"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        ),
+        make_event(
+            EventType::DecisionSuperseded,
+            "actor:planner",
+            json!({
+                "old_decision_id": "decision:old",
+                "new_decision_id": "decision:new"
+            }),
+        ),
+        make_event(
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:stale-direct",
+                "title": "Directly premised on a refuted hypothesis",
+                "rationale": "No chosen option — PREMISED_ON_DIRECT",
+                "topic_keys": ["infra"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": ["hypothesis:direct"],
+                "evidence_ids": []
+            }),
+        ),
+        make_event(
+            EventType::RelationAdded,
+            "actor:analyst",
+            json!({
+                "relation": "REFUTES",
+                "from_id": "evidence:refute-direct",
+                "to_id": "hypothesis:direct"
+            }),
+        ),
+        make_event(
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:stale-option",
+                "title": "Premised via a chosen option on a refuted hypothesis",
+                "rationale": "Chosen option — PREMISED_ON",
+                "topic_keys": ["infra"],
+                "option_ids": ["option:stale"],
+                "chosen_option_id": "option:stale",
+                "hypothesis_ids": ["hypothesis:option"],
+                "evidence_ids": []
+            }),
+        ),
+        make_event(
+            EventType::RelationAdded,
+            "actor:analyst",
+            json!({
+                "relation": "REFUTES",
+                "from_id": "evidence:refute-option",
+                "to_id": "hypothesis:option"
+            }),
+        ),
+        make_event(
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:contested",
+                "title": "Contested decision",
+                "rationale": "Alice and bob disagree",
+                "topic_keys": ["infra"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        ),
+        make_event(
+            EventType::DecisionAccepted,
+            "actor:alice",
+            json!({"decision_id": "decision:contested"}),
+        ),
+        make_event(
+            EventType::DecisionRejected,
+            "actor:bob",
+            json!({"decision_id": "decision:contested"}),
+        ),
+        make_event(
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:thin",
+                "title": "Thin decision",
+                "rationale": "No options or evidence attached",
+                "topic_keys": ["infra"],
                 "option_ids": [],
                 "chosen_option_id": null,
                 "hypothesis_ids": [],
