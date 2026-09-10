@@ -1174,6 +1174,148 @@ fn disagree_fluent_topic_narrows_ambiguous_to_resolved() -> CliTestResult {
 }
 
 #[test]
+fn supersede_fluent_description_resolves_uniquely_and_records() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("supersede-fluent-resolve");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let old_decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:alice",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Use shared admin token",
+        "--rationale",
+        "Fastest path",
+        "--topic-keys",
+        "auth",
+        "--options",
+        "shared-token",
+    ]))?;
+
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:bob",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "supersede",
+        "shared admin token",
+        "--title",
+        "Use scoped service tokens",
+        "--rationale",
+        "Scoped tokens preserve audit boundaries",
+        "--options",
+        "scoped-service-tokens",
+        "--chose",
+        "scoped-service-tokens",
+    ]))?;
+    let output: serde_json::Value = serde_json::from_str(&output)?;
+    ensure_json_eq(
+        &output["old_decision_id"],
+        serde_json::json!(old_decision_id),
+        "supersede resolves the unique matching decision via positional description",
+    )?;
+    ensure_json_eq(
+        &output["old_decision_status"],
+        serde_json::json!("superseded"),
+        "supersede flips the resolved decision's status to superseded",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn supersede_fluent_ambiguous_description_short_circuits_without_writing() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("supersede-fluent-ambiguous");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    for topic in ["billing", "notifications"] {
+        run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "actor:alice",
+            "--hivemind-dir",
+            dir,
+            "emit",
+            "decision.proposed",
+            "--title",
+            &format!("Adopt async queue for {topic}"),
+            "--rationale",
+            "because reasons",
+            "--topic-keys",
+            topic,
+            "--options",
+            "async",
+        ]))?;
+    }
+
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:bob",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "supersede",
+        "adopt async queue",
+        "--title",
+        "Adopt sync queue instead",
+        "--rationale",
+        "should not apply to either",
+        "--options",
+        "sync",
+        "--chose",
+        "sync",
+    ]))?;
+    let output: serde_json::Value = serde_json::from_str(&output)?;
+    ensure_json_eq(
+        &output["data"]["outcome"],
+        serde_json::json!("ambiguous"),
+        "two equally-matching decisions must short-circuit supersede as ambiguous, never guess which to supersede",
+    )?;
+    ensure_eq(
+        output["data"]["candidates"]
+            .as_array()
+            .expect("candidates array")
+            .len(),
+        2,
+        "both decisions are listed as candidates",
+    )?;
+
+    // Neither decision was superseded: both remain "proposed" and no replacement was created.
+    let search = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "search_decisions",
+        "--q",
+        "adopt async queue",
+    ]))?;
+    let search: serde_json::Value = serde_json::from_str(&search)?;
+    let items = search["data"]["items"].as_array().expect("items array");
+    ensure_eq(
+        items.len(),
+        2,
+        "ambiguous supersede must not create a replacement decision",
+    )?;
+    for item in items {
+        ensure_json_eq(
+            &item["decision"]["status"],
+            serde_json::json!("proposed"),
+            "ambiguous supersede must not mutate either candidate",
+        )?;
+    }
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn query_chain_and_why_aliases_resolve_by_description() -> CliTestResult {
     let hivemind_dir = unique_test_dir("query-chain-why-fluent");
     let dir = hivemind_dir.to_str().expect("utf-8 temp path");
