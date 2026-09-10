@@ -4,14 +4,25 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  query-decisions.sh [--q "..."] [--actor-id actor] [--source agent|human]
-                     [--limit 10] [--hivemind-dir DIR]
+  query-decisions.sh ["free text query"] [--q "..."] [--topic t,...]
+                     [--status s,...] [--actor-id actor,...]
+                     [--source agent|human] [--since T] [--until T]
+                     [--limit 10] [--cursor C] [--hivemind-dir DIR]
 
-Options are forwarded to:
-  hivemind query search_decisions
+"What did we decide about X?" Free text first; forwards to the fluent verb:
+  hivemind query recall
 
-If no actor is supplied, the query defaults to the current agent session actor:
-agent:<tool>:<session>.
+`--q "..."` is accepted for backward compatibility and is treated the same
+as a bare positional query.
+
+If no actor is supplied, the query defaults to the current agent session
+actor: agent:<tool>:<session>.
+
+For deeper follow-up on a specific decision — why it was made, whether it
+still holds, contesting or superseding it — install the hivemind-context
+plugin and use its fluent verbs (recall/why/verify/chain/disagree/supersede);
+none of them take a decision id as primary input either. See
+docs/AGENT_DECISION_CONTEXT.md.
 USAGE
 }
 
@@ -106,7 +117,18 @@ AGENT_SESSION=""
 HAS_ACTOR=0
 HAS_SOURCE=0
 HAS_LIMIT=0
+QUERY=""
 FORWARDED=()
+
+# The positional free-text query, if present, must be the first argument
+# (mirrors QueryRecallArgs' positional `query` field). Every later bare
+# token is a flag's value and must stay in place in FORWARDED, not be
+# captured here — otherwise `--topic smoke` would lose its value to this
+# check on the next loop iteration.
+if [[ $# -gt 0 && "$1" != -* ]]; then
+  QUERY="$1"
+  shift
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -116,6 +138,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --hivemind-dir)
       HIVEMIND_DIR="${2:-}"
+      shift 2
+      ;;
+    --q)
+      QUERY="${2:-}"
       shift 2
       ;;
     --actor)
@@ -190,5 +216,10 @@ else
   exit 127
 fi
 
-exec "${BASE_CMD[@]}" --hivemind-dir "$HIVEMIND_DIR" query search_decisions \
-  "${FORWARDED[@]}"
+QUERY_ARGS=()
+if [[ -n "$QUERY" ]]; then
+  QUERY_ARGS=("$QUERY")
+fi
+
+exec "${BASE_CMD[@]}" --hivemind-dir "$HIVEMIND_DIR" query recall \
+  "${QUERY_ARGS[@]}" "${FORWARDED[@]}"

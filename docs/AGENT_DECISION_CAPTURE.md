@@ -82,8 +82,10 @@ install it. The plugin includes:
 - `/hivemind-capture:capture-decision`, which defaults to
   `actor_id=agent:claude:<session>` and prints a one-line confirmation plus a
   query suggestion.
-- `/hivemind-capture:query-decisions`, which runs bounded
-  `query search_decisions` reads without ranking or summarizing.
+- `/hivemind-capture:query-decisions`, which answers "what did we decide
+  about X?" via the fluent `query recall` verb — free text first, never a
+  decision id. For single-decision follow-up (rationale, still-holds check,
+  contest, supersede) see the `hivemind-context` plugin above.
 - `.mcp.json`, which wires the `hivemind` MCP server to `hivemind mcp`.
 - The `hivemind-capture` skill for durable decision boundaries and provenance
   rules.

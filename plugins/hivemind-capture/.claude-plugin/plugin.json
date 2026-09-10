@@ -1,7 +1,7 @@
 {
   "name": "hivemind-capture",
   "version": "0.1.0",
-  "description": "Capture and query HiveMind decisions from Claude Code through the deterministic local CLI and MCP server.",
+  "description": "Capture HiveMind decisions from Claude Code with explicit actor provenance, through the deterministic local CLI and MCP server.",
   "author": {
     "name": "HiveMind contributors",
     "url": "https://github.com/alexknips/hivemind"

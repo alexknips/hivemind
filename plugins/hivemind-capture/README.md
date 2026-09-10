@@ -8,8 +8,10 @@ This directory is both the Codex capture plugin and the Claude Code
   `--kind hypothesis` when the kind is known.
 - `/hivemind-capture:capture-decision` as the legacy decision-only wrapper for
   `emit decision.capture`.
-- `/hivemind-capture:query-decisions` for bounded `query search_decisions`
-  reads.
+- `/hivemind-capture:query-decisions` for free-text `query recall` reads —
+  "what did we decide about X?", never a decision id. For single-decision
+  follow-up (why, still-holds, disagree, supersede), install the
+  `hivemind-context` plugin instead.
 - `/hivemind-capture:classify-queue` (Worker A) — drains the pending
   classification work queue using the agent's subscription seat. Run after a
   session to classify batches that the server-side classifier has not yet

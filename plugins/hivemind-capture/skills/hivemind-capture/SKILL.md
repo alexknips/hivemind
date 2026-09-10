@@ -143,11 +143,14 @@ ledger write must stay explicit and deterministic.
      --new decision-002
    ```
 
-6. Verify the write through the read path:
+6. Verify the write through the read path. Prefer the fluent `recall` verb
+   (free text first, never a decision id — see
+   [docs/AGENT_DECISION_CONTEXT.md](../../../../docs/AGENT_DECISION_CONTEXT.md)
+   for the full fluent surface shipped in the `hivemind-context` plugin):
 
    ```bash
    HIVEMIND_AGENT_SESSION="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}"
-   hivemind --hivemind-dir "$HIVEMIND_DIR" query search_decisions \
+   hivemind --hivemind-dir "$HIVEMIND_DIR" query recall \
      --actor-id "agent:codex:$HIVEMIND_AGENT_SESSION" \
      --source agent \
      --limit 10
@@ -293,7 +296,7 @@ retrospective extraction over accumulated context.
 4. **Verify** the captures are visible:
 
    ```bash
-   hivemind --hivemind-dir "$HIVEMIND_DIR" query search_decisions --limit 5
+   hivemind --hivemind-dir "$HIVEMIND_DIR" query recall --limit 5
    ```
 
 ### Schema Contract

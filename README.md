@@ -295,7 +295,7 @@ to install it. The plugin provides:
 
 - `/hivemind-capture:capture` — capture a decision, evidence, or hypothesis
 - `/hivemind-capture:capture-decision` — legacy decision-only shorthand
-- `/hivemind-capture:query-decisions` — bounded topic/status reads
+- `/hivemind-capture:query-decisions` — free-text recall: "what did we decide about X?"
 - `/hivemind-capture:classify-queue` — drain the pending classification queue
   using your subscription seat (**no `ANTHROPIC_API_KEY` required**)
 - A `hivemind` MCP server wired to `hivemind mcp`

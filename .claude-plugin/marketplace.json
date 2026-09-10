@@ -8,7 +8,7 @@
     {
       "name": "hivemind-capture",
       "displayName": "HiveMind Capture",
-      "description": "Capture and query HiveMind decisions from Claude Code with explicit actor provenance.",
+      "description": "Capture HiveMind decisions from Claude Code with explicit actor provenance.",
       "source": "./plugins/hivemind-capture",
       "category": "Productivity",
       "tags": [

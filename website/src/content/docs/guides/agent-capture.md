@@ -7,6 +7,10 @@ HiveMind ships installable capture bundles for **Claude Code** and **Codex**. Ag
 capture decisions directly into the local ledger or a self-hosted cell — no
 `ANTHROPIC_API_KEY` on the server is required.
 
+This page covers the write path. For consulting, verifying, and contesting
+decisions that already exist by description rather than by id, see the
+[`hivemind-context` plugin](https://github.com/alexknips/hivemind/blob/master/docs/AGENT_DECISION_CONTEXT.md).
+
 ## Two capture paths
 
 | Path | When to use | API key on server? |
@@ -34,7 +38,7 @@ This installs three skills and an MCP server:
 | Skill / Tool | What it does |
 |-------------|-------------|
 | `/hivemind-capture:capture-decision` | Capture a single decision to the local ledger |
-| `/hivemind-capture:query-decisions` | Query recent decisions by topic or status |
+| `/hivemind-capture:query-decisions` | "What did we decide about X?" — free-text recall of the ledger |
 | `hivemind` MCP server | Full write + query access via MCP tools |
 
 ### Codex
@@ -106,7 +110,7 @@ hivemind --hivemind-dir ./hivemind/ emit ingest.batch_classified \
 3. Verify the captures are visible:
 
 ```bash
-hivemind --hivemind-dir ./hivemind/ query search_decisions --limit 5
+hivemind --hivemind-dir ./hivemind/ query recall --limit 5
 ```
 
 The server's background classifier does not reprocess plugin-submitted batches —
