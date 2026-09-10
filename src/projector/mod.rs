@@ -1,6 +1,6 @@
 //! Projector trait and graph types: replays ledger events into a live in-memory graph view.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 
@@ -348,7 +348,8 @@ pub fn rebuild_graph_for_tenant(
 /// are `(RelationKind, from_id, to_id)`. Notification nodes are excluded.
 pub fn project_captures_in_memory(id_captures: &[(&str, &CaptureItem)]) -> Result<ProjectedGraph> {
     let graph = memory::MemoryGraph::default();
-    for (node_id, capture) in id_captures {
+    let resolved = resolve_batch_local_references(id_captures);
+    for (node_id, capture) in &resolved {
         project_capture(&graph, capture, node_id, &GraphProperties::default())?;
     }
     let (nodes_map, edges) = graph.nodes_and_edges()?;
@@ -363,6 +364,46 @@ pub fn project_captures_in_memory(id_captures: &[(&str, &CaptureItem)]) -> Resul
         })
         .collect();
     Ok((nodes, edges))
+}
+
+/// Resolve same-batch cross-references in a slice of captures.
+///
+/// Real HiveMind node ids are assigned post-hoc (ledger offset + array
+/// index for the production path, or a caller-chosen id for the in-memory
+/// eval path) — the classifier can never know a sibling capture's real id
+/// before generating output. So the classifier prompt allows a relational-id
+/// field (`evidence_ids`, `premised_on_ids`, `supersedes_id`, `supports_ids`,
+/// `refutes_ids`) to name a sibling capture in the *same* response by its
+/// exact `title` instead. This resolves those title references to the
+/// sibling's real node id before projection; any value that doesn't match a
+/// sibling's title is left untouched (the existing verbatim-id pass-through
+/// behavior, via `ensure_node_reference`, is unchanged).
+fn resolve_batch_local_references(id_captures: &[(&str, &CaptureItem)]) -> Vec<(String, CaptureItem)> {
+    let mut title_index: HashMap<&str, &str> = HashMap::new();
+    for (node_id, capture) in id_captures {
+        title_index
+            .entry(capture.title.trim())
+            .or_insert(*node_id);
+    }
+
+    id_captures
+        .iter()
+        .map(|(node_id, capture)| {
+            let resolve = |raw: &str| -> String {
+                match title_index.get(raw.trim()) {
+                    Some(target) if *target != *node_id => (*target).to_owned(),
+                    _ => raw.to_owned(),
+                }
+            };
+            let mut resolved = (*capture).clone();
+            resolved.supersedes_id = resolved.supersedes_id.as_deref().map(resolve);
+            resolved.premised_on_ids = resolved.premised_on_ids.iter().map(|s| resolve(s)).collect();
+            resolved.supports_ids = resolved.supports_ids.iter().map(|s| resolve(s)).collect();
+            resolved.refutes_ids = resolved.refutes_ids.iter().map(|s| resolve(s)).collect();
+            resolved.evidence_ids = resolved.evidence_ids.iter().map(|s| resolve(s)).collect();
+            ((*node_id).to_owned(), resolved)
+        })
+        .collect()
 }
 
 fn capture_node_text(kind: NodeKind, id: &str, props: &GraphProperties) -> String {
@@ -898,9 +939,17 @@ fn project_ingest_batch_classified(
     payload: &IngestBatchClassifiedPayload,
     origin_properties: &GraphProperties,
 ) -> Result<()> {
-    for (idx, capture) in payload.captures.iter().enumerate() {
-        let node_id = format!("capture:{event_origin}:{idx}");
-        project_capture(graph, capture, &node_id, origin_properties)?;
+    let node_ids: Vec<String> = (0..payload.captures.len())
+        .map(|idx| format!("capture:{event_origin}:{idx}"))
+        .collect();
+    let id_captures: Vec<(&str, &CaptureItem)> = node_ids
+        .iter()
+        .map(String::as_str)
+        .zip(payload.captures.iter())
+        .collect();
+    let resolved = resolve_batch_local_references(&id_captures);
+    for (node_id, capture) in &resolved {
+        project_capture(graph, capture, node_id, origin_properties)?;
     }
     Ok(())
 }

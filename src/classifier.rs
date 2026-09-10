@@ -60,11 +60,22 @@ branch-name mechanics, routine gate chatter, raw command output, stack traces,
 file diffs, TODO lists, status narration, or generic plans. If the material is
 borderline, omit it.
 
-Never invent evidence ids. Use only ids present in the input. Keep titles short.
-Use 1 to 5 lowercase topic keys. Confidence is your self-estimate for offline
-tuning, not authoritative truth.
+Keep titles short. Use 1 to 5 lowercase topic keys. Confidence is your
+self-estimate for offline tuning, not authoritative truth.
 
 RELATIONAL FIELDS — populate only from explicit text, never infer:
+
+CROSS-REFERENCE RULE (applies to evidence_ids, premised_on_ids, supersedes_id,
+supports_ids, refutes_ids): each id is valid in exactly two cases — (1) it is
+a real id that appears verbatim in the input text (the agent quoted an
+existing id such as "decision:..." or "hyp:..."), or (2) it is the exact
+`title` you are giving to ANOTHER capture in this same response, copied
+verbatim, when this item explicitly references that other one (e.g. a
+decision that supersedes another decision you are capturing right now, or
+evidence that supports a hypothesis you are capturing right now). Never
+invent an id that is neither of these — if the referenced item's real id is
+unknown and it is not being captured in this same response, leave the field
+null/empty.
 
 expressed_confidence: For decisions only. Extract the decider's own words about
 confidence level: "low" (tentative, provisional, lean, unsure), "medium"
@@ -80,14 +91,18 @@ explicitly named as accepting or rejecting it. Populate with every actor
 named in the text, never inferred and never deduplicated to one. Empty array
 if none.
 
-supersedes_id: For decisions that explicitly replace a prior decision. Only use
-an ID that appears verbatim in the input text. null if none.
+evidence_ids: For decisions. Evidence ids (per the cross-reference rule above)
+this decision is explicitly based on. Empty array if none.
 
-premised_on_ids: For decisions. Hypothesis IDs this decision is explicitly premised on,
-from the input text only. Empty array if none.
+supersedes_id: For decisions that explicitly replace a prior decision. An id
+per the cross-reference rule above. null if none.
 
-supports_ids / refutes_ids: For evidence. Hypothesis IDs this evidence
-explicitly supports or refutes, from the input text only. Empty array if none.
+premised_on_ids: For decisions. Hypothesis ids (per the cross-reference rule
+above) this decision is explicitly premised on. Empty array if none.
+
+supports_ids / refutes_ids: For evidence. Hypothesis ids (per the
+cross-reference rule above) this evidence explicitly supports or refutes.
+Empty array if none.
 
 blocked_actor_id: For blockers. The actor being blocked, IF named in the input.
 decision_id: For blockers. The decision being blocked, IF its ID appears in

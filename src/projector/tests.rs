@@ -858,6 +858,166 @@ fn classified_batch_hypothesis_projects_node() -> Result<()> {
 }
 
 #[test]
+fn classified_batch_resolves_within_batch_title_references() -> Result<()> {
+    // No pre-existing ledger state: every cross-reference target is captured
+    // in this SAME batch and named only by its title, matching how the
+    // classifier must reference a sibling capture (see resolve_batch_local_references).
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:within",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [
+                {
+                    "kind": "decision",
+                    "title": "Old approach",
+                    "rationale": "Original choice",
+                    "topic_keys": ["arch"],
+                    "evidence_ids": [],
+                    "options": null,
+                    "chosen_option": null,
+                    "extraction_confidence": 0.8,
+                    "expressed_confidence": null,
+                    "supersedes_id": null,
+                    "premised_on_ids": [],
+                    "supports_ids": [],
+                    "refutes_ids": [],
+                    "actor_id": null,
+                    "accepted_by": null,
+                    "rejected_by": null,
+                    "blocked_actor_id": null,
+                    "decision_id": null
+                },
+                {
+                    "kind": "hypothesis",
+                    "title": "Caching helps latency",
+                    "rationale": "Stated as a proposition to test",
+                    "topic_keys": ["cache"],
+                    "evidence_ids": [],
+                    "options": null,
+                    "chosen_option": null,
+                    "extraction_confidence": 0.8,
+                    "expressed_confidence": null,
+                    "supersedes_id": null,
+                    "premised_on_ids": [],
+                    "supports_ids": [],
+                    "refutes_ids": [],
+                    "actor_id": null,
+                    "accepted_by": null,
+                    "rejected_by": null,
+                    "blocked_actor_id": null,
+                    "decision_id": null
+                },
+                {
+                    "kind": "evidence",
+                    "title": "Cache hit rate 95% in load test",
+                    "rationale": "Load test result",
+                    "topic_keys": ["cache"],
+                    "evidence_ids": [],
+                    "options": null,
+                    "chosen_option": null,
+                    "extraction_confidence": 0.9,
+                    "expressed_confidence": null,
+                    "supersedes_id": null,
+                    "premised_on_ids": [],
+                    "supports_ids": ["Caching helps latency"],
+                    "refutes_ids": [],
+                    "actor_id": null,
+                    "accepted_by": null,
+                    "rejected_by": null,
+                    "blocked_actor_id": null,
+                    "decision_id": null
+                },
+                {
+                    "kind": "decision",
+                    "title": "New approach supersedes old",
+                    "rationale": "Better fit, backed by the cache load test",
+                    "topic_keys": ["arch"],
+                    "evidence_ids": ["Cache hit rate 95% in load test"],
+                    "options": null,
+                    "chosen_option": null,
+                    "extraction_confidence": 0.85,
+                    "expressed_confidence": null,
+                    "supersedes_id": "Old approach",
+                    "premised_on_ids": ["Caching helps latency"],
+                    "supports_ids": [],
+                    "refutes_ids": [],
+                    "actor_id": null,
+                    "accepted_by": null,
+                    "rejected_by": null,
+                    "blocked_actor_id": null,
+                    "decision_id": null
+                }
+            ]
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    // Two Decision nodes exist ("Old approach" and "New approach..."); resolve
+    // which one is "old" by its stored title so edge assertions below aren't
+    // order-dependent.
+    let old_decision_id = nodes
+        .iter()
+        .find(|((kind, _), props)| {
+            *kind == NodeKind::Decision
+                && matches!(props.get("title"), Some(GraphValue::String(t)) if t == "Old approach")
+        })
+        .map(|((_, id), _)| id.clone())
+        .expect("Old approach decision node");
+    let hypothesis_id = nodes
+        .keys()
+        .find(|(kind, _)| *kind == NodeKind::Hypothesis)
+        .map(|(_, id)| id.clone())
+        .expect("hypothesis node");
+    let evidence_id = nodes
+        .keys()
+        .find(|(kind, _)| *kind == NodeKind::Evidence)
+        .map(|(_, id)| id.clone())
+        .expect("evidence node");
+
+    let edges = graph.edges();
+    assert!(
+        edges
+            .keys()
+            .any(|(kind, _, to)| *kind == RelationKind::Supersedes && *to == old_decision_id),
+        "SUPERSEDES must resolve to the sibling Decision's real node id, not the literal title"
+    );
+    assert!(
+        edges
+            .keys()
+            .any(|(kind, _, to)| *kind == RelationKind::BasedOn && *to == evidence_id),
+        "BASED_ON must resolve to the sibling Evidence's real node id, not the literal title"
+    );
+    assert!(
+        edges.keys().any(
+            |(kind, _, to)| *kind == RelationKind::PremisedOnDirect && *to == hypothesis_id
+        ),
+        "PREMISED_ON_DIRECT must resolve to the sibling Hypothesis's real node id, not the literal title"
+    );
+    assert!(
+        edges
+            .keys()
+            .any(|(kind, _, to)| *kind == RelationKind::Supports && *to == hypothesis_id),
+        "SUPPORTS must resolve to the sibling Hypothesis's real node id, not the literal title"
+    );
+    // None of the resolved edge targets should be the raw title strings —
+    // that would mean resolution silently fell through to stub-node creation.
+    assert!(
+        !edges
+            .keys()
+            .any(|(_, _, to)| to == "Old approach" || to == "Caching helps latency" || to == "Cache hit rate 95% in load test"),
+        "no edge should target a raw title string once same-batch resolution ran"
+    );
+    Ok(())
+}
+
+#[test]
 fn classified_batch_empty_captures_is_no_op() -> Result<()> {
     let ledger = InMemoryEventLedger::new();
     ledger.append(event(
