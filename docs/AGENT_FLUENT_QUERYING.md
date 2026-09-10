@@ -40,7 +40,9 @@ Scope (this bead, tenv.1):
   `shared-backend-postgres` feature).
 
 Out of scope (owned by siblings per the parent epic):
-- `hivemind query context` situational lookup (tenv.2) — reuses this bead's
+- `hivemind query situational` (working name at the time this document was
+  written: `hivemind query context`; naming locked 2026-09-08 to
+  `situational` — see hivemind-tenv's bead notes) — reuses this bead's
   resolver module if it lands first; coordinate through bead comments per
   tenv.2's description, do not fork a second ranker.
 - The `hivemind-context` Claude/Codex plugin (tenv.3).
