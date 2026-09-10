@@ -26,9 +26,14 @@ current target branch. Capture a JSON report for the branch under review and
 compare its total warning count with the baseline report from the target branch:
 
 ```bash
-ubs . --format=json --ci --quiet --report-json "$REPORT"
+ubs . --format=json --ci --quiet --include-ext=rs --report-json "$REPORT"
 jq '[.scanners[].warning // 0] | add // 0' "$REPORT"
 ```
+
+`--include-ext=rs` works around hivemind-0qwf: UBS ships without
+`modules/contract.json`, so its language prepass classifies zero files and
+`ubs` reports "no supported languages" (exit 3) instead of scanning. Drop the
+flag once upstream repairs the contract file.
 
 Any warning-count growth blocks submission or merge unless the warning is fixed
 or the baseline is explicitly updated by a separate bead that explains why the
