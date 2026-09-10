@@ -1009,9 +1009,9 @@ fn classified_batch_resolves_within_batch_title_references() -> Result<()> {
     // None of the resolved edge targets should be the raw title strings —
     // that would mean resolution silently fell through to stub-node creation.
     assert!(
-        !edges
-            .keys()
-            .any(|(_, _, to)| to == "Old approach" || to == "Caching helps latency" || to == "Cache hit rate 95% in load test"),
+        !edges.keys().any(|(_, _, to)| to == "Old approach"
+            || to == "Caching helps latency"
+            || to == "Cache hit rate 95% in load test"),
         "no edge should target a raw title string once same-batch resolution ran"
     );
     Ok(())

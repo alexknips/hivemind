@@ -378,12 +378,12 @@ pub fn project_captures_in_memory(id_captures: &[(&str, &CaptureItem)]) -> Resul
 /// sibling's real node id before projection; any value that doesn't match a
 /// sibling's title is left untouched (the existing verbatim-id pass-through
 /// behavior, via `ensure_node_reference`, is unchanged).
-fn resolve_batch_local_references(id_captures: &[(&str, &CaptureItem)]) -> Vec<(String, CaptureItem)> {
+fn resolve_batch_local_references(
+    id_captures: &[(&str, &CaptureItem)],
+) -> Vec<(String, CaptureItem)> {
     let mut title_index: HashMap<&str, &str> = HashMap::new();
     for (node_id, capture) in id_captures {
-        title_index
-            .entry(capture.title.trim())
-            .or_insert(*node_id);
+        title_index.entry(capture.title.trim()).or_insert(*node_id);
     }
 
     id_captures
@@ -397,7 +397,11 @@ fn resolve_batch_local_references(id_captures: &[(&str, &CaptureItem)]) -> Vec<(
             };
             let mut resolved = (*capture).clone();
             resolved.supersedes_id = resolved.supersedes_id.as_deref().map(resolve);
-            resolved.premised_on_ids = resolved.premised_on_ids.iter().map(|s| resolve(s)).collect();
+            resolved.premised_on_ids = resolved
+                .premised_on_ids
+                .iter()
+                .map(|s| resolve(s))
+                .collect();
             resolved.supports_ids = resolved.supports_ids.iter().map(|s| resolve(s)).collect();
             resolved.refutes_ids = resolved.refutes_ids.iter().map(|s| resolve(s)).collect();
             resolved.evidence_ids = resolved.evidence_ids.iter().map(|s| resolve(s)).collect();
