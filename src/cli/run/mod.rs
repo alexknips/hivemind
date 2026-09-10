@@ -854,7 +854,7 @@ fn run_disagree(cli: &Cli, args: &DisagreeArgs) -> Result<String> {
 
     let commands = Commands::new_with_context(
         &ledger,
-        CommandContext::new(tenant_id.clone(), EventProvenance::human(cli.actor.clone())),
+        CommandContext::new(tenant_id.clone(), fluent_write_provenance(&cli.actor)),
     );
     let event_id = commands.disagree(&cli.actor, &decision_id, &args.reason)?;
     let decision_status = decision_status_after_write(&ledger, &tenant_id, &decision_id)?;
@@ -891,7 +891,7 @@ fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
 
     let commands = Commands::new_with_context(
         &ledger,
-        CommandContext::new(tenant_id.clone(), EventProvenance::human(cli.actor.clone())),
+        CommandContext::new(tenant_id.clone(), fluent_write_provenance(&cli.actor)),
     );
     let outcome = commands.supersede(SupersedeInput {
         actor_id: &cli.actor,
@@ -1510,6 +1510,23 @@ fn cli_emit_provenance(actor_id: &str) -> EventProvenance {
         EventProvenance::human(actor_id.trim().to_owned())
     } else {
         EventProvenance::cli()
+    }
+}
+
+/// Provenance for the fluent write verbs (disagree, supersede): derives source from
+/// `--actor`'s `agent:`/`human:` shape (identity.rs's `agent_actor_id`/
+/// `default_human_actor_id` convention), the same way decision.capture already
+/// distinguishes source by actor (`capture_provenance`). These verbs previously
+/// hardcoded `EventProvenance::human` unconditionally, misattributing every
+/// agent-initiated disagree/supersede as human-sourced (AGENTS.md #2, hivemind-xm93).
+/// Anything not explicitly agent-shaped defaults to human, preserving prior behavior
+/// for bare/human actor ids.
+fn fluent_write_provenance(actor_id: &str) -> EventProvenance {
+    let trimmed = actor_id.trim();
+    if trimmed.starts_with("agent:") {
+        EventProvenance::agent(trimmed.to_owned())
+    } else {
+        EventProvenance::human(trimmed.to_owned())
     }
 }
 

@@ -697,6 +697,73 @@ fn disagree_cli_records_reason_contests_and_is_idempotent() {
 }
 
 #[test]
+fn disagree_cli_records_agent_source_for_agent_actor() {
+    // hivemind-xm93: run_disagree previously hardcoded EventProvenance::human
+    // regardless of --actor, so an agent-initiated disagree was misattributed as
+    // human-sourced (AGENTS.md #2). An `agent:`-shaped actor must record source=agent.
+    let hivemind_dir = unique_test_dir("disagree-cli-agent-source");
+    let decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Keep current auth",
+        "--rationale",
+        "Lowest immediate migration cost",
+        "--topic-keys",
+        "auth",
+        "--options",
+        "keep",
+    ]))
+    .expect("decision proposed");
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:bob",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.accepted",
+        "--decision-id",
+        &decision_id,
+    ]))
+    .expect("decision accepted");
+
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent:claude:tenv3-smoke-test",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "disagree",
+        "--decision",
+        &decision_id,
+        "--reason",
+        "misses auth implications",
+    ]))
+    .expect("disagree succeeds");
+    let output: serde_json::Value = serde_json::from_str(&output).expect("valid disagree json");
+    let event_id = output["event_id"].as_u64().expect("event id");
+
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let events = ledger.read(0, 20).expect("events read");
+    let rejected = events
+        .iter()
+        // ubs:ignore: public ledger event IDs are not secrets.
+        .find(|event| event.event_id == Some(event_id))
+        .expect("rejected event");
+    assert_eq!(rejected.source, crate::events::EventSource::Agent);
+    assert_eq!(rejected.actor_id, "agent:claude:tenv3-smoke-test");
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
 fn supersede_cli_proposes_replacement_marks_old_and_is_idempotent() {
     let hivemind_dir = unique_test_dir("supersede-cli");
     let old_decision_id = run(&Cli::parse_from([
@@ -793,6 +860,69 @@ fn supersede_cli_proposes_replacement_marks_old_and_is_idempotent() {
         ledger.latest_offset().expect("latest offset unchanged"),
         latest_after_first
     );
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn supersede_cli_records_agent_source_for_agent_actor() {
+    // hivemind-xm93: run_supersede previously hardcoded EventProvenance::human
+    // regardless of --actor, so an agent-initiated supersede was misattributed as
+    // human-sourced (AGENTS.md #2). An `agent:`-shaped actor must record source=agent.
+    let hivemind_dir = unique_test_dir("supersede-cli-agent-source");
+    let old_decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Use shared admin token",
+        "--rationale",
+        "Fastest path",
+        "--topic-keys",
+        "auth",
+        "--options",
+        "shared-token",
+    ]))
+    .expect("decision proposed");
+
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent:claude:tenv3-smoke-test",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "supersede",
+        "--old",
+        &old_decision_id,
+        "--title",
+        "Use scoped service tokens",
+        "--rationale",
+        "Scoped tokens preserve audit boundaries",
+        "--options",
+        "scoped-service-tokens",
+        "--chose",
+        "scoped-service-tokens",
+    ]))
+    .expect("supersede succeeds");
+    let output: serde_json::Value = serde_json::from_str(&output).expect("valid supersede json");
+    let superseded_event_id = output["superseded_event_id"]
+        .as_u64()
+        .expect("superseded event id");
+
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let events = ledger.read(0, 20).expect("events read");
+    let superseded = events
+        .iter()
+        // ubs:ignore: public ledger event IDs are not secrets.
+        .find(|event| event.event_id == Some(superseded_event_id))
+        .expect("superseded event");
+    assert_eq!(superseded.source, crate::events::EventSource::Agent);
+    assert_eq!(superseded.actor_id, "agent:claude:tenv3-smoke-test");
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);
 }
