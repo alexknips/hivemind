@@ -251,7 +251,7 @@ fn claude_code_plugin_bundle_is_installable_and_wires_cli_mcp() -> TestResult<()
     let query_command =
         fs::read_to_string(root.join("plugins/hivemind-capture/commands/query-decisions.md"))?;
     assert_no_todos("Claude query command", &query_command);
-    assert!(query_command.contains("query search_decisions"));
+    assert!(query_command.contains("query recall"));
     assert!(query_command.contains("truncated"));
 
     let readme = fs::read_to_string(root.join("plugins/hivemind-capture/README.md"))?;
@@ -379,7 +379,7 @@ fn claude_code_plugin_capture_and_query_scripts_write_agent_decision() -> TestRe
     let query: Value = serde_json::from_slice(&query.stdout)?;
     assert_eq!(query["result_count"], 1);
     assert_eq!(
-        query["data"]["items"][0]["graph_context"]["actor_ids"][0],
+        query["data"]["ranked"]["items"][0]["graph_context"]["actor_ids"][0],
         actor_id
     );
 
@@ -496,7 +496,7 @@ fn capture_plugin_scripts_derive_codex_session_context() -> TestResult<()> {
     let query: Value = serde_json::from_slice(&query.stdout)?;
     assert_eq!(query["result_count"], 1);
     assert_eq!(
-        query["data"]["items"][0]["graph_context"]["actor_ids"][0],
+        query["data"]["ranked"]["items"][0]["graph_context"]["actor_ids"][0],
         actor_id
     );
 
@@ -633,7 +633,8 @@ fn capture_plugin_defaults_to_rig_ledger_from_linked_worktree() -> TestResult<()
     )?;
     let query_actor = query
         .get("data")
-        .and_then(|data| data.get("items"))
+        .and_then(|data| data.get("ranked"))
+        .and_then(|ranked| ranked.get("items"))
         .and_then(Value::as_array)
         .and_then(|items| items.first())
         .and_then(|item| item.get("graph_context"))
