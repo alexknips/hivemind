@@ -115,6 +115,15 @@ jobs:
   ubs:
     name: UBS critical scan
     runs-on: ubuntu-latest
+    # hivemind-0qwf: the rust module runs `cargo clippy --all-features`, a
+    # heavier build than the default-feature checks elsewhere in this
+    # workflow (this crate's postgres/kuzu/tui features add real compile
+    # time). That reliably exceeds UBS's 300s per-module default even with a
+    # warm target/ cache, so the module is killed mid-scan and the run comes
+    # back "partial" instead of a real result. Raise the budget; drop once
+    # upstream's own default is high enough for multi-feature crates.
+    env:
+      UBS_MODULE_TIMEOUT: "1200"
 
     steps:
       - name: Check out repository
@@ -137,10 +146,19 @@ jobs:
         # scripts at install time, so ~/.local/share/ubs/modules/ubs-rust.sh is
         # absent after a fresh install and direct invocation fails with exit 127
         # (hivemind-13n5). The meta-runner downloads modules on first use.
+        #
+        # --include-ext=rs works around hivemind-0qwf: UBS 5.4.1 ships without
+        # modules/contract.json (missing from its own supply-chain manifest, so
+        # `ubs doctor` reports all-green while detection is broken). Its language
+        # prepass classifies files via that missing contract, so every language's
+        # file list comes back empty and detect_lang() reports "no supported
+        # languages" (exit 3) without ever running a scanner. --include-ext
+        # bypasses the empty contract via UBS's extension-hint fallback. Drop this
+        # flag once upstream ships/repairs contract.json.
         shell: bash
         run: |
           set -euo pipefail
-          ubs --ci --only=rust --report-json=/tmp/ubs-critical-summary.json .
+          ubs --ci --only=rust --include-ext=rs --report-json=/tmp/ubs-critical-summary.json .
           criticals="$(jq -r '.totals.critical // 0' /tmp/ubs-critical-summary.json)"
           if [ "${criticals}" -gt 0 ]; then
             echo "UBS critical count: ${criticals}. Failing."
@@ -165,11 +183,12 @@ jobs:
       # Top categories still tracked: unwrap/expect panic inventory (hivemind-dfc5e),
       # runtime panic surfaces (hivemind-gofiy), loop allocation inventory (hivemind-41n8s).
       - name: Run UBS warning baseline scan
+        # --include-ext=rs: see hivemind-0qwf comment on the critical-scan step above.
         shell: bash
         run: |
           set -euo pipefail
           baseline_warnings=308
-          ~/.local/bin/ubs --ci --only=rust --report-json=/tmp/ubs-warning-summary.json .
+          ~/.local/bin/ubs --ci --only=rust --include-ext=rs --report-json=/tmp/ubs-warning-summary.json .
           warnings="$(jq -r '.totals.warning' /tmp/ubs-warning-summary.json)"
           if [ "${warnings}" -gt "${baseline_warnings}" ]; then
             echo "UBS warning count grew from ${baseline_warnings} to ${warnings}."
