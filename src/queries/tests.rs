@@ -2467,10 +2467,7 @@ fn memory_graph_quality_candidates_bulk_and_since_filter() -> Result<()> {
     let ids: BTreeSet<_> = since.data.iter().map(|o| o.decision_id.clone()).collect();
     assert_eq!(
         ids,
-        BTreeSet::from([
-            "decision:contested".to_owned(),
-            "decision:thin".to_owned(),
-        ])
+        BTreeSet::from(["decision:contested".to_owned(), "decision:thin".to_owned(),])
     );
 
     // only_with_signals excludes decision:clean (no reasons) from the full set.

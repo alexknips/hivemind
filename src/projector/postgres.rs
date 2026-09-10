@@ -182,7 +182,8 @@ fn dispatch_query(
     //    check — outcome.rs's get_decision_outcome existence probe reads only
     //    id/event_origin but the row carries every stored property either way) ──
     if cypher.contains("LIMIT 1")
-        && (cypher.contains("d.title AS title") || cypher.contains("d.event_origin AS event_origin"))
+        && (cypher.contains("d.title AS title")
+            || cypher.contains("d.event_origin AS event_origin"))
     {
         return query_decision_by_id(client, tenant_id, params);
     }

@@ -12,9 +12,8 @@ use crate::projector::{
     project_from_ledger, GraphParams, GraphValue, GraphView, NodeKind, RelationKind,
 };
 use crate::queries::{
-    get_decision, get_decision_outcome, get_decision_quality_candidates,
-    get_supersession_chain, resolve_decision_by_description, search_decisions,
-    DecisionQualityCandidatesRequest,
+    get_decision, get_decision_outcome, get_decision_quality_candidates, get_supersession_chain,
+    resolve_decision_by_description, search_decisions, DecisionQualityCandidatesRequest,
 };
 use crate::Result;
 
