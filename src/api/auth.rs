@@ -42,6 +42,7 @@ struct WorkosClaims {
     email: Option<String>,
     /// WorkOS organization ID — used as tenant key in SQLite mode.
     #[serde(default)]
+    #[cfg_attr(feature = "shared-backend-postgres", allow(dead_code))]
     org_id: Option<String>,
 }
 
@@ -184,21 +185,19 @@ pub(super) async fn extract_ctx(state: &AppState, headers: &HeaderMap) -> ApiRes
 
     // SQLite WorkOS JWT path: WorkOS configured, no postgres store, bearer looks like JWT.
     // org_id claim → tenant key; falls back to sub when org_id absent.
+    #[cfg(not(feature = "shared-backend-postgres"))]
     if bearer.starts_with("ey") {
         if let Some(ref workos) = state.workos_config {
-            #[cfg(not(feature = "shared-backend-postgres"))]
-            {
-                let claims = workos_validate_token(state, workos, bearer).await?;
+            let claims = workos_validate_token(state, workos, bearer).await?;
 
-                let tenant_raw = claims.org_id.as_deref().unwrap_or(claims.sub.as_str());
-                let tenant_id = TenantId::new(tenant_raw)
-                    .map_err(|_| ApiError::internal("invalid tenant from WorkOS org_id"))?;
-                let actor_id = format!("human:{}", claims.email.as_deref().unwrap_or(&claims.sub));
-                return Ok(ApiRequestCtx {
-                    tenant_id,
-                    actor_id,
-                });
-            }
+            let tenant_raw = claims.org_id.as_deref().unwrap_or(claims.sub.as_str());
+            let tenant_id = TenantId::new(tenant_raw)
+                .map_err(|_| ApiError::internal("invalid tenant from WorkOS org_id"))?;
+            let actor_id = format!("human:{}", claims.email.as_deref().unwrap_or(&claims.sub));
+            return Ok(ApiRequestCtx {
+                tenant_id,
+                actor_id,
+            });
         }
     }
 

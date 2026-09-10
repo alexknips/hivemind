@@ -250,7 +250,7 @@ mod tenant_store_tests {
                 .resolve_token(&provisioned.token_secret)
                 .map_err(|e| test_error(e.to_string()))?;
 
-            if resolved.as_deref() != Some(tid.as_str()) {
+            if resolved.as_ref().map(|r| r.tenant_id.as_str()) != Some(tid.as_str()) {
                 return Err(test_error("resolved tenant_id does not match"));
             }
             Ok(())
