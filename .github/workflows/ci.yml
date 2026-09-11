@@ -26,6 +26,19 @@ jobs:
             features: ''
           - os: ubuntu-latest
             features: tui
+          # hivemind-wegd: shared-backend-postgres was previously ungated by
+          # CI, letting #[cfg(feature = "shared-backend-postgres")] code
+          # (including its own test module) bit-rot silently — see the E0599
+          # break hivemind-um4j fixed. This entry is compile+clippy only (see
+          # the "Run tests" step's `if:`): most Postgres-backed tests self-
+          # skip without HIVEMIND_TEST_POSTGRES_URL, but
+          # ledger::postgres::tests::async_safety_tests::pass_after_spawn_blocking_is_async_safe
+          # deliberately panics instead of skipping when the URL is absent
+          # (by design — see its require_pg_url comment), so `cargo test`
+          # can't run clean without a live DB here. Live-DB parity/e2e
+          # coverage is separate (e2e-compose-postgres).
+          - os: ubuntu-latest
+            features: shared-backend-postgres
 
     steps:
       - name: Check out repository
@@ -44,6 +57,9 @@ jobs:
         run: cargo clippy --locked --all-targets${{ matrix.features && format(' --features {0}', matrix.features) || '' }} -- -D warnings
 
       - name: Run tests
+        # shared-backend-postgres is compile+clippy-only here; see the matrix
+        # comment above for why `cargo test` can't pass without a live DB.
+        if: matrix.features != 'shared-backend-postgres'
         run: cargo test --locked${{ matrix.features && format(' --features {0}', matrix.features) || '' }}
 
       - name: Build release binary
