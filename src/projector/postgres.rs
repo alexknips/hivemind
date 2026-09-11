@@ -284,7 +284,16 @@ fn dispatch_query(
     // PREMISED_ON_DIRECT), unfiltered by REFUTES — distinct from query_refuted_premises above,
     // which requires "REFUTES" in the cypher text; this one never contains that substring.
     if cypher.contains("UNION") && cypher.contains(" AS hid") {
-        return query_hypothesis_ids(client, tenant_id, params);
+        return query_hypothesis_ids(client, tenant_id, params, "hid");
+    }
+
+    // shared.rs's premised_on_hypothesis_ids: same premised-on-hypothesis computation as
+    // query_hypothesis_count above, but under the "hypothesis_id" alias — consumed as a list
+    // (not just a count) by get_decision, get_decision_brief, and situational.rs. Distinct
+    // cypher text from query_hypothesis_count's (" AS hid" vs "hypothesis_id"), so the two
+    // conditions never both match; REFUTES-filtered callers already returned above.
+    if cypher.contains("UNION") && cypher.contains("hypothesis_id") {
+        return query_hypothesis_ids(client, tenant_id, params, "hypothesis_id");
     }
 
     // get_decision_context's single-decision fetch: any remaining
@@ -881,11 +890,14 @@ fn query_actor_kind_pairs(
 /// Hypotheses this decision premises on (via CHOSE->PREMISED_ON or PREMISED_ON_DIRECT),
 /// unfiltered by REFUTES. Mirrors `query_refuted_premises` above minus the refuted-hypothesis
 /// filter — kept as a separate function (rather than a shared helper with a filter flag) so
-/// each stays a direct, line-for-line match against its own memory.rs counterpart.
+/// each stays a direct, line-for-line match against its own memory.rs counterpart. `alias`
+/// selects the returned column name ("hid" for context.rs's count-only caller, "hypothesis_id"
+/// for shared.rs's list caller) — same rows, different callers read different keys.
 fn query_hypothesis_ids(
     client: &mut Client,
     tenant_id: &str,
     params: &GraphParams,
+    alias: &str,
 ) -> Result<Vec<GraphRow>> {
     let id = required_string_param(params, "id")?;
 
@@ -925,7 +937,7 @@ fn query_hypothesis_ids(
 
     Ok(ids
         .into_iter()
-        .map(|hid| GraphRow::from([("hid".to_owned(), GraphValue::String(hid))]))
+        .map(|hid| GraphRow::from([(alias.to_owned(), GraphValue::String(hid))]))
         .collect())
 }
 
