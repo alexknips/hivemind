@@ -1153,7 +1153,10 @@ fn resolving_title_reference_increments_resolve_counter() {
         .find(|(node_id, _)| node_id == "id-referencer")
         .map(|(_, capture)| capture)
         .expect("referencer capture present");
-    assert_eq!(referencer_resolved.supports_ids, vec!["id-sibling".to_owned()]);
+    assert_eq!(
+        referencer_resolved.supports_ids,
+        vec!["id-sibling".to_owned()]
+    );
     assert_eq!(
         referencer_resolved.refutes_ids,
         vec!["no such title".to_owned()],
