@@ -254,11 +254,45 @@ fn dispatch_query(
         return query_has_relation(client, tenant_id, cypher, params);
     }
 
-    // get_decision_quality_candidates: bulk decision id + event_origin dump, optionally
-    // floored by $since. Distinct from the title/topic bulk handlers above — different
-    // column set and no id filter.
+    // get_decision_quality_candidates / get_decision_context_candidates: bulk decision dump,
+    // optionally floored by $since. Both context.rs's and outcome.rs's bulk queries share this
+    // ORDER BY tail (differing only in which columns they RETURN); this handler returns every
+    // stored property either way, same as query_decision_by_id below.
     if cypher.contains("ORDER BY d.event_origin, d.id") {
         return query_decisions_with_origin(client, tenant_id, params);
+    }
+
+    // ── context.rs's get_decision_context and brief.rs's get_decision_brief query shapes ──
+    // Not covered by the handlers above; see hivemind-ookw.
+
+    // brief.rs's resolve_option_label: single Option node lookup by id, returning its label
+    // (or Null if the node has no `label` property — the row still exists as long as the
+    // Option node itself exists, matching memory.rs's `graph_property_or_default`).
+    if cypher.contains("RETURN o.label AS label") {
+        return query_option_label(client, tenant_id, params);
+    }
+
+    // query_proposer / query_actor_ids_by_edge: decision -[relation]-> Actor, returning the
+    // actor id and its "kind" (human/agent/unknown, stamped by upsert_actor). The two callers
+    // differ only in whether the cypher ends "LIMIT 1;" (proposer) or "ORDER BY a.id;"
+    // (acceptors) — both are handled by the same query, truncated when LIMIT 1 is present.
+    if cypher.contains("RETURN a.id AS actor_id, a.kind AS kind") {
+        return query_actor_kind_pairs(client, tenant_id, cypher, params);
+    }
+
+    // query_hypothesis_count: hypotheses this decision premises on (via CHOSE->PREMISED_ON or
+    // PREMISED_ON_DIRECT), unfiltered by REFUTES — distinct from query_refuted_premises above,
+    // which requires "REFUTES" in the cypher text; this one never contains that substring.
+    if cypher.contains("UNION") && cypher.contains(" AS hid") {
+        return query_hypothesis_ids(client, tenant_id, params);
+    }
+
+    // get_decision_context's single-decision fetch: any remaining
+    // "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id, ..." shape returns the id plus every
+    // stored property, same as query_decision_by_id above — the caller reads only the specific
+    // keys it asked for. Placed last since it's the most general remaining single-id shape.
+    if cypher.contains("MATCH (d:`Decision` {id: $id})") && cypher.contains("RETURN d.id AS id") {
+        return query_decision_by_id(client, tenant_id, params);
     }
 
     Err(projection_error(format!("unsupported cypher query: {cypher}")).into())
@@ -765,6 +799,133 @@ fn query_decisions_with_origin(
             let props: JsonValue = row.get(1);
             json_props_to_row(&node_id, &props)
         })
+        .collect())
+}
+
+// ── context.rs / brief.rs query implementations (hivemind-ookw) ────────────────
+
+/// Label of a single `Option` node by id, or `None` if the node doesn't exist. When the node
+/// exists but has no `label` property, returns a row with `label: Null` — same distinction as
+/// memory.rs's `graph_property_or_default` (missing node vs. missing property are different).
+fn query_option_label(
+    client: &mut Client,
+    tenant_id: &str,
+    params: &GraphParams,
+) -> Result<Vec<GraphRow>> {
+    let id = required_string_param(params, "id")?;
+    let row = client
+        .query_opt(
+            "SELECT properties FROM hm_nodes
+             WHERE tenant_id=$1 AND node_kind='Option' AND node_id=$2
+             LIMIT 1",
+            &[&tenant_id, &id],
+        )
+        .map_err(pg_error)?;
+    Ok(row
+        .map(|row| {
+            let props: JsonValue = row.get(0);
+            let label = props
+                .get("label")
+                .and_then(json_to_graph_value)
+                .unwrap_or(GraphValue::Null);
+            GraphRow::from([("label".to_owned(), label)])
+        })
+        .into_iter()
+        .collect())
+}
+
+/// `(actor_id, kind)` pairs for actors connected via one relationship label (PROPOSED_BY or
+/// ACCEPTED_BY), sourced from `hm_edges` joined against `hm_nodes` for the actor's stored
+/// `kind` property. `kind` is `Null` when the actor node is missing or has no `kind` key,
+/// matching memory.rs's `.unwrap_or(GraphValue::Null)` fallback. Truncated to one row when the
+/// cypher carries `LIMIT 1` (the single-proposer lookup); otherwise every match is returned,
+/// ordered by actor id (the multi-acceptor lookup).
+fn query_actor_kind_pairs(
+    client: &mut Client,
+    tenant_id: &str,
+    cypher: &str,
+    params: &GraphParams,
+) -> Result<Vec<GraphRow>> {
+    let relation = parse_relation(cypher)?;
+    let id = required_string_param(params, "id")?;
+    let rows = client
+        .query(
+            "SELECT e.to_id, n.properties->>'kind' FROM hm_edges e
+             LEFT JOIN hm_nodes n
+               ON n.tenant_id = e.tenant_id AND n.node_kind = 'Actor' AND n.node_id = e.to_id
+             WHERE e.tenant_id = $1 AND e.relation_kind = $2 AND e.from_id = $3
+             ORDER BY e.to_id",
+            &[&tenant_id, &relation.table_name(), &id],
+        )
+        .map_err(pg_error)?;
+    let mut result: Vec<GraphRow> = rows
+        .into_iter()
+        .map(|row| {
+            let actor_id: String = row.get(0);
+            let kind: Option<String> = row.get(1);
+            GraphRow::from([
+                ("actor_id".to_owned(), GraphValue::String(actor_id)),
+                (
+                    "kind".to_owned(),
+                    kind.map_or(GraphValue::Null, GraphValue::String),
+                ),
+            ])
+        })
+        .collect();
+    if cypher.contains("LIMIT 1") {
+        result.truncate(1);
+    }
+    Ok(result)
+}
+
+/// Hypotheses this decision premises on (via CHOSE->PREMISED_ON or PREMISED_ON_DIRECT),
+/// unfiltered by REFUTES. Mirrors `query_refuted_premises` above minus the refuted-hypothesis
+/// filter — kept as a separate function (rather than a shared helper with a filter flag) so
+/// each stays a direct, line-for-line match against its own memory.rs counterpart.
+fn query_hypothesis_ids(
+    client: &mut Client,
+    tenant_id: &str,
+    params: &GraphParams,
+) -> Result<Vec<GraphRow>> {
+    let id = required_string_param(params, "id")?;
+
+    let chosen_options: std::collections::BTreeSet<String> = client
+        .query(
+            "SELECT to_id FROM hm_edges WHERE tenant_id=$1 AND relation_kind='CHOSE' AND from_id=$2",
+            &[&tenant_id, &id],
+        )
+        .map_err(pg_error)?
+        .into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect();
+
+    let mut ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    if !chosen_options.is_empty() {
+        let premised_rows = client
+            .query(
+                "SELECT from_id, to_id FROM hm_edges WHERE tenant_id=$1 AND relation_kind='PREMISED_ON'",
+                &[&tenant_id],
+            )
+            .map_err(pg_error)?;
+        ids.extend(premised_rows.into_iter().filter_map(|row| {
+            let from_id: String = row.get(0);
+            let to_id: String = row.get(1);
+            chosen_options.contains(&from_id).then_some(to_id)
+        }));
+    }
+
+    let direct_rows = client
+        .query(
+            "SELECT to_id FROM hm_edges WHERE tenant_id=$1 AND relation_kind='PREMISED_ON_DIRECT' AND from_id=$2",
+            &[&tenant_id, &id],
+        )
+        .map_err(pg_error)?;
+    ids.extend(direct_rows.into_iter().map(|row| row.get::<_, String>(0)));
+
+    Ok(ids
+        .into_iter()
+        .map(|hid| GraphRow::from([("hid".to_owned(), GraphValue::String(hid))]))
         .collect())
 }
 

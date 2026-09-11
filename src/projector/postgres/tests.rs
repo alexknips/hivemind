@@ -12,8 +12,10 @@ use crate::projector::{
     project_from_ledger, GraphParams, GraphValue, GraphView, NodeKind, RelationKind,
 };
 use crate::queries::{
-    get_decision, get_decision_outcome, get_decision_quality_candidates, get_supersession_chain,
-    resolve_decision_by_description, search_decisions, DecisionQualityCandidatesRequest,
+    get_decision, get_decision_brief, get_decision_context, get_decision_context_candidates,
+    get_decision_outcome, get_decision_quality_candidates, get_supersession_chain,
+    resolve_decision_by_description, search_decisions, DecisionContextRequest,
+    DecisionQualityCandidatesRequest,
 };
 use crate::Result;
 
@@ -277,7 +279,8 @@ fn node_properties_round_trip_through_postgres() -> Result<()> {
 // `get_decision_outcome`'s bespoke query shapes were a separate, pre-existing gap in
 // `dispatch_query` on this backend (hivemind-kj0i; memory.rs was fixed earlier by
 // hivemind-tenv.2) — see the outcome-parity tests below for that coverage.
-// `get_decision_context`'s shapes remain unaudited on this backend; out of scope for kj0i.
+// `get_decision_context`'s and `get_decision_brief`'s shapes were the same class of gap,
+// closed by hivemind-ookw — see the context/brief-parity tests below.
 
 #[test]
 fn resolve_decision_by_description_matches_memory() -> Result<()> {
@@ -389,6 +392,127 @@ fn get_decision_quality_candidates_matches_memory() -> Result<()> {
             return Err(test_error(format!(
                 "get_decision_quality_candidates since-filter mismatch: memory={memory_since:?} pg={pg_since:?}"
             )));
+        }
+        Ok(())
+    })
+}
+
+// ── get_decision_context / get_decision_context_candidates parity (hivemind-ookw) ──
+
+#[test]
+fn get_decision_context_matches_memory() -> Result<()> {
+    with_postgres_graph("context-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = outcome_fixture_ledger()?;
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        for decision_id in [
+            "decision:clean",
+            "decision:old",
+            "decision:new",
+            "decision:stale-direct",
+            "decision:stale-option",
+            "decision:contested",
+            "decision:thin",
+        ] {
+            let memory_result = get_decision_context(&memory, decision_id)?.data;
+            let pg_result = get_decision_context(pg, decision_id)?.data;
+            if memory_result != pg_result {
+                return Err(test_error(format!(
+                    "get_decision_context mismatch for {decision_id}: memory={memory_result:?} pg={pg_result:?}"
+                )));
+            }
+        }
+
+        // Nonexistent decision: both backends must agree on None, not error.
+        let memory_missing = get_decision_context(&memory, "decision:missing")?.data;
+        let pg_missing = get_decision_context(pg, "decision:missing")?.data;
+        if memory_missing != pg_missing {
+            return Err(test_error(format!(
+                "get_decision_context missing-decision mismatch: memory={memory_missing:?} pg={pg_missing:?}"
+            )));
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn get_decision_context_candidates_matches_memory() -> Result<()> {
+    with_postgres_graph("context-candidates-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = outcome_fixture_ledger()?;
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        let request = DecisionContextRequest {
+            limit: 100,
+            ..Default::default()
+        };
+        let memory_ids: Vec<_> = get_decision_context_candidates(&memory, &request)?
+            .data
+            .iter()
+            .map(|c| c.decision_id.clone())
+            .collect();
+        let pg_ids: Vec<_> = get_decision_context_candidates(pg, &request)?
+            .data
+            .iter()
+            .map(|c| c.decision_id.clone())
+            .collect();
+        if memory_ids != pg_ids {
+            return Err(test_error(format!(
+                "get_decision_context_candidates id mismatch: memory={memory_ids:?} pg={pg_ids:?}"
+            )));
+        }
+
+        // since_event_origin floors by the decision node's own event_origin, same as
+        // get_decision_quality_candidates's since-filter test above.
+        let since_request = DecisionContextRequest {
+            since_event_origin: Some(15),
+            limit: 100,
+            ..Default::default()
+        };
+        let memory_since: Vec<_> = get_decision_context_candidates(&memory, &since_request)?
+            .data
+            .iter()
+            .map(|c| c.decision_id.clone())
+            .collect();
+        let pg_since: Vec<_> = get_decision_context_candidates(pg, &since_request)?
+            .data
+            .iter()
+            .map(|c| c.decision_id.clone())
+            .collect();
+        if memory_since != pg_since {
+            return Err(test_error(format!(
+                "get_decision_context_candidates since-filter mismatch: memory={memory_since:?} pg={pg_since:?}"
+            )));
+        }
+        Ok(())
+    })
+}
+
+// ── get_decision_brief parity (hivemind-ookw) ───────────────────────────────────
+//
+// Composes get_decision + get_decision_context + get_decision_outcome + resolve_option_label
+// (the "MATCH (o:`Option` {id: $id}) RETURN o.label AS label" shape) — exercises all four
+// dispatch_query gaps this bead closes in one call, including chosen/rejected option labels.
+
+#[test]
+fn get_decision_brief_matches_memory() -> Result<()> {
+    with_postgres_graph("brief-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = fixture_ledger()?;
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        for decision_id in ["decision:1", "decision:2", "decision:missing"] {
+            let memory_result = get_decision_brief(&memory, decision_id)?.data;
+            let pg_result = get_decision_brief(pg, decision_id)?.data;
+            if memory_result != pg_result {
+                return Err(test_error(format!(
+                    "get_decision_brief mismatch for {decision_id}: memory={memory_result:?} pg={pg_result:?}"
+                )));
+            }
         }
         Ok(())
     })
