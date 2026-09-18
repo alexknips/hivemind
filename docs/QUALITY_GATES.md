@@ -21,6 +21,29 @@ The UBS wrapper is the critical-finding gate. It must report zero criticals.
 If `ubs` is unavailable, the wrapper reports that it skipped; that skip must be
 named in the proof line instead of hidden.
 
+UBS category 14 (dependency hygiene) counts every `cargo audit` output line
+matching `Vulnerability|RUSTSEC` as one critical, regardless of `cargo audit`'s
+own exit code or the allow-list in `.cargo/audit.toml`. On a host with
+`cargo-audit` on `PATH`, that currently flags the informational advisories
+`.cargo/audit.toml` already allows (`cargo audit` itself exits 0 there). Those
+category-14 criticals are advisory noise, not merge-blocking: `cargo audit`'s
+own exit status — run directly by the `dependency-audit` CI job in
+`.github/workflows/ci.yml` — is the authoritative dependency-vulnerability
+gate. If a UBS critical count is entirely explained by category-14 findings
+that `.cargo/audit.toml` already allows, name that in the proof line instead
+of rejecting, and confirm `cargo audit --locked` exits 0. A critical from any
+other category, or an advisory `.cargo/audit.toml` does not allow, still
+blocks as normal (hivemind-eako).
+
+The CI `ubs` job installs a Rust toolchain and `cargo-audit` so its
+dependency-hygiene scan sees what a local host sees, and suppresses the known
+advisory finding via `--baseline=.github/ubs-baseline.json --new-only`
+(hivemind-eako.3); its critical count is 0 on a clean tree. The shared
+`ubs-rig-scan.sh` wrapper above does not install `cargo-audit` or apply that
+baseline, so a host that already has `cargo-audit` on `PATH` can still see the
+category-14 finding locally — treat it per the paragraph above rather than as
+a rejection.
+
 UBS warnings are a baseline gate: warning count must not grow relative to the
 current target branch. **The number that reds CI is rust-only** —
 `.github/workflows/ci.yml`'s `ubs` job (`Run UBS warning baseline scan` step)
@@ -103,6 +126,15 @@ ubs-warnings: PASS (rust-only, --only=rust; baseline=<n>, branch=<n>, no growth)
 
 Add `workflow-lint: PASS (./scripts/lint-workflows.sh)` to that list whenever
 the diff touches `.github/workflows/**`; omit the line otherwise.
+
+If the wrapper's critical count is nonzero but entirely explained by
+category-14 (dependency hygiene) findings that `.cargo/audit.toml` already
+allows, say so instead of rejecting, e.g.:
+
+```text
+ubs-critical: PASS (<wrapper command>; 0 criticals outside category 14;
+  N category-14 findings covered by .cargo/audit.toml; cargo audit --locked: PASS)
+```
 
 Do not submit `verified with <tests>` or another placeholder. If a gate is
 skipped because a tool is unavailable, name the skipped gate and the reason.
