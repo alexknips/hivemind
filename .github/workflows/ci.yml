@@ -164,6 +164,21 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/ultimate_bug_scanner/main/install.sh?$(date +%s)" \
             | bash -s -- --non-interactive
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          # hivemind-eako.3: the installed `ubs` binary's generate_combined_json()
+          # resolves its Python findings-merge helpers via
+          # `dirname "${BASH_SOURCE[0]}"`/modules/helpers -- i.e. relative to the
+          # installed *binary's* directory ($HOME/.local/bin) -- but install.sh
+          # actually puts them under $HOME/.local/share/ubs/modules/helpers. That
+          # first path never exists, so `[[ -d "$helpers_dir/ubs_core" ]]` is
+          # always false and the findings-merge step (which --baseline/--new-only
+          # depends on to fingerprint-match findings) silently never runs, for
+          # any language, no matter what flags are passed. Confirmed by reading
+          # ~/.local/bin/ubs and reproducing locally: --baseline/--new-only was a
+          # complete no-op through the real CLI. Symlink the path the binary
+          # expects to the real one so the mechanism UBS itself documents
+          # actually executes. Drop this once upstream fixes the path.
+          mkdir -p "$HOME/.local/bin/modules"
+          ln -sfn "$HOME/.local/share/ubs/modules/helpers" "$HOME/.local/bin/modules/helpers"
 
       - name: Run UBS critical scan
         # Runtime panic-surface signal should exclude test assertions, which are
@@ -202,22 +217,30 @@ jobs:
         # would NOT retrigger this gate on its own. The dependency-audit job
         # above is the authoritative real-vulnerability gate (cargo audit's own
         # exit code against .cargo/audit.toml) and is unaffected by this
-        # baseline. Regenerate the baseline after a genuine change here with:
+        # baseline. --format=json is required here: findings-merge (which
+        # --new-only needs to fingerprint-match against the baseline) only
+        # sees per-finding data when the rust module is invoked in JSON mode;
+        # in the default text format the module never writes its NDJSON sink,
+        # so there is nothing to filter and totals.critical stays unfiltered.
+        # Its (large) JSON is redirected away since only the report file
+        # matters here; on failure, the finding breakdown below explains why.
+        # Regenerate the baseline after a genuine change here with:
         #   cargo install cargo-audit --locked
         #   ubs --ci --only=rust --include-ext=rs --skip-rust=12,13 \
-        #     --save-baseline=.github/ubs-baseline.json .
+        #     --format=json --save-baseline=.github/ubs-baseline.json .
         # (--skip-rust=12,13 skips the slow clippy/build categories, which
         # this baseline doesn't need, so it saves in seconds instead of
         # minutes.)
         shell: bash
         run: |
           set -euo pipefail
-          ubs --ci --only=rust --include-ext=rs \
+          ubs --ci --only=rust --include-ext=rs --format=json \
             --baseline=.github/ubs-baseline.json --new-only \
-            --report-json=/tmp/ubs-critical-summary.json .
+            --report-json=/tmp/ubs-critical-summary.json . >/dev/null
           criticals="$(jq -r '.totals.critical // 0' /tmp/ubs-critical-summary.json)"
           if [ "${criticals}" -gt 0 ]; then
             echo "UBS critical count: ${criticals}. Failing."
+            jq -c '.findings[]? | select(.severity=="critical")' /tmp/ubs-critical-summary.json || true
             exit 1
           fi
           echo "UBS critical count ${criticals} — OK."
