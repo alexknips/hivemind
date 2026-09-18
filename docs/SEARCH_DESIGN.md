@@ -112,6 +112,12 @@ Minimum current flags are `--q`, `--topic`, `--status`, `--actor-id`,
 search contract. The remaining flags are part of the storage-agnostic contract
 and should be added without changing the operation name or result envelope.
 
+Note: `--supersedes-decision-id` here is a planned *search filter* (find
+decisions that supersede a given decision id) — not implemented yet, and
+unrelated to the create-time reversal flow. To capture a decision that
+reverses a prior one today, use `hivemind supersede`
+(see [CLI reference](../website/src/content/docs/reference/cli.md#supersede)).
+
 CLI examples:
 
 ```bash

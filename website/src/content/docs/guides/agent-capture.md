@@ -144,7 +144,7 @@ The capture classifier (layer 3) distinguishes signal from noise. In practice:
 **Capture:**
 - A choice between implementation approaches where the rationale is non-obvious
 - A decision that future agents or humans will need to understand
-- A reversal of a previous decision (use `--supersedes <id>`)
+- A reversal of a previous decision (use the [`supersede`](/reference/cli/#supersede) command)
 
 **Don't capture:**
 - Mechanical steps (reading a file, running a test)

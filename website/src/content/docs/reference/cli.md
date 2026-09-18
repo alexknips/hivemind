@@ -25,10 +25,13 @@ hivemind emit decision.proposed
   [--topic-keys <key,key,...>]
   [--options <opt,opt,...>]
   [--chose <option>]
-  [--supersedes <decision-id>]
 ```
 
 Prints the new decision ID on success. Add `--json` for a structured envelope.
+
+There is no `--supersedes` flag on this command. To capture a decision that
+reverses a prior one, use [`supersede`](#supersede) instead — it captures the
+new decision and marks the old one superseded in a single call.
 
 ### `emit decision.capture`
 
@@ -59,8 +62,13 @@ hivemind emit decision.rejected --target <decision-id> --reason <text>
 ### `emit decision.superseded`
 
 ```
-hivemind emit decision.superseded --target <decision-id> --by <new-decision-id>
+hivemind emit decision.superseded --old <decision-id> --new <new-decision-id>
 ```
+
+Marks one existing decision as superseding another existing decision. Both
+must already exist — this only records the relationship. To capture the new
+decision and mark the supersession in one call, use [`supersede`](#supersede)
+instead.
 
 ### `emit evidence.recorded`
 
@@ -400,6 +408,35 @@ hivemind tui [--q <query>] [--topic <key>] [--status <status>] [--dot-output <pa
 
 Read-only terminal UI for decision search and graph navigation.
 Requires build with `--features tui`.
+
+### `supersede`
+
+```
+hivemind --actor <id> supersede [<description>]
+  [--old <decision-id>]
+  [--pick <n>]
+  [--topic <topic-key>]
+  --title <text>
+  --rationale <text>
+  [--topic-keys <key,key,...>]
+  [--options <opt,opt,...>]
+  [--chose <option>]
+  [--hypotheses <id,id,...>]
+  [--evidence <id,id,...>]
+```
+
+Captures a new decision and marks it as superseding an existing one in a
+single call — the write path for "this reverses an earlier decision."
+Resolve the decision being superseded either with `--old <decision-id>` or a
+free-text `<description>` fragment (narrow candidates first with `--topic`);
+an ambiguous description short-circuits without writing and returns numbered
+candidates to disambiguate with `--pick <n>`. Retrying with the same resolved
+old decision and the same new-decision fields is idempotent — it returns the
+same `new_decision_id` and appends no new ledger events.
+
+Prints `old_decision_id`, `new_decision_id`, `old_decision_status` (now
+`superseded`), and `new_decision_status`. Add `--json` for the structured
+form.
 
 ## Environment variables
 
