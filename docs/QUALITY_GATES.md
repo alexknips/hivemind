@@ -22,18 +22,46 @@ If `ubs` is unavailable, the wrapper reports that it skipped; that skip must be
 named in the proof line instead of hidden.
 
 UBS warnings are a baseline gate: warning count must not grow relative to the
-current target branch. Capture a JSON report for the branch under review and
-compare its total warning count with the baseline report from the target branch:
+current target branch. **The number that reds CI is rust-only** —
+`.github/workflows/ci.yml`'s `ubs` job (`Run UBS warning baseline scan` step)
+runs the command below and compares `.totals.warning` against the baseline.
+Reproduce that exact command, not a different-scoped scan:
 
 ```bash
-ubs . --format=json --ci --quiet --include-ext=rs --report-json "$REPORT"
-jq '[.scanners[].warning // 0] | add // 0' "$REPORT"
+UBS_MODULE_TIMEOUT=1200 ubs --ci --only=rust --include-ext=rs \
+  --report-json "$REPORT" .
+jq '.totals.warning' "$REPORT"
 ```
+
+`--only=rust` scopes the scan to the rust module. **Do not drop it and sum
+across `.scanners[]` instead** — that measures a different, larger quantity
+(every language UBS detects in the tree, not just rust) and produced a false
+"warnings grew" report during the v0.4.0 release merge (hivemind-o412): the
+all-scanner total (318) was compared against the rust-only CI baseline (308)
+as if the two numbers measured the same thing. They don't, and they move
+independently.
 
 `--include-ext=rs` works around hivemind-0qwf: UBS ships without
 `modules/contract.json`, so its language prepass classifies zero files and
 `ubs` reports "no supported languages" (exit 3) instead of scanning. Drop the
-flag once upstream repairs the contract file.
+flag once upstream repairs the contract file, but keep `--only=rust` — without
+it, a repaired contract file makes `ubs` scan every language the repo
+contains, reopening the same mismatch.
+
+`UBS_MODULE_TIMEOUT=1200` matches the CI job. The rust module runs `cargo
+clippy --all-features`, a heavier build than the default-feature checks
+elsewhere, and reliably exceeds UBS's 300s default even with a warm `target/`
+cache. A timed-out module reports `"status":"partial"` with `critical` and
+`warning` both `0` and a non-zero exit code — that looks like a clean pass if
+you only check the counts. Check the exit code and the top-level `status`
+field, and avoid a trailing `| tail` or `| jq` that would swallow the exit
+code of the `ubs` invocation itself.
+
+There is currently no working supplementary "all languages" check: running
+`ubs` without `--include-ext=rs` hits the hivemind-0qwf contract-file gap
+directly and exits 3 with zero scanners run, not a cross-language total.
+Don't add one back without first confirming upstream has repaired the
+contract file.
 
 Any warning-count growth blocks submission or merge unless the warning is fixed
 or the baseline is explicitly updated by a separate bead that explains why the
@@ -70,7 +98,7 @@ clippy: PASS (cargo clippy --locked --all-targets -- -D warnings)
 test: PASS (cargo test --locked)
 reference-docs: PASS (cargo run --locked --bin generate-reference -- --check)
 ubs-critical: PASS (<wrapper command>; 0 criticals)
-ubs-warnings: PASS (baseline=<n>, branch=<n>, no growth)
+ubs-warnings: PASS (rust-only, --only=rust; baseline=<n>, branch=<n>, no growth)
 ```
 
 Add `workflow-lint: PASS (./scripts/lint-workflows.sh)` to that list whenever
