@@ -649,3 +649,201 @@ fn summarize_mode_single_with_multiple_ids_returns_tool_error() {
     assert!(result["isError"].as_bool().unwrap_or(false)); // ubs:ignore: test-only assertion
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// Golden cross-transport parity harness (hivemind-whvd.1)
+//
+// Drives the same MCP tool call through both the stdio transport (this
+// module, via `drive`) and the MCP-over-HTTP transport (`api::mcp_http`,
+// via an in-process axum router) against separate fresh ledgers, then
+// asserts the two responses agree. Generated ids (decision_id, option_ids)
+// are per-call randomness, so only their presence/shape is compared; every
+// other field — and every error message — must match exactly. This is the
+// regression test for the exact drift class hivemind-whvd exists to close:
+// stdio and HTTP disagreed on the empty-option-label message before
+// `mcp::core` unified argument parsing.
+//
+// Add one case here per tool as it migrates behind `mcp::core`.
+// ---------------------------------------------------------------------------
+mod transport_parity {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt as _;
+    use tower::ServiceExt as _;
+
+    fn http_app(dir: &std::path::Path) -> axum::Router {
+        let config = crate::api::ApiConfig {
+            hivemind_dir: dir.to_path_buf(),
+            port: 0,
+            api_key: None,
+            database_url: None,
+            admin_key: None,
+            workos_domain: None,
+            workos_issuer: None,
+            workos_jwks_url: None,
+            workos_audience: None,
+            spa_dir: None,
+            cors_origins: vec![],
+        };
+        crate::api::create_router(&config)
+    }
+
+    async fn http_call(dir: &std::path::Path, tool: &str, arguments: Value) -> Value {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments }
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/mcp")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).expect("json body"))) // ubs:ignore: test-only; panicking is correct in tests
+            .expect("build request"); // ubs:ignore: test-only; panicking is correct in tests
+        let response = http_app(dir).oneshot(request).await.expect("http response"); // ubs:ignore: test-only; panicking is correct in tests
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body") // ubs:ignore: test-only; panicking is correct in tests
+            .to_bytes();
+        serde_json::from_slice(&bytes).expect("json response") // ubs:ignore: test-only; panicking is correct in tests
+    }
+
+    fn stdio_call(dir: &std::path::Path, tool: &str, arguments: Value) -> Value {
+        let config = McpConfig::new(dir).with_session_id("parity-stdio");
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments }
+        })
+        .to_string();
+        drive(&config, &[request.as_str()])
+            .into_iter()
+            .next()
+            .expect("one response") // ubs:ignore: test-only; panicking is correct in tests
+    }
+
+    /// Runs `tool` with `arguments` against a fresh ledger on each
+    /// transport and returns each response's top-level `result` object.
+    async fn run(tool: &str, label: &str, arguments: Value) -> (Value, Value) {
+        let stdio_dir = unique_dir(&format!("parity-stdio-{label}"));
+        let http_dir = unique_dir(&format!("parity-http-{label}"));
+        let stdio = stdio_call(&stdio_dir, tool, arguments.clone());
+        let http = http_call(&http_dir, tool, arguments).await;
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+        (
+            stdio["result"].clone(), // ubs:ignore: test-only; index guaranteed by test setup
+            http["result"].clone(),  // ubs:ignore: test-only; index guaranteed by test setup
+        )
+    }
+
+    #[tokio::test]
+    async fn capture_decision_happy_path_with_chosen_option() {
+        let (stdio, http) = run(
+            "capture_decision",
+            "happy-chosen",
+            json!({
+                "title": "Use SQLite for the ledger",
+                "rationale": "Local-first storage is enough for v1",
+                "topic_keys": ["storage"],
+                "options": [{"label": "sqlite"}, {"label": "postgres"}],
+                "chosen_option_label": "sqlite",
+            }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let content = &result["structuredContent"];
+            assert!(
+                // ubs:ignore: test-only assertion
+                content["decision_id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("decision-")),
+                "{name}: decision_id = {:?}",
+                content["decision_id"]
+            );
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                content["option_ids"].as_array().map(Vec::len),
+                Some(2),
+                "{name}: option_ids"
+            );
+            assert!(
+                content["chosen_option_id"].is_string(), // ubs:ignore: test-only assertion
+                "{name}: chosen_option_id should be set"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_decision_happy_path_without_chosen_option() {
+        let (stdio, http) = run(
+            "capture_decision",
+            "happy-unchosen",
+            json!({
+                "title": "Evaluate caching layers",
+                "rationale": "Need more data before choosing",
+                "topic_keys": ["cache"],
+                "options": [{"label": "redis"}, {"label": "memcached"}],
+            }),
+        )
+        .await;
+        assert_eq!(stdio["structuredContent"]["chosen_option_id"], Value::Null); // ubs:ignore: test-only assertion
+        assert_eq!(http["structuredContent"]["chosen_option_id"], Value::Null); // ubs:ignore: test-only assertion
+    }
+
+    #[tokio::test]
+    async fn capture_decision_error_messages_match_across_transports() {
+        let cases: &[(&str, Value, &str)] = &[
+            (
+                "missing-options",
+                json!({"title": "t", "rationale": "r", "topic_keys": ["x"]}),
+                "missing `options`",
+            ),
+            (
+                "empty-topic-keys",
+                json!({"title": "t", "rationale": "r", "topic_keys": [], "options": [{"label": "a"}]}),
+                "topic_keys must not be empty",
+            ),
+            (
+                "empty-option-label",
+                json!({"title": "t", "rationale": "r", "topic_keys": ["x"], "options": [{"label": ""}]}),
+                "options[0].label must be a non-empty string",
+            ),
+            (
+                "unmatched-chosen-label",
+                json!({
+                    "title": "t", "rationale": "r", "topic_keys": ["x"],
+                    "options": [{"label": "a"}], "chosen_option_label": "b"
+                }),
+                "chosen_option_label must match one of the supplied option labels",
+            ),
+        ];
+        for (label, arguments, expected_message) in cases {
+            let (stdio, http) = run("capture_decision", label, arguments.clone()).await;
+            assert!(
+                stdio["isError"].as_bool().unwrap_or(false), // ubs:ignore: test-only assertion
+                "{label}: stdio should error: {stdio:?}"
+            );
+            assert!(
+                http["isError"].as_bool().unwrap_or(false), // ubs:ignore: test-only assertion
+                "{label}: http should error: {http:?}"
+            );
+            assert_eq!(
+                stdio["content"][0]["text"].as_str(), // ubs:ignore: test-only assertion
+                Some(*expected_message),
+                "{label}: stdio message"
+            );
+            assert_eq!(
+                http["content"][0]["text"].as_str(), // ubs:ignore: test-only assertion
+                Some(*expected_message),
+                "{label}: http message"
+            );
+        }
+    }
+}

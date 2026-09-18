@@ -13,14 +13,14 @@ use axum::extract::{Json, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-use crate::commands::{CommandContext, Commands, DecisionProposalInput, SupersedeInput};
-use crate::events::EventProvenance;
+use crate::commands::{CommandContext, Commands, SupersedeInput};
+use crate::events::{EventProvenance, TenantId};
 use crate::mcp::args::{
-    default_option_description, optional_option_labels as mcp_opt_option_labels,
-    optional_string as mcp_opt_str, optional_string_array as mcp_opt_str_array,
-    optional_usize as mcp_opt_usize, require_string as mcp_req_str,
-    require_string_array as mcp_req_str_array,
+    optional_option_labels as mcp_opt_option_labels, optional_string as mcp_opt_str,
+    optional_string_array as mcp_opt_str_array, optional_usize as mcp_opt_usize,
+    require_string as mcp_req_str, require_string_array as mcp_req_str_array,
 };
+use crate::mcp::core::{CaptureDecisionArgs, CoreError, LedgerHandle, LedgerProvider};
 use crate::projector::memory::MemoryGraph;
 #[cfg(feature = "shared-backend-postgres")]
 use crate::queries::search_decisions_with_ledger;
@@ -254,96 +254,53 @@ fn mcp_tool_err(message: String) -> serde_json::Value {
 // Per-tool implementations
 // ---------------------------------------------------------------------------
 
+/// HTTP's [`LedgerProvider`]: resolves a tenant-scoped ledger from the
+/// tenant already established by [`extract_ctx`]'s WorkOS/bearer-token
+/// validation. Auth happened before this is ever called — the core this
+/// feeds never sees the tenant negotiation, only its result.
+struct HttpLedgerProvider<'a> {
+    backend: &'a ApiBackend,
+    tenant_id: &'a TenantId,
+}
+
+impl LedgerProvider for HttpLedgerProvider<'_> {
+    type Ledger = ApiLedger;
+
+    fn ledger(&self) -> std::result::Result<LedgerHandle<Self::Ledger>, CoreError> {
+        let ledger = self
+            .backend
+            .open_ledger_for_tenant(self.tenant_id)
+            .map_err(|e| CoreError::Internal(e.to_string()))?;
+        Ok(LedgerHandle {
+            ledger,
+            tenant_id: self.tenant_id.clone(),
+        })
+    }
+}
+
+impl From<CoreError> for (i32, String) {
+    fn from(error: CoreError) -> Self {
+        let code = match &error {
+            CoreError::InvalidArgument(_) => -32602,
+            CoreError::Internal(_) => -32603,
+        };
+        (code, error.into_message())
+    }
+}
+
 fn mcp_capture_decision(
     backend: &ApiBackend,
     ctx: &ApiRequestCtx,
     actor_id: &str,
     args: serde_json::Map<String, serde_json::Value>,
 ) -> McpToolResult {
-    let title = mcp_req_str(&args, "title")?;
-    let rationale = mcp_req_str(&args, "rationale")?;
-    let topic_keys = mcp_req_str_array(&args, "topic_keys")?;
-    if topic_keys.is_empty() {
-        return Err((-32602, "topic_keys must not be empty".into()));
-    }
-    let options_val = args
-        .get("options")
-        .cloned()
-        .ok_or_else(|| (-32602i32, "missing `options`".to_owned()))?;
-    let options = match options_val {
-        serde_json::Value::Array(v) => v,
-        _ => return Err((-32602, "`options` must be an array".into())),
+    let core_args = CaptureDecisionArgs::from_json(&args, actor_id.to_owned())?;
+    let provider = HttpLedgerProvider {
+        backend,
+        tenant_id: &ctx.tenant_id,
     };
-    if options.is_empty() {
-        return Err((-32602, "options must not be empty".into()));
-    }
-    let chosen_label = mcp_opt_str(&args, "chosen_option_label")?;
-    let hypothesis_ids = mcp_opt_str_array(&args, "hypothesis_ids")?;
-    let evidence_ids = mcp_opt_str_array(&args, "evidence_ids")?;
-
-    let ledger = backend
-        .open_ledger_for_tenant(&ctx.tenant_id)
-        .map_err(|e| (-32603i32, e.to_string()))?;
-    let commands = Commands::new_with_context(
-        &ledger,
-        CommandContext::new(
-            ctx.tenant_id.clone(),
-            EventProvenance::agent(actor_id.to_owned()),
-        ),
-    );
-
-    let mut option_ids: Vec<String> = Vec::with_capacity(options.len());
-    let mut chosen_option_id: Option<String> = None;
-    for (i, opt) in options.into_iter().enumerate() {
-        let obj = match opt {
-            serde_json::Value::Object(map) => map,
-            _ => return Err((-32602, format!("options[{i}] must be an object"))),
-        };
-        let label = obj
-            .get("label")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| (-32602i32, format!("options[{i}].label must be non-empty")))?
-            .to_owned();
-        let description = obj
-            .get("description")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| s.to_owned())
-            .unwrap_or_else(|| default_option_description(&label));
-        let oid = commands
-            .record_option(actor_id, &label, &description)
-            .map_err(|e| (-32603i32, e.to_string()))?;
-        // ubs:ignore: == compares option labels (user-visible strings), not secrets
-        if chosen_label.as_deref() == Some(label.as_str()) {
-            chosen_option_id = Some(oid.clone());
-        }
-        option_ids.push(oid);
-    }
-    if chosen_label.is_some() && chosen_option_id.is_none() {
-        return Err((
-            -32602,
-            "chosen_option_label must match one of the supplied option labels".into(),
-        ));
-    }
-    let decision_id = commands
-        .propose_decision(DecisionProposalInput {
-            actor_id,
-            title: &title,
-            rationale: &rationale,
-            topic_keys: &topic_keys,
-            option_ids: &option_ids,
-            chosen_option_id: chosen_option_id.as_deref(),
-            hypothesis_ids: &hypothesis_ids,
-            evidence_ids: &evidence_ids,
-        })
-        .map_err(|e| (-32603i32, e.to_string()))?;
-    Ok(serde_json::json!({
-        "decision_id": decision_id,
-        "option_ids": option_ids,
-        "chosen_option_id": chosen_option_id,
-    }))
+    let output = crate::mcp::core::capture_decision(&provider, core_args)?;
+    Ok(output.into_value())
 }
 
 fn mcp_capture_evidence(

@@ -17,8 +17,8 @@
 use std::io::{BufRead, BufReader, Write};
 
 use args::{
-    default_option_description, optional_datetime, optional_option_labels, optional_string,
-    optional_string_array, optional_usize, require_string, require_string_array,
+    optional_datetime, optional_option_labels, optional_string, optional_string_array,
+    optional_usize, require_string, require_string_array,
 };
 use std::path::PathBuf;
 
@@ -26,7 +26,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tracing::{debug, warn};
 
-use crate::commands::{CommandContext, Commands, DecisionProposalInput, SupersedeInput};
+use crate::commands::{CommandContext, Commands, SupersedeInput};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, TenantId};
 use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool};
@@ -48,6 +48,7 @@ use crate::summarize::{
     RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT,
 };
 use crate::Result;
+use core::{CaptureDecisionArgs, CoreError, LedgerHandle, LedgerProvider};
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
 /// 2025-03-26 schema (tools/list + tools/call); kept in one place so version
@@ -257,6 +258,19 @@ impl From<HivemindError> for RpcError {
         Self {
             code,
             message: error.to_string(),
+        }
+    }
+}
+
+impl From<CoreError> for RpcError {
+    fn from(error: CoreError) -> Self {
+        let code = match &error {
+            CoreError::InvalidArgument(_) => JSONRPC_INVALID_PARAMS,
+            CoreError::Internal(_) => JSONRPC_INTERNAL_ERROR,
+        };
+        Self {
+            code,
+            message: error.into_message(),
         }
     }
 }
@@ -720,96 +734,31 @@ pub fn tool_definitions() -> Vec<Value> {
 // Tool implementations
 // ---------------------------------------------------------------------------
 
+/// stdio's [`LedgerProvider`]: opens a directory-based ledger. No tenancy or
+/// auth to resolve — the whole surface today is a single local tenant.
+struct StdioLedgerProvider<'a> {
+    config: &'a McpConfig,
+}
+
+impl LedgerProvider for StdioLedgerProvider<'_> {
+    type Ledger = SqliteEventLedger;
+
+    fn ledger(&self) -> std::result::Result<LedgerHandle<Self::Ledger>, CoreError> {
+        let ledger = SqliteEventLedger::open(&self.config.hivemind_dir)?;
+        Ok(LedgerHandle {
+            ledger,
+            tenant_id: self.config.tenant_id.clone(),
+        })
+    }
+}
+
 fn tool_capture_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
     let actor_id = actor_id_or_default(&args, config)?;
-    let title = require_string(&args, "title")?;
-    let rationale = require_string(&args, "rationale")?;
-    let topic_keys = require_string_array(&args, "topic_keys")?;
-    if topic_keys.is_empty() {
-        return Err(RpcError::invalid_params("topic_keys must not be empty"));
-    }
-
-    let options_value = args
-        .get("options")
-        .cloned()
-        .ok_or_else(|| RpcError::invalid_params("missing `options`"))?;
-    let options = match options_value {
-        Value::Array(items) => items,
-        _ => return Err(RpcError::invalid_params("`options` must be an array")),
-    };
-    if options.is_empty() {
-        return Err(RpcError::invalid_params("options must not be empty"));
-    }
-
-    let chosen_label = optional_string(&args, "chosen_option_label")?;
-    let hypothesis_ids = optional_string_array(&args, "hypothesis_ids")?;
-    let evidence_ids = optional_string_array(&args, "evidence_ids")?;
-
-    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
-    let commands = Commands::new_with_context(
-        &ledger,
-        config.command_context(EventProvenance::agent(actor_id.clone())),
-    );
-
-    let mut option_ids: Vec<String> = Vec::with_capacity(options.len());
-    let mut chosen_option_id: Option<String> = None;
-    for (index, option) in options.into_iter().enumerate() {
-        let option_obj = match option {
-            Value::Object(map) => map,
-            _ => {
-                return Err(RpcError::invalid_params(format!(
-                    "options[{index}] must be an object"
-                )))
-            }
-        };
-        let label = option_obj
-            .get("label")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                RpcError::invalid_params(format!(
-                    "options[{index}].label must be a non-empty string"
-                ))
-            })?
-            .to_owned();
-        let description = option_obj
-            .get("description")
-            .and_then(Value::as_str)
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| s.to_owned())
-            .unwrap_or_else(|| default_option_description(&label));
-
-        let option_id = commands.record_option(&actor_id, &label, &description)?;
-        if chosen_label.as_deref() == Some(label.as_str()) {
-            chosen_option_id = Some(option_id.clone());
-        }
-        option_ids.push(option_id);
-    }
-
-    if chosen_label.is_some() && chosen_option_id.is_none() {
-        return Err(RpcError::invalid_params(
-            "chosen_option_label must match one of the supplied option labels",
-        ));
-    }
-
-    let decision_id = commands.propose_decision(DecisionProposalInput {
-        actor_id: &actor_id,
-        title: &title,
-        rationale: &rationale,
-        topic_keys: &topic_keys,
-        option_ids: &option_ids,
-        chosen_option_id: chosen_option_id.as_deref(),
-        hypothesis_ids: &hypothesis_ids,
-        evidence_ids: &evidence_ids,
-    })?;
-
-    Ok(json!({
-        "decision_id": decision_id,
-        "option_ids": option_ids,
-        "chosen_option_id": chosen_option_id,
-    }))
+    let core_args = CaptureDecisionArgs::from_json(&args, actor_id)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::capture_decision(&provider, core_args)?;
+    Ok(output.into_value())
 }
 
 fn tool_capture_evidence(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
@@ -1432,6 +1381,7 @@ impl From<(i32, String)> for RpcError {
 }
 
 pub(crate) mod args;
+pub(crate) mod core;
 
 #[cfg(test)]
 mod tests;
