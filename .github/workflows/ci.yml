@@ -263,11 +263,22 @@ jobs:
       # runtime panic surfaces (hivemind-gofiy), loop allocation inventory (hivemind-41n8s).
       - name: Run UBS warning baseline scan
         # --include-ext=rs: see hivemind-0qwf comment on the critical-scan step above.
+        #
+        # `|| true` on the ubs invocation (hivemind-eako.3): this step only
+        # gates on .totals.warning, but ubs's own exit code reflects
+        # .totals.critical too, and this job now installs cargo-audit (see
+        # the critical-scan step above), so this step's un-suppressed
+        # category-14 scan sees the same 12 allow-listed advisories as
+        # criticals and ubs itself exits 1 -- which, under `set -e`, aborted
+        # this step before the warnings check below ever ran. This step
+        # doesn't use --baseline/--new-only (it has no reason to filter
+        # criticals), so it tolerates that nonzero exit and judges the run
+        # solely by the warning count it actually wrote to the report file.
         shell: bash
         run: |
           set -euo pipefail
           baseline_warnings=308
-          ~/.local/bin/ubs --ci --only=rust --include-ext=rs --report-json=/tmp/ubs-warning-summary.json .
+          ~/.local/bin/ubs --ci --only=rust --include-ext=rs --report-json=/tmp/ubs-warning-summary.json . || true
           warnings="$(jq -r '.totals.warning' /tmp/ubs-warning-summary.json)"
           if [ "${warnings}" -gt "${baseline_warnings}" ]; then
             echo "UBS warning count grew from ${baseline_warnings} to ${warnings}."
