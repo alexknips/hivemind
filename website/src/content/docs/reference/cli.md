@@ -50,13 +50,13 @@ hivemind emit decision.capture
 ### `emit decision.accepted`
 
 ```
-hivemind emit decision.accepted --target <decision-id>
+hivemind emit decision.accepted --decision-id <decision-id>
 ```
 
 ### `emit decision.rejected`
 
 ```
-hivemind emit decision.rejected --target <decision-id> --reason <text>
+hivemind emit decision.rejected --decision-id <decision-id>
 ```
 
 ### `emit decision.superseded`
