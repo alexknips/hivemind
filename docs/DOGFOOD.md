@@ -89,18 +89,26 @@ helper, MCP server defaults, or `decision.capture` `--agent-tool` and
 Install or build the CLI first. Agent capture helpers look for `hivemind` on
 `PATH`, then fall back to a local debug binary or `cargo run` from this checkout.
 
-**Install to PATH (recommended for Gas Town rigs):** After building, copy the
-binary to a directory on `$PATH` so the MCP config, capture scripts, and
-plugin all resolve `hivemind` without a repo-relative path:
+**Install to PATH (recommended for Gas Town rigs):** run `make install` (or
+the equivalent `cargo install --path . --locked --bin hivemind`) so the MCP
+config, capture scripts, and plugin all resolve `hivemind` without a
+repo-relative path:
+
+```bash
+make install
+hivemind --version  # should print hivemind 0.6.0+
+```
+
+This builds the CLI from the current checkout and installs it into cargo's
+install root (`~/.cargo/bin` by default), which is on `$PATH` for a standard
+Rust toolchain install. Re-run `make install` after every rebase or pull so
+PATH never resolves a stale binary. If cargo's install root is not on your
+`$PATH`, either add it or copy the built binary to a directory that is:
 
 ```bash
 cargo build
 cp ./target/debug/hivemind ~/.local/bin/hivemind
-hivemind --version  # should print hivemind 0.5.0+
 ```
-
-Replace `~/.local/bin` with any writable directory on your `$PATH`. On a
-shared host, `/usr/local/bin` works if you have write access.
 
 If `hivemind` is not installed on `PATH`, replace `hivemind` in the examples
 below with `./target/debug/hivemind` from the repository root.

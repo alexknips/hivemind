@@ -188,6 +188,11 @@ cargo build
 cargo test
 ```
 
+To build from this checkout and install `hivemind` onto `$PATH` for local
+dogfooding, run `make install` (or `cargo install --path . --locked --bin
+hivemind`) instead of copying `target/debug/hivemind` by hand — see
+[`docs/DOGFOOD.md`](docs/DOGFOOD.md#starting-an-agent).
+
 Kuzu support is optional and may compile bundled native C++ code:
 
 ```bash
