@@ -1,0 +1,12 @@
+{
+  "_comment": "UBS --baseline/--new-only baseline for the 'UBS critical scan' CI job (hivemind-eako.3). Regenerate with: cargo install cargo-audit --locked && ubs --ci --only=rust --include-ext=rs --skip-rust=12,13 --save-baseline=.github/ubs-baseline.json . -- see .github/workflows/ci.yml for the full rationale.",
+  "findings": [
+    {
+      "rule_id": "rust.dependencies.phase",
+      "category_id": "rust.dependencies",
+      "severity": "critical",
+      "message": "Advisories found by cargo-audit",
+      "fingerprint": "672970c50027b526"
+    }
+  ]
+}

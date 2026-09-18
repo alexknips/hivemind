@@ -145,6 +145,20 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      # hivemind-eako / hivemind-eako.3: without a Rust toolchain + cargo-audit
+      # on PATH, UBS's dependency-hygiene category (14) can't run `cargo audit`
+      # (HAS_AUDIT=0 in ubs-rust.sh) and silently reports an "info" skip finding
+      # instead of a real result. That made this job blind to advisories that a
+      # local host WITH cargo-audit installed reports as criticals — a
+      # local-vs-CI divergence in a mandatory gate. Install both here so this
+      # job's cargo-audit result matches local, mirroring the dependency-audit
+      # job above.
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
       - name: Install UBS
         run: |
           curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/ultimate_bug_scanner/main/install.sh?$(date +%s)" \
@@ -171,10 +185,36 @@ jobs:
         # languages" (exit 3) without ever running a scanner. --include-ext
         # bypasses the empty contract via UBS's extension-hint fallback. Drop this
         # flag once upstream ships/repairs contract.json.
+        #
+        # --baseline=.github/ubs-baseline.json --new-only (hivemind-eako.3):
+        # now that cargo-audit runs here, category 14 (dependency hygiene)
+        # reports every `cargo audit` line matching "Vulnerability|RUSTSEC" as
+        # one critical finding — 12 lines today, for the 6 informational
+        # advisories .cargo/audit.toml already allows (unmaintained/unsound,
+        # `cargo audit` itself exits 0). UBS bundles that into a single
+        # "Advisories found by cargo-audit" finding rather than one per
+        # advisory, so it can't be allow-listed per-RUSTSEC-ID; --new-only
+        # (UBS's supported "known findings don't fail; new ones do" mechanism)
+        # is applied via a fingerprint of that finding, checked into
+        # .github/ubs-baseline.json. Caveat: because the finding is one bucket
+        # per cargo-audit run rather than one per advisory, a genuinely new
+        # advisory landing later stays inside the same bucket/fingerprint and
+        # would NOT retrigger this gate on its own. The dependency-audit job
+        # above is the authoritative real-vulnerability gate (cargo audit's own
+        # exit code against .cargo/audit.toml) and is unaffected by this
+        # baseline. Regenerate the baseline after a genuine change here with:
+        #   cargo install cargo-audit --locked
+        #   ubs --ci --only=rust --include-ext=rs --skip-rust=12,13 \
+        #     --save-baseline=.github/ubs-baseline.json .
+        # (--skip-rust=12,13 skips the slow clippy/build categories, which
+        # this baseline doesn't need, so it saves in seconds instead of
+        # minutes.)
         shell: bash
         run: |
           set -euo pipefail
-          ubs --ci --only=rust --include-ext=rs --report-json=/tmp/ubs-critical-summary.json .
+          ubs --ci --only=rust --include-ext=rs \
+            --baseline=.github/ubs-baseline.json --new-only \
+            --report-json=/tmp/ubs-critical-summary.json .
           criticals="$(jq -r '.totals.critical // 0' /tmp/ubs-critical-summary.json)"
           if [ "${criticals}" -gt 0 ]; then
             echo "UBS critical count: ${criticals}. Failing."
