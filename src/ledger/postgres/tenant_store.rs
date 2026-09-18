@@ -77,12 +77,43 @@ impl TenantStore {
     }
 
     /// Create provisioning tables and enable RLS on the event ledger.
+    ///
+    /// The whole sequence (table creation, column migrations, RLS
+    /// enablement, policy creation) runs inside one transaction, opened
+    /// with `pg_advisory_xact_lock(hashtext('hivemind_schema_init'))` as
+    /// its first statement — the SAME key `PostgresEventLedger::
+    /// initialize_schema` locks on before creating `events`. Two
+    /// invariants depend on this:
+    ///
+    /// 1. `CREATE TABLE IF NOT EXISTS` is not race-free across concurrent
+    ///    sessions creating the same not-yet-existing table for the first
+    ///    time (a documented Postgres caveat); the shared lock serializes
+    ///    every caller of either `initialize_schema` so only one session
+    ///    ever runs first-time creation at once.
+    /// 2. `ALTER TABLE events ENABLE/FORCE ROW LEVEL SECURITY` takes an
+    ///    ACCESS EXCLUSIVE lock; running the policy check-and-create in
+    ///    the SAME transaction keeps that lock held until the policy also
+    ///    exists, so a concurrent reader/writer never observes RLS
+    ///    enabled with no policy (which denies every row, even to the
+    ///    owner, since FORCE is set).
+    ///
+    /// Violating either one reproduces hivemind-g9kv: on a brand-new
+    /// database, ledger tests intermittently failed with a raw db error
+    /// — whichever test's `initialize_schema` lost the race saw a
+    /// duplicate-object error from `CREATE TABLE IF NOT EXISTS`, or (for
+    /// the RLS gap specifically) a `next_event_id` lookup that
+    /// momentarily saw zero rows for a tenant that already had some,
+    /// producing a PRIMARY KEY collision that `ON CONFLICT (tenant_id,
+    /// event_uuid)` doesn't cover.
     pub fn initialize_schema(&self) -> Result<()> {
         let mut client = self.pool.get().map_err(storage_error)?;
+        let mut tx = client.transaction().map_err(storage_error)?;
 
-        client
-            .batch_execute(
-                "CREATE TABLE IF NOT EXISTS hm_tenants (
+        tx.batch_execute("SELECT pg_advisory_xact_lock(hashtext('hivemind_schema_init'));")
+            .map_err(storage_error)?;
+
+        tx.batch_execute(
+            "CREATE TABLE IF NOT EXISTS hm_tenants (
                     tenant_id    text PRIMARY KEY,
                     display_name text NOT NULL,
                     created_at   timestamptz NOT NULL DEFAULT now()
@@ -113,22 +144,20 @@ impl TenantStore {
                     email      text,
                     created_at timestamptz NOT NULL DEFAULT now()
                 );",
-            )
-            .map_err(storage_error)?;
+        )
+        .map_err(storage_error)?;
 
         // Idempotent column additions for deployments that predate this schema version.
-        client
-            .batch_execute(
-                "ALTER TABLE hm_tokens ADD COLUMN IF NOT EXISTS user_id    uuid REFERENCES hm_users(user_id);
+        tx.batch_execute(
+            "ALTER TABLE hm_tokens ADD COLUMN IF NOT EXISTS user_id    uuid REFERENCES hm_users(user_id);
                  ALTER TABLE hm_tokens ADD COLUMN IF NOT EXISTS actor_id   text NOT NULL DEFAULT 'service:api';
                  ALTER TABLE hm_tokens ADD COLUMN IF NOT EXISTS revoked_at timestamptz;",
-            )
-            .map_err(storage_error)?;
+        )
+        .map_err(storage_error)?;
 
-        // Enable RLS on events if it exists (separate query for clear error handling).
-        // ALTER TABLE ENABLE/FORCE ROW LEVEL SECURITY is idempotent.
+        // Enable RLS on events if it exists.
         // Graph projection tables (hm_nodes, hm_edges) are derived state; no RLS needed.
-        let events_exists: bool = client
+        let events_exists: bool = tx
             .query_one(
                 "SELECT EXISTS (
                     SELECT FROM information_schema.tables
@@ -140,15 +169,13 @@ impl TenantStore {
             .get(0);
 
         if events_exists {
-            client
-                .batch_execute(
-                    "ALTER TABLE events ENABLE ROW LEVEL SECURITY;
-                     ALTER TABLE events FORCE ROW LEVEL SECURITY;",
-                )
-                .map_err(storage_error)?;
+            tx.batch_execute(
+                "ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+                 ALTER TABLE events FORCE ROW LEVEL SECURITY;",
+            )
+            .map_err(storage_error)?;
 
-            // Create the isolation policy if it does not exist yet.
-            let policy_exists: bool = client
+            let policy_exists: bool = tx
                 .query_one(
                     "SELECT EXISTS (
                         SELECT FROM pg_policies
@@ -160,15 +187,16 @@ impl TenantStore {
                 .get(0);
 
             if !policy_exists {
-                client
-                    .execute(
-                        "CREATE POLICY tenant_isolation ON events
-                             USING (tenant_id = current_setting('app.tenant_id', true))",
-                        &[],
-                    )
-                    .map_err(storage_error)?;
+                tx.execute(
+                    "CREATE POLICY tenant_isolation ON events
+                         USING (tenant_id = current_setting('app.tenant_id', true))",
+                    &[],
+                )
+                .map_err(storage_error)?;
             }
         }
+
+        tx.commit().map_err(storage_error)?;
 
         Ok(())
     }

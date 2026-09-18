@@ -230,11 +230,26 @@ impl PostgresEventLedger {
         i64_to_event_id(offset.unwrap_or_default(), "latest_offset")
     }
 
+    /// `CREATE TABLE IF NOT EXISTS` is not race-free across concurrent
+    /// sessions creating the same not-yet-existing table for the first
+    /// time — Postgres can raise a duplicate-object error from the
+    /// catalog instead of silently no-opping (see the Postgres docs' own
+    /// caveat on `IF NOT EXISTS`). The leading advisory-xact-lock
+    /// statement serializes first-time schema creation against every
+    /// other caller using the same key, including `TenantStore::
+    /// initialize_schema`, which also touches this table (ALTER TABLE
+    /// events ...). `batch_execute` runs this whole multi-statement
+    /// string as one implicit transaction, so the lock releases as soon
+    /// as this call returns (hivemind-g9kv: replay_matches_sqlite_event_stream
+    /// and other ledger tests intermittently failed with a raw db error
+    /// only on a brand-new database, where every ledger test's first
+    /// `initialize_schema` call raced to create `events`).
     fn initialize_schema(&self) -> Result<()> {
         let mut client = self.pool.get().map_err(storage_error)?;
         client
             .batch_execute(
-                "CREATE TABLE IF NOT EXISTS events (
+                "SELECT pg_advisory_xact_lock(hashtext('hivemind_schema_init'));
+                CREATE TABLE IF NOT EXISTS events (
                     tenant_id text NOT NULL,
                     event_id bigint NOT NULL,
                     event_uuid uuid NOT NULL,

@@ -139,6 +139,46 @@ fn concurrent_tenant_writes_are_isolated_streams() -> Result<()> {
     })
 }
 
+/// Regression test for hivemind-g9kv: on a brand-new database, every ledger
+/// test's first `PostgresEventLedger::connect_with_pool_size` call runs
+/// `initialize_schema`'s `CREATE TABLE IF NOT EXISTS events`. Postgres does
+/// not guarantee that statement is race-free across concurrent sessions
+/// creating the same not-yet-existing table for the first time; without
+/// serialization, one of several concurrent callers can get a raw duplicate-
+/// object db error instead of silently no-opping. This spawns many
+/// concurrent connections (mirroring how `cargo test`'s default parallelism
+/// runs every `with_postgres_ledger`-based test at once) and requires all of
+/// them to succeed.
+#[test]
+fn concurrent_first_time_schema_init_does_not_race() -> Result<()> {
+    let Some(database_url) = std::env::var(TEST_DATABASE_URL_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        eprintln!("skipping Postgres ledger test; set {TEST_DATABASE_URL_ENV}");
+        return Ok(());
+    };
+
+    let handles: Vec<_> = (0..12)
+        .map(|index| {
+            let url = database_url.clone();
+            let tenant_id = unique_tenant(&format!("schema-init-race-{index}"));
+            std::thread::spawn(move || {
+                PostgresEventLedger::connect_with_pool_size(&url, tenant_id, 2).map(|_| ())
+            })
+        })
+        .collect();
+
+    for handle in handles {
+        handle
+            .join()
+            .map_err(|_| test_error("schema-init thread panicked"))?
+            .map_err(|e| test_error(format!("concurrent initialize_schema failed: {e}")))?;
+    }
+
+    Ok(())
+}
+
 fn with_postgres_ledger<T>(
     prefix: &str,
     f: impl FnOnce(&PostgresEventLedger) -> Result<T>,
@@ -340,6 +380,78 @@ mod tenant_store_tests {
             return Err(test_error(format!(
                 "Bob event payload mismatch: {bob_payload}"
             )));
+        }
+
+        Ok(())
+    }
+
+    /// Regression test for hivemind-g9kv: `TenantStore::initialize_schema`
+    /// used to enable RLS and create its policy as two separate statements,
+    /// leaving a window where RLS was active with no policy — during which
+    /// every row is denied (even to the owner, since FORCE is set). A
+    /// concurrent append landing in that window could see zero rows for a
+    /// tenant that already had some, recompute an already-used event_id, and
+    /// hit a PRIMARY KEY collision instead of a clean sequential append.
+    ///
+    /// The fix wraps the enable+policy sequence in one transaction so the
+    /// ACCESS EXCLUSIVE lock from `ALTER TABLE ... ENABLE ROW LEVEL
+    /// SECURITY` is held until the policy also exists, forcing any
+    /// concurrent access to the table to wait for the whole sequence rather
+    /// than observe it half-done. This test drives `TenantStore::connect`
+    /// (RLS enable + policy create) concurrently with a burst of appends to
+    /// an already-seeded tenant; with the fix, every append must land with a
+    /// strictly sequential id regardless of interleaving.
+    #[test]
+    fn concurrent_rls_enablement_does_not_corrupt_event_ids() -> Result<()> {
+        let Some(database_url) = std::env::var(TEST_DATABASE_URL_ENV)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+        else {
+            eprintln!("skipping RLS-atomicity test; set {TEST_DATABASE_URL_ENV}");
+            return Ok(());
+        };
+
+        let tenant_id = unique_tenant("rls-atomic");
+        let ledger = PostgresEventLedger::connect_with_pool_size(&database_url, &tenant_id, 8)
+            .map_err(|e| test_error(e.to_string()))?;
+
+        // Seed one event so the tenant already has event_id = 1 before RLS
+        // gets (re-)enabled — this is the row that a buggy MAX(event_id)
+        // lookup could wrongly fail to see.
+        ledger.append(make_event("seed", Uuid::new_v4()))?;
+
+        const RACE_APPENDS: usize = 20;
+        std::thread::scope(|scope| {
+            let store_handle =
+                scope.spawn(|| TenantStore::connect(&database_url).map_err(|e| e.to_string()));
+            let append_handle = scope.spawn(|| append_events(&ledger, "race", RACE_APPENDS));
+
+            store_handle
+                .join()
+                .map_err(|_| test_error("TenantStore::connect thread panicked"))?
+                .map_err(test_error)?;
+            append_handle
+                .join()
+                .map_err(|_| test_error("append thread panicked"))??;
+            Ok::<_, crate::HivemindError>(())
+        })?;
+
+        let events = ledger.read(0, RACE_APPENDS + 2)?;
+        if events.len() != RACE_APPENDS + 1 {
+            return Err(test_error(format!(
+                "expected {} events (1 seed + {RACE_APPENDS} raced), got {}",
+                RACE_APPENDS + 1,
+                events.len()
+            )));
+        }
+        for (index, event) in events.iter().enumerate() {
+            let expected_id = u64::try_from(index + 1).map_err(|_| test_error("id overflow"))?;
+            if event.event_id != Some(expected_id) {
+                return Err(test_error(format!(
+                    "event ids not sequential: index {index} has id {:?}, expected {expected_id}",
+                    event.event_id
+                )));
+            }
         }
 
         Ok(())
