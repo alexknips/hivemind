@@ -40,15 +40,17 @@ cd website && npm ci && npm run build
 
 # Link check (website/** only): root-relative content links (`](/x/)`) build
 # fine but 404 on the live /hivemind/ base path (hivemind-pls9). Grep the
-# built output for hrefs missing that prefix.
-grep -rEo 'href="/[^"]*"' website/dist | grep -v '^href="/hivemind/'
+# built output for hrefs missing that prefix. PASS = no output.
+grep -rhEo 'href="/[^"]*"' website/dist | grep -v '^href="/hivemind/'
 
 # Flag check: when the diff touches docs/cli.md, docs/mcp-tools.md, or any
 # other doc describing CLI/MCP flags, verify the doc still matches source.
-# A docs-only diff changes no .rs file, so this uses whatever binary is
-# already built and does not trigger a recompile. It is checking doc-code
-# sync, not code quality, so it is not one of the cargo gates this
-# exception skips.
+# A docs-only diff changes no .rs file, so on a warm target/ this uses
+# whatever binary is already built and does not trigger a recompile; on a
+# fresh or cold worktree it triggers at most a default-feature build
+# (minutes), never the all-features kuzu build the UBS job runs. It is
+# checking doc-code sync, not code quality, so it is not one of the cargo
+# gates this exception skips.
 cargo run --locked --bin generate-reference -- --check
 ```
 
