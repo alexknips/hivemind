@@ -1171,6 +1171,84 @@ fn situational_decisions_surface_for_a_touched_path_and_rank_by_overlap() -> Res
 }
 
 #[test]
+fn situational_decisions_dedup_evidence_overlap_reasons_for_repeated_based_on_edge() -> Result<()> {
+    // A decision can end up BASED_ON the same evidence item via two separate events at
+    // two different offsets (e.g. evidence_ids at proposal time, then a later manual
+    // RelationAdded re-linking the same evidence) — this must not double up matched_via.
+    let ledger = InMemoryEventLedger::new();
+    for event in [
+        test_event(
+            1,
+            EventType::EvidenceRecorded,
+            "actor:analyst",
+            json!({
+                "evidence_id": "evidence:auth-note",
+                "content": "Bearer auth on Postgres requires session tokens for the API layer",
+                "source": "test"
+            }),
+            "2026-01-01T00:00:00Z",
+        ),
+        test_event(
+            2,
+            EventType::DecisionProposed,
+            "actor:planner",
+            json!({
+                "decision_id": "decision:auth",
+                "title": "Adopt bearer auth",
+                "rationale": "Keeps session handling stateless",
+                "topic_keys": ["auth"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": ["evidence:auth-note"]
+            }),
+            "2026-01-01T00:01:00Z",
+        ),
+        test_event(
+            3,
+            EventType::RelationAdded,
+            "actor:auditor",
+            json!({
+                "relation": EventRelationKind::BasedOn,
+                "from_id": "decision:auth",
+                "to_id": "evidence:auth-note"
+            }),
+            "2026-01-01T00:02:00Z",
+        ),
+    ] {
+        ledger.append(event)?;
+    }
+    let graph = MemoryGraph::default();
+    rebuild_graph(&ledger, &graph)?;
+    let context = QueryContext::local();
+
+    let response = get_situational_decisions(
+        &context,
+        &graph,
+        &ledger,
+        &SituationalRequest {
+            paths: vec!["src/api/auth.rs".to_owned()],
+            limit: 10,
+            ..SituationalRequest::default()
+        },
+    )?;
+
+    assert_eq!(response.data.total_matches, 1);
+    let matched_via = &response.data.matches[0].matched_via;
+    let evidence_overlap_count = matched_via
+        .iter()
+        .filter(|reason| {
+            matches!(reason, MatchReason::EvidenceOverlap { evidence_id, .. } if evidence_id == "evidence:auth-note")
+        })
+        .count();
+    assert_eq!(
+        evidence_overlap_count, 1,
+        "duplicate BASED_ON edge must not duplicate the EvidenceOverlap reason: {matched_via:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn situational_decisions_do_not_surface_for_an_unrelated_path() -> Result<()> {
     let (ledger, graph) = situational_fixture()?;
     let context = QueryContext::local();

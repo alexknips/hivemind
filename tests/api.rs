@@ -692,18 +692,19 @@ async fn rls_cross_tenant_decision_not_visible() {
         "alpha must see its own decision, got: {body}"
     );
 
-    // Tenant "beta" cannot see alpha's decision — data must be null.
+    // Tenant "beta" cannot see alpha's decision — this must be indistinguishable from
+    // a genuinely nonexistent id (404), not a 200 that leaks "it exists, just hidden".
     let (status, body) = call(
         app(dir.clone()),
         get_req_as_tenant(&format!("/v1/decisions/{decision_id}"), "beta"),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "beta get alpha's decision: {body}"); // ubs:ignore
-    assert!(
-        // ubs:ignore
-        body["data"].is_null(),
-        "beta must not see alpha's decision; got non-null data: {body}"
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "beta get alpha's decision: {body}" // ubs:ignore
     );
+    assert_eq!(body["error"]["code"], "not_found"); // ubs:ignore
 }
 
 // ---------------------------------------------------------------------------
@@ -741,6 +742,14 @@ async fn supersede_nonexistent_decision_returns_404() {
         ),
     )
     .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "not_found"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn get_decision_for_nonexistent_id_returns_404() {
+    let dir = test_ledger_dir();
+    let (status, body) = call(app(dir), get_req("/v1/decisions/nonexistent-id")).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}"); // ubs:ignore
     assert_eq!(body["error"]["code"], "not_found"); // ubs:ignore
 }

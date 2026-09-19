@@ -201,12 +201,16 @@ fn score_candidates(
 ) -> Result<Vec<ScoredCandidate>> {
     let evidence_rows = node_rows(graph, NodeKind::Evidence)?;
 
-    let mut evidence_to_decisions: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // BTreeSet, not Vec: the same (decision, evidence) BASED_ON edge can be asserted by
+    // more than one ledger event (e.g. re-touched at a later event_origin), and the
+    // memory graph backend keys edges on event_origin too, so a naive Vec would let the
+    // evidence-overlap pass below push a duplicate MatchReason for one decision.
+    let mut evidence_to_decisions: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (decision_id, evidence_id) in relation_edges(graph, RelationKind::BasedOn)? {
         evidence_to_decisions
             .entry(evidence_id)
             .or_default()
-            .push(decision_id);
+            .insert(decision_id);
     }
 
     // Populated for every decision (not just matches) so the evidence pass below can

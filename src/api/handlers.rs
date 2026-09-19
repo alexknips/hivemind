@@ -446,6 +446,11 @@ pub(super) async fn get_decision_handler(
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
         let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
         let view = get_decision(&*graph, &decision_id).map_err(to_api_error)?;
+        if view.data.is_none() {
+            return Err(ApiError::not_found(format!(
+                "decision not found: {decision_id}"
+            )));
+        }
         Ok(view)
     })
     .await;
