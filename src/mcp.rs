@@ -30,7 +30,7 @@ use crate::commands::{CommandContext, Commands, SupersedeInput};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, TenantId};
 use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool};
-use crate::ledger::SqliteEventLedger;
+use crate::ledger::{AnyLedger, LedgerConfig};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
     context_next_cursor, derive_decision_status, get_compact_view, get_decision,
@@ -38,10 +38,10 @@ use crate::queries::{
     get_decision_quality_candidates, get_decision_quality_score, get_failure_attribution,
     get_recent_decisions, get_relevant_decisions, get_situational_decisions,
     get_supersession_chain, outcome_next_cursor, scan_decision_quality, scorer_next_cursor,
-    search_decisions_fts_with_context, DecisionContextRequest, DecisionQualityCandidatesRequest,
-    DecisionStatus, FailureAttributionRequest, QualityTier, QueryContext,
-    RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest, ScorerConfig,
-    SearchDecisionRequest, SituationalRequest,
+    search_decisions_any, DecisionContextRequest, DecisionQualityCandidatesRequest, DecisionStatus,
+    FailureAttributionRequest, QualityTier, QueryContext, RecentDecisionFilterRequest,
+    RecentDecisionsRequest, ScanQualityRequest, ScorerConfig, SearchDecisionRequest,
+    SituationalRequest,
 };
 use crate::summarize::{
     recall_decisions, summarize_decisions, RecallRequest, SummarizeMode, SummarizeRequest,
@@ -68,7 +68,10 @@ const JSONRPC_INTERNAL_ERROR: i32 = -32603;
 /// tests with explicit values.
 #[derive(Debug, Clone)]
 pub struct McpConfig {
-    pub hivemind_dir: PathBuf,
+    /// Backend selector: SQLite under `hivemind_dir` (default) or Postgres
+    /// when `ledger.database_url` is set. Every tool that opens a ledger goes
+    /// through `AnyLedger::open(&config.ledger, &config.tenant_id)`.
+    pub ledger: LedgerConfig,
     pub tenant_id: TenantId,
     /// Tool name embedded in default actor ids for write tools.
     pub agent_tool: String,
@@ -83,7 +86,10 @@ impl McpConfig {
         let agent_tool = default_agent_tool();
         let session_id = agent_session_from_env(&agent_tool).unwrap_or_else(default_session_id);
         Self {
-            hivemind_dir: hivemind_dir.into(),
+            ledger: LedgerConfig {
+                hivemind_dir: hivemind_dir.into(),
+                database_url: None,
+            },
             tenant_id: TenantId::local(),
             agent_tool,
             session_id,
@@ -97,6 +103,13 @@ impl McpConfig {
 
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = session_id.into();
+        self
+    }
+
+    /// Sets the Postgres backend URL (empty is treated as unset — same rule
+    /// `LedgerConfig::from_cli` applies to `--database-url`).
+    pub fn with_database_url(mut self, database_url: Option<String>) -> Self {
+        self.ledger.database_url = database_url.filter(|url| !url.is_empty());
         self
     }
 
@@ -734,17 +747,18 @@ pub fn tool_definitions() -> Vec<Value> {
 // Tool implementations
 // ---------------------------------------------------------------------------
 
-/// stdio's [`LedgerProvider`]: opens a directory-based ledger. No tenancy or
-/// auth to resolve — the whole surface today is a single local tenant.
+/// stdio's [`LedgerProvider`]: opens a directory- or Postgres-backed ledger
+/// per `config.ledger`. No tenancy or auth to resolve — the whole surface
+/// today is a single local tenant.
 struct StdioLedgerProvider<'a> {
     config: &'a McpConfig,
 }
 
 impl LedgerProvider for StdioLedgerProvider<'_> {
-    type Ledger = SqliteEventLedger;
+    type Ledger = AnyLedger;
 
     fn ledger(&self) -> std::result::Result<LedgerHandle<Self::Ledger>, CoreError> {
-        let ledger = SqliteEventLedger::open(&self.config.hivemind_dir)?;
+        let ledger = AnyLedger::open(&self.config.ledger, &self.config.tenant_id)?;
         Ok(LedgerHandle {
             ledger,
             tenant_id: self.config.tenant_id.clone(),
@@ -766,7 +780,7 @@ fn tool_capture_evidence(args: Value, config: &McpConfig) -> std::result::Result
     let actor_id = actor_id_or_default(&args, config)?;
     let content = require_string(&args, "content")?;
 
-    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
     let commands = Commands::new_with_context(
         &ledger,
         config.command_context(EventProvenance::agent(actor_id.clone())),
@@ -783,7 +797,7 @@ fn tool_capture_hypothesis(
     let actor_id = actor_id_or_default(&args, config)?;
     let statement = require_string(&args, "statement")?;
 
-    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
     let commands = Commands::new_with_context(
         &ledger,
         config.command_context(EventProvenance::agent(actor_id.clone())),
@@ -798,7 +812,7 @@ fn tool_disagree_decision(args: Value, config: &McpConfig) -> std::result::Resul
     let decision_id = require_string(&args, "decision_id")?;
     let reason = require_string(&args, "reason")?;
 
-    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
     let commands = Commands::new_with_context(
         &ledger,
         config.command_context(EventProvenance::agent(config.session_id.clone())),
@@ -829,7 +843,7 @@ fn tool_supersede_decision(
     let hypothesis_ids = optional_string_array(&args, "hypothesis_ids")?;
     let evidence_ids = optional_string_array(&args, "evidence_ids")?;
 
-    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
     let commands = Commands::new_with_context(
         &ledger,
         config.command_context(EventProvenance::agent(config.session_id.clone())),
@@ -904,7 +918,7 @@ fn tool_get_situational_decisions(
     let limit = optional_usize(&args, "limit")?.unwrap_or(0);
     let cursor = optional_string(&args, "cursor")?;
 
-    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &config.tenant_id, &graph)?;
     let response = get_situational_decisions(
@@ -952,11 +966,10 @@ fn tool_search_decisions(args: Value, config: &McpConfig) -> std::result::Result
         limit,
         cursor: optional_string(&args, "cursor")?,
     };
-    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &config.tenant_id, &graph)?;
-    let response =
-        search_decisions_fts_with_context(&config.query_context(), &ledger, &graph, &request)?;
+    let response = search_decisions_any(&config.query_context(), &ledger, &graph, &request)?;
     Ok(serde_json::to_value(QueryEnvelope::from(response))?)
 }
 
@@ -983,7 +996,7 @@ fn tool_recall_decisions(args: Value, config: &McpConfig) -> std::result::Result
         limit,
         cursor: optional_string(&args, "cursor")?,
     };
-    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &config.tenant_id, &graph)?;
     let response = recall_decisions(&config.query_context(), &ledger, &graph, &request)?;
@@ -1048,7 +1061,7 @@ fn tool_recent_decisions(args: Value, config: &McpConfig) -> std::result::Result
         limit: optional_usize(&args, "limit")?.unwrap_or(25),
         cursor: optional_string(&args, "cursor")?,
     };
-    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
     let response = get_recent_decisions(&ledger, &request)?;
     Ok(serde_json::to_value(QueryEnvelope::from(response))?)
 }
@@ -1068,7 +1081,7 @@ fn tool_compact_view(args: Value, config: &McpConfig) -> std::result::Result<Val
 }
 
 fn open_memory_graph(config: &McpConfig) -> Result<MemoryGraph> {
-    let ledger = SqliteEventLedger::open(&config.hivemind_dir)?;
+    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &config.tenant_id, &graph)?;
     Ok(graph)

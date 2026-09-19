@@ -13,18 +13,16 @@ use serde::Deserialize;
 use crate::commands::{CommandContext, Commands, DecisionProposalInput, SupersedeInput};
 use crate::events::{EventProvenance, IngestTurn};
 use crate::ledger::{EventLedger, SqliteEventLedger};
-#[cfg(feature = "shared-backend-postgres")]
-use crate::queries::search_decisions_with_ledger;
 use crate::queries::{
     derive_decision_status, get_compact_view, get_decision, get_relevant_decisions,
-    get_supersession_chain, search_decisions_fts_with_context, QueryContext, SearchDecisionRequest,
+    get_supersession_chain, search_decisions_any, QueryContext, SearchDecisionRequest,
 };
 
 use super::auth::extract_ctx;
 use super::graph::{get_cached_graph, open_graph_from_ledger};
 use super::{
     parse_datetime, parse_status, respond, respond_envelope, to_api_error, ApiBackend, ApiError,
-    ApiLedger, ApiRequestCtx, ApiResult, AppState,
+    ApiRequestCtx, ApiResult, AppState,
 };
 
 #[derive(Debug, Deserialize)]
@@ -676,44 +674,12 @@ pub(super) async fn search_handler(
             cursor: params.cursor,
         };
 
-        match backend.as_ref() {
-            ApiBackend::Sqlite(_dir) => {
-                let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
-                let graph = get_cached_graph(&ledger, &ctx.tenant_id, &cache)?;
-                // FTS requires a concrete SqliteEventLedger.
-                #[allow(clippy::infallible_destructuring_match)]
-                let sqlite_ledger = match ledger {
-                    ApiLedger::Sqlite(l) => l,
-                    #[cfg(feature = "shared-backend-postgres")]
-                    ApiLedger::Postgres(_) => unreachable!(), // ubs:ignore: cfg-gated arm; unreachable when only sqlite feature is active
-                };
-                let query_ctx = QueryContext::new(ctx.tenant_id);
-                let response = search_decisions_fts_with_context(
-                    &query_ctx,
-                    &sqlite_ledger,
-                    &*graph,
-                    &request,
-                )
-                .map_err(to_api_error)?;
-                Ok(response)
-            }
-            #[cfg(feature = "shared-backend-postgres")]
-            ApiBackend::Postgres(_) => {
-                let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
-                let graph = get_cached_graph(&ledger, &ctx.tenant_id, &cache)?;
-                #[allow(clippy::infallible_destructuring_match)]
-                let postgres_ledger = match &ledger {
-                    #[cfg(feature = "shared-backend-postgres")]
-                    ApiLedger::Postgres(l) => l,
-                    ApiLedger::Sqlite(_) => unreachable!(), // ubs:ignore: unreachable in Postgres mode
-                };
-                let query_ctx = QueryContext::new(ctx.tenant_id);
-                let response =
-                    search_decisions_with_ledger(&query_ctx, postgres_ledger, &*graph, &request)
-                        .map_err(to_api_error)?;
-                Ok(response)
-            }
-        }
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = get_cached_graph(&ledger, &ctx.tenant_id, &cache)?;
+        let query_ctx = QueryContext::new(ctx.tenant_id);
+        let response =
+            search_decisions_any(&query_ctx, &ledger, &*graph, &request).map_err(to_api_error)?;
+        Ok(response)
     })
     .await;
 

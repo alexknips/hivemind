@@ -9,6 +9,7 @@ description: Complete reference for the hivemind command-line interface.
 |------|-------------|
 | `--actor <id>` | Actor making this request. Format: `human:<id>` or `agent:<tool>:<session>` |
 | `--hivemind-dir <path>` | Ledger directory (default: `./hivemind/`). Created on first write. |
+| `--database-url <url>` | Shared Postgres backend connection URL. Unset or empty selects the local SQLite ledger under `--hivemind-dir` instead. A flag value beats `HIVEMIND_DATABASE_URL`. Requires the `shared-backend-postgres` feature. |
 | `--json` | Emit structured JSON output |
 | `--graph-backend <memory\|kuzu>` | Graph projection backend (default: `memory`) |
 
@@ -443,6 +444,7 @@ form.
 | Variable | Description |
 |----------|-------------|
 | `HIVEMIND_DIR` | Default ledger directory |
+| `HIVEMIND_DATABASE_URL` | Shared Postgres backend connection URL. Unset or empty selects the local SQLite ledger. Overridden by `--database-url`. Requires the `shared-backend-postgres` feature. |
 | `HIVEMIND_ACTOR` | Default actor if `--actor` is omitted |
 | `HIVEMIND_GRAPH_BACKEND` | Graph backend: `memory` (default) or `kuzu` |
 | `HIVEMIND_VERSION` | Pin version for the installer script |

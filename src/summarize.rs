@@ -15,10 +15,10 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::ledger::SqliteEventLedger;
+use crate::ledger::AnyLedger;
 use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::queries::{
-    get_decision, get_supersession_chain, search_decisions_fts_with_context, DecisionSearchResult,
+    get_decision, get_supersession_chain, search_decisions_any, DecisionSearchResult,
     DecisionStatus, DecisionView, QueryContext, QueryResponse, SearchDecisionRequest,
 };
 use crate::Result;
@@ -362,7 +362,7 @@ pub struct RecallResponse {
 /// `digest.cited_decision_ids`.
 pub fn recall_decisions(
     context: &QueryContext,
-    ledger: &SqliteEventLedger,
+    ledger: &AnyLedger,
     graph: &impl GraphView,
     request: &RecallRequest,
 ) -> crate::Result<QueryResponse<RecallResponse>> {
@@ -381,7 +381,7 @@ pub fn recall_decisions(
         limit,
         cursor: request.cursor.clone(),
     };
-    let search_response = search_decisions_fts_with_context(context, ledger, graph, &search_req)?;
+    let search_response = search_decisions_any(context, ledger, graph, &search_req)?;
     let truncated = search_response.truncated;
     let search_data = search_response.data;
 
@@ -471,7 +471,7 @@ pub struct DigestResponse {
 /// rationale context. Every claim is backed by a cited decision ID.
 pub fn weekly_digest(
     context: &QueryContext,
-    ledger: &SqliteEventLedger,
+    ledger: &AnyLedger,
     graph: &impl GraphView,
     request: &DigestRequest,
 ) -> crate::Result<QueryResponse<DigestResponse>> {
@@ -489,7 +489,7 @@ pub fn weekly_digest(
         limit,
         cursor: None,
     };
-    let search_response = search_decisions_fts_with_context(context, ledger, graph, &search_req)?;
+    let search_response = search_decisions_any(context, ledger, graph, &search_req)?;
     let truncated = search_response.truncated;
     let total_in_window = search_response.data.total_matches;
 

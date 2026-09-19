@@ -927,40 +927,39 @@ fn supersede_cli_records_agent_source_for_agent_actor() {
     let _ = std::fs::remove_dir_all(&hivemind_dir);
 }
 
-#[test]
-fn disagree_fluent_description_resolves_uniquely_and_records() -> CliTestResult {
-    let hivemind_dir = unique_test_dir("disagree-fluent-resolve");
-    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
-    let decision_id = run(&Cli::parse_from([
-        "hivemind",
-        "--actor",
-        "actor:alice",
-        "--hivemind-dir",
-        dir,
-        "emit",
-        "decision.proposed",
-        "--title",
-        "Adopt async billing queue",
-        "--rationale",
-        "Durability beats latency here",
-        "--topic-keys",
-        "billing",
-        "--options",
-        "async",
-    ]))?;
+fn disagree_fluent_description_resolves_uniquely_and_records_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    let decision_id = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:alice",
+            "emit",
+            "decision.proposed",
+            "--title",
+            "Adopt async billing queue",
+            "--rationale",
+            "Durability beats latency here",
+            "--topic-keys",
+            "billing",
+            "--options",
+            "async",
+        ],
+    )))?;
 
-    let output = run(&Cli::parse_from([
-        "hivemind",
-        "--actor",
-        "actor:bob",
-        "--json",
-        "--hivemind-dir",
-        dir,
-        "disagree",
-        "async billing queue",
-        "--reason",
-        "underestimates operational cost",
-    ]))?;
+    let output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:bob",
+            "--json",
+            "disagree",
+            "async billing queue",
+            "--reason",
+            "underestimates operational cost",
+        ],
+    )))?;
     let output: serde_json::Value = serde_json::from_str(&output)?;
     ensure_json_eq(
         &output["decision_id"],
@@ -973,46 +972,60 @@ fn disagree_fluent_description_resolves_uniquely_and_records() -> CliTestResult 
         "disagree flips status to rejected",
     )?;
 
-    let _ = std::fs::remove_dir_all(&hivemind_dir);
     Ok(())
 }
 
 #[test]
-fn disagree_fluent_ambiguous_description_short_circuits_without_writing() -> CliTestResult {
-    let hivemind_dir = unique_test_dir("disagree-fluent-ambiguous");
-    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+fn disagree_fluent_description_resolves_uniquely_and_records() -> CliTestResult {
+    disagree_fluent_description_resolves_uniquely_and_records_body(&TestBackend::sqlite(
+        "disagree-fluent-resolve",
+    ))
+}
+
+#[test]
+fn disagree_fluent_description_resolves_uniquely_and_records_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("disagree-fluent-resolve-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    disagree_fluent_description_resolves_uniquely_and_records_body(&backend)
+}
+
+fn disagree_fluent_ambiguous_description_short_circuits_without_writing_body(
+    backend: &TestBackend,
+) -> CliTestResult {
     for topic in ["billing", "notifications"] {
-        run(&Cli::parse_from([
-            "hivemind",
-            "--actor",
-            "actor:alice",
-            "--hivemind-dir",
-            dir,
-            "emit",
-            "decision.proposed",
-            "--title",
-            &format!("Adopt async queue for {topic}"),
-            "--rationale",
-            "because reasons",
-            "--topic-keys",
-            topic,
-            "--options",
-            "async",
-        ]))?;
+        run(&Cli::parse_from(cli_args(
+            backend,
+            &[
+                "--actor",
+                "actor:alice",
+                "emit",
+                "decision.proposed",
+                "--title",
+                &format!("Adopt async queue for {topic}"),
+                "--rationale",
+                "because reasons",
+                "--topic-keys",
+                topic,
+                "--options",
+                "async",
+            ],
+        )))?;
     }
 
-    let output = run(&Cli::parse_from([
-        "hivemind",
-        "--actor",
-        "actor:bob",
-        "--json",
-        "--hivemind-dir",
-        dir,
-        "disagree",
-        "adopt async queue",
-        "--reason",
-        "should not apply to either",
-    ]))?;
+    let output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:bob",
+            "--json",
+            "disagree",
+            "adopt async queue",
+            "--reason",
+            "should not apply to either",
+        ],
+    )))?;
     let output: serde_json::Value = serde_json::from_str(&output)?;
     ensure_json_eq(
         &output["data"]["outcome"],
@@ -1029,15 +1042,10 @@ fn disagree_fluent_ambiguous_description_short_circuits_without_writing() -> Cli
     )?;
 
     // Neither decision was written to: both remain in their original "proposed" status.
-    let search = run(&Cli::parse_from([
-        "hivemind",
-        "--hivemind-dir",
-        dir,
-        "query",
-        "search_decisions",
-        "--q",
-        "adopt async queue",
-    ]))?;
+    let search = run(&Cli::parse_from(cli_args(
+        backend,
+        &["query", "search_decisions", "--q", "adopt async queue"],
+    )))?;
     let search: serde_json::Value = serde_json::from_str(&search)?;
     for item in search["data"]["items"].as_array().expect("items array") {
         ensure_json_eq(
@@ -1047,50 +1055,65 @@ fn disagree_fluent_ambiguous_description_short_circuits_without_writing() -> Cli
         )?;
     }
 
-    let _ = std::fs::remove_dir_all(&hivemind_dir);
     Ok(())
 }
 
 #[test]
-fn disagree_fluent_pick_disambiguates_and_hash_handle_reuses_it() -> CliTestResult {
-    let hivemind_dir = unique_test_dir("disagree-fluent-pick");
-    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+fn disagree_fluent_ambiguous_description_short_circuits_without_writing() -> CliTestResult {
+    disagree_fluent_ambiguous_description_short_circuits_without_writing_body(&TestBackend::sqlite(
+        "disagree-fluent-ambiguous",
+    ))
+}
+
+#[test]
+fn disagree_fluent_ambiguous_description_short_circuits_without_writing_postgres() -> CliTestResult
+{
+    let Some(backend) = TestBackend::postgres("disagree-fluent-ambiguous-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    disagree_fluent_ambiguous_description_short_circuits_without_writing_body(&backend)
+}
+
+fn disagree_fluent_pick_disambiguates_and_hash_handle_reuses_it_body(
+    backend: &TestBackend,
+) -> CliTestResult {
     let mut decision_ids = Vec::new();
     for topic in ["billing", "notifications"] {
-        decision_ids.push(run(&Cli::parse_from([
-            "hivemind",
-            "--actor",
-            "actor:alice",
-            "--hivemind-dir",
-            dir,
-            "emit",
-            "decision.proposed",
-            "--title",
-            &format!("Adopt async queue for {topic}"),
-            "--rationale",
-            "because reasons",
-            "--topic-keys",
-            topic,
-            "--options",
-            "async",
-        ]))?);
+        decision_ids.push(run(&Cli::parse_from(cli_args(
+            backend,
+            &[
+                "--actor",
+                "actor:alice",
+                "emit",
+                "decision.proposed",
+                "--title",
+                &format!("Adopt async queue for {topic}"),
+                "--rationale",
+                "because reasons",
+                "--topic-keys",
+                topic,
+                "--options",
+                "async",
+            ],
+        )))?);
     }
 
     // --pick 1 disambiguates deterministically (newest-first: "notifications" was proposed last).
-    let picked = run(&Cli::parse_from([
-        "hivemind",
-        "--actor",
-        "actor:bob",
-        "--json",
-        "--hivemind-dir",
-        dir,
-        "disagree",
-        "adopt async queue",
-        "--pick",
-        "1",
-        "--reason",
-        "picked via --pick",
-    ]))?;
+    let picked = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:bob",
+            "--json",
+            "disagree",
+            "adopt async queue",
+            "--pick",
+            "1",
+            "--reason",
+            "picked via --pick",
+        ],
+    )))?;
     let picked: serde_json::Value = serde_json::from_str(&picked)?;
     ensure_json_eq(
         &picked["decision_id"],
@@ -1101,18 +1124,18 @@ fn disagree_fluent_pick_disambiguates_and_hash_handle_reuses_it() -> CliTestResu
     // A later invocation's bare `#2` reads the candidate list this ambiguous-then-picked call
     // wrote to the continuation file, addressing the older (billing) candidate without
     // re-resolving the description.
-    let handled = run(&Cli::parse_from([
-        "hivemind",
-        "--actor",
-        "actor:carol",
-        "--json",
-        "--hivemind-dir",
-        dir,
-        "disagree",
-        "#2",
-        "--reason",
-        "picked via #N handle",
-    ]))?;
+    let handled = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:carol",
+            "--json",
+            "disagree",
+            "#2",
+            "--reason",
+            "picked via #N handle",
+        ],
+    )))?;
     let handled: serde_json::Value = serde_json::from_str(&handled)?;
     ensure_json_eq(
         &handled["decision_id"],
@@ -1120,48 +1143,62 @@ fn disagree_fluent_pick_disambiguates_and_hash_handle_reuses_it() -> CliTestResu
         "#2 addresses the second-listed (billing) candidate from the previous resolver call",
     )?;
 
-    let _ = std::fs::remove_dir_all(&hivemind_dir);
     Ok(())
 }
 
 #[test]
-fn disagree_fluent_topic_narrows_ambiguous_to_resolved() -> CliTestResult {
-    let hivemind_dir = unique_test_dir("disagree-fluent-topic");
-    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+fn disagree_fluent_pick_disambiguates_and_hash_handle_reuses_it() -> CliTestResult {
+    disagree_fluent_pick_disambiguates_and_hash_handle_reuses_it_body(&TestBackend::sqlite(
+        "disagree-fluent-pick",
+    ))
+}
+
+#[test]
+fn disagree_fluent_pick_disambiguates_and_hash_handle_reuses_it_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("disagree-fluent-pick-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    disagree_fluent_pick_disambiguates_and_hash_handle_reuses_it_body(&backend)
+}
+
+fn disagree_fluent_topic_narrows_ambiguous_to_resolved_body(
+    backend: &TestBackend,
+) -> CliTestResult {
     for topic in ["billing", "notifications"] {
-        run(&Cli::parse_from([
-            "hivemind",
-            "--actor",
-            "actor:alice",
-            "--hivemind-dir",
-            dir,
-            "emit",
-            "decision.proposed",
-            "--title",
-            &format!("Adopt async queue for {topic}"),
-            "--rationale",
-            "because reasons",
-            "--topic-keys",
-            topic,
-            "--options",
-            "async",
-        ]))?;
+        run(&Cli::parse_from(cli_args(
+            backend,
+            &[
+                "--actor",
+                "actor:alice",
+                "emit",
+                "decision.proposed",
+                "--title",
+                &format!("Adopt async queue for {topic}"),
+                "--rationale",
+                "because reasons",
+                "--topic-keys",
+                topic,
+                "--options",
+                "async",
+            ],
+        )))?;
     }
 
-    let output = run(&Cli::parse_from([
-        "hivemind",
-        "--actor",
-        "actor:bob",
-        "--json",
-        "--hivemind-dir",
-        dir,
-        "disagree",
-        "adopt async queue",
-        "--topic",
-        "billing",
-        "--reason",
-        "narrowed by topic",
-    ]))?;
+    let output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:bob",
+            "--json",
+            "disagree",
+            "adopt async queue",
+            "--topic",
+            "billing",
+            "--reason",
+            "narrowed by topic",
+        ],
+    )))?;
     let output: serde_json::Value = serde_json::from_str(&output)?;
     ensure_json_eq(
         &output["decision_status"],
@@ -1169,50 +1206,64 @@ fn disagree_fluent_topic_narrows_ambiguous_to_resolved() -> CliTestResult {
         "--topic narrows the otherwise-ambiguous match down to one candidate",
     )?;
 
-    let _ = std::fs::remove_dir_all(&hivemind_dir);
     Ok(())
 }
 
 #[test]
-fn supersede_fluent_description_resolves_uniquely_and_records() -> CliTestResult {
-    let hivemind_dir = unique_test_dir("supersede-fluent-resolve");
-    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
-    let old_decision_id = run(&Cli::parse_from([
-        "hivemind",
-        "--actor",
-        "actor:alice",
-        "--hivemind-dir",
-        dir,
-        "emit",
-        "decision.proposed",
-        "--title",
-        "Use shared admin token",
-        "--rationale",
-        "Fastest path",
-        "--topic-keys",
-        "auth",
-        "--options",
-        "shared-token",
-    ]))?;
+fn disagree_fluent_topic_narrows_ambiguous_to_resolved() -> CliTestResult {
+    disagree_fluent_topic_narrows_ambiguous_to_resolved_body(&TestBackend::sqlite(
+        "disagree-fluent-topic",
+    ))
+}
 
-    let output = run(&Cli::parse_from([
-        "hivemind",
-        "--actor",
-        "actor:bob",
-        "--json",
-        "--hivemind-dir",
-        dir,
-        "supersede",
-        "shared admin token",
-        "--title",
-        "Use scoped service tokens",
-        "--rationale",
-        "Scoped tokens preserve audit boundaries",
-        "--options",
-        "scoped-service-tokens",
-        "--chose",
-        "scoped-service-tokens",
-    ]))?;
+#[test]
+fn disagree_fluent_topic_narrows_ambiguous_to_resolved_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("disagree-fluent-topic-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    disagree_fluent_topic_narrows_ambiguous_to_resolved_body(&backend)
+}
+
+fn supersede_fluent_description_resolves_uniquely_and_records_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    let old_decision_id = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:alice",
+            "emit",
+            "decision.proposed",
+            "--title",
+            "Use shared admin token",
+            "--rationale",
+            "Fastest path",
+            "--topic-keys",
+            "auth",
+            "--options",
+            "shared-token",
+        ],
+    )))?;
+
+    let output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:bob",
+            "--json",
+            "supersede",
+            "shared admin token",
+            "--title",
+            "Use scoped service tokens",
+            "--rationale",
+            "Scoped tokens preserve audit boundaries",
+            "--options",
+            "scoped-service-tokens",
+            "--chose",
+            "scoped-service-tokens",
+        ],
+    )))?;
     let output: serde_json::Value = serde_json::from_str(&output)?;
     ensure_json_eq(
         &output["old_decision_id"],
@@ -1225,52 +1276,66 @@ fn supersede_fluent_description_resolves_uniquely_and_records() -> CliTestResult
         "supersede flips the resolved decision's status to superseded",
     )?;
 
-    let _ = std::fs::remove_dir_all(&hivemind_dir);
     Ok(())
 }
 
 #[test]
-fn supersede_fluent_ambiguous_description_short_circuits_without_writing() -> CliTestResult {
-    let hivemind_dir = unique_test_dir("supersede-fluent-ambiguous");
-    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+fn supersede_fluent_description_resolves_uniquely_and_records() -> CliTestResult {
+    supersede_fluent_description_resolves_uniquely_and_records_body(&TestBackend::sqlite(
+        "supersede-fluent-resolve",
+    ))
+}
+
+#[test]
+fn supersede_fluent_description_resolves_uniquely_and_records_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("supersede-fluent-resolve-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    supersede_fluent_description_resolves_uniquely_and_records_body(&backend)
+}
+
+fn supersede_fluent_ambiguous_description_short_circuits_without_writing_body(
+    backend: &TestBackend,
+) -> CliTestResult {
     for topic in ["billing", "notifications"] {
-        run(&Cli::parse_from([
-            "hivemind",
-            "--actor",
-            "actor:alice",
-            "--hivemind-dir",
-            dir,
-            "emit",
-            "decision.proposed",
-            "--title",
-            &format!("Adopt async queue for {topic}"),
-            "--rationale",
-            "because reasons",
-            "--topic-keys",
-            topic,
-            "--options",
-            "async",
-        ]))?;
+        run(&Cli::parse_from(cli_args(
+            backend,
+            &[
+                "--actor",
+                "actor:alice",
+                "emit",
+                "decision.proposed",
+                "--title",
+                &format!("Adopt async queue for {topic}"),
+                "--rationale",
+                "because reasons",
+                "--topic-keys",
+                topic,
+                "--options",
+                "async",
+            ],
+        )))?;
     }
 
-    let output = run(&Cli::parse_from([
-        "hivemind",
-        "--actor",
-        "actor:bob",
-        "--json",
-        "--hivemind-dir",
-        dir,
-        "supersede",
-        "adopt async queue",
-        "--title",
-        "Adopt sync queue instead",
-        "--rationale",
-        "should not apply to either",
-        "--options",
-        "sync",
-        "--chose",
-        "sync",
-    ]))?;
+    let output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:bob",
+            "--json",
+            "supersede",
+            "adopt async queue",
+            "--title",
+            "Adopt sync queue instead",
+            "--rationale",
+            "should not apply to either",
+            "--options",
+            "sync",
+            "--chose",
+            "sync",
+        ],
+    )))?;
     let output: serde_json::Value = serde_json::from_str(&output)?;
     ensure_json_eq(
         &output["data"]["outcome"],
@@ -1287,15 +1352,10 @@ fn supersede_fluent_ambiguous_description_short_circuits_without_writing() -> Cl
     )?;
 
     // Neither decision was superseded: both remain "proposed" and no replacement was created.
-    let search = run(&Cli::parse_from([
-        "hivemind",
-        "--hivemind-dir",
-        dir,
-        "query",
-        "search_decisions",
-        "--q",
-        "adopt async queue",
-    ]))?;
+    let search = run(&Cli::parse_from(cli_args(
+        backend,
+        &["query", "search_decisions", "--q", "adopt async queue"],
+    )))?;
     let search: serde_json::Value = serde_json::from_str(&search)?;
     let items = search["data"]["items"].as_array().expect("items array");
     ensure_eq(
@@ -1310,6 +1370,65 @@ fn supersede_fluent_ambiguous_description_short_circuits_without_writing() -> Cl
             "ambiguous supersede must not mutate either candidate",
         )?;
     }
+
+    Ok(())
+}
+
+#[test]
+fn supersede_fluent_ambiguous_description_short_circuits_without_writing() -> CliTestResult {
+    supersede_fluent_ambiguous_description_short_circuits_without_writing_body(
+        &TestBackend::sqlite("supersede-fluent-ambiguous"),
+    )
+}
+
+#[test]
+fn supersede_fluent_ambiguous_description_short_circuits_without_writing_postgres() -> CliTestResult
+{
+    let Some(backend) = TestBackend::postgres("supersede-fluent-ambiguous-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    supersede_fluent_ambiguous_description_short_circuits_without_writing_body(&backend)
+}
+
+/// A no-feature build must reject `--database-url` before touching the ledger
+/// at all, not silently fall back to SQLite. Gated to the no-feature build:
+/// with `shared-backend-postgres` compiled in, this URL would instead attempt
+/// a real (failing, since it's a placeholder) Postgres connection.
+#[cfg(not(feature = "shared-backend-postgres"))]
+#[test]
+fn database_url_without_feature_errors_before_any_write() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("database-url-no-feature");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+
+    let result = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:alice",
+        "--hivemind-dir",
+        dir,
+        "--database-url",
+        "postgres://user:pass@127.0.0.1/hivemind",
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Should never be written",
+        "--rationale",
+        "the feature is not compiled in",
+        "--topic-keys",
+        "test",
+        "--options",
+        "a",
+    ]));
+    let error = result.expect_err("--database-url without the feature must fail, not write");
+    ensure(
+        error.to_string().contains("shared-backend-postgres"),
+        "error must name the missing feature",
+    )?;
+    ensure(
+        !hivemind_dir.exists(),
+        "must not have created a SQLite ledger as a fallback before failing",
+    )?;
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);
     Ok(())
@@ -3791,6 +3910,79 @@ fn format_error_outputs_structured_json() {
 
 fn unique_test_dir(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("hivemind-{name}-{}", uuid::Uuid::new_v4()))
+}
+
+/// Backend selector for a CLI test invocation. SQLite (the default) only needs
+/// `--hivemind-dir`, pointing at a fresh isolated temp directory per test.
+/// Postgres additionally needs `--database-url` and a per-test `--tenant` —
+/// unlike a temp SQLite dir, the configured Postgres database is shared, so
+/// tests must not collide with each other or with prior runs.
+struct TestBackend {
+    hivemind_dir: PathBuf,
+    tenant: Option<String>,
+    database_url: Option<String>,
+}
+
+impl TestBackend {
+    fn sqlite(name: &str) -> Self {
+        Self {
+            hivemind_dir: unique_test_dir(name),
+            tenant: None,
+            database_url: None,
+        }
+    }
+
+    /// `None` when `HIVEMIND_TEST_POSTGRES_URL` is unset — callers skip the test.
+    fn postgres(name: &str) -> Option<Self> {
+        let database_url = std::env::var("HIVEMIND_TEST_POSTGRES_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        Some(Self {
+            hivemind_dir: unique_test_dir(name),
+            tenant: Some(format!("tenant:test:{name}:{nanos}")),
+            database_url: Some(database_url),
+        })
+    }
+
+    /// Global flags to splice into a `Cli::parse_from` argument list, right
+    /// after the binary name.
+    fn global_args(&self) -> Vec<String> {
+        let mut args = vec![
+            "--hivemind-dir".to_owned(),
+            self.hivemind_dir
+                .to_str()
+                .expect("utf-8 temp path")
+                .to_owned(),
+        ];
+        if let Some(url) = &self.database_url {
+            args.push("--database-url".to_owned());
+            args.push(url.clone());
+        }
+        if let Some(tenant) = &self.tenant {
+            args.push("--tenant".to_owned());
+            args.push(tenant.clone());
+        }
+        args
+    }
+}
+
+impl Drop for TestBackend {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.hivemind_dir);
+    }
+}
+
+/// Builds a full `Cli::parse_from` argument vector: the binary name, this
+/// backend's global flags, then `rest` (starting with per-command flags like
+/// `--actor` and the subcommand itself).
+fn cli_args(backend: &TestBackend, rest: &[&str]) -> Vec<String> {
+    let mut args = vec!["hivemind".to_owned()];
+    args.extend(backend.global_args());
+    args.extend(rest.iter().map(|value| (*value).to_owned()));
+    args
 }
 
 fn write_simple_pdf(path: &std::path::Path, lines: &[&str]) {

@@ -9,6 +9,7 @@ use crate::ingest::{
     DocumentConflictResolutionAction, DocumentImportFormat, DocumentPreparationFormat,
     DEFAULT_SLACK_MENTION,
 };
+use crate::ledger::LedgerConfig;
 use crate::projector::RelationKind as GraphRelationKind;
 use crate::queries::{DecisionStatus, ReadOnlyExportFormat as QueryReadOnlyExportFormat};
 use crate::slack_app::SlackCaptureSurface;
@@ -40,6 +41,13 @@ pub struct Cli {
     )]
     pub hivemind_dir: PathBuf,
 
+    /// Shared Postgres backend connection URL. Unset or empty selects the local
+    /// SQLite ledger under --hivemind-dir. A flag value beats the environment
+    /// variable; an empty flag value is treated as unset, same as
+    /// HIVEMIND_DATABASE_URL. Requires the shared-backend-postgres feature.
+    #[arg(long, global = true, env = "HIVEMIND_DATABASE_URL")]
+    pub database_url: Option<String>,
+
     #[arg(long, global = true, value_enum)]
     pub graph_backend: Option<GraphBackend>,
 
@@ -54,6 +62,18 @@ pub struct Cli {
 pub enum GraphBackend {
     Memory,
     Kuzu,
+}
+
+impl LedgerConfig {
+    /// Builds a `LedgerConfig` from global CLI flags: `--hivemind-dir` and
+    /// `--database-url` (flag beats `HIVEMIND_DATABASE_URL`; an empty value
+    /// means unset, same rule as `ApiConfig::new`).
+    pub fn from_cli(cli: &Cli) -> Self {
+        Self {
+            hivemind_dir: cli.hivemind_dir.clone(),
+            database_url: cli.database_url.clone().filter(|url| !url.is_empty()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Subcommand)]

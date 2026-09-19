@@ -1,7 +1,7 @@
 // Parent module gates this file with #[cfg(test)]; repeat the marker so UBS can filter test-only assertions.
 #[cfg(test)]
 use super::*;
-use crate::ledger::EventLedger;
+use crate::ledger::{EventLedger, SqliteEventLedger};
 use std::io::Cursor;
 use std::path::PathBuf;
 

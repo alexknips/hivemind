@@ -22,9 +22,9 @@ use crate::ingest::{
     DocumentImportSummary, DocumentPreparationRequest, ProseImportCandidate, ProseImportSource,
     SlackIngestOutcome,
 };
+use crate::ledger::{AnyLedger, EventLedger, LedgerConfig, TenantScopedLedger};
 #[cfg(feature = "shared-backend-postgres")]
-use crate::ledger::PostgresEventLedger;
-use crate::ledger::{EventLedger, SqliteEventLedger, TenantScopedLedger};
+use crate::ledger::{PostgresEventLedger, SqliteEventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
     derive_decision_status, export_read_only_summary, get_active_decision_blockers,
@@ -32,7 +32,7 @@ use crate::queries::{
     get_decision_neighborhood, get_decision_quality_score, get_decisions_added_since,
     get_decisions_changed_since, get_recent_activity, get_recent_decisions, get_relevant_decisions,
     get_situational_decisions, get_supersession_chain, resolve_decision_by_description,
-    scan_decision_quality, scorer_next_cursor, search_decisions, search_decisions_fts_with_context,
+    scan_decision_quality, scorer_next_cursor, search_decisions, search_decisions_any,
     ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest, ChangedSinceRequest,
     DecisionBlockerFilters, DecisionStatus, DecisionsAddedSinceFilterRequest,
     DecisionsAddedSinceRequest, HistoryFilterRequest, NeighborhoodRequest, QualityTier,
@@ -113,9 +113,17 @@ pub fn run(cli: &Cli) -> Result<String> {
 }
 
 fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
+    // Isolated ledger directory (never the caller's --hivemind-dir) so quickstart
+    // never touches a real local ledger. When --database-url/HIVEMIND_DATABASE_URL
+    // is configured, backend selection still applies — quickstart then proves the
+    // configured Postgres backend works end to end instead of silently writing a
+    // throwaway local SQLite file that has nothing to do with it; the isolated
+    // directory is simply unused on that path.
     let ledger_dir = std::env::temp_dir().join(format!("hivemind-quickstart-{}", Uuid::new_v4()));
     let tenant_id = cli_tenant(cli)?;
-    let ledger = SqliteEventLedger::open(&ledger_dir)?;
+    let mut ledger_config = LedgerConfig::from_cli(cli);
+    ledger_config.hivemind_dir = ledger_dir.clone();
+    let ledger = AnyLedger::open(&ledger_config, &tenant_id)?;
     let commands = Commands::new_with_context(
         &ledger,
         CommandContext::new(tenant_id.clone(), EventProvenance::cli()),
@@ -203,8 +211,9 @@ fn format_quickstart_report(report: &QuickstartReport) -> String {
 }
 
 fn run_mcp(cli: &Cli, args: &McpArgs) -> Result<String> {
-    let mut config =
-        crate::mcp::McpConfig::new(cli.hivemind_dir.clone()).with_tenant(cli_tenant(cli)?);
+    let mut config = crate::mcp::McpConfig::new(cli.hivemind_dir.clone())
+        .with_tenant(cli_tenant(cli)?)
+        .with_database_url(cli.database_url.clone());
     if let Some(agent_tool) = args.agent_tool.as_deref().map(str::trim) {
         if !agent_tool.is_empty() {
             config = config.with_agent_tool(agent_tool);
@@ -221,7 +230,9 @@ fn run_mcp(cli: &Cli, args: &McpArgs) -> Result<String> {
 }
 
 fn run_serve(cli: &Cli, args: &ServeArgs) -> Result<String> {
-    let config = crate::api::ApiConfig::new(cli.hivemind_dir.clone()).with_port(args.port);
+    let config = crate::api::ApiConfig::new(cli.hivemind_dir.clone())
+        .with_port(args.port)
+        .with_database_url(LedgerConfig::from_cli(cli).database_url);
     // Build AppState (which constructs r2d2/postgres pool) BEFORE entering
     // the tokio runtime. r2d2 pool construction internally calls block_on,
     // which panics if already inside an existing runtime.
@@ -240,7 +251,7 @@ fn run_serve(cli: &Cli, args: &ServeArgs) -> Result<String> {
 
 fn run_map(cli: &Cli, args: &MapArgs) -> Result<String> {
     let tenant_id = cli_tenant(cli)?;
-    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let ledger = open_ledger(cli)?;
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
 
@@ -317,7 +328,7 @@ fn parse_window_duration(window: &str) -> Result<chrono::Duration> {
 
 fn run_digest(cli: &Cli, args: &DigestArgs) -> Result<String> {
     let tenant_id = cli_tenant(cli)?;
-    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let ledger = open_ledger(cli)?;
     let context = QueryContext::new(tenant_id.clone());
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
@@ -373,7 +384,7 @@ fn run_classify_queue_submit(cli: &Cli, args: &ClassifyQueueSubmitArgs) -> Resul
         .map_err(|e| CliError::InvalidInput(format!("--captures is not valid JSON: {e}")))?;
 
     let tenant_id = cli_tenant(cli)?;
-    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let ledger = open_ledger(cli)?;
     let commands = Commands::new_with_context(
         &ledger,
         CommandContext::new(tenant_id, EventProvenance::cli()),
@@ -461,7 +472,7 @@ fn run_ingest_slack_thread(cli: &Cli, args: &IngestSlackThreadArgs) -> Result<St
     let thread = parse_slack_thread_fixture(&contents)?;
     let draft = extract_slack_decision_draft(&thread, &args.mention)?;
 
-    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let ledger = open_ledger(cli)?;
     let scoped_ledger = TenantScopedLedger::new(&ledger, cli_tenant(cli)?);
     let outcome = import_slack_thread(&scoped_ledger, &draft)?;
 
@@ -522,14 +533,14 @@ fn run_slack_app(cli: &Cli, args: &SlackAppArgs) -> Result<String> {
             format_json_value(cli.json, &event)
         }
         SlackAppCommand::Drain(_) => {
-            let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+            let ledger = open_ledger(cli)?;
             let scoped_ledger = TenantScopedLedger::new(&ledger, cli_tenant(cli)?);
             let report = store.drain_queue(&scoped_ledger)?;
             format_json_value(cli.json, &report)
         }
         SlackAppCommand::Command(args) => {
             let tenant_id = cli_tenant(cli)?;
-            let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+            let ledger = open_ledger(cli)?;
             let scoped_ledger = TenantScopedLedger::new(&ledger, tenant_id.clone());
             let graph = MemoryGraph::default();
             rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
@@ -550,7 +561,7 @@ fn run_slack_app(cli: &Cli, args: &SlackAppArgs) -> Result<String> {
 }
 
 fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
-    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let ledger = open_ledger(cli)?;
     let commands = Commands::new_with_context(
         &ledger,
         cli_command_context(cli, cli_emit_provenance(&cli.actor))?,
@@ -802,8 +813,13 @@ fn continuation_file_path(hivemind_dir: &Path) -> PathBuf {
 
 /// Best-effort: a write failure here must never block the underlying query or write. This state
 /// is UI convenience, never authoritative — losing it just means a future `#N` fails cleanly.
+/// Creates `hivemind_dir` lazily: in Postgres mode there is no reason for it to
+/// pre-exist (the ledger itself lives in the configured database), but this
+/// resolver cache file is always local, so the directory must exist for the
+/// write to land.
 fn write_continuation_candidates(hivemind_dir: &Path, candidates: &[ResolvedCandidate]) {
     let path = continuation_file_path(hivemind_dir);
+    let _ = std::fs::create_dir_all(hivemind_dir);
     if let Ok(json) = serde_json::to_vec(candidates) {
         let _ = std::fs::write(path, json);
     }
@@ -834,7 +850,7 @@ fn read_continuation_candidate(hivemind_dir: &Path, index: usize) -> Result<Reso
 
 fn run_disagree(cli: &Cli, args: &DisagreeArgs) -> Result<String> {
     let tenant_id = cli_tenant(cli)?;
-    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let ledger = open_ledger(cli)?;
 
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
@@ -871,7 +887,7 @@ fn run_disagree(cli: &Cli, args: &DisagreeArgs) -> Result<String> {
 
 fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
     let tenant_id = cli_tenant(cli)?;
-    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let ledger = open_ledger(cli)?;
 
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
@@ -937,7 +953,7 @@ pub(crate) fn run_review_session<R: BufRead, W: IoWrite>(
     prompt_output: &mut W,
 ) -> Result<String> {
     let tenant_id = cli_tenant(cli)?;
-    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let ledger = open_ledger(cli)?;
     let scoped_ledger = TenantScopedLedger::new(&ledger, tenant_id.clone());
     let request = review_recent_decisions_request(args)?;
     let response = get_recent_decisions(&scoped_ledger, &request)?;
@@ -1297,7 +1313,7 @@ fn apply_prose_extraction<L: crate::ledger::EventLedger>(
 fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
     match &import.command {
         ImportCommand::Documents(args) => {
-            let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+            let ledger = open_ledger(cli)?;
             let scoped_ledger = TenantScopedLedger::new(&ledger, cli_tenant(cli)?);
             let mut paths = args.files.clone();
             paths.extend(args.paths.clone());
@@ -1337,7 +1353,7 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
                 retract_same_as, ConnectorImportRequest, GitFileConnector, GoogleDocsConnector,
                 SameAsConfig,
             };
-            let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+            let ledger = open_ledger(cli)?;
             let tenant_id = cli_tenant(cli)?;
             match &args.command {
                 ImportConnectorCommand::Run(run_args) => {
@@ -1435,9 +1451,9 @@ fn propose_decision_from_option_labels<L: EventLedger>(
 
 fn emit_actor_and_commands<'a>(
     cli: &Cli,
-    ledger: &'a SqliteEventLedger,
+    ledger: &'a AnyLedger,
     provenance_args: &EmitCaptureProvenanceArgs,
-) -> Result<(String, Commands<'a, SqliteEventLedger>)> {
+) -> Result<(String, Commands<'a, AnyLedger>)> {
     if !provenance_args.has_override() {
         let commands = Commands::new_with_context(
             ledger,
@@ -1548,7 +1564,7 @@ fn trimmed_optional<'a>(field: &'static str, value: &'a Option<String>) -> Resul
 
 fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {
     let context = cli_query_context(cli)?;
-    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let ledger = open_ledger(cli)?;
 
     if query.command.is_ledger_history_query() {
         let scoped_ledger = TenantScopedLedger::new(&ledger, context.tenant_id.clone());
@@ -2154,7 +2170,7 @@ fn parse_utc_timestamp(
 
 fn run_query_with_graph(
     context: &QueryContext,
-    ledger: &SqliteEventLedger,
+    ledger: &AnyLedger,
     graph: &impl GraphView,
     hivemind_dir: &Path,
     query: &QueryArgs,
@@ -2274,7 +2290,7 @@ fn run_query_with_graph(
         }
         QueryCommand::Search(args) => {
             let request = search_decision_request(args)?;
-            let response = search_decisions_fts_with_context(context, ledger, graph, &request)?;
+            let response = search_decisions_any(context, ledger, graph, &request)?;
             format_query_response(
                 query.summary,
                 &response,
@@ -2284,7 +2300,7 @@ fn run_query_with_graph(
         }
         QueryCommand::SearchDecisions(args) => {
             let request = search_decision_request(args)?;
-            let response = search_decisions_fts_with_context(context, ledger, graph, &request)?;
+            let response = search_decisions_any(context, ledger, graph, &request)?;
             format_query_response(
                 query.summary,
                 &response,
@@ -2646,7 +2662,7 @@ fn parse_required_query_datetime(value: &str, flag: &str) -> Result<DateTime<Utc
 
 fn run_dump(cli: &Cli, dump: &DumpArgs) -> Result<String> {
     let tenant_id = cli_tenant(cli)?;
-    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let ledger = open_ledger(cli)?;
 
     match selected_graph_backend(cli)? {
         GraphBackend::Memory => {
@@ -2668,7 +2684,7 @@ fn run_tui(cli: &Cli, args: &TuiArgs) -> Result<String> {
     }
 
     let tenant_id = cli_tenant(cli)?;
-    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let ledger = open_ledger(cli)?;
     let config = crate::tui::TuiConfig {
         query: args.query.clone(),
         topic_keys: args.topic_keys.clone(),
@@ -2738,7 +2754,7 @@ fn run_dump_with_graph(graph: &impl GraphView, dump: &DumpArgs) -> Result<String
 #[cfg(feature = "graph-kuzu")]
 fn run_query_with_kuzu(
     context: &QueryContext,
-    ledger: &SqliteEventLedger,
+    ledger: &AnyLedger,
     hivemind_dir: &std::path::Path,
     query: &QueryArgs,
 ) -> Result<String> {
@@ -2750,7 +2766,7 @@ fn run_query_with_kuzu(
 #[cfg(not(feature = "graph-kuzu"))]
 fn run_query_with_kuzu(
     _context: &QueryContext,
-    _ledger: &SqliteEventLedger,
+    _ledger: &AnyLedger,
     _hivemind_dir: &std::path::Path,
     _query: &QueryArgs,
 ) -> Result<String> {
@@ -2822,6 +2838,14 @@ fn validate_global_flags(cli: &Cli) -> Result<()> {
 pub(crate) fn cli_tenant(cli: &Cli) -> Result<TenantId> {
     TenantId::new(cli.tenant.trim().to_owned())
         .map_err(|error| CliError::InvalidInput(format!("--tenant is invalid: {error}")).into())
+}
+
+/// Opens the ledger for one CLI invocation: SQLite under `--hivemind-dir` (default)
+/// or Postgres when `--database-url`/`HIVEMIND_DATABASE_URL` is set. Every command
+/// that reads or writes the ledger goes through this — a CLI that captures to
+/// SQLite but reads Postgres (or vice versa) is worse than either alone.
+fn open_ledger(cli: &Cli) -> Result<AnyLedger> {
+    AnyLedger::open(&LedgerConfig::from_cli(cli), &cli_tenant(cli)?)
 }
 
 fn cli_command_context(cli: &Cli, provenance: EventProvenance) -> Result<CommandContext> {
@@ -2975,7 +2999,7 @@ fn run_quality_scan(cli: &Cli, args: &QualityScanArgs) -> Result<String> {
     use crate::linear::{format_issue_description, format_issue_title, LinearClient};
 
     let tenant_id = cli_tenant(cli)?;
-    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    let ledger = open_ledger(cli)?;
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
 

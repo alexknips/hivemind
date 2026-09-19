@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 
 use crate::events::{self, EventPayload};
-use crate::ledger::{EventLedger, SqliteEventLedger};
+use crate::ledger::{AnyLedger, EventLedger, SqliteEventLedger};
 use crate::projector::{GraphRow, GraphView, NodeKind, RelationKind};
 use crate::Result;
 
@@ -263,6 +263,28 @@ pub fn search_decisions_with_ledger(
             items,
         },
     })
+}
+
+/// Backend-dispatching search: SQLite goes through FTS
+/// (`search_decisions_fts_with_context`); Postgres goes through the
+/// backend-agnostic in-memory path (`search_decisions_with_ledger`). Both
+/// return identical order for identical fixtures (see docs/SEARCH_DESIGN.md's
+/// Ordering Guarantees), so callers that only hold an `AnyLedger` — the CLI,
+/// stdio MCP, and one-shot HTTP paths — never need to know which backend they
+/// are on.
+pub fn search_decisions_any(
+    context: &QueryContext,
+    ledger: &AnyLedger,
+    graph: &impl GraphView,
+    request: &SearchDecisionRequest,
+) -> Result<QueryResponse<DecisionSearchResults>> {
+    match ledger {
+        AnyLedger::Sqlite(inner) => {
+            search_decisions_fts_with_context(context, inner, graph, request)
+        }
+        #[cfg(feature = "shared-backend-postgres")]
+        AnyLedger::Postgres(inner) => search_decisions_with_ledger(context, inner, graph, request),
+    }
 }
 
 pub fn search_decisions_fts_with_context(

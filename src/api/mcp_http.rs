@@ -22,13 +22,11 @@ use crate::mcp::args::{
 };
 use crate::mcp::core::{CaptureDecisionArgs, CoreError, LedgerHandle, LedgerProvider};
 use crate::projector::memory::MemoryGraph;
-#[cfg(feature = "shared-backend-postgres")]
-use crate::queries::search_decisions_with_ledger;
 use crate::queries::{
     derive_decision_status, get_compact_view, get_decision, get_decision_quality_score,
     get_relevant_decisions, get_supersession_chain, scan_decision_quality, scorer_next_cursor,
-    search_decisions_fts_with_context, DecisionStatus, QualityTier, QueryContext,
-    ScanQualityRequest, ScorerConfig, SearchDecisionRequest,
+    search_decisions_any, DecisionStatus, QualityTier, QueryContext, ScanQualityRequest,
+    ScorerConfig, SearchDecisionRequest,
 };
 
 use super::auth::extract_ctx;
@@ -537,17 +535,8 @@ fn mcp_search_decisions(
         cursor: mcp_opt_str(&args, "cursor")?,
     };
     let query_ctx = QueryContext::new(ctx.tenant_id.clone());
-    let response = match &ledger {
-        ApiLedger::Sqlite(sqlite_ledger) => {
-            search_decisions_fts_with_context(&query_ctx, sqlite_ledger, &*graph, &request)
-                .map_err(|e| (-32603i32, e.to_string()))?
-        }
-        #[cfg(feature = "shared-backend-postgres")]
-        ApiLedger::Postgres(postgres_ledger) => {
-            search_decisions_with_ledger(&query_ctx, postgres_ledger, &*graph, &request)
-                .map_err(|e| (-32603i32, e.to_string()))?
-        }
-    };
+    let response = search_decisions_any(&query_ctx, &ledger, &*graph, &request)
+        .map_err(|e| (-32603i32, e.to_string()))?;
     serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
 }
 

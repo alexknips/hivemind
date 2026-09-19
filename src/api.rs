@@ -129,9 +129,10 @@ impl ApiConfig {
             hivemind_dir: hivemind_dir.into(),
             port: 8080,
             api_key: std::env::var("HIVEMIND_API_KEY").ok(),
-            database_url: std::env::var("HIVEMIND_DATABASE_URL")
-                .ok()
-                .filter(|s| !s.is_empty()),
+            // Not read here: the CLI resolves --database-url/HIVEMIND_DATABASE_URL via
+            // LedgerConfig::from_cli and passes it through with_database_url, so a flag
+            // beats the env var the same way it does for every other command.
+            database_url: None,
             admin_key: std::env::var("HIVEMIND_ADMIN_KEY").ok(),
             workos_domain: std::env::var("WORKOS_DOMAIN").ok(),
             workos_issuer: std::env::var("WORKOS_ISSUER").ok(),
@@ -157,6 +158,13 @@ impl ApiConfig {
 
     pub fn with_port(mut self, port: u16) -> Self {
         self.port = port;
+        self
+    }
+
+    /// Sets the Postgres backend URL (empty is treated as unset — same rule
+    /// `LedgerConfig::from_cli` applies to `--database-url`).
+    pub fn with_database_url(mut self, database_url: Option<String>) -> Self {
+        self.database_url = database_url.filter(|url| !url.is_empty());
         self
     }
 }
