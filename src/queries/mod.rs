@@ -6,6 +6,7 @@ mod brief;
 mod compact_view;
 mod context;
 mod decision;
+mod decision_log;
 mod history;
 mod inhouse_scorer;
 mod neighborhood;
@@ -47,6 +48,7 @@ pub use context::{
     DecisionContext, DecisionContextRequest, ReviewShape,
 };
 pub use decision::{get_decision, get_hypothesis_statement, DecisionView, HypothesisContext};
+pub use decision_log::{export_decision_log, DecisionLogExport, DecisionLogRequest};
 pub use history::*;
 pub use inhouse_scorer::{
     get_decision_quality_score, scan_decision_quality, scorer_next_cursor, QualityTier,
