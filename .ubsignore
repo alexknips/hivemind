@@ -37,6 +37,7 @@ src/slack_app/tests.rs
 src/ledger/sqlite/tests.rs
 src/ledger/postgres/tests.rs
 src/ledger/memory/tests.rs
+src/ledger/any/tests.rs
 src/ingest/tests.rs
 src/tui/tests.rs
 src/projector/kuzu/tests.rs
