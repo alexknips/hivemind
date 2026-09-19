@@ -37,17 +37,32 @@ against.
 
 ## Quality gates (PRINCIPLES §8)
 
-Every contribution must pass these gates locally before being submitted:
+Which gates you run locally depends on your diff. See
+[docs/QUALITY_GATES.md](docs/QUALITY_GATES.md) for the full mandatory gate
+set, proof-line format, and the docs-only exception's rationale — summary:
 
-```bash
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-```
+- **Docs-only diff** (no `.rs`, `Cargo.*`, or build/CI file changed): skip
+  the cargo-based gates locally. Build the docs instead (e.g. `cd website &&
+  npm ci && npm run build` for `website/**` changes) and, if you touched
+  CLI/MCP flag docs, run `cargo run --locked --bin generate-reference --
+  --check`.
+- **Code diff**: run these locally before submitting:
 
-The CI workflow re-runs them on every push. A pull request that fails any
-gate does not merge. Quality is not a P3 follow-up — it is part of the work
-that made the bead claimable in the first place.
+  ```bash
+  cargo fmt --check
+  cargo clippy --locked --all-targets -- -D warnings
+  cargo test --locked
+  cargo run --locked --bin generate-reference -- --check
+  ```
+
+UBS's critical-finding and warning-baseline gates run in CI only, regardless
+of diff scope — do not run the local UBS wrapper as part of your submission
+checklist.
+
+The CI workflow re-runs the full gate set (including UBS) on every push. A
+pull request that fails any gate does not merge. Quality is not a P3
+follow-up — it is part of the work that made the bead claimable in the first
+place.
 
 If your change touches surfaces (CLI, MCP, future HTTP API), implement once
 in the internal `commands` / `queries` module and expose identically through
