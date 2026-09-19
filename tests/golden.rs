@@ -1,17 +1,26 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use hivemind::cli::{run, Cli};
+use hivemind::ledger::{EventLedger, InMemoryEventLedger};
+use hivemind::projector::{memory::MemoryGraph, rebuild_graph};
+use hivemind::queries::{export_decision_log, DecisionLogRequest};
 use serde_json::json;
 
 #[allow(dead_code)]
 #[path = "support/seed_data.rs"]
 mod seed_data;
 
+#[allow(dead_code)]
+#[path = "support/organizational_scenarios.rs"]
+mod organizational_scenarios;
+
 use seed_data::{seed_to_dir, unique_temp_dir, TestResult};
 
 const SNAPSHOT_DIR: &str = "tests/snapshots/golden";
+const EXPORT_SNAPSHOT_DIR: &str = "tests/snapshots/golden/export_markdown";
 
 const QUERY_SPECS: &[QuerySpec] = &[
     QuerySpec {
@@ -217,14 +226,22 @@ fn run_harness() -> TestResult<()> {
     seed_to_dir(&seed_dir)?;
 
     let actual_outputs = capture_query_outputs(&seed_dir)?;
-    let result = if bless {
+    let query_result = if bless {
         bless_snapshots(&actual_outputs)
     } else {
         compare_snapshots(&actual_outputs)
     };
 
+    let export_outputs = capture_export_outputs()?;
+    let export_result = if bless {
+        bless_export_outputs(&export_outputs)
+    } else {
+        compare_export_outputs(&export_outputs)
+    };
+
     let cleanup_result = fs::remove_dir_all(&scratch_root);
-    result?;
+    query_result?;
+    export_result?;
     cleanup_result?;
     Ok(())
 }
@@ -339,6 +356,127 @@ fn compare_snapshots(outputs: &[QueryOutput]) -> TestResult<()> {
         )
         .into())
     }
+}
+
+struct ExportOutput {
+    label: &'static str,
+    files: std::collections::BTreeMap<String, String>,
+}
+
+fn capture_export_outputs() -> TestResult<Vec<ExportOutput>> {
+    let mut outputs = Vec::new();
+    for (label, events) in [
+        ("seed", seed_data::seed_events()),
+        (
+            "organizational_scenarios",
+            organizational_scenarios::scenario_events(),
+        ),
+    ] {
+        let ledger = InMemoryEventLedger::new();
+        for event in events {
+            ledger.append(event)?;
+        }
+        let graph = MemoryGraph::default();
+        rebuild_graph(&ledger, &graph)?;
+        let export = export_decision_log(&graph, &ledger, &DecisionLogRequest::default())?;
+        outputs.push(ExportOutput {
+            label,
+            files: export.files,
+        });
+    }
+    Ok(outputs)
+}
+
+fn bless_export_outputs(outputs: &[ExportOutput]) -> TestResult<()> {
+    for output in outputs {
+        let dir = Path::new(EXPORT_SNAPSHOT_DIR).join(output.label);
+        if dir.exists() {
+            fs::remove_dir_all(&dir)?;
+        }
+        for (relative_path, content) in &output.files {
+            let full_path = dir.join(relative_path);
+            if let Some(parent) = full_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(full_path, content)?;
+        }
+    }
+    println!(
+        "blessed {} export_decision_log golden tree(s)",
+        outputs.len()
+    );
+    Ok(())
+}
+
+fn compare_export_outputs(outputs: &[ExportOutput]) -> TestResult<()> {
+    let mut failures = String::new();
+
+    for output in outputs {
+        let dir = Path::new(EXPORT_SNAPSHOT_DIR).join(output.label);
+        let mut expected_paths = BTreeSet::new();
+        collect_relative_files(&dir, &dir, &mut expected_paths)?;
+        let actual_paths: BTreeSet<String> = output.files.keys().cloned().collect();
+        if expected_paths != actual_paths {
+            failures.push_str(&format!(
+                "{}: exported file set differs from snapshot.\n  only in snapshot: {:?}\n  only in export: {:?}\n",
+                output.label,
+                expected_paths.difference(&actual_paths).collect::<Vec<_>>(),
+                actual_paths.difference(&expected_paths).collect::<Vec<_>>(),
+            ));
+        }
+
+        for (relative_path, content) in &output.files {
+            let full_path = dir.join(relative_path);
+            match fs::read_to_string(&full_path) {
+                Ok(expected) if expected == *content => {}
+                Ok(expected) => {
+                    failures.push_str(&unified_diff(
+                        &full_path.display().to_string(),
+                        &format!("{}/{relative_path}", output.label),
+                        &expected,
+                        content,
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    failures.push_str(&format!("missing snapshot: {}\n", full_path.display()));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "export_decision_log golden mismatch\n{failures}\nRegenerate with: cargo test --test golden -- --bless"
+        )
+        .into())
+    }
+}
+
+fn collect_relative_files(
+    root: &Path,
+    current: &Path,
+    out: &mut BTreeSet<String>,
+) -> TestResult<()> {
+    if !current.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_relative_files(root, &path, out)?;
+        } else {
+            let relative = path
+                .strip_prefix(root)?
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.insert(relative);
+        }
+    }
+    Ok(())
 }
 
 fn unified_diff(expected_label: &str, actual_label: &str, expected: &str, actual: &str) -> String {
