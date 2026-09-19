@@ -152,7 +152,7 @@ Or set `HIVEMIND_DIR` and omit `--hivemind-dir`:
 
 ## Available tools
 
-The HiveMind MCP server exposes 14 tools. See [MCP Tools reference](/reference/mcp-tools/)
+The HiveMind MCP server exposes 14 tools. See [MCP Tools reference](../../reference/mcp-tools/)
 for full parameter documentation.
 
 | Tool | Type | Description |
@@ -190,6 +190,6 @@ The server records `source=agent` and a per-session `source_ref` for every write
 
 ## Next steps
 
-- [MCP Tools reference](/reference/mcp-tools/) — full parameter documentation for all 14 tools
-- [Agent Capture guide](/guides/agent-capture/) — how agents capture decisions automatically
-- [Self-host install](/getting-started/install/) — install the binary and run your own server
+- [MCP Tools reference](../../reference/mcp-tools/) — full parameter documentation for all 14 tools
+- [Agent Capture guide](../agent-capture/) — how agents capture decisions automatically
+- [Self-host install](../../getting-started/install/) — install the binary and run your own server

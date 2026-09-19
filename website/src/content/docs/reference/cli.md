@@ -358,7 +358,7 @@ hivemind --actor human:<id> review
   [--unreviewed-only]
 ```
 
-Interactive terminal review flow. See [Human Review](/guides/human-review/).
+Interactive terminal review flow. See [Human Review](../../guides/human-review/).
 
 ### `mcp`
 
@@ -366,7 +366,7 @@ Interactive terminal review flow. See [Human Review](/guides/human-review/).
 hivemind mcp [--session-id <id>]
 ```
 
-Start the MCP stdio server. See [MCP Setup](/guides/mcp-setup/).
+Start the MCP stdio server. See [MCP Setup](../../guides/mcp-setup/).
 
 ### `dump`
 

@@ -51,7 +51,7 @@ A/B-tested, swapped, or removed without touching ingest or queries.
 - Similarity search and ranking
 - Capture classification (signal vs. noise)
 - Prose import extraction (when `--extractor-command` is provided to `import documents`)
-- *Planned:* decision-quality signal derivation and explainable in-house scoring (see [Decision Graph](/concepts/decision-graph/#decision-quality-signals-planned))
+- *Planned:* decision-quality signal derivation and explainable in-house scoring (see [Decision Graph](../decision-graph/#decision-quality-signals-planned))
 
 **Key property:** The rest of the system must remain functional and correct without layer 3.
 If a smart feature requires reaching back into layers 1 or 2 from this layer, the feature
@@ -90,5 +90,5 @@ An optional [Kuzu](https://kuzudb.com/)-backed projection is available behind th
 
 ## Related
 
-- [Auth Model](/concepts/auth-model/) — how actors, provenance, and multi-tenancy work
-- [Decision Graph](/concepts/decision-graph/) — the five node types and typed edges
+- [Auth Model](../auth-model/) — how actors, provenance, and multi-tenancy work
+- [Decision Graph](../decision-graph/) — the five node types and typed edges

@@ -7,7 +7,7 @@ The HiveMind MCP server exposes 22 tools. Write tools append events to the
 ledger and require an explicit `actor_id`. Read tools query the graph and never
 write. Layer-3 tools add ranked summaries or compact views.
 
-See [MCP Setup](/guides/mcp-setup/) to configure your client.
+See [MCP Setup](../../guides/mcp-setup/) to configure your client.
 
 ---
 

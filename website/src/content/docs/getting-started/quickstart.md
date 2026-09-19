@@ -32,7 +32,7 @@ Choose your path:
    }
    ```
 
-   Or use the managed remote server — see [MCP Setup](/guides/mcp-setup/) for the remote config
+   Or use the managed remote server — see [MCP Setup](../../guides/mcp-setup/) for the remote config
    and bearer-token setup.
 
 2. **Reload your MCP client**
@@ -60,7 +60,7 @@ Choose your path:
 
 ## CLI quickstart
 
-For self-hosted installs. First [set up your self-hosted cell](/getting-started/install/).
+For self-hosted installs. First [set up your self-hosted cell](../install/).
 
 The fastest first run uses an isolated temporary ledger:
 
@@ -141,6 +141,6 @@ If `--actor` is omitted, HiveMind falls back to `HIVEMIND_ACTOR`, then `human:<g
 
 ## Next steps
 
-- [MCP Setup](/guides/mcp-setup/) — full remote and local MCP configuration for all clients
-- [Agent Capture](/guides/agent-capture/) — how agents capture decisions automatically
-- [Architecture](/concepts/architecture/) — understand the three-layer design
+- [MCP Setup](../../guides/mcp-setup/) — full remote and local MCP configuration for all clients
+- [Agent Capture](../../guides/agent-capture/) — how agents capture decisions automatically
+- [Architecture](../../concepts/architecture/) — understand the three-layer design

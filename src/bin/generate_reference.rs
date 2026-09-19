@@ -130,7 +130,7 @@ fn generate_mcp_reference() -> String {
     writeln!(out).unwrap();
     writeln!(
         out,
-        "See [MCP Setup](/guides/mcp-setup/) to configure your client."
+        "See [MCP Setup](../../guides/mcp-setup/) to configure your client."
     )
     .unwrap();
     writeln!(out).unwrap();

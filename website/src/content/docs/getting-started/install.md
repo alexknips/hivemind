@@ -128,5 +128,5 @@ Set `HIVEMIND_API_KEY` to require bearer-token authentication.
 The [full self-hosting runbook](https://github.com/alexknips/hivemind/blob/master/docs/SELF_HOSTING.md)
 covers production configuration, TLS setup, E2E verification, upgrading, and troubleshooting.
 
-- [MCP Setup](/guides/mcp-setup/) — agent configuration for all MCP clients
-- [Quickstart](/getting-started/quickstart/) — capture your first decision in one command
+- [MCP Setup](../../guides/mcp-setup/) — agent configuration for all MCP clients
+- [Quickstart](../quickstart/) — capture your first decision in one command
