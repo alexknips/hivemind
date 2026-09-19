@@ -1,5 +1,6 @@
 //! Ledger trait and backend selection: append-only event store backed by SQLite, in-memory, or Postgres.
 
+mod any;
 mod backend_error;
 mod memory;
 #[cfg(feature = "shared-backend-postgres")]
@@ -12,6 +13,7 @@ pub(crate) mod contract_tests;
 use crate::events::{Event, EventId, TenantId};
 use crate::Result;
 
+pub use any::{AnyLedger, LedgerConfig};
 pub use memory::InMemoryEventLedger;
 #[cfg(feature = "shared-backend-postgres")]
 pub use postgres::{PostgresEventLedger, ProvisionedUser, ResolvedToken, TenantStore, UserInfo};

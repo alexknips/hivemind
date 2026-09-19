@@ -64,7 +64,7 @@ use tracing::warn;
 
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventId, TenantId};
-use crate::ledger::{EventLedger, SqliteEventLedger, SqliteUserStore};
+use crate::ledger::{AnyLedger, SqliteEventLedger, SqliteUserStore};
 #[cfg(feature = "shared-backend-postgres")]
 use crate::ledger::{PostgresEventLedger, TenantStore};
 use crate::projector::memory::MemoryGraph;
@@ -203,66 +203,10 @@ impl ApiBackend {
     }
 }
 
-/// Enum wrapper so handlers dispatch to either backend without monomorphisation.
-enum ApiLedger {
-    Sqlite(SqliteEventLedger),
-    #[cfg(feature = "shared-backend-postgres")]
-    Postgres(PostgresEventLedger),
-}
-
-impl EventLedger for ApiLedger {
-    fn append_for_tenant(
-        &self,
-        tenant_id: &TenantId,
-        event: crate::events::Event,
-    ) -> crate::Result<crate::events::EventId> {
-        match self {
-            ApiLedger::Sqlite(l) => l.append_for_tenant(tenant_id, event),
-            // Use explicit trait dispatch to avoid the inherent &str overload.
-            #[cfg(feature = "shared-backend-postgres")]
-            ApiLedger::Postgres(l) => EventLedger::append_for_tenant(l, tenant_id, event),
-        }
-    }
-
-    fn read_for_tenant(
-        &self,
-        tenant_id: &TenantId,
-        offset: crate::events::EventId,
-        limit: usize,
-    ) -> crate::Result<Vec<crate::events::Event>> {
-        match self {
-            ApiLedger::Sqlite(l) => l.read_for_tenant(tenant_id, offset, limit),
-            #[cfg(feature = "shared-backend-postgres")]
-            ApiLedger::Postgres(l) => EventLedger::read_for_tenant(l, tenant_id, offset, limit),
-        }
-    }
-
-    fn replay_from_for_tenant(
-        &self,
-        tenant_id: &TenantId,
-        offset: crate::events::EventId,
-        callback: &mut dyn FnMut(&crate::events::Event) -> crate::Result<()>,
-    ) -> crate::Result<()> {
-        match self {
-            ApiLedger::Sqlite(l) => l.replay_from_for_tenant(tenant_id, offset, callback),
-            #[cfg(feature = "shared-backend-postgres")]
-            ApiLedger::Postgres(l) => {
-                EventLedger::replay_from_for_tenant(l, tenant_id, offset, callback)
-            }
-        }
-    }
-
-    fn latest_offset_for_tenant(
-        &self,
-        tenant_id: &TenantId,
-    ) -> crate::Result<crate::events::EventId> {
-        match self {
-            ApiLedger::Sqlite(l) => l.latest_offset_for_tenant(tenant_id),
-            #[cfg(feature = "shared-backend-postgres")]
-            ApiLedger::Postgres(l) => EventLedger::latest_offset_for_tenant(l, tenant_id),
-        }
-    }
-}
+/// Rename-only alias: [`AnyLedger`](crate::ledger::AnyLedger) is the value
+/// type (dispatches to either backend without monomorphisation); this alias
+/// keeps the rest of this module's diff a rename.
+pub(crate) type ApiLedger = AnyLedger;
 
 #[derive(Clone)]
 pub struct AppState {
