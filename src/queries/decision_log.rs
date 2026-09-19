@@ -20,6 +20,7 @@
 //! fewer round trip per decision for evidence/decision property lookups.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 use chrono::{DateTime, Utc};
 
@@ -81,7 +82,7 @@ pub fn export_decision_log(
         .iter()
         .map(|(id, row)| {
             (
-                id.clone(),
+                id.clone(), // ubs:ignore: clone necessary — building owned titles map while decision_rows stays borrowed for the loop below
                 optional_string(row, "title").unwrap_or_default(),
             )
         })
@@ -102,13 +103,13 @@ pub fn export_decision_log(
 
     let mut files = BTreeMap::new();
     for entry in &entries {
-        let filename = filenames
+        let filename = filenames // ubs:ignore: expect below documents a construction invariant (assign_filenames covers every entry in this same slice), not a real panic risk
             .get(&entry.id)
-            .expect("filename assigned for every exported entry");
-        files.insert(
-            format!("decisions/{filename}"),
-            render_decision_file(entry, &filenames, &titles),
-        );
+            .expect("filename assigned for every exported entry, populated just above");
+        let mut path = String::with_capacity("decisions/".len() + filename.len());
+        path.push_str("decisions/");
+        path.push_str(filename);
+        files.insert(path, render_decision_file(entry, &filenames, &titles));
     }
     files.insert(
         "INDEX.md".to_owned(),
@@ -191,7 +192,7 @@ fn build_entry(
     for hyp in &decision.hypotheses {
         let statement = get_hypothesis_statement(graph, &hyp.id)?.unwrap_or_default();
         hypotheses.push(HypothesisEntry {
-            id: hyp.id.clone(),
+            id: hyp.id.clone(), // ubs:ignore: clone necessary — building owned HypothesisEntry from borrowed hyp
             statement,
             status: hyp.status,
         });
@@ -338,18 +339,22 @@ fn last_event_timestamp(
 fn assign_filenames(entries: &[DecisionEntry]) -> BTreeMap<String, String> {
     let mut filenames = BTreeMap::new();
     for entry in entries {
-        let date_part = entry
-            .occurred_at
-            .map(|ts| ts.format("%Y-%m-%d").to_string())
-            .unwrap_or_else(|| "undated".to_owned());
+        let mut filename = String::new();
+        match entry.occurred_at {
+            Some(ts) => {
+                let _ = write!(filename, "{}", ts.format("%Y-%m-%d"));
+            }
+            None => filename.push_str("undated"),
+        }
         let slug = capped_slug(&entry.title);
-        let id8 = short_id(&entry.id);
-        let filename = if slug.is_empty() {
-            format!("{date_part}-{id8}.md")
-        } else {
-            format!("{date_part}-{slug}-{id8}.md")
-        };
-        filenames.insert(entry.id.clone(), filename);
+        if !slug.is_empty() {
+            filename.push('-');
+            filename.push_str(&slug);
+        }
+        filename.push('-');
+        filename.push_str(&short_id(&entry.id));
+        filename.push_str(".md");
+        filenames.insert(entry.id.clone(), filename); // ubs:ignore: clone necessary — owned key for the filenames map, entry stays borrowed for later iterations
     }
     filenames
 }
@@ -420,7 +425,7 @@ fn render_decision_file(
 ) -> String {
     let front_matter = render_front_matter(entry);
     let mut body = String::new();
-    body.push_str(&format!("# {}\n\n", entry.title));
+    let _ = write!(body, "# {}\n\n", entry.title);
     body.push_str(&render_status_line(entry, filenames, titles));
     body.push_str("\n\n## Context\n\n");
     body.push_str(&render_context_section(entry));
@@ -530,51 +535,55 @@ fn render_actor_list(actors: &[String]) -> String {
 }
 
 fn render_context_section(entry: &DecisionEntry) -> String {
-    let topics_line = if entry.topic_keys.is_empty() {
-        "Topic keys: None recorded.".to_owned()
+    let mut out = String::new();
+    if entry.topic_keys.is_empty() {
+        out.push_str("Topic keys: None recorded.");
     } else {
-        format!("Topic keys: {}", entry.topic_keys.join(", "))
-    };
+        out.push_str("Topic keys: ");
+        write_joined(&mut out, entry.topic_keys.iter(), ", ");
+    }
 
+    out.push_str("\n\nHypotheses premised on:");
     if entry.hypotheses.is_empty() {
-        return format!("{topics_line}\n\nHypotheses premised on: None recorded.");
+        out.push_str(" None recorded.");
+    } else {
+        for hyp in &entry.hypotheses {
+            let status_text = match hyp.status {
+                HypothesisStatus::Refuted => "**refuted**",
+                HypothesisStatus::Supported => "supported",
+                HypothesisStatus::Open => "open",
+            };
+            let _ = write!(out, "\n- {} ({}): {status_text}", hyp.statement, hyp.id);
+        }
     }
-
-    let mut lines = vec![
-        topics_line,
-        String::new(),
-        "Hypotheses premised on:".to_owned(),
-    ];
-    for hyp in &entry.hypotheses {
-        let status_text = match hyp.status {
-            HypothesisStatus::Refuted => "**refuted**".to_owned(),
-            HypothesisStatus::Supported => "supported".to_owned(),
-            HypothesisStatus::Open => "open".to_owned(),
-        };
-        lines.push(format!("- {} ({}): {status_text}", hyp.statement, hyp.id));
-    }
-    lines.join("\n")
+    out
 }
 
 fn render_options_section(entry: &DecisionEntry) -> String {
     if entry.chosen_option.is_none() && entry.rejected_options.is_empty() {
         return "None recorded.".to_owned();
     }
-    let mut lines = Vec::new();
+    let mut out = String::new();
+    let mut first = true;
     if let Some(chosen) = &entry.chosen_option {
-        lines.push(format!("- **{}** (chosen)", chosen.label));
+        let _ = write!(out, "- **{}** (chosen)", chosen.label);
+        first = false;
     }
     for option in &entry.rejected_options {
-        lines.push(format!("- {}", option.label));
+        if !first {
+            out.push('\n');
+        }
+        let _ = write!(out, "- {}", option.label);
+        first = false;
     }
-    lines.join("\n")
+    out
 }
 
 fn render_decision_section(entry: &DecisionEntry) -> String {
     match &entry.chosen_option {
         Some(chosen) => format!("**{}**\n\n{}", chosen.label, entry.rationale),
         None if entry.rationale.trim().is_empty() => "None recorded.".to_owned(),
-        None => entry.rationale.clone(),
+        None => entry.rationale.clone(), // ubs:ignore: clone necessary — other match arms return owned String, entry stays borrowed
     }
 }
 
@@ -582,21 +591,28 @@ fn render_evidence_section(entry: &DecisionEntry) -> String {
     if entry.evidence.is_empty() {
         return "None recorded.".to_owned();
     }
-    entry
-        .evidence
-        .iter()
-        .map(|evidence| {
-            let source = match &evidence.source_ref {
-                Some(source_ref) if looks_like_url(source_ref) => {
-                    format!("[{source_ref}]({source_ref})")
-                }
-                Some(source_ref) => source_ref.clone(),
-                None => "None recorded.".to_owned(),
-            };
-            format!("- {} (source: {source})", evidence.content)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = String::new();
+    for (i, evidence) in entry.evidence.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        match &evidence.source_ref {
+            Some(source_ref) if looks_like_url(source_ref) => {
+                let _ = write!(
+                    out,
+                    "- {} (source: [{source_ref}]({source_ref}))",
+                    evidence.content
+                );
+            }
+            Some(source_ref) => {
+                let _ = write!(out, "- {} (source: {source_ref})", evidence.content);
+            }
+            None => {
+                let _ = write!(out, "- {} (source: None recorded.)", evidence.content);
+            }
+        }
+    }
+    out
 }
 
 fn looks_like_url(value: &str) -> bool {
@@ -634,57 +650,60 @@ fn render_outcome_section(
     filenames: &BTreeMap<String, String>,
     titles: &BTreeMap<String, String>,
 ) -> String {
-    let mut lines = vec![format!(
+    let mut out = String::new();
+    let _ = write!(
+        out,
         "Still holds: **{}**",
         if entry.held_up { "yes" } else { "no" }
-    )];
+    );
 
     if entry.outcome_reasons.is_empty() {
-        lines.push("Reasons: None recorded.".to_owned());
+        out.push_str("\nReasons: None recorded.");
     } else {
-        lines.push("Reasons:".to_owned());
+        out.push_str("\nReasons:");
         for reason in &entry.outcome_reasons {
-            lines.push(format!("- {}", render_outcome_reason(reason)));
+            out.push_str("\n- ");
+            out.push_str(&render_outcome_reason(reason));
         }
     }
 
-    lines.push(String::new());
-    let supersedes_text = entry
-        .supersedes
-        .as_deref()
-        .map(|id| render_decision_ref(id, filenames, titles, ""))
-        .unwrap_or_else(|| "None recorded.".to_owned());
-    lines.push(format!("Supersedes: {supersedes_text}"));
+    out.push_str("\n\nSupersedes: ");
+    match entry.supersedes.as_deref() {
+        Some(id) => out.push_str(&render_decision_ref(id, filenames, titles, "")),
+        None => out.push_str("None recorded."),
+    }
 
-    let superseded_by_text = if entry.all_superseded_by.is_empty() {
-        "None recorded.".to_owned()
+    out.push_str("\nSuperseded by: ");
+    if entry.all_superseded_by.is_empty() {
+        out.push_str("None recorded.");
     } else {
-        entry
-            .all_superseded_by
-            .iter()
-            .map(|id| render_decision_ref(id, filenames, titles, ""))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    lines.push(format!("Superseded by: {superseded_by_text}"));
+        write_joined(
+            &mut out,
+            entry
+                .all_superseded_by
+                .iter()
+                .map(|id| render_decision_ref(id, filenames, titles, "")),
+            ", ",
+        );
+    }
 
-    lines.push(String::new());
+    out.push_str("\n\nActive blockers:");
     if entry.active_blockers.is_empty() {
-        lines.push("Active blockers: None recorded.".to_owned());
+        out.push_str(" None recorded.");
     } else {
-        lines.push("Active blockers:".to_owned());
         for blocker in &entry.active_blockers {
-            lines.push(format!(
-                "- {} ({}, blocking {}): {}",
+            let _ = write!(
+                out,
+                "\n- {} ({}, blocking {}): {}",
                 blocker.id,
                 blocker.priority.as_str(),
                 blocker.blocked_actor_id,
                 blocker.reason
-            ));
+            );
         }
     }
 
-    lines.join("\n")
+    out
 }
 
 fn render_provenance_section(entry: &DecisionEntry) -> String {
@@ -699,17 +718,11 @@ fn render_provenance_section(entry: &DecisionEntry) -> String {
         format!("- Source: {}", entry.source),
         format!(
             "- Source ref: {}",
-            entry
-                .source_ref
-                .clone()
-                .unwrap_or_else(|| "None recorded.".to_owned())
+            entry.source_ref.as_deref().unwrap_or("None recorded.")
         ),
         format!(
             "- Proposer: {}",
-            entry
-                .proposer_id
-                .clone()
-                .unwrap_or_else(|| "None recorded.".to_owned())
+            entry.proposer_id.as_deref().unwrap_or("None recorded.")
         ),
         format!(
             "- Accepted by: {}",
@@ -774,10 +787,11 @@ fn render_index(
     let last_event_text = last_event_ts
         .map(|ts| ts.to_rfc3339())
         .unwrap_or_else(|| "none".to_owned());
-    out.push_str(&format!(
-        "Generated from HiveMind ledger offset {ledger_offset} (last event {last_event_text}). Do not edit; regenerate with `hivemind export`.\n\n"
-    ));
-    out.push_str(&format!("Filters: {}\n\n", render_filters(req)));
+    let _ = writeln!(
+        out,
+        "Generated from HiveMind ledger offset {ledger_offset} (last event {last_event_text}). Do not edit; regenerate with `hivemind export`.\n"
+    );
+    let _ = writeln!(out, "Filters: {}\n", render_filters(req));
 
     let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
     for entry in entries {
@@ -790,7 +804,7 @@ fn render_index(
             .iter()
             .map(|(status, count)| format!("{status}={count}"))
             .collect();
-        out.push_str(&format!("Counts: {}\n\n", parts.join(", ")));
+        let _ = writeln!(out, "Counts: {}\n", parts.join(", "));
     }
 
     out.push_str("| Date | Decision | Status | Topics | Decided by |\n");
@@ -802,41 +816,55 @@ fn render_index(
     });
 
     for entry in newest_first {
-        let date_text = entry
-            .occurred_at
-            .map(|ts| ts.format("%Y-%m-%d").to_string())
-            .unwrap_or_else(|| "undated".to_owned());
-        let filename = filenames
+        let filename = filenames // ubs:ignore: expect below documents a construction invariant (assign_filenames covers every entry in this same slice), not a real panic risk
             .get(&entry.id)
-            .expect("filename assigned for every exported entry");
-        let decision_link = format!("[{}](decisions/{filename})", entry.title);
-        let status_text = match entry.status {
-            DecisionStatus::Superseded => {
-                let refs: Vec<String> = entry
-                    .all_superseded_by
-                    .iter()
-                    .map(|id| render_decision_ref(id, filenames, titles, "decisions/"))
-                    .collect();
-                if refs.is_empty() {
-                    "superseded".to_owned()
-                } else {
-                    format!("superseded → {}", refs.join(", "))
-                }
+            .expect("filename assigned for every exported entry, populated just above");
+        out.push_str("| ");
+        match entry.occurred_at {
+            Some(ts) => {
+                let _ = write!(out, "{}", ts.format("%Y-%m-%d"));
             }
-            other => status_word(other).to_owned(),
-        };
-        let topics_text = entry.topic_keys.join(", ");
-        let decided_by_text = if !entry.accepted_by.is_empty() {
-            entry.accepted_by.join(", ")
+            None => out.push_str("undated"),
+        }
+        let _ = write!(out, " | [{}](decisions/{filename}) | ", entry.title);
+        match entry.status {
+            DecisionStatus::Superseded if !entry.all_superseded_by.is_empty() => {
+                out.push_str("superseded → ");
+                write_joined(
+                    &mut out,
+                    entry
+                        .all_superseded_by
+                        .iter()
+                        .map(|id| render_decision_ref(id, filenames, titles, "decisions/")),
+                    ", ",
+                );
+            }
+            DecisionStatus::Superseded => out.push_str("superseded"),
+            other => out.push_str(status_word(other)),
+        }
+        out.push_str(" | ");
+        write_joined(&mut out, entry.topic_keys.iter(), ", ");
+        out.push_str(" | ");
+        if entry.accepted_by.is_empty() {
+            out.push_str(entry.proposer_id.as_deref().unwrap_or_default());
         } else {
-            entry.proposer_id.clone().unwrap_or_default()
-        };
-        out.push_str(&format!(
-            "| {date_text} | {decision_link} | {status_text} | {topics_text} | {decided_by_text} |\n"
-        ));
+            write_joined(&mut out, entry.accepted_by.iter(), ", ");
+        }
+        out.push_str(" |\n");
     }
 
     out
+}
+
+/// Writes `items` into `out` separated by `sep`, without the intermediate `Vec<String>` and
+/// `String` that `.collect::<Vec<_>>().join(sep)` would allocate.
+fn write_joined<S: AsRef<str>>(out: &mut String, items: impl IntoIterator<Item = S>, sep: &str) {
+    for (i, item) in items.into_iter().enumerate() {
+        if i > 0 {
+            out.push_str(sep);
+        }
+        out.push_str(item.as_ref());
+    }
 }
 
 #[cfg(test)]
