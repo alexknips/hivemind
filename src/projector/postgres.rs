@@ -61,11 +61,27 @@ impl PostgresGraphView {
         &self.tenant_id
     }
 
+    /// `CREATE TABLE IF NOT EXISTS` is not race-free across concurrent sessions
+    /// creating the same not-yet-existing table for the first time — Postgres can
+    /// raise a duplicate-object error from the catalog instead of silently
+    /// no-opping (see the Postgres docs' own caveat on `IF NOT EXISTS`). The
+    /// leading advisory-xact-lock statement serializes first-time schema creation
+    /// against every other caller using the same key, including
+    /// `PostgresEventLedger::initialize_schema` and `TenantStore::
+    /// initialize_schema`. `batch_execute` runs this whole multi-statement string
+    /// as one implicit transaction, so the lock releases as soon as this call
+    /// returns (hivemind-ot72.3: the shared-backend-postgres CI job was ~40%
+    /// flaky with `duplicate key value violates unique constraint
+    /// "pg_type_typname_nsp_index"` on `hm_nodes` once tests started running
+    /// concurrently against a live Postgres instead of skipping — same bug class
+    /// as hivemind-g9kv, which fixed the ledger and tenant-store schema init the
+    /// same way).
     fn initialize_schema(&self) -> Result<()> {
         let mut client = self.pool.get().map_err(pg_error)?;
         client
             .batch_execute(
-                "CREATE TABLE IF NOT EXISTS hm_nodes (
+                "SELECT pg_advisory_xact_lock(hashtext('hivemind_schema_init'));
+                CREATE TABLE IF NOT EXISTS hm_nodes (
                     tenant_id   text    NOT NULL,
                     node_kind   text    NOT NULL,
                     node_id     text    NOT NULL,
