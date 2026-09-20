@@ -328,6 +328,57 @@ The token format is `hm_tk_<64-hex>` (shown once at creation time).
 
 ---
 
+## Using the CLI / MCP from local agents
+
+The compose stack above publishes only port 8080 (`docker-compose.yml`);
+Postgres is reachable only on the compose network. An agent that wants to
+run the `hivemind` CLI or `hivemind mcp` with `--database-url` /
+`HIVEMIND_DATABASE_URL` against the cell's own Postgres — instead of going
+through the HTTP API — needs one of the following.
+
+### Option A — publish Postgres on loopback
+
+Bring the stack up with the local-agents override, which adds a
+loopback-only port mapping for the `postgres` service
+(`docker-compose.local-agents.yml`; not applied by default):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local-agents.yml up -d
+```
+
+Then point the CLI or `hivemind mcp` at it directly:
+
+```bash
+HIVEMIND_DATABASE_URL=postgres://hivemind:<POSTGRES_PASSWORD>@127.0.0.1:5432/hivemind \
+HIVEMIND_TENANT=<tenant> \
+hivemind query situational --diff
+```
+
+Set `POSTGRES_PORT` in `.env` if `5432` collides with a Postgres instance
+already running on the host.
+
+**This puts the database credential on the agent's machine.** The
+`POSTGRES_PASSWORD` from `.env` is a full read/write credential to every
+tenant's data on the cell, not scoped to one tenant. Only use this option on
+a host you trust with that credential. A CLI that talks to the server's HTTP
+API instead of the database directly would avoid this, but that is a
+separate, larger change — file it only if this credential story doesn't
+work for your setup.
+
+### Option B — run the CLI inside the container
+
+No port publishing needed. Exec into the running `hivemind` container, which
+already has `HIVEMIND_DATABASE_URL` pointed at the compose network address:
+
+```bash
+docker compose exec hivemind hivemind --tenant <tenant> query situational --diff
+```
+
+This is the safer default — no database credential ever leaves the
+container.
+
+---
+
 ## Production checklist
 
 - [ ] Set `HIVEMIND_ADMIN_KEY` to a strong random value (`openssl rand -hex 32`)

@@ -1,0 +1,14 @@
+# Example override: publish Postgres on loopback so CLI/MCP agents running
+# on the host (outside the compose network) can reach it directly with
+# HIVEMIND_DATABASE_URL / --database-url. Not applied by default — the base
+# docker-compose.yml only publishes port 8080.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.local-agents.yml up -d
+#
+# See docs/SELF_HOSTING.md, "Using the CLI / MCP from local agents", for the
+# full walkthrough, including the credential tradeoff this override makes.
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
