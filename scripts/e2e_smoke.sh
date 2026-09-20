@@ -24,6 +24,13 @@
 #
 # Minimal runtime deps: curl, jq.  hivemind binary for CLI/MCP legs.
 # The script does NOT start or stop the server — call it after compose is up.
+#
+# The "Fluent CLI leg (in-container, both backends)" section below shells out to
+# `docker compose exec hivemind hivemind ...` to run the CLI against whichever
+# backend the running compose stack is wired to (HIVEMIND_DIR/HIVEMIND_DATABASE_URL
+# already set in the container's own environment — this script never branches on
+# backend). It SKIPs cleanly when no `docker compose`-managed `hivemind` service is
+# running (e.g. a bare `cargo run` local server) — see hivemind-ot72.13a.
 
 set -euo pipefail
 
@@ -342,6 +349,148 @@ if [[ -n "$DECISION_ID" ]]; then
 else
   skip "GET /v1/decisions/why — no decision_id (capture failed)"
   skip "GET /v1/decisions/verify — no decision_id"
+fi
+
+# ── fluent CLI leg — inside the container (BOTH backends) ────────────────────
+# Runs the CLI's fluent verbs via `docker compose exec` against the server's OWN
+# backend (SQLite or Postgres, whichever HIVEMIND_DATABASE_URL selects inside the
+# running container — hivemind-ot72.2) instead of a throwaway local ledger. One
+# script body, no backend branching: the container's own environment already
+# picked the backend before this script ever runs.
+#
+# No decision id is ever typed — every read/write below resolves a decision by
+# free-text description (+ --pick / --topic), the same fluent contract a coding
+# agent uses (docs/AGENT_FLUENT_QUERYING.md). Two decisions share the phrase
+# "adopt async retry queue" (ambiguous — 2 candidates) but only the first
+# ("...ingestion pipeline") also contains "ingestion" (resolves uniquely).
+section "Fluent CLI leg (in-container, both backends)"
+
+CLI_IC_TENANT="$TENANT"
+CLI_IC_ACTOR="agent:e2e:smoke-cli-incontainer"
+CLI_IC_TOPIC="smokeclifluent"
+
+hm_ic() {
+  docker compose exec -T hivemind hivemind \
+    --tenant "$CLI_IC_TENANT" --actor "$CLI_IC_ACTOR" --json "$@" 2>&1
+}
+
+if ! command -v docker > /dev/null 2>&1 \
+   || ! docker compose ps --status running --services 2>/dev/null | grep -qx hivemind; then
+  skip "CLI (in-container): emit decision.proposed — ingestion decision — no running 'hivemind' compose service"
+  skip "CLI (in-container): emit decision.proposed — notification decision — no running 'hivemind' compose service"
+  skip "CLI (in-container): query situational — no running 'hivemind' compose service"
+  skip "CLI (in-container): query recall — no running 'hivemind' compose service"
+  skip "CLI (in-container): query why — no running 'hivemind' compose service"
+  skip "CLI (in-container): query verify (pre-supersede) — no running 'hivemind' compose service"
+  skip "CLI (in-container): disagree (ambiguous description) — no running 'hivemind' compose service"
+  skip "CLI (in-container): ledger offset unmoved after ambiguous disagree — no running 'hivemind' compose service"
+  skip "CLI (in-container): disagree --pick 2 — no running 'hivemind' compose service"
+  skip "CLI (in-container): supersede --pick 2 — no running 'hivemind' compose service"
+  skip "CLI (in-container): query verify (post-supersede) — no running 'hivemind' compose service"
+else
+  ic_d1=$(hm_ic emit decision.proposed \
+    --title "Adopt async retry queue for the ingestion pipeline" \
+    --rationale "Bounded retries avoid unbounded backlog growth under load" \
+    --topic-keys "$CLI_IC_TOPIC" \
+    --options "async,sync" \
+    --chose "async") || true
+  if echo "$ic_d1" | jq -e 'select(.kind=="decision_id")' > /dev/null 2>&1; then
+    IC_D1_ID=$(echo "$ic_d1" | jq -r '.value')
+    pass "CLI (in-container): emit decision.proposed — ingestion decision ($IC_D1_ID)"
+  else
+    fail "CLI (in-container): emit decision.proposed — ingestion decision — response: $ic_d1"
+    IC_D1_ID=""
+  fi
+
+  ic_d2=$(hm_ic emit decision.proposed \
+    --title "Adopt async retry queue for the notification pipeline" \
+    --rationale "Consistent retry semantics simplify downstream alerting" \
+    --topic-keys "$CLI_IC_TOPIC" \
+    --options "async") || true
+  if echo "$ic_d2" | jq -e 'select(.kind=="decision_id")' > /dev/null 2>&1; then
+    IC_D2_ID=$(echo "$ic_d2" | jq -r '.value')
+    pass "CLI (in-container): emit decision.proposed — notification decision ($IC_D2_ID)"
+  else
+    fail "CLI (in-container): emit decision.proposed — notification decision — response: $ic_d2"
+    IC_D2_ID=""
+  fi
+
+  ic_situational=$(hm_ic query situational --paths "$CLI_IC_TOPIC") || true
+  if echo "$ic_situational" | jq -e '.data.total_matches >= 2' > /dev/null 2>&1; then
+    pass "CLI (in-container): query situational --paths=$CLI_IC_TOPIC — both decisions surfaced"
+  else
+    fail "CLI (in-container): query situational — response: $ic_situational"
+  fi
+
+  ic_recall=$(hm_ic query recall "adopt async retry queue") || true
+  if echo "$ic_recall" | jq -e '(.data.ranked.items | length) >= 2' > /dev/null 2>&1; then
+    pass "CLI (in-container): query recall — ranked items include both decisions"
+  else
+    fail "CLI (in-container): query recall — response: $ic_recall"
+  fi
+
+  ic_why=$(hm_ic query why "adopt async retry queue ingestion") || true
+  if echo "$ic_why" | jq -e --arg id "$IC_D1_ID" '.data.root.id == $id' > /dev/null 2>&1; then
+    pass "CLI (in-container): query why — resolves uniquely to the ingestion decision"
+  else
+    fail "CLI (in-container): query why — response: $ic_why"
+  fi
+
+  ic_verify_pre=$(hm_ic query verify "adopt async retry queue ingestion") || true
+  if echo "$ic_verify_pre" | jq -e --arg id "$IC_D1_ID" \
+      '.data.decision_id == $id and .data.still_holds.held_up == true' > /dev/null 2>&1; then
+    pass "CLI (in-container): query verify — ingestion decision still holds (pre-supersede)"
+  else
+    fail "CLI (in-container): query verify (pre-supersede) — response: $ic_verify_pre"
+  fi
+
+  ic_offset_before=$(hm_ic query get_recent_activity --limit 1) || true
+  IC_OFFSET_BEFORE=$(echo "$ic_offset_before" | jq -r '.data.items[0].event_origin // empty')
+
+  ic_disagree_ambig=$(hm_ic disagree "adopt async retry queue" \
+    --reason "e2e smoke: ambiguous — must not resolve or write") || true
+  if echo "$ic_disagree_ambig" | jq -e \
+      '.data.outcome == "ambiguous" and (.data.candidates | length) == 2' > /dev/null 2>&1; then
+    pass "CLI (in-container): disagree (ambiguous description) — short-circuits with 2 candidates, no write"
+  else
+    fail "CLI (in-container): disagree (ambiguous) — response: $ic_disagree_ambig"
+  fi
+
+  ic_offset_after=$(hm_ic query get_recent_activity --limit 1) || true
+  IC_OFFSET_AFTER=$(echo "$ic_offset_after" | jq -r '.data.items[0].event_origin // empty')
+  if [[ -n "$IC_OFFSET_BEFORE" && "$IC_OFFSET_AFTER" == "$IC_OFFSET_BEFORE" ]]; then
+    pass "CLI (in-container): ledger offset unmoved after ambiguous disagree short-circuit ($IC_OFFSET_BEFORE)"
+  else
+    fail "CLI (in-container): ledger offset moved after ambiguous disagree — before=$IC_OFFSET_BEFORE after=$IC_OFFSET_AFTER"
+  fi
+
+  ic_disagree_pick=$(hm_ic disagree "adopt async retry queue" --pick 2 \
+    --reason "e2e smoke: retries hide a slower systemic bottleneck") || true
+  if echo "$ic_disagree_pick" | jq -e --arg id "$IC_D1_ID" '.decision_id == $id' > /dev/null 2>&1; then
+    pass "CLI (in-container): disagree --pick 2 — resolves and contests the ingestion decision"
+  else
+    fail "CLI (in-container): disagree --pick 2 — response: $ic_disagree_pick"
+  fi
+
+  ic_supersede=$(hm_ic supersede "adopt async retry queue" --pick 2 \
+    --title "Batch ingestion writes instead of per-event retries" \
+    --rationale "e2e smoke: batching removes the retry queue's backlog risk entirely" \
+    --options "batched-writes" \
+    --chose "batched-writes") || true
+  if echo "$ic_supersede" | jq -e --arg id "$IC_D1_ID" \
+      '.old_decision_id == $id and .old_decision_status == "superseded"' > /dev/null 2>&1; then
+    pass "CLI (in-container): supersede --pick 2 — supersedes the ingestion decision"
+  else
+    fail "CLI (in-container): supersede --pick 2 — response: $ic_supersede"
+  fi
+
+  ic_verify_post=$(hm_ic query verify "adopt async retry queue ingestion") || true
+  if echo "$ic_verify_post" | jq -e --arg id "$IC_D1_ID" \
+      '.data.decision_id == $id and .data.still_holds.held_up == false' > /dev/null 2>&1; then
+    pass "CLI (in-container): query verify — ingestion decision no longer holds (still_holds.held_up=false, post-supersede)"
+  else
+    fail "CLI (in-container): query verify (post-supersede) — response: $ic_verify_post"
+  fi
 fi
 
 # ── review operations ─────────────────────────────────────────────────────────
