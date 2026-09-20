@@ -1,9 +1,9 @@
 ---
 title: MCP Tools
-description: Reference for all 22 tools exposed by the HiveMind MCP server.
+description: Reference for all 23 tools exposed by the HiveMind MCP server.
 ---
 
-The HiveMind MCP server exposes 22 tools. Write tools append events to the
+The HiveMind MCP server exposes 23 tools. Write tools append events to the
 ledger and require an explicit `actor_id`. Read tools query the graph and never
 write. Layer-3 tools add ranked summaries or compact views.
 
@@ -144,6 +144,20 @@ Return the linear supersession chain a decision sits in, oldest first.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `decision_id` | string | ✓ |  |
+
+---
+
+### `get_decision_neighborhood`
+
+"Why does this decision look the way it does?" — the one-hop graph neighborhood around a decision: proposing/accepting/rejecting actors, options, the chosen option, evidence, premised hypotheses (with their supporting/refuting evidence one hop further), and supersession links in both directions. Equivalent to `hivemind query why`. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: "ambiguous", candidates: [...]}`, not an error; re-call with decision_id from that list. A description matching nothing is an error (there is no #N/--pick over MCP to retry against).
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `decision_id` | string | — | The decision to inspect. Provide this or `description`, not both. |
+| `description` | string | — | Free-text description to resolve to a decision when the id is not known. |
+| `topic` | string | — | Narrows description resolution to decisions carrying this topic key. |
 
 ---
 

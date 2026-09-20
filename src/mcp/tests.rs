@@ -51,7 +51,7 @@ fn tools_list_includes_all_eighteen_tools() {
     );
     assert_eq!(responses.len(), 1); // ubs:ignore: test-only; index guaranteed by test setup
     let tools = responses[0]["result"]["tools"].as_array().expect("array"); // ubs:ignore: test-only; panicking is correct in tests
-    assert_eq!(tools.len(), 22, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
+    assert_eq!(tools.len(), 23, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("string name")) // ubs:ignore: test-only; panicking is correct in tests
@@ -73,6 +73,7 @@ fn tools_list_includes_all_eighteen_tools() {
         "get_relevant_decisions",
         "get_situational_decisions",
         "get_supersession_chain",
+        "get_decision_neighborhood",
         "search_decisions",
         "recall_decisions",
         "recent_decisions",
@@ -978,5 +979,133 @@ mod transport_parity {
                 "{label}: http message"
             );
         }
+    }
+
+    /// Like `run`, but first captures one decision per `titles` entry on each
+    /// transport's own fresh ledger via `capture_decision`, then runs `tool`.
+    /// Used to seed the graph `get_decision_neighborhood` resolves against.
+    async fn run_seeded(
+        tool: &str,
+        label: &str,
+        titles: &[&str],
+        arguments: Value,
+    ) -> (Value, Value) {
+        let stdio_dir = unique_dir(&format!("parity-stdio-{label}"));
+        let http_dir = unique_dir(&format!("parity-http-{label}"));
+
+        for title in titles {
+            let seed = json!({
+                "title": title,
+                "rationale": "seed for get_decision_neighborhood parity test",
+                "topic_keys": ["parity"],
+                "options": [{"label": "only"}],
+            });
+            stdio_call(&stdio_dir, "capture_decision", seed.clone());
+            http_call(&http_dir, "capture_decision", seed).await;
+        }
+
+        let stdio = stdio_call(&stdio_dir, tool, arguments.clone());
+        let http = http_call(&http_dir, tool, arguments).await;
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+        (
+            stdio["result"].clone(), // ubs:ignore: test-only; index guaranteed by test setup
+            http["result"].clone(),  // ubs:ignore: test-only; index guaranteed by test setup
+        )
+    }
+
+    #[tokio::test]
+    async fn get_decision_neighborhood_resolves_unique_description() {
+        let (stdio, http) = run_seeded(
+            "get_decision_neighborhood",
+            "why-resolved",
+            &["Adopt async billing queue"],
+            json!({ "description": "adopt async billing queue" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let data = &result["structuredContent"]["data"];
+            assert_eq!(data["root"]["present"], true, "{name}: root present"); // ubs:ignore: test-only assertion
+            assert_eq!(data["root"]["kind"], "decision", "{name}: root kind"); // ubs:ignore: test-only assertion
+        }
+    }
+
+    #[tokio::test]
+    async fn get_decision_neighborhood_ambiguous_description_returns_candidates_not_error() {
+        let (stdio, http) = run_seeded(
+            "get_decision_neighborhood",
+            "why-ambiguous",
+            &[
+                "Adopt async queue for billing",
+                "Adopt async queue for notifications",
+            ],
+            json!({ "description": "adopt async queue" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: ambiguous is not an error"
+            ); // ubs:ignore: test-only assertion
+            let structured = &result["structuredContent"];
+            assert_eq!(
+                structured["data"]["outcome"], "ambiguous",
+                "{name}: outcome"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                structured["data"]["candidates"].as_array().map(Vec::len),
+                Some(2),
+                "{name}: candidate count"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn get_decision_neighborhood_not_found_description_returns_envelope_not_error() {
+        let (stdio, http) = run_seeded(
+            "get_decision_neighborhood",
+            "why-not-found",
+            &["Adopt async billing queue"],
+            json!({ "description": "totally unrelated widget factory zzz" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: not-found is not an error: {result:?}"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["data"]["outcome"], "not_found", // ubs:ignore: test-only assertion
+                "{name}: outcome"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn get_decision_neighborhood_missing_selector_errors_identically() {
+        let (stdio, http) = run(
+            "get_decision_neighborhood",
+            "why-missing-selector",
+            json!({}),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert!(
+                result["isError"].as_bool().unwrap_or(false), // ubs:ignore: test-only assertion
+                "{name}: missing selector should error: {result:?}"
+            );
+        }
+        assert_eq!(
+            stdio["content"][0]["text"],
+            http["content"][0]["text"], // ubs:ignore: test-only assertion
+            "missing-selector message must match across transports"
+        );
+        assert_eq!(
+            stdio["content"][0]["text"].as_str(), // ubs:ignore: test-only assertion
+            Some("one of `decision_id` or `description` is required"),
+            "missing-selector message text"
+        );
     }
 }

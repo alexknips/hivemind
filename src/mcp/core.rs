@@ -29,8 +29,11 @@ use crate::commands::{CommandContext, Commands, DecisionProposalInput};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, TenantId};
 use crate::ledger::EventLedger;
-use crate::projector::GraphView;
-use crate::queries::{QueryContext, SituationalRequest};
+use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
+use crate::queries::{
+    get_decision_neighborhood as query_get_decision_neighborhood, resolve_decision_by_description,
+    NeighborhoodRequest, QueryContext, QueryResponse, ResolveOutcome, SituationalRequest,
+};
 
 use super::args::{
     default_option_description, optional_datetime, optional_string, optional_string_array,
@@ -47,10 +50,12 @@ use super::args::{
 /// concerns, and each transport already has its own error envelope. Adapters
 /// map each variant to their own wire shape.
 ///
-/// Only the two variants `capture_decision` actually produces are here.
-/// Tools that migrate next (e.g. `get_decision`'s not-found, `supersede`'s
-/// conflicting concurrent update) add their own variant when they need one,
-/// rather than this bead pre-declaring cases nothing constructs yet.
+/// `capture_decision` produced only the first variant; per Alex's
+/// 2026-09-20 call, a free-text description that matches nothing is a
+/// success outcome (`{outcome: "not_found"}`, see [`ResolvedTarget::NotFound`]),
+/// not an error, so `resolve_target` never needed its own `CoreError`
+/// variant. whvd.1's note that later tools add their own variant when they
+/// need one still stands — none has, yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CoreError {
     /// Caller-supplied arguments failed validation.
@@ -70,7 +75,9 @@ impl CoreError {
 impl std::fmt::Display for CoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CoreError::InvalidArgument(m) | CoreError::Internal(m) => write!(f, "{m}"),
+            CoreError::InvalidArgument(m) | CoreError::Internal(m) => {
+                write!(f, "{m}")
+            }
         }
     }
 }
@@ -327,6 +334,114 @@ impl GetSituationalDecisionsArgs {
     }
 }
 
+// ---------------------------------------------------------------------------
+// resolve_target: the shared fluent (no-id) target resolver
+// ---------------------------------------------------------------------------
+//
+// The CLI's equivalent (`resolve_fluent_target`, `src/cli/run/mod.rs`) supports
+// `--pick`/`#N` because it has a local, single-user session to cache candidates
+// in. MCP has neither: stdio is stateless per call and HTTP has no session
+// directory, so there is no disambiguation shortcut here — an ambiguous or
+// not-found description is returned to the caller as a success envelope, and
+// the caller re-calls with `decision_id` once it knows one.
+
+/// Shared "one of `decision_id` / `description` is required" message. Both
+/// transports raise this exact text so they can never drift on it, the same
+/// discipline `CaptureDecisionArgs` already applies to its own validation.
+const MISSING_SELECTOR_MESSAGE: &str = "one of `decision_id` or `description` is required";
+
+/// Outcome of resolving a fluent MCP tool's target.
+pub(crate) enum ResolvedTarget {
+    /// A concrete decision id to proceed with — either the caller supplied it
+    /// directly, or resolution found exactly one best-tier match.
+    Id(String),
+    /// Resolution matched more than one decision at the best tier. This is a
+    /// successful outcome (not an error): the caller returns it as-is.
+    Ambiguous(ToolOutput),
+    /// The description matched nothing. This is also a successful outcome —
+    /// `{outcome: "not_found"}` — not an error, per Alex's 2026-09-20 call:
+    /// MCP has no session to retry a bare id against, but the caller can
+    /// still branch on `data.outcome` without needing a JSON-RPC error path.
+    NotFound(ToolOutput),
+}
+
+/// Resolve a fluent tool's target: `id` bypasses resolution entirely
+/// (unvalidated, matching the CLI's `--id` escape hatch byte-for-byte);
+/// otherwise `description` is resolved via [`resolve_decision_by_description`]
+/// over a graph rebuilt from `handle`.
+///
+/// Both ambiguity and not-found are success, rendered as the identical
+/// `{result_count, truncated, latency_ms, data: {outcome: ..., ...}}`
+/// envelope the CLI's `--json` output uses for the same outcomes (all three
+/// resolutions serialize the same `QueryResponse<ResolveOutcome>`).
+pub(crate) fn resolve_target<L: EventLedger>(
+    handle: &LedgerHandle<L>,
+    id: Option<&str>,
+    description: Option<&str>,
+    topic: Option<&str>,
+) -> Result<ResolvedTarget, CoreError> {
+    if let Some(id) = id {
+        return Ok(ResolvedTarget::Id(id.to_owned()));
+    }
+
+    let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Err(CoreError::InvalidArgument(
+            MISSING_SELECTOR_MESSAGE.to_owned(),
+        ));
+    };
+
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&handle.ledger, &handle.tenant_id, &graph).map_err(CoreError::from)?;
+    let response =
+        resolve_decision_by_description(&graph, description, topic).map_err(CoreError::from)?;
+
+    let QueryResponse {
+        result_count,
+        truncated,
+        latency_ms,
+        data,
+    } = response;
+    match data {
+        ResolveOutcome::Resolved { candidate } => Ok(ResolvedTarget::Id(candidate.decision_id)),
+        ResolveOutcome::NotFound => Ok(ResolvedTarget::NotFound(ToolOutput(json!({
+            "result_count": result_count,
+            "truncated": truncated,
+            "latency_ms": latency_ms,
+            "data": ResolveOutcome::NotFound,
+        })))),
+        ResolveOutcome::Ambiguous { candidates } => {
+            let data = ResolveOutcome::Ambiguous { candidates };
+            Ok(ResolvedTarget::Ambiguous(ToolOutput(json!({
+                "result_count": result_count,
+                "truncated": truncated,
+                "latency_ms": latency_ms,
+                "data": data,
+            }))))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// get_decision_neighborhood (the CLI's `why`)
+// ---------------------------------------------------------------------------
+
+/// Parsed, validated arguments for the `get_decision_neighborhood` tool.
+pub(crate) struct GetDecisionNeighborhoodArgs {
+    pub(crate) decision_id: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) topic: Option<String>,
+}
+
+impl GetDecisionNeighborhoodArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            decision_id: optional_string(args, "decision_id")?,
+            description: optional_string(args, "description")?,
+            topic: optional_string(args, "topic")?,
+        })
+    }
+}
+
 /// The migrated core for the `get_situational_decisions` MCP tool: one
 /// implementation consumed by both transports.
 ///
@@ -353,6 +468,43 @@ pub(crate) fn get_situational_decisions<P: LedgerProvider>(
     let response =
         crate::queries::get_situational_decisions(&context, graph, &handle.ledger, &request)
             .map_err(CoreError::from)?;
+    Ok(ToolOutput(json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "data": response.data,
+    })))
+}
+
+/// The migrated core for the `get_decision_neighborhood` MCP tool (the CLI's
+/// `why`): one implementation consumed by both transports. Payload is
+/// identical to `hivemind query why --json` — the same `QueryResponse`
+/// envelope around [`crate::queries::NeighborhoodView`], always at the
+/// CLI default (depth 1, all relations, non-compact); this bead does not
+/// expose those filters over MCP.
+pub(crate) fn get_decision_neighborhood<P: LedgerProvider>(
+    provider: &P,
+    args: GetDecisionNeighborhoodArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let target = resolve_target(
+        &handle,
+        args.decision_id.as_deref(),
+        args.description.as_deref(),
+        args.topic.as_deref(),
+    )?;
+    let decision_id = match target {
+        ResolvedTarget::Id(id) => id,
+        ResolvedTarget::Ambiguous(output) => return Ok(output),
+        ResolvedTarget::NotFound(output) => return Ok(output),
+    };
+
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&handle.ledger, &handle.tenant_id, &graph).map_err(CoreError::from)?;
+    let response =
+        query_get_decision_neighborhood(&graph, &decision_id, &NeighborhoodRequest::all())
+            .map_err(CoreError::from)?;
+
     Ok(ToolOutput(json!({
         "result_count": response.result_count,
         "truncated": response.truncated,

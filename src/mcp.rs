@@ -48,7 +48,8 @@ use crate::summarize::{
 };
 use crate::Result;
 use core::{
-    CaptureDecisionArgs, CoreError, GetSituationalDecisionsArgs, LedgerHandle, LedgerProvider,
+    CaptureDecisionArgs, CoreError, GetDecisionNeighborhoodArgs, GetSituationalDecisionsArgs,
+    LedgerHandle, LedgerProvider,
 };
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -343,6 +344,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "get_relevant_decisions" => tool_get_relevant_decisions(arguments, config),
         "get_situational_decisions" => tool_get_situational_decisions(arguments, config),
         "get_supersession_chain" => tool_get_supersession_chain(arguments, config),
+        "get_decision_neighborhood" => tool_get_decision_neighborhood(arguments, config),
         "search_decisions" => tool_search_decisions(arguments, config),
         "recall_decisions" => tool_recall_decisions(arguments, config),
         "recent_decisions" => tool_recent_decisions(arguments, config),
@@ -509,6 +511,18 @@ pub fn tool_definitions() -> Vec<Value> {
                 "required": ["decision_id"],
                 "properties": {
                     "decision_id": { "type": "string" }
+                }
+            }
+        }),
+        json!({
+            "name": "get_decision_neighborhood",
+            "description": "\"Why does this decision look the way it does?\" — the one-hop graph neighborhood around a decision: proposing/accepting/rejecting actors, options, the chosen option, evidence, premised hypotheses (with their supporting/refuting evidence one hop further), and supersession links in both directions. Equivalent to `hivemind query why`. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error; re-call with decision_id from that list. A description matching nothing is an error (there is no #N/--pick over MCP to retry against).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "decision_id": { "type": "string", "description": "The decision to inspect. Provide this or `description`, not both." },
+                    "description": { "type": "string", "description": "Free-text description to resolve to a decision when the id is not known." },
+                    "topic": { "type": "string", "description": "Narrows description resolution to decisions carrying this topic key." }
                 }
             }
         }),
@@ -929,6 +943,17 @@ fn tool_get_supersession_chain(
     let graph = open_memory_graph(config)?;
     let response = get_supersession_chain(&graph, &decision_id)?;
     Ok(serde_json::to_value(QueryEnvelope::from(response))?)
+}
+
+fn tool_get_decision_neighborhood(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let core_args = GetDecisionNeighborhoodArgs::from_json(&args)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::get_decision_neighborhood(&provider, core_args)?;
+    Ok(output.into_value())
 }
 
 fn tool_search_decisions(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
