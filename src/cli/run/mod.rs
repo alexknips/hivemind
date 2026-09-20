@@ -3263,7 +3263,7 @@ fn write_export_tree(out_dir: &Path, export: &DecisionLogExport) -> Result<Expor
     }
 
     for (rel_path, content) in &export.files {
-        let full_path = out_dir.join(rel_path);
+        let full_path = out_dir.join(rel_path); // ubs:ignore: rel_path keys come from decision_log::export_decision_log -- "INDEX.md" or "decisions/<date>-<slug>-<id>.md" with slug/id restricted to [a-z0-9-]/[A-Za-z0-9] (normalize_topic_key, short_id), so the join cannot leave out_dir
         std::fs::write(&full_path, content).map_err(|error| {
             CliError::InvalidInput(format!(
                 "cannot write export file {}: {error}",
