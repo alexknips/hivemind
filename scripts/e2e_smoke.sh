@@ -303,6 +303,47 @@ else
   fi
 fi
 
+# ── fluent read routes ──────────────────────────────────────────────────────────
+# One call per route (existence + shape only — the fluent flow itself is C5).
+section "Fluent read routes"
+
+situational_resp=$(curl_api GET "/v1/decisions/situational?paths=storage")
+if echo "$situational_resp" | jq -e 'has("data")' > /dev/null 2>&1; then
+  pass "GET /v1/decisions/situational?paths=storage"
+else
+  fail "GET /v1/decisions/situational — response: $situational_resp"
+fi
+
+if [[ "$SKIP_SEARCH" == "true" ]]; then
+  skip "GET /v1/decisions/recall — skipped (same backend constraint as search)"
+else
+  recall_resp=$(curl_api GET "/v1/decisions/recall?q=postgres")
+  if echo "$recall_resp" | jq -e 'has("data")' > /dev/null 2>&1; then
+    pass "GET /v1/decisions/recall?q=postgres"
+  else
+    fail "GET /v1/decisions/recall — response: $recall_resp"
+  fi
+fi
+
+if [[ -n "$DECISION_ID" ]]; then
+  why_resp=$(curl_api GET "/v1/decisions/why?id=$DECISION_ID")
+  if echo "$why_resp" | jq -e 'has("data")' > /dev/null 2>&1; then
+    pass "GET /v1/decisions/why?id=<decision>"
+  else
+    fail "GET /v1/decisions/why — response: $why_resp"
+  fi
+
+  verify_resp=$(curl_api GET "/v1/decisions/verify?id=$DECISION_ID")
+  if echo "$verify_resp" | jq -e 'has("data")' > /dev/null 2>&1; then
+    pass "GET /v1/decisions/verify?id=<decision>"
+  else
+    fail "GET /v1/decisions/verify — response: $verify_resp"
+  fi
+else
+  skip "GET /v1/decisions/why — no decision_id (capture failed)"
+  skip "GET /v1/decisions/verify — no decision_id"
+fi
+
 # ── review operations ─────────────────────────────────────────────────────────
 section "Review — disagree + supersede"
 

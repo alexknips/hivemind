@@ -31,6 +31,10 @@
 //! - `GET  /v1/decisions/{id}/supersession-chain`  — supersession chain
 //! - `GET  /v1/decisions/search`                   — full-text search (SQLite only)
 //! - `GET  /v1/decisions/relevant`                 — decisions by topic
+//! - `GET  /v1/decisions/situational`               — decisions relevant to touched paths
+//! - `GET  /v1/decisions/recall`                    — ranked search + text digest
+//! - `GET  /v1/decisions/why`                       — decision neighborhood, by id or free text
+//! - `GET  /v1/decisions/verify`                    — decision brief (still holds?), by id or free text
 //! - `GET  /v1/decisions/map[?alpha=0.5]`          — 2-D spectral decision map
 //! - `GET  /v1/graph`                              — full decision graph (JSON)
 //! - `GET  /v1/health`                             — liveness probe
@@ -406,6 +410,14 @@ fn build_router(state: AppState) -> Router {
         .route("/v1/decisions/search", get(handlers::search_handler))
         .route("/v1/decisions/relevant", get(handlers::relevant_handler))
         .route("/v1/decisions/map", get(handlers::map_handler))
+        // Fluent (no-id) read routes (hivemind-ot72.4)
+        .route(
+            "/v1/decisions/situational",
+            get(handlers::situational_handler),
+        )
+        .route("/v1/decisions/recall", get(handlers::recall_handler))
+        .route("/v1/decisions/why", get(handlers::why_handler))
+        .route("/v1/decisions/verify", get(handlers::verify_handler))
         // Decision resource routes
         .route("/v1/decisions", post(handlers::post_decisions_handler))
         .route("/v1/decisions/{id}", get(handlers::get_decision_handler))

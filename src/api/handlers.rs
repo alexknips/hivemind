@@ -8,15 +8,20 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::commands::{CommandContext, Commands, DecisionProposalInput, SupersedeInput};
 use crate::events::{EventProvenance, IngestTurn};
 use crate::ledger::{EventLedger, SqliteEventLedger};
+use crate::projector::GraphView;
 use crate::queries::{
-    derive_decision_status, get_compact_view, get_decision, get_relevant_decisions,
-    get_supersession_chain, search_decisions_any, QueryContext, SearchDecisionRequest,
+    derive_decision_status, get_compact_view, get_decision, get_decision_brief,
+    get_decision_neighborhood, get_relevant_decisions, get_situational_decisions,
+    get_supersession_chain, resolve_decision_by_description, search_decisions_any,
+    NeighborhoodRequest, QueryContext, QueryResponse, ResolveOutcome, SearchDecisionRequest,
+    SituationalRequest,
 };
+use crate::summarize::{recall_decisions, RecallRequest, RECALL_DEFAULT_LIMIT};
 
 use super::auth::extract_ctx;
 use super::graph::{get_cached_graph, open_graph_from_ledger};
@@ -116,6 +121,88 @@ pub(super) struct MapParams {
     /// Blend weight: 0.0 = pure semantic, 1.0 = pure structural. Comma-separated
     /// list (e.g. "0.0,0.5") returns two result sets for side-by-side comparison.
     alpha: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct SituationalParams {
+    /// Comma-separated file/dir paths, branch name, or cwd terms. The server never
+    /// shells out to git — path resolution stays in the CLI (AGENTS.md three-layer
+    /// separation); callers pass the resolved path list directly.
+    paths: Option<String>,
+    since_offset: Option<u64>,
+    since_ts: Option<String>,
+    limit: Option<usize>,
+    cursor: Option<String>,
+}
+
+/// Query params shared by the fluent follow-up routes (`why`, `verify`): exactly one
+/// of `id`/`description` selects the target, `topic` narrows description resolution.
+#[derive(Debug, Deserialize)]
+pub(super) struct FluentLookupParams {
+    id: Option<String>,
+    description: Option<String>,
+    topic: Option<String>,
+}
+
+/// Outcome of resolving a fluent lookup route's target over HTTP. Unlike the CLI,
+/// there is no `--pick`/`#N` continuation here: the API is stateless, so an ambiguous
+/// result is returned to the caller, who re-calls with `id=` from the candidate list.
+enum FluentTarget {
+    Id(String),
+    Ambiguous(QueryResponse<ResolveOutcome>),
+}
+
+fn resolve_fluent_target_http(
+    graph: &impl GraphView,
+    params: &FluentLookupParams,
+) -> ApiResult<FluentTarget> {
+    let id = params
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let description = params
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    match (id, description) {
+        (Some(id), None) => Ok(FluentTarget::Id(id.to_owned())),
+        (None, Some(description)) => {
+            let response =
+                resolve_decision_by_description(graph, description, params.topic.as_deref())
+                    .map_err(to_api_error)?;
+            match &response.data {
+                ResolveOutcome::Resolved { candidate } => {
+                    Ok(FluentTarget::Id(candidate.decision_id.clone()))
+                }
+                ResolveOutcome::Ambiguous { .. } => Ok(FluentTarget::Ambiguous(response)),
+                ResolveOutcome::NotFound => Err(ApiError::not_found(
+                    "no decision matches the given description",
+                )),
+            }
+        }
+        (Some(_), Some(_)) => Err(ApiError::validation(
+            "exactly one of `id` or `description` is required, not both",
+        )),
+        (None, None) => Err(ApiError::validation(
+            "exactly one of `id` or `description` is required",
+        )),
+    }
+}
+
+/// Envelope shape shared by every query response: `{result_count, truncated,
+/// latency_ms, data}` (the same fields `hivemind query --json` prints). A plain
+/// `serde_json::Value` lets `why`/`verify` return either a resolve outcome or the
+/// underlying query's response through the same handler without a shared enum.
+fn envelope_value<T: Serialize>(response: &QueryResponse<T>) -> serde_json::Value {
+    serde_json::json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "data": response.data,
+    })
 }
 
 pub(super) async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -709,6 +796,223 @@ pub(super) async fn relevant_handler(
     .await;
 
     respond_envelope(result)
+}
+
+pub(super) async fn situational_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<SituationalParams>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let paths: Vec<String> = params
+            .paths
+            .as_deref()
+            .map(|raw| {
+                raw.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if paths.is_empty() {
+            return Err(ApiError::validation(
+                "paths must not be empty; pass at least one comma-separated path",
+            ));
+        }
+        let since_timestamp = params
+            .since_ts
+            .as_deref()
+            .map(parse_datetime)
+            .transpose()
+            .map_err(|e| ApiError::validation(format!("invalid `since_ts`: {e}")))?;
+
+        let request = SituationalRequest {
+            paths,
+            since_offset: params.since_offset,
+            since_timestamp,
+            limit: params.limit.unwrap_or(25),
+            cursor: params.cursor,
+        };
+
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = get_cached_graph(&ledger, &ctx.tenant_id, &cache)?;
+        let query_ctx = QueryContext::new(ctx.tenant_id);
+        let response = get_situational_decisions(&query_ctx, &*graph, &ledger, &request)
+            .map_err(to_api_error)?;
+        Ok(response)
+    })
+    .await;
+
+    respond_envelope(result)
+}
+
+pub(super) async fn recall_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<SearchParams>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let statuses = match params.status.as_deref() {
+            None => Vec::new(),
+            Some(s) => s
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(parse_status)
+                .collect::<ApiResult<Vec<_>>>()?,
+        };
+        let since = params
+            .since
+            .as_deref()
+            .map(parse_datetime)
+            .transpose()
+            .map_err(|e| ApiError::validation(format!("invalid `since`: {e}")))?;
+        let until = params
+            .until
+            .as_deref()
+            .map(parse_datetime)
+            .transpose()
+            .map_err(|e| ApiError::validation(format!("invalid `until`: {e}")))?;
+
+        let request = RecallRequest {
+            q: params.q.filter(|s| !s.trim().is_empty()),
+            topic_keys: params
+                .topic
+                .as_deref()
+                .map(|t| {
+                    t.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            statuses,
+            actor_ids: params
+                .actor_id
+                .as_deref()
+                .map(|a| {
+                    a.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            sources: params
+                .source
+                .as_deref()
+                .map(|s| {
+                    s.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            since,
+            until,
+            limit: params.limit.unwrap_or(RECALL_DEFAULT_LIMIT),
+            cursor: params.cursor,
+        };
+
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = get_cached_graph(&ledger, &ctx.tenant_id, &cache)?;
+        let query_ctx = QueryContext::new(ctx.tenant_id);
+        let response =
+            recall_decisions(&query_ctx, &ledger, &*graph, &request).map_err(to_api_error)?;
+        Ok(response)
+    })
+    .await;
+
+    respond_envelope(result)
+}
+
+pub(super) async fn why_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<FluentLookupParams>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<serde_json::Value> {
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let graph = &*graph;
+
+        match resolve_fluent_target_http(graph, &params)? {
+            FluentTarget::Ambiguous(response) => Ok(envelope_value(&response)),
+            FluentTarget::Id(decision_id) => {
+                let response =
+                    get_decision_neighborhood(graph, &decision_id, &NeighborhoodRequest::all())
+                        .map_err(to_api_error)?;
+                if !response.data.root.present {
+                    return Err(ApiError::not_found(format!(
+                        "decision not found: {decision_id}"
+                    )));
+                }
+                Ok(envelope_value(&response))
+            }
+        }
+    })
+    .await;
+
+    respond(result, StatusCode::OK)
+}
+
+pub(super) async fn verify_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<FluentLookupParams>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<serde_json::Value> {
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let graph = &*graph;
+
+        match resolve_fluent_target_http(graph, &params)? {
+            FluentTarget::Ambiguous(response) => Ok(envelope_value(&response)),
+            FluentTarget::Id(decision_id) => {
+                let response = get_decision_brief(graph, &decision_id).map_err(to_api_error)?;
+                if response.data.is_none() {
+                    return Err(ApiError::not_found(format!(
+                        "decision not found: {decision_id}"
+                    )));
+                }
+                Ok(envelope_value(&response))
+            }
+        }
+    })
+    .await;
+
+    respond(result, StatusCode::OK)
 }
 
 pub(super) async fn post_ingest_handler(

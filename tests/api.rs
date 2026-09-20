@@ -767,6 +767,293 @@ async fn supersession_chain_for_nonexistent_decision_returns_404() {
 }
 
 // ---------------------------------------------------------------------------
+// Fluent (no-id) read routes: situational, recall, why, verify (hivemind-ot72.4)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn situational_route_matches_before_decision_id_route() {
+    let dir = test_ledger_dir();
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            serde_json::json!({
+                "title": "Situational route test decision",
+                "rationale": "Verifies the static /situational route wins over /:id",
+                // A single alphanumeric token: topic_keys are matched verbatim
+                // (lowercased) against tokenized path terms, so a hyphenated key
+                // like "situational-route-test" would never match "situational"
+                // or "route" as separate tokens.
+                "topic_keys": ["situationalroutetest"],
+                "options": [{"label": "opt"}]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "capture: {body}"); // ubs:ignore
+    let decision_id = body["decision_id"].as_str().unwrap().to_owned();
+
+    // If axum ever matched `/v1/decisions/{id}` first, "situational" would be treated
+    // as a decision id and this would 404 with `{"error":{"code":"not_found",...}}`
+    // instead of a situational-shaped envelope — that is the fact this test checks.
+    let (status, body) = call(
+        app(dir),
+        get_req("/v1/decisions/situational?paths=situationalroutetest"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "situational: {body}"); // ubs:ignore
+    assert!(body.get("result_count").is_some(), "{body}"); // ubs:ignore
+    let matches = body["data"]["matches"].as_array().unwrap();
+    assert!(
+        matches.iter().any(|m| m["decision"]["id"] == decision_id),
+        "{body}"
+    ); // ubs:ignore
+}
+
+#[tokio::test]
+async fn situational_requires_at_least_one_path() {
+    let dir = test_ledger_dir();
+    let (status, body) = call(app(dir), get_req("/v1/decisions/situational")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "validation_error"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn recall_route_returns_ranked_items_and_digest() {
+    let dir = test_ledger_dir();
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            serde_json::json!({
+                "title": "Recall route test: adopt widget caching",
+                "rationale": "Verifies GET /v1/decisions/recall returns ranked items + digest",
+                "topic_keys": ["recall-route-test"],
+                "options": [{"label": "opt"}]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "capture: {body}"); // ubs:ignore
+    let decision_id = body["decision_id"].as_str().unwrap().to_owned();
+
+    let (status, body) = call(app(dir), get_req("/v1/decisions/recall?q=widget+caching")).await;
+    assert_eq!(status, StatusCode::OK, "recall: {body}"); // ubs:ignore
+    let items = body["data"]["ranked"]["items"].as_array().unwrap();
+    assert!(
+        items
+            .iter()
+            .any(|item| item["decision"]["id"] == decision_id),
+        "{body}"
+    ); // ubs:ignore
+    assert!(
+        body["data"]["digest"]["summary"].as_str().is_some(),
+        "{body}"
+    ); // ubs:ignore
+}
+
+#[tokio::test]
+async fn why_resolves_by_id_and_by_description() {
+    let dir = test_ledger_dir();
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            serde_json::json!({
+                "title": "Why route test: unique neighborhood target",
+                "rationale": "Verifies GET /v1/decisions/why by id and by description",
+                "topic_keys": ["why-route-test"],
+                "options": [{"label": "opt"}]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "capture: {body}"); // ubs:ignore
+    let decision_id = body["decision_id"].as_str().unwrap().to_owned();
+
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req(&format!("/v1/decisions/why?id={decision_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "why by id: {body}"); // ubs:ignore
+    assert_eq!(body["data"]["root"]["present"], true); // ubs:ignore
+    assert_eq!(body["data"]["root"]["id"], decision_id); // ubs:ignore
+
+    let (status, body) = call(
+        app(dir),
+        get_req("/v1/decisions/why?description=unique+neighborhood+target"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "why by description: {body}"); // ubs:ignore
+    assert_eq!(body["data"]["root"]["present"], true); // ubs:ignore
+    assert_eq!(body["data"]["root"]["id"], decision_id); // ubs:ignore
+}
+
+#[tokio::test]
+async fn why_returns_404_for_missing_id() {
+    let dir = test_ledger_dir();
+    let (status, body) = call(app(dir), get_req("/v1/decisions/why?id=nonexistent-id")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "not_found"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn why_returns_ambiguous_outcome_for_ambiguous_description() {
+    let dir = test_ledger_dir();
+
+    for title in [
+        "Adopt async queue for billing",
+        "Adopt async queue for notifications",
+    ] {
+        let (status, body) = call(
+            app(dir.clone()),
+            post_json(
+                "/v1/decisions",
+                serde_json::json!({
+                    "title": title,
+                    "rationale": "Fixture for why-ambiguity test",
+                    "topic_keys": ["why-ambiguous-test"],
+                    "options": [{"label": "opt"}]
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "capture: {body}"); // ubs:ignore
+    }
+
+    let (status, body) = call(
+        app(dir),
+        get_req("/v1/decisions/why?description=adopt+async+queue"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["data"]["outcome"], "ambiguous"); // ubs:ignore
+    assert_eq!(body["data"]["candidates"].as_array().unwrap().len(), 2); // ubs:ignore
+}
+
+#[tokio::test]
+async fn why_requires_exactly_one_of_id_or_description() {
+    let dir = test_ledger_dir();
+
+    let (status, body) = call(app(dir.clone()), get_req("/v1/decisions/why")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "missing both: {body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "validation_error"); // ubs:ignore
+
+    let (status, body) = call(
+        app(dir),
+        get_req("/v1/decisions/why?id=some-id&description=some+text"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "both given: {body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "validation_error"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn verify_resolves_by_id_and_by_description() {
+    let dir = test_ledger_dir();
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            serde_json::json!({
+                "title": "Verify route test: unique brief target",
+                "rationale": "Verifies GET /v1/decisions/verify by id and by description",
+                "topic_keys": ["verify-route-test"],
+                "options": [{"label": "opt"}],
+                "chosen_option_label": "opt"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "capture: {body}"); // ubs:ignore
+    let decision_id = body["decision_id"].as_str().unwrap().to_owned();
+
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req(&format!("/v1/decisions/verify?id={decision_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "verify by id: {body}"); // ubs:ignore
+    assert_eq!(body["data"]["decision_id"], decision_id); // ubs:ignore
+    assert!(
+        body["data"]["still_holds"]["held_up"].as_bool().is_some(),
+        "{body}"
+    ); // ubs:ignore
+
+    let (status, body) = call(
+        app(dir),
+        get_req("/v1/decisions/verify?description=unique+brief+target"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "verify by description: {body}"); // ubs:ignore
+    assert_eq!(body["data"]["decision_id"], decision_id); // ubs:ignore
+}
+
+#[tokio::test]
+async fn verify_returns_404_for_missing_id() {
+    let dir = test_ledger_dir();
+    let (status, body) = call(app(dir), get_req("/v1/decisions/verify?id=nonexistent-id")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "not_found"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn verify_returns_ambiguous_outcome_for_ambiguous_description() {
+    let dir = test_ledger_dir();
+
+    for title in [
+        "Adopt async queue for billing",
+        "Adopt async queue for notifications",
+    ] {
+        let (status, body) = call(
+            app(dir.clone()),
+            post_json(
+                "/v1/decisions",
+                serde_json::json!({
+                    "title": title,
+                    "rationale": "Fixture for verify-ambiguity test",
+                    "topic_keys": ["verify-ambiguous-test"],
+                    "options": [{"label": "opt"}]
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "capture: {body}"); // ubs:ignore
+    }
+
+    let (status, body) = call(
+        app(dir),
+        get_req("/v1/decisions/verify?description=adopt+async+queue"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["data"]["outcome"], "ambiguous"); // ubs:ignore
+    assert_eq!(body["data"]["candidates"].as_array().unwrap().len(), 2); // ubs:ignore
+}
+
+#[tokio::test]
+async fn verify_requires_exactly_one_of_id_or_description() {
+    let dir = test_ledger_dir();
+
+    let (status, body) = call(app(dir.clone()), get_req("/v1/decisions/verify")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "missing both: {body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "validation_error"); // ubs:ignore
+
+    let (status, body) = call(
+        app(dir),
+        get_req("/v1/decisions/verify?id=some-id&description=some+text"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "both given: {body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "validation_error"); // ubs:ignore
+}
+
+// ---------------------------------------------------------------------------
 // Layer-3 classifier: annotation event round-trip
 // ---------------------------------------------------------------------------
 
