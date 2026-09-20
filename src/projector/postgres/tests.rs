@@ -1,4 +1,6 @@
 // Parent module gates this file with #[cfg(test)]; repeat the marker so UBS can filter test-only assertions.
+use std::fs;
+use std::path::PathBuf;
 #[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -6,7 +8,9 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::events::{Event, EventSource, EventType};
-use crate::ledger::{EventLedger, InMemoryEventLedger};
+use crate::ledger::{
+    AnyLedger, EventLedger, InMemoryEventLedger, PostgresEventLedger, SqliteEventLedger,
+};
 use crate::projector::memory::MemoryGraph;
 use crate::projector::{
     project_from_ledger, GraphParams, GraphValue, GraphView, NodeKind, RelationKind,
@@ -15,8 +19,9 @@ use crate::queries::{
     get_decision, get_decision_brief, get_decision_context, get_decision_context_candidates,
     get_decision_outcome, get_decision_quality_candidates, get_supersession_chain,
     resolve_decision_by_description, search_decisions, DecisionContextRequest,
-    DecisionQualityCandidatesRequest,
+    DecisionQualityCandidatesRequest, QueryContext,
 };
+use crate::summarize::{recall_decisions, RecallRequest, RECALL_MAX_LIMIT};
 use crate::Result;
 
 use super::PostgresGraphView;
@@ -518,6 +523,100 @@ fn get_decision_brief_matches_memory() -> Result<()> {
     })
 }
 
+// ── recall_decisions parity (hivemind-ot72.3) ───────────────────────────────────
+//
+// `recall_decisions` only accepts `&AnyLedger` (search_decisions_any dispatches on
+// it), so this test — unlike the house pattern above — drives two real ledgers
+// instead of one shared `InMemoryEventLedger`: a temp `SqliteEventLedger` behind
+// `AnyLedger::Sqlite` (search_decisions_any routes this to FTS,
+// search_decisions_fts_with_context) and a `PostgresEventLedger` behind
+// `AnyLedger::Postgres` (routed to the backend-agnostic in-memory matcher,
+// search_decisions_with_ledger). Both are seeded with the same fixture events, so
+// only the returned decision-id *set* is compared: FTS and the portable matcher
+// use different scoring internals and are not required to agree on order (that's
+// tests/search_ranking_parity.rs's job).
+#[test]
+fn recall_decisions_returns_same_decision_set() -> Result<()> {
+    let Some(database_url) = std::env::var(TEST_DATABASE_URL_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        eprintln!("skipping Postgres graph test; set {TEST_DATABASE_URL_ENV}");
+        return Ok(());
+    };
+
+    let memory_graph = MemoryGraph::default();
+    let sqlite_dir = temp_hivemind_dir("recall-parity");
+    let sqlite_ledger = SqliteEventLedger::open(&sqlite_dir)?;
+    for event in fixture_events() {
+        sqlite_ledger.append(event)?;
+    }
+    project_from_ledger(&sqlite_ledger, &memory_graph, 0)?;
+
+    let tenant_id = unique_tenant("recall-parity");
+    let pg_graph = PostgresGraphView::connect_with_pool_size(&database_url, tenant_id.clone(), 2)?;
+    pg_graph.wipe()?;
+    let postgres_ledger = PostgresEventLedger::connect_with_pool_size(&database_url, tenant_id, 2)?;
+    for event in fixture_events() {
+        postgres_ledger.append(event)?;
+    }
+    project_from_ledger(&postgres_ledger, &pg_graph, 0)?;
+
+    let context = QueryContext::local();
+    let request = RecallRequest {
+        q: None,
+        topic_keys: Vec::new(),
+        statuses: Vec::new(),
+        actor_ids: Vec::new(),
+        sources: Vec::new(),
+        since: None,
+        until: None,
+        limit: RECALL_MAX_LIMIT,
+        cursor: None,
+    };
+
+    let sqlite_any = AnyLedger::Sqlite(sqlite_ledger);
+    let postgres_any = AnyLedger::Postgres(postgres_ledger);
+
+    let sqlite_response = recall_decisions(&context, &sqlite_any, &memory_graph, &request);
+    let postgres_response = recall_decisions(&context, &postgres_any, &pg_graph, &request);
+
+    let _ = fs::remove_dir_all(&sqlite_dir);
+    pg_graph.wipe()?;
+
+    let sqlite_response = sqlite_response?;
+    let postgres_response = postgres_response?;
+
+    let mut sqlite_ids: Vec<_> = sqlite_response
+        .data
+        .ranked
+        .items
+        .iter()
+        .map(|item| item.decision.id.clone())
+        .collect();
+    let mut postgres_ids: Vec<_> = postgres_response
+        .data
+        .ranked
+        .items
+        .iter()
+        .map(|item| item.decision.id.clone())
+        .collect();
+    sqlite_ids.sort();
+    postgres_ids.sort();
+
+    if sqlite_ids != postgres_ids {
+        return Err(test_error(format!(
+            "recall_decisions decision-id set mismatch: sqlite(FTS)={sqlite_ids:?} postgres(portable)={postgres_ids:?}"
+        )));
+    }
+    if sqlite_ids.is_empty() {
+        return Err(test_error(
+            "fixture should produce at least one recall match",
+        ));
+    }
+    Ok(())
+}
+
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
 fn with_postgres_graph<T>(
@@ -551,6 +650,13 @@ fn unique_tenant(prefix: &str) -> String {
     format!("tenant:test:{prefix}:{nanos}:{}", std::process::id())
 }
 
+fn temp_hivemind_dir(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    std::env::temp_dir().join(format!("hivemind-{prefix}-{nanos}-{}", std::process::id()))
+}
+
 fn make_event(event_type: EventType, actor_id: &str, payload: serde_json::Value) -> Event {
     Event {
         tenant_id: Default::default(),
@@ -569,7 +675,17 @@ fn make_event(event_type: EventType, actor_id: &str, payload: serde_json::Value)
 
 fn fixture_ledger() -> Result<InMemoryEventLedger> {
     let ledger = InMemoryEventLedger::new();
-    for event in [
+    for event in fixture_events() {
+        ledger.append(event)?;
+    }
+    Ok(ledger)
+}
+
+/// Same event set as `fixture_ledger`, exposed directly for tests that need to
+/// replay it into a real `SqliteEventLedger` or `PostgresEventLedger` rather
+/// than an `InMemoryEventLedger`.
+fn fixture_events() -> Vec<Event> {
+    vec![
         make_event(
             EventType::EvidenceRecorded,
             "actor:alice",
@@ -628,10 +744,7 @@ fn fixture_ledger() -> Result<InMemoryEventLedger> {
                 "new_decision_id": "decision:2"
             }),
         ),
-    ] {
-        ledger.append(event)?;
-    }
-    Ok(ledger)
+    ]
 }
 
 fn situational_fixture_ledger() -> Result<InMemoryEventLedger> {
