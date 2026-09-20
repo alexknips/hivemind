@@ -18,9 +18,10 @@
 //!    to the MCP `content`/`structuredContent` wire shape is unchanged and
 //!    stays with each adapter's existing renderer.
 //!
-//! Migrated so far: `capture_decision`. Later tools follow the same shape —
-//! an `Args::from_json` parser plus a `core::<tool>` function — one pair per
-//! tool, each independently reviewable.
+//! Migrated so far: `capture_decision`, `get_situational_decisions`. Later
+//! tools follow the same shape — an `Args::from_json` parser plus a
+//! `core::<tool>` function — one pair per tool, each independently
+//! reviewable.
 
 use serde_json::{json, Map, Value};
 
@@ -28,10 +29,12 @@ use crate::commands::{CommandContext, Commands, DecisionProposalInput};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, TenantId};
 use crate::ledger::EventLedger;
+use crate::projector::GraphView;
+use crate::queries::{QueryContext, SituationalRequest};
 
 use super::args::{
-    default_option_description, optional_string, optional_string_array, require_string,
-    require_string_array,
+    default_option_description, optional_datetime, optional_string, optional_string_array,
+    optional_usize, require_string, require_string_array,
 };
 
 // ---------------------------------------------------------------------------
@@ -288,5 +291,72 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
         "decision_id": decision_id,
         "option_ids": option_ids,
         "chosen_option_id": chosen_option_id,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// get_situational_decisions
+// ---------------------------------------------------------------------------
+
+/// Parsed, validated arguments for the `get_situational_decisions` tool. No
+/// resolver involved: situational takes paths, not a free-text description,
+/// so there is no id/description ambiguity to settle before calling the
+/// query layer.
+pub(crate) struct GetSituationalDecisionsArgs {
+    pub(crate) paths: Vec<String>,
+    pub(crate) since_offset: Option<u64>,
+    pub(crate) since_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) limit: usize,
+    pub(crate) cursor: Option<String>,
+}
+
+impl GetSituationalDecisionsArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        let paths = require_string_array(args, "paths")?;
+        let since_offset = optional_usize(args, "since_offset")?.map(|value| value as u64);
+        let since_timestamp = optional_datetime(args, "since_timestamp")?;
+        let limit = optional_usize(args, "limit")?.unwrap_or(0);
+        let cursor = optional_string(args, "cursor")?;
+        Ok(Self {
+            paths,
+            since_offset,
+            since_timestamp,
+            limit,
+            cursor,
+        })
+    }
+}
+
+/// The migrated core for the `get_situational_decisions` MCP tool: one
+/// implementation consumed by both transports.
+///
+/// `graph` is supplied by the caller rather than resolved via
+/// [`LedgerProvider`]: stdio rebuilds a fresh [`crate::projector::memory::MemoryGraph`]
+/// per call, while HTTP reuses its per-tenant graph cache. That is a caching
+/// decision, not a tenancy one, so it stays outside the provider seam —
+/// [`LedgerProvider`] here is only used for the ledger the query needs to
+/// resolve `since_offset`/`since_timestamp` change annotations.
+pub(crate) fn get_situational_decisions<P: LedgerProvider>(
+    provider: &P,
+    graph: &impl GraphView,
+    args: GetSituationalDecisionsArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let context = QueryContext::new(handle.tenant_id);
+    let request = SituationalRequest {
+        paths: args.paths,
+        since_offset: args.since_offset,
+        since_timestamp: args.since_timestamp,
+        limit: args.limit,
+        cursor: args.cursor,
+    };
+    let response =
+        crate::queries::get_situational_decisions(&context, graph, &handle.ledger, &request)
+            .map_err(CoreError::from)?;
+    Ok(ToolOutput(json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "data": response.data,
     })))
 }

@@ -742,6 +742,139 @@ mod transport_parity {
         )
     }
 
+    /// Like `run`, but issues a setup call (typically `capture_decision`) before
+    /// the call under test, against the same per-transport ledger, and returns
+    /// only the second call's `result` object. `get_situational_decisions`
+    /// needs a decision already captured to have anything to match.
+    async fn run_after(
+        setup_tool: &str,
+        setup_args: Value,
+        tool: &str,
+        label: &str,
+        arguments: Value,
+    ) -> (Value, Value) {
+        let stdio_dir = unique_dir(&format!("parity-stdio-{label}"));
+        let http_dir = unique_dir(&format!("parity-http-{label}"));
+
+        let config = McpConfig::new(&stdio_dir).with_session_id("parity-stdio");
+        let setup_request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": setup_tool, "arguments": setup_args.clone() }
+        })
+        .to_string();
+        let _ = drive(&config, &[setup_request.as_str()]);
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments.clone() }
+        })
+        .to_string();
+        let stdio = drive(&config, &[request.as_str()])
+            .into_iter()
+            .next()
+            .expect("one response"); // ubs:ignore: test-only; panicking is correct in tests
+
+        let _ = http_call(&http_dir, setup_tool, setup_args).await;
+        let http = http_call(&http_dir, tool, arguments).await;
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+        (stdio["result"].clone(), http["result"].clone())
+    }
+
+    #[tokio::test]
+    async fn get_situational_decisions_matches_topic_key_across_transports() {
+        let setup_args = json!({
+            "title": "Use SQLite for the ledger",
+            "rationale": "Local-first storage is enough for v1",
+            "topic_keys": ["storage"],
+            "options": [{"label": "sqlite"}],
+        });
+        let (stdio, http) = run_after(
+            "capture_decision",
+            setup_args,
+            "get_situational_decisions",
+            "situational-basic",
+            json!({ "paths": ["src/storage/engine.rs"] }),
+        )
+        .await;
+
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let data = &result["structuredContent"]["data"];
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                data["query_terms"],
+                json!(["engine", "storage"]),
+                "{name}: query_terms"
+            );
+            assert_eq!(data["total_matches"], json!(1), "{name}: total_matches"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                data["since_boundary"],
+                Value::Null,
+                "{name}: since_boundary"
+            ); // ubs:ignore: test-only assertion
+            let matches = data["matches"].as_array().expect("matches array"); // ubs:ignore: test-only; panicking is correct in tests
+            assert_eq!(matches.len(), 1, "{name}: matches length"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                matches[0]["decision"]["title"],
+                "Use SQLite for the ledger",
+                "{name}: decision title"
+            );
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                matches[0]["matched_via"],
+                json!([{"kind": "topic_key", "topic": "storage"}]),
+                "{name}: matched_via"
+            );
+            assert_eq!(
+                matches[0]["changed_since"],
+                Value::Null,
+                "{name}: changed_since"
+            ); // ubs:ignore: test-only assertion
+        }
+    }
+
+    #[tokio::test]
+    async fn get_situational_decisions_since_offset_flags_changed_across_transports() {
+        let setup_args = json!({
+            "title": "Use SQLite for the ledger",
+            "rationale": "Local-first storage is enough for v1",
+            "topic_keys": ["storage"],
+            "options": [{"label": "sqlite"}],
+        });
+        let (stdio, http) = run_after(
+            "capture_decision",
+            setup_args,
+            "get_situational_decisions",
+            "situational-since-offset",
+            json!({ "paths": ["src/storage/engine.rs"], "since_offset": 0 }),
+        )
+        .await;
+
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let data = &result["structuredContent"]["data"];
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                data["since_boundary"],
+                json!({ "offset": 0, "timestamp": null }),
+                "{name}: since_boundary"
+            );
+            let matches = data["matches"].as_array().expect("matches array"); // ubs:ignore: test-only; panicking is correct in tests
+            assert_eq!(matches.len(), 1, "{name}: matches length"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                matches[0]["changed_since"],
+                json!(true),
+                "{name}: changed_since"
+            ); // ubs:ignore: test-only assertion
+        }
+    }
+
     #[tokio::test]
     async fn capture_decision_happy_path_with_chosen_option() {
         let (stdio, http) = run(

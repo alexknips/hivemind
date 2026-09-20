@@ -36,19 +36,20 @@ use crate::queries::{
     context_next_cursor, derive_decision_status, get_compact_view, get_decision,
     get_decision_context, get_decision_context_candidates, get_decision_outcome,
     get_decision_quality_candidates, get_decision_quality_score, get_failure_attribution,
-    get_recent_decisions, get_relevant_decisions, get_situational_decisions,
-    get_supersession_chain, outcome_next_cursor, scan_decision_quality, scorer_next_cursor,
-    search_decisions_any, DecisionContextRequest, DecisionQualityCandidatesRequest, DecisionStatus,
-    FailureAttributionRequest, QualityTier, QueryContext, RecentDecisionFilterRequest,
-    RecentDecisionsRequest, ScanQualityRequest, ScorerConfig, SearchDecisionRequest,
-    SituationalRequest,
+    get_recent_decisions, get_relevant_decisions, get_supersession_chain, outcome_next_cursor,
+    scan_decision_quality, scorer_next_cursor, search_decisions_any, DecisionContextRequest,
+    DecisionQualityCandidatesRequest, DecisionStatus, FailureAttributionRequest, QualityTier,
+    QueryContext, RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest,
+    ScorerConfig, SearchDecisionRequest,
 };
 use crate::summarize::{
     recall_decisions, summarize_decisions, RecallRequest, SummarizeMode, SummarizeRequest,
     RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT,
 };
 use crate::Result;
-use core::{CaptureDecisionArgs, CoreError, LedgerHandle, LedgerProvider};
+use core::{
+    CaptureDecisionArgs, CoreError, GetSituationalDecisionsArgs, LedgerHandle, LedgerProvider,
+};
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
 /// 2025-03-26 schema (tools/list + tools/call); kept in one place so version
@@ -912,28 +913,11 @@ fn tool_get_situational_decisions(
     config: &McpConfig,
 ) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let paths = require_string_array(&args, "paths")?;
-    let since_offset = optional_usize(&args, "since_offset")?.map(|value| value as u64);
-    let since_timestamp = optional_datetime(&args, "since_timestamp")?;
-    let limit = optional_usize(&args, "limit")?.unwrap_or(0);
-    let cursor = optional_string(&args, "cursor")?;
-
-    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
-    let graph = MemoryGraph::default();
-    rebuild_graph_for_tenant(&ledger, &config.tenant_id, &graph)?;
-    let response = get_situational_decisions(
-        &config.query_context(),
-        &graph,
-        &ledger,
-        &SituationalRequest {
-            paths,
-            since_offset,
-            since_timestamp,
-            limit,
-            cursor,
-        },
-    )?;
-    Ok(serde_json::to_value(QueryEnvelope::from(response))?)
+    let core_args = GetSituationalDecisionsArgs::from_json(&args)?;
+    let graph = open_memory_graph(config)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::get_situational_decisions(&provider, &graph, core_args)?;
+    Ok(output.into_value())
 }
 
 fn tool_get_supersession_chain(

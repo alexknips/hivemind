@@ -20,7 +20,9 @@ use crate::mcp::args::{
     optional_string_array as mcp_opt_str_array, optional_usize as mcp_opt_usize,
     require_string as mcp_req_str, require_string_array as mcp_req_str_array,
 };
-use crate::mcp::core::{CaptureDecisionArgs, CoreError, LedgerHandle, LedgerProvider};
+use crate::mcp::core::{
+    CaptureDecisionArgs, CoreError, GetSituationalDecisionsArgs, LedgerHandle, LedgerProvider,
+};
 use crate::projector::memory::MemoryGraph;
 use crate::queries::{
     derive_decision_status, get_compact_view, get_decision, get_decision_quality_score,
@@ -185,6 +187,7 @@ fn mcp_tools_call_blocking(
         "supersede_decision" => mcp_supersede(backend, ctx, &actor_id, args, cache),
         "get_decision" => mcp_get_decision(backend, ctx, args, cache),
         "get_relevant_decisions" => mcp_get_relevant_decisions(backend, ctx, args, cache),
+        "get_situational_decisions" => mcp_get_situational_decisions(backend, ctx, args, cache),
         "get_supersession_chain" => mcp_get_supersession_chain(backend, ctx, args, cache),
         "search_decisions" => mcp_search_decisions(backend, ctx, args, cache),
         "score_decision" => mcp_score_decision(backend, ctx, args, cache),
@@ -472,6 +475,22 @@ fn mcp_get_relevant_decisions(
     let response = get_relevant_decisions(&*graph, &topic, status_filter)
         .map_err(|e| (-32603i32, e.to_string()))?;
     serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
+}
+
+fn mcp_get_situational_decisions(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
+) -> McpToolResult {
+    let core_args = GetSituationalDecisionsArgs::from_json(&args)?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let provider = HttpLedgerProvider {
+        backend,
+        tenant_id: &ctx.tenant_id,
+    };
+    let output = crate::mcp::core::get_situational_decisions(&provider, &*graph, core_args)?;
+    Ok(output.into_value())
 }
 
 fn mcp_get_supersession_chain(
