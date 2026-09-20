@@ -149,7 +149,7 @@ Return the linear supersession chain a decision sits in, oldest first.
 
 ### `get_decision_neighborhood`
 
-"Why does this decision look the way it does?" — the one-hop graph neighborhood around a decision: proposing/accepting/rejecting actors, options, the chosen option, evidence, premised hypotheses (with their supporting/refuting evidence one hop further), and supersession links in both directions. Equivalent to `hivemind query why`. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: "ambiguous", candidates: [...]}`, not an error; re-call with decision_id from that list. A description matching nothing is an error (there is no #N/--pick over MCP to retry against).
+"Why does this decision look the way it does?" — the one-hop graph neighborhood around a decision: proposing/accepting/rejecting actors, options, the chosen option, evidence, premised hypotheses (with their supporting/refuting evidence one hop further), and supersession links in both directions. Equivalent to `hivemind query why`. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: "ambiguous", candidates: [...]}`, not an error; re-call with decision_id from that list. A description matching nothing is also a successful result, shaped `{outcome: "not_found"}` (there is no #N/--pick over MCP to retry against, so there is nothing further to disambiguate).
 
 **Parameters:**
 

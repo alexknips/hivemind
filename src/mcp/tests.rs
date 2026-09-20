@@ -1077,7 +1077,8 @@ mod transport_parity {
                 "{name}: not-found is not an error: {result:?}"
             ); // ubs:ignore: test-only assertion
             assert_eq!(
-                result["structuredContent"]["data"]["outcome"], "not_found", // ubs:ignore: test-only assertion
+                result["structuredContent"]["data"]["outcome"],
+                "not_found", // ubs:ignore: test-only assertion
                 "{name}: outcome"
             );
         }
