@@ -91,6 +91,18 @@ Keep private:
 This boundary matters because non-developers and non-Codex agents need a stable
 product API, not database credentials or a git/file synchronization workflow.
 
+**As shipped, the CLI/`hivemind mcp` "remote mode" is narrower than the bullet
+above:** `HIVEMIND_DATABASE_URL`/`--database-url` (see
+[Local To Remote Mapping](#local-to-remote-mapping) below and
+[DEPLOYMENT.md](DEPLOYMENT.md#cli-and-mcp-direct-postgres-mode)) opens a
+direct Postgres connection with the raw connection string, not a call through
+this HTTP service — the operator running that process holds real database
+credentials, which is exactly what "Keep private: Database credentials" above
+says not to hand out. This mode exists for trusted operators and agents on
+hosts already permitted to hold that connection string; it does not give
+non-developers or untrusted agents the credential-free product API this
+section otherwise describes — that still requires the HTTP/JSON surface.
+
 ## Backend Comparison
 
 | Backend | Use now? | Reason |
@@ -111,8 +123,13 @@ Current local storage remains useful:
 - New `PostgresEventLedger` implements the same ledger trait.
 - New `PostgresGraphView` implements the same projection/query trait, using SQL
   over typed node and edge tables.
-- The CLI defaults to local mode for quick onboarding and supports remote mode
-  with `HIVEMIND_URL` plus an actor token.
+- The CLI (and `hivemind mcp`) default to local SQLite mode for quick
+  onboarding. Setting `HIVEMIND_DATABASE_URL` (or `--database-url`) switches
+  a process to a direct Postgres connection instead, scoped to the tenant
+  named by `HIVEMIND_TENANT`/`--tenant`. This is a direct database
+  connection, not a call through the HTTP service — there is no separate
+  `HIVEMIND_URL` client mode; `--actor` provides local provenance the same
+  way it does in SQLite mode. See [DEPLOYMENT.md](DEPLOYMENT.md#cli-and-mcp-direct-postgres-mode).
 
 Remote mode must treat the service as authoritative. Local SQLite/Kuzu copies
 may cache, replay, or debug remote events, but they are not shared truth.

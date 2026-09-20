@@ -42,15 +42,39 @@ reads these from the shell or from an `.env` file in the project root.
 
 | Variable | Default | Description |
 |---|---|---|
-| `HIVEMIND_DATABASE_URL` | *(unset)* | Postgres connection string. When set enables the multi-tenant Postgres backend. Unset = SQLite at `HIVEMIND_DIR`. |
+| `HIVEMIND_DATABASE_URL` | *(unset)* | Postgres connection string. Also accepted as `--database-url` on the CLI and `hivemind mcp` (flag beats the env var), not only by `serve`. When set, the process connects directly to Postgres instead of the local SQLite ledger. |
 | `HIVEMIND_DIR` | `/data` | Directory where the SQLite ledger is stored. Mount a volume here for persistence. |
 | `HIVEMIND_PORT` | `8080` | Port the HTTP API listens on. Also accepted as `--port` / `-p` on the CLI. |
 | `HIVEMIND_API_KEY` | *(unset)* | Static bearer token (SQLite mode only). Omit for development/trusted-network mode. |
 | `HIVEMIND_ADMIN_KEY` | *(unset)* | Bearer token for `POST /v1/tenants` (Postgres mode). Required before provisioning tenants. |
-| `HIVEMIND_TENANT` | `local` | Default tenant for CLI usage (not used in Postgres mode). |
+| `HIVEMIND_TENANT` | `local` | Tenant to open. For the CLI and `hivemind mcp` this selects the Postgres tenant scope when `HIVEMIND_DATABASE_URL`/`--database-url` is also set (see below for what happens on an unrecognized value). Not used by `serve`, which resolves the tenant per request from the caller's auth instead. |
 | `HIVEMIND_CORS_ORIGINS` | *(unset)* | Comma-separated origins for browser cross-origin requests. |
 | `ANTHROPIC_API_KEY` | *(unset)* | Enables the Layer-3 ingest classifier (Claude Haiku). Optional. |
 | `POSTGRES_PASSWORD` | `hivemind` | Password for the bundled Postgres service (compose only). |
+
+### CLI and MCP direct-Postgres mode
+
+`HIVEMIND_DATABASE_URL` (or `--database-url`) and `HIVEMIND_TENANT` (or
+`--tenant`) are read by every `hivemind` subcommand, not only `serve` — this
+includes `hivemind mcp`, so a stdio MCP server can talk to the shared Postgres
+backend directly instead of the local SQLite file.
+
+- The CLI and `hivemind mcp` never provision tenants in the `hm_tenants`
+  table that `POST /v1/tenants` manages (see
+  [SELF_HOSTING.md](SELF_HOSTING.md)) — but they also don't check against
+  it: tenant-id validation only rejects an empty string, so an
+  unrecognized or typo'd `--tenant` on a Postgres-backed CLI/mcp invocation
+  is not rejected. It silently opens, and on first write silently
+  populates, a brand-new empty tenant scope in the `events` table (there is
+  no foreign key from `events.tenant_id` to `hm_tenants`). Whether this
+  path should instead hard-error on an unknown tenant is an open design
+  question, not yet decided.
+- A binary built without the `shared-backend-postgres` Cargo feature fails
+  with an explicit error if a database URL is configured — it never falls
+  back to SQLite silently. The Docker image is built with this feature;
+  `cargo install` / `make install` (the path most local dev setups use) is
+  not, so a locally installed `hivemind` cannot open a Postgres ledger
+  without rebuilding with `--features shared-backend-postgres`.
 
 For a self-hosted cell (server + Postgres, one command), see [SELF_HOSTING.md](SELF_HOSTING.md).
 
