@@ -128,6 +128,12 @@ pub enum Command {
     /// Pass --dry-run to preview what would be filed without calling Linear.
     #[command(name = "quality-scan")]
     QualityScan(QualityScanArgs),
+    /// Export the decision log as a tree of Markdown files: one file per
+    /// decision plus an INDEX.md. Writes to --out, which the export owns —
+    /// stale decision files from a prior run are pruned. Not a `query`
+    /// subcommand: query subcommands print one envelope, this one writes a
+    /// directory tree.
+    Export(ExportArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -178,6 +184,38 @@ pub struct QualityScanArgs {
     /// E.g. https://hivemind.example.com. Overrides HIVEMIND_PUBLIC_URL.
     #[arg(long, env = "HIVEMIND_PUBLIC_URL")]
     pub hivemind_base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ExportArgs {
+    /// Export format. `markdown` is the only supported value today.
+    #[arg(long, value_enum)]
+    pub format: ExportFormat,
+
+    /// Directory to write the export into. Created if missing. The export
+    /// owns `<out>/decisions/*.md` and `<out>/INDEX.md`; nothing else under
+    /// `<out>` is touched.
+    #[arg(long)]
+    pub out: PathBuf,
+
+    /// Only include decisions with a ledger timestamp at or after this
+    /// RFC3339 instant.
+    #[arg(long)]
+    pub since: Option<String>,
+
+    /// Restrict to decisions carrying any of these topic keys.
+    #[arg(long = "topic", value_delimiter = ',')]
+    pub topic_keys: Vec<String>,
+
+    /// Restrict to decisions with one of these derived statuses.
+    #[arg(long = "status", value_delimiter = ',')]
+    pub statuses: Vec<QueryDecisionStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum ExportFormat {
+    Markdown,
 }
 
 #[derive(Debug, Clone, Args)]

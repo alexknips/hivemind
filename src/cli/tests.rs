@@ -4756,3 +4756,237 @@ fn import_documents_cli_blocks_path_used_when_extractor_present() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// ---------------------------------------------------------------------------
+// export command: directory writing, pruning, idempotence
+// ---------------------------------------------------------------------------
+
+/// Non-recursive listing of the regular files directly in `dir`, sorted by
+/// name, with their bytes — enough to compare `INDEX.md`/`decisions/` layers
+/// separately without pulling in a general-purpose recursive walker.
+fn read_dir_files(dir: &std::path::Path) -> std::io::Result<Vec<(String, Vec<u8>)>> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let bytes = std::fs::read(entry.path())?;
+            out.push((name, bytes));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+fn export_writes_prunes_and_is_idempotent_body(backend: &TestBackend) -> CliTestResult {
+    let accepted_id = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:alice",
+            "emit",
+            "decision.proposed",
+            "--title",
+            "Adopt Postgres session store",
+            "--rationale",
+            "Durable sessions across restarts",
+            "--topic-keys",
+            "auth",
+            "--options",
+            "postgres",
+        ],
+    )))?;
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:bob",
+            "emit",
+            "decision.accepted",
+            "--decision-id",
+            &accepted_id,
+        ],
+    )))?;
+
+    let rejected_id = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:alice",
+            "emit",
+            "decision.proposed",
+            "--title",
+            "Use bearer tokens for sessions",
+            "--rationale",
+            "Simpler client integration",
+            "--topic-keys",
+            "auth",
+            "--options",
+            "bearer",
+        ],
+    )))?;
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:bob",
+            "emit",
+            "decision.rejected",
+            "--decision-id",
+            &rejected_id,
+        ],
+    )))?;
+
+    let out_dir = unique_test_dir("export-out");
+    let out_str = out_dir.to_str().expect("utf-8 temp path").to_owned();
+    let decisions_dir = out_dir.join("decisions");
+
+    let first_output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--json", "export", "--format", "markdown", "--out", &out_str,
+        ],
+    )))?;
+    let first_report: serde_json::Value = serde_json::from_str(&first_output)?;
+    ensure_eq(
+        first_report["files_written"].as_u64(),
+        Some(3),
+        "first export writes INDEX.md plus both decision files",
+    )?;
+    ensure_eq(
+        first_report["files_removed"].as_u64(),
+        Some(0),
+        "first export into an empty directory removes nothing",
+    )?;
+    ensure_eq(
+        read_dir_files(&decisions_dir)?.len(),
+        2,
+        "both decisions land in decisions/ after the first export",
+    )?;
+
+    // Stray files the exporter must never touch: a non-.md file inside
+    // decisions/, and a file outside decisions/ entirely.
+    std::fs::write(decisions_dir.join("notes.txt"), b"scratch")?;
+    std::fs::write(out_dir.join("README.md"), b"not managed by export")?;
+
+    // Idempotence: same filters, unchanged ledger -> byte-identical tree, same file list.
+    let root_before = read_dir_files(&out_dir)?;
+    let decisions_before = read_dir_files(&decisions_dir)?;
+    let second_output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--json", "export", "--format", "markdown", "--out", &out_str,
+        ],
+    )))?;
+    let second_report: serde_json::Value = serde_json::from_str(&second_output)?;
+    ensure_eq(
+        second_report["files_removed"].as_u64(),
+        Some(0),
+        "idempotent re-export removes nothing",
+    )?;
+    ensure_eq(
+        read_dir_files(&out_dir)?,
+        root_before,
+        "re-export produces byte-identical top-level files (INDEX.md and the stray README.md)",
+    )?;
+    ensure_eq(
+        read_dir_files(&decisions_dir)?,
+        decisions_before,
+        "re-export produces byte-identical decisions/ files (both decisions and the stray notes.txt)",
+    )?;
+
+    // Pruning: a narrower --status drops the excluded decision's file and nothing else.
+    let third_output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--json", "export", "--format", "markdown", "--out", &out_str, "--status", "accepted",
+        ],
+    )))?;
+    let third_report: serde_json::Value = serde_json::from_str(&third_output)?;
+    ensure_eq(
+        third_report["files_written"].as_u64(),
+        Some(2),
+        "narrower export writes INDEX.md plus the one remaining decision file",
+    )?;
+    ensure_eq(
+        third_report["files_removed"].as_u64(),
+        Some(1),
+        "narrower export prunes the now-excluded rejected decision's file",
+    )?;
+
+    let remaining = read_dir_files(&decisions_dir)?;
+    ensure_eq(
+        remaining.len(),
+        2,
+        "decisions/ keeps the still-matching decision file plus the untouched stray notes.txt",
+    )?;
+    ensure(
+        remaining
+            .iter()
+            .filter(|(name, _)| name.ends_with(".md"))
+            .count()
+            == 1,
+        "pruning leaves exactly the still-matching decision file",
+    )?;
+    ensure_eq(
+        std::fs::read(decisions_dir.join("notes.txt"))?,
+        b"scratch".to_vec(),
+        "stray non-.md file in decisions/ is untouched by pruning",
+    )?;
+    ensure_eq(
+        std::fs::read(out_dir.join("README.md"))?,
+        b"not managed by export".to_vec(),
+        "stray file outside decisions/ is untouched by pruning",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&out_dir);
+    Ok(())
+}
+
+#[test]
+fn export_writes_prunes_and_is_idempotent() -> CliTestResult {
+    export_writes_prunes_and_is_idempotent_body(&TestBackend::sqlite("export-tree"))
+}
+
+#[test]
+fn export_writes_prunes_and_is_idempotent_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("export-tree-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    export_writes_prunes_and_is_idempotent_body(&backend)
+}
+
+#[test]
+fn export_out_pointing_at_file_fails_before_any_write() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("export-out-is-file-ledger");
+    let out_path = unique_test_dir("export-out-is-file");
+    std::fs::write(&out_path, b"not a directory")?;
+
+    let error = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "export",
+        "--format",
+        "markdown",
+        "--out",
+        out_path.to_str().expect("utf-8 temp path"),
+    ]))
+    .expect_err("export refuses to treat a file as the output directory");
+    ensure(
+        error.to_string().contains("is a file"),
+        "export --out-is-a-file error names the problem",
+    )?;
+    ensure(
+        std::fs::metadata(&out_path)?.is_file(),
+        "export must not touch --out when it already points at a file",
+    )?;
+    ensure(
+        !hivemind_dir.exists(),
+        "export must not create the ledger before validating --out",
+    )?;
+
+    let _ = std::fs::remove_file(&out_path);
+    Ok(())
+}

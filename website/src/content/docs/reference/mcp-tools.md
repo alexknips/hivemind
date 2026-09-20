@@ -7,6 +7,10 @@ The HiveMind MCP server exposes 23 tools. Write tools append events to the
 ledger and require an explicit `actor_id`. Read tools query the graph and never
 write. Layer-3 tools add ranked summaries or compact views.
 
+The Markdown decision-log export (`hivemind export --format markdown --out <dir>`) is
+CLI-only and has no MCP tool: its output is a directory tree, not a single result an
+MCP call can return.
+
 See [MCP Setup](../../guides/mcp-setup/) to configure your client.
 
 ---

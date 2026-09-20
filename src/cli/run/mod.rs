@@ -27,14 +27,15 @@ use crate::ledger::{AnyLedger, EventLedger, LedgerConfig, TenantScopedLedger};
 use crate::ledger::{PostgresEventLedger, SqliteEventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
-    derive_decision_status, export_read_only_summary, get_active_decision_blockers,
-    get_blocker_notification_candidates, get_compact_view, get_decision, get_decision_brief,
-    get_decision_neighborhood, get_decision_quality_score, get_decisions_added_since,
-    get_decisions_changed_since, get_recent_activity, get_recent_decisions, get_relevant_decisions,
-    get_situational_decisions, get_supersession_chain, resolve_decision_by_description,
-    scan_decision_quality, scorer_next_cursor, search_decisions, search_decisions_any,
-    ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest, ChangedSinceRequest,
-    DecisionBlockerFilters, DecisionStatus, DecisionsAddedSinceFilterRequest,
+    derive_decision_status, export_decision_log, export_read_only_summary,
+    get_active_decision_blockers, get_blocker_notification_candidates, get_compact_view,
+    get_decision, get_decision_brief, get_decision_neighborhood, get_decision_quality_score,
+    get_decisions_added_since, get_decisions_changed_since, get_recent_activity,
+    get_recent_decisions, get_relevant_decisions, get_situational_decisions,
+    get_supersession_chain, resolve_decision_by_description, scan_decision_quality,
+    scorer_next_cursor, search_decisions, search_decisions_any, ActiveDecisionBlockersRequest,
+    BlockerNotificationCandidatesRequest, ChangedSinceRequest, DecisionBlockerFilters,
+    DecisionLogExport, DecisionLogRequest, DecisionStatus, DecisionsAddedSinceFilterRequest,
     DecisionsAddedSinceRequest, HistoryFilterRequest, NeighborhoodRequest, QualityTier,
     QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest, RecentActivityRequest,
     RecentDecisionEntry, RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome,
@@ -60,27 +61,28 @@ use super::args::{
     ClassifyQueueArgs, ClassifyQueueCommand, ClassifyQueueListArgs, ClassifyQueueSubmitArgs, Cli,
     Command, ConnectorArgs, ConnectorAuthArgs, ConnectorCommand, DecisionCaptureSource, DigestArgs,
     DisagreeArgs, DumpArgs, DumpFormat, EmitArgs, EmitCaptureProvenanceArgs, EmitCommand,
-    EmitDecisionProposedArgs, EmitRelationKind, GraphBackend, ImportArgs, ImportCommand,
-    ImportConnectorCommand, ImportDocumentsArgs, IngestArgs, IngestCommand, IngestSlackThreadArgs,
-    MapArgs, McpArgs, QualityScanArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority,
-    QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus, QueryExportKind,
-    QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs, QueryQualityTier,
+    EmitDecisionProposedArgs, EmitRelationKind, ExportArgs, GraphBackend, ImportArgs,
+    ImportCommand, ImportConnectorCommand, ImportDocumentsArgs, IngestArgs, IngestCommand,
+    IngestSlackThreadArgs, MapArgs, McpArgs, QualityScanArgs, QueryAddedSinceArgs, QueryArgs,
+    QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus,
+    QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs, QueryQualityTier,
     QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
     QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
     SupersedeArgs, TuiArgs,
 };
 use super::render::{
-    append_truncation_notice, decision_status_label, format_disagree_output, format_import_output,
-    format_json_value, format_output, format_prepare_documents_output, format_query_response,
-    format_review_output, format_supersede_output, render_active_blockers_summary,
-    render_added_since_summary, render_blocker_notifications_summary, render_changed_since_summary,
+    append_truncation_notice, decision_status_label, format_disagree_output, format_export_output,
+    format_import_output, format_json_value, format_output, format_prepare_documents_output,
+    format_query_response, format_review_output, format_supersede_output,
+    render_active_blockers_summary, render_added_since_summary,
+    render_blocker_notifications_summary, render_changed_since_summary,
     render_compact_view_summary, render_decision_brief_summary, render_decision_list_summary,
     render_decision_summary, render_dot, render_neighborhood_summary,
     render_read_only_export_summary, render_recall_summary, render_recent_activity_summary,
     render_recent_decisions_summary, render_resolve_outcome_summary, render_scan_quality_summary,
     render_scored_decision_summary, render_search_summary, render_situational_summary,
-    render_supersession_summary, DisagreeCommandOutput, OutputEnvelope, ReviewActionOutput,
-    ReviewCommandOutput, SupersedeCommandOutput,
+    render_supersession_summary, DisagreeCommandOutput, ExportReport, OutputEnvelope,
+    ReviewActionOutput, ReviewCommandOutput, SupersedeCommandOutput,
 };
 #[cfg(feature = "shared-backend-postgres")]
 use super::render::{MigrateReport, ParityCheckResult};
@@ -109,6 +111,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::ClassifyQueue(args) => run_classify_queue(cli, args),
         Command::Connector(args) => run_connector(cli, args),
         Command::QualityScan(args) => run_quality_scan(cli, args),
+        Command::Export(args) => run_export(cli, args),
     }
 }
 
@@ -3152,4 +3155,122 @@ fn format_reason(reason: &ScorerReason) -> String {
             format!("Agent-only authorship with no human review (deduction: -{deduction:.2})")
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// export subcommand
+// ---------------------------------------------------------------------------
+
+const EXPORT_DECISIONS_DIR: &str = "decisions";
+
+fn run_export(cli: &Cli, args: &ExportArgs) -> Result<String> {
+    // Fails before any write when --out is a plain file, not a directory.
+    if args.out.is_file() {
+        return Err(CliError::InvalidInput(format!(
+            "--out {} exists and is a file, not a directory",
+            args.out.display()
+        ))
+        .into());
+    }
+
+    let tenant_id = cli_tenant(cli)?;
+    let ledger = open_ledger(cli)?;
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
+
+    let request = DecisionLogRequest {
+        since: parse_query_datetime(args.since.as_deref(), "--since")?,
+        topics: args.topic_keys.clone(),
+        statuses: args
+            .statuses
+            .iter()
+            .copied()
+            .map(QueryDecisionStatus::as_decision_status)
+            .collect(),
+    };
+    let export = export_decision_log(&graph, &ledger, &request)?;
+
+    let summary = write_export_tree(&args.out, &export)?;
+
+    let report = ExportReport {
+        out_dir: args.out.display().to_string(),
+        ledger_offset: export.ledger_offset,
+        files_written: export.files.len(),
+        files_removed: summary.removed,
+    };
+    format_export_output(cli.json, &report)
+}
+
+struct ExportWriteSummary {
+    removed: usize,
+}
+
+/// The only filesystem I/O in the export path. Writes every file in
+/// `export.files` (relative path -> content) under `out_dir`, creating
+/// `out_dir` and `out_dir/decisions/` as needed. The export owns
+/// `out_dir/decisions/*.md` and `out_dir/INDEX.md`: any `.md` file already
+/// in `decisions/` that this run did not produce is removed so a narrower
+/// filter, or a compacted ledger, cannot leave stale files behind. Nothing
+/// else under `out_dir` — including non-`.md` files in `decisions/` and any
+/// file outside it — is touched.
+fn write_export_tree(out_dir: &Path, export: &DecisionLogExport) -> Result<ExportWriteSummary> {
+    let decisions_dir = out_dir.join(EXPORT_DECISIONS_DIR);
+    std::fs::create_dir_all(&decisions_dir).map_err(|error| {
+        CliError::InvalidInput(format!(
+            "cannot create export output directory {}: {error}",
+            decisions_dir.display()
+        ))
+    })?;
+
+    let produced: BTreeSet<&str> = export
+        .files
+        .keys()
+        .filter_map(|path| path.strip_prefix("decisions/"))
+        .collect();
+
+    let mut removed = 0usize;
+    let entries = std::fs::read_dir(&decisions_dir).map_err(|error| {
+        CliError::InvalidInput(format!(
+            "cannot list export decisions directory {}: {error}",
+            decisions_dir.display()
+        ))
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            CliError::InvalidInput(format!(
+                "cannot read export decisions directory {}: {error}",
+                decisions_dir.display()
+            ))
+        })?;
+        let is_file = entry
+            .file_type()
+            .map(|kind| kind.is_file())
+            .unwrap_or(false); // ubs:ignore: unwrap_or — an unreadable file type is treated as "not ours to prune", not fatal
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if !is_file || !file_name.ends_with(".md") || produced.contains(file_name) {
+            continue;
+        }
+        std::fs::remove_file(entry.path()).map_err(|error| {
+            CliError::InvalidInput(format!(
+                "cannot remove stale export file {}: {error}",
+                entry.path().display()
+            ))
+        })?;
+        removed += 1;
+    }
+
+    for (rel_path, content) in &export.files {
+        let full_path = out_dir.join(rel_path);
+        std::fs::write(&full_path, content).map_err(|error| {
+            CliError::InvalidInput(format!(
+                "cannot write export file {}: {error}",
+                full_path.display()
+            ))
+        })?;
+    }
+
+    Ok(ExportWriteSummary { removed })
 }

@@ -377,6 +377,36 @@ hivemind dump --format <dot|json>
 
 Export the current projected graph as DOT (Graphviz) or JSON.
 
+### `export`
+
+```
+hivemind export --format markdown --out <dir>
+  [--since <RFC3339>]
+  [--topic <key,key,...>]
+  [--status <status,status,...>]
+```
+
+Renders the decision log as a tree of Markdown files under `--out`: one file
+per matching decision under `decisions/`, plus an `INDEX.md` summarizing all
+of them newest-first. `--format` accepts only `markdown` today. `--since`,
+`--topic`, and `--status` narrow which decisions are included and are ANDed
+together.
+
+`--out` is created if missing. The export **owns** `<out>/decisions/*.md`
+and `<out>/INDEX.md`: any `.md` file already in `decisions/` that this run
+did not produce is removed, so a narrower filter or a compacted ledger never
+leaves stale files behind. Nothing else under `--out` is touched. `--out`
+pointing at an existing file fails before any write.
+
+Every byte is derived from the graph (ledger timestamps, immutable ids and
+titles, derived status) — re-running with an unchanged ledger and the same
+filters produces a byte-identical tree. Not an MCP tool: the intended
+consumer is a scheduled CLI run that commits the tree to a repo, which has
+no use for a directory tree returned as one JSON payload.
+
+Prints a one-line summary (`out_dir=... ledger_offset=... files_written=...
+files_removed=...`) or, with `--json`, the same fields as a JSON object.
+
 ### `import documents`
 
 ```

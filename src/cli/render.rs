@@ -853,6 +853,19 @@ pub(crate) fn format_prepare_documents_output(
     }
 }
 
+pub(crate) fn format_export_output(as_json: bool, report: &ExportReport) -> Result<String> {
+    if as_json {
+        serde_json::to_string(report).map_err(|error| {
+            CliError::InvalidInput(format!("json serialization failed: {error}")).into()
+        })
+    } else {
+        Ok(format!(
+            "out_dir={} ledger_offset={} files_written={} files_removed={}",
+            report.out_dir, report.ledger_offset, report.files_written, report.files_removed
+        ))
+    }
+}
+
 pub fn exit_code_for_error(error: &HivemindError) -> CliExit {
     match error {
         HivemindError::Cli(_) => CliExit::Validation,
@@ -1168,6 +1181,14 @@ pub(crate) struct SupersedeCommandOutput {
     pub(crate) superseded_event_id: EventId,
     pub(crate) old_decision_status: DecisionStatus,
     pub(crate) new_decision_status: DecisionStatus,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ExportReport {
+    pub(crate) out_dir: String,
+    pub(crate) ledger_offset: EventId,
+    pub(crate) files_written: usize,
+    pub(crate) files_removed: usize,
 }
 
 #[derive(Debug, Serialize)]

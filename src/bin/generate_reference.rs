@@ -130,6 +130,18 @@ fn generate_mcp_reference() -> String {
     writeln!(out).unwrap();
     writeln!(
         out,
+        "The Markdown decision-log export (`hivemind export --format markdown --out <dir>`) is"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "CLI-only and has no MCP tool: its output is a directory tree, not a single result an"
+    )
+    .unwrap();
+    writeln!(out, "MCP call can return.").unwrap();
+    writeln!(out).unwrap();
+    writeln!(
+        out,
         "See [MCP Setup](../../guides/mcp-setup/) to configure your client."
     )
     .unwrap();
