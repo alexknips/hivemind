@@ -39,6 +39,7 @@ BASE_URL="${HIVEMIND_E2E_BASE_URL:-http://localhost:8080}"
 API_KEY="${HIVEMIND_E2E_API_KEY:-}"
 API_KEY_B="${HIVEMIND_E2E_API_KEY_B:-}"  # separate token for tenant-B in auth mode
 TENANT="${HIVEMIND_E2E_TENANT:-e2e-test}"
+TENANT_B="e2e-test-other"  # fixed second tenant for multi-tenant isolation
 HIVEMIND_BIN="${HIVEMIND_BIN:-hivemind}"
 SKIP_MAP="${HIVEMIND_E2E_SKIP_MAP:-false}"     # flag kept for local convenience; map works on all backends since 270r
 SKIP_SEARCH="${HIVEMIND_E2E_SKIP_SEARCH:-false}"  # set true for Postgres (FTS not in shared-backend)
@@ -108,6 +109,26 @@ curl_json() {
     "$BASE_URL$path"
 }
 
+# ── tenant provisioning (dev/no-auth SQLite backend only) ──────────────────────
+# Unknown --tenant / X-HiveMind-Tenant now hard-errors at the ledger-open seam
+# (hivemind-rkbf) instead of silently opening a fresh scope. The Postgres CI
+# job provisions tenant A + B itself via the admin-gated POST /v1/tenants
+# route before this script runs (see ci.yml) — that route only exists with
+# the shared-backend-postgres feature. A SQLite server has no HTTP
+# provisioning path, so register its tenants directly against its ledger via
+# `docker compose exec` instead. Runs only in dev/no-auth mode (an API key
+# implies Postgres/auth mode, already provisioned externally) and only when a
+# compose-managed `hivemind` service is actually running; a bare local server
+# (e.g. `cargo run`) is assumed to already have its tenant(s) registered.
+if [[ -z "$API_KEY" ]] && command -v docker > /dev/null 2>&1 \
+   && docker compose ps --status running --services 2>/dev/null | grep -qx hivemind; then
+  for t in "$TENANT" "$TENANT_B"; do
+    if ! out=$(docker compose exec -T hivemind hivemind tenant create "$t" 2>&1); then
+      echo "WARNING: failed to provision SQLite tenant '$t': $out" >&2
+    fi
+  done
+fi
+
 # ── health check ──────────────────────────────────────────────────────────────
 section "Health"
 if curl -sf "$BASE_URL/v1/health" | jq -e '.status == "ok"' > /dev/null 2>&1; then
@@ -168,6 +189,9 @@ CLI_DATA_DIR=$(mktemp -d)
 trap 'rm -rf "$CLI_DATA_DIR" "${EDGE_DIR:-}"' EXIT
 
 if command -v "$HIVEMIND_BIN" > /dev/null 2>&1; then
+  # Fresh --hivemind-dir only seeds the "local" default tenant; register
+  # ours before the emit below hits the unknown-tenant hard error.
+  "$HIVEMIND_BIN" --hivemind-dir "$CLI_DATA_DIR" tenant create "$TENANT" > /dev/null
   cli_out=$("$HIVEMIND_BIN" \
     --hivemind-dir "$CLI_DATA_DIR" \
     --actor "agent:e2e:smoke-cli" \
@@ -543,7 +567,6 @@ fi
 # ── multi-tenant isolation ────────────────────────────────────────────────────
 section "Multi-tenant isolation"
 
-TENANT_B="e2e-test-other"
 curl_json_tenant_b() {
   local method="$1"; shift
   local path="$1";   shift

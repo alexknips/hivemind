@@ -46,6 +46,11 @@ HM_FLAGS="--hivemind-dir $HIVEMIND_DIR --tenant $TENANT"
 
 hm() { $HM $HM_FLAGS "$@"; }
 
+# Unknown tenants now hard-error at the ledger-open seam (hivemind-rkbf); a
+# fresh --hivemind-dir only seeds the "local" default, so register ours
+# before the first emit. Idempotent — safe to rerun against an existing dir.
+$HM --hivemind-dir "$HIVEMIND_DIR" tenant create "$TENANT" > /dev/null
+
 echo "=== Acme Payments showcase corpus loader ==="
 echo "  dir:    $HIVEMIND_DIR"
 echo "  tenant: $TENANT"
