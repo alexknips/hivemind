@@ -186,7 +186,7 @@ fi
 section "Capture — CLI"
 
 CLI_DATA_DIR=$(mktemp -d)
-trap 'rm -rf "$CLI_DATA_DIR" "${EDGE_DIR:-}"' EXIT
+trap 'rm -rf "$CLI_DATA_DIR" "${EDGE_DIR:-}" "${CONTEXT_DIR:-}"' EXIT
 
 if command -v "$HIVEMIND_BIN" > /dev/null 2>&1; then
   # Fresh --hivemind-dir only seeds the "local" default tenant; register
@@ -1094,6 +1094,82 @@ $EDGE_DECISION_TEXT"
     else
       fidelity_smoke_f1=$(echo "$fidelity_smoke_out" | grep "Macro-F1" | awk '{print $NF}')
       pass "LLM fidelity smoke (edge/claude-cli): claude-cli backend ran both smoke cases via claude -p, Macro-F1=$fidelity_smoke_f1"
+    fi
+  fi
+
+  # LEG 4: hivemind-context plugin slash-command smoke (hivemind-tenv.3
+  # reopen). Drives the plugin through a REAL `claude -p` session issuing the
+  # actual slash command with an UNQUOTED multi-word free-text description —
+  # the natural, unprompted phrasing an agent reaches for first, and the
+  # exact shape that broke before this leg existed. Calling
+  # plugins/hivemind-context/scripts/recall.sh directly cannot catch this
+  # class of bug: the defect was in how Claude Code's $ARGUMENTS
+  # command-template substitution fed the script, not in the script's own
+  # argument handling in isolation — that gap is why the original landing
+  # (PR #33) shipped it and only a real plugin invocation during tenv.5's
+  # fan-in re-verification found it.
+  if ! command -v "$HIVEMIND_BIN" > /dev/null 2>&1; then
+    skip "hivemind-context plugin slash-command smoke — hivemind binary not found (HIVEMIND_BIN=$HIVEMIND_BIN)"
+  else
+    CONTEXT_PLUGIN_DIR="$REPO_ROOT/plugins/hivemind-context"
+    CONTEXT_DIR=$(mktemp -d)
+    CONTEXT_TITLE="Plugin smoke test fixture decision"
+
+    context_seed_rc=0
+    "$HIVEMIND_BIN" --hivemind-dir "$CONTEXT_DIR" --actor "agent:e2e:smoke-context" --json \
+      emit decision.proposed \
+      --title "$CONTEXT_TITLE" \
+      --rationale "Seeded by scripts/e2e_smoke.sh LEG 4 so a real /hivemind-context:recall slash-command invocation has something to match." \
+      --options fixture \
+      --chose fixture \
+      --topic-keys plugin-smoke-fixture \
+      > /dev/null 2>&1 || context_seed_rc=$?
+
+    if [[ "$context_seed_rc" -ne 0 ]]; then
+      fail "hivemind-context plugin slash-command smoke — could not seed the fixture decision (exit $context_seed_rc)"
+    else
+      # Bash-tool subprocesses spawned by claude -p do not inherit an
+      # arbitrary HIVEMIND_DIR env var reliably (verified empirically: it
+      # fell back to the plugin's default ./hivemind/ resolution). Point the
+      # plugin at the fixture ledger the documented way instead — a trailing
+      # --hivemind-dir flag, which the plugin's scripts forward straight to
+      # the CLI (README: "or pass --hivemind-dir to the underlying
+      # scripts"). This also exercises the fix for the multi-word
+      # description + trailing flag case, not just the bare description
+      # case. HIVEMIND_CAPTURE_BIN *does* propagate (verified) and pins the
+      # binary under test rather than whatever `hivemind` is on PATH.
+      context_prompt="/hivemind-context:recall plugin smoke test fixture decision --hivemind-dir $CONTEXT_DIR"
+      context_rc=0
+      # stream-json + --verbose, not the single-result "json" format: a
+      # Haiku session that hits the bug on its first Bash call reliably
+      # self-corrects by re-invoking with manual quotes on the next turn
+      # (observed directly while building this leg), so the FINAL result
+      # text looks clean even when the regression fired. Only the raw
+      # tool_result stream shows the first attempt honestly.
+      context_result=$(env -u ANTHROPIC_API_KEY HIVEMIND_CAPTURE_BIN="$HIVEMIND_BIN" \
+        "$CLAUDE_BIN" -p "$context_prompt" \
+        --model claude-haiku-4-5-20251001 \
+        --plugin-dir "$CONTEXT_PLUGIN_DIR" \
+        --output-format stream-json \
+        --verbose \
+        --no-session-persistence \
+        --permission-mode bypassPermissions \
+        --max-budget-usd 1.00 < /dev/null 2>&1) || context_rc=$?
+
+      if [[ "$context_rc" -ne 0 ]]; then
+        fail "hivemind-context plugin slash-command smoke — claude -p exited $context_rc: $context_result"
+      else
+        context_tool_results=$(echo "$context_result" | jq -c 'select(.type=="user") | .message.content[]? | select(.type=="tool_result")' 2>/dev/null)
+        if [[ -z "$context_tool_results" ]]; then
+          fail "hivemind-context plugin slash-command smoke — no Bash tool_result observed in the transcript: $context_result"
+        elif echo "$context_tool_results" | grep -qi "unexpected argument"; then
+          fail "hivemind-context plugin slash-command smoke — a Bash tool_result shows the CLI rejected the unquoted multi-word description (the exact hivemind-tenv.3 reopen regression), even if a later retry in the same session masked it: $context_tool_results"
+        elif echo "$context_tool_results" | grep -qF "$CONTEXT_TITLE"; then
+          pass "hivemind-context plugin slash-command smoke: unquoted multi-word /hivemind-context:recall round-tripped through claude -p and matched the seeded fixture decision, on the first attempt"
+        else
+          fail "hivemind-context plugin slash-command smoke — ran without the arg-parsing regression but never surfaced the seeded fixture decision: $context_tool_results"
+        fi
+      fi
     fi
   fi
 fi

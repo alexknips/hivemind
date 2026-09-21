@@ -88,6 +88,45 @@ detect_agent_session() {
   esac
 }
 
+# hivemind_context_join_description <args...>
+# Sets HC_ARGS to a reconstructed argument list where a leading run of words
+# that don't look like a flag (i.e. don't start with `-`) is joined with
+# single spaces into ONE argument. The underlying CLI's free-text description
+# positional is a single `Option<String>` (src/cli/args.rs) -- it accepts
+# exactly one shell token, by design (hivemind-tenv.1). Every command's
+# argument-hint documents the workaround: quote the description yourself,
+# e.g. `"what did we decide about X" --topic t`. When a caller does that,
+# the quoted text already arrives here as one word and this function is a
+# no-op passthrough. But the equally natural, unprompted phrasing -- typing
+# the free-text description as several bare shell words with no quotes at
+# all -- used to reach the CLI as separate positionals and error on the
+# second word (hivemind-tenv.3 reopen: an agent hit this on its first try).
+# Joining here, in the plugin's own script layer, fixes that without
+# touching the locked CLI contract or the command markdown's $ARGUMENTS
+# substitution (which must stay unquoted -- wrapping the whole substituted
+# blob in one more pair of quotes collides with a caller's own quotes around
+# --flag values and breaks the documented quoted form instead of fixing the
+# unquoted one; verified empirically before choosing this fix).
+hivemind_context_join_description() {
+  HC_ARGS=()
+  local description="" collecting=1 word
+  for word in "$@"; do
+    if [[ "$collecting" == "1" && "$word" != -* ]]; then
+      if [[ -z "$description" ]]; then
+        description="$word"
+      else
+        description="$description $word"
+      fi
+    else
+      collecting=0
+      HC_ARGS+=("$word")
+    fi
+  done
+  if [[ -n "$description" ]]; then
+    HC_ARGS=("$description" "${HC_ARGS[@]}")
+  fi
+}
+
 # Sets WORKTREE_ROOT, PROJECT_ROOT, HIVEMIND_DIR, AGENT_TOOL, AGENT_SESSION,
 # AGENT_ACTOR, and BASE_CMD (array) for the calling script.
 hivemind_context_resolve() {

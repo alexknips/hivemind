@@ -30,4 +30,5 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"
 
-hivemind_context_exec --write supersede "$@"
+hivemind_context_join_description "$@"
+hivemind_context_exec --write supersede "${HC_ARGS[@]}"
