@@ -28,13 +28,21 @@ const WRITE_TOOLS: &[&str] = &[
     "supersede_decision",
 ];
 
+const MCP_SETUP_PATH: &str = "website/src/content/docs/guides/mcp-setup.md";
+
 fn main() {
     let check_mode = std::env::args().any(|a| a == "--check");
 
+    let tool_count = tool_definitions().len();
     let mcp_md = generate_mcp_reference();
     let cli_missing = check_cli_completeness();
 
     let mcp_path = "website/src/content/docs/reference/mcp-tools.md";
+
+    let setup_text = std::fs::read_to_string(MCP_SETUP_PATH).unwrap_or_else(|e| {
+        eprintln!("Cannot read {MCP_SETUP_PATH}: {e}");
+        std::process::exit(1)
+    });
 
     if check_mode {
         let current = std::fs::read_to_string(mcp_path).unwrap_or_else(|e| {
@@ -70,6 +78,24 @@ fn main() {
             println!("OK: cli.md documents all emit and query subcommands.");
         }
 
+        let stale_mentions = stale_tool_count_mentions(&setup_text, tool_count);
+        if !stale_mentions.is_empty() {
+            eprintln!(
+                "STALE: {MCP_SETUP_PATH} has tool-count mentions that don't match \
+                 tool_definitions() ({tool_count} tools):"
+            );
+            for mention in &stale_mentions {
+                eprintln!("{mention}");
+            }
+            eprintln!("Run: cargo run --bin generate-reference");
+            failed = true;
+        } else {
+            println!(
+                "OK: {MCP_SETUP_PATH} tool-count mentions match tool_definitions() \
+                 ({tool_count} tools)."
+            );
+        }
+
         if failed {
             std::process::exit(1);
         }
@@ -91,7 +117,131 @@ fn main() {
         } else {
             println!("OK: cli.md documents all emit and query subcommands.");
         }
+
+        let fixed_setup = fix_tool_count_mentions(&setup_text, tool_count);
+        if fixed_setup != setup_text {
+            std::fs::write(MCP_SETUP_PATH, &fixed_setup).unwrap_or_else(|e| {
+                eprintln!("Cannot write {MCP_SETUP_PATH}: {e}");
+                std::process::exit(1)
+            });
+            println!("Updated: {MCP_SETUP_PATH} tool-count mentions -> {tool_count}");
+        } else {
+            println!(
+                "OK: {MCP_SETUP_PATH} tool-count mentions already match ({tool_count} tools)."
+            );
+        }
     }
+}
+
+// ---------------------------------------------------------------------------
+// MCP setup guide tool-count guard
+// ---------------------------------------------------------------------------
+//
+// mcp-setup.md is hand-written prose (unlike mcp-tools.md, which is fully
+// generated), so it can't just be overwritten wholesale. Instead we scan it
+// for numbers immediately followed by "tool"/"tools" (e.g. "14 tools", "12
+// HiveMind tools") and treat each as an assertion about the total tool count
+// that must match `tool_definitions().len()`.
+
+/// A number in `mcp-setup.md` immediately followed (within two words) by
+/// "tool" or "tools" — treated as an assertion about the total tool count.
+struct ToolCountMention {
+    line: usize,
+    /// Byte range of the digit run within the file (suffix punctuation like
+    /// "14." is preserved; only the digits are replaced on fix).
+    start: usize,
+    end: usize,
+    value: usize,
+}
+
+fn find_tool_count_mentions(text: &str) -> Vec<ToolCountMention> {
+    let mut mentions = Vec::new();
+    let mut line_offset = 0usize;
+
+    for (line_idx, line) in text.split('\n').enumerate() {
+        let words = word_offsets(line);
+        for (i, &(w_off, word)) in words.iter().enumerate() {
+            let digits_len = word.bytes().take_while(u8::is_ascii_digit).count();
+            if digits_len == 0 {
+                continue;
+            }
+            // Reject ordinals ("14th") and other letter-suffixed tokens; only
+            // punctuation may trail the digits.
+            if !word[digits_len..].chars().all(|c| c.is_ascii_punctuation()) {
+                continue;
+            }
+            let window_end = (i + 3).min(words.len());
+            let window_start = (i + 1).min(window_end);
+            let followed_by_tool = words[window_start..window_end].iter().any(|&(_, w)| {
+                let stripped: String = w.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+                let lower = stripped.to_ascii_lowercase();
+                lower == "tool" || lower == "tools"
+            });
+            if !followed_by_tool {
+                continue;
+            }
+            let Ok(value) = word[..digits_len].parse::<usize>() else {
+                continue;
+            };
+            mentions.push(ToolCountMention {
+                line: line_idx + 1,
+                start: line_offset + w_off,
+                end: line_offset + w_off + digits_len,
+                value,
+            });
+        }
+        line_offset += line.len() + 1; // +1 for the '\n' split delimiter
+    }
+
+    mentions
+}
+
+/// Whitespace-delimited tokens in `line` paired with their byte offset
+/// within `line`.
+fn word_offsets(line: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut start = None;
+    for (i, c) in line.char_indices() {
+        if c.is_whitespace() {
+            if let Some(s) = start.take() {
+                out.push((s, &line[s..i]));
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+    }
+    if let Some(s) = start {
+        out.push((s, &line[s..]));
+    }
+    out
+}
+
+fn stale_tool_count_mentions(text: &str, expected: usize) -> Vec<String> {
+    find_tool_count_mentions(text)
+        .into_iter()
+        .filter(|m| m.value != expected)
+        .map(|m| {
+            format!(
+                "  line {}: found {} tool(s), expected {expected}",
+                m.line, m.value
+            )
+        })
+        .collect()
+}
+
+fn fix_tool_count_mentions(text: &str, expected: usize) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0usize;
+    for mention in find_tool_count_mentions(text) {
+        if mention.value == expected {
+            continue;
+        }
+        out.push_str(&text[last..mention.start]);
+        out.push_str(&expected.to_string());
+        last = mention.end;
+    }
+    out.push_str(&text[last..]);
+    out
 }
 
 // ---------------------------------------------------------------------------
