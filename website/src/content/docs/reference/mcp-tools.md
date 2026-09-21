@@ -64,15 +64,17 @@ Record a hypothesis. Defaults actor_id to agent:<tool>:<session> and writes sour
 
 ### `disagree_decision`
 
-Record an actor disagreement with a decision and return the resulting derived status. Wraps `hivemind disagree`.
+Record an actor disagreement with a decision and return the resulting derived status. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: "ambiguous", candidates: [...]}`, not an error, and no event is appended; re-call with decision_id from that list. A description matching nothing is also a successful result, shaped `{outcome: "not_found"}`, and no event is appended. Wraps `hivemind disagree`.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `decision_id` | string | ✓ |  |
 | `reason` | string | ✓ |  |
 | `actor_id` | string | — | Disagreeing actor. Defaults to `agent:codex:<session>` when omitted. |
+| `decision_id` | string | — | The decision to disagree with. Provide this or `description`, not both. |
+| `description` | string | — | Free-text description to resolve to a decision when the id is not known. |
+| `topic` | string | — | Narrows description resolution to decisions carrying this topic key. |
 
 ---
 

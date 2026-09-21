@@ -33,21 +33,20 @@ use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool
 use crate::ledger::{AnyLedger, LedgerConfig};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
-    context_next_cursor, derive_decision_status, get_compact_view, get_decision,
-    get_decision_context, get_decision_context_candidates, get_decision_quality_candidates,
-    get_decision_quality_score, get_failure_attribution, get_recent_decisions,
-    get_relevant_decisions, get_supersession_chain, outcome_next_cursor, scan_decision_quality,
-    scorer_next_cursor, search_decisions_any, DecisionContextRequest,
-    DecisionQualityCandidatesRequest, DecisionStatus, FailureAttributionRequest, QualityTier,
-    QueryContext, RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest,
-    ScorerConfig, SearchDecisionRequest,
+    context_next_cursor, get_compact_view, get_decision, get_decision_context,
+    get_decision_context_candidates, get_decision_quality_candidates, get_decision_quality_score,
+    get_failure_attribution, get_recent_decisions, get_relevant_decisions, get_supersession_chain,
+    outcome_next_cursor, scan_decision_quality, scorer_next_cursor, search_decisions_any,
+    DecisionContextRequest, DecisionQualityCandidatesRequest, DecisionStatus,
+    FailureAttributionRequest, QualityTier, QueryContext, RecentDecisionFilterRequest,
+    RecentDecisionsRequest, ScanQualityRequest, ScorerConfig, SearchDecisionRequest,
 };
 use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
 use core::{
-    CaptureDecisionArgs, CoreError, GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs,
-    GetSituationalDecisionsArgs, LedgerHandle, LedgerProvider, RecallDecisionsArgs,
-    SupersedeDecisionArgs,
+    CaptureDecisionArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
+    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, LedgerHandle, LedgerProvider,
+    RecallDecisionsArgs, SupersedeDecisionArgs,
 };
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -419,13 +418,15 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "disagree_decision",
-            "description": "Record an actor disagreement with a decision and return the resulting derived status. Wraps `hivemind disagree`.",
+            "description": "Record an actor disagreement with a decision and return the resulting derived status. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error, and no event is appended; re-call with decision_id from that list. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}`, and no event is appended. Wraps `hivemind disagree`.",
             "inputSchema": {
                 "type": "object",
-                "required": ["decision_id", "reason"],
+                "required": ["reason"],
                 "properties": {
                     "actor_id": { "type": "string", "description": "Disagreeing actor. Defaults to `agent:codex:<session>` when omitted." },
-                    "decision_id": { "type": "string" },
+                    "decision_id": { "type": "string", "description": "The decision to disagree with. Provide this or `description`, not both." },
+                    "description": { "type": "string", "description": "Free-text description to resolve to a decision when the id is not known." },
+                    "topic": { "type": "string", "description": "Narrows description resolution to decisions carrying this topic key." },
                     "reason": { "type": "string" }
                 }
             }
@@ -825,23 +826,10 @@ fn tool_capture_hypothesis(
 fn tool_disagree_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
     let actor_id = mcp_actor_id(&args, config)?;
-    let decision_id = require_string(&args, "decision_id")?;
-    let reason = require_string(&args, "reason")?;
-
-    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
-    let commands = Commands::new_with_context(
-        &ledger,
-        config.command_context(EventProvenance::agent(config.session_id.clone())),
-    );
-    let event_id = commands.disagree(&actor_id, &decision_id, &reason)?;
-    let graph = open_memory_graph(config)?;
-    let decision_status = derive_decision_status(&graph, &decision_id)?;
-
-    Ok(json!({
-        "decision_id": decision_id,
-        "event_id": event_id,
-        "decision_status": decision_status,
-    }))
+    let core_args = DisagreeArgs::from_json(&args, actor_id)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::disagree_decision(&provider, core_args)?;
+    Ok(output.into_value())
 }
 
 fn tool_supersede_decision(

@@ -20,9 +20,10 @@
 //!
 //! Migrated so far: `capture_decision`, `get_situational_decisions`,
 //! `resolve_target`/`get_decision_neighborhood`, `recall_decisions`,
-//! `supersede_decision`, `get_decision_outcome`. Later tools follow the
-//! same shape — an `Args::from_json` parser plus a `core::<tool>`
-//! function — one pair per tool, each independently reviewable.
+//! `supersede_decision`, `disagree_decision`, `get_decision_outcome`. Later
+//! tools follow the same shape — an `Args::from_json` parser plus a
+//! `core::<tool>` function — one pair per tool, each independently
+//! reviewable.
 
 use serde_json::{json, Map, Value};
 
@@ -582,6 +583,41 @@ impl RecallDecisionsArgs {
     }
 }
 
+// ---------------------------------------------------------------------------
+// disagree_decision
+// ---------------------------------------------------------------------------
+
+/// Parsed, validated arguments for the `disagree_decision` tool. Shares the
+/// id/description/topic resolution shape [`resolve_target`] defines; `reason`
+/// is the one field unique to a disagreement, and is always required
+/// regardless of how the target resolves.
+pub(crate) struct DisagreeArgs {
+    pub(crate) actor_id: String,
+    pub(crate) decision_id: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) topic: Option<String>,
+    pub(crate) reason: String,
+}
+
+impl DisagreeArgs {
+    pub(crate) fn from_json(
+        args: &Map<String, Value>,
+        actor_id: String,
+    ) -> Result<Self, CoreError> {
+        let decision_id = optional_string(args, "decision_id")?;
+        let description = optional_string(args, "description")?;
+        let topic = optional_string(args, "topic")?;
+        let reason = require_string(args, "reason")?;
+        Ok(Self {
+            actor_id,
+            decision_id,
+            description,
+            topic,
+            reason,
+        })
+    }
+}
+
 /// The migrated core for the `recall_decisions` MCP tool: one implementation
 /// consumed by both transports.
 ///
@@ -784,5 +820,50 @@ pub(crate) fn supersede_decision<P: LedgerProvider>(
         "superseded_event_id": outcome.superseded_event_id,
         "old_decision_status": old_decision_status,
         "new_decision_status": new_decision_status,
+    })))
+}
+
+/// The migrated core for the `disagree_decision` MCP tool: one implementation
+/// consumed by both transports. Resolves its target via [`resolve_target`]
+/// first; on `Ambiguous` or `NotFound` the resolver's envelope is returned
+/// as-is and no event is appended — "never act on a guess" holds for a write
+/// tool exactly as it does for the read-only `get_decision_neighborhood`.
+pub(crate) fn disagree_decision<P: LedgerProvider>(
+    provider: &P,
+    args: DisagreeArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let target = resolve_target(
+        &handle,
+        args.decision_id.as_deref(),
+        args.description.as_deref(),
+        args.topic.as_deref(),
+        "decision_id",
+    )?;
+    let decision_id = match target {
+        ResolvedTarget::Id(id) => id,
+        ResolvedTarget::Ambiguous(output) => return Ok(output),
+        ResolvedTarget::NotFound(output) => return Ok(output),
+    };
+
+    let commands = Commands::new_with_context(
+        &handle.ledger,
+        CommandContext::new(
+            handle.tenant_id.clone(),
+            EventProvenance::agent(args.actor_id.clone()),
+        ),
+    );
+    let event_id = commands
+        .disagree(&args.actor_id, &decision_id, &args.reason)
+        .map_err(CoreError::from)?;
+
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&handle.ledger, &handle.tenant_id, &graph).map_err(CoreError::from)?;
+    let decision_status = derive_decision_status(&graph, &decision_id).map_err(CoreError::from)?;
+
+    Ok(ToolOutput(json!({
+        "decision_id": decision_id,
+        "event_id": event_id,
+        "decision_status": decision_status,
     })))
 }

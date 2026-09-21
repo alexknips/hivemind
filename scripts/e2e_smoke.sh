@@ -268,6 +268,78 @@ else
   fail "MCP HTTP capture_decision — unexpected response: $mcp_capture"
 fi
 
+# ── fluent disagree via MCP HTTP ────────────────────────────────────────────────
+# disagree_decision resolves decision_id | description (hivemind-ot72.6): a
+# description matching two decisions at the same confidence tier is a
+# successful ambiguous result, never a write; MCP has no #N/--pick session to
+# retry against, so the agent re-calls with the decision_id the first call
+# already told it about.
+section "Fluent disagree — MCP HTTP"
+
+mcp_capture_fluent_a=$(curl -s \
+  -H "Content-Type: application/json" \
+  -H "X-HiveMind-Tenant: $TENANT" \
+  -H "X-HiveMind-Actor: $MCP_ACTOR" \
+  "${mcp_auth_args[@]}" \
+  "${mcp_session_args[@]}" \
+  -X POST \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"capture_decision","arguments":{"actor_id":"agent:e2e:smoke-mcp","title":"e2e-smoke MCP fluent: adopt async billing queue","rationale":"Durability beats latency for billing events","topic_keys":["e2e","fluent"],"options":[{"label":"async"}]}}}' \
+  "$BASE_URL/mcp")
+mcp_capture_fluent_b=$(curl -s \
+  -H "Content-Type: application/json" \
+  -H "X-HiveMind-Tenant: $TENANT" \
+  -H "X-HiveMind-Actor: $MCP_ACTOR" \
+  "${mcp_auth_args[@]}" \
+  "${mcp_session_args[@]}" \
+  -X POST \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"capture_decision","arguments":{"actor_id":"agent:e2e:smoke-mcp","title":"e2e-smoke MCP fluent: adopt async notifications queue","rationale":"Durability beats latency for notification events","topic_keys":["e2e","fluent"],"options":[{"label":"async"}]}}}' \
+  "$BASE_URL/mcp")
+
+MCP_FLUENT_DECISION_A=""
+if echo "$mcp_capture_fluent_a" | jq -e '.result.structuredContent.decision_id' > /dev/null 2>&1; then
+  MCP_FLUENT_DECISION_A=$(echo "$mcp_capture_fluent_a" | jq -r '.result.structuredContent.decision_id')
+fi
+
+if [[ -n "$MCP_FLUENT_DECISION_A" ]] \
+  && echo "$mcp_capture_fluent_b" | jq -e '.result.structuredContent.decision_id' > /dev/null 2>&1; then
+  pass "MCP HTTP capture_decision (fluent disagree seed) — 2 decisions captured"
+
+  mcp_disagree_ambiguous=$(curl -s \
+    -H "Content-Type: application/json" \
+    -H "X-HiveMind-Tenant: $TENANT" \
+    -H "X-HiveMind-Actor: $MCP_ACTOR" \
+    "${mcp_auth_args[@]}" \
+    "${mcp_session_args[@]}" \
+    -X POST \
+    -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"disagree_decision","arguments":{"description":"adopt async queue","reason":"e2e smoke: should not resolve to either"}}}' \
+    "$BASE_URL/mcp")
+  if [[ "$(echo "$mcp_disagree_ambiguous" | jq -r '.result.isError')" == "false" ]] \
+    && [[ "$(echo "$mcp_disagree_ambiguous" | jq -r '.result.structuredContent.data.outcome')" == "ambiguous" ]]; then
+    pass "MCP HTTP disagree_decision — ambiguous description returns candidates, not an error"
+  else
+    fail "MCP HTTP disagree_decision — ambiguous description: $mcp_disagree_ambiguous"
+  fi
+
+  mcp_disagree_resolved=$(curl -s \
+    -H "Content-Type: application/json" \
+    -H "X-HiveMind-Tenant: $TENANT" \
+    -H "X-HiveMind-Actor: $MCP_ACTOR" \
+    "${mcp_auth_args[@]}" \
+    "${mcp_session_args[@]}" \
+    -X POST \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"disagree_decision\",\"arguments\":{\"decision_id\":\"$MCP_FLUENT_DECISION_A\",\"reason\":\"e2e smoke: disagree via resolved decision_id\"}}}" \
+    "$BASE_URL/mcp")
+  if [[ "$(echo "$mcp_disagree_resolved" | jq -r '.result.isError')" == "false" ]] \
+    && echo "$mcp_disagree_resolved" | jq -e '.result.structuredContent.event_id' > /dev/null 2>&1; then
+    pass "MCP HTTP disagree_decision — resolved by decision_id after the ambiguous retry"
+  else
+    fail "MCP HTTP disagree_decision — resolved by decision_id: $mcp_disagree_resolved"
+  fi
+else
+  skip "MCP HTTP disagree_decision — ambiguous description returns candidates, not an error"
+  skip "MCP HTTP disagree_decision — resolved by decision_id after the ambiguous retry"
+fi
+
 # ── query / projection ────────────────────────────────────────────────────────
 section "Query — projection"
 

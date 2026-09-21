@@ -452,6 +452,66 @@ fn disagree_decision_tool_contests_and_defaults_actor() {
 }
 
 #[test]
+fn disagree_decision_tool_ambiguous_description_does_not_write() {
+    let dir = unique_dir("disagree-ambiguous");
+    let config = McpConfig::new(&dir).with_session_id("disagree-ambiguous-session");
+
+    for topic in ["billing", "notifications"] {
+        let capture = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "capture_decision",
+                "arguments": {
+                    "title": format!("Adopt async queue for {topic}"),
+                    "rationale": "because reasons",
+                    "topic_keys": [topic],
+                    "options": [{"label": "async"}]
+                }
+            }
+        })
+        .to_string();
+        drive(&config, &[capture.as_str()]);
+    }
+
+    let ledger = SqliteEventLedger::open(&dir).expect("ledger opens");
+    let offset_before = ledger.latest_offset().expect("offset before");
+
+    let disagree = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "disagree_decision",
+            "arguments": {
+                "description": "adopt async queue",
+                "reason": "should not apply to either"
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[disagree.as_str()]);
+    let structured = &responses[0]["result"]["structuredContent"];
+    assert_eq!(
+        structured["data"]["outcome"],
+        serde_json::json!("ambiguous")
+    );
+    assert_eq!(
+        structured["data"]["candidates"].as_array().map(Vec::len),
+        Some(2)
+    );
+
+    assert_eq!(
+        ledger.latest_offset().expect("offset after"),
+        offset_before,
+        "ambiguous disagree must not append any event"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn supersede_decision_tool_marks_old_and_is_idempotent() {
     let dir = unique_dir("supersede");
     let config = McpConfig::new(&dir).with_session_id("supersede-session");
@@ -1531,6 +1591,131 @@ mod transport_parity {
             "verify-not-found",
             &["Adopt async billing queue"],
             json!({ "description": "totally unrelated widget factory zzz" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: not-found is not an error: {result:?}"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["data"]["outcome"],
+                "not_found", // ubs:ignore: test-only assertion
+                "{name}: outcome"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn disagree_decision_resolves_by_id_across_transports() {
+        let (stdio, http) = run_after_with_id(
+            "capture_decision",
+            json!({
+                "title": "Keep auth as-is",
+                "rationale": "Avoids migration work",
+                "topic_keys": ["auth"],
+                "options": [{"label": "keep"}],
+            }),
+            "disagree_decision",
+            "disagree-by-id",
+            |decision_id| {
+                json!({
+                    "decision_id": decision_id,
+                    "reason": "misses auth implications",
+                })
+            },
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let content = &result["structuredContent"];
+            assert_eq!(
+                content["decision_status"],
+                json!("rejected"), // ubs:ignore: test-only assertion
+                "{name}: decision_status"
+            );
+            assert!(
+                content["event_id"].is_number(), // ubs:ignore: test-only assertion
+                "{name}: event_id should be present"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn disagree_decision_resolves_unique_description_and_writes() {
+        let (stdio, http) = run_seeded(
+            "disagree_decision",
+            "disagree-unique-description",
+            &["Adopt async billing queue"],
+            json!({
+                "description": "adopt async billing queue",
+                "reason": "underestimates operational cost",
+            }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let content = &result["structuredContent"];
+            assert_eq!(
+                content["decision_status"],
+                json!("rejected"), // ubs:ignore: test-only assertion
+                "{name}: decision_status"
+            );
+            assert!(
+                // ubs:ignore: test-only assertion
+                content["decision_id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("decision-")),
+                "{name}: decision_id = {:?}",
+                content["decision_id"]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn disagree_decision_ambiguous_description_returns_candidates_not_error() {
+        let (stdio, http) = run_seeded(
+            "disagree_decision",
+            "disagree-ambiguous",
+            &[
+                "Adopt async queue for billing",
+                "Adopt async queue for notifications",
+            ],
+            json!({
+                "description": "adopt async queue",
+                "reason": "should not apply to either",
+            }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: ambiguous is not an error"
+            ); // ubs:ignore: test-only assertion
+            let structured = &result["structuredContent"];
+            assert_eq!(
+                structured["data"]["outcome"], "ambiguous",
+                "{name}: outcome"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                structured["data"]["candidates"].as_array().map(Vec::len),
+                Some(2),
+                "{name}: candidate count"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn disagree_decision_not_found_description_returns_envelope_not_error() {
+        let (stdio, http) = run_seeded(
+            "disagree_decision",
+            "disagree-not-found",
+            &["Adopt async billing queue"],
+            json!({
+                "description": "totally unrelated widget factory zzz",
+                "reason": "does not matter",
+            }),
         )
         .await;
         for (name, result) in [("stdio", &stdio), ("http", &http)] {

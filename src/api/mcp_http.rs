@@ -21,16 +21,16 @@ use crate::mcp::args::{
     require_string_array as mcp_req_str_array,
 };
 use crate::mcp::core::{
-    CaptureDecisionArgs, CoreError, GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs,
-    GetSituationalDecisionsArgs, LedgerHandle, LedgerProvider, RecallDecisionsArgs,
-    SupersedeDecisionArgs,
+    CaptureDecisionArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
+    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, LedgerHandle, LedgerProvider,
+    RecallDecisionsArgs, SupersedeDecisionArgs,
 };
 use crate::projector::memory::MemoryGraph;
 use crate::queries::{
-    derive_decision_status, get_compact_view, get_decision, get_decision_quality_score,
-    get_relevant_decisions, get_supersession_chain, scan_decision_quality, scorer_next_cursor,
-    search_decisions_any, DecisionStatus, QualityTier, QueryContext, ScanQualityRequest,
-    ScorerConfig, SearchDecisionRequest,
+    get_compact_view, get_decision, get_decision_quality_score, get_relevant_decisions,
+    get_supersession_chain, scan_decision_quality, scorer_next_cursor, search_decisions_any,
+    DecisionStatus, QualityTier, QueryContext, ScanQualityRequest, ScorerConfig,
+    SearchDecisionRequest,
 };
 
 use super::auth::extract_ctx;
@@ -185,7 +185,7 @@ fn mcp_tools_call_blocking(
         "capture_decision" => mcp_capture_decision(backend, ctx, &actor_id, args),
         "capture_evidence" => mcp_capture_evidence(backend, ctx, &actor_id, args),
         "capture_hypothesis" => mcp_capture_hypothesis(backend, ctx, &actor_id, args),
-        "disagree_decision" => mcp_disagree(backend, ctx, &actor_id, args, cache),
+        "disagree_decision" => mcp_disagree(backend, ctx, &actor_id, args),
         "supersede_decision" => mcp_supersede(backend, ctx, &actor_id, args),
         "get_decision" => mcp_get_decision(backend, ctx, args, cache),
         "get_decision_outcome" => mcp_get_decision_outcome(backend, ctx, args),
@@ -360,32 +360,14 @@ fn mcp_disagree(
     ctx: &ApiRequestCtx,
     actor_id: &str,
     args: serde_json::Map<String, serde_json::Value>,
-    cache: &Arc<GraphCache>,
 ) -> McpToolResult {
-    let decision_id = mcp_req_str(&args, "decision_id")?;
-    let reason = mcp_req_str(&args, "reason")?;
-    let ledger = backend
-        .open_ledger_for_tenant(&ctx.tenant_id)
-        .map_err(|e| (-32603i32, e.to_string()))?;
-    let commands = Commands::new_with_context(
-        &ledger,
-        CommandContext::new(
-            ctx.tenant_id.clone(),
-            EventProvenance::agent(actor_id.to_owned()),
-        ),
-    );
-    let event_id = commands
-        .disagree(actor_id, &decision_id, &reason)
-        .map_err(|e| (-32603i32, e.to_string()))?;
-    let graph =
-        get_cached_graph(&ledger, &ctx.tenant_id, cache).map_err(|e| (-32603i32, e.to_string()))?;
-    let status =
-        derive_decision_status(&*graph, &decision_id).map_err(|e| (-32603i32, e.to_string()))?;
-    Ok(serde_json::json!({
-        "decision_id": decision_id,
-        "event_id": event_id,
-        "decision_status": status,
-    }))
+    let core_args = DisagreeArgs::from_json(&args, actor_id.to_owned())?;
+    let provider = HttpLedgerProvider {
+        backend,
+        tenant_id: &ctx.tenant_id,
+    };
+    let output = crate::mcp::core::disagree_decision(&provider, core_args)?;
+    Ok(output.into_value())
 }
 
 fn mcp_supersede(
