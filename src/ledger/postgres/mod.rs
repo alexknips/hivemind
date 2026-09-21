@@ -26,6 +26,17 @@ const DEFAULT_POOL_SIZE: u32 = 16;
 const MAX_TRANSIENT_RETRIES: usize = 3;
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(25);
 
+/// Overrides the r2d2 pool size used by [`PostgresEventLedger::connect`].
+/// Unset in production, where `DEFAULT_POOL_SIZE` connections are warmed
+/// eagerly at pool creation. The test harness and the `shared-backend-postgres`
+/// CI job set this to a small value (2-4): each `cargo test` thread opens its
+/// own pool through this same `connect` path (directly, or indirectly via
+/// `AnyLedger::open`'s CLI backend selection), so N parallel threads times
+/// `DEFAULT_POOL_SIZE` eager connections easily exceeds Postgres's
+/// `max_connections`. When set, the pool also fills lazily (`min_idle = 0`)
+/// instead of opening every connection up front.
+const POOL_SIZE_ENV: &str = "HIVEMIND_POSTGRES_POOL_SIZE";
+
 type PgManager = PostgresConnectionManager<MakeTlsConnector>;
 type PgPool = Pool<PgManager>;
 
@@ -52,7 +63,12 @@ impl PostgresEventLedger {
     pub const LOCAL_DEFAULT_TENANT_ID: &'static str = "tenant:local-default";
 
     pub fn connect(database_url: &str, tenant_id: impl Into<String>) -> Result<Self> {
-        Self::connect_with_pool_size(database_url, tenant_id, DEFAULT_POOL_SIZE)
+        match pool_size_override() {
+            Some(max_size) => {
+                Self::connect_with_pool_config(database_url, tenant_id, max_size, Some(0))
+            }
+            None => Self::connect_with_pool_size(database_url, tenant_id, DEFAULT_POOL_SIZE),
+        }
     }
 
     pub fn connect_local_default(database_url: &str) -> Result<Self> {
@@ -64,11 +80,21 @@ impl PostgresEventLedger {
         tenant_id: impl Into<String>,
         max_size: u32,
     ) -> Result<Self> {
+        Self::connect_with_pool_config(database_url, tenant_id, max_size, None)
+    }
+
+    fn connect_with_pool_config(
+        database_url: &str,
+        tenant_id: impl Into<String>,
+        max_size: u32,
+        min_idle: Option<u32>,
+    ) -> Result<Self> {
         let config = Config::from_str(database_url).map_err(storage_error)?;
         let tls = MakeTlsConnector::new(native_tls::TlsConnector::new().map_err(storage_error)?);
         let manager = PostgresConnectionManager::new(config, tls);
         let pool = Pool::builder()
             .max_size(max_size)
+            .min_idle(min_idle)
             .build(manager)
             .map_err(storage_error)?;
 
@@ -449,6 +475,15 @@ fn event_id_to_i64(event_id: EventId, label: &str) -> Result<i64> {
 fn i64_to_event_id(event_id: i64, label: &str) -> Result<EventId> {
     u64::try_from(event_id)
         .map_err(|error| storage_error(format!("invalid {label}: {error}")).into())
+}
+
+/// Reads [`POOL_SIZE_ENV`]. `None` when unset, empty, or unparseable, in
+/// which case `connect` falls back to `DEFAULT_POOL_SIZE` with r2d2's
+/// default eager fill.
+fn pool_size_override() -> Option<u32> {
+    std::env::var(POOL_SIZE_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
 }
 
 fn validate_tenant_id(tenant_id: String) -> Result<String> {

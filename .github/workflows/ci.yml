@@ -100,6 +100,12 @@ jobs:
       - name: Run tests
         env:
           HIVEMIND_TEST_POSTGRES_URL: postgres://hivemind:hivemind@localhost:5432/hivemind
+          # Caps the r2d2 pool size opened per `PostgresEventLedger::connect`
+          # call (production default is 16, eagerly filled). Each parallel
+          # test thread opens its own pool through this path, directly or
+          # via AnyLedger's CLI backend selection, so at default parallelism
+          # N-threads x 16 easily exceeds Postgres's max_connections=100.
+          HIVEMIND_POSTGRES_POOL_SIZE: "4"
         run: cargo test --locked --features shared-backend-postgres
 
   docker:
