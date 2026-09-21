@@ -678,26 +678,25 @@ fn project_decision_proposed(
         origin_properties,
     )?;
 
-    // Falls back to the raw id when option_labels is shorter (events predating this field, or
-    // a caller that never learned the label) — never fails projection. Shared by the options
-    // loop below and the chosen-option upsert, so a chosen option keeps its label even under a
-    // graph backend whose upsert_node replaces properties outright instead of merging them —
-    // relying on merge semantics here would silently drop the label on such a backend.
-    let option_label = |option_id: &str| -> String {
+    // `None` when option_labels is shorter (events predating this field, or a caller that
+    // never learned the label) — every reader of the "label" property (brief.rs, render.rs,
+    // summarize.rs) already falls back to the option id when the property is absent, so
+    // storing nothing here is equivalent for display. It also keeps search indexing (which
+    // treats "label" as a distinct searchable field from "id") from indexing the id twice
+    // under two field names. Shared by the options loop below and the chosen-option upsert.
+    let option_label = |option_id: &str| -> Option<String> {
         payload
             .option_ids
             .iter()
             .position(|id| id == option_id)
             .and_then(|index| payload.option_labels.get(index).cloned())
-            .unwrap_or_else(|| option_id.to_owned())
     };
 
     for option_id in &payload.option_ids {
+        // ubs:ignore: per-option props copy; each Option node needs a fresh map with a distinct "label" entry
         let mut option_properties = origin_properties.clone();
-        option_properties.insert(
-            "label".to_owned(),
-            GraphValue::String(option_label(option_id)),
-        );
+        let label_value = option_label(option_id).map_or(GraphValue::Null, GraphValue::String);
+        option_properties.insert("label".to_owned(), label_value); // ubs:ignore: per-option label key; alloc differs per iteration — unavoidable with BTreeMap<String,…> properties map
         graph.upsert_node(NodeKind::Option, option_id, &option_properties)?;
         graph.upsert_edge(
             RelationKind::HasOption,
@@ -708,10 +707,11 @@ fn project_decision_proposed(
     }
 
     if let Some(chosen_option_id) = &payload.chosen_option_id {
+        // ubs:ignore: per-option props copy; the chosen option needs its own map with a distinct "label" entry, mirroring the options loop above
         let mut option_properties = origin_properties.clone();
         option_properties.insert(
             "label".to_owned(),
-            GraphValue::String(option_label(chosen_option_id)),
+            option_label(chosen_option_id).map_or(GraphValue::Null, GraphValue::String),
         );
         graph.upsert_node(NodeKind::Option, chosen_option_id, &option_properties)?;
         graph.upsert_edge(

@@ -285,7 +285,10 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
     let mut option_ids: Vec<String> = Vec::with_capacity(args.options.len());
     let mut option_labels: Vec<String> = Vec::with_capacity(args.options.len());
     let mut chosen_option_id: Option<String> = None;
-    for option in &args.options {
+    // Consumes args.options (moved, not iterated by reference) so each label is
+    // pushed by ownership transfer instead of a per-iteration clone; args.options
+    // is not read again after this loop.
+    for option in args.options {
         let option_id = commands
             .record_option(&args.actor_id, &option.label, &option.description)
             .map_err(CoreError::from)?;
@@ -294,7 +297,7 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
             chosen_option_id = Some(option_id.clone());
         }
         option_ids.push(option_id);
-        option_labels.push(option.label.clone());
+        option_labels.push(option.label);
     }
     if args.chosen_option_label.is_some() && chosen_option_id.is_none() {
         return Err(CoreError::InvalidArgument(

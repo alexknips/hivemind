@@ -557,9 +557,12 @@ fn decision_proposed_with_option_labels_stores_label_per_option() -> Result<()> 
 }
 
 #[test]
-fn decision_proposed_without_option_labels_falls_back_to_option_id() -> Result<()> {
+fn decision_proposed_without_option_labels_stores_no_label() -> Result<()> {
     // Backward compatibility: events written before this field existed (or by a caller that
-    // never learned the label) must still project — the label just falls back to the id.
+    // never learned the label) must still project. The "label" property is stored as Null
+    // rather than falling back to the id — every reader of it (brief.rs, render.rs,
+    // summarize.rs, and search field indexing) already falls back to the id when the
+    // property is absent, so a real label and "no label" stay distinguishable in storage.
     let ledger = InMemoryEventLedger::new();
     ledger.append(event(
         EventType::DecisionProposed,
@@ -584,7 +587,7 @@ fn decision_proposed_without_option_labels_falls_back_to_option_id() -> Result<(
             .nodes()
             .get(&(NodeKind::Option, "option:legacy".to_owned()))
             .and_then(|p| p.get("label")),
-        Some(&GraphValue::String("option:legacy".to_owned()))
+        Some(&GraphValue::Null)
     );
     Ok(())
 }
