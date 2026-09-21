@@ -145,13 +145,15 @@ List decisions whose topic_keys contain the given topic. Optional status filter.
 
 ### `get_supersession_chain`
 
-Return the linear supersession chain a decision sits in, oldest first.
+Return the linear supersession chain a decision sits in, oldest first. Equivalent to `hivemind query chain`. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: "ambiguous", candidates: [...]}`, not an error; re-call with decision_id from that list. A description matching nothing is also a successful result, shaped `{outcome: "not_found"}` (there is no #N/--pick over MCP to retry against, so there is nothing further to disambiguate).
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `decision_id` | string | ✓ |  |
+| `decision_id` | string | — | The decision to inspect. Provide this or `description`, not both. |
+| `description` | string | — | Free-text description to resolve to a decision when the id is not known. |
+| `topic` | string | — | Narrows description resolution to decisions carrying this topic key. |
 
 ---
 

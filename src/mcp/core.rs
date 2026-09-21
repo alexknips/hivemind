@@ -19,8 +19,9 @@
 //!    stays with each adapter's existing renderer.
 //!
 //! Migrated so far: `capture_decision`, `get_situational_decisions`,
-//! `resolve_target`/`get_decision_neighborhood`, `recall_decisions`,
-//! `supersede_decision`, `disagree_decision`, `get_decision_outcome`. Later
+//! `resolve_target`/`get_decision_neighborhood`, `get_supersession_chain`,
+//! `recall_decisions`, `supersede_decision`, `disagree_decision`,
+//! `get_decision_outcome`. Later
 //! tools follow the same shape — an `Args::from_json` parser plus a
 //! `core::<tool>` function — one pair per tool, each independently
 //! reviewable.
@@ -34,7 +35,8 @@ use crate::ledger::{AnyLedger, EventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
     derive_decision_status, get_decision_brief as query_get_decision_brief,
-    get_decision_neighborhood as query_get_decision_neighborhood, resolve_decision_by_description,
+    get_decision_neighborhood as query_get_decision_neighborhood,
+    get_supersession_chain as query_get_supersession_chain, resolve_decision_by_description,
     DecisionStatus, NeighborhoodRequest, QueryContext, QueryResponse, ResolveOutcome,
     SituationalRequest,
 };
@@ -865,5 +867,62 @@ pub(crate) fn disagree_decision<P: LedgerProvider>(
         "decision_id": decision_id,
         "event_id": event_id,
         "decision_status": decision_status,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// get_supersession_chain (the CLI's `chain`)
+// ---------------------------------------------------------------------------
+
+/// Parsed, validated arguments for the `get_supersession_chain` tool.
+pub(crate) struct GetSupersessionChainArgs {
+    pub(crate) decision_id: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) topic: Option<String>,
+}
+
+impl GetSupersessionChainArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            decision_id: optional_string(args, "decision_id")?,
+            description: optional_string(args, "description")?,
+            topic: optional_string(args, "topic")?,
+        })
+    }
+}
+
+/// The migrated core for the `get_supersession_chain` MCP tool (the CLI's
+/// `chain`): one implementation consumed by both transports. Payload is
+/// identical to `hivemind query chain --json`, resolving `decision_id` or a
+/// free-text `description` through the same [`resolve_target`] every other
+/// fluent tool uses — ambiguous and not-found are both success envelopes,
+/// never errors.
+pub(crate) fn get_supersession_chain<P: LedgerProvider>(
+    provider: &P,
+    args: GetSupersessionChainArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let target = resolve_target(
+        &handle,
+        args.decision_id.as_deref(),
+        args.description.as_deref(),
+        args.topic.as_deref(),
+        "decision_id",
+    )?;
+    let decision_id = match target {
+        ResolvedTarget::Id(id) => id,
+        ResolvedTarget::Ambiguous(output) => return Ok(output),
+        ResolvedTarget::NotFound(output) => return Ok(output),
+    };
+
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&handle.ledger, &handle.tenant_id, &graph).map_err(CoreError::from)?;
+    let response = query_get_supersession_chain(&graph, &decision_id).map_err(CoreError::from)?;
+
+    Ok(ToolOutput(json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "data": response.data,
     })))
 }

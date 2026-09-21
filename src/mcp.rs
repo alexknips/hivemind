@@ -35,18 +35,18 @@ use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
     context_next_cursor, get_compact_view, get_decision, get_decision_context,
     get_decision_context_candidates, get_decision_quality_candidates, get_decision_quality_score,
-    get_failure_attribution, get_recent_decisions, get_relevant_decisions, get_supersession_chain,
-    outcome_next_cursor, scan_decision_quality, scorer_next_cursor, search_decisions_any,
-    DecisionContextRequest, DecisionQualityCandidatesRequest, DecisionStatus,
-    FailureAttributionRequest, QualityTier, QueryContext, RecentDecisionFilterRequest,
-    RecentDecisionsRequest, ScanQualityRequest, ScorerConfig, SearchDecisionRequest,
+    get_failure_attribution, get_recent_decisions, get_relevant_decisions, outcome_next_cursor,
+    scan_decision_quality, scorer_next_cursor, search_decisions_any, DecisionContextRequest,
+    DecisionQualityCandidatesRequest, DecisionStatus, FailureAttributionRequest, QualityTier,
+    QueryContext, RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest,
+    ScorerConfig, SearchDecisionRequest,
 };
 use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
 use core::{
     CaptureDecisionArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
-    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, LedgerHandle, LedgerProvider,
-    RecallDecisionsArgs, SupersedeDecisionArgs,
+    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSupersessionChainArgs, LedgerHandle,
+    LedgerProvider, RecallDecisionsArgs, SupersedeDecisionArgs,
 };
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -506,12 +506,13 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_supersession_chain",
-            "description": "Return the linear supersession chain a decision sits in, oldest first.",
+            "description": "Return the linear supersession chain a decision sits in, oldest first. Equivalent to `hivemind query chain`. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error; re-call with decision_id from that list. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}` (there is no #N/--pick over MCP to retry against, so there is nothing further to disambiguate).",
             "inputSchema": {
                 "type": "object",
-                "required": ["decision_id"],
                 "properties": {
-                    "decision_id": { "type": "string" }
+                    "decision_id": { "type": "string", "description": "The decision to inspect. Provide this or `description`, not both." },
+                    "description": { "type": "string", "description": "Free-text description to resolve to a decision when the id is not known." },
+                    "topic": { "type": "string", "description": "Narrows description resolution to decisions carrying this topic key." }
                 }
             }
         }),
@@ -894,10 +895,10 @@ fn tool_get_supersession_chain(
     config: &McpConfig,
 ) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let decision_id = require_string(&args, "decision_id")?;
-    let graph = open_memory_graph(config)?;
-    let response = get_supersession_chain(&graph, &decision_id)?;
-    Ok(serde_json::to_value(QueryEnvelope::from(response))?)
+    let core_args = GetSupersessionChainArgs::from_json(&args)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::get_supersession_chain(&provider, core_args)?;
+    Ok(output.into_value())
 }
 
 fn tool_get_decision_neighborhood(

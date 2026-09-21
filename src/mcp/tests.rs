@@ -1554,10 +1554,62 @@ mod transport_parity {
     }
 
     #[tokio::test]
+    async fn get_supersession_chain_resolves_unique_description() {
+        let (stdio, http) = run_seeded(
+            "get_supersession_chain",
+            "chain-resolved",
+            &["Adopt async billing queue"],
+            json!({ "description": "adopt async billing queue" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let data = &result["structuredContent"]["data"];
+            assert_eq!(
+                data["decision_ids"].as_array().map(Vec::len),
+                Some(1),
+                "{name}: decision_ids length"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(data["input_index"], 0, "{name}: input_index"); // ubs:ignore: test-only assertion
+        }
+    }
+
+    #[tokio::test]
     async fn get_decision_outcome_ambiguous_description_returns_candidates_not_error() {
         let (stdio, http) = run_seeded(
             "get_decision_outcome",
             "verify-ambiguous",
+            &[
+                "Adopt async queue for billing",
+                "Adopt async queue for notifications",
+            ],
+            json!({ "description": "adopt async queue" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: ambiguous is not an error"
+            ); // ubs:ignore: test-only assertion
+            let structured = &result["structuredContent"];
+            assert_eq!(
+                structured["data"]["outcome"], "ambiguous",
+                "{name}: outcome"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                structured["data"]["candidates"].as_array().map(Vec::len),
+                Some(2),
+                "{name}: candidate count"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn get_supersession_chain_ambiguous_description_returns_candidates_not_error() {
+        let (stdio, http) = run_seeded(
+            "get_supersession_chain",
+            "chain-ambiguous",
             &[
                 "Adopt async queue for billing",
                 "Adopt async queue for notifications",
@@ -1729,5 +1781,53 @@ mod transport_parity {
                 "{name}: outcome"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn get_supersession_chain_not_found_description_returns_envelope_not_error() {
+        let (stdio, http) = run_seeded(
+            "get_supersession_chain",
+            "chain-not-found",
+            &["Adopt async billing queue"],
+            json!({ "description": "totally unrelated widget factory zzz" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: not-found is not an error: {result:?}"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["data"]["outcome"],
+                "not_found", // ubs:ignore: test-only assertion
+                "{name}: outcome"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn get_supersession_chain_missing_selector_errors_identically() {
+        let (stdio, http) = run(
+            "get_supersession_chain",
+            "chain-missing-selector",
+            json!({}),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert!(
+                result["isError"].as_bool().unwrap_or(false), // ubs:ignore: test-only assertion
+                "{name}: missing selector should error: {result:?}"
+            );
+        }
+        assert_eq!(
+            stdio["content"][0]["text"],
+            http["content"][0]["text"], // ubs:ignore: test-only assertion
+            "missing-selector message must match across transports"
+        );
+        assert_eq!(
+            stdio["content"][0]["text"].as_str(), // ubs:ignore: test-only assertion
+            Some("one of `decision_id` or `description` is required"),
+            "missing-selector message text"
+        );
     }
 }
