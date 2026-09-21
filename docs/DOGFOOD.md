@@ -192,7 +192,6 @@ Query it back:
 
 ```bash
 plugins/hivemind-capture/scripts/query-decisions.sh \
-  --agent-tool codex \
   --source agent \
   --limit 10
 ```

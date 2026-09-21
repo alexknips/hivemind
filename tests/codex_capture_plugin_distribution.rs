@@ -388,6 +388,74 @@ fn claude_code_plugin_capture_and_query_scripts_write_agent_decision() -> TestRe
 }
 
 #[test]
+fn query_decisions_script_finds_decisions_captured_by_a_different_session() -> TestResult<()> {
+    // Regression test for hivemind-tenv.4's reopen finding: the query
+    // script used to silently inject --actor-id/--source for the
+    // QUERYING session's own identity, so "what did we decide about X"
+    // from a fresh session found nothing a prior session had captured.
+    // Capture and query here run as two distinct sessions/actors on
+    // purpose — the bug was invisible when both used the same session
+    // (see claude_code_plugin_capture_and_query_scripts_write_agent_decision).
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let unique = uuid::Uuid::new_v4().to_string();
+    let hivemind_dir = std::env::temp_dir().join(format!("hivemind-cross-session-query-{unique}"));
+    let capturer_actor_id = "agent:claude:capturer-session";
+
+    let capture_script = root.join("plugins/hivemind-capture/scripts/capture-decision.sh");
+    let output = Command::new(&capture_script)
+        .current_dir(root)
+        .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+        .env("HIVEMIND_DIR", &hivemind_dir)
+        .env("CLAUDE_PROJECT_DIR", root)
+        .env("CLAUDE_SESSION_ID", "capturer-session")
+        .args([
+            "--title",
+            "Recall smoke test fixture across sessions",
+            "--rationale",
+            "A fresh querying session must find decisions captured by other sessions",
+            "--topic-keys",
+            "claude,plugin,recall",
+            "--options",
+            "cross-session,same-session",
+            "--chose",
+            "cross-session",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "plugin capture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let query_script = root.join("plugins/hivemind-capture/scripts/query-decisions.sh");
+    let query = Command::new(&query_script)
+        .current_dir(root)
+        .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+        .env("HIVEMIND_DIR", &hivemind_dir)
+        .env("CLAUDE_PROJECT_DIR", root)
+        .env("CLAUDE_SESSION_ID", "querier-session")
+        .args(["--q", "recall smoke test fixture", "--limit", "5"])
+        .output()?;
+    assert!(
+        query.status.success(),
+        "plugin query failed: {}",
+        String::from_utf8_lossy(&query.stderr)
+    );
+    let query: Value = serde_json::from_slice(&query.stdout)?;
+    assert_eq!(
+        query["result_count"], 1,
+        "a query from a different session with no --actor-id/--source must still find the decision"
+    );
+    assert_eq!(
+        query["data"]["ranked"]["items"][0]["graph_context"]["actor_ids"][0],
+        capturer_actor_id
+    );
+
+    let _ = fs::remove_dir_all(hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn codex_capture_defaults_actor_from_session_environment() -> TestResult<()> {
     let hivemind_dir = unique_temp_dir("hivemind-codex-default-capture")?;
 

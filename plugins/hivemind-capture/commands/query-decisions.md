@@ -12,15 +12,19 @@ first, never a decision id:
 
 `$ARGUMENTS`
 
-Run the plugin helper:
+Run the plugin helper. Quote `$ARGUMENTS` — free text is normally several
+words and an unquoted expansion splits it into separate shell arguments,
+which the CLI's positional query field rejects:
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/query-decisions.sh $ARGUMENTS
+${CLAUDE_PLUGIN_ROOT}/scripts/query-decisions.sh "$ARGUMENTS"
 ```
 
-If no actor is supplied, default to the current Claude Code session actor:
-`agent:claude:<session>`. Return the CLI result directly and preserve
-`truncated` fields, statuses, contested decisions, and stale dependencies.
+No actor or source filter is applied unless the caller passes --actor-id
+or --source: this searches every decision in the ledger, not just the
+ones captured by the current session. Return the CLI result directly and
+preserve `truncated` fields, statuses, contested decisions, and stale
+dependencies.
 
 For follow-up on one specific decision — its rationale and neighborhood, or
 whether it still holds — or to contest/supersede it, install the
