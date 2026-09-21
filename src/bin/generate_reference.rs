@@ -167,20 +167,26 @@ fn find_tool_count_mentions(text: &str) -> Vec<ToolCountMention> {
             }
             // Reject ordinals ("14th") and other letter-suffixed tokens; only
             // punctuation may trail the digits.
-            if !word[digits_len..].chars().all(|c| c.is_ascii_punctuation()) {
+            let suffix = word.get(digits_len..).unwrap_or("");
+            if !suffix.chars().all(|c| c.is_ascii_punctuation()) {
                 continue;
             }
             let window_end = (i + 3).min(words.len());
             let window_start = (i + 1).min(window_end);
-            let followed_by_tool = words[window_start..window_end].iter().any(|&(_, w)| {
-                let stripped: String = w.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-                let lower = stripped.to_ascii_lowercase();
-                lower == "tool" || lower == "tools"
-            });
+            let followed_by_tool = words
+                .get(window_start..window_end)
+                .unwrap_or(&[])
+                .iter()
+                .any(|&(_, w)| {
+                    let stripped: String =
+                        w.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+                    let lower = stripped.to_ascii_lowercase();
+                    lower == "tool" || lower == "tools"
+                });
             if !followed_by_tool {
                 continue;
             }
-            let Ok(value) = word[..digits_len].parse::<usize>() else {
+            let Ok(value) = word.get(..digits_len).unwrap_or("").parse::<usize>() else {
                 continue;
             };
             mentions.push(ToolCountMention {
@@ -204,14 +210,14 @@ fn word_offsets(line: &str) -> Vec<(usize, &str)> {
     for (i, c) in line.char_indices() {
         if c.is_whitespace() {
             if let Some(s) = start.take() {
-                out.push((s, &line[s..i]));
+                out.push((s, line.get(s..i).unwrap_or("")));
             }
         } else if start.is_none() {
             start = Some(i);
         }
     }
     if let Some(s) = start {
-        out.push((s, &line[s..]));
+        out.push((s, line.get(s..).unwrap_or("")));
     }
     out
 }
@@ -236,11 +242,11 @@ fn fix_tool_count_mentions(text: &str, expected: usize) -> String {
         if mention.value == expected {
             continue;
         }
-        out.push_str(&text[last..mention.start]);
-        out.push_str(&expected.to_string());
+        out.push_str(text.get(last..mention.start).unwrap_or(""));
+        write!(out, "{expected}").unwrap();
         last = mention.end;
     }
-    out.push_str(&text[last..]);
+    out.push_str(text.get(last..).unwrap_or(""));
     out
 }
 
