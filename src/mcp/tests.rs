@@ -786,6 +786,60 @@ mod transport_parity {
         (stdio["result"].clone(), http["result"].clone())
     }
 
+    /// Like `run_after`, but `build_args` receives the setup call's
+    /// generated `decision_id` to build the second call's arguments. Ids are
+    /// generated per-ledger, so each transport substitutes its own — stdio's
+    /// id never crosses over to the http call and vice versa.
+    async fn run_after_with_id(
+        setup_tool: &str,
+        setup_args: Value,
+        tool: &str,
+        label: &str,
+        build_args: impl Fn(&str) -> Value,
+    ) -> (Value, Value) {
+        let stdio_dir = unique_dir(&format!("parity-stdio-{label}"));
+        let http_dir = unique_dir(&format!("parity-http-{label}"));
+
+        let config = McpConfig::new(&stdio_dir).with_session_id("parity-stdio");
+        let setup_request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": setup_tool, "arguments": setup_args.clone() }
+        })
+        .to_string();
+        let setup_response = drive(&config, &[setup_request.as_str()])
+            .into_iter()
+            .next()
+            .expect("one response"); // ubs:ignore: test-only; panicking is correct in tests
+        let stdio_id = setup_response["result"]["structuredContent"]["decision_id"]
+            .as_str()
+            .expect("decision_id") // ubs:ignore: test-only; panicking is correct in tests
+            .to_owned();
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": build_args(&stdio_id) }
+        })
+        .to_string();
+        let stdio = drive(&config, &[request.as_str()])
+            .into_iter()
+            .next()
+            .expect("one response"); // ubs:ignore: test-only; panicking is correct in tests
+
+        let setup_http = http_call(&http_dir, setup_tool, setup_args).await;
+        let http_id = setup_http["result"]["structuredContent"]["decision_id"]
+            .as_str()
+            .expect("decision_id") // ubs:ignore: test-only; panicking is correct in tests
+            .to_owned();
+        let http = http_call(&http_dir, tool, build_args(&http_id)).await;
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+        (stdio["result"].clone(), http["result"].clone())
+    }
+
     #[tokio::test]
     async fn get_situational_decisions_matches_topic_key_across_transports() {
         let setup_args = json!({
@@ -1379,5 +1433,116 @@ mod transport_parity {
 
         let _ = std::fs::remove_dir_all(&stdio_dir);
         let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn get_decision_outcome_resolves_by_decision_id() {
+        let setup_args = json!({
+            "title": "Adopt blue-green deploys",
+            "rationale": "Zero-downtime releases",
+            "topic_keys": ["deploy"],
+            "options": [{"label": "blue-green"}],
+            "chosen_option_label": "blue-green",
+        });
+        let (stdio, http) = run_after_with_id(
+            "capture_decision",
+            setup_args,
+            "get_decision_outcome",
+            "outcome-by-id",
+            |id| json!({ "decision_id": id }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let data = &result["structuredContent"]["data"];
+            assert_eq!(data["title"], "Adopt blue-green deploys", "{name}: title"); // ubs:ignore: test-only assertion
+                                                                                    // No OptionRecorded-style event exists for `record_option`, so
+                                                                                    // the label falls back to the generated option_id (the stated
+                                                                                    // schema gap `get_decision_brief`'s own tests document) — assert
+                                                                                    // the option is present and self-consistent, not a literal label.
+            assert_eq!(
+                data["chosen_option"]["label"], data["chosen_option"]["option_id"],
+                "{name}: chosen_option label falls back to option_id"
+            ); // ubs:ignore: test-only assertion
+            assert!(
+                data["chosen_option"]["option_id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("option-blue-green-")),
+                "{name}: chosen_option.option_id = {:?}",
+                data["chosen_option"]["option_id"]
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(data["still_holds"]["held_up"], true, "{name}: held_up");
+            // ubs:ignore: test-only assertion
+        }
+    }
+
+    #[tokio::test]
+    async fn get_decision_outcome_resolves_unique_description() {
+        let (stdio, http) = run_seeded(
+            "get_decision_outcome",
+            "verify-resolved",
+            &["Adopt async billing queue"],
+            json!({ "description": "adopt async billing queue" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let data = &result["structuredContent"]["data"];
+            assert_eq!(data["title"], "Adopt async billing queue", "{name}: title");
+            // ubs:ignore: test-only assertion
+        }
+    }
+
+    #[tokio::test]
+    async fn get_decision_outcome_ambiguous_description_returns_candidates_not_error() {
+        let (stdio, http) = run_seeded(
+            "get_decision_outcome",
+            "verify-ambiguous",
+            &[
+                "Adopt async queue for billing",
+                "Adopt async queue for notifications",
+            ],
+            json!({ "description": "adopt async queue" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: ambiguous is not an error"
+            ); // ubs:ignore: test-only assertion
+            let structured = &result["structuredContent"];
+            assert_eq!(
+                structured["data"]["outcome"], "ambiguous",
+                "{name}: outcome"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                structured["data"]["candidates"].as_array().map(Vec::len),
+                Some(2),
+                "{name}: candidate count"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn get_decision_outcome_not_found_description_returns_envelope_not_error() {
+        let (stdio, http) = run_seeded(
+            "get_decision_outcome",
+            "verify-not-found",
+            &["Adopt async billing queue"],
+            json!({ "description": "totally unrelated widget factory zzz" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: not-found is not an error: {result:?}"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["data"]["outcome"],
+                "not_found", // ubs:ignore: test-only assertion
+                "{name}: outcome"
+            );
+        }
     }
 }

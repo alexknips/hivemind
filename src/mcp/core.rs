@@ -20,9 +20,9 @@
 //!
 //! Migrated so far: `capture_decision`, `get_situational_decisions`,
 //! `resolve_target`/`get_decision_neighborhood`, `recall_decisions`,
-//! `supersede_decision`. Later tools follow the same shape — an
-//! `Args::from_json` parser plus a `core::<tool>` function — one pair per
-//! tool, each independently reviewable.
+//! `supersede_decision`, `get_decision_outcome`. Later tools follow the
+//! same shape — an `Args::from_json` parser plus a `core::<tool>`
+//! function — one pair per tool, each independently reviewable.
 
 use serde_json::{json, Map, Value};
 
@@ -32,7 +32,8 @@ use crate::events::{EventProvenance, TenantId};
 use crate::ledger::{AnyLedger, EventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
-    derive_decision_status, get_decision_neighborhood as query_get_decision_neighborhood,
+    derive_decision_status, get_decision_brief as query_get_decision_brief,
+    get_decision_neighborhood as query_get_decision_neighborhood,
     resolve_decision_by_description, DecisionStatus, NeighborhoodRequest, QueryContext,
     QueryResponse, ResolveOutcome, SituationalRequest,
 };
@@ -613,6 +614,64 @@ where
     };
     let response = crate::summarize::recall_decisions(&context, &handle.ledger, graph, &request)
         .map_err(CoreError::from)?;
+    Ok(ToolOutput(json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "data": response.data,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// get_decision_outcome (the CLI's `verify`)
+// ---------------------------------------------------------------------------
+
+/// Parsed, validated arguments for the `get_decision_outcome` tool.
+pub(crate) struct GetDecisionOutcomeArgs {
+    pub(crate) decision_id: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) topic: Option<String>,
+}
+
+impl GetDecisionOutcomeArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            decision_id: optional_string(args, "decision_id")?,
+            description: optional_string(args, "description")?,
+            topic: optional_string(args, "topic")?,
+        })
+    }
+}
+
+/// The migrated core for the `get_decision_outcome` MCP tool (the CLI's
+/// `verify`): one implementation consumed by both transports. Payload is
+/// `DecisionBrief` — the same envelope `hivemind query verify --json`
+/// (`get_decision_brief`, composing `get_decision` + `get_decision_context` +
+/// `get_decision_outcome`) returns, not the narrower outcome-signal-only
+/// payload this tool returned before this migration — see hivemind-ot72.8
+/// ("match the CLI").
+pub(crate) fn get_decision_outcome<P: LedgerProvider>(
+    provider: &P,
+    args: GetDecisionOutcomeArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let target = resolve_target(
+        &handle,
+        args.decision_id.as_deref(),
+        args.description.as_deref(),
+        args.topic.as_deref(),
+        "decision_id",
+    )?;
+    let decision_id = match target {
+        ResolvedTarget::Id(id) => id,
+        ResolvedTarget::Ambiguous(output) => return Ok(output),
+        ResolvedTarget::NotFound(output) => return Ok(output),
+    };
+
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&handle.ledger, &handle.tenant_id, &graph).map_err(CoreError::from)?;
+    let response = query_get_decision_brief(&graph, &decision_id).map_err(CoreError::from)?;
+
     Ok(ToolOutput(json!({
         "result_count": response.result_count,
         "truncated": response.truncated,

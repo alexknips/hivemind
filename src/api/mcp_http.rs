@@ -21,8 +21,9 @@ use crate::mcp::args::{
     require_string_array as mcp_req_str_array,
 };
 use crate::mcp::core::{
-    CaptureDecisionArgs, CoreError, GetDecisionNeighborhoodArgs, GetSituationalDecisionsArgs,
-    LedgerHandle, LedgerProvider, RecallDecisionsArgs, SupersedeDecisionArgs,
+    CaptureDecisionArgs, CoreError, GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs,
+    GetSituationalDecisionsArgs, LedgerHandle, LedgerProvider, RecallDecisionsArgs,
+    SupersedeDecisionArgs,
 };
 use crate::projector::memory::MemoryGraph;
 use crate::queries::{
@@ -187,6 +188,7 @@ fn mcp_tools_call_blocking(
         "disagree_decision" => mcp_disagree(backend, ctx, &actor_id, args, cache),
         "supersede_decision" => mcp_supersede(backend, ctx, &actor_id, args),
         "get_decision" => mcp_get_decision(backend, ctx, args, cache),
+        "get_decision_outcome" => mcp_get_decision_outcome(backend, ctx, args),
         "get_relevant_decisions" => mcp_get_relevant_decisions(backend, ctx, args, cache),
         "get_situational_decisions" => mcp_get_situational_decisions(backend, ctx, args, cache),
         "get_supersession_chain" => mcp_get_supersession_chain(backend, ctx, args, cache),
@@ -411,6 +413,20 @@ fn mcp_get_decision(
     let graph = mcp_open_graph(backend, ctx, cache)?;
     let response = get_decision(&*graph, &decision_id).map_err(|e| (-32603i32, e.to_string()))?;
     serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
+}
+
+fn mcp_get_decision_outcome(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+) -> McpToolResult {
+    let core_args = GetDecisionOutcomeArgs::from_json(&args)?;
+    let provider = HttpLedgerProvider {
+        backend,
+        tenant_id: &ctx.tenant_id,
+    };
+    let output = crate::mcp::core::get_decision_outcome(&provider, core_args)?;
+    Ok(output.into_value())
 }
 
 fn mcp_get_relevant_decisions(
