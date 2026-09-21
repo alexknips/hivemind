@@ -128,11 +128,9 @@ fn generate_mcp_reference() -> String {
     )
     .unwrap();
     writeln!(out).unwrap();
-    writeln!( // ubs:ignore: fmt::Write for String is infallible — this writeln! can never actually panic
-        out,
-        "The Markdown decision-log export (`hivemind export --format markdown --out <dir>`) is\nCLI-only and has no MCP tool: its output is a directory tree, not a single result an\nMCP call can return.\n"
-    )
-    .unwrap();
+    out.push_str(
+        "The Markdown decision-log export (`hivemind export --format markdown --out <dir>`) is\nCLI-only and has no MCP tool: its output is a directory tree, not a single result an\nMCP call can return.\n\n",
+    );
     writeln!(
         out,
         "See [MCP Setup](../../guides/mcp-setup/) to configure your client."
