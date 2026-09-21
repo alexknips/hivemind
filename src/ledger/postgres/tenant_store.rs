@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::error::LedgerError;
 use crate::Result;
 
-use super::super::backend_error::storage_error;
+use super::super::backend_error::{storage_error, unknown_tenant_error};
 
 type PgPool = Pool<PostgresConnectionManager<MakeTlsConnector>>;
 
@@ -71,6 +71,15 @@ impl TenantStore {
             .max_size(4)
             .build(manager)
             .map_err(storage_error)?;
+        Self::from_pool(pool)
+    }
+
+    /// Build a store sharing an existing pool (e.g. `PostgresEventLedger::
+    /// pool()`) instead of opening a second one — see `pool()`'s doc comment.
+    /// Schema init still runs (idempotent, cheap), so this is safe to call
+    /// on every ledger open. Same ordering requirement as `connect`: the
+    /// pool's tables must already exist.
+    pub fn from_pool(pool: PgPool) -> Result<Self> {
         let store = Self { pool };
         store.initialize_schema()?;
         Ok(store)
@@ -383,6 +392,37 @@ impl TenantStore {
             token_id,
             token_secret,
         })
+    }
+
+    /// Whether `tenant_id` has an `hm_tenants` row.
+    pub fn tenant_exists(&self, tenant_id: &str) -> Result<bool> {
+        let mut client = self.pool.get().map_err(storage_error)?;
+        let exists: bool = client
+            .query_one(
+                "SELECT EXISTS (SELECT 1 FROM hm_tenants WHERE tenant_id = $1)",
+                &[&tenant_id],
+            )
+            .map_err(storage_error)?
+            .get(0);
+        Ok(exists)
+    }
+
+    /// Errors unless `tenant_id` has an `hm_tenants` row. Called once at
+    /// ledger-open time (the CLI/stdio-MCP seam in
+    /// [`crate::ledger::AnyLedger::open`] and the HTTP API's per-request
+    /// seam) so a typo'd `--tenant`/token-resolved tenant cannot silently
+    /// open a fresh, empty tenant scope. Tenant creation stays the server's
+    /// provisioning route (`POST /v1/tenants`), never the CLI.
+    pub fn ensure_known_tenant(&self, tenant_id: &str) -> Result<()> {
+        if !self.tenant_exists(tenant_id)? {
+            return Err(unknown_tenant_error(
+                tenant_id,
+                "tenants are created through the server's provisioning route \
+                 (POST /v1/tenants), not the CLI",
+            )
+            .into());
+        }
+        Ok(())
     }
 
     /// Revoke a token. Returns false if not found or already revoked.

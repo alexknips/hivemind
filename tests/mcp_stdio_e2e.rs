@@ -18,6 +18,21 @@ fn unique_dir(label: &str) -> PathBuf {
     dir
 }
 
+/// Since hivemind-rkbf.1, an unregistered tenant hard-errors at ledger-open
+/// time instead of silently opening a fresh scope — register a non-default
+/// tenant via the real CLI before a test spawns an MCP server under it.
+fn create_tenant(hivemind_dir: &std::path::Path, tenant_id: &str) {
+    let status = Command::new(env!("CARGO_BIN_EXE_hivemind"))
+        .arg("--hivemind-dir")
+        .arg(hivemind_dir)
+        .arg("tenant")
+        .arg("create")
+        .arg(tenant_id)
+        .status()
+        .expect("spawn hivemind tenant create"); // ubs:ignore: test-only; panicking is correct in tests
+    assert!(status.success(), "hivemind tenant create {tenant_id}"); // ubs:ignore: test-only assertion
+}
+
 #[test]
 fn mcp_stdio_server_handles_initialize_list_and_capture() {
     let hivemind_dir = unique_dir("roundtrip");
@@ -741,6 +756,8 @@ fn mcp_compact_view_e2e() {
 fn mcp_m3_tools_are_tenant_isolated() {
     let hivemind_dir = unique_dir("tenant-iso");
     let _ = std::fs::create_dir_all(&hivemind_dir);
+    create_tenant(&hivemind_dir, "tenant-a");
+    create_tenant(&hivemind_dir, "tenant-b");
 
     // Spawn tenant-a process, capture a decision with a unique keyword.
     let decision_id_a = {

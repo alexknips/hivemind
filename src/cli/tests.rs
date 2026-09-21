@@ -3933,6 +3933,11 @@ impl TestBackend {
     }
 
     /// `None` when `HIVEMIND_TEST_POSTGRES_URL` is unset — callers skip the test.
+    ///
+    /// Provisions the per-test tenant before returning: since hivemind-rkbf.1,
+    /// an unregistered tenant hard-errors at ledger-open time instead of
+    /// silently opening a fresh scope, so every CLI-against-Postgres test
+    /// needs a real `hm_tenants` row first.
     fn postgres(name: &str) -> Option<Self> {
         let database_url = std::env::var("HIVEMIND_TEST_POSTGRES_URL")
             .ok()
@@ -3940,9 +3945,20 @@ impl TestBackend {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_nanos());
+        let tenant = format!("tenant:test:{name}:{nanos}");
+
+        #[cfg(feature = "shared-backend-postgres")]
+        {
+            let store = crate::ledger::TenantStore::connect(&database_url)
+                .expect("TenantStore::connect for CLI test tenant provisioning");
+            store
+                .provision_tenant(&tenant, "CLI test tenant")
+                .expect("provision_tenant for CLI test");
+        }
+
         Some(Self {
             hivemind_dir: unique_test_dir(name),
-            tenant: Some(format!("tenant:test:{name}:{nanos}")),
+            tenant: Some(tenant),
             database_url: Some(database_url),
         })
     }

@@ -181,7 +181,10 @@ impl ApiConfig {
 enum ApiBackend {
     Sqlite(Arc<PathBuf>),
     #[cfg(feature = "shared-backend-postgres")]
-    Postgres(Arc<PostgresEventLedger>),
+    Postgres {
+        ledger: Arc<PostgresEventLedger>,
+        tenant_store: Arc<TenantStore>,
+    },
 }
 
 impl ApiBackend {
@@ -190,11 +193,16 @@ impl ApiBackend {
         match self {
             ApiBackend::Sqlite(dir) => Some(dir.as_ref()),
             #[cfg(feature = "shared-backend-postgres")]
-            ApiBackend::Postgres(_) => None,
+            ApiBackend::Postgres { .. } => None,
         }
     }
 
     /// Open a tenant-scoped ledger for use within a blocking closure.
+    ///
+    /// Errors with 404 if `tenant_id` is unknown on the selected backend —
+    /// the per-request seam that mirrors `AnyLedger::open`'s CLI/stdio-MCP
+    /// check, so a request for an unregistered tenant cannot silently open
+    /// a fresh, empty scope.
     fn open_ledger_for_tenant(&self, tenant_id: &TenantId) -> ApiResult<ApiLedger> {
         #[cfg(not(feature = "shared-backend-postgres"))]
         let _ = tenant_id;
@@ -202,16 +210,38 @@ impl ApiBackend {
             ApiBackend::Sqlite(dir) => {
                 let ledger = SqliteEventLedger::open(dir.as_ref())
                     .map_err(|e| ApiError::internal(e.to_string()))?;
+                ledger
+                    .ensure_known_tenant(tenant_id)
+                    .map_err(unknown_tenant_to_api_error)?;
                 Ok(ApiLedger::Sqlite(ledger))
             }
             #[cfg(feature = "shared-backend-postgres")]
-            ApiBackend::Postgres(base) => {
+            ApiBackend::Postgres {
+                ledger: base,
+                tenant_store,
+            } => {
+                tenant_store
+                    .ensure_known_tenant(tenant_id.as_str())
+                    .map_err(unknown_tenant_to_api_error)?;
                 let ledger = base
                     .for_tenant(tenant_id.as_str())
                     .map_err(|e| ApiError::internal(e.to_string()))?;
                 Ok(ApiLedger::Postgres(ledger))
             }
         }
+    }
+}
+
+/// Routes an `ensure_known_tenant` failure to 404 — an unknown tenant is a
+/// not-found "wrong address", not a validation or server error — while a
+/// genuine storage/connection failure from the same call still surfaces as
+/// 500.
+fn unknown_tenant_to_api_error(error: HivemindError) -> ApiError {
+    let message = error.to_string();
+    if message.contains("unknown tenant") {
+        ApiError::not_found(message)
+    } else {
+        ApiError::internal(message)
     }
 }
 
@@ -255,14 +285,20 @@ impl AppState {
 
         #[cfg(feature = "shared-backend-postgres")]
         if let Some(ref url) = config.database_url {
-            let ledger = PostgresEventLedger::connect(url, "provisioning")?;
-            let store = TenantStore::connect(url)?;
+            let ledger = Arc::new(PostgresEventLedger::connect(url, "provisioning")?);
+            // Shares the ledger's pool instead of opening a second one for
+            // the server's whole lifetime — see PostgresEventLedger::pool()'s
+            // doc comment and TenantStore::from_pool.
+            let store = Arc::new(TenantStore::from_pool(ledger.pool().clone())?);
             return Ok(Self {
-                backend: Arc::new(ApiBackend::Postgres(Arc::new(ledger))),
+                backend: Arc::new(ApiBackend::Postgres {
+                    ledger,
+                    tenant_store: Arc::clone(&store),
+                }),
                 api_key: None,
                 admin_key: config.admin_key.clone(),
                 sqlite_user_store: None,
-                tenant_store: Some(Arc::new(store)),
+                tenant_store: Some(store),
                 workos_config: workos_config.clone(),
                 workos_jwks: Arc::clone(&workos_jwks),
                 graph_cache: Arc::new(RwLock::new(HashMap::new())),

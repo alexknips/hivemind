@@ -661,6 +661,17 @@ async fn rls_cross_tenant_decision_not_visible() {
     // in a GET /v1/decisions/{id} request scoped to tenant "beta".
     let dir = test_ledger_dir();
 
+    // Since hivemind-rkbf.1, an unregistered tenant hard-errors at
+    // ledger-open time instead of silently opening a fresh scope, so both
+    // tenants used below must be registered first.
+    let ledger =
+        hivemind::ledger::SqliteEventLedger::open(&dir).expect("open ledger for provisioning");
+    for tenant in ["alpha", "beta"] {
+        ledger
+            .create_tenant(&hivemind::events::TenantId::new(tenant).expect("valid tenant id"))
+            .expect("register test tenant");
+    }
+
     // Capture a decision as tenant "alpha".
     let (status, body) = call(
         app(dir.clone()),
@@ -704,6 +715,47 @@ async fn rls_cross_tenant_decision_not_visible() {
         StatusCode::NOT_FOUND,
         "beta get alpha's decision: {body}" // ubs:ignore
     );
+    assert_eq!(body["error"]["code"], "not_found"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn unregistered_tenant_header_is_rejected_on_read_and_write() {
+    // Unlike "alpha"/"beta" above, this tenant is never registered via
+    // SqliteEventLedger::create_tenant — a typo'd X-HiveMind-Tenant must not
+    // silently open a fresh, empty scope (hivemind-rkbf.1).
+    let dir = test_ledger_dir();
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json_as_tenant(
+            "/v1/decisions",
+            serde_json::json!({
+                "title": "Should never be captured",
+                "rationale": "the tenant does not exist",
+                "topic_keys": ["isolation"],
+                "options": [{ "label": "opt-a" }]
+            }),
+            "never-registered",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "write: {body}"); // ubs:ignore
+    assert_eq!(body["error"]["code"], "not_found"); // ubs:ignore
+    assert!(
+        // ubs:ignore
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("never-registered"),
+        "error must name the tenant: {body}"
+    );
+
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req_as_tenant("/v1/decisions/search?q=test", "never-registered"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "read: {body}"); // ubs:ignore
     assert_eq!(body["error"]["code"], "not_found"); // ubs:ignore
 }
 

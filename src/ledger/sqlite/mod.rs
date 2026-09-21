@@ -14,7 +14,7 @@ use crate::error::LedgerError;
 use crate::events::{Event, EventId, TenantId};
 use crate::Result;
 
-use super::backend_error::storage_error;
+use super::backend_error::{storage_error, unknown_tenant_error};
 use super::EventLedger;
 
 const LEDGER_DB_NAME: &str = "ledger.sqlite";
@@ -43,6 +43,55 @@ impl SqliteEventLedger {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Errors unless `tenant_id` has a row in the local `tenants` registry.
+    /// Called once at ledger-open time (the CLI/stdio-MCP seam in
+    /// [`crate::ledger::AnyLedger::open`] and the HTTP API's per-request
+    /// seam) so a typo'd `--tenant`/`X-HiveMind-Tenant` cannot silently open
+    /// a fresh, empty tenant scope. `TenantId::LOCAL_VALUE` is seeded by
+    /// schema init, so the local-default flow is always known.
+    pub fn ensure_known_tenant(&self, tenant_id: &TenantId) -> Result<()> {
+        let exists: bool = retry_sqlite_lock(|| {
+            self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tenants WHERE tenant_id = ?1)",
+                params![tenant_id.as_str()],
+                |row| row.get(0),
+            )
+        })
+        .map_err(storage_error)?;
+
+        if !exists {
+            return Err(unknown_tenant_error(
+                tenant_id.as_str(),
+                format!(
+                    "run `hivemind tenant create {}` to register it",
+                    tenant_id.as_str()
+                ),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Registers `tenant_id` in the local `tenants` registry. SQLite-only:
+    /// on Postgres, tenant creation stays the server's provisioning route
+    /// (`POST /v1/tenants`), never the CLI.
+    pub fn create_tenant(&self, tenant_id: &TenantId) -> Result<()> {
+        let inserted = retry_sqlite_lock(|| {
+            self.connection.execute(
+                "INSERT OR IGNORE INTO tenants (tenant_id) VALUES (?1)",
+                params![tenant_id.as_str()],
+            )
+        })
+        .map_err(storage_error)?;
+
+        if inserted == 0 {
+            return Err(
+                storage_error(format!("tenant '{}' already exists", tenant_id.as_str())).into(),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -193,7 +242,12 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
                  payload TEXT NOT NULL,
                  ts TEXT NOT NULL,
                  UNIQUE(tenant_id, event_uuid)
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS tenants (
+                 tenant_id  TEXT PRIMARY KEY,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             INSERT OR IGNORE INTO tenants (tenant_id) VALUES ('local');",
         )?;
         ensure_column(
             connection,

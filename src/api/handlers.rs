@@ -223,7 +223,7 @@ fn backend_healthy(backend: &ApiBackend) -> bool {
     match backend {
         ApiBackend::Sqlite(dir) => SqliteEventLedger::open(dir.as_ref()).is_ok(),
         #[cfg(feature = "shared-backend-postgres")]
-        ApiBackend::Postgres(ledger) => ledger.pool().get().is_ok(),
+        ApiBackend::Postgres { ledger, .. } => ledger.pool().get().is_ok(),
     }
 }
 

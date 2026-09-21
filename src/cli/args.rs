@@ -134,10 +134,34 @@ pub enum Command {
     /// subcommand: query subcommands print one envelope, this one writes a
     /// directory tree.
     Export(ExportArgs),
+    /// Manage the local tenant registry. Every ledger open (CLI, stdio-MCP,
+    /// and the HTTP API server) errors on an unrecognized --tenant/
+    /// X-HiveMind-Tenant rather than silently opening a fresh, empty scope.
+    Tenant(TenantArgs),
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct QuickstartArgs {}
+
+#[derive(Debug, Clone, Args)]
+pub struct TenantArgs {
+    #[command(subcommand)]
+    pub command: TenantCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum TenantCommand {
+    /// Register a tenant in the local SQLite tenant registry. SQLite only —
+    /// on a Postgres backend, tenants are created through the server's
+    /// provisioning route (POST /v1/tenants), never the CLI.
+    Create(TenantCreateArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct TenantCreateArgs {
+    /// Tenant id to register.
+    pub tenant_id: String,
+}
 
 #[derive(Debug, Clone, Args)]
 pub struct ConnectorArgs {

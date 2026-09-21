@@ -112,11 +112,90 @@ fn open_selects_postgres_when_database_url_set() -> Result<()> {
         .map_or(0, |duration| duration.as_nanos());
     let tenant_id = TenantId::new(format!("tenant:test:any-ledger-open:{nanos}"))
         .map_err(|e| crate::error::LedgerError::Storage(e.to_string()))?;
+    let store = crate::ledger::TenantStore::connect(&database_url)?;
+    store.provision_tenant(tenant_id.as_str(), "AnyLedger open test tenant")?;
     let config = LedgerConfig {
         hivemind_dir: temp_hivemind_dir("postgres-selected"),
         database_url: Some(database_url),
     };
     let ledger = AnyLedger::open(&config, &tenant_id)?;
     assert!(matches!(ledger, AnyLedger::Postgres(_)));
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Known-tenant enforcement at the ledger-open seam (hivemind-rkbf.1)
+// ---------------------------------------------------------------------------
+
+/// Parity: an unregistered tenant hard-errors on SQLite, naming the tenant
+/// and the create path, and never opens a fresh empty scope.
+#[test]
+fn open_rejects_unknown_tenant_sqlite() {
+    let dir = temp_hivemind_dir("unknown-tenant");
+    let config = LedgerConfig {
+        hivemind_dir: dir.clone(),
+        database_url: None,
+    };
+    let tenant_id = TenantId::new("tenant:does-not-exist").expect("valid tenant id");
+
+    let error = AnyLedger::open(&config, &tenant_id)
+        .expect_err("an unregistered tenant must be rejected, not silently opened");
+    let message = error.to_string();
+    assert!(
+        message.contains("unknown tenant") && message.contains("tenant:does-not-exist"),
+        "error must name the tenant: {message}"
+    );
+    assert!(
+        message.contains("hivemind tenant create"),
+        "error must name the create path: {message}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Existing local-default flows are unaffected: `TenantId::local()` is
+/// seeded by schema init, so opening with no explicit `--tenant` still works.
+#[test]
+fn open_accepts_local_default_tenant_sqlite() -> Result<()> {
+    with_sqlite_any_ledger("local-default", |ledger| {
+        assert!(matches!(ledger, AnyLedger::Sqlite(_)));
+        Ok(())
+    })
+}
+
+/// Parity: the same unregistered tenant hard-errors on Postgres too, with
+/// the backend-specific create hint (the server's provisioning route, not
+/// the CLI).
+#[cfg(feature = "shared-backend-postgres")]
+#[test]
+fn open_rejects_unknown_tenant_postgres() -> Result<()> {
+    let Some(database_url) = std::env::var("HIVEMIND_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        eprintln!("skipping Postgres AnyLedger test; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let tenant_id = TenantId::new(format!("tenant:test:any-ledger-unknown:{nanos}"))
+        .map_err(|e| crate::error::LedgerError::Storage(e.to_string()))?;
+    let config = LedgerConfig {
+        hivemind_dir: temp_hivemind_dir("postgres-unknown-tenant"),
+        database_url: Some(database_url),
+    };
+
+    let error = AnyLedger::open(&config, &tenant_id)
+        .expect_err("an unregistered tenant must be rejected, not silently opened");
+    let message = error.to_string();
+    assert!(
+        message.contains("unknown tenant") && message.contains(tenant_id.as_str()),
+        "error must name the tenant: {message}"
+    );
+    assert!(
+        message.contains("provisioning route"),
+        "error must name the create path: {message}"
+    );
     Ok(())
 }

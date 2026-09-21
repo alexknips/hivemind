@@ -22,9 +22,9 @@ use crate::ingest::{
     DocumentImportSummary, DocumentPreparationRequest, ProseImportCandidate, ProseImportSource,
     SlackIngestOutcome,
 };
-use crate::ledger::{AnyLedger, EventLedger, LedgerConfig, TenantScopedLedger};
 #[cfg(feature = "shared-backend-postgres")]
-use crate::ledger::{PostgresEventLedger, SqliteEventLedger};
+use crate::ledger::PostgresEventLedger;
+use crate::ledger::{AnyLedger, EventLedger, LedgerConfig, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
     derive_decision_status, export_decision_log, export_read_only_summary,
@@ -68,7 +68,7 @@ use super::args::{
     QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs, QueryQualityTier,
     QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
     QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
-    SupersedeArgs, TuiArgs,
+    SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs, TuiArgs,
 };
 use super::render::{
     append_truncation_notice, decision_status_label, format_disagree_output, format_export_output,
@@ -112,6 +112,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Connector(args) => run_connector(cli, args),
         Command::QualityScan(args) => run_quality_scan(cli, args),
         Command::Export(args) => run_export(cli, args),
+        Command::Tenant(args) => run_tenant(cli, args),
     }
 }
 
@@ -3199,6 +3200,54 @@ fn run_export(cli: &Cli, args: &ExportArgs) -> Result<String> {
         files_removed: summary.removed,
     };
     format_export_output(cli.json, &report)
+}
+
+fn run_tenant(cli: &Cli, args: &TenantArgs) -> Result<String> {
+    match &args.command {
+        TenantCommand::Create(create_args) => run_tenant_create(cli, create_args),
+    }
+}
+
+/// SQLite only — Postgres tenants are created through the server's
+/// provisioning route (`POST /v1/tenants`), never the CLI.
+fn run_tenant_create(cli: &Cli, args: &TenantCreateArgs) -> Result<String> {
+    if cli
+        .database_url
+        .as_deref()
+        .is_some_and(|url| !url.is_empty())
+    {
+        return Err(CliError::InvalidInput(
+            "tenant create is SQLite-only; on Postgres, tenants are created through \
+             the server's provisioning route (POST /v1/tenants)"
+                .to_owned(),
+        )
+        .into());
+    }
+
+    let tenant_id = TenantId::new(args.tenant_id.trim().to_owned()).map_err(|error| {
+        HivemindError::from(CliError::InvalidInput(format!(
+            "tenant id is invalid: {error}"
+        )))
+    })?;
+
+    let ledger = SqliteEventLedger::open(&cli.hivemind_dir)?;
+    ledger.create_tenant(&tenant_id)?;
+
+    if cli.json {
+        format_json_value(
+            true,
+            &serde_json::json!({
+                "tenant_id": tenant_id.as_str(),
+                "hivemind_dir": cli.hivemind_dir.display().to_string(),
+            }),
+        )
+    } else {
+        Ok(format!(
+            "Created tenant '{}' in {}",
+            tenant_id.as_str(),
+            cli.hivemind_dir.display()
+        ))
+    }
 }
 
 struct ExportWriteSummary {

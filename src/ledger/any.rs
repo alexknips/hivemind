@@ -39,18 +39,33 @@ impl AnyLedger {
     /// the local SQLite ledger under `config.hivemind_dir`. Never falls back
     /// from Postgres to SQLite on connection failure — a misconfigured cell
     /// must fail loudly, not silently write to a local file.
+    ///
+    /// Errors if `tenant_id` is unknown on the selected backend (no
+    /// `tenants` row on SQLite, no `hm_tenants` row on Postgres) — a typo'd
+    /// `--tenant` must not silently open a fresh, empty tenant scope.
     pub fn open(config: &LedgerConfig, tenant_id: &TenantId) -> Result<Self> {
         match config.database_url.as_deref() {
             Some(url) if !url.is_empty() => Self::open_postgres(url, tenant_id),
-            _ => Ok(AnyLedger::Sqlite(SqliteEventLedger::open(
-                &config.hivemind_dir,
-            )?)),
+            _ => Self::open_sqlite(&config.hivemind_dir, tenant_id),
         }
+    }
+
+    fn open_sqlite(hivemind_dir: &std::path::Path, tenant_id: &TenantId) -> Result<Self> {
+        let ledger = SqliteEventLedger::open(hivemind_dir)?;
+        ledger.ensure_known_tenant(tenant_id)?;
+        Ok(AnyLedger::Sqlite(ledger))
     }
 
     #[cfg(feature = "shared-backend-postgres")]
     fn open_postgres(url: &str, tenant_id: &TenantId) -> Result<Self> {
         let ledger = PostgresEventLedger::connect(url, tenant_id.as_str())?;
+        // Shares the ledger's pool (see PostgresEventLedger::pool()'s doc
+        // comment) rather than opening a second one per one-shot CLI/
+        // stdio-MCP invocation. Built AFTER the ledger above (see
+        // TenantStore::from_pool) so RLS can be enabled on the tables it
+        // just created — mirrors AppState::from_config's startup order.
+        let tenant_store = crate::ledger::TenantStore::from_pool(ledger.pool().clone())?;
+        tenant_store.ensure_known_tenant(tenant_id.as_str())?;
         Ok(AnyLedger::Postgres(ledger))
     }
 
