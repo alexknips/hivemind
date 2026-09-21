@@ -33,9 +33,9 @@ use crate::ledger::{AnyLedger, EventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
     derive_decision_status, get_decision_brief as query_get_decision_brief,
-    get_decision_neighborhood as query_get_decision_neighborhood,
-    resolve_decision_by_description, DecisionStatus, NeighborhoodRequest, QueryContext,
-    QueryResponse, ResolveOutcome, SituationalRequest,
+    get_decision_neighborhood as query_get_decision_neighborhood, resolve_decision_by_description,
+    DecisionStatus, NeighborhoodRequest, QueryContext, QueryResponse, ResolveOutcome,
+    SituationalRequest,
 };
 use crate::summarize::{RecallRequest, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT};
 
