@@ -259,13 +259,15 @@ Layer-3: produce a concise text summary of one or more decisions. All content is
 
 ### `get_decision_outcome`
 
-Derive the outcome record for a single decision: did it hold up? Returns four quality signals — superseded (and how fast), stale premises (premised on a refuted hypothesis), contested (unresolved disagreement), thin structure (no options/evidence) — each with its contributing reasons attached. No LLM involved; derived purely from graph edges. Returns null when the decision_id is not found.
+"Did this decision hold up?" — leads with the decision, rationale, chosen and rejected options, and who decided it, then whether it still holds: superseded (and how fast), stale premises (premised on a refuted hypothesis), contested (unresolved disagreement), or thin structure (no options/evidence), each with its contributing reasons attached. No LLM involved; derived purely from graph edges. Equivalent to `hivemind query verify`. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: "ambiguous", candidates: [...]}`, not an error; re-call with decision_id from that list. A description matching nothing is also a successful result, shaped `{outcome: "not_found"}` (there is no #N/--pick over MCP to retry against, so there is nothing further to disambiguate).
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `decision_id` | string | ✓ | The decision to evaluate. |
+| `decision_id` | string | — | The decision to evaluate. Provide this or `description`, not both. |
+| `description` | string | — | Free-text description to resolve to a decision when the id is not known. |
+| `topic` | string | — | Narrows description resolution to decisions carrying this topic key. |
 
 ---
 
