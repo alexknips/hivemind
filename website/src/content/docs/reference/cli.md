@@ -9,9 +9,62 @@ description: Complete reference for the hivemind command-line interface.
 |------|-------------|
 | `--actor <id>` | Actor making this request. Format: `human:<id>` or `agent:<tool>:<session>` |
 | `--hivemind-dir <path>` | Ledger directory (default: `./hivemind/`). Created on first write. |
+| `--tenant <id>` | Tenant to read/write (default: `local`). Must already be a known tenant — see [Tenants](#tenants) below. |
 | `--database-url <url>` | Shared Postgres backend connection URL. Unset or empty selects the local SQLite ledger under `--hivemind-dir` instead. A flag value beats `HIVEMIND_DATABASE_URL`. Requires the `shared-backend-postgres` feature. |
 | `--json` | Emit structured JSON output |
 | `--graph-backend <memory\|kuzu>` | Graph projection backend (default: `memory`) |
+
+## Tenants
+
+Every ledger open — CLI, HTTP API, and stdio MCP alike — validates `--tenant`
+(or `X-HiveMind-Tenant` on the HTTP API) against a per-backend tenant
+registry before any read or write. An unknown tenant is a hard error, not a
+fresh empty scope: a typo'd `--tenant` must never look indistinguishable from
+"this tenant just has no decisions yet."
+
+**Default:** `--tenant local` (env `HIVEMIND_TENANT`). The `local` tenant is
+seeded automatically for every SQLite ledger directory, so single-user/local
+workflows need no tenant setup.
+
+**SQLite — `hivemind tenant create`:** tenants are a per-`--hivemind-dir`
+registry. Register a new one with:
+
+```
+hivemind tenant create <tenant-id>
+```
+
+Creates the tenant in the ledger directory named by
+`--hivemind-dir`/`HIVEMIND_DIR` (errors if it already exists there). Add
+`--json` for a structured `{tenant_id, hivemind_dir}` result. This subcommand
+is SQLite-only — pointed at a Postgres backend (`--database-url` set) it
+fails immediately, since Postgres tenants are provisioned server-side, not
+by any CLI invocation.
+
+**Postgres — server provisioning route:** tenants live in the shared
+`hm_tenants` table and are created only through the server's admin-gated
+`POST /v1/tenants` route (requires `HIVEMIND_ADMIN_KEY`). There is no CLI
+equivalent by design — this is the same route the HTTP API's per-user and
+WorkOS-OIDC auth paths depend on to have a tenant to resolve a caller into.
+
+**The unknown-tenant error:** on both backends, opening a ledger for an
+unregistered tenant fails with an error naming the tenant and the
+backend-specific create path instead of silently opening a fresh, empty
+scope:
+
+```
+unknown tenant 'acme-inc': run `hivemind tenant create acme-inc` to register it
+```
+
+```
+unknown tenant 'acme-inc': tenants are created through the server's provisioning route (POST /v1/tenants), not the CLI
+```
+
+On the HTTP API this surfaces as `404 Not Found` for every read and write
+endpoint alike (a wrong address, not a validation or server error). In
+Postgres multi-tenant mode, clients never send a tenant header at all — the
+bearer token (or, with WorkOS configured, the JWT's `org_id` claim) resolves
+to the tenant server-side; `X-HiveMind-Tenant` only applies to SQLite
+dev-mode auth, where it defaults to `local` when absent.
 
 ## Emit commands
 
@@ -341,6 +394,17 @@ hivemind query scan_decision_quality
 
 ## Other commands
 
+### `tenant create`
+
+```
+hivemind tenant create <tenant-id>
+```
+
+Registers a tenant in the local SQLite ledger's tenant registry so it passes
+the known-tenant check on later `--tenant <tenant-id>` opens. See
+[Tenants](#tenants) above for the full contract, including the Postgres
+provisioning route this command does not apply to.
+
 ### `quickstart`
 
 ```
@@ -474,6 +538,7 @@ form.
 | Variable | Description |
 |----------|-------------|
 | `HIVEMIND_DIR` | Default ledger directory |
+| `HIVEMIND_TENANT` | Default tenant (default: `local`). Overridden by `--tenant`. Must be a known tenant — see [Tenants](#tenants). |
 | `HIVEMIND_DATABASE_URL` | Shared Postgres backend connection URL. Unset or empty selects the local SQLite ledger. Overridden by `--database-url`. Requires the `shared-backend-postgres` feature. |
 | `HIVEMIND_ACTOR` | Default actor if `--actor` is omitted |
 | `HIVEMIND_GRAPH_BACKEND` | Graph backend: `memory` (default) or `kuzu` |
