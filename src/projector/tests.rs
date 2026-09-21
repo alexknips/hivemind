@@ -517,6 +517,79 @@ fn decision_proposed_without_expressed_confidence_stores_null() -> Result<()> {
 }
 
 #[test]
+fn decision_proposed_with_option_labels_stores_label_per_option() -> Result<()> {
+    // hivemind-zdsh.3: option_labels must land on each Option node's `label` property so
+    // digests/summaries can render titles instead of raw generated option ids.
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:labeled",
+            "title": "Pick a queue",
+            "rationale": "Need durable delivery",
+            "topic_keys": ["infra"],
+            "option_ids": ["option:sqs", "option:kafka"],
+            "option_labels": ["Amazon SQS", "Kafka"],
+            "chosen_option_id": "option:kafka",
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    assert_eq!(
+        nodes
+            .get(&(NodeKind::Option, "option:sqs".to_owned()))
+            .and_then(|p| p.get("label")),
+        Some(&GraphValue::String("Amazon SQS".to_owned()))
+    );
+    assert_eq!(
+        nodes
+            .get(&(NodeKind::Option, "option:kafka".to_owned()))
+            .and_then(|p| p.get("label")),
+        Some(&GraphValue::String("Kafka".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn decision_proposed_without_option_labels_falls_back_to_option_id() -> Result<()> {
+    // Backward compatibility: events written before this field existed (or by a caller that
+    // never learned the label) must still project — the label just falls back to the id.
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:unlabeled",
+            "title": "Pick a queue",
+            "rationale": "Need durable delivery",
+            "topic_keys": ["infra"],
+            "option_ids": ["option:legacy"],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    assert_eq!(
+        graph
+            .nodes()
+            .get(&(NodeKind::Option, "option:legacy".to_owned()))
+            .and_then(|p| p.get("label")),
+        Some(&GraphValue::String("option:legacy".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
 fn classified_batch_decision_projects_node_and_actor_edges() -> Result<()> {
     let ledger = InMemoryEventLedger::new();
     ledger.append(event(

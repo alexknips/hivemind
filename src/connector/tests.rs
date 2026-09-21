@@ -146,6 +146,7 @@ fn emit_test_decision(
             rationale: rationale.to_owned(),
             topic_keys: topic_keys.iter().map(|s| s.to_string()).collect(),
             option_ids: vec![],
+            option_labels: vec![],
             chosen_option_id: None,
             hypothesis_ids: vec![],
             evidence_ids: vec![],

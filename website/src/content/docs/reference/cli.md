@@ -79,6 +79,7 @@ hivemind emit decision.proposed
   [--topic-keys <key,key,...>]
   [--options <opt,opt,...>]
   [--chose <option>]
+  [--decided-by <actor-id>]
 ```
 
 Prints the new decision ID on success. Add `--json` for a structured envelope.
@@ -86,6 +87,13 @@ Prints the new decision ID on success. Add `--json` for a structured envelope.
 There is no `--supersedes` flag on this command. To capture a decision that
 reverses a prior one, use [`supersede`](#supersede) instead — it captures the
 new decision and marks the old one superseded in a single call.
+
+`--decided-by <actor-id>` names the actor who actually made the decision, when
+that differs from `--actor` (the recording actor/scribe) — for example an
+agent writing down a decision a human made: `--actor agent:claude:session
+--decided-by human:alex`. Requires `--chose`; immediately advances the
+decision to `accepted` via a `decision.accepted` event from `--decided-by`,
+instead of leaving it at `proposed`.
 
 ### `emit decision.capture`
 
@@ -99,6 +107,7 @@ hivemind emit decision.capture
   [--topic-keys <key,...>]
   [--options <opt,...>]
   [--chose <option>]
+  [--decided-by <actor-id>]
 ```
 
 ### `emit decision.accepted`

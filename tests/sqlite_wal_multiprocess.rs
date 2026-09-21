@@ -192,7 +192,9 @@ fn run_worker() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             rationale: "Exercise concurrent writes from independent HiveMind processes.",
             topic_keys: &[topic_key],
             option_ids: &[option_id],
+            option_labels: &[],
             chosen_option_id: None,
+            decided_by: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })?;

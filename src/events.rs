@@ -178,6 +178,11 @@ pub struct DecisionProposedPayload {
     pub topic_keys: Vec<String>,
     #[serde(default)]
     pub option_ids: Vec<String>,
+    /// Human-readable label per `option_ids` entry, index-aligned. `#[serde(default)]` so
+    /// events from before this field existed still replay: the projector falls back to the
+    /// raw option id when a label is missing (see `project_decision_proposed`).
+    #[serde(default)]
+    pub option_labels: Vec<String>,
     pub chosen_option_id: Option<String>,
     #[serde(default)]
     pub hypothesis_ids: Vec<String>,
@@ -893,6 +898,7 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty("payload.rationale", &payload.rationale)?;
             require_non_empty_values("payload.topic_keys", &payload.topic_keys)?;
             require_non_empty_values("payload.option_ids", &payload.option_ids)?;
+            require_non_empty_values("payload.option_labels", &payload.option_labels)?;
             require_optional_non_empty(
                 "payload.chosen_option_id",
                 payload.chosen_option_id.as_deref(),

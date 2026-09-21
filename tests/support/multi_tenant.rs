@@ -65,7 +65,9 @@ pub fn seed_tenant<L: EventLedger>(ledger: &L, name: &'static str) -> TestResult
             rationale: &format!("Rationale for {name} decision {i}: {topic} tradeoff evaluated"),
             topic_keys: &[topic.to_owned()],
             option_ids: &[opt_a, opt_b.clone()],
+            option_labels: &[],
             chosen_option_id: Some(&opt_b),
+            decided_by: None,
             hypothesis_ids: &hyp_refs,
             evidence_ids: &ev_refs,
         })?;

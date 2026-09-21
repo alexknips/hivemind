@@ -678,8 +678,27 @@ fn project_decision_proposed(
         origin_properties,
     )?;
 
+    // Falls back to the raw id when option_labels is shorter (events predating this field, or
+    // a caller that never learned the label) — never fails projection. Shared by the options
+    // loop below and the chosen-option upsert, so a chosen option keeps its label even under a
+    // graph backend whose upsert_node replaces properties outright instead of merging them —
+    // relying on merge semantics here would silently drop the label on such a backend.
+    let option_label = |option_id: &str| -> String {
+        payload
+            .option_ids
+            .iter()
+            .position(|id| id == option_id)
+            .and_then(|index| payload.option_labels.get(index).cloned())
+            .unwrap_or_else(|| option_id.to_owned())
+    };
+
     for option_id in &payload.option_ids {
-        graph.upsert_node(NodeKind::Option, option_id, origin_properties)?;
+        let mut option_properties = origin_properties.clone();
+        option_properties.insert(
+            "label".to_owned(),
+            GraphValue::String(option_label(option_id)),
+        );
+        graph.upsert_node(NodeKind::Option, option_id, &option_properties)?;
         graph.upsert_edge(
             RelationKind::HasOption,
             &payload.decision_id,
@@ -689,7 +708,12 @@ fn project_decision_proposed(
     }
 
     if let Some(chosen_option_id) = &payload.chosen_option_id {
-        graph.upsert_node(NodeKind::Option, chosen_option_id, origin_properties)?;
+        let mut option_properties = origin_properties.clone();
+        option_properties.insert(
+            "label".to_owned(),
+            GraphValue::String(option_label(chosen_option_id)),
+        );
+        graph.upsert_node(NodeKind::Option, chosen_option_id, &option_properties)?;
         graph.upsert_edge(
             RelationKind::Chose,
             &payload.decision_id,

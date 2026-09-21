@@ -365,7 +365,7 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "capture_decision",
-            "description": "Record a proposed decision with rationale, topic keys, and at least one option. Defaults actor_id to agent:<tool>:<session> and writes source=agent.",
+            "description": "Record a proposed decision with rationale, topic keys, and at least one option. Defaults actor_id to agent:<tool>:<session> and writes source=agent. Pass `decided_by` when the actual decider differs from the recording actor (e.g. a human decided, an agent is scribing it) — the decision is recorded as accepted by that actor rather than left proposed.",
             "inputSchema": {
                 "type": "object",
                 "required": ["title", "rationale", "topic_keys", "options"],
@@ -387,6 +387,7 @@ pub fn tool_definitions() -> Vec<Value> {
                         }
                     },
                     "chosen_option_label": { "type": "string", "description": "Label of the option that was accepted; must match one of `options[].label`." },
+                    "decided_by": { "type": "string", "description": "Actor who actually made the decision, when it differs from `actor_id` (the recording actor/scribe) — e.g. `human:alex@example.com` when an agent is writing down a decision a human made. Requires `chosen_option_label`; immediately advances the decision to `accepted` from this actor." },
                     "hypothesis_ids": { "type": "array", "items": { "type": "string" } },
                     "evidence_ids": { "type": "array", "items": { "type": "string" } }
                 }

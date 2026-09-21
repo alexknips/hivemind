@@ -111,7 +111,9 @@ fn propose_decision_fans_out_relation_events_with_causation_linkage() {
             rationale: "Need robust ingestion",
             topic_keys: &["Infra / Queue".to_owned()],
             option_ids: &[option_a.clone(), option_b.clone()],
+            option_labels: &[],
             chosen_option_id: Some(option_b.as_str()),
+            decided_by: None,
             hypothesis_ids: std::slice::from_ref(&hypothesis_id),
             evidence_ids: std::slice::from_ref(&evidence_id),
         })
@@ -182,7 +184,9 @@ fn direct_agent_decision_persists_agent_provenance() {
                 rationale: "Agent-written decisions must be distinguishable from CLI writes",
                 topic_keys: &["Integrations".to_owned()],
                 option_ids: &[option_id],
+                option_labels: &[],
                 chosen_option_id: None,
+                decided_by: None,
                 hypothesis_ids: &[],
                 evidence_ids: &[],
             })
@@ -228,7 +232,9 @@ fn accept_and_reject_invariant_for_same_actor_is_enforced() {
             rationale: "Need progress",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
+            option_labels: &[],
             chosen_option_id: None,
+            decided_by: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -240,6 +246,137 @@ fn accept_and_reject_invariant_for_same_actor_is_enforced() {
     assert!(commands
         .reject_decision(&decision_id, "actor:alice")
         .is_err());
+}
+
+#[test]
+fn propose_decision_with_decided_by_emits_accepted_event_from_that_actor() {
+    // hivemind-zdsh.3: an agent (the recorder) proposing a decision a human (the decider)
+    // already made must not leave it stuck at `proposed` — decided_by drives an explicit
+    // accept from the decider, distinct from the recording actor_id.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("agent:claude:scribe", "Ship it", "Option A")
+        .expect("option");
+    let decision_id = commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "agent:claude:scribe",
+            title: "Human decides, agent records",
+            rationale: "The human chose; the agent is only writing it down",
+            topic_keys: &["governance".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: Some(option_id.as_str()),
+            decided_by: Some("human:alex"),
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
+        .expect("propose with decided_by");
+
+    let events = ledger.read(0, 20).expect("read events");
+    let proposal = events
+        .iter()
+        .find(|event| event.event_type == EventType::DecisionProposed)
+        .expect("proposal event present");
+    assert_eq!(proposal.actor_id, "agent:claude:scribe");
+
+    let accepted = events
+        .iter()
+        .find(|event| event.event_type == EventType::DecisionAccepted)
+        .expect("decided_by must emit a decision.accepted event");
+    assert_eq!(accepted.actor_id, "human:alex");
+    assert_eq!(
+        accepted.payload.get("decision_id").and_then(|v| v.as_str()),
+        Some(decision_id.as_str())
+    );
+}
+
+#[test]
+fn propose_decision_decided_by_requires_chosen_option_id() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("agent:claude:scribe", "A", "Option A")
+        .expect("option");
+    let result = commands.propose_decision(DecisionProposalInput {
+        actor_id: "agent:claude:scribe",
+        title: "No chosen option yet",
+        rationale: "Still an open proposal",
+        topic_keys: &["governance".to_owned()],
+        option_ids: &[option_id],
+        option_labels: &[],
+        chosen_option_id: None,
+        decided_by: Some("human:alex"),
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+    });
+    assert!(
+        result.is_err(),
+        "decided_by without a chosen_option_id must be rejected"
+    );
+}
+
+#[test]
+fn propose_decision_without_decided_by_stays_proposed() {
+    // Unchanged behavior: a chosen option alone does not imply review/acceptance — that
+    // stays a deliberate, separate step unless the caller names who decided.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option");
+    commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Proposed with a leaning but not accepted",
+            rationale: "No decided_by given",
+            topic_keys: &["Core".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: Some(option_id.as_str()),
+            decided_by: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
+        .expect("propose");
+
+    let events = ledger.read(0, 20).expect("read events");
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.event_type == EventType::DecisionAccepted),
+        "no decided_by must mean no accept event"
+    );
+}
+
+#[test]
+fn propose_decision_rejects_mismatched_option_labels_length() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_a = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let option_b = commands
+        .record_option("actor:alice", "B", "Option B")
+        .expect("option b");
+
+    let result = commands.propose_decision(DecisionProposalInput {
+        actor_id: "actor:alice",
+        title: "Mismatched labels",
+        rationale: "option_labels shorter than option_ids and non-empty",
+        topic_keys: &["Core".to_owned()],
+        option_ids: &[option_a, option_b],
+        option_labels: &["Only one label".to_owned()],
+        chosen_option_id: None,
+        decided_by: None,
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+    });
+    assert!(result.is_err());
 }
 
 #[test]
@@ -261,7 +398,9 @@ fn supersede_requires_both_decisions_to_exist() {
             rationale: "rationale",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_a],
+            option_labels: &[],
             chosen_option_id: None,
+            decided_by: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -274,7 +413,9 @@ fn supersede_requires_both_decisions_to_exist() {
             rationale: "rationale",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_b],
+            option_labels: &[],
             chosen_option_id: None,
+            decided_by: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -304,7 +445,9 @@ fn disagree_records_reason_and_is_idempotent_for_same_actor() {
             rationale: "rationale",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
+            option_labels: &[],
             chosen_option_id: None,
+            decided_by: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -358,7 +501,9 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
             rationale: "rationale",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
+            option_labels: &[],
             chosen_option_id: None,
+            decided_by: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -459,7 +604,9 @@ fn attach_evidence_requires_existing_endpoints() {
             rationale: "rationale",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
+            option_labels: &[],
             chosen_option_id: None,
+            decided_by: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -545,7 +692,9 @@ fn propose_decision_normalizes_topic_keys() {
                 "Ops___SRE   Alerts".to_owned(),
             ],
             option_ids: &[option_id],
+            option_labels: &[],
             chosen_option_id: None,
+            decided_by: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })

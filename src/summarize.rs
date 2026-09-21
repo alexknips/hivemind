@@ -253,7 +253,7 @@ fn fetch_option_labels(
     // Use the scan pattern that the memory projector supports: "RETURN node.id AS id".
     // It returns all Option nodes with their stored properties; we filter by id client-side.
     let rows = graph.query(
-        "MATCH (node:`Option`) RETURN node.id AS id ORDER BY node.id;",
+        "MATCH (node:`Option`) RETURN node.id AS id, node.label AS label ORDER BY node.id;",
         &GraphParams::new(),
     )?;
     let mut label_map: std::collections::BTreeMap<String, String> = rows
@@ -528,7 +528,7 @@ fn load_option_label_cache(
     graph: &impl GraphView,
 ) -> crate::Result<std::collections::BTreeMap<String, String>> {
     let rows = graph.query(
-        "MATCH (node:`Option`) RETURN node.id AS id ORDER BY node.id;",
+        "MATCH (node:`Option`) RETURN node.id AS id, node.label AS label ORDER BY node.id;",
         &GraphParams::new(),
     )?;
     Ok(rows
@@ -703,11 +703,9 @@ fn render_digest_text(
         );
     }
 
-    let cited: Vec<String> = entries
-        .iter()
-        .map(|e| e.decision_id.clone()) // ubs:ignore: clone necessary — building owned Vec from borrowed entries
-        .collect();
-    let _ = writeln!(out, "Cited: {}", cited.join(", "));
+    // No "Cited:" footer here: every decision_id already appears in its own "• [id] title"
+    // bullet above, so a trailing list would just repeat them (hivemind-zdsh.3). Machine
+    // consumers get the same ids losslessly via DigestResponse::cited_decision_ids (JSON mode).
 
     out.trim_end().to_owned()
 }
@@ -736,6 +734,8 @@ mod tests {
         chosen: Option<&str>,
     ) -> String {
         let topic_keys: Vec<String> = topic_keys.iter().map(|s| s.to_string()).collect();
+        let owned_option_labels: Vec<String> =
+            option_labels.iter().map(|s| s.to_string()).collect();
         let option_ids: Vec<String> = option_labels
             .iter()
             .map(|label| commands.record_option(actor, label, label).unwrap()) // ubs:ignore: test-only helper; panicking is correct in tests
@@ -753,7 +753,9 @@ mod tests {
             rationale,
             topic_keys: &topic_keys,
             option_ids: &option_ids,
+            option_labels: &owned_option_labels,
             chosen_option_id: chosen_id.as_deref(),
+            decided_by: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
         };

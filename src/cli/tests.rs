@@ -2019,7 +2019,10 @@ fn search_cli_alias_uses_fts_surface_with_time_filters() {
     assert_eq!(query["data"]["items"][0]["decision"]["id"], decision_id);
     assert_eq!(
         query["data"]["items"][0]["matched_fields"],
-        serde_json::json!(["option.id"])
+        // hivemind-zdsh.3: option.label now carries the real label ("gateway") instead of
+        // being empty, so it matches too, alongside option.id (whose generated slug also
+        // embeds the label).
+        serde_json::json!(["option.id", "option.label"])
     );
     assert_eq!(
         query["data"]["filters"]["since"],
@@ -2182,8 +2185,85 @@ fn digest_cli_returns_decisions_in_window() {
         "summary must mention the decision title"
     ); // ubs:ignore: test-only assertion
     assert!(
-        summary.contains("Cited:"),
-        "summary must include citation line"
+        summary.contains("Options: json, msgpack — Chose: msgpack"),
+        "summary must render option labels, not raw option ids (hivemind-zdsh.3): {summary}"
+    ); // ubs:ignore: test-only assertion
+    assert!(
+        !summary.contains("Cited:"),
+        "summary must not repeat every decision_id again in a trailing footer \
+         (hivemind-zdsh.3) — each already appears in its own bullet: {summary}"
+    ); // ubs:ignore: test-only assertion
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn decision_capture_with_decided_by_is_the_acceptance_test_for_ledger_fidelity() {
+    // hivemind-zdsh.3 acceptance test: capture Alex's ruling itself — a decision he made,
+    // recorded by the capturing agent — with correct attribution, and confirm the digest
+    // renders it readably. decided_by=human:alex.knips@gmail.com must appear as who decided;
+    // agent:claude:hivemind-crew (the recorder) must appear as who recorded it — neither
+    // hidden, both visible in the same "By:" line — and the decision must land as accepted,
+    // not stuck at proposed.
+    let hivemind_dir = unique_test_dir("ledger-fidelity-acceptance");
+    let decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.capture",
+        "--agent-tool",
+        "claude",
+        "--agent-session",
+        "hivemind-crew",
+        "--title",
+        "Ledger must distinguish who decided from who recorded",
+        "--rationale",
+        "If the human delegates small decisions to agents, we track that; when the agent \
+         asks the human to choose and the human does, the human made the decision. The agent \
+         that wrote it down is the recorder, not the decider.",
+        "--topic-keys",
+        "governance,capture-fidelity",
+        "--options",
+        "Keep recorder and decider as the same actor,\
+         Let capture name decided_by separately from the recording actor",
+        "--chose",
+        "Let capture name decided_by separately from the recording actor",
+        "--decided-by",
+        "human:alex.knips@gmail.com",
+    ]))
+    .expect("decision.capture with decided_by succeeds");
+
+    let summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "digest",
+        "--window",
+        "7d",
+        "--summary",
+    ]))
+    .expect("digest summary succeeds");
+
+    assert!(
+        summary.contains(&format!("[{decision_id}]")),
+        "digest must cite the captured decision: {summary}"
+    ); // ubs:ignore: test-only assertion
+    assert!(
+        summary.contains("(accepted)"),
+        "a decision captured with decided_by must land as accepted, not stuck at proposed: {summary}"
+    ); // ubs:ignore: test-only assertion
+    assert!(
+        summary.contains(
+            "Options: Keep recorder and decider as the same actor, \
+             Let capture name decided_by separately from the recording actor — \
+             Chose: Let capture name decided_by separately from the recording actor"
+        ),
+        "digest must render option titles, not raw option ids: {summary}"
+    ); // ubs:ignore: test-only assertion
+    assert!(
+        summary.contains("By: agent:claude:hivemind-crew, human:alex.knips@gmail.com"),
+        "digest must be honest about both who recorded and who decided, in one line: {summary}"
     ); // ubs:ignore: test-only assertion
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);

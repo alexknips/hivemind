@@ -445,6 +445,7 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 rationale: "Contract tests need one valid payload per event type".to_owned(),
                 topic_keys: Vec::new(),
                 option_ids: Vec::new(),
+                option_labels: Vec::new(),
                 chosen_option_id: None,
                 hypothesis_ids: Vec::new(),
                 evidence_ids: Vec::new(),

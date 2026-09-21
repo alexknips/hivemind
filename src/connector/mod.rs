@@ -1799,6 +1799,7 @@ fn emit_decision_proposed<L: EventLedger>(
             rationale: rationale.to_owned(),
             topic_keys: effective_topic_keys,
             option_ids: vec![option_id.to_owned()],
+            option_labels: vec!["As stated in the imported document".to_owned()],
             chosen_option_id: None,
             hypothesis_ids: vec![],
             evidence_ids: vec![],

@@ -172,6 +172,10 @@ pub(crate) struct CaptureDecisionArgs {
     pub(crate) topic_keys: Vec<String>,
     pub(crate) options: Vec<CaptureOptionArg>,
     pub(crate) chosen_option_label: Option<String>,
+    /// Actor who actually made the decision, when it differs from `actor_id` (the recording
+    /// actor — an agent scribing a decision a human made, for example). Requires
+    /// `chosen_option_label`. See `decided_by` on `DecisionProposalInput`.
+    pub(crate) decided_by: Option<String>,
     pub(crate) hypothesis_ids: Vec<String>,
     pub(crate) evidence_ids: Vec<String>,
 }
@@ -239,8 +243,15 @@ impl CaptureDecisionArgs {
         }
 
         let chosen_option_label = optional_string(args, "chosen_option_label")?;
+        let decided_by = optional_string(args, "decided_by")?;
         let hypothesis_ids = optional_string_array(args, "hypothesis_ids")?;
         let evidence_ids = optional_string_array(args, "evidence_ids")?;
+
+        if decided_by.is_some() && chosen_option_label.is_none() {
+            return Err(CoreError::InvalidArgument(
+                "decided_by requires chosen_option_label".to_owned(),
+            ));
+        }
 
         Ok(Self {
             actor_id,
@@ -249,6 +260,7 @@ impl CaptureDecisionArgs {
             topic_keys,
             options,
             chosen_option_label,
+            decided_by,
             hypothesis_ids,
             evidence_ids,
         })
@@ -271,6 +283,7 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
     );
 
     let mut option_ids: Vec<String> = Vec::with_capacity(args.options.len());
+    let mut option_labels: Vec<String> = Vec::with_capacity(args.options.len());
     let mut chosen_option_id: Option<String> = None;
     for option in &args.options {
         let option_id = commands
@@ -281,6 +294,7 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
             chosen_option_id = Some(option_id.clone());
         }
         option_ids.push(option_id);
+        option_labels.push(option.label.clone());
     }
     if args.chosen_option_label.is_some() && chosen_option_id.is_none() {
         return Err(CoreError::InvalidArgument(
@@ -295,7 +309,9 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
             rationale: &args.rationale,
             topic_keys: &args.topic_keys,
             option_ids: &option_ids,
+            option_labels: &option_labels,
             chosen_option_id: chosen_option_id.as_deref(),
+            decided_by: args.decided_by.as_deref(),
             hypothesis_ids: &args.hypothesis_ids,
             evidence_ids: &args.evidence_ids,
         })
@@ -305,6 +321,7 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
         "decision_id": decision_id,
         "option_ids": option_ids,
         "chosen_option_id": chosen_option_id,
+        "decided_by": args.decided_by,
     })))
 }
 

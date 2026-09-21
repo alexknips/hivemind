@@ -43,6 +43,11 @@ pub(super) struct CaptureDecisionRequest {
     topic_keys: Vec<String>,
     options: Vec<OptionInput>,
     chosen_option_label: Option<String>,
+    /// Actor who actually made the decision, when it differs from the authenticated caller
+    /// (`ctx.actor_id`, the recorder). Requires `chosen_option_label`. See `decided_by` on
+    /// `DecisionProposalInput`.
+    #[serde(default)]
+    decided_by: Option<String>,
     #[serde(default)]
     hypothesis_ids: Vec<String>,
     #[serde(default)]
@@ -276,6 +281,7 @@ fn capture_decision_blocking(
     );
 
     let mut option_ids: Vec<String> = Vec::with_capacity(req.options.len());
+    let mut option_labels: Vec<String> = Vec::with_capacity(req.options.len());
     let mut chosen_option_id: Option<String> = None;
     for (index, option) in req.options.into_iter().enumerate() {
         let label = option.label.trim().to_owned();
@@ -298,11 +304,18 @@ fn capture_decision_blocking(
             chosen_option_id = Some(option_id.clone());
         }
         option_ids.push(option_id);
+        option_labels.push(label);
     }
 
     if req.chosen_option_label.is_some() && chosen_option_id.is_none() {
         return Err(ApiError::validation(
             "chosen_option_label must match one of the supplied option labels",
+        ));
+    }
+
+    if req.decided_by.is_some() && chosen_option_id.is_none() {
+        return Err(ApiError::validation(
+            "decided_by requires chosen_option_label",
         ));
     }
 
@@ -313,7 +326,9 @@ fn capture_decision_blocking(
             rationale: &req.rationale,
             topic_keys: &req.topic_keys,
             option_ids: &option_ids,
+            option_labels: &option_labels,
             chosen_option_id: chosen_option_id.as_deref(),
+            decided_by: req.decided_by.as_deref(),
             hypothesis_ids: &req.hypothesis_ids,
             evidence_ids: &req.evidence_ids,
         })

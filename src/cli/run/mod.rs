@@ -138,6 +138,7 @@ fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
         topic_keys: vec!["quickstart".to_owned(), "onboarding".to_owned()],
         option_ids: vec!["local-ledger".to_owned(), "spreadsheet".to_owned()],
         chosen_option_id: Some("local-ledger".to_owned()),
+        decided_by: None,
         hypothesis_ids: Vec::new(),
         evidence_ids: Vec::new(),
     };
@@ -1447,7 +1448,9 @@ fn propose_decision_from_option_labels<L: EventLedger>(
         rationale: &args.rationale,
         topic_keys: &args.topic_keys,
         option_ids: &option_ids,
+        option_labels: &args.option_ids,
         chosen_option_id: chosen_option_id.as_deref(),
+        decided_by: args.decided_by.as_deref(),
         hypothesis_ids: &args.hypothesis_ids,
         evidence_ids: &args.evidence_ids,
     })

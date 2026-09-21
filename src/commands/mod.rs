@@ -56,7 +56,17 @@ pub struct DecisionProposalInput<'a> {
     pub rationale: &'a str,
     pub topic_keys: &'a [String],
     pub option_ids: &'a [String],
+    /// Human-readable label per `option_ids` entry, index-aligned. Empty is accepted (labels
+    /// unknown to the caller); a non-empty slice shorter than `option_ids` falls back to the
+    /// raw id for the missing tail when rendered.
+    pub option_labels: &'a [String],
     pub chosen_option_id: Option<&'a str>,
+    /// Actor who actually made the decision, when it differs from `actor_id` (the recording
+    /// actor/scribe). `Some` also advances the decision straight to `accepted` by emitting a
+    /// `decision.accepted` event from this actor immediately after the proposal — requires
+    /// `chosen_option_id` to be `Some` (see `propose_decision`). `None` leaves the decision at
+    /// `proposed`, unchanged from before this field existed.
+    pub decided_by: Option<&'a str>,
     pub hypothesis_ids: &'a [String],
     pub evidence_ids: &'a [String],
 }
@@ -323,6 +333,13 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             return Err(CommandError::Validation("option_ids must not be empty".to_owned()).into());
         }
 
+        if input.decided_by.is_some() && input.chosen_option_id.is_none() {
+            return Err(CommandError::Validation(
+                "decided_by requires a chosen_option_id — accepting a decision needs a decided option".to_owned(),
+            )
+            .into());
+        }
+
         let normalized_topic_keys: Vec<String> = input
             .topic_keys
             .iter()
@@ -391,6 +408,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
         self.propose_decision_with_id(input, &decision_id, event_uuids)?;
 
+        if let Some(decided_by) = input.decided_by {
+            self.accept_decision(&decision_id, decided_by)?;
+        }
+
         Ok(decision_id)
     }
 
@@ -407,6 +428,13 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
         if input.option_ids.is_empty() {
             return Err(CommandError::Validation("option_ids must not be empty".to_owned()).into());
+        }
+
+        if !input.option_labels.is_empty() && input.option_labels.len() != input.option_ids.len() {
+            return Err(CommandError::Validation(
+                "option_labels must be empty or match option_ids length".to_owned(),
+            )
+            .into());
         }
 
         if event_uuids.has_option.len() != input.option_ids.len() {
@@ -503,6 +531,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 rationale: input.rationale.to_owned(),
                 topic_keys: normalized_topic_keys,
                 option_ids: input.option_ids.to_vec(),
+                option_labels: input.option_labels.to_vec(),
                 chosen_option_id: input.chosen_option_id.map(ToOwned::to_owned),
                 hypothesis_ids: input.hypothesis_ids.to_vec(),
                 evidence_ids: input.evidence_ids.to_vec(),
@@ -801,7 +830,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             rationale: input.new_rationale,
             topic_keys: &effective_topic_keys,
             option_ids: &option_ids,
+            option_labels: &option_labels,
             chosen_option_id: chosen_option_id.as_deref(),
+            decided_by: None,
             hypothesis_ids: input.hypothesis_ids,
             evidence_ids: input.evidence_ids,
         };

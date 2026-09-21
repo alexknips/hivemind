@@ -13,6 +13,7 @@
     "rationale": "Slice 1 needs an embedded, auditable event store with no server dependency.",
     "topic_keys": ["storage"],
     "option_ids": ["opt-sqlite", "opt-postgres"],
+    "option_labels": ["SQLite", "Postgres"],
     "chosen_option_id": "opt-sqlite",
     "hypothesis_ids": ["hyp-embedded-is-enough"],
     "evidence_ids": ["ev-sqlite-wal"]

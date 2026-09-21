@@ -156,6 +156,118 @@ fn capture_then_get_round_trips_a_decision() {
 }
 
 #[test]
+fn capture_decision_with_decided_by_advances_to_accepted_with_correct_authorship() {
+    // hivemind-zdsh.3: an agent scribing a decision a human actually made must record the
+    // human as decider (accepted_by) while staying the recorder (proposed_by) itself — not
+    // leave the decision stuck at `proposed`, and not attribute the decision to itself.
+    let dir = unique_dir("decided-by");
+    let config = McpConfig::new(&dir).with_session_id("scribe-session");
+
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "actor_id": "agent:claude:hivemind-crew",
+                "title": "Ledger must distinguish who decided from who recorded",
+                "rationale": "If the human delegates small decisions to agents, we track that; when the agent asks the human to choose and the human does, the human made the decision.",
+                "topic_keys": ["governance"],
+                "options": [
+                    {"label": "Keep recorder and decider as the same actor"},
+                    {"label": "Let capture name decided_by separately from the recording actor"}
+                ],
+                "chosen_option_label": "Let capture name decided_by separately from the recording actor",
+                "decided_by": "human:alex.knips@gmail.com"
+            }
+        }
+    })
+    .to_string();
+
+    let responses = drive(&config, &[capture.as_str()]);
+    let result = &responses[0]["result"];
+    assert_eq!(result["isError"], serde_json::Value::Bool(false));
+    let structured = &result["structuredContent"];
+    let decision_id = structured["decision_id"]
+        .as_str()
+        .expect("decision_id")
+        .to_owned();
+    assert_eq!(
+        structured["decided_by"].as_str(),
+        Some("human:alex.knips@gmail.com")
+    );
+
+    let get_decision = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": { "name": "get_decision", "arguments": { "decision_id": decision_id } }
+    })
+    .to_string();
+    let responses = drive(&config, &[get_decision.as_str()]);
+    let data = &responses[0]["result"]["structuredContent"]["data"];
+    assert_eq!(
+        data["status"].as_str(),
+        Some("accepted"),
+        "a decision captured with decided_by must not be left at proposed: {data:?}"
+    );
+
+    let get_context = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": { "name": "get_decision_context", "arguments": { "decision_id": decision_id } }
+    })
+    .to_string();
+    let responses = drive(&config, &[get_context.as_str()]);
+    let data = &responses[0]["result"]["structuredContent"]["data"];
+    assert_eq!(
+        data["authorship"].as_str(),
+        Some("agent_proposed_human_accepted"),
+        "recorder must stay the proposer while the human is the acceptor: {data:?}"
+    );
+    assert_eq!(
+        data["proposer_id"].as_str(),
+        Some("agent:claude:hivemind-crew")
+    );
+    assert_eq!(data["review"].as_str(), Some("peer_reviewed"));
+    assert_eq!(data["accepted_count"].as_i64(), Some(1));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn capture_decision_decided_by_without_chosen_option_is_rejected() {
+    let dir = unique_dir("decided-by-invalid");
+    let config = McpConfig::new(&dir).with_session_id("scribe-session");
+
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "actor_id": "agent:claude:hivemind-crew",
+                "title": "Decided by without a choice",
+                "rationale": "decided_by with no chosen option should be rejected",
+                "topic_keys": ["governance"],
+                "options": [{"label": "A"}, {"label": "B"}],
+                "decided_by": "human:alex.knips@gmail.com"
+            }
+        }
+    })
+    .to_string();
+
+    let responses = drive(&config, &[capture.as_str()]);
+    let result = &responses[0]["result"];
+    assert_eq!(result["isError"], serde_json::Value::Bool(true));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn write_tools_default_actor_to_configured_agent_session() {
     let dir = unique_dir("default-actor");
     let config = McpConfig::new(&dir)
@@ -256,7 +368,10 @@ fn search_decisions_tool_returns_fts_query_response() {
     );
     assert_eq!(
         structured["data"]["items"][0]["matched_fields"],
-        serde_json::json!(["option.id"])
+        // hivemind-zdsh.3: option.label now carries the real label ("gateway") instead of
+        // being empty, so it matches too, alongside option.id (whose generated slug also
+        // embeds the label).
+        serde_json::json!(["option.id", "option.label"])
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -1516,13 +1631,12 @@ mod transport_parity {
             assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
             let data = &result["structuredContent"]["data"];
             assert_eq!(data["title"], "Adopt blue-green deploys", "{name}: title"); // ubs:ignore: test-only assertion
-                                                                                    // No OptionRecorded-style event exists for `record_option`, so
-                                                                                    // the label falls back to the generated option_id (the stated
-                                                                                    // schema gap `get_decision_brief`'s own tests document) — assert
-                                                                                    // the option is present and self-consistent, not a literal label.
+                                                                                    // hivemind-zdsh.3: capture_decision now carries option_labels through to the
+                                                                                    // ledger, so the chosen option's real label survives — no more falling back to
+                                                                                    // the generated option_id.
             assert_eq!(
-                data["chosen_option"]["label"], data["chosen_option"]["option_id"],
-                "{name}: chosen_option label falls back to option_id"
+                data["chosen_option"]["label"], "blue-green",
+                "{name}: chosen_option label must be the real label, not the generated id"
             ); // ubs:ignore: test-only assertion
             assert!(
                 data["chosen_option"]["option_id"]

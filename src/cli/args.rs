@@ -709,6 +709,13 @@ pub struct EmitDecisionProposedArgs {
     #[arg(long = "chose")]
     pub chosen_option_id: Option<String>,
 
+    /// Actor who actually made the decision, when it differs from the recording actor
+    /// (`--actor`/`--actor-id`). Requires `--chose`. Immediately advances the decision to
+    /// `accepted` via a `decision.accepted` event from this actor — e.g. an agent recording a
+    /// decision a human made: `--actor-id agent:claude:session --decided-by human:alex`.
+    #[arg(long = "decided-by")]
+    pub decided_by: Option<String>,
+
     #[arg(long = "hypotheses", value_delimiter = ',')]
     pub hypothesis_ids: Vec<String>,
 
