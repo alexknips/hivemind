@@ -101,7 +101,17 @@ to `$HOME/.agents/skills/` and invoke `$hivemind-context`.
 
 ## Backend Selection
 
-Both interaction models honor the same ledger resolution: the project-local
-`./hivemind/` directory by default, or `HIVEMIND_DIR`/`--hivemind-dir`/the
-plugin's `hivemind_dir` option for a shared ledger. Verb names, actor
-format, and the ambiguity gate are unaffected by backend choice.
+Both interaction models — MCP and the `hivemind-context` plugin's CLI
+wrappers — read two independent settings from whatever environment launches
+the agent; neither model sets either itself:
+
+- **Ledger location** (SQLite mode): `./hivemind/` by default, or
+  `HIVEMIND_DIR`/`--hivemind-dir`/the plugin's `hivemind_dir` option for
+  another directory, including one on shared storage.
+- **Backend** (SQLite vs. Postgres): unset `HIVEMIND_DATABASE_URL` uses the
+  SQLite ledger above; setting it (with `HIVEMIND_TENANT` to pick the
+  tenant) makes `hivemind mcp` and every `hivemind query`/`disagree`/
+  `supersede` invocation the plugin shells out to connect directly to that
+  Postgres backend instead — `--hivemind-dir`/`hivemind_dir` is then
+  ignored. Verb names, actor format, and the ambiguity gate are unaffected
+  by this choice.

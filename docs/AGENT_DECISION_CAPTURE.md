@@ -149,9 +149,16 @@ For instruction-only use, copy
 `plugins/hivemind-capture/skills/hivemind-capture` to `$HOME/.agents/skills/`
 and invoke `$hivemind-capture`.
 
-The skill is backend agnostic. Use the default local ledger with
-`HIVEMIND_DIR=./hivemind`, or set `HIVEMIND_DIR`/`--hivemind-dir` to a shared
-ledger path. The capture verb and query behavior stay the same.
+The skill is backend agnostic: it always execs the `hivemind` binary
+directly, so it inherits whatever backend the calling environment selects.
+`HIVEMIND_DIR`/`--hivemind-dir` only ever names a SQLite ledger path (the
+default local `./hivemind`, or another directory on shared storage); it does
+not select Postgres. To connect the skill's capture and query commands to a
+shared Postgres backend instead, set `HIVEMIND_DATABASE_URL` (or
+`--database-url`) plus `HIVEMIND_TENANT` in the environment the skill runs
+in — every `hivemind` subcommand it shells out to honors those the same way
+`hivemind serve` does. The capture verb and query behavior stay the same
+either way.
 
 ## HTTP API Capture
 
