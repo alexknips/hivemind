@@ -1152,4 +1152,232 @@ mod transport_parity {
             "missing-selector message text"
         );
     }
+
+    /// Reopens the on-disk ledger under `dir` (same sqlite file either
+    /// transport writes) and returns its latest offset, to prove a call
+    /// wrote nothing.
+    fn ledger_offset(dir: &std::path::Path) -> crate::events::EventId {
+        let ledger = SqliteEventLedger::open(dir).expect("ledger opens"); // ubs:ignore: test-only; panicking is correct in tests
+        ledger.latest_offset().expect("latest offset") // ubs:ignore: test-only; panicking is correct in tests
+    }
+
+    #[tokio::test]
+    async fn supersede_decision_resolves_by_id_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-supersede-by-id");
+        let http_dir = unique_dir("parity-http-supersede-by-id");
+
+        let seed = json!({
+            "title": "Use shared admin token",
+            "rationale": "Fastest path",
+            "topic_keys": ["auth"],
+            "options": [{"label": "shared-token"}],
+        });
+        let stdio_capture = stdio_call(&stdio_dir, "capture_decision", seed.clone());
+        let stdio_old_id = stdio_capture["result"]["structuredContent"]["decision_id"]
+            .as_str() // ubs:ignore: test-only; chain continues to expect
+            .expect("stdio decision id") // ubs:ignore: test-only; panicking is correct in tests
+            .to_owned();
+        let http_capture = http_call(&http_dir, "capture_decision", seed).await;
+        let http_old_id = http_capture["result"]["structuredContent"]["decision_id"]
+            .as_str() // ubs:ignore: test-only; chain continues to expect
+            .expect("http decision id") // ubs:ignore: test-only; panicking is correct in tests
+            .to_owned();
+
+        let supersede_args = |old_decision_id: &str| {
+            json!({
+                "old_decision_id": old_decision_id,
+                "title": "Use scoped service tokens",
+                "rationale": "Scoped tokens preserve audit boundaries",
+                "options": [{"label": "scoped-service-tokens"}],
+                "chosen_option_label": "scoped-service-tokens",
+            })
+        };
+        let stdio = stdio_call(
+            &stdio_dir,
+            "supersede_decision",
+            supersede_args(&stdio_old_id),
+        );
+        let http = http_call(
+            &http_dir,
+            "supersede_decision",
+            supersede_args(&http_old_id),
+        )
+        .await;
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+
+        for (name, result) in [("stdio", &stdio["result"]), ("http", &http["result"])] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let content = &result["structuredContent"];
+            assert_eq!(
+                content["old_decision_status"],
+                "superseded", // ubs:ignore: test-only assertion
+                "{name}: old_decision_status"
+            );
+            assert_eq!(
+                content["new_decision_status"],
+                "proposed", // ubs:ignore: test-only assertion
+                "{name}: new_decision_status"
+            );
+            assert!(
+                // ubs:ignore: test-only assertion
+                content["new_decision_id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("decision-")),
+                "{name}: new_decision_id = {:?}",
+                content["new_decision_id"]
+            );
+            assert!(
+                content["superseded_event_id"].is_u64(), // ubs:ignore: test-only assertion
+                "{name}: superseded_event_id should be set"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn supersede_decision_resolves_unique_description_across_transports() {
+        let (stdio, http) = run_seeded(
+            "supersede_decision",
+            "supersede-unique-desc",
+            &["Use shared admin token"],
+            json!({
+                "description": "shared admin token",
+                "title": "Use scoped service tokens",
+                "rationale": "Scoped tokens preserve audit boundaries",
+                "options": [{"label": "scoped-service-tokens"}],
+            }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let content = &result["structuredContent"];
+            assert_eq!(
+                content["old_decision_status"], "superseded", // ubs:ignore: test-only assertion
+                "{name}: old_decision_status — proves the description resolved and the write happened"
+            );
+            assert_eq!(
+                content["new_decision_status"],
+                "proposed", // ubs:ignore: test-only assertion
+                "{name}: new_decision_status"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn supersede_decision_ambiguous_description_writes_nothing_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-supersede-ambiguous");
+        let http_dir = unique_dir("parity-http-supersede-ambiguous");
+
+        for title in [
+            "Adopt async queue for billing",
+            "Adopt async queue for notifications",
+        ] {
+            let seed = json!({
+                "title": title,
+                "rationale": "seed for supersede_decision parity test",
+                "topic_keys": ["parity"],
+                "options": [{"label": "only"}],
+            });
+            stdio_call(&stdio_dir, "capture_decision", seed.clone());
+            http_call(&http_dir, "capture_decision", seed).await;
+        }
+
+        let stdio_offset_before = ledger_offset(&stdio_dir);
+        let http_offset_before = ledger_offset(&http_dir);
+
+        let supersede_args = json!({
+            "description": "adopt async queue",
+            "title": "Adopt async queue (v2)",
+            "rationale": "must not be written — the match is ambiguous",
+            "options": [{"label": "replacement"}],
+        });
+        let stdio = stdio_call(&stdio_dir, "supersede_decision", supersede_args.clone());
+        let http = http_call(&http_dir, "supersede_decision", supersede_args).await;
+
+        for (name, result) in [("stdio", &stdio["result"]), ("http", &http["result"])] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: ambiguous is not an error"
+            ); // ubs:ignore: test-only assertion
+            let structured = &result["structuredContent"];
+            assert_eq!(
+                structured["data"]["outcome"], "ambiguous",
+                "{name}: outcome"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                structured["data"]["candidates"].as_array().map(Vec::len),
+                Some(2),
+                "{name}: candidate count"
+            );
+        }
+
+        assert_eq!(
+            ledger_offset(&stdio_dir),
+            stdio_offset_before,
+            "stdio: ambiguous resolution must not write"
+        );
+        assert_eq!(
+            ledger_offset(&http_dir),
+            http_offset_before,
+            "http: ambiguous resolution must not write"
+        );
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn supersede_decision_not_found_description_writes_nothing_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-supersede-not-found");
+        let http_dir = unique_dir("parity-http-supersede-not-found");
+
+        let seed = json!({
+            "title": "Adopt async billing queue",
+            "rationale": "seed for supersede_decision parity test",
+            "topic_keys": ["parity"],
+            "options": [{"label": "only"}],
+        });
+        stdio_call(&stdio_dir, "capture_decision", seed.clone());
+        http_call(&http_dir, "capture_decision", seed).await;
+
+        let stdio_offset_before = ledger_offset(&stdio_dir);
+        let http_offset_before = ledger_offset(&http_dir);
+
+        let supersede_args = json!({
+            "description": "totally unrelated widget factory zzz",
+            "title": "Irrelevant replacement",
+            "rationale": "must not be written — nothing matched",
+            "options": [{"label": "replacement"}],
+        });
+        let stdio = stdio_call(&stdio_dir, "supersede_decision", supersede_args.clone());
+        let http = http_call(&http_dir, "supersede_decision", supersede_args).await;
+
+        for (name, result) in [("stdio", &stdio["result"]), ("http", &http["result"])] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: not-found is not an error: {result:?}"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["data"]["outcome"],
+                "not_found", // ubs:ignore: test-only assertion
+                "{name}: outcome"
+            );
+        }
+
+        assert_eq!(
+            ledger_offset(&stdio_dir),
+            stdio_offset_before,
+            "stdio: not-found resolution must not write"
+        );
+        assert_eq!(
+            ledger_offset(&http_dir),
+            http_offset_before,
+            "http: not-found resolution must not write"
+        );
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
 }

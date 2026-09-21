@@ -19,27 +19,28 @@
 //!    stays with each adapter's existing renderer.
 //!
 //! Migrated so far: `capture_decision`, `get_situational_decisions`,
-//! `get_decision_neighborhood`, `recall_decisions`. Later tools follow the
-//! same shape — an `Args::from_json` parser plus a `core::<tool>` function —
-//! one pair per tool, each independently reviewable.
+//! `resolve_target`/`get_decision_neighborhood`, `recall_decisions`,
+//! `supersede_decision`. Later tools follow the same shape — an
+//! `Args::from_json` parser plus a `core::<tool>` function — one pair per
+//! tool, each independently reviewable.
 
 use serde_json::{json, Map, Value};
 
-use crate::commands::{CommandContext, Commands, DecisionProposalInput};
+use crate::commands::{CommandContext, Commands, DecisionProposalInput, SupersedeInput};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, TenantId};
 use crate::ledger::{AnyLedger, EventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
-    get_decision_neighborhood as query_get_decision_neighborhood, resolve_decision_by_description,
-    DecisionStatus, NeighborhoodRequest, QueryContext, QueryResponse, ResolveOutcome,
-    SituationalRequest,
+    derive_decision_status, get_decision_neighborhood as query_get_decision_neighborhood,
+    resolve_decision_by_description, DecisionStatus, NeighborhoodRequest, QueryContext,
+    QueryResponse, ResolveOutcome, SituationalRequest,
 };
 use crate::summarize::{RecallRequest, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT};
 
 use super::args::{
-    default_option_description, optional_datetime, optional_string, optional_string_array,
-    optional_usize, require_string, require_string_array,
+    default_option_description, optional_datetime, optional_option_labels, optional_string,
+    optional_string_array, optional_usize, require_string, require_string_array,
 };
 
 // ---------------------------------------------------------------------------
@@ -347,10 +348,16 @@ impl GetSituationalDecisionsArgs {
 // not-found description is returned to the caller as a success envelope, and
 // the caller re-calls with `decision_id` once it knows one.
 
-/// Shared "one of `decision_id` / `description` is required" message. Both
-/// transports raise this exact text so they can never drift on it, the same
-/// discipline `CaptureDecisionArgs` already applies to its own validation.
-const MISSING_SELECTOR_MESSAGE: &str = "one of `decision_id` or `description` is required";
+/// Shared "one of `<selector_field>` or `description` is required" message.
+/// Both transports raise this exact text so they can never drift on it, the
+/// same discipline `CaptureDecisionArgs` already applies to its own
+/// validation. `selector_field` is the caller's id parameter name —
+/// `decision_id` for `get_decision_neighborhood`, `old_decision_id` for
+/// `supersede_decision` — so the message always names the field the caller
+/// actually sent.
+fn missing_selector_message(selector_field: &str) -> String {
+    format!("one of `{selector_field}` or `description` is required")
+}
 
 /// Outcome of resolving a fluent MCP tool's target.
 pub(crate) enum ResolvedTarget {
@@ -381,15 +388,16 @@ pub(crate) fn resolve_target<L: EventLedger>(
     id: Option<&str>,
     description: Option<&str>,
     topic: Option<&str>,
+    selector_field: &str,
 ) -> Result<ResolvedTarget, CoreError> {
     if let Some(id) = id {
         return Ok(ResolvedTarget::Id(id.to_owned()));
     }
 
     let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Err(CoreError::InvalidArgument(
-            MISSING_SELECTOR_MESSAGE.to_owned(),
-        ));
+        return Err(CoreError::InvalidArgument(missing_selector_message(
+            selector_field,
+        )));
     };
 
     let graph = MemoryGraph::default();
@@ -494,6 +502,7 @@ pub(crate) fn get_decision_neighborhood<P: LedgerProvider>(
         args.decision_id.as_deref(),
         args.description.as_deref(),
         args.topic.as_deref(),
+        "decision_id",
     )?;
     let decision_id = match target {
         ResolvedTarget::Id(id) => id,
@@ -609,5 +618,112 @@ where
         "truncated": response.truncated,
         "latency_ms": response.latency_ms,
         "data": response.data,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// supersede_decision
+// ---------------------------------------------------------------------------
+
+/// Parsed, validated arguments for the `supersede_decision` tool. The old
+/// decision is selected the same way `get_decision_neighborhood` selects its
+/// target: `old_decision_id` bypasses resolution, otherwise `description`
+/// (+ optional `topic`) resolves via [`resolve_target`].
+pub(crate) struct SupersedeDecisionArgs {
+    pub(crate) actor_id: String,
+    pub(crate) old_decision_id: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) topic: Option<String>,
+    pub(crate) title: String,
+    pub(crate) rationale: String,
+    pub(crate) topic_keys: Vec<String>,
+    pub(crate) option_labels: Vec<String>,
+    pub(crate) chosen_option_label: Option<String>,
+    pub(crate) hypothesis_ids: Vec<String>,
+    pub(crate) evidence_ids: Vec<String>,
+}
+
+impl SupersedeDecisionArgs {
+    pub(crate) fn from_json(
+        args: &Map<String, Value>,
+        actor_id: String,
+    ) -> Result<Self, CoreError> {
+        Ok(Self {
+            actor_id,
+            old_decision_id: optional_string(args, "old_decision_id")?,
+            description: optional_string(args, "description")?,
+            topic: optional_string(args, "topic")?,
+            title: require_string(args, "title")?,
+            rationale: require_string(args, "rationale")?,
+            topic_keys: optional_string_array(args, "topic_keys")?,
+            option_labels: optional_option_labels(args, "options")?,
+            chosen_option_label: optional_string(args, "chosen_option_label")?,
+            hypothesis_ids: optional_string_array(args, "hypothesis_ids")?,
+            evidence_ids: optional_string_array(args, "evidence_ids")?,
+        })
+    }
+}
+
+/// The migrated core for the `supersede_decision` MCP tool: one
+/// implementation consumed by both transports. The old decision is resolved
+/// exactly like [`get_decision_neighborhood`]'s target via [`resolve_target`];
+/// an ambiguous or not-found resolution is returned as-is, with
+/// `commands.supersede` never called — no ledger write happens for either
+/// outcome, matching Alex's 2026-09-20 fluent-resolution call for the rest of
+/// this tool surface.
+pub(crate) fn supersede_decision<P: LedgerProvider>(
+    provider: &P,
+    args: SupersedeDecisionArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let target = resolve_target(
+        &handle,
+        args.old_decision_id.as_deref(),
+        args.description.as_deref(),
+        args.topic.as_deref(),
+        "old_decision_id",
+    )?;
+    let old_decision_id = match target {
+        ResolvedTarget::Id(id) => id,
+        ResolvedTarget::Ambiguous(output) => return Ok(output),
+        ResolvedTarget::NotFound(output) => return Ok(output),
+    };
+
+    let commands = Commands::new_with_context(
+        &handle.ledger,
+        CommandContext::new(
+            handle.tenant_id.clone(),
+            EventProvenance::agent(args.actor_id.clone()),
+        ),
+    );
+    let outcome = commands
+        .supersede(SupersedeInput {
+            actor_id: &args.actor_id,
+            old_decision_id: &old_decision_id,
+            new_title: &args.title,
+            new_rationale: &args.rationale,
+            topic_keys: &args.topic_keys,
+            option_labels: &args.option_labels,
+            chosen_option_label: args.chosen_option_label.as_deref(),
+            hypothesis_ids: &args.hypothesis_ids,
+            evidence_ids: &args.evidence_ids,
+        })
+        .map_err(CoreError::from)?;
+
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&handle.ledger, &handle.tenant_id, &graph).map_err(CoreError::from)?;
+    let old_decision_status =
+        derive_decision_status(&graph, &old_decision_id).map_err(CoreError::from)?;
+    let new_decision_status =
+        derive_decision_status(&graph, &outcome.new_decision_id).map_err(CoreError::from)?;
+
+    Ok(ToolOutput(json!({
+        "old_decision_id": old_decision_id,
+        "new_decision_id": outcome.new_decision_id,
+        "proposal_event_id": outcome.proposal_event_id,
+        "relation_event_ids": outcome.relation_event_ids,
+        "superseded_event_id": outcome.superseded_event_id,
+        "old_decision_status": old_decision_status,
+        "new_decision_status": new_decision_status,
     })))
 }

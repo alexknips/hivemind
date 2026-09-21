@@ -17,8 +17,8 @@
 use std::io::{BufRead, BufReader, Write};
 
 use args::{
-    optional_datetime, optional_option_labels, optional_string, optional_string_array,
-    optional_usize, require_string, require_string_array,
+    optional_datetime, optional_string, optional_string_array, optional_usize, require_string,
+    require_string_array,
 };
 use std::path::PathBuf;
 
@@ -26,7 +26,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tracing::{debug, warn};
 
-use crate::commands::{CommandContext, Commands, SupersedeInput};
+use crate::commands::{CommandContext, Commands};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, TenantId};
 use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool};
@@ -46,7 +46,7 @@ use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
 use core::{
     CaptureDecisionArgs, CoreError, GetDecisionNeighborhoodArgs, GetSituationalDecisionsArgs,
-    LedgerHandle, LedgerProvider, RecallDecisionsArgs,
+    LedgerHandle, LedgerProvider, RecallDecisionsArgs, SupersedeDecisionArgs,
 };
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -431,13 +431,15 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "supersede_decision",
-            "description": "Propose a replacement decision and mark it as superseding an old decision. Wraps `hivemind supersede`.",
+            "description": "Propose a replacement decision and mark it as superseding an old decision. Wraps `hivemind supersede`. Resolves the old decision by `old_decision_id` or a free-text `description` (+ optional `topic`) — exactly one of `old_decision_id`/`description` is required, the same fluent resolution `get_decision_neighborhood` uses. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error, with no write; re-call with `old_decision_id` from that list. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}`, also with no write.",
             "inputSchema": {
                 "type": "object",
-                "required": ["old_decision_id", "title", "rationale"],
+                "required": ["title", "rationale"],
                 "properties": {
                     "actor_id": { "type": "string", "description": "Superseding actor. Defaults to `agent:codex:<session>` when omitted." },
                     "old_decision_id": { "type": "string" },
+                    "description": { "type": "string", "description": "Free-text match for the decision to supersede. Required when `old_decision_id` is omitted." },
+                    "topic": { "type": "string", "description": "Optional topic_key filter narrowing the `description` match." },
                     "title": { "type": "string" },
                     "rationale": { "type": "string" },
                     "topic_keys": { "type": "array", "items": { "type": "string" } },
@@ -846,44 +848,10 @@ fn tool_supersede_decision(
 ) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
     let actor_id = mcp_actor_id(&args, config)?;
-    let old_decision_id = require_string(&args, "old_decision_id")?;
-    let title = require_string(&args, "title")?;
-    let rationale = require_string(&args, "rationale")?;
-    let topic_keys = optional_string_array(&args, "topic_keys")?;
-    let option_labels = optional_option_labels(&args, "options")?;
-    let chosen_option_label = optional_string(&args, "chosen_option_label")?;
-    let hypothesis_ids = optional_string_array(&args, "hypothesis_ids")?;
-    let evidence_ids = optional_string_array(&args, "evidence_ids")?;
-
-    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
-    let commands = Commands::new_with_context(
-        &ledger,
-        config.command_context(EventProvenance::agent(config.session_id.clone())),
-    );
-    let outcome = commands.supersede(SupersedeInput {
-        actor_id: &actor_id,
-        old_decision_id: &old_decision_id,
-        new_title: &title,
-        new_rationale: &rationale,
-        topic_keys: &topic_keys,
-        option_labels: &option_labels,
-        chosen_option_label: chosen_option_label.as_deref(),
-        hypothesis_ids: &hypothesis_ids,
-        evidence_ids: &evidence_ids,
-    })?;
-    let graph = open_memory_graph(config)?;
-    let old_decision_status = derive_decision_status(&graph, &old_decision_id)?;
-    let new_decision_status = derive_decision_status(&graph, &outcome.new_decision_id)?;
-
-    Ok(json!({
-        "old_decision_id": old_decision_id,
-        "new_decision_id": outcome.new_decision_id,
-        "proposal_event_id": outcome.proposal_event_id,
-        "relation_event_ids": outcome.relation_event_ids,
-        "superseded_event_id": outcome.superseded_event_id,
-        "old_decision_status": old_decision_status,
-        "new_decision_status": new_decision_status,
-    }))
+    let core_args = SupersedeDecisionArgs::from_json(&args, actor_id)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::supersede_decision(&provider, core_args)?;
+    Ok(output.into_value())
 }
 
 fn tool_get_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {

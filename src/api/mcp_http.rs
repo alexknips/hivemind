@@ -13,16 +13,16 @@ use axum::extract::{Json, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-use crate::commands::{CommandContext, Commands, SupersedeInput};
+use crate::commands::{CommandContext, Commands};
 use crate::events::{EventProvenance, TenantId};
 use crate::mcp::args::{
-    optional_option_labels as mcp_opt_option_labels, optional_string as mcp_opt_str,
-    optional_string_array as mcp_opt_str_array, optional_usize as mcp_opt_usize,
-    require_string as mcp_req_str, require_string_array as mcp_req_str_array,
+    optional_string as mcp_opt_str, optional_string_array as mcp_opt_str_array,
+    optional_usize as mcp_opt_usize, require_string as mcp_req_str,
+    require_string_array as mcp_req_str_array,
 };
 use crate::mcp::core::{
     CaptureDecisionArgs, CoreError, GetDecisionNeighborhoodArgs, GetSituationalDecisionsArgs,
-    LedgerHandle, LedgerProvider, RecallDecisionsArgs,
+    LedgerHandle, LedgerProvider, RecallDecisionsArgs, SupersedeDecisionArgs,
 };
 use crate::projector::memory::MemoryGraph;
 use crate::queries::{
@@ -185,7 +185,7 @@ fn mcp_tools_call_blocking(
         "capture_evidence" => mcp_capture_evidence(backend, ctx, &actor_id, args),
         "capture_hypothesis" => mcp_capture_hypothesis(backend, ctx, &actor_id, args),
         "disagree_decision" => mcp_disagree(backend, ctx, &actor_id, args, cache),
-        "supersede_decision" => mcp_supersede(backend, ctx, &actor_id, args, cache),
+        "supersede_decision" => mcp_supersede(backend, ctx, &actor_id, args),
         "get_decision" => mcp_get_decision(backend, ctx, args, cache),
         "get_relevant_decisions" => mcp_get_relevant_decisions(backend, ctx, args, cache),
         "get_situational_decisions" => mcp_get_situational_decisions(backend, ctx, args, cache),
@@ -391,55 +391,14 @@ fn mcp_supersede(
     ctx: &ApiRequestCtx,
     actor_id: &str,
     args: serde_json::Map<String, serde_json::Value>,
-    cache: &Arc<GraphCache>,
 ) -> McpToolResult {
-    let old_id = mcp_req_str(&args, "old_decision_id")?;
-    let title = mcp_req_str(&args, "title")?;
-    let rationale = mcp_req_str(&args, "rationale")?;
-    let topic_keys = mcp_opt_str_array(&args, "topic_keys")?;
-    let option_labels = mcp_opt_option_labels(&args, "options")?;
-    let chosen_label = mcp_opt_str(&args, "chosen_option_label")?;
-    let hypothesis_ids = mcp_opt_str_array(&args, "hypothesis_ids")?;
-    let evidence_ids = mcp_opt_str_array(&args, "evidence_ids")?;
-
-    let ledger = backend
-        .open_ledger_for_tenant(&ctx.tenant_id)
-        .map_err(|e| (-32603i32, e.to_string()))?;
-    let commands = Commands::new_with_context(
-        &ledger,
-        CommandContext::new(
-            ctx.tenant_id.clone(),
-            EventProvenance::agent(actor_id.to_owned()),
-        ),
-    );
-    let outcome = commands
-        .supersede(SupersedeInput {
-            actor_id,
-            old_decision_id: &old_id,
-            new_title: &title,
-            new_rationale: &rationale,
-            topic_keys: &topic_keys,
-            option_labels: &option_labels,
-            chosen_option_label: chosen_label.as_deref(),
-            hypothesis_ids: &hypothesis_ids,
-            evidence_ids: &evidence_ids,
-        })
-        .map_err(|e| (-32603i32, e.to_string()))?;
-    let graph =
-        get_cached_graph(&ledger, &ctx.tenant_id, cache).map_err(|e| (-32603i32, e.to_string()))?;
-    let old_status =
-        derive_decision_status(&*graph, &old_id).map_err(|e| (-32603i32, e.to_string()))?;
-    let new_status = derive_decision_status(&*graph, &outcome.new_decision_id)
-        .map_err(|e| (-32603i32, e.to_string()))?;
-    Ok(serde_json::json!({
-        "old_decision_id": old_id,
-        "new_decision_id": outcome.new_decision_id,
-        "proposal_event_id": outcome.proposal_event_id,
-        "relation_event_ids": outcome.relation_event_ids,
-        "superseded_event_id": outcome.superseded_event_id,
-        "old_decision_status": old_status,
-        "new_decision_status": new_status,
-    }))
+    let core_args = SupersedeDecisionArgs::from_json(&args, actor_id.to_owned())?;
+    let provider = HttpLedgerProvider {
+        backend,
+        tenant_id: &ctx.tenant_id,
+    };
+    let output = crate::mcp::core::supersede_decision(&provider, core_args)?;
+    Ok(output.into_value())
 }
 
 fn mcp_get_decision(

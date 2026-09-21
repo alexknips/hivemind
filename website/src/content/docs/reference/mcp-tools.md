@@ -78,20 +78,22 @@ Record an actor disagreement with a decision and return the resulting derived st
 
 ### `supersede_decision`
 
-Propose a replacement decision and mark it as superseding an old decision. Wraps `hivemind supersede`.
+Propose a replacement decision and mark it as superseding an old decision. Wraps `hivemind supersede`. Resolves the old decision by `old_decision_id` or a free-text `description` (+ optional `topic`) — exactly one of `old_decision_id`/`description` is required, the same fluent resolution `get_decision_neighborhood` uses. An ambiguous description returns a successful result shaped `{outcome: "ambiguous", candidates: [...]}`, not an error, with no write; re-call with `old_decision_id` from that list. A description matching nothing is also a successful result, shaped `{outcome: "not_found"}`, also with no write.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `old_decision_id` | string | ✓ |  |
 | `rationale` | string | ✓ |  |
 | `title` | string | ✓ |  |
 | `actor_id` | string | — | Superseding actor. Defaults to `agent:codex:<session>` when omitted. |
 | `chosen_option_label` | string | — |  |
+| `description` | string | — | Free-text match for the decision to supersede. Required when `old_decision_id` is omitted. |
 | `evidence_ids` | string[] | — |  |
 | `hypothesis_ids` | string[] | — |  |
+| `old_decision_id` | string | — |  |
 | `options` | any[] | — |  |
+| `topic` | string | — | Optional topic_key filter narrowing the `description` match. |
 | `topic_keys` | string[] | — |  |
 
 ---
