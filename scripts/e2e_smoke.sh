@@ -299,10 +299,22 @@ MCP_FLUENT_DECISION_A=""
 if echo "$mcp_capture_fluent_a" | jq -e '.result.structuredContent.decision_id' > /dev/null 2>&1; then
   MCP_FLUENT_DECISION_A=$(echo "$mcp_capture_fluent_a" | jq -r '.result.structuredContent.decision_id')
 fi
+MCP_FLUENT_DECISION_B=""
+if echo "$mcp_capture_fluent_b" | jq -e '.result.structuredContent.decision_id' > /dev/null 2>&1; then
+  MCP_FLUENT_DECISION_B=$(echo "$mcp_capture_fluent_b" | jq -r '.result.structuredContent.decision_id')
+fi
 
-if [[ -n "$MCP_FLUENT_DECISION_A" ]] \
-  && echo "$mcp_capture_fluent_b" | jq -e '.result.structuredContent.decision_id' > /dev/null 2>&1; then
+if [[ -n "$MCP_FLUENT_DECISION_A" && -n "$MCP_FLUENT_DECISION_B" ]]; then
   pass "MCP HTTP capture_decision (fluent disagree seed) — 2 decisions captured"
+
+  # Snapshot both candidates' status before the ambiguous call. "No write"
+  # means resolution touches neither — a disagreement flips a decision's
+  # derived status to contested, so an unchanged status on both sides is
+  # the observable proof, the same invariant the in-container CLI leg above
+  # checks via ledger offset (no equivalent raw-offset route exists over
+  # MCP HTTP).
+  status_a_before=$(curl_api GET "/v1/decisions/$MCP_FLUENT_DECISION_A" | jq -r '.data.status // "missing"')
+  status_b_before=$(curl_api GET "/v1/decisions/$MCP_FLUENT_DECISION_B" | jq -r '.data.status // "missing"')
 
   mcp_disagree_ambiguous=$(curl -s \
     -H "Content-Type: application/json" \
@@ -320,6 +332,14 @@ if [[ -n "$MCP_FLUENT_DECISION_A" ]] \
     fail "MCP HTTP disagree_decision — ambiguous description: $mcp_disagree_ambiguous"
   fi
 
+  status_a_after_ambiguous=$(curl_api GET "/v1/decisions/$MCP_FLUENT_DECISION_A" | jq -r '.data.status // "missing"')
+  status_b_after_ambiguous=$(curl_api GET "/v1/decisions/$MCP_FLUENT_DECISION_B" | jq -r '.data.status // "missing"')
+  if [[ "$status_a_after_ambiguous" == "$status_a_before" && "$status_b_after_ambiguous" == "$status_b_before" ]]; then
+    pass "MCP HTTP disagree_decision — ambiguous description wrote to neither candidate (status unchanged: $status_a_before / $status_b_before)"
+  else
+    fail "MCP HTTP disagree_decision — ambiguous description wrote a status change: a $status_a_before->$status_a_after_ambiguous b $status_b_before->$status_b_after_ambiguous"
+  fi
+
   mcp_disagree_resolved=$(curl -s \
     -H "Content-Type: application/json" \
     -H "X-HiveMind-Tenant: $TENANT" \
@@ -335,9 +355,46 @@ if [[ -n "$MCP_FLUENT_DECISION_A" ]] \
   else
     fail "MCP HTTP disagree_decision — resolved by decision_id: $mcp_disagree_resolved"
   fi
+
+  # A lone disagreement with no prior acceptance derives to "rejected", not
+  # "contested" — derive_decision_status (src/queries/status.rs) only
+  # returns contested when a decision carries BOTH an AcceptedBy and a
+  # RejectedBy edge. This decision was only ever proposed, so rejected is
+  # the correct post-write status here.
+  status_a_after_resolved=$(curl_api GET "/v1/decisions/$MCP_FLUENT_DECISION_A" | jq -r '.data.status // "missing"')
+  if [[ "$status_a_after_resolved" == "rejected" ]]; then
+    pass "MCP HTTP disagree_decision — decision_id call actually wrote: status $status_a_before -> rejected"
+  else
+    fail "MCP HTTP disagree_decision — decision_id call did not persist a write: status stayed $status_a_after_resolved"
+  fi
+
+  # ── fluent get_decision_neighborhood via MCP HTTP ──────────────────────────
+  # get_decision_neighborhood (the CLI's `why`) resolves the same
+  # decision_id | description contract disagree_decision does above
+  # (hivemind-ot72.5). "billing" is the term that breaks the tie against
+  # fluent decision B's title, so this resolves uniquely to decision A
+  # instead of retracing the ambiguous path already covered above.
+  mcp_neighborhood=$(curl -s \
+    -H "Content-Type: application/json" \
+    -H "X-HiveMind-Tenant: $TENANT" \
+    -H "X-HiveMind-Actor: $MCP_ACTOR" \
+    "${mcp_auth_args[@]}" \
+    "${mcp_session_args[@]}" \
+    -X POST \
+    -d '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"get_decision_neighborhood","arguments":{"description":"adopt async billing queue"}}}' \
+    "$BASE_URL/mcp")
+  if [[ "$(echo "$mcp_neighborhood" | jq -r '.result.isError')" == "false" ]] \
+    && [[ "$(echo "$mcp_neighborhood" | jq -r '.result.structuredContent.data.root.id')" == "$MCP_FLUENT_DECISION_A" ]]; then
+    pass "MCP HTTP get_decision_neighborhood — resolves by description to the billing decision"
+  else
+    fail "MCP HTTP get_decision_neighborhood — resolve by description: $mcp_neighborhood"
+  fi
 else
   skip "MCP HTTP disagree_decision — ambiguous description returns candidates, not an error"
+  skip "MCP HTTP disagree_decision — ambiguous description wrote to neither candidate"
   skip "MCP HTTP disagree_decision — resolved by decision_id after the ambiguous retry"
+  skip "MCP HTTP disagree_decision — decision_id call actually wrote a status change"
+  skip "MCP HTTP get_decision_neighborhood — resolves by description to the billing decision"
 fi
 
 # ── query / projection ────────────────────────────────────────────────────────
