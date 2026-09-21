@@ -1,6 +1,17 @@
 # Agent-Fluent Follow-Up Verbs — Design Document (tenv.1)
 
-Status: **DRAFT — awaiting alex review before implementation begins**
+Status: **SHIPPED** (was DRAFT as of 2026-09-07). The CLI surface landed via
+`hivemind-tenv.1`/`hivemind-tenv.2`. MCP+HTTP backend parity for the resolver
+and the `why`/`verify`/`disagree`/`supersede` verbs landed via
+`hivemind-ot72.5`–`hivemind-ot72.8` (2026-09-21); `get_supersession_chain` and
+`compact-view` remain `decision_id`-only over MCP (`hivemind-ot72.9`,
+`hivemind-ot72.10`, both still open). §1.5 below covers backend portability
+and §3.4 covers current MCP status. The §7 open questions below are the
+historical record of what alex actually decided at each checkpoint — kept for
+the rationale, not because the design is still speculative. See also
+[`docs/AGENT_DECISION_CONTEXT.md`](AGENT_DECISION_CONTEXT.md) for how this
+resolver fits into the two shipped interaction models (MCP vs. the
+`hivemind-context` CLI plugin).
 Bead: hivemind-tenv.1
 Parent epic: hivemind-tenv
 Author: gastown.rictus (polecat), 2026-09-07
@@ -176,6 +187,34 @@ from. `--id <decision_id>` bypasses resolution entirely — the existing
 for both the new positional-description mode and the legacy `--id` mode, so
 `--id` behavior for existing scripts/callers is unchanged.
 
+### 1.5 Backends
+
+`resolve_decision_by_description` (`src/queries/resolve.rs`) — and every
+fluent verb built on it: `situational` (`src/queries/situational.rs`),
+`why`/`get_decision_neighborhood` (`src/queries/neighborhood.rs`),
+`verify`/`get_decision_outcome` (`src/queries/outcome.rs`), and the
+resolution step in front of `disagree`/`supersede` — takes only
+`graph: &impl GraphView`. Nothing in that path is SQLite- or Postgres-
+specific: it runs unmodified against the SQLite-projected `MemoryGraph` and
+against `PostgresGraphView` (`src/projector/postgres/tests.rs` asserts
+parity between the two for the resolver and its callers). This is what
+"backend-agnostic" means here — one code path, no `#[cfg]`, no backend match
+arm, for every fluent verb except `recall`/`search`.
+
+`recall`/`search` are the one place backend choice is visible, and only at
+the ranking layer: `search_decisions_any` (`src/queries/search.rs:275`)
+dispatches SQLite to FTS5 (`search_decisions_fts_with_context`, backed by
+the `decision_search_fts` virtual table) and Postgres to a portable
+in-memory term matcher (`search_decisions_with_ledger`) reusing the same
+`collect_graph_search_results` tiering the resolver uses, since Postgres has
+no FTS5 equivalent available. Both paths converged on one ordinal ranking
+scheme and return identical order for identical fixtures (see
+`docs/SEARCH_DESIGN.md`'s Ordering Guarantees), so a caller holding only an
+`AnyLedger` — the CLI, stdio MCP, and the HTTP `/v1/decisions/search` and
+`/v1/decisions/recall` routes — never needs to know which backend it is on;
+`recall`'s digest and citation list are identical either way, only the
+matching mechanism underneath differs.
+
 ---
 
 ## 2. Ambiguity Is Not an Error — Compliance Note (Principles 1 & 7)
@@ -260,23 +299,49 @@ and error semantics on every verb (`decision_node_exists`,
 and MCP callers that always pass `decision_id` are unaffected — this is a
 strictly additive contract change.
 
-### 3.4 MCP parity (sketch)
+### 3.4 MCP parity (status)
 
-Every MCP tool above (`disagree_decision`, `supersede_decision`,
-`get_supersession_chain`, `get_decision_neighborhood`/`get_decision_context`,
-`hivemind_compact_view`, and a new `get_decision_outcome` free-text path)
-gets a sibling optional `description` string parameter alongside the
-existing required `decision_id` (making `decision_id` optional when
-`description` is present, and vice versa — tool schemas enforce "exactly
-one of" via a `oneOf`/description text since JSON Schema's `required` can't
-express mutual exclusion cleanly; matches how `tool_disagree_decision`
-already validates required args at `mcp.rs:832`). The ambiguity gate returns
-the same `ResolveOutcome::Ambiguous` payload over MCP as over CLI JSON
-output — an agent calling MCP tools gets the same candidate-list-plus-pick
-UX, not a silently different contract. Full wiring is implementation work
-for this bead once the design is approved, not deferred to tenv.3 (the
-plugin is CLI-only and depends on these verbs already working, including
-over MCP where Claude/Codex use MCP rather than shelling out).
+Shipped (`hivemind-ot72.5`–`hivemind-ot72.8`, via the shared `resolve_target`
+core in `src/mcp/core.rs`): `get_decision_neighborhood` (why),
+`get_decision_outcome` (verify), `disagree_decision`, and `supersede_decision`
+each take an optional `description` string alongside their existing
+`decision_id`/`old_decision_id`, plus an optional `topic` narrowing filter.
+`decision_id` is simply left out of the tool's JSON Schema `required` array
+rather than expressed via `oneOf` — the mutual-exclusion rule ("exactly one
+of `decision_id`/`description`") is enforced at runtime, not in the schema,
+and a call supplying neither returns a real MCP tool error (`one of
+"decision_id" or "description" is required`) since a malformed call is the
+one case that *is* exceptional here.
+
+**Still id-only over MCP** (no fluent parity yet): `get_supersession_chain`
+(`hivemind-ot72.9`, open) and `hivemind_compact_view`
+(`hivemind-ot72.10`, open) both still require `decision_id`.
+`get_decision_context` and `get_decision` are not on the fluent-parity
+roadmap at all — they stay id-only by design, since both are meant to be
+called once a decision is already resolved (e.g. right after a fluent
+`why`/`verify` call), not as a first fluent hop.
+
+**No `--pick`/`#N` over MCP.** Unlike the CLI, MCP has no local per-session
+state to cache a candidate list in (stdio is stateless per call; HTTP has no
+session directory) — see `resolve_target`'s doc comment in
+`src/mcp/core.rs`. An ambiguous or not-found description is returned to the
+caller as data, and the caller re-calls with `decision_id` from the
+candidate list once it has one.
+
+**Ambiguous and not-found are both success, not errors** — per alex's
+2026-09-21 decision ("errors are for the exceptional case; a miss is not
+exceptional, it's data"): every fluent MCP tool wraps its result in the same
+`{result_count, truncated, latency_ms, data: {outcome, ...}}` envelope the
+CLI's `--json` output uses for `ResolveOutcome`, whether `outcome` is
+`"resolved"`, `"ambiguous"` (with `candidates`), or `"not_found"`. None of
+these is a JSON-RPC error or `isError: true` — an agent branches on
+`data.outcome`, the same way it would branch on any other field, rather than
+needing a separate error-handling path for "nothing matched." This is one
+contract shared verbatim by CLI (`--json`), MCP, and the four fluent HTTP
+routes (`docs/DEPLOYMENT.md`, `docs/SELF_HOSTING.md`) — the only surface
+without it is the two still-id-only MCP tools above, and the HTTP write
+routes (`disagree`/`supersede`), which remain `decision_id`-path-only and are
+not fluent over HTTP at all today.
 
 ---
 

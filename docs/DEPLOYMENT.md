@@ -138,6 +138,37 @@ curl -s "http://localhost:8080/v1/decisions/search?q=storage" \
 
 When `HIVEMIND_API_KEY` is unset, omit the `Authorization` header entirely.
 
+### Fluent (no-id) read routes
+
+Four GET routes resolve a decision without an id, the HTTP equivalent of the
+CLI's `why`/`verify`/`recall`/`situational` verbs
+(`docs/AGENT_FLUENT_QUERYING.md`):
+
+| Route | Query params | Equivalent |
+|---|---|---|
+| `GET /v1/decisions/situational` | `paths` (required, comma-separated), `since_offset`, `since_ts`, `limit`, `cursor` | `hivemind query situational` |
+| `GET /v1/decisions/recall` | `q`, `topic`, `status`, `actor_id`, `source`, `since`, `until`, `limit`, `cursor` | `hivemind query recall` |
+| `GET /v1/decisions/why` | `id` or `description` (+ optional `topic`) | `hivemind query why` |
+| `GET /v1/decisions/verify` | `id` or `description` (+ optional `topic`) | `hivemind query verify` |
+
+```bash
+curl -s "http://localhost:8080/v1/decisions/why?description=storage" \
+  -H "Authorization: Bearer $HIVEMIND_API_KEY"
+```
+
+`why`/`verify` resolve `description` the same deterministic way `search`
+does (term match + topic + recency, no LLM — `docs/AGENT_FLUENT_QUERYING.md`
+§1). A description matching more than one decision at the best rank tier, or
+matching none, is **not an error** — it comes back as HTTP 200 with
+`data.outcome` set to `"ambiguous"` (with a `candidates` list) or
+`"not_found"`. There is no `--pick`/`#N` continuation over HTTP (the API is
+stateless): re-call with `id=<decision_id>` from the candidate list.
+
+`disagree`/`supersede` are **not** fluent over HTTP today — `POST
+/v1/decisions/{id}/disagreements` and `/v1/decisions/{id}/supersessions`
+still take `decision_id` only as a path parameter, unlike their MCP
+equivalents (`docs/AGENT_FLUENT_QUERYING.md` §3.4).
+
 ## Multi-tenant usage
 
 Each request carries a tenant identifier via the `X-HiveMind-Tenant` header.

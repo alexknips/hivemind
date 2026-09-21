@@ -51,10 +51,11 @@ curl http://localhost:8080/v1/health
 # {"status":"ok"}
 ```
 
-> **Search note:** The default Postgres compose uses `GET /v1/decisions/relevant?topic=<topic>`
-> for querying. Full-text search (`GET /v1/decisions/search`) is only available in SQLite
-> mode. Switch to `HIVEMIND_DATABASE_URL=` (empty/unset) for a single-user local setup
-> with full-text search.
+> **Search note:** `GET /v1/decisions/search` and `GET /v1/decisions/recall` work on both
+> backends — SQLite goes through FTS5, Postgres goes through a portable in-memory term
+> matcher with the same ranking order (`docs/AGENT_FLUENT_QUERYING.md` §1.5). `GET
+> /v1/decisions/relevant?topic=<topic>` remains available on both backends too, for exact
+> topic-key filtering rather than free-text search.
 
 ---
 
@@ -302,10 +303,13 @@ curl -s -X POST $HM_URL/v1/decisions \
   }' | tee /tmp/decision.json
 # → {"decision_id":"decision-...","option_ids":[...],...}
 
-# 3. Query it back
-# Note: full-text search (GET /v1/decisions/search) is SQLite mode only.
-# In Postgres mode, query by topic:
+# 3. Query it back — full-text search/recall work on both backends (see the
+# Search note above); topic filtering also works on both:
 curl -s "$HM_URL/v1/decisions/relevant?topic=infrastructure" \
+  -H "Authorization: Bearer $HM_TOKEN" | python3 -m json.tool | head -20
+
+# 3b. Fluent (no-id) follow-up — "why was this decided?", by description:
+curl -s "$HM_URL/v1/decisions/why?description=Postgres%20for%20shared-backend" \
   -H "Authorization: Bearer $HM_TOKEN" | python3 -m json.tool | head -20
 
 # 4. SPA reachable
@@ -323,6 +327,12 @@ curl -s -o /dev/null -w "%{http_code}" -X POST $HM_URL/mcp \
 **Layer-3 classifier** (if `ANTHROPIC_API_KEY` is set): after step 2, wait a
 few seconds then re-fetch the decision — `topic_keys` should be populated
 automatically.
+
+**Fluent (no-id) routes:** step 3b above is one of four GET routes that
+resolve a decision without an id — `situational`, `recall`, `why`, `verify`.
+See `docs/DEPLOYMENT.md`'s "Fluent (no-id) read routes" table for the full
+param list; all four work identically on both backends. `disagree`/
+`supersede` remain `decision_id`-path-only over HTTP (not fluent).
 
 ---
 

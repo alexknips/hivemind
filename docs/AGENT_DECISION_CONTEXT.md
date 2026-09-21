@@ -10,12 +10,22 @@ honest about the fact that HiveMind ships **two different interaction
 models** for that, not one:
 
 1. **MCP** (`src/mcp.rs`, native stdio and `POST /mcp`) — tools like
-   `get_relevant_decisions`, `get_decision_context`,
-   `get_supersession_chain`, `disagree_decision`, `supersede_decision`.
-   Every one of these still takes a `decision_id` (or a `topic`) as a
-   required argument. It is the right surface when an agent's tool-calling
-   runtime prefers structured function calls, or when an id is already at
-   hand from a prior tool result.
+   `get_relevant_decisions`, `get_decision_context`, `get_supersession_chain`,
+   `disagree_decision`, `supersede_decision`. As of `hivemind-ot72.5`–
+   `hivemind-ot72.8` (2026-09-21), `get_decision_neighborhood` (why),
+   `get_decision_outcome` (verify), `disagree_decision`, and
+   `supersede_decision` also accept a free-text `description` (+ optional
+   `topic`) instead of an id — the same resolve-by-description primitive the
+   CLI uses (see `docs/AGENT_FLUENT_QUERYING.md` §3.4). `get_decision_context`
+   and `get_supersession_chain` still require `decision_id` (the latter has
+   an open bead, `hivemind-ot72.9`, to add fluent resolution; the former is
+   not planned to change — it is meant to be called once a decision is
+   already resolved). MCP has no `--pick`/`#N` continuation (stateless per
+   call): an ambiguous or not-found description comes back as a normal
+   success reply with `data.outcome` set to `"ambiguous"` or `"not_found"`,
+   never a JSON-RPC error, and the caller re-calls with `decision_id` once it
+   has one. Pick MCP when an id is already known, the runtime prefers
+   structured tool calls, or the verb is one of the still-id-only ones above.
 2. **The `hivemind-context` Claude/Codex plugin** (this document,
    `plugins/hivemind-context/`) — thin `scripts/*.sh` wrappers around the
    `hivemind-tenv.1`/`hivemind-tenv.2` CLI verbs
@@ -27,13 +37,24 @@ models** for that, not one:
    genuinely different interaction model from MCP rather than an MCP
    client wearing a CLI costume.
 
-Neither model is a strict subset of the other today. MCP exposes a broader
-tool surface (scoring, compaction, quality scanning) that the CLI-only
-plugin does not wrap; the CLI-only plugin's resolve-by-description ambiguity
-gate (candidates returned as a value, `--pick N` / `#N` continuation) has no
-MCP equivalent yet. Pick MCP when an id is already known or the runtime
-wants structured tool calls; pick `hivemind-context` when the agent knows
-only what it is about to change or what it wants to ask, not an id.
+Neither model is a strict subset of the other. MCP exposes a broader tool
+surface (scoring, compaction, quality scanning) that the CLI-only plugin does
+not wrap, and two verbs (`get_supersession_chain`, `compact-view`) that
+still require an id over MCP but resolve fluently over the CLI. The
+CLI-only plugin's `--pick N` / `#N` cross-invocation continuation has no MCP
+equivalent (MCP's ambiguous replies still carry the full candidate list in
+the same call — there is just no shorthand to re-select one in a later
+call). Pick MCP when an id is already known or the runtime wants structured
+tool calls; pick `hivemind-context` when the agent knows only what it is
+about to change or what it wants to ask, not an id, or wants `--pick`/`#N`
+continuation across calls.
+
+The HTTP REST API sits between the two: `GET /v1/decisions/{situational,
+recall,why,verify}` are fluent (id-optional, `hivemind-ot72.4`) the same way
+`why`/`verify` are over MCP, but `POST /v1/decisions/{id}/disagreements` and
+`/{id}/supersessions` are still `decision_id`-path-only — HTTP has no fluent
+write path yet, unlike MCP. See `docs/DEPLOYMENT.md`/`docs/SELF_HOSTING.md`
+for the HTTP route list.
 
 ## The Agent's Lens
 
