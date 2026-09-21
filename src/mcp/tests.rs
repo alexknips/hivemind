@@ -877,6 +877,49 @@ mod transport_parity {
     }
 
     #[tokio::test]
+    async fn recall_decisions_matches_topic_across_transports() {
+        let setup_args = json!({
+            "title": "Use SQLite for the ledger",
+            "rationale": "Local-first storage is enough for v1",
+            "topic_keys": ["storage"],
+            "options": [{"label": "sqlite"}],
+        });
+        let (stdio, http) = run_after(
+            "capture_decision",
+            setup_args,
+            "recall_decisions",
+            "recall-topic",
+            json!({ "topic": ["storage"] }),
+        )
+        .await;
+
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let data = &result["structuredContent"]["data"];
+            assert_eq!(data["query"], Value::Null, "{name}: query"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                data["ranked"]["total_matches"],
+                json!(1),
+                "{name}: total_matches"
+            ); // ubs:ignore: test-only assertion
+            let items = data["ranked"]["items"].as_array().expect("items array"); // ubs:ignore: test-only; panicking is correct in tests
+            assert_eq!(items.len(), 1, "{name}: items length"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                items[0]["decision"]["title"], "Use SQLite for the ledger",
+                "{name}: decision title"
+            ); // ubs:ignore: test-only assertion
+            let cited = data["digest"]["cited_decision_ids"]
+                .as_array()
+                .expect("cited_decision_ids array"); // ubs:ignore: test-only; panicking is correct in tests
+            assert_eq!(cited.len(), 1, "{name}: cited_decision_ids length"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                cited[0], items[0]["decision"]["id"],
+                "{name}: cited id matches ranked item id"
+            ); // ubs:ignore: test-only assertion
+        }
+    }
+
+    #[tokio::test]
     async fn capture_decision_happy_path_with_chosen_option() {
         let (stdio, http) = run(
             "capture_decision",

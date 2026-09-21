@@ -42,14 +42,11 @@ use crate::queries::{
     QueryContext, RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest,
     ScorerConfig, SearchDecisionRequest,
 };
-use crate::summarize::{
-    recall_decisions, summarize_decisions, RecallRequest, SummarizeMode, SummarizeRequest,
-    RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT,
-};
+use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
 use core::{
     CaptureDecisionArgs, CoreError, GetDecisionNeighborhoodArgs, GetSituationalDecisionsArgs,
-    LedgerHandle, LedgerProvider,
+    LedgerHandle, LedgerProvider, RecallDecisionsArgs,
 };
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -984,32 +981,11 @@ fn tool_search_decisions(args: Value, config: &McpConfig) -> std::result::Result
 
 fn tool_recall_decisions(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let statuses = optional_string_array(&args, "status")?
-        .into_iter()
-        .map(|status| parse_decision_status(&status))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let limit = optional_usize(&args, "limit")?.unwrap_or(RECALL_DEFAULT_LIMIT);
-    if limit > RECALL_MAX_LIMIT {
-        return Err(RpcError::invalid_params(format!(
-            "limit must be at most {RECALL_MAX_LIMIT}"
-        )));
-    }
-    let request = RecallRequest {
-        q: optional_string(&args, "q")?,
-        topic_keys: optional_string_array(&args, "topic")?,
-        statuses,
-        actor_ids: optional_string_array(&args, "actor_id")?,
-        sources: optional_string_array(&args, "source")?,
-        since: optional_datetime(&args, "since")?,
-        until: optional_datetime(&args, "until")?,
-        limit,
-        cursor: optional_string(&args, "cursor")?,
-    };
-    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
-    let graph = MemoryGraph::default();
-    rebuild_graph_for_tenant(&ledger, &config.tenant_id, &graph)?;
-    let response = recall_decisions(&config.query_context(), &ledger, &graph, &request)?;
-    Ok(serde_json::to_value(QueryEnvelope::from(response))?)
+    let core_args = RecallDecisionsArgs::from_json(&args)?;
+    let graph = open_memory_graph(config)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::recall_decisions(&provider, &graph, core_args)?;
+    Ok(output.into_value())
 }
 
 fn tool_summarize_decisions(

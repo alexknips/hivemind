@@ -18,22 +18,24 @@
 //!    to the MCP `content`/`structuredContent` wire shape is unchanged and
 //!    stays with each adapter's existing renderer.
 //!
-//! Migrated so far: `capture_decision`, `get_situational_decisions`. Later
-//! tools follow the same shape — an `Args::from_json` parser plus a
-//! `core::<tool>` function — one pair per tool, each independently
-//! reviewable.
+//! Migrated so far: `capture_decision`, `get_situational_decisions`,
+//! `get_decision_neighborhood`, `recall_decisions`. Later tools follow the
+//! same shape — an `Args::from_json` parser plus a `core::<tool>` function —
+//! one pair per tool, each independently reviewable.
 
 use serde_json::{json, Map, Value};
 
 use crate::commands::{CommandContext, Commands, DecisionProposalInput};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, TenantId};
-use crate::ledger::EventLedger;
+use crate::ledger::{AnyLedger, EventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
     get_decision_neighborhood as query_get_decision_neighborhood, resolve_decision_by_description,
-    NeighborhoodRequest, QueryContext, QueryResponse, ResolveOutcome, SituationalRequest,
+    DecisionStatus, NeighborhoodRequest, QueryContext, QueryResponse, ResolveOutcome,
+    SituationalRequest,
 };
+use crate::summarize::{RecallRequest, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT};
 
 use super::args::{
     default_option_description, optional_datetime, optional_string, optional_string_array,
@@ -505,6 +507,103 @@ pub(crate) fn get_decision_neighborhood<P: LedgerProvider>(
         query_get_decision_neighborhood(&graph, &decision_id, &NeighborhoodRequest::all())
             .map_err(CoreError::from)?;
 
+    Ok(ToolOutput(json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "data": response.data,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// recall_decisions
+// ---------------------------------------------------------------------------
+
+fn parse_decision_status(value: &str) -> Result<DecisionStatus, CoreError> {
+    match value {
+        "proposed" => Ok(DecisionStatus::Proposed),
+        "accepted" => Ok(DecisionStatus::Accepted),
+        "rejected" => Ok(DecisionStatus::Rejected),
+        "contested" => Ok(DecisionStatus::Contested),
+        "superseded" => Ok(DecisionStatus::Superseded),
+        other => Err(CoreError::InvalidArgument(format!(
+            "unknown status `{other}`"
+        ))),
+    }
+}
+
+/// Parsed, validated arguments for the `recall_decisions` tool. No resolver
+/// involved: recall takes a free-text search query and filters, not an id.
+pub(crate) struct RecallDecisionsArgs {
+    pub(crate) q: Option<String>,
+    pub(crate) topic_keys: Vec<String>,
+    pub(crate) statuses: Vec<DecisionStatus>,
+    pub(crate) actor_ids: Vec<String>,
+    pub(crate) sources: Vec<String>,
+    pub(crate) since: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) until: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) limit: usize,
+    pub(crate) cursor: Option<String>,
+}
+
+impl RecallDecisionsArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        let statuses = optional_string_array(args, "status")?
+            .iter()
+            .map(|status| parse_decision_status(status))
+            .collect::<Result<Vec<_>, _>>()?;
+        let limit = optional_usize(args, "limit")?.unwrap_or(RECALL_DEFAULT_LIMIT);
+        if limit > RECALL_MAX_LIMIT {
+            return Err(CoreError::InvalidArgument(format!(
+                "limit must be at most {RECALL_MAX_LIMIT}"
+            )));
+        }
+        Ok(Self {
+            q: optional_string(args, "q")?,
+            topic_keys: optional_string_array(args, "topic")?,
+            statuses,
+            actor_ids: optional_string_array(args, "actor_id")?,
+            sources: optional_string_array(args, "source")?,
+            since: optional_datetime(args, "since")?,
+            until: optional_datetime(args, "until")?,
+            limit,
+            cursor: optional_string(args, "cursor")?,
+        })
+    }
+}
+
+/// The migrated core for the `recall_decisions` MCP tool: one implementation
+/// consumed by both transports.
+///
+/// `graph` is supplied by the caller, same caching split as
+/// [`get_situational_decisions`]. Unlike that tool, the ledger here must be
+/// [`AnyLedger`] specifically rather than any `P::Ledger: EventLedger`:
+/// `recall_decisions` calls `search_decisions_any` internally, which
+/// dispatches on the concrete backend (SQLite FTS5 vs Postgres portable
+/// search) and so needs the concrete enum, not just the trait.
+pub(crate) fn recall_decisions<P>(
+    provider: &P,
+    graph: &impl GraphView,
+    args: RecallDecisionsArgs,
+) -> Result<ToolOutput, CoreError>
+where
+    P: LedgerProvider<Ledger = AnyLedger>,
+{
+    let handle = provider.ledger()?;
+    let context = QueryContext::new(handle.tenant_id);
+    let request = RecallRequest {
+        q: args.q,
+        topic_keys: args.topic_keys,
+        statuses: args.statuses,
+        actor_ids: args.actor_ids,
+        sources: args.sources,
+        since: args.since,
+        until: args.until,
+        limit: args.limit,
+        cursor: args.cursor,
+    };
+    let response = crate::summarize::recall_decisions(&context, &handle.ledger, graph, &request)
+        .map_err(CoreError::from)?;
     Ok(ToolOutput(json!({
         "result_count": response.result_count,
         "truncated": response.truncated,

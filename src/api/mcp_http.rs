@@ -22,7 +22,7 @@ use crate::mcp::args::{
 };
 use crate::mcp::core::{
     CaptureDecisionArgs, CoreError, GetDecisionNeighborhoodArgs, GetSituationalDecisionsArgs,
-    LedgerHandle, LedgerProvider,
+    LedgerHandle, LedgerProvider, RecallDecisionsArgs,
 };
 use crate::projector::memory::MemoryGraph;
 use crate::queries::{
@@ -191,6 +191,7 @@ fn mcp_tools_call_blocking(
         "get_situational_decisions" => mcp_get_situational_decisions(backend, ctx, args, cache),
         "get_supersession_chain" => mcp_get_supersession_chain(backend, ctx, args, cache),
         "get_decision_neighborhood" => mcp_get_decision_neighborhood(backend, ctx, args),
+        "recall_decisions" => mcp_recall_decisions(backend, ctx, args, cache),
         "search_decisions" => mcp_search_decisions(backend, ctx, args, cache),
         "score_decision" => mcp_score_decision(backend, ctx, args, cache),
         "scan_decision_quality" => mcp_scan_decision_quality(backend, ctx, args, cache),
@@ -492,6 +493,22 @@ fn mcp_get_situational_decisions(
         tenant_id: &ctx.tenant_id,
     };
     let output = crate::mcp::core::get_situational_decisions(&provider, &*graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn mcp_recall_decisions(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
+) -> McpToolResult {
+    let core_args = RecallDecisionsArgs::from_json(&args)?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let provider = HttpLedgerProvider {
+        backend,
+        tenant_id: &ctx.tenant_id,
+    };
+    let output = crate::mcp::core::recall_decisions(&provider, &*graph, core_args)?;
     Ok(output.into_value())
 }
 
