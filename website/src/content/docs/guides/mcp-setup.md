@@ -164,13 +164,22 @@ for full parameter documentation.
 | `supersede_decision` | write | Supersede a prior decision with a new one |
 | `get_decision` | read | Retrieve a decision by ID with derived status |
 | `get_relevant_decisions` | read | Search by topic, status, actor, or time window |
+| `get_situational_decisions` | read | Decisions bearing on a situation — matches by topic or evidence overlap, no ID needed |
 | `get_supersession_chain` | read | Walk the full supersession history backward |
+| `get_decision_neighborhood` | read | One-hop graph neighborhood around a decision — actors, options, evidence, hypotheses |
 | `search_decisions` | read | Full-text search across the ledger |
 | `recent_decisions` | read | List recently proposed decisions |
 | `dump_graph` | read | Export the full projected graph (DOT or JSON) |
+| `get_decision_outcome` | read | Whether a decision still holds — superseded, stale premises, contested, or thin |
 | `hivemind_compact_view` | layer-3 | Compact summary of a decision and its context |
 | `recall_decisions` | layer-3 | Search + ranked digest — answers "what was decided about X?" |
 | `summarize_decisions` | layer-3 | Concise text summary of one or more decisions |
+| `decision_quality_candidates` | layer-3 | Bulk quality-signal pull for external scorers |
+| `get_decision_context` | layer-3 | Context record for a decision — authorship, review depth, evidence richness |
+| `decision_context_candidates` | layer-3 | Bulk context-feature pull, the independent-variable side of quality scoring |
+| `score_decision` | layer-3 | Explainable quality score in [0,1] with contributing reasons |
+| `scan_decision_quality` | layer-3 | Bulk quality scan across all decisions using the same scoring engine |
+| `analyze_failure_modes` | layer-3 | Aggregate failure-rate patterns across authorship, review, and context |
 
 ---
 

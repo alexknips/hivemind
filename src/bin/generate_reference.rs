@@ -29,6 +29,7 @@ const WRITE_TOOLS: &[&str] = &[
 ];
 
 const MCP_SETUP_PATH: &str = "website/src/content/docs/guides/mcp-setup.md";
+const HOMEPAGE_PATH: &str = "website/src/pages/index.astro";
 
 fn main() {
     let check_mode = std::env::args().any(|a| a == "--check");
@@ -41,6 +42,10 @@ fn main() {
 
     let setup_text = std::fs::read_to_string(MCP_SETUP_PATH).unwrap_or_else(|e| {
         eprintln!("Cannot read {MCP_SETUP_PATH}: {e}");
+        std::process::exit(1)
+    });
+    let homepage_text = std::fs::read_to_string(HOMEPAGE_PATH).unwrap_or_else(|e| {
+        eprintln!("Cannot read {HOMEPAGE_PATH}: {e}");
         std::process::exit(1)
     });
 
@@ -78,21 +83,24 @@ fn main() {
             println!("OK: cli.md documents all emit and query subcommands.");
         }
 
-        let stale_mentions = stale_tool_count_mentions(&setup_text, tool_count);
-        if !stale_mentions.is_empty() {
+        if !check_tool_count_mentions(MCP_SETUP_PATH, &setup_text, tool_count) {
+            failed = true;
+        }
+        if !check_tool_count_mentions(HOMEPAGE_PATH, &homepage_text, tool_count) {
+            failed = true;
+        }
+
+        let table_rows = count_available_tools_table_rows(&setup_text);
+        if table_rows != tool_count {
             eprintln!(
-                "STALE: {MCP_SETUP_PATH} has tool-count mentions that don't match \
-                 tool_definitions() ({tool_count} tools):"
+                "STALE: {MCP_SETUP_PATH} \"Available tools\" table lists {table_rows} \
+                 tool(s), expected {tool_count} (tool_definitions().len()). Add or \
+                 remove rows so every tool is listed exactly once."
             );
-            for mention in &stale_mentions {
-                eprintln!("{mention}");
-            }
-            eprintln!("Run: cargo run --bin generate-reference");
             failed = true;
         } else {
             println!(
-                "OK: {MCP_SETUP_PATH} tool-count mentions match tool_definitions() \
-                 ({tool_count} tools)."
+                "OK: {MCP_SETUP_PATH} \"Available tools\" table lists all {tool_count} tools."
             );
         }
 
@@ -118,19 +126,72 @@ fn main() {
             println!("OK: cli.md documents all emit and query subcommands.");
         }
 
-        let fixed_setup = fix_tool_count_mentions(&setup_text, tool_count);
-        if fixed_setup != setup_text {
-            std::fs::write(MCP_SETUP_PATH, &fixed_setup).unwrap_or_else(|e| {
-                eprintln!("Cannot write {MCP_SETUP_PATH}: {e}");
-                std::process::exit(1)
-            });
-            println!("Updated: {MCP_SETUP_PATH} tool-count mentions -> {tool_count}");
+        write_fixed_tool_count_mentions(MCP_SETUP_PATH, &setup_text, tool_count);
+        write_fixed_tool_count_mentions(HOMEPAGE_PATH, &homepage_text, tool_count);
+
+        let table_rows = count_available_tools_table_rows(&setup_text);
+        if table_rows != tool_count {
+            eprintln!(
+                "WARNING: {MCP_SETUP_PATH} \"Available tools\" table lists {table_rows} \
+                 tool(s), expected {tool_count}. Add or remove rows by hand."
+            );
         } else {
             println!(
-                "OK: {MCP_SETUP_PATH} tool-count mentions already match ({tool_count} tools)."
+                "OK: {MCP_SETUP_PATH} \"Available tools\" table lists all {tool_count} tools."
             );
         }
     }
+}
+
+/// Report (and print) whether `text`'s tool-count mentions match `expected`.
+/// Returns `false` on mismatch so callers can fold it into an overall
+/// check-mode failure.
+fn check_tool_count_mentions(path: &str, text: &str, expected: usize) -> bool {
+    let stale = stale_tool_count_mentions(text, expected);
+    if stale.is_empty() {
+        println!("OK: {path} tool-count mentions match tool_definitions() ({expected} tools).");
+        true
+    } else {
+        eprintln!(
+            "STALE: {path} has tool-count mentions that don't match tool_definitions() \
+             ({expected} tools):"
+        );
+        for mention in &stale {
+            eprintln!("{mention}");
+        }
+        eprintln!("Run: cargo run --bin generate-reference");
+        false
+    }
+}
+
+/// Rewrite `path`'s tool-count mentions to `expected` if they've drifted.
+fn write_fixed_tool_count_mentions(path: &str, text: &str, expected: usize) {
+    let fixed = fix_tool_count_mentions(text, expected);
+    if fixed == text {
+        println!("OK: {path} tool-count mentions already match ({expected} tools).");
+        return;
+    }
+    std::fs::write(path, &fixed).unwrap_or_else(|e| {
+        eprintln!("Cannot write {path}: {e}");
+        std::process::exit(1)
+    });
+    println!("Updated: {path} tool-count mentions -> {expected}");
+}
+
+/// Count rows in the hand-written "## Available tools" table in
+/// mcp-setup.md, so `--check` can catch it drifting from the tool count
+/// even though (unlike mcp-tools.md) the table itself isn't generated.
+fn count_available_tools_table_rows(text: &str) -> usize {
+    let Some(start) = text.find("## Available tools") else {
+        return 0;
+    };
+    let rest = text.get(start..).unwrap_or("");
+    let end = rest.find("\n## ").unwrap_or(rest.len());
+    let section = rest.get(..end).unwrap_or(rest);
+    section
+        .lines()
+        .filter(|l| l.trim_start().starts_with("| `"))
+        .count()
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +304,8 @@ fn fix_tool_count_mentions(text: &str, expected: usize) -> String {
             continue;
         }
         out.push_str(text.get(last..mention.start).unwrap_or(""));
-        write!(out, "{expected}").unwrap();
+        // fmt::Write into a String is infallible; the result is never Err.
+        let _ = write!(out, "{expected}");
         last = mention.end;
     }
     out.push_str(text.get(last..).unwrap_or(""));
