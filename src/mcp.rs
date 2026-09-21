@@ -33,10 +33,10 @@ use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool
 use crate::ledger::{AnyLedger, LedgerConfig};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
-    context_next_cursor, get_compact_view, get_decision, get_decision_context,
-    get_decision_context_candidates, get_decision_quality_candidates, get_decision_quality_score,
-    get_failure_attribution, get_recent_decisions, get_relevant_decisions, outcome_next_cursor,
-    scan_decision_quality, scorer_next_cursor, search_decisions_any, DecisionContextRequest,
+    context_next_cursor, get_decision, get_decision_context, get_decision_context_candidates,
+    get_decision_quality_candidates, get_decision_quality_score, get_failure_attribution,
+    get_recent_decisions, get_relevant_decisions, outcome_next_cursor, scan_decision_quality,
+    scorer_next_cursor, search_decisions_any, DecisionContextRequest,
     DecisionQualityCandidatesRequest, DecisionStatus, FailureAttributionRequest, QualityTier,
     QueryContext, RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest,
     ScorerConfig, SearchDecisionRequest,
@@ -44,7 +44,7 @@ use crate::queries::{
 use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
 use core::{
-    CaptureDecisionArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
+    CaptureDecisionArgs, CompactViewArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
     GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSupersessionChainArgs, LedgerHandle,
     LedgerProvider, RecallDecisionsArgs, SupersedeDecisionArgs,
 };
@@ -602,12 +602,13 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "hivemind_compact_view",
-            "description": "Layer-3 compact view of a decision subgraph. Applies signal/noise semantics: terminal decision is fully preserved; superseded predecessors, unchosen options, and resolved blockers are elided and counted. Contested decisions are never compacted. Returns null when the decision_id is not found.",
+            "description": "Layer-3 compact view of a decision subgraph. Applies signal/noise semantics: terminal decision is fully preserved; superseded predecessors, unchosen options, and resolved blockers are elided and counted. Contested decisions are never compacted. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error; re-call with decision_id from that list. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}`. Returns data: null when a directly-supplied decision_id itself does not exist.",
             "inputSchema": {
                 "type": "object",
-                "required": ["decision_id"],
                 "properties": {
-                    "decision_id": { "type": "string", "description": "The decision to compact. If mid-chain, the terminal (newest) decision in the supersession chain is used as the focal node." }
+                    "decision_id": { "type": "string", "description": "The decision to compact. Provide this or `description`, not both. If mid-chain, the terminal (newest) decision in the supersession chain is used as the focal node." },
+                    "description": { "type": "string", "description": "Free-text description to resolve to a decision when the id is not known." },
+                    "topic": { "type": "string", "description": "Narrows description resolution to decisions carrying this topic key." }
                 }
             }
         }),
@@ -1019,10 +1020,10 @@ fn tool_dump_graph(_args: Value, config: &McpConfig) -> std::result::Result<Valu
 
 fn tool_compact_view(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let decision_id = require_string(&args, "decision_id")?;
-    let graph = open_memory_graph(config)?;
-    let response = get_compact_view(&graph, &decision_id)?;
-    serde_json::to_value(&response).map_err(|e| RpcError::internal(e.to_string()))
+    let core_args = CompactViewArgs::from_json(&args)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::compact_view(&provider, core_args)?;
+    Ok(output.into_value())
 }
 
 fn open_memory_graph(config: &McpConfig) -> Result<MemoryGraph> {

@@ -239,13 +239,15 @@ Render the current decision graph as Graphviz DOT.
 
 ### `hivemind_compact_view`
 
-Layer-3 compact view of a decision subgraph. Applies signal/noise semantics: terminal decision is fully preserved; superseded predecessors, unchosen options, and resolved blockers are elided and counted. Contested decisions are never compacted. Returns null when the decision_id is not found.
+Layer-3 compact view of a decision subgraph. Applies signal/noise semantics: terminal decision is fully preserved; superseded predecessors, unchosen options, and resolved blockers are elided and counted. Contested decisions are never compacted. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: "ambiguous", candidates: [...]}`, not an error; re-call with decision_id from that list. A description matching nothing is also a successful result, shaped `{outcome: "not_found"}`. Returns data: null when a directly-supplied decision_id itself does not exist.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `decision_id` | string | ✓ | The decision to compact. If mid-chain, the terminal (newest) decision in the supersession chain is used as the focal node. |
+| `decision_id` | string | — | The decision to compact. Provide this or `description`, not both. If mid-chain, the terminal (newest) decision in the supersession chain is used as the focal node. |
+| `description` | string | — | Free-text description to resolve to a decision when the id is not known. |
+| `topic` | string | — | Narrows description resolution to decisions carrying this topic key. |
 
 ---
 

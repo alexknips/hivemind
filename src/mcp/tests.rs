@@ -1944,4 +1944,139 @@ mod transport_parity {
             "missing-selector message text"
         );
     }
+
+    /// Like `run_seeded`, but captures the seeded decisions and returns each
+    /// transport's own `decision_id`s alongside the tool's response —
+    /// `hivemind_compact_view`'s by-id case needs a real id per transport,
+    /// since stdio and http each get a fresh, independently-assigned ledger.
+    async fn run_seeded_with_ids(
+        titles: &[&str],
+        tool: &str,
+        label: &str,
+        arguments_from_id: impl Fn(&str) -> Value,
+    ) -> (Value, Value) {
+        let stdio_dir = unique_dir(&format!("parity-stdio-{label}"));
+        let http_dir = unique_dir(&format!("parity-http-{label}"));
+
+        let mut stdio_id = None;
+        let mut http_id = None;
+        for title in titles {
+            let seed = json!({
+                "title": title,
+                "rationale": "seed for hivemind_compact_view parity test",
+                "topic_keys": ["parity"],
+                "options": [{"label": "only"}],
+            });
+            let stdio_capture = stdio_call(&stdio_dir, "capture_decision", seed.clone());
+            let http_capture = http_call(&http_dir, "capture_decision", seed).await;
+            stdio_id = stdio_capture["result"]["structuredContent"]["decision_id"]
+                .as_str()
+                .map(str::to_owned);
+            http_id = http_capture["result"]["structuredContent"]["decision_id"]
+                .as_str()
+                .map(str::to_owned);
+        }
+        let stdio_id = stdio_id.expect("stdio decision_id"); // ubs:ignore: test-only; panicking is correct in tests
+        let http_id = http_id.expect("http decision_id"); // ubs:ignore: test-only; panicking is correct in tests
+
+        let stdio = stdio_call(&stdio_dir, tool, arguments_from_id(&stdio_id));
+        let http = http_call(&http_dir, tool, arguments_from_id(&http_id)).await;
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+        (
+            stdio["result"].clone(), // ubs:ignore: test-only; index guaranteed by test setup
+            http["result"].clone(),  // ubs:ignore: test-only; index guaranteed by test setup
+        )
+    }
+
+    #[tokio::test]
+    async fn compact_view_resolves_by_id() {
+        let (stdio, http) = run_seeded_with_ids(
+            &["Adopt async billing queue"],
+            "hivemind_compact_view",
+            "compact-view-by-id",
+            |id| json!({ "decision_id": id }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let data = &result["structuredContent"]["data"];
+            assert_eq!(
+                data["decision"]["title"], "Adopt async billing queue",
+                "{name}: decision title"
+            ); // ubs:ignore: test-only assertion
+        }
+    }
+
+    #[tokio::test]
+    async fn compact_view_resolves_unique_description() {
+        let (stdio, http) = run_seeded(
+            "hivemind_compact_view",
+            "compact-view-resolved",
+            &["Adopt async billing queue"],
+            json!({ "description": "adopt async billing queue" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let data = &result["structuredContent"]["data"];
+            assert_eq!(
+                data["decision"]["title"], "Adopt async billing queue",
+                "{name}: decision title"
+            ); // ubs:ignore: test-only assertion
+        }
+    }
+
+    #[tokio::test]
+    async fn compact_view_ambiguous_description_returns_candidates_not_error() {
+        let (stdio, http) = run_seeded(
+            "hivemind_compact_view",
+            "compact-view-ambiguous",
+            &[
+                "Adopt async queue for billing",
+                "Adopt async queue for notifications",
+            ],
+            json!({ "description": "adopt async queue" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: ambiguous is not an error"
+            ); // ubs:ignore: test-only assertion
+            let structured = &result["structuredContent"];
+            assert_eq!(
+                structured["data"]["outcome"], "ambiguous",
+                "{name}: outcome"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                structured["data"]["candidates"].as_array().map(Vec::len),
+                Some(2),
+                "{name}: candidate count"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn compact_view_not_found_description_returns_envelope_not_error() {
+        let (stdio, http) = run_seeded(
+            "hivemind_compact_view",
+            "compact-view-not-found",
+            &["Adopt async billing queue"],
+            json!({ "description": "totally unrelated widget factory zzz" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: not-found is not an error: {result:?}"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["data"]["outcome"],
+                "not_found", // ubs:ignore: test-only assertion
+                "{name}: outcome"
+            );
+        }
+    }
 }

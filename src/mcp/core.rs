@@ -21,7 +21,7 @@
 //! Migrated so far: `capture_decision`, `get_situational_decisions`,
 //! `resolve_target`/`get_decision_neighborhood`, `get_supersession_chain`,
 //! `recall_decisions`, `supersede_decision`, `disagree_decision`,
-//! `get_decision_outcome`. Later
+//! `get_decision_outcome`, `hivemind_compact_view`. Later
 //! tools follow the same shape — an `Args::from_json` parser plus a
 //! `core::<tool>` function — one pair per tool, each independently
 //! reviewable.
@@ -34,7 +34,7 @@ use crate::events::{EventProvenance, TenantId};
 use crate::ledger::{AnyLedger, EventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
-    derive_decision_status, get_decision_brief as query_get_decision_brief,
+    derive_decision_status, get_compact_view, get_decision_brief as query_get_decision_brief,
     get_decision_neighborhood as query_get_decision_neighborhood,
     get_supersession_chain as query_get_supersession_chain, resolve_decision_by_description,
     DecisionStatus, NeighborhoodRequest, QueryContext, QueryResponse, ResolveOutcome,
@@ -539,6 +539,67 @@ pub(crate) fn get_decision_neighborhood<P: LedgerProvider>(
     let response =
         query_get_decision_neighborhood(&graph, &decision_id, &NeighborhoodRequest::all())
             .map_err(CoreError::from)?;
+
+    Ok(ToolOutput(json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "data": response.data,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// hivemind_compact_view (the CLI's `compact-view`)
+// ---------------------------------------------------------------------------
+
+/// Parsed, validated arguments for the `hivemind_compact_view` tool.
+pub(crate) struct CompactViewArgs {
+    pub(crate) decision_id: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) topic: Option<String>,
+}
+
+impl CompactViewArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            decision_id: optional_string(args, "decision_id")?,
+            description: optional_string(args, "description")?,
+            topic: optional_string(args, "topic")?,
+        })
+    }
+}
+
+/// The migrated core for the `hivemind_compact_view` MCP tool: one
+/// implementation consumed by both transports. Payload is identical to
+/// `hivemind query compact-view --json` — the same `QueryResponse` envelope
+/// around `Option<CompactView>` from [`crate::queries::get_compact_view`].
+/// `data: null` there means the resolved `decision_id` itself doesn't exist
+/// (the id escape hatch bypasses resolution, so an unvalidated id can still
+/// miss); that's distinct from the resolver's own not-found outcome, which
+/// fires when a free-text `description` matches nothing and is signalled by
+/// `data.outcome` instead — same split [`get_decision_neighborhood`] already
+/// established.
+pub(crate) fn compact_view<P: LedgerProvider>(
+    provider: &P,
+    args: CompactViewArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let target = resolve_target(
+        &handle,
+        args.decision_id.as_deref(),
+        args.description.as_deref(),
+        args.topic.as_deref(),
+        "decision_id",
+    )?;
+    let decision_id = match target {
+        ResolvedTarget::Id(id) => id,
+        ResolvedTarget::Ambiguous(output) => return Ok(output),
+        ResolvedTarget::NotFound(output) => return Ok(output),
+    };
+
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&handle.ledger, &handle.tenant_id, &graph).map_err(CoreError::from)?;
+    let response = get_compact_view(&graph, &decision_id).map_err(CoreError::from)?;
 
     Ok(ToolOutput(json!({
         "result_count": response.result_count,
