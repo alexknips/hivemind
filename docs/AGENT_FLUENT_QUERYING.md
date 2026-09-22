@@ -354,7 +354,9 @@ separate query functions:
 - `get_decision` (`decision.rs:37`) → `DecisionView`: id, title, rationale,
   `option_ids` (ids only, **no labels** — see below), `chosen_option_id`,
   status, evidence/hypothesis ids.
-- `get_decision_context` (`context.rs`) → `DecisionContext`: `proposer_id`,
+- `get_decision_context` (`context.rs`) → `DecisionContext`: `proposer_id`
+  (who *recorded* it), `accepted_by` (who actually *decided* — may differ
+  from `proposer_id`, or be empty when unreviewed; hivemind-zdsh.9),
   `source`, `source_ref`, `review: ReviewShape` (unreviewed / self_accepted /
   peer_reviewed / disputed) — this is "who decided."
 - `get_decision_outcome` (`outcome.rs:94`) → `DecisionOutcome`: `held_up`
@@ -387,14 +389,14 @@ pub struct DecisionBrief {
     pub rationale: String,
     pub chosen_option: Option<OptionLabel>,
     pub rejected_options: Vec<OptionLabel>,   // label-resolved, rationale shared not per-option
-    pub decided_by: DecidedBy,                // proposer_id, source, source_ref, review shape
+    pub decided_by: DecidedBy,                // proposer_id, decider_ids, source, source_ref, review shape
     pub still_holds: StillHolds,              // held_up + reasons, from DecisionOutcome
     pub topic_keys: Vec<String>,
     pub status: DecisionStatus,               // proposed/accepted/contested/superseded
 }
 
 pub struct OptionLabel { pub option_id: String, pub label: String }
-pub struct DecidedBy { pub proposer_id: Option<String>, pub source: String, pub source_ref: Option<String>, pub review: ReviewShape }
+pub struct DecidedBy { pub proposer_id: Option<String>, pub decider_ids: Vec<String>, pub source: String, pub source_ref: Option<String>, pub review: ReviewShape }
 pub struct StillHolds { pub held_up: bool, pub reasons: Vec<OutcomeReason> }
 ```
 
@@ -409,8 +411,10 @@ is the default (matches `QueryArgs`'s existing convention,
 generic dispatcher `format_query_response` (`render.rs:171`), following the
 established pattern of a per-verb `render_*_summary(&T) -> String` closure
 (e.g. `render_neighborhood_summary`, `render.rs:342`) — but as short
-labeled paragraphs (decision / rationale / rejected options / decided by /
-still holds), not the tab-cell table style used by list-shaped commands
+labeled paragraphs (decision / rationale / rejected options / recorded by
+and decided by, shown as one line on self-acceptance or two when the
+recorder and decider differ / still holds), not the tab-cell table style
+used by list-shaped commands
 (`summary_cell`, `render.rs:456`), since a `DecisionBrief` is a single
 record meant to be read, not a row in a list. IDs appear only in a trailing
 "ref: <decision_id>" line — present for follow-up (`--id`, `--pick`), never

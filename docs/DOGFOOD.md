@@ -68,16 +68,25 @@ mkdir ./hivemind
 
 Every event has an actor. Dogfood captures use these actor id prefixes:
 
-- `agent:claude:<session>` for Claude Code sessions.
-- `agent:codex:<session>` for Codex sessions.
+- `agent:claude:<name>` for Claude Code sessions.
+- `agent:codex:<name>` for Codex sessions.
 - `human:<email-or-name>` for manual terminal writes by a human.
+
+`<name>` is a **stable** identity, not a raw session id: a Gas City agent
+resolves it from `GC_AGENT`/`GC_ALIAS` (a fixed crew/polecat/refinery slot
+name that survives process restarts) before ever falling back to a raw
+per-run session id. Folding a raw session id in here would make the same
+physical agent appear as a different actor on every restart
+(hivemind-zdsh.9).
 
 The actor identifies who took the action. The event source identifies the
 capture surface:
 
 - `source=agent` means an agent capture path wrote the event.
 - `source=human` means a bare human terminal write wrote the event.
-- `source_ref` is normally the actor id for local agent and human writes. Other
+- `source_ref` carries the raw per-run session id for agent writes when one
+  is available (the provenance a stable actor id no longer carries), the
+  actor id when it isn't, and the actor id for human writes. Other
   integrations can use it for their external source reference.
 
 Do not invent actor ids by hand during normal dogfood operation. Use the plugin
@@ -225,7 +234,7 @@ client can pass a stable session id, add it after the `mcp` subcommand:
 If no session id is supplied, the MCP server generates one for that server
 process. The MCP `capture_decision`, `capture_evidence`, and
 `capture_hypothesis` tools default `actor_id` to
-`agent:<tool>:<session>` and write with `source=agent`.
+`agent:<tool>:<name>` and write with `source=agent`.
 
 ## Concurrent-Use Contract
 
@@ -277,7 +286,7 @@ Filter to one session:
 
 ```bash
 hivemind --hivemind-dir ./hivemind/ query search_decisions \
-  --actor-id "agent:codex:<session>" \
+  --actor-id "agent:codex:<name>" \
   --source agent \
   --limit 10
 ```
@@ -356,10 +365,11 @@ slash command, or `emit decision.capture --agent-tool ... --agent-session ...`.
 
 ### `source=agent` is present, but the actor is unexpected
 
-The helper derives session identity from the client environment. Claude uses
-`CLAUDE_SESSION_ID` or `CLAUDE_CODE_SESSION_ID`; Codex uses `CODEX_THREAD_ID`,
-`CODEX_SESSION_ID`, or `CODEX_TASK_ID`; Gas City sessions can fall back to
-`GC_SESSION_ID` or `GC_SESSION_NAME`.
+The helper derives identity from the client environment, stable name first:
+`GC_AGENT`/`GC_ALIAS` (a Gas City agent's fixed slot name), then a raw
+per-run session id -- Claude uses `CLAUDE_SESSION_ID` or
+`CLAUDE_CODE_SESSION_ID`; Codex uses `CODEX_THREAD_ID`, `CODEX_SESSION_ID`,
+or `CODEX_TASK_ID` -- then `GC_SESSION_ID` or `GC_SESSION_NAME`.
 
 Pass `--agent-tool` and `--agent-session` explicitly only when you are repairing
 or testing that environment.

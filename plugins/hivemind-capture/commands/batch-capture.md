@@ -63,7 +63,7 @@ Return only the JSON array, no other text.
 Write the JSON array returned by the subagent to a temporary file, then submit:
 
 ```bash
-HIVEMIND_AGENT_SESSION="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}"
+HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}"
 printf '%s\n' '<SUBAGENT_JSON_OUTPUT>' > /tmp/hivemind-batch-captures.json
 hivemind --hivemind-dir "$HIVEMIND_DIR" emit ingest.batch_classified \
   --captures /tmp/hivemind-batch-captures.json \

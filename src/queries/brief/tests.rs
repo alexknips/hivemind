@@ -92,6 +92,9 @@ fn brief_composes_context_and_outcome_for_a_clean_decision() -> Result<()> {
     assert_eq!(brief.rejected_options[0].option_id, "opt:sync");
 
     assert_eq!(brief.decided_by.proposer_id.as_deref(), Some("human:alice"));
+    // alice recorded it, but bob is who accepted it -- the two must stay distinguishable
+    // rather than collapsing to "decided by: alice" (hivemind-zdsh.9).
+    assert_eq!(brief.decided_by.decider_ids, vec!["human:bob".to_owned()]);
     assert_eq!(brief.decided_by.source, "cli");
     assert_eq!(brief.decided_by.review, ReviewShape::PeerReviewed);
 

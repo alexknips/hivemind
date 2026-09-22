@@ -19,7 +19,7 @@ See [MCP Setup](../../guides/mcp-setup/) to configure your client.
 
 ### `capture_decision`
 
-Record a proposed decision with rationale, topic keys, and at least one option. Defaults actor_id to agent:<tool>:<session> and writes source=agent. Pass `decided_by` when the actual decider differs from the recording actor (e.g. a human decided, an agent is scribing it) — the decision is recorded as accepted by that actor rather than left proposed.
+Record a proposed decision with rationale, topic keys, and at least one option. Defaults actor_id to agent:<tool>:<name> and writes source=agent. Pass `decided_by` when the actual decider differs from the recording actor (e.g. a human decided, an agent is scribing it) — the decision is recorded as accepted by that actor rather than left proposed.
 
 **Parameters:**
 
@@ -29,7 +29,7 @@ Record a proposed decision with rationale, topic keys, and at least one option. 
 | `rationale` | string | ✓ |  |
 | `title` | string | ✓ |  |
 | `topic_keys` | string[] | ✓ |  |
-| `actor_id` | string | — | Optional capturing actor override. Defaults to `agent:<tool>:<session>`. |
+| `actor_id` | string | — | Optional capturing actor override. Defaults to `agent:<tool>:<name>`. |
 | `chosen_option_label` | string | — | Label of the option that was accepted; must match one of `options[].label`. |
 | `decided_by` | string | — | Actor who actually made the decision, when it differs from `actor_id` (the recording actor/scribe) — e.g. `human:alex@example.com` when an agent is writing down a decision a human made. Requires `chosen_option_label`; immediately advances the decision to `accepted` from this actor. |
 | `evidence_ids` | string[] | — |  |
@@ -39,27 +39,27 @@ Record a proposed decision with rationale, topic keys, and at least one option. 
 
 ### `capture_evidence`
 
-Record an evidence item that can be attached to decisions or hypotheses. Defaults actor_id to agent:<tool>:<session> and writes source=agent.
+Record an evidence item that can be attached to decisions or hypotheses. Defaults actor_id to agent:<tool>:<name> and writes source=agent.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `content` | string | ✓ |  |
-| `actor_id` | string | — | Optional capturing actor override. Defaults to `agent:<tool>:<session>`. |
+| `actor_id` | string | — | Optional capturing actor override. Defaults to `agent:<tool>:<name>`. |
 
 ---
 
 ### `capture_hypothesis`
 
-Record a hypothesis. Defaults actor_id to agent:<tool>:<session> and writes source=agent.
+Record a hypothesis. Defaults actor_id to agent:<tool>:<name> and writes source=agent.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `statement` | string | ✓ |  |
-| `actor_id` | string | — | Optional capturing actor override. Defaults to `agent:<tool>:<session>`. |
+| `actor_id` | string | — | Optional capturing actor override. Defaults to `agent:<tool>:<name>`. |
 
 ---
 
@@ -72,7 +72,7 @@ Record an actor disagreement with a decision and return the resulting derived st
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `reason` | string | ✓ |  |
-| `actor_id` | string | — | Disagreeing actor. Defaults to `agent:codex:<session>` when omitted. |
+| `actor_id` | string | — | Disagreeing actor. Defaults to `agent:<tool>:<name>` when omitted. |
 | `decision_id` | string | — | The decision to disagree with. Provide this or `description`, not both. |
 | `description` | string | — | Free-text description to resolve to a decision when the id is not known. |
 | `topic` | string | — | Narrows description resolution to decisions carrying this topic key. |
@@ -89,7 +89,7 @@ Propose a replacement decision and mark it as superseding an old decision. Wraps
 |-----------|------|----------|-------------|
 | `rationale` | string | ✓ |  |
 | `title` | string | ✓ |  |
-| `actor_id` | string | — | Superseding actor. Defaults to `agent:codex:<session>` when omitted. |
+| `actor_id` | string | — | Superseding actor. Defaults to `agent:<tool>:<name>` when omitted. |
 | `chosen_option_label` | string | — |  |
 | `description` | string | — | Free-text match for the decision to supersede. Required when `old_decision_id` is omitted. |
 | `evidence_ids` | string[] | — |  |
@@ -295,7 +295,7 @@ Bulk quality-signal pull for external scorers: returns outcome records for all d
 
 ### `get_decision_context`
 
-Derive the context record for a single decision: the conditions under which it was made. Returns five feature groups — authorship shape (human-authored / agent-proposed+human-accepted / agent-only / unknown), source system and model/session reference, review depth (unreviewed / self_accepted / peer_reviewed / disputed), evidence and hypothesis counts, and context richness proxies (options count, rationale character count). No LLM involved; derived purely from graph edges. Pair with get_decision_outcome for causal attribution. Returns null when the decision_id is not found.
+Derive the context record for a single decision: the conditions under which it was made. Returns five feature groups — authorship shape (human-authored / agent-proposed+human-accepted / agent-only / unknown) with proposer_id (who recorded it) and accepted_by (who actually decided — may differ from proposer_id, or be empty when unreviewed), source system and model/session reference, review depth (unreviewed / self_accepted / peer_reviewed / disputed), evidence and hypothesis counts, and context richness proxies (options count, rationale character count). No LLM involved; derived purely from graph edges. Pair with get_decision_outcome for causal attribution. Returns null when the decision_id is not found.
 
 **Parameters:**
 

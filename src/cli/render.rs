@@ -12,10 +12,10 @@ use crate::projector::{
 };
 use crate::queries::{
     derive_decision_status, derive_hypothesis_status, BlockerNotificationCandidates, CompactView,
-    DecisionBlockerResults, DecisionBrief, DecisionSearchResults, DecisionStatus, DecisionView,
-    DecisionsAddedSinceResults, DecisionsChangedSinceResults, HistoryChangeKind, HypothesisStatus,
-    MatchReason, NeighborhoodView, OutcomeReason, QualityTier, QueryResponse, ReadOnlyExport,
-    ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
+    DecidedBy, DecisionBlockerResults, DecisionBrief, DecisionSearchResults, DecisionStatus,
+    DecisionView, DecisionsAddedSinceResults, DecisionsChangedSinceResults, HistoryChangeKind,
+    HypothesisStatus, MatchReason, NeighborhoodView, OutcomeReason, QualityTier, QueryResponse,
+    ReadOnlyExport, ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
     RecentActivityResults, RecentDecisionsResults, ResolveOutcome, ScoredDecision,
     SituationalResults, SupersessionChain,
 };
@@ -422,13 +422,7 @@ pub(crate) fn render_decision_brief_summary(brief: &Option<DecisionBrief>) -> St
             labels.join(", ")
         );
     }
-    let _ = writeln!(
-        output,
-        "  decided by: {} (source={}, review={:?})",
-        brief.decided_by.proposer_id.as_deref().unwrap_or("unknown"),
-        brief.decided_by.source,
-        brief.decided_by.review
-    );
+    write_decided_by(&mut output, &brief.decided_by);
     if let Some(occurred_at) = brief.occurred_at {
         let _ = writeln!(output, "  when: {}", occurred_at.to_rfc3339());
     }
@@ -441,6 +435,44 @@ pub(crate) fn render_decision_brief_summary(brief: &Option<DecisionBrief>) -> St
     }
     let _ = writeln!(output, "  ref: {}", brief.decision_id);
     output.trim_end().to_owned()
+}
+
+/// Recorder and decider are distinct actors (hivemind-zdsh.9): the recorder is whoever
+/// wrote the decision down (`PROPOSED_BY`), the decider is whoever actually made the call
+/// (`ACCEPTED_BY`). Collapsed to one "decided by" line only on self-acceptance, where
+/// they're the same actor; an unreviewed decision says so honestly instead of implying the
+/// recorder decided.
+fn write_decided_by(output: &mut String, decided_by: &DecidedBy) {
+    let recorder = decided_by.proposer_id.as_deref().unwrap_or("unknown");
+    match decided_by.decider_ids.as_slice() {
+        [] => {
+            let _ = writeln!(
+                output,
+                "  recorded by: {} (source={}) -- not yet decided ({:?})",
+                recorder, decided_by.source, decided_by.review
+            );
+        }
+        [only] if only == recorder => {
+            let _ = writeln!(
+                output,
+                "  decided by: {} (source={}, review={:?})",
+                recorder, decided_by.source, decided_by.review
+            );
+        }
+        deciders => {
+            let _ = writeln!(
+                output,
+                "  recorded by: {} (source={})",
+                recorder, decided_by.source
+            );
+            let _ = writeln!(
+                output,
+                "  decided by: {} (review={:?})",
+                deciders.join(", "),
+                decided_by.review
+            );
+        }
+    }
 }
 
 fn format_outcome_reason(reason: &OutcomeReason) -> String {

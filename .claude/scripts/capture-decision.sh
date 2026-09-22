@@ -47,7 +47,12 @@ SOURCE="human"
 ACTOR_ID=""
 SOURCE_REF=""
 AGENT_TOOL="claude"
-AGENT_SESSION="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-manual-session}}"
+# Stable identity first: Gas City assigns every crew/polecat/refinery slot a
+# fixed name (GC_AGENT, mirrored in GC_ALIAS) that survives process restarts.
+# A raw session id (CLAUDE_SESSION_ID, ...) does not -- it's freshly
+# generated on every run, so checking it first makes the same physical agent
+# appear as a different actor on every restart (hivemind-zdsh.9).
+AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-manual-session}}}}"
 FORWARDED=()
 
 while [[ $# -gt 0 ]]; do

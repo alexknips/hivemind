@@ -72,9 +72,10 @@ hivemind --hivemind-dir ./hivemind/ emit decision.capture \
   --chose direct-cli
 ```
 
-Actor identity is derived automatically from session environment variables
-(`CLAUDE_SESSION_ID`, `CODEX_THREAD_ID`, etc.). Use `--agent-tool` and
-`--agent-session` only when overriding the defaults.
+Actor identity is derived automatically, stable name first: a Gas City
+agent's fixed slot name (`GC_AGENT`/`GC_ALIAS`) before any raw per-run
+session environment variable (`CLAUDE_SESSION_ID`, `CODEX_THREAD_ID`, etc.).
+Use `--agent-tool` and `--agent-session` only when overriding the defaults.
 
 ## Batch capture (keyless)
 
@@ -99,7 +100,7 @@ cat > /tmp/hivemind-captures.json <<'EOF'
 [ { "kind": "decision", "title": "...", "rationale": "...", ... } ]
 EOF
 
-HIVEMIND_AGENT_SESSION="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${GC_SESSION_ID:-manual-session}}}"
+HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${GC_SESSION_ID:-manual-session}}}}}"
 hivemind --hivemind-dir ./hivemind/ emit ingest.batch_classified \
   --captures /tmp/hivemind-captures.json \
   --agent-tool claude \

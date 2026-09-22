@@ -72,18 +72,16 @@ or pass `--hivemind-dir` to the underlying scripts.
 Read verbs (`situational`, `recall`, `why`, `verify`) run under the CLI's
 own default actor and record no new events.
 
-Write verbs (`disagree`, `supersede`) pass `--actor agent:<tool>:<session>`
+Write verbs (`disagree`, `supersede`) pass `--actor agent:<tool>:<name>`
 explicitly, derived the same way `hivemind-capture`'s scripts derive it —
-`CLAUDE_SESSION_ID`/`CLAUDE_CODE_SESSION_ID` under Claude,
-`CODEX_THREAD_ID`/`CODEX_SESSION_ID`/`CODEX_TASK_ID` under Codex, falling
-back to Gas City session variables. **Known limitation:** the CLI's
-`disagree`/`supersede` commands currently construct `EventProvenance::human`
-regardless of the `--actor` value passed
-(`src/cli/run/mod.rs::run_disagree`/`run_supersede`), so the emitted
-event's `actor_id` correctly reads `agent:...` but its `source` field
-still reads `human`. This is existing `hivemind-tenv.1` CLI behavior, out
-of this plugin's scope to change; flagged here rather than silently
-worked around.
+Gas City's stable `GC_AGENT`/`GC_ALIAS` slot identity first (it survives
+process restarts), falling back to a raw per-run session id
+(`CLAUDE_SESSION_ID`/`CLAUDE_CODE_SESSION_ID` under Claude,
+`CODEX_THREAD_ID`/`CODEX_SESSION_ID`/`CODEX_TASK_ID` under Codex), then
+Gas City's session-instance variables. `run_disagree`/`run_supersede`
+(`src/cli/run/mod.rs`) derive `source` from that `--actor` value itself
+(`agent:` prefix → `EventProvenance::agent`, otherwise `::human`), so the
+emitted event's `source` field always matches its `actor_id`'s kind.
 
 ## Verify
 

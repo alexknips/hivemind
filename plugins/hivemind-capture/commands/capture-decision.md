@@ -23,10 +23,10 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/capture-decision.sh $ARGUMENTS
 The helper prints a confirmation and a follow-up
 `/hivemind-capture:query-decisions` command scoped to the recorded actor.
 
-Default to `--source agent`, which records
-`actor_id=agent:claude:<session>` and `source=agent`. Use `--source human`
-only when the user explicitly asks you to record their decision as a human
-write.
+Default to `--source agent`, which records `actor_id=agent:claude:<name>`
+(a stable identity, preferring Gas City's `GC_AGENT`/`GC_ALIAS` over a raw
+session id) and `source=agent`. Use `--source human` only when the user
+explicitly asks you to record their decision as a human write.
 
 Do not query, rank, summarize, or infer related decisions before capturing.
 This command is a write-layer path only.

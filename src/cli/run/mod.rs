@@ -14,6 +14,7 @@ use crate::events::{
 };
 use crate::identity::{
     agent_actor_id, default_agent_session, default_agent_tool, default_human_actor_id,
+    raw_agent_session_from_env,
 };
 use crate::ingest::{
     accumulate_file_summary_pub, extract_slack_decision_draft, import_documents,
@@ -1523,7 +1524,25 @@ fn capture_provenance(args: &EmitCaptureProvenanceArgs, actor_id: &str) -> Resul
     }
 
     Ok(match source {
-        DecisionCaptureSource::Agent => EventProvenance::agent(actor_id),
+        // The raw per-run session id (never the stable name `actor_id` now carries --
+        // `agent_session_from_env` prefers a stable Gas City identity over it, see
+        // identity.rs) is exactly what provenance is for: it lets a specific capture's
+        // run still be traced even though actor_id no longer varies per run
+        // (hivemind-zdsh.9). Only applies to ambient derivation, though: when the caller
+        // pinned the session or actor explicitly, that pin is itself the intended claim
+        // for this capture and stays authoritative in source_ref too, matching actor_id
+        // (the prior, pre-zdsh.9 default).
+        DecisionCaptureSource::Agent => {
+            let explicit = trimmed_optional("--agent-session", &args.agent_session)?.is_some()
+                || trimmed_optional("--actor-id", &args.actor_id)?.is_some();
+            let source_ref = if explicit {
+                actor_id.to_owned()
+            } else {
+                let tool = capture_agent_tool(args)?;
+                raw_agent_session_from_env(&tool).unwrap_or_else(|| actor_id.to_owned())
+            };
+            EventProvenance::agent(source_ref)
+        }
         DecisionCaptureSource::Human => EventProvenance::human(actor_id),
     })
 }

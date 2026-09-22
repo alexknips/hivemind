@@ -32,7 +32,15 @@ pub struct OptionLabel {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct DecidedBy {
+    /// The actor who *recorded* this decision (the `PROPOSED_BY` actor) -- often a scribe
+    /// writing down someone else's call, not necessarily the one who made it. See
+    /// `decider_ids` for who actually decided (hivemind-zdsh.9).
     pub proposer_id: Option<String>,
+    /// The actor(s) who actually *decided* (`ACCEPTED_BY` targets). Empty when the decision
+    /// hasn't been accepted by anyone yet (`review == Unreviewed`); equal to `proposer_id`
+    /// on self-acceptance.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub decider_ids: Vec<String>,
     pub source: String,
     pub source_ref: Option<String>,
     pub review: ReviewShape,
@@ -109,6 +117,7 @@ pub fn get_decision_brief(
         rejected_options,
         decided_by: DecidedBy {
             proposer_id: context.proposer_id,
+            decider_ids: context.accepted_by,
             source: context.source,
             source_ref: context.source_ref,
             review: context.review,

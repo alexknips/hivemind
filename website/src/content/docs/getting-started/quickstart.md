@@ -86,7 +86,7 @@ No files are left behind.
      --chose hivemind
    ```
 
-   Every write requires `--actor`. Use `human:<id>` for humans, `agent:<tool>:<session>` for agents.
+   Every write requires `--actor`. Use `human:<id>` for humans, `agent:<tool>:<name>` for agents.
    `--hivemind-dir` sets the ledger location; it is created on first write.
 
 2. **Query it back**

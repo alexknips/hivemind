@@ -34,7 +34,8 @@ cargo run -- --actor human:alice quickstart
 
 Every write carries actor provenance. Use `--actor` to override the actor with
 a stable human id such as `human:alice` or an agent id such as
-`agent:codex:<session>`. If `--actor` is omitted, the CLI falls back to
+`agent:codex:<name>` (a stable identity, not a raw session id). If `--actor`
+is omitted, the CLI falls back to
 `HIVEMIND_ACTOR`, then `human:<git config user.email>`, then a local user name.
 
 To capture and query the first real decision in the current directory:
@@ -249,8 +250,8 @@ hivemind emit decision.proposed \
   --chose sqlite
 ```
 
-Agents can use the noninteractive capture path. It defaults the actor and
-provenance to `agent:<tool>:<session>` and writes events with `source=agent`:
+Agents can use the noninteractive capture path. It defaults the actor to a
+stable `agent:<tool>:<name>` and writes events with `source=agent`:
 
 ```bash
 hivemind --hivemind-dir ./hivemind/ emit decision.capture \
@@ -375,10 +376,11 @@ Cursor uses the same shape under `mcp.servers`. The server exposes these tools:
 | `summarize_decisions` | layer-3 | decision digest |
 
 Every capture requires an explicit `actor_id`. Prefix it with the originating
-tool, e.g. `agent:claude:<session>`, so provenance stays readable. The server
-records `source=agent` plus a per-session `source_ref` for every write; pass
-`--session-id` to override the generated default. Anonymous writes are
-rejected because the underlying `Commands` API requires a non-empty actor.
+tool, e.g. `agent:claude:<name>` (a stable identity, not a raw session id),
+so provenance stays readable. The server records `source=agent` for every
+write; pass `--session-id` to override the generated default. Anonymous
+writes are rejected because the underlying `Commands` API requires a
+non-empty actor.
 
 `HIVEMIND_DIR` selects the ledger directory if `--hivemind-dir` is not set.
 `HIVEMIND_GRAPH_BACKEND` is honored the same way the CLI honors it, so a

@@ -49,7 +49,10 @@ fn codex_capture_plugin_bundle_is_installable_and_points_at_cli_capture() -> Tes
     assert_no_todos("skill", &skill);
     assert!(skill.contains("decision.capture"));
     assert!(skill.contains("--agent-tool codex"));
-    assert!(skill.contains("agent:codex:<session>"));
+    // hivemind-zdsh.9: the skill now documents actor construction generically
+    // (agent:<tool>:<name>, a stable identity, not a raw session id) rather
+    // than repeating a per-tool "agent:codex:<session>" example.
+    assert!(skill.contains("agent:<tool>:<name>"));
     assert!(skill.contains("Automatic Capture Triggers"));
     assert!(skill.contains("CODEX_THREAD_ID"));
     assert!(skill.contains("Capture immediately after the decision is made"));
@@ -239,7 +242,7 @@ fn claude_code_plugin_bundle_is_installable_and_wires_cli_mcp() -> TestResult<()
     )?;
     require_contains(
         &capture_decision_command,
-        "agent:claude:<session>",
+        "agent:claude:<name>",
         "decision command documents Claude actor provenance",
     )?;
     require_contains(
@@ -339,6 +342,12 @@ fn claude_code_plugin_capture_and_query_scripts_write_agent_decision() -> TestRe
         .env("HIVEMIND_DIR", &hivemind_dir)
         .env("CLAUDE_PROJECT_DIR", root)
         .env("CLAUDE_SESSION_ID", "plugin-test-session")
+        // A Gas City-hosted test run (or this very repo's own dev polecats) may have
+        // GC_AGENT/GC_ALIAS ambient; this test isolates CLAUDE_SESSION_ID-derived
+        // identity specifically, so the stable-identity-first resolution
+        // (identity.rs::stable_agent_identity, hivemind-zdsh.9) must not see them.
+        .env_remove("GC_AGENT")
+        .env_remove("GC_ALIAS")
         .args([
             "--title",
             "Capture Claude plugin decisions",
@@ -408,6 +417,8 @@ fn query_decisions_script_finds_decisions_captured_by_a_different_session() -> T
         .env("HIVEMIND_DIR", &hivemind_dir)
         .env("CLAUDE_PROJECT_DIR", root)
         .env("CLAUDE_SESSION_ID", "capturer-session")
+        .env_remove("GC_AGENT")
+        .env_remove("GC_ALIAS")
         .args([
             "--title",
             "Recall smoke test fixture across sessions",
@@ -467,6 +478,8 @@ fn codex_capture_defaults_actor_from_session_environment() -> TestResult<()> {
         .env_remove("HIVEMIND_CLAUDE_SESSION")
         .env_remove("CLAUDE_SESSION_ID")
         .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("GC_AGENT")
+        .env_remove("GC_ALIAS")
         .env("CODEX_SESSION_ID", "plugin-test-session")
         .arg("--json")
         .arg("--hivemind-dir")
@@ -498,10 +511,9 @@ fn codex_capture_defaults_actor_from_session_environment() -> TestResult<()> {
     )?;
     assert_eq!(event.actor_id, "agent:codex:plugin-test-session");
     assert_eq!(event.source.as_str(), "agent");
-    assert_eq!(
-        event.source_ref.as_deref(),
-        Some("agent:codex:plugin-test-session")
-    );
+    // source_ref carries the raw session id (provenance), not a repeat of actor_id --
+    // ambient derivation with no --agent-session/--actor-id pin (hivemind-zdsh.9).
+    assert_eq!(event.source_ref.as_deref(), Some("plugin-test-session"));
 
     let _ = fs::remove_dir_all(hivemind_dir);
     Ok(())
@@ -523,6 +535,8 @@ fn capture_plugin_scripts_derive_codex_session_context() -> TestResult<()> {
         .env_remove("CLAUDE_PROJECT_DIR")
         .env_remove("CLAUDE_SESSION_ID")
         .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("GC_AGENT")
+        .env_remove("GC_ALIAS")
         .args([
             "--title",
             "Derive Codex plugin session defaults",
@@ -607,6 +621,8 @@ fn capture_plugin_defaults_to_rig_ledger_from_linked_worktree() -> TestResult<()
         .env_remove("CLAUDE_PROJECT_DIR")
         .env_remove("CLAUDE_SESSION_ID")
         .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("GC_AGENT")
+        .env_remove("GC_ALIAS")
         .args([
             "--title",
             "Capture from linked worktree to rig ledger",
@@ -735,6 +751,8 @@ fn unified_capture_script_records_evidence_with_agent_provenance() -> TestResult
         .env("HIVEMIND_DIR", &hivemind_dir)
         .env("CLAUDE_PROJECT_DIR", root)
         .env("CLAUDE_SESSION_ID", "evidence-test-session")
+        .env_remove("GC_AGENT")
+        .env_remove("GC_ALIAS")
         .args([
             "The plugin smoke test wrote a decision and queried it back",
             "--kind",
@@ -763,9 +781,11 @@ fn unified_capture_script_records_evidence_with_agent_provenance() -> TestResult
     let event = event_with_type(&hivemind_dir, hivemind::events::EventType::EvidenceRecorded)?;
     require_eq(event.actor_id.as_str(), actor_id, "evidence actor id")?;
     require_eq(event.source.as_str(), "agent", "evidence source")?;
+    // source_ref carries the raw session id (provenance), not a repeat of actor_id --
+    // ambient derivation with no explicit session/actor pin (hivemind-zdsh.9).
     require_eq(
         event.source_ref.as_deref(),
-        Some(actor_id),
+        Some("evidence-test-session"),
         "evidence source_ref",
     )?;
     require_eq(
@@ -794,6 +814,8 @@ fn unified_capture_script_uses_classifier_when_kind_is_omitted() -> TestResult<(
         .env_remove("CLAUDE_PROJECT_DIR")
         .env_remove("CLAUDE_SESSION_ID")
         .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("GC_AGENT")
+        .env_remove("GC_ALIAS")
         .arg("The test failed with error E")
         .output()?;
     require(

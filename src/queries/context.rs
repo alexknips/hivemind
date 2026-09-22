@@ -67,9 +67,15 @@ pub struct DecisionContext {
     pub decision_id: String,
     /// Authorship shape derived from `PROPOSED_BY` and `ACCEPTED_BY` edges.
     pub authorship: AuthorshipShape,
-    /// Actor ID of the proposer (`PROPOSED_BY` target), if present.
+    /// Actor ID of the proposer (`PROPOSED_BY` target), if present. This is the actor who
+    /// *recorded* the decision, not necessarily the one who made it -- see `accepted_by`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposer_id: Option<String>,
+    /// Actor IDs of every `ACCEPTED_BY` target: the actor(s) who actually *decided*. May
+    /// differ from `proposer_id` (an agent scribing a human's decision, `decided_by` at
+    /// capture time) or overlap it (self-acceptance). Empty when `review` is `Unreviewed`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub accepted_by: Vec<String>,
     /// Source system that captured the decision (cli / agent / human / slack / document / api).
     pub source: String,
     /// Free-text model/session reference from the capturing event (e.g. `claude:opus:session-xyz`).
@@ -251,10 +257,13 @@ fn derive_context(
     let hypothesis_count = query_hypothesis_count(graph, decision_id)?;
     let options_count = query_edge_count(graph, decision_id, "HAS_OPTION", "Option")?;
 
+    let accepted_by: Vec<String> = acceptors.iter().map(|(id, _)| id.clone()).collect();
+
     Ok(DecisionContext {
         decision_id: decision_id.to_owned(),
         authorship,
         proposer_id,
+        accepted_by,
         source,
         source_ref,
         review,

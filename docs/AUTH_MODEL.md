@@ -94,10 +94,10 @@ before graph reads.
 ## Actor Resolution
 
 `actor_id` remains the provenance identity recorded on events. Existing agent
-session conventions stay valid:
+naming conventions stay valid:
 
-- `agent:codex:<session>`
-- `agent:claude:<session>`
+- `agent:codex:<name>` (a stable identity, not a raw session id)
+- `agent:claude:<name>`
 - `human:<stable-human-label>`
 - `service:<service-name>`
 

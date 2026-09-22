@@ -25,10 +25,13 @@ This directory is both the Codex capture plugin and the Claude Code
   hash, revision ID, or access date) when a link appears in a capture context.
 
 The shared helper defaults to `source=agent` and derives
-`actor_id=agent:<tool>:<session>` from the active session. Under Codex it uses
-`CODEX_THREAD_ID`, `CODEX_SESSION_ID`, or `CODEX_TASK_ID`; under Claude Code it
-uses `CLAUDE_SESSION_ID` or `CLAUDE_CODE_SESSION_ID`. In Gas City sessions it can
-fall back to `GC_SESSION_ID`/`GC_SESSION_NAME`.
+`actor_id=agent:<tool>:<name>` from a **stable** identity, not a raw session id:
+Gas City's `GC_AGENT` (mirrored in `GC_ALIAS`) is checked first, since it names
+a fixed crew/polecat/refinery slot that survives process restarts. Only when
+neither is set does it fall back to a raw per-run session id (`CODEX_THREAD_ID`,
+`CODEX_SESSION_ID`, or `CODEX_TASK_ID` under Codex; `CLAUDE_SESSION_ID` or
+`CLAUDE_CODE_SESSION_ID` under Claude Code), then Gas City's session-instance
+variables (`GC_SESSION_ID`/`GC_SESSION_NAME`).
 
 ## Install
 
@@ -71,15 +74,16 @@ commands, set the plugin option `hivemind_dir`, export `HIVEMIND_DIR`, or pass
 
 ## Provenance Defaults
 
-Claude plugin writes default to `actor_id=agent:claude:<session>` and
-`source=agent`. The slash command uses `CLAUDE_SESSION_ID` or
-`CLAUDE_CODE_SESSION_ID`; the bundled MCP server starts with `--agent-tool
-claude` and uses the same session environment for write tools when `actor_id` is
-omitted.
+Claude plugin writes default to `actor_id=agent:claude:<name>` and
+`source=agent`. The slash command prefers Gas City's stable `GC_AGENT`/
+`GC_ALIAS` slot identity, falling back to `CLAUDE_SESSION_ID` or
+`CLAUDE_CODE_SESSION_ID` when neither is set; the bundled MCP server starts
+with `--agent-tool claude` and uses the same environment resolution for write
+tools when `actor_id` is omitted.
 
-Codex skill writes use the same convention with
-`actor_id=agent:codex:<session>`, deriving the session from
-`CODEX_SESSION_ID`, `CODEX_TASK_ID`, or `HIVEMIND_CODEX_SESSION`.
+Codex skill writes use the same convention with `actor_id=agent:codex:<name>`,
+preferring `GC_AGENT`/`GC_ALIAS` and falling back to `CODEX_SESSION_ID`,
+`CODEX_TASK_ID`, or `HIVEMIND_CODEX_SESSION`.
 
 Bare terminal writes such as `hivemind emit decision.proposed ...` default to
 `actor_id=human:<git config user.email>` and `source=human` when `--actor` is
@@ -103,7 +107,7 @@ The command prints a one-line confirmation and a query suggestion. Run the
 suggested query or use:
 
 ```text
-/hivemind-capture:query-decisions --actor-id agent:claude:<session> --source agent --limit 10
+/hivemind-capture:query-decisions --actor-id agent:claude:<name> --source agent --limit 10
 ```
 
 The MCP server appears as `hivemind` in Claude Code's MCP tool list after the

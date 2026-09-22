@@ -365,12 +365,12 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "capture_decision",
-            "description": "Record a proposed decision with rationale, topic keys, and at least one option. Defaults actor_id to agent:<tool>:<session> and writes source=agent. Pass `decided_by` when the actual decider differs from the recording actor (e.g. a human decided, an agent is scribing it) — the decision is recorded as accepted by that actor rather than left proposed.",
+            "description": "Record a proposed decision with rationale, topic keys, and at least one option. Defaults actor_id to agent:<tool>:<name> and writes source=agent. Pass `decided_by` when the actual decider differs from the recording actor (e.g. a human decided, an agent is scribing it) — the decision is recorded as accepted by that actor rather than left proposed.",
             "inputSchema": {
                 "type": "object",
                 "required": ["title", "rationale", "topic_keys", "options"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<session>`." },
+                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<name>`." },
                     "title": { "type": "string" },
                     "rationale": { "type": "string" },
                     "topic_keys": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
@@ -395,24 +395,24 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "capture_evidence",
-            "description": "Record an evidence item that can be attached to decisions or hypotheses. Defaults actor_id to agent:<tool>:<session> and writes source=agent.",
+            "description": "Record an evidence item that can be attached to decisions or hypotheses. Defaults actor_id to agent:<tool>:<name> and writes source=agent.",
             "inputSchema": {
                 "type": "object",
                 "required": ["content"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<session>`." },
+                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<name>`." },
                     "content": { "type": "string" }
                 }
             }
         }),
         json!({
             "name": "capture_hypothesis",
-            "description": "Record a hypothesis. Defaults actor_id to agent:<tool>:<session> and writes source=agent.",
+            "description": "Record a hypothesis. Defaults actor_id to agent:<tool>:<name> and writes source=agent.",
             "inputSchema": {
                 "type": "object",
                 "required": ["statement"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<session>`." },
+                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<name>`." },
                     "statement": { "type": "string" }
                 }
             }
@@ -424,7 +424,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "required": ["reason"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Disagreeing actor. Defaults to `agent:codex:<session>` when omitted." },
+                    "actor_id": { "type": "string", "description": "Disagreeing actor. Defaults to `agent:<tool>:<name>` when omitted." },
                     "decision_id": { "type": "string", "description": "The decision to disagree with. Provide this or `description`, not both." },
                     "description": { "type": "string", "description": "Free-text description to resolve to a decision when the id is not known." },
                     "topic": { "type": "string", "description": "Narrows description resolution to decisions carrying this topic key." },
@@ -439,7 +439,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "required": ["title", "rationale"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Superseding actor. Defaults to `agent:codex:<session>` when omitted." },
+                    "actor_id": { "type": "string", "description": "Superseding actor. Defaults to `agent:<tool>:<name>` when omitted." },
                     "old_decision_id": { "type": "string" },
                     "description": { "type": "string", "description": "Free-text match for the decision to supersede. Required when `old_decision_id` is omitted." },
                     "topic": { "type": "string", "description": "Optional topic_key filter narrowing the `description` match." },
@@ -673,7 +673,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_decision_context",
-            "description": "Derive the context record for a single decision: the conditions under which it was made. Returns five feature groups — authorship shape (human-authored / agent-proposed+human-accepted / agent-only / unknown), source system and model/session reference, review depth (unreviewed / self_accepted / peer_reviewed / disputed), evidence and hypothesis counts, and context richness proxies (options count, rationale character count). No LLM involved; derived purely from graph edges. Pair with get_decision_outcome for causal attribution. Returns null when the decision_id is not found.",
+            "description": "Derive the context record for a single decision: the conditions under which it was made. Returns five feature groups — authorship shape (human-authored / agent-proposed+human-accepted / agent-only / unknown) with proposer_id (who recorded it) and accepted_by (who actually decided — may differ from proposer_id, or be empty when unreviewed), source system and model/session reference, review depth (unreviewed / self_accepted / peer_reviewed / disputed), evidence and hypothesis counts, and context richness proxies (options count, rationale character count). No LLM involved; derived purely from graph edges. Pair with get_decision_outcome for causal attribution. Returns null when the decision_id is not found.",
             "inputSchema": {
                 "type": "object",
                 "required": ["decision_id"],
@@ -1258,7 +1258,7 @@ fn mcp_actor_id(
     if config.session_id.starts_with("agent:") {
         Ok(config.session_id.clone())
     } else {
-        Ok(format!("agent:codex:{}", config.session_id))
+        Ok(agent_actor_id(&config.agent_tool, &config.session_id))
     }
 }
 

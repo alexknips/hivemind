@@ -2935,6 +2935,7 @@ fn human_authored_decision_context() -> Result<()> {
     assert_eq!(ctx.decision_id, "d:1");
     assert_eq!(ctx.authorship, AuthorshipShape::HumanAuthored);
     assert_eq!(ctx.proposer_id.as_deref(), Some("human:alice"));
+    assert!(ctx.accepted_by.is_empty());
     assert_eq!(ctx.source, "human");
     assert_eq!(ctx.review, ReviewShape::Unreviewed);
     assert_eq!(ctx.accepted_count, 0);
@@ -2968,6 +2969,10 @@ fn agent_proposed_human_accepted_context() -> Result<()> {
     assert_eq!(ctx.authorship, AuthorshipShape::AgentProposedHumanAccepted);
     assert_eq!(ctx.source_ref.as_deref(), Some("claude:opus:sess-abc"));
     assert_eq!(ctx.review, ReviewShape::PeerReviewed);
+    // The recorder (proposer) and the decider (accepted_by) are distinct actors here --
+    // exactly the case hidden by earlier code (hivemind-zdsh.9).
+    assert_eq!(ctx.proposer_id.as_deref(), Some("agent:claude:sess-abc"));
+    assert_eq!(ctx.accepted_by, vec!["human:bob".to_owned()]);
     assert_eq!(ctx.accepted_count, 1);
     assert_eq!(ctx.evidence_count, 1);
     assert_eq!(ctx.options_count, 2);
@@ -3043,6 +3048,7 @@ fn self_accepted_decision_context() -> Result<()> {
 
     assert_eq!(ctx.review, ReviewShape::SelfAccepted);
     assert_eq!(ctx.authorship, AuthorshipShape::HumanAuthored);
+    assert_eq!(ctx.accepted_by, vec!["human:alice".to_owned()]);
     Ok(())
 }
 
@@ -3138,6 +3144,7 @@ fn peer_reviewed_context(id: &str) -> DecisionContext {
         decision_id: id.to_owned(),
         authorship: AuthorshipShape::HumanAuthored,
         proposer_id: Some("human:alice".to_owned()),
+        accepted_by: vec!["human:alice".to_owned(), "human:bob".to_owned()],
         source: "human".to_owned(),
         source_ref: None,
         review: ReviewShape::PeerReviewed,

@@ -500,7 +500,15 @@ fn recent_decisions_tool_returns_recent_query_response() {
 #[test]
 fn disagree_decision_tool_contests_and_defaults_actor() {
     let dir = unique_dir("disagree");
-    let config = McpConfig::new(&dir).with_session_id("disagree-session");
+    // Pin agent_tool explicitly (hivemind-zdsh.9): mcp_actor_id now reflects
+    // config.agent_tool instead of always hardcoding "codex", so this test's
+    // "agent:codex:..." expectation must not depend on ambient
+    // CLAUDE_SESSION_ID/CLAUDE_CODE_SESSION_ID leaking into McpConfig::new's
+    // env-derived default_agent_tool() (as it does when this suite runs
+    // inside a Claude Code session).
+    let config = McpConfig::new(&dir)
+        .with_agent_tool("codex")
+        .with_session_id("disagree-session");
 
     let capture = json!({
         "jsonrpc": "2.0",

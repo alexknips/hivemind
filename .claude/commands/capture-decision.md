@@ -18,7 +18,9 @@ Use the repository-local capture helper:
 Default to `--source human`, which records `actor_id=human:<git-user>` and
 `source=human` for a decision explicitly requested through this slash command.
 Use `--source agent` only when you are recording an autonomous Claude Code
-decision; that records `actor_id=agent:claude:<session>` and `source=agent`.
+decision; that records `actor_id=agent:claude:<name>` (a stable identity,
+preferring Gas City's `GC_AGENT`/`GC_ALIAS` over a raw session id) and
+`source=agent`.
 
 Do not query, rank, summarize, or infer related decisions. This command is a
 write-layer capture path only.

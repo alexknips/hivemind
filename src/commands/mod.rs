@@ -17,7 +17,7 @@ use crate::events::{
     RelationAddedPayload, RelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
-use crate::util::require_non_empty;
+use crate::util::{require_non_empty, require_valid_actor_id};
 use crate::Result;
 
 pub type DecisionId = String;
@@ -150,7 +150,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     }
 
     pub fn record_evidence(&self, actor_id: &str, content: &str) -> Result<EvidenceId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("content", content)?;
 
         let evidence_id = generate_entity_id("evidence");
@@ -166,7 +166,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         source: Option<&str>,
         event_uuid: Uuid,
     ) -> Result<EventId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("evidence_id", evidence_id)?;
         require_non_empty("content", content)?;
         require_optional_non_empty("source", source)?;
@@ -186,7 +186,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     }
 
     pub fn record_hypothesis(&self, actor_id: &str, statement: &str) -> Result<HypothesisId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("statement", statement)?;
 
         let hypothesis_id = generate_entity_id("hypothesis");
@@ -201,7 +201,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         statement: &str,
         event_uuid: Uuid,
     ) -> Result<EventId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("hypothesis_id", hypothesis_id)?;
         require_non_empty("statement", statement)?;
 
@@ -426,7 +426,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         session_id: &str,
         turns: Vec<IngestTurn>,
     ) -> Result<EventId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("batch_id", batch_id)?;
         require_non_empty("agent_tool", agent_tool)?;
         require_non_empty("session_id", session_id)?;
@@ -455,7 +455,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         captures: Vec<CaptureItem>,
         causation_event_id: Option<EventId>,
     ) -> Result<EventId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("batch_id", batch_id)?;
         require_non_empty("classifier_model", classifier_model)?;
         require_non_empty("schema_version", schema_version)?;
@@ -481,7 +481,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         payload: DecisionScoredPayload,
         causation_event_id: Option<EventId>,
     ) -> Result<EventId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("payload.capture_node_id", &payload.capture_node_id)?;
         require_non_empty("payload.scorer_model", &payload.scorer_model)?;
         require_non_empty("payload.weight_version", &payload.weight_version)?;
@@ -502,7 +502,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         label: &str,
         description: &str,
     ) -> Result<OptionId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("label", label)?;
         require_non_empty("description", description)?;
 
@@ -518,7 +518,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         label: &str,
         description: &str,
     ) -> Result<OptionId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("option_id", option_id)?;
         require_non_empty("label", label)?;
         require_non_empty("description", description)?;
@@ -529,7 +529,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     }
 
     pub fn propose_decision(&self, input: DecisionProposalInput<'_>) -> Result<DecisionId> {
-        require_non_empty("actor_id", input.actor_id)?;
+        require_valid_actor_id(input.actor_id)?;
         require_non_empty("title", input.title)?;
         require_non_empty("rationale", input.rationale)?;
 
@@ -625,7 +625,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         decision_id: &str,
         event_uuids: DecisionProposalEventUuids,
     ) -> Result<DecisionProposalEventIds> {
-        require_non_empty("actor_id", input.actor_id)?;
+        require_valid_actor_id(input.actor_id)?;
         require_non_empty("decision_id", decision_id)?;
         require_non_empty("title", input.title)?;
         require_non_empty("rationale", input.rationale)?;
@@ -811,7 +811,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         actor_id: &str,
         event_uuid: Uuid,
     ) -> Result<EventId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("decision_id", decision_id)?;
 
         if !self.decision_exists(decision_id)? {
@@ -854,7 +854,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         reason: &str,
         event_uuid: Uuid,
     ) -> Result<EventId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("decision_id", decision_id)?;
         require_non_empty("reason", reason)?;
 
@@ -896,7 +896,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         actor_id: &str,
         event_uuid: Uuid,
     ) -> Result<EventId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("decision_id", decision_id)?;
 
         if !self.decision_exists(decision_id)? {
@@ -946,7 +946,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         actor_id: &str,
         event_uuid: Uuid,
     ) -> Result<EventId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("old_decision_id", old_decision_id)?;
         require_non_empty("new_decision_id", new_decision_id)?;
 
@@ -985,7 +985,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     }
 
     pub fn supersede(&self, input: SupersedeInput<'_>) -> Result<SupersedeOutcome> {
-        require_non_empty("actor_id", input.actor_id)?;
+        require_valid_actor_id(input.actor_id)?;
         require_non_empty("old_decision_id", input.old_decision_id)?;
         require_non_empty("new_title", input.new_title)?;
         require_non_empty("new_rationale", input.new_rationale)?;
@@ -1105,7 +1105,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         actor_id: &str,
         event_uuid: Uuid,
     ) -> Result<EventId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("decision_id", decision_id)?;
         require_non_empty("evidence_id", evidence_id)?;
 
@@ -1137,7 +1137,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         actor_id: &str,
         event_uuid: Uuid,
     ) -> Result<EventId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("decision_id", decision_id)?;
         require_non_empty("hypothesis_id", hypothesis_id)?;
 
@@ -1173,7 +1173,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         relation_kind: RelationKind,
         actor_id: &str,
     ) -> Result<EventId> {
-        require_non_empty("actor_id", actor_id)?;
+        require_valid_actor_id(actor_id)?;
         require_non_empty("evidence_id", evidence_id)?;
         require_non_empty("hypothesis_id", hypothesis_id)?;
 

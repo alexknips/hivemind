@@ -16,7 +16,9 @@ Options:
                            the configured classifier chooses a kind.
   --source human|agent     Provenance source. Defaults to agent.
   --actor-id ID            Override actor id.
-  --source-ref REF         Override source_ref. Defaults to actor id.
+  --source-ref REF         Override source_ref. Defaults to the raw per-run
+                           session id (provenance), or the actor id when no
+                           session id is available.
   --agent-tool TOOL        Agent tool name. Defaults from session context.
   --agent-session SESSION  Agent session id. Defaults from session context.
   --hivemind-dir DIR       Ledger directory. Defaults to plugin config,
@@ -89,10 +91,19 @@ detect_agent_tool() {
   fi
 }
 
+
+# Stable identity first: Gas City assigns every crew/polecat/refinery slot a
+# fixed name (GC_AGENT, mirrored in GC_ALIAS) that survives process restarts.
+# A raw session id (CLAUDE_SESSION_ID, CODEX_SESSION_ID, ...) does not -- it's
+# freshly generated on every run, so checking it first makes the same physical
+# agent appear as a different actor on every restart (hivemind-zdsh.9). Raw
+# session ids stay as fallbacks for standalone use without gc.
 detect_agent_session() {
   case "$1" in
     codex)
       first_nonempty \
+        "${GC_AGENT:-}" \
+        "${GC_ALIAS:-}" \
         "${CODEX_THREAD_ID:-}" \
         "${CODEX_SESSION_ID:-}" \
         "${CODEX_TASK_ID:-}" \
@@ -102,6 +113,8 @@ detect_agent_session() {
       ;;
     claude)
       first_nonempty \
+        "${GC_AGENT:-}" \
+        "${GC_ALIAS:-}" \
         "${CLAUDE_SESSION_ID:-}" \
         "${CLAUDE_CODE_SESSION_ID:-}" \
         "${GC_SESSION_ID:-}" \
@@ -110,9 +123,28 @@ detect_agent_session() {
       ;;
     *)
       first_nonempty \
+        "${GC_AGENT:-}" \
+        "${GC_ALIAS:-}" \
         "${GC_SESSION_ID:-}" \
         "${GC_SESSION_NAME:-}" \
         "manual-session"
+      ;;
+  esac
+}
+
+# The literal per-run session id, ignoring GC_AGENT/GC_ALIAS -- used only as
+# source_ref provenance so a specific capture's run stays traceable even
+# though the actor id no longer varies per run.
+detect_provenance_session() {
+  case "$1" in
+    codex)
+      first_nonempty "${CODEX_THREAD_ID:-}" "${CODEX_SESSION_ID:-}" "${CODEX_TASK_ID:-}"
+      ;;
+    claude)
+      first_nonempty "${CLAUDE_SESSION_ID:-}" "${CLAUDE_CODE_SESSION_ID:-}"
+      ;;
+    *)
+      return 1
       ;;
   esac
 }
@@ -339,8 +371,17 @@ mkdir -p "$HIVEMIND_DIR"
 if [[ -z "$AGENT_TOOL" ]]; then
   AGENT_TOOL="$(detect_agent_tool)"
 fi
+# Track whether the caller pinned session/actor explicitly: an explicit pin is itself the
+# intended claim for this capture and stays authoritative in source_ref too, matching
+# actor_id (the prior default) -- only ambient, automatic derivation gets the raw
+# per-run session id as source_ref instead (hivemind-zdsh.9).
+EXPLICIT_SESSION_OR_ACTOR=1
 if [[ -z "$AGENT_SESSION" ]]; then
+  EXPLICIT_SESSION_OR_ACTOR=0
   AGENT_SESSION="$(detect_agent_session "$AGENT_TOOL")"
+fi
+if [[ -n "$ACTOR_ID" ]]; then
+  EXPLICIT_SESSION_OR_ACTOR=1
 fi
 
 if [[ "$SOURCE" == "human" ]]; then
@@ -348,7 +389,12 @@ if [[ "$SOURCE" == "human" ]]; then
   SOURCE_REF="${SOURCE_REF:-$ACTOR_ID}"
 else
   ACTOR_ID="${ACTOR_ID:-agent:$AGENT_TOOL:$AGENT_SESSION}"
-  SOURCE_REF="${SOURCE_REF:-$ACTOR_ID}"
+  if [[ "$EXPLICIT_SESSION_OR_ACTOR" == "1" ]]; then
+    SOURCE_REF="${SOURCE_REF:-$ACTOR_ID}"
+  else
+    PROVENANCE_SESSION="$(detect_provenance_session "$AGENT_TOOL" || true)"
+    SOURCE_REF="${SOURCE_REF:-${PROVENANCE_SESSION:-$ACTOR_ID}}"
+  fi
 fi
 
 PROVENANCE=()

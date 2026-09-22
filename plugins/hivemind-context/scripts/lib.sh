@@ -60,10 +60,19 @@ detect_agent_tool() {
   fi
 }
 
+
+# Stable identity first: Gas City assigns every crew/polecat/refinery slot a
+# fixed name (GC_AGENT, mirrored in GC_ALIAS) that survives process restarts.
+# A raw session id (CLAUDE_SESSION_ID, CODEX_SESSION_ID, ...) does not -- it's
+# freshly generated on every run, so checking it first makes the same physical
+# agent appear as a different actor on every restart (hivemind-zdsh.9). Raw
+# session ids stay as fallbacks for standalone use without gc.
 detect_agent_session() {
   case "$1" in
     codex)
       first_nonempty \
+        "${GC_AGENT:-}" \
+        "${GC_ALIAS:-}" \
         "${CODEX_THREAD_ID:-}" \
         "${CODEX_SESSION_ID:-}" \
         "${CODEX_TASK_ID:-}" \
@@ -73,6 +82,8 @@ detect_agent_session() {
       ;;
     claude)
       first_nonempty \
+        "${GC_AGENT:-}" \
+        "${GC_ALIAS:-}" \
         "${CLAUDE_SESSION_ID:-}" \
         "${CLAUDE_CODE_SESSION_ID:-}" \
         "${GC_SESSION_ID:-}" \
@@ -81,6 +92,8 @@ detect_agent_session() {
       ;;
     *)
       first_nonempty \
+        "${GC_AGENT:-}" \
+        "${GC_ALIAS:-}" \
         "${GC_SESSION_ID:-}" \
         "${GC_SESSION_NAME:-}" \
         "manual-session"
@@ -153,7 +166,7 @@ hivemind_context_resolve() {
 }
 
 # hivemind_context_exec [--write] <subcommand...>
-# --write injects `--actor agent:<tool>:<session>` ahead of the subcommand so
+# --write injects `--actor agent:<tool>:<name>` ahead of the subcommand so
 # disagree/supersede record agent provenance in actor_id rather than falling
 # back to the CLI's git-derived human default. Read verbs need no such
 # override; they log the CLI's own default actor.

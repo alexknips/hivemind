@@ -47,7 +47,28 @@ pub fn default_agent_session(tool: &str) -> String {
     agent_session_from_env(tool).unwrap_or_else(|| MANUAL_AGENT_SESSION.to_owned())
 }
 
+/// A durable name for "who" this process runs as, stable across restarts of the same
+/// logical agent slot. Gas City assigns every crew/polecat/refinery slot a fixed name
+/// (`GC_AGENT`, mirrored in `GC_ALIAS`) that survives process restarts; a raw session
+/// id (`CLAUDE_SESSION_ID`, `CODEX_SESSION_ID`, ...) does not -- it's freshly generated
+/// on every run. Folding a raw session id into the actor name makes the same physical
+/// agent appear as a different actor on every restart (hivemind-zdsh.9); this is the
+/// stable alternative `agent_session_from_env` prefers before falling back to one.
+pub fn stable_agent_identity() -> Option<String> {
+    env_value("GC_AGENT").or_else(|| env_value("GC_ALIAS"))
+}
+
 pub fn agent_session_from_env(tool: &str) -> Option<String> {
+    env_value("HIVEMIND_AGENT_SESSION")
+        .or_else(stable_agent_identity)
+        .or_else(|| raw_agent_session_from_env(tool))
+}
+
+/// The literal per-run session id, ignoring `HIVEMIND_AGENT_SESSION` and the stable
+/// Gas City identity `agent_session_from_env` prefers. Unlike that stable name, this
+/// value is different on every run -- exactly the kind of ephemeral detail that
+/// belongs in provenance (`source_ref`), never in `actor_id` itself.
+pub fn raw_agent_session_from_env(tool: &str) -> Option<String> {
     let normalized_tool = tool.trim().to_ascii_lowercase();
     let tool_specific = match normalized_tool.as_str() {
         "claude" => env_value("HIVEMIND_CLAUDE_SESSION")
@@ -59,8 +80,7 @@ pub fn agent_session_from_env(tool: &str) -> Option<String> {
         _ => None,
     };
 
-    env_value("HIVEMIND_AGENT_SESSION")
-        .or(tool_specific)
+    tool_specific
         .or_else(|| env_value("HIVEMIND_CLAUDE_SESSION"))
         .or_else(|| env_value("CLAUDE_SESSION_ID"))
         .or_else(|| env_value("CLAUDE_CODE_SESSION_ID"))

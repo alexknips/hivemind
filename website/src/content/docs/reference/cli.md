@@ -7,7 +7,7 @@ description: Complete reference for the hivemind command-line interface.
 
 | Flag | Description |
 |------|-------------|
-| `--actor <id>` | Actor making this request. Format: `human:<id>` or `agent:<tool>:<session>` |
+| `--actor <id>` | Actor making this request. Format: `human:<id>` or `agent:<tool>:<name>` |
 | `--hivemind-dir <path>` | Ledger directory (default: `./hivemind/`). Created on first write. |
 | `--tenant <id>` | Tenant to read/write (default: `local`). Must already be a known tenant — see [Tenants](#tenants) below. |
 | `--database-url <url>` | Shared Postgres backend connection URL. Unset or empty selects the local SQLite ledger under `--hivemind-dir` instead. A flag value beats `HIVEMIND_DATABASE_URL`. Requires the `shared-backend-postgres` feature. |
@@ -97,8 +97,8 @@ instead of leaving it at `proposed`.
 
 ### `emit decision.capture`
 
-Noninteractive shorthand for agent use. Defaults actor to `agent:<tool>:<session>`,
-records `source=agent`.
+Noninteractive shorthand for agent use. Defaults actor to a stable
+`agent:<tool>:<name>`, records `source=agent`.
 
 ```
 hivemind emit decision.capture

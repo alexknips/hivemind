@@ -32,9 +32,10 @@ The helper recognizes blocker, decision-request, and notification as schema
 kinds, but returns a clear unsupported-kind error until the command layer has
 canonical capture paths for those event shapes.
 
-Default to `--source agent`, which records
-`actor_id=agent:claude:<session>` and `source=agent`. Use `--source human`
-only when the user explicitly asks you to record their write as human-authored.
+Default to `--source agent`, which records `actor_id=agent:claude:<name>`
+(a stable identity, preferring Gas City's `GC_AGENT`/`GC_ALIAS` over a raw
+session id) and `source=agent`. Use `--source human` only when the user
+explicitly asks you to record their write as human-authored.
 
 Do not query, rank, summarize, or infer related decisions before capturing.
 This command is a write-layer path only.

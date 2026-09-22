@@ -107,24 +107,29 @@ ledger write must stay explicit and deterministic.
      --chose direct-cli
    ```
 
-   The helper records `source=agent`, derives `actor_id=agent:<tool>:<session>`,
-   and sets `source_ref` to the same actor id unless explicitly overridden.
-   Codex records as `agent:codex:<session>` using `CODEX_THREAD_ID`,
-   `CODEX_SESSION_ID`, or `CODEX_TASK_ID` when present, then Gas City session
-   variables. Claude Code records as `agent:claude:<session>` using
-   `CLAUDE_SESSION_ID` or `CLAUDE_CODE_SESSION_ID`, then Gas City session
-   variables.
+   The helper records `source=agent` and derives `actor_id=agent:<tool>:<name>`.
+   The `<name>` is a **stable identity**, not a raw session id: Gas City's
+   `GC_AGENT` (mirrored in `GC_ALIAS`) is checked first, because it names a
+   fixed crew/polecat/refinery slot that survives process restarts. Only when
+   neither is set does the helper fall back to a raw per-run session id
+   (`CODEX_THREAD_ID`/`CODEX_SESSION_ID`/`CODEX_TASK_ID` for Codex,
+   `CLAUDE_SESSION_ID`/`CLAUDE_CODE_SESSION_ID` for Claude Code), then Gas
+   City's session-instance variables, then `manual-session`. Folding a raw
+   session id into `actor_id` would make the same physical agent appear as a
+   different actor on every restart (hivemind-zdsh.9) -- `source_ref` is where
+   that per-run session id belongs instead: the helper sets it to the raw
+   session id when one exists, or to `actor_id` only when it doesn't, unless
+   explicitly overridden.
 
-   The CLI derives `actor_id=agent:codex:<session>` for Codex and
-   `actor_id=agent:claude:<session>` for Claude unless `--actor-id` is
-   explicitly provided. Use `--agent-tool codex --agent-session <session>` only
-   when the helper is unavailable or when overriding the environment-derived
-   defaults.
+   The CLI applies the same stable-identity-first resolution for Codex and
+   Claude unless `--actor-id` is explicitly provided. Use
+   `--agent-tool codex --agent-session <session>` only when the helper is
+   unavailable or when overriding the environment-derived defaults.
 
 3. Capture a new proposed decision directly when the helper is unavailable:
 
    ```bash
-   HIVEMIND_AGENT_SESSION="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}"
+   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" emit decision.capture \
      --agent-tool codex \
      --agent-session "$HIVEMIND_AGENT_SESSION" \
@@ -147,7 +152,7 @@ ledger write must stay explicit and deterministic.
 4. Attach existing evidence or hypotheses only when their ids are already known:
 
    ```bash
-   HIVEMIND_AGENT_SESSION="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}"
+   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" emit decision.capture \
      --agent-tool codex \
      --agent-session "$HIVEMIND_AGENT_SESSION" \
@@ -164,14 +169,14 @@ ledger write must stay explicit and deterministic.
    with the same actor id:
 
    ```bash
-   HIVEMIND_AGENT_SESSION="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}"
+   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
    hivemind --actor "agent:codex:$HIVEMIND_AGENT_SESSION" \
      --hivemind-dir "$HIVEMIND_DIR" emit decision.accepted \
      --decision-id decision-001
    ```
 
    ```bash
-   HIVEMIND_AGENT_SESSION="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}"
+   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
    hivemind --actor "agent:codex:$HIVEMIND_AGENT_SESSION" \
      --hivemind-dir "$HIVEMIND_DIR" emit decision.superseded \
      --old decision-001 \
@@ -184,7 +189,7 @@ ledger write must stay explicit and deterministic.
    for the full fluent surface shipped in the `hivemind-context` plugin):
 
    ```bash
-   HIVEMIND_AGENT_SESSION="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}"
+   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" query recall \
      --actor-id "agent:codex:$HIVEMIND_AGENT_SESSION" \
      --source agent \
@@ -305,7 +310,7 @@ retrospective extraction over accumulated context.
    [{ ... subagent output ... }]
    EOF
 
-   HIVEMIND_AGENT_SESSION="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}"
+   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" emit ingest.batch_classified \
      --captures /tmp/hivemind-captures.json \
      --agent-tool claude \
@@ -315,7 +320,7 @@ retrospective extraction over accumulated context.
 
    For Codex sessions:
    ```bash
-   HIVEMIND_AGENT_SESSION="${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}"
+   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" emit ingest.batch_classified \
      --captures /tmp/hivemind-captures.json \
      --agent-tool codex \
@@ -452,7 +457,7 @@ already carry a `decision.scored` event).
    { ... subagent output ... }
    EOF
 
-   HIVEMIND_AGENT_SESSION="${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}"
+   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" emit decision.scored \
      --batch-id "$EDGE_BATCH_ID" \
      --capture-index 0 \

@@ -12,7 +12,7 @@ Every HiveMind event carries a mandatory `actor_id`. Anonymous writes are reject
 | Kind | Format | Example |
 |------|--------|---------|
 | Human | `human:<identifier>` | `human:alice`, `human:alice@example.com` |
-| Agent | `agent:<tool>:<session>` | `agent:claude:sess_abc123` |
+| Agent | `agent:<tool>:<name>` | `agent:claude:sess_abc123` |
 | System | `system:<name>` | `system:ci`, `system:importer` |
 
 The actor's *kind* — human, agent, system — never grants or revokes privilege in the
