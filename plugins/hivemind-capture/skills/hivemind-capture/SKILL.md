@@ -516,3 +516,51 @@ The default local backend is whatever `--hivemind-dir` points at, normally
 `./hivemind/`. To switch to a shared backend, set `HIVEMIND_DIR` to the shared
 ledger mount or service-managed directory before running the same commands. The
 capture verb, actor format, and query behavior stay unchanged.
+
+**This CLI transport only reaches a local directory or a database the CLI
+process can open directly** (a mounted SQLite dir, or Postgres via
+`--database-url`/`HIVEMIND_DATABASE_URL` on a `shared-backend-postgres`
+build). It has no HTTP-client mode — it cannot reach a remote cell's `/v1`
+API or `/mcp` endpoint (see `docs/SELF_HOSTING.md`'s "Using the CLI / MCP
+from local agents"). If your session's `hivemind-dir`/database target isn't
+reachable from where this CLI runs, captures made with `capture.sh` /
+`capture-decision.sh` land in whatever local fallback directory `--hivemind-
+dir` resolves to instead — silently fragmenting the ledger rather than
+failing loudly. Verify with `query recall` (step 6 above) after any backend
+change, especially the first capture in a new environment.
+
+## MCP-over-HTTP Capture (remote cell, no local CLI reach)
+
+When a self-hosted cell is reachable only over HTTP — no local directory, no
+direct Postgres credential on this session — configure `.mcp.json` to point
+at the cell instead of spawning a local `hivemind mcp` process
+(`docs/SELF_HOSTING.md`'s "Configuring an agent to use MCP-over-HTTP"):
+
+```json
+{
+  "mcpServers": {
+    "hivemind": {
+      "url": "http://<cell-host>:8080/mcp",
+      "headers": { "Authorization": "Bearer <role-or-user-token>" }
+    }
+  }
+}
+```
+
+When this is how `hivemind` is registered, call the `mcp__hivemind__*` tools
+(`capture_decision`, `capture_evidence`, `capture_hypothesis`,
+`disagree_decision`, `supersede_decision`, and the read tools) directly
+instead of shelling out to `capture.sh` — the CLI transport above cannot
+reach this backend at all.
+
+**Always pass `actor_id` explicitly on every write call** when the token is
+shared across more than one session (e.g. one per-role token for a pool of
+agent instances): `agent:<tool>:<name>`, using the same stable-identity-first
+resolution as the CLI helper (`GC_AGENT`/`GC_ALIAS` first, then a raw session
+id, never omitted). Without an explicit `actor_id`, the server falls back to
+`agent:mcp-http:<mcp-session-id>` — a fresh, unstable id per connection, not
+the calling agent's identity — or, if no session id is present at all, to the
+token's own bound identity, collapsing every caller sharing that token into
+one actor. This is a caller-asserted override, not a verified one: anyone
+holding the token can claim any `actor_id`, so only rely on it across callers
+you already trust (see `docs/SELF_HOSTING.md`).

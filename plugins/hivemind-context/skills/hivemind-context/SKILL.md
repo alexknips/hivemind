@@ -139,3 +139,27 @@ The default local backend is whatever `--hivemind-dir` points at, normally
 shared ledger mount or service-managed directory before running the same
 commands, or set the plugin's `hivemind_dir` option. The verbs, actor
 format, and ambiguity-gate behavior stay unchanged.
+
+**These scripts only reach a local directory or a database the CLI process
+can open directly** — they have no HTTP-client mode and cannot reach a
+remote cell's `/v1` API or `/mcp` endpoint (`docs/SELF_HOSTING.md`'s "Using
+the CLI / MCP from local agents"). If the cell is reachable only over HTTP,
+use the equivalent `mcp__hivemind__*` tool directly instead of the script:
+
+| Script | MCP tool |
+|---|---|
+| `situational.sh` | `get_situational_decisions` |
+| `recall.sh` | `recall_decisions` |
+| `why.sh` | `get_decision_neighborhood` |
+| `verify.sh` | `get_decision_outcome` |
+| `disagree.sh` | `disagree_decision` |
+| `supersede.sh` | `supersede_decision` |
+
+All six are already registered on the HTTP transport (`hivemind-ot72.6`
+through `.12`), so this substitution works with no further product change.
+The MCP tools take the same free-text/description arguments as the scripts
+— still never a `decision_id` you invented. For the two write verbs,
+`actor_id` follows the same rule as `hivemind-capture`'s MCP-over-HTTP
+section: pass it explicitly when the server's token is shared across more
+than one session, so disagreement/supersession provenance doesn't collapse
+onto the token's own identity or an unstable per-connection session id.

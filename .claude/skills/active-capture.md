@@ -8,7 +8,11 @@ description: Nudge HiveMind capture when durable decision memory is forming: com
 Use this skill during the session when a capture-worthy moment is happening,
 not after the turn is over. This is a nudge path only: decide whether the
 moment is real, then ask the main agent to invoke `/capture`; do not write
-directly to the ledger from this skill.
+directly to the ledger from this skill. When the `hivemind` MCP server is
+registered over HTTP against a remote cell instead (no local `--hivemind-dir`
+the CLI can reach), ask the main agent to call the equivalent
+`mcp__hivemind__capture_*` tool directly instead of `/capture` — see
+`hivemind-capture`'s "MCP-over-HTTP Capture" section.
 
 ## Capture Moments
 

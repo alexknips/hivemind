@@ -362,6 +362,28 @@ Point your Claude Code (or any MCP-compatible agent) at the `/mcp` endpoint:
 Use the `token_secret` value returned by `POST /v1/users` as the bearer token.
 The token format is `hm_tk_<64-hex>` (shown once at creation time).
 
+**Actor identity differs from the REST endpoints above.** `POST /v1/decisions`
+and friends always attribute writes to the bearer token's own bound identity
+and ignore any client-supplied actor — that is what "Actor identity is locked
+to the token" means in the auth story above. The `/mcp` tool-call surface is
+more permissive: `capture_decision`, `capture_evidence`, `capture_hypothesis`,
+`disagree_decision`, and `supersede_decision` all accept an optional
+`actor_id` argument that, when present, overrides the token's bound identity
+for that one call (`src/api/mcp_http.rs::mcp_resolve_actor`; verified against
+a running cell — a `tools/call capture_decision` with
+`"actor_id": "agent:claude:some-session"` produces a `PROPOSED_BY` edge to
+that actor, not to the token's own identity). This lets one shared per-role
+token serve many distinct callers with correct per-caller attribution — e.g.
+a fleet of agent sessions sharing one token, each passing its own
+`agent:<tool>:<session>` as `actor_id` — without minting a token per session.
+
+This is a convenience, not a security boundary: `actor_id` here is
+**caller-asserted, not verified**. Any holder of the token can claim any
+actor string, including another human's or agent's identity — the same trust
+level as the CLI's free-text `--actor` flag. Only share one token across
+callers you already trust not to misattribute their own writes; mint a
+personal per-user token (Step 2 above) whenever that trust does not hold.
+
 ---
 
 ## Using the CLI / MCP from local agents
