@@ -66,6 +66,76 @@ bearer token (or, with WorkOS configured, the JWT's `org_id` claim) resolves
 to the tenant server-side; `X-HiveMind-Tenant` only applies to SQLite
 dev-mode auth, where it defaults to `local` when absent.
 
+## Projects
+
+A project is a named home for decisions inside a tenant. Every decision
+belongs to exactly one project. Two kinds:
+
+- **Shared project** — registered explicitly, by handle (`billing`:
+  lowercase letters, digits, dashes; 2–40 characters; unique per tenant).
+  Can carry **anchors** (a folder, a rig, a Jira/Linear/GitHub reference, a
+  channel) and **links** to other projects: `part_of` (at most one active
+  parent) and `depends_on` (no limit).
+- **Personal project** — derived from the actor id (`personal:human:alice`,
+  `personal:agent:claude`), never registered, always resolves. Comes with
+  the identity, so it "cannot be a typo."
+
+`project show` on an unknown handle returns a successful envelope with
+`{"outcome": "not_found"}`, never an error — a miss is data, not an
+exceptional condition.
+
+### `project register`
+
+```
+hivemind --actor human:<id> project register <handle>
+  [--display-name <name>]
+  [--purpose <text>]
+```
+
+Registers a shared project. Refused if the handle is malformed, already
+registered (names the existing project), or uses the reserved `personal:`
+prefix.
+
+### `project link` / `project unlink`
+
+```
+hivemind --actor human:<id> project link --from <handle> --to <handle> --kind <part_of|depends_on>
+hivemind --actor human:<id> project unlink --from <handle> --to <handle> --kind <part_of|depends_on>
+```
+
+Links (or removes a link between) two registered projects. Both endpoints
+must already be registered; `part_of` is refused if `from` already has a
+different active parent; `unlink` is refused when no such link is
+currently active.
+
+### `project anchor`
+
+```
+hivemind --actor human:<id> project anchor --handle <handle> --kind <folder|rig|jira|linear|github|channel> --value <value>
+```
+
+Anchors a registered project to a place in the world. A `rig` anchor value
+is unique per tenant.
+
+### `project list`
+
+```
+hivemind project list [--limit <n>] [--cursor <cursor>]
+```
+
+Lists registered (shared) projects, paged (`truncated: true` with a
+`next_cursor` when the limit is hit). Personal projects never appear here —
+resolve one directly with `project show`.
+
+### `project show`
+
+```
+hivemind project show <handle>
+```
+
+Shows one project by handle, or a personal address
+(`personal:<actor-id>`), which always resolves.
+
 ## Emit commands
 
 All `emit` commands append an event to the ledger. They require `--actor`.
@@ -435,6 +505,21 @@ Registers a tenant in the local SQLite ledger's tenant registry so it passes
 the known-tenant check on later `--tenant <tenant-id>` opens. See
 [Tenants](#tenants) above for the full contract, including the Postgres
 provisioning route this command does not apply to.
+
+### `project register` / `link` / `unlink` / `anchor` / `list` / `show`
+
+```
+hivemind project register <handle> [--display-name <name>] [--purpose <text>]
+hivemind project link --from <handle> --to <handle> --kind <part_of|depends_on>
+hivemind project unlink --from <handle> --to <handle> --kind <part_of|depends_on>
+hivemind project anchor --handle <handle> --kind <folder|rig|jira|linear|github|channel> --value <value>
+hivemind project list [--limit <n>] [--cursor <cursor>]
+hivemind project show <handle>
+```
+
+Manage the project registry. See [Projects](#projects) above for the full
+contract, including the `personal:<actor-id>` address and the `not_found`
+envelope on `show`.
 
 ### `quickstart`
 

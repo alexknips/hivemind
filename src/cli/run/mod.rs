@@ -31,18 +31,18 @@ use crate::queries::{
     derive_decision_status, export_decision_log, export_read_only_summary,
     get_active_decision_blockers, get_blocker_notification_candidates, get_compact_view,
     get_decision, get_decision_brief, get_decision_neighborhood, get_decision_quality_score,
-    get_decisions_added_since, get_decisions_changed_since, get_recent_activity,
+    get_decisions_added_since, get_decisions_changed_since, get_project, get_recent_activity,
     get_recent_decisions, get_relevant_decisions, get_situational_decisions,
-    get_supersession_chain, misfiled_next_cursor, resolve_decision_by_description,
+    get_supersession_chain, list_projects, misfiled_next_cursor, resolve_decision_by_description,
     scan_decision_quality, scan_misfiled_decisions, scorer_next_cursor, search_decisions,
     search_decisions_any, ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest,
     ChangedSinceRequest, DecisionBlockerFilters, DecisionLogExport, DecisionLogRequest,
     DecisionStatus, DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
-    HistoryFilterRequest, MisfiledScanRequest, NeighborhoodRequest, QualityTier, QueryContext,
-    ReadOnlyExportQuery, ReadOnlyExportRequest, RecentActivityRequest, RecentDecisionEntry,
-    RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome, ResolvedCandidate,
-    ScanQualityRequest, ScorerConfig, ScorerReason, SearchDecisionRequest, SituationalRequest,
-    SupersessionSpeed,
+    HistoryFilterRequest, MisfiledScanRequest, NeighborhoodRequest, ProjectListRequest,
+    QualityTier, QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest, RecentActivityRequest,
+    RecentDecisionEntry, RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome,
+    ResolvedCandidate, ScanQualityRequest, ScorerConfig, ScorerReason, SearchDecisionRequest,
+    SituationalRequest, SupersessionSpeed,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -65,26 +65,30 @@ use super::args::{
     DisagreeArgs, DumpArgs, DumpFormat, EmitArgs, EmitCaptureProvenanceArgs, EmitCommand,
     EmitDecisionProposedArgs, EmitRelationKind, ExportArgs, GraphBackend, ImportArgs,
     ImportCommand, ImportConnectorCommand, ImportDocumentsArgs, IngestArgs, IngestCommand,
-    IngestSlackThreadArgs, MapArgs, McpArgs, QualityScanArgs, QueryAddedSinceArgs, QueryArgs,
-    QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus,
-    QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs, QueryQualityTier,
-    QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
-    QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
-    SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs, TuiArgs,
+    IngestSlackThreadArgs, MapArgs, McpArgs, ProjectAnchorArgs, ProjectArgs, ProjectCommand,
+    ProjectLinkArgs, ProjectListArgs, ProjectRegisterArgs, ProjectShowArgs, QualityScanArgs,
+    QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand,
+    QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs,
+    QueryQualityTier, QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
+    QuerySearchDecisionsArgs, QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs,
+    SlackAppArgs, SlackAppCommand, SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs,
+    TuiArgs,
 };
 use super::render::{
     append_truncation_notice, decision_status_label, format_disagree_output, format_export_output,
     format_import_output, format_json_value, format_output, format_prepare_documents_output,
-    format_query_response, format_review_output, format_supersede_output,
-    render_active_blockers_summary, render_added_since_summary,
-    render_blocker_notifications_summary, render_changed_since_summary,
+    format_project_anchor_output, format_project_link_output, format_project_list_output,
+    format_project_register_output, format_project_show_output, format_query_response,
+    format_review_output, format_supersede_output, render_active_blockers_summary,
+    render_added_since_summary, render_blocker_notifications_summary, render_changed_since_summary,
     render_compact_view_summary, render_decision_brief_summary, render_decision_list_summary,
     render_decision_summary, render_dot, render_misfiled_scan_summary, render_neighborhood_summary,
     render_read_only_export_summary, render_recall_summary, render_recent_activity_summary,
     render_recent_decisions_summary, render_resolve_outcome_summary, render_scan_quality_summary,
     render_scored_decision_summary, render_search_summary, render_situational_summary,
     render_supersession_summary, DisagreeCommandOutput, ExportReport, OutputEnvelope,
-    ReviewActionOutput, ReviewCommandOutput, SupersedeCommandOutput,
+    ProjectAnchorOutput, ProjectLinkOutput, ProjectRegisterOutput, ReviewActionOutput,
+    ReviewCommandOutput, SupersedeCommandOutput,
 };
 #[cfg(feature = "shared-backend-postgres")]
 use super::render::{MigrateReport, ParityCheckResult};
@@ -115,6 +119,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::QualityScan(args) => run_quality_scan(cli, args),
         Command::Export(args) => run_export(cli, args),
         Command::Tenant(args) => run_tenant(cli, args),
+        Command::Project(args) => run_project(cli, args),
     }
 }
 
@@ -3310,6 +3315,123 @@ fn run_tenant_create(cli: &Cli, args: &TenantCreateArgs) -> Result<String> {
             cli.hivemind_dir.display()
         ))
     }
+}
+
+fn run_project(cli: &Cli, args: &ProjectArgs) -> Result<String> {
+    match &args.command {
+        ProjectCommand::Register(register_args) => run_project_register(cli, register_args),
+        ProjectCommand::Link(link_args) => {
+            run_project_link(cli, link_args, ProjectLinkAction::Link)
+        }
+        ProjectCommand::Unlink(link_args) => {
+            run_project_link(cli, link_args, ProjectLinkAction::Unlink)
+        }
+        ProjectCommand::Anchor(anchor_args) => run_project_anchor(cli, anchor_args),
+        ProjectCommand::List(list_args) => run_project_list(cli, list_args),
+        ProjectCommand::Show(show_args) => run_project_show(cli, show_args),
+    }
+}
+
+fn run_project_register(cli: &Cli, args: &ProjectRegisterArgs) -> Result<String> {
+    let ledger = open_ledger(cli)?;
+    let commands =
+        Commands::new_with_context(&ledger, cli_command_context(cli, EventProvenance::cli())?);
+
+    let event_id = commands.register_project(
+        &cli.actor,
+        &args.handle,
+        args.display_name.as_deref(),
+        args.purpose.as_deref(),
+    )?;
+
+    format_project_register_output(
+        cli.json,
+        &ProjectRegisterOutput {
+            event_id,
+            handle: args.handle.clone(),
+            display_name: args.display_name.clone(),
+            purpose: args.purpose.clone(),
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+enum ProjectLinkAction {
+    Link,
+    Unlink,
+}
+
+fn run_project_link(
+    cli: &Cli,
+    args: &ProjectLinkArgs,
+    action: ProjectLinkAction,
+) -> Result<String> {
+    let ledger = open_ledger(cli)?;
+    let commands =
+        Commands::new_with_context(&ledger, cli_command_context(cli, EventProvenance::cli())?);
+
+    let kind = args.kind.as_project_link_kind();
+    let event_id = match action {
+        ProjectLinkAction::Link => commands.link_project(&cli.actor, &args.from, &args.to, kind)?,
+        ProjectLinkAction::Unlink => {
+            commands.unlink_project(&cli.actor, &args.from, &args.to, kind)?
+        }
+    };
+
+    format_project_link_output(
+        cli.json,
+        &ProjectLinkOutput {
+            event_id,
+            from: args.from.clone(),
+            to: args.to.clone(),
+            kind: kind.as_str(),
+        },
+    )
+}
+
+fn run_project_anchor(cli: &Cli, args: &ProjectAnchorArgs) -> Result<String> {
+    let ledger = open_ledger(cli)?;
+    let commands =
+        Commands::new_with_context(&ledger, cli_command_context(cli, EventProvenance::cli())?);
+
+    let anchor_kind = args.anchor_kind.as_project_anchor_kind();
+    let event_id = commands.anchor_project(&cli.actor, &args.handle, anchor_kind, &args.value)?;
+
+    format_project_anchor_output(
+        cli.json,
+        &ProjectAnchorOutput {
+            event_id,
+            handle: args.handle.clone(),
+            anchor_kind: anchor_kind.as_str(),
+            value: args.value.clone(),
+        },
+    )
+}
+
+fn run_project_list(cli: &Cli, args: &ProjectListArgs) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
+    let ledger = open_ledger(cli)?;
+    let scoped_ledger = TenantScopedLedger::new(&ledger, tenant_id);
+
+    let response = list_projects(
+        &scoped_ledger,
+        &ProjectListRequest {
+            limit: args.limit,
+            cursor: args.cursor.clone(),
+        },
+    )?;
+
+    format_project_list_output(cli.json, &response)
+}
+
+fn run_project_show(cli: &Cli, args: &ProjectShowArgs) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
+    let ledger = open_ledger(cli)?;
+    let scoped_ledger = TenantScopedLedger::new(&ledger, tenant_id);
+
+    let response = get_project(&scoped_ledger, &args.handle)?;
+
+    format_project_show_output(cli.json, &response)
 }
 
 struct ExportWriteSummary {

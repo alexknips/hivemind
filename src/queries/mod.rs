@@ -12,6 +12,7 @@ mod inhouse_scorer;
 mod misfiled;
 mod neighborhood;
 mod outcome;
+mod projects;
 mod relevant;
 mod resolve;
 mod search;
@@ -65,6 +66,10 @@ pub use neighborhood::{
 pub use outcome::{
     get_decision_outcome, get_decision_quality_candidates, outcome_next_cursor, DecisionOutcome,
     DecisionQualityCandidatesRequest, OutcomeReason,
+};
+pub use projects::{
+    get_project, list_projects, ProjectAnchorView, ProjectLinkFact, ProjectListRequest,
+    ProjectListResults, ProjectOutcome, ProjectView,
 };
 pub use relevant::get_relevant_decisions;
 pub use resolve::{resolve_decision_by_description, ResolveOutcome, ResolvedCandidate};

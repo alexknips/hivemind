@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
-use crate::events::BlockerPriority;
+use crate::events::{
+    BlockerPriority, ProjectAnchorKind as EventProjectAnchorKind,
+    ProjectLinkKind as EventProjectLinkKind,
+};
 use crate::identity::default_actor;
 use crate::ingest::{
     DocumentConflictResolutionAction, DocumentImportFormat, DocumentPreparationFormat,
@@ -138,6 +141,10 @@ pub enum Command {
     /// and the HTTP API server) errors on an unrecognized --tenant/
     /// X-HiveMind-Tenant rather than silently opening a fresh, empty scope.
     Tenant(TenantArgs),
+    /// Manage the project registry: shared projects, part_of/depends_on links,
+    /// and anchors. A personal project (`personal:<actor>`) is derived from the
+    /// actor and never registered — `project show` resolves it directly.
+    Project(ProjectArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -161,6 +168,124 @@ pub enum TenantCommand {
 pub struct TenantCreateArgs {
     /// Tenant id to register.
     pub tenant_id: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProjectArgs {
+    #[command(subcommand)]
+    pub command: ProjectCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum ProjectCommand {
+    /// Register a shared project. Handles are lowercase letters, digits, and
+    /// dashes, 2-40 characters; the "personal:" prefix is reserved.
+    Register(ProjectRegisterArgs),
+    /// Link two registered projects (`part_of` or `depends_on`).
+    Link(ProjectLinkArgs),
+    /// Remove a currently active link. Refused when no such link is active.
+    Unlink(ProjectLinkArgs),
+    /// Anchor a registered project to a place in the world (folder, rig,
+    /// jira, linear, github, or channel).
+    Anchor(ProjectAnchorArgs),
+    /// List registered (shared) projects, paged. Personal projects never
+    /// appear here — resolve one directly with `project show`.
+    List(ProjectListArgs),
+    /// Show one project by handle. An unknown handle is a successful
+    /// envelope with outcome `not_found`, never an error. A `personal:<actor>`
+    /// address always resolves to a derived project.
+    Show(ProjectShowArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProjectRegisterArgs {
+    /// Handle to register.
+    pub handle: String,
+
+    #[arg(long = "display-name")]
+    pub display_name: Option<String>,
+
+    #[arg(long)]
+    pub purpose: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProjectLinkArgs {
+    #[arg(long = "from")]
+    pub from: String,
+
+    #[arg(long = "to")]
+    pub to: String,
+
+    #[arg(long, value_enum)]
+    pub kind: ProjectLinkKindArg,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum ProjectLinkKindArg {
+    PartOf,
+    DependsOn,
+}
+
+impl ProjectLinkKindArg {
+    pub(crate) const fn as_project_link_kind(self) -> EventProjectLinkKind {
+        match self {
+            Self::PartOf => EventProjectLinkKind::PartOf,
+            Self::DependsOn => EventProjectLinkKind::DependsOn,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProjectAnchorArgs {
+    #[arg(long)]
+    pub handle: String,
+
+    #[arg(long = "kind", value_enum)]
+    pub anchor_kind: ProjectAnchorKindArg,
+
+    #[arg(long)]
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum ProjectAnchorKindArg {
+    Folder,
+    Rig,
+    Jira,
+    Linear,
+    Github,
+    Channel,
+}
+
+impl ProjectAnchorKindArg {
+    pub(crate) const fn as_project_anchor_kind(self) -> EventProjectAnchorKind {
+        match self {
+            Self::Folder => EventProjectAnchorKind::Folder,
+            Self::Rig => EventProjectAnchorKind::Rig,
+            Self::Jira => EventProjectAnchorKind::Jira,
+            Self::Linear => EventProjectAnchorKind::Linear,
+            Self::Github => EventProjectAnchorKind::Github,
+            Self::Channel => EventProjectAnchorKind::Channel,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProjectListArgs {
+    #[arg(long, default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long)]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProjectShowArgs {
+    /// Project handle, or a personal address (personal:<actor-id>).
+    pub handle: String,
 }
 
 #[derive(Debug, Clone, Args)]

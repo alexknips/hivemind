@@ -4247,6 +4247,230 @@ fn classify_queue_list_and_submit_round_trip() {
     assert_eq!(list2.as_array().map(|a| a.len()), Some(0));
 }
 
+fn project_registry_register_link_anchor_list_show_round_trip_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    // Mirrors the product spec's own worked example (§5): Billing is part of
+    // Platform, and Billing depends on Auth.
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "project",
+            "register",
+            "platform",
+            "--display-name",
+            "Platform",
+        ],
+    )))?;
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "project",
+            "register",
+            "billing",
+            "--display-name",
+            "Billing",
+            "--purpose",
+            "Per-seat and per-org pricing decisions",
+        ],
+    )))?;
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &["--actor", "human:alice", "project", "register", "auth"],
+    )))?;
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "project",
+            "link",
+            "--from",
+            "billing",
+            "--to",
+            "platform",
+            "--kind",
+            "part_of",
+        ],
+    )))?;
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "project",
+            "link",
+            "--from",
+            "billing",
+            "--to",
+            "auth",
+            "--kind",
+            "depends_on",
+        ],
+    )))?;
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "project",
+            "anchor",
+            "--handle",
+            "billing",
+            "--kind",
+            "rig",
+            "--value",
+            "billing",
+        ],
+    )))?;
+
+    let list_output = run(&Cli::parse_from(cli_args(
+        backend,
+        &["--json", "project", "list"],
+    )))?;
+    let mut list_json: serde_json::Value = serde_json::from_str(&list_output)?;
+    list_json["latency_ms"] = serde_json::json!(0);
+    ensure_json_eq(
+        &list_json,
+        serde_json::json!({
+            "result_count": 3,
+            "truncated": false,
+            "latency_ms": 0,
+            "data": {
+                "limit": 25,
+                "cursor": null,
+                "next_cursor": null,
+                "total_matches": 3,
+                "items": [
+                    {
+                        "handle": "auth",
+                        "personal": false,
+                        "anchors": [],
+                        "depends_on": [],
+                        "registered_event_origin": 3
+                    },
+                    {
+                        "handle": "billing",
+                        "display_name": "Billing",
+                        "purpose": "Per-seat and per-org pricing decisions",
+                        "personal": false,
+                        "anchors": [{"kind": "rig", "value": "billing"}],
+                        "part_of": {"to": "platform", "event_origin": 4},
+                        "depends_on": [{"to": "auth", "event_origin": 5}],
+                        "registered_event_origin": 2
+                    },
+                    {
+                        "handle": "platform",
+                        "display_name": "Platform",
+                        "personal": false,
+                        "anchors": [],
+                        "depends_on": [],
+                        "registered_event_origin": 1
+                    }
+                ]
+            }
+        }),
+        "project list golden",
+    )?;
+
+    let show_output = run(&Cli::parse_from(cli_args(
+        backend,
+        &["--json", "project", "show", "billing"],
+    )))?;
+    let mut show_json: serde_json::Value = serde_json::from_str(&show_output)?;
+    show_json["latency_ms"] = serde_json::json!(0);
+    ensure_json_eq(
+        &show_json,
+        serde_json::json!({
+            "result_count": 1,
+            "truncated": false,
+            "latency_ms": 0,
+            "data": {
+                "outcome": "found",
+                "project": {
+                    "handle": "billing",
+                    "display_name": "Billing",
+                    "purpose": "Per-seat and per-org pricing decisions",
+                    "personal": false,
+                    "anchors": [{"kind": "rig", "value": "billing"}],
+                    "part_of": {"to": "platform", "event_origin": 4},
+                    "depends_on": [{"to": "auth", "event_origin": 5}],
+                    "registered_event_origin": 2
+                }
+            }
+        }),
+        "project show golden (registered handle)",
+    )?;
+
+    // An unknown handle is a successful envelope with outcome not_found, never an
+    // error (Alex's rule, 2026-09-20: a miss is data).
+    let missing_output = run(&Cli::parse_from(cli_args(
+        backend,
+        &["--json", "project", "show", "nonexistent"],
+    )))?;
+    let mut missing_json: serde_json::Value = serde_json::from_str(&missing_output)?;
+    missing_json["latency_ms"] = serde_json::json!(0);
+    ensure_json_eq(
+        &missing_json,
+        serde_json::json!({
+            "result_count": 0,
+            "truncated": false,
+            "latency_ms": 0,
+            "data": {"outcome": "not_found"}
+        }),
+        "project show golden (unknown handle)",
+    )?;
+
+    // A personal address always resolves — it's derived from the actor, never
+    // registered, and "cannot be a typo" (product spec §1).
+    let personal_output = run(&Cli::parse_from(cli_args(
+        backend,
+        &["--json", "project", "show", "personal:human:alice"],
+    )))?;
+    let mut personal_json: serde_json::Value = serde_json::from_str(&personal_output)?;
+    personal_json["latency_ms"] = serde_json::json!(0);
+    ensure_json_eq(
+        &personal_json,
+        serde_json::json!({
+            "result_count": 1,
+            "truncated": false,
+            "latency_ms": 0,
+            "data": {
+                "outcome": "found",
+                "project": {
+                    "handle": "personal:human:alice",
+                    "personal": true,
+                    "anchors": [],
+                    "depends_on": []
+                }
+            }
+        }),
+        "project show golden (personal address)",
+    )?;
+
+    Ok(())
+}
+
+#[test]
+fn project_registry_register_link_anchor_list_show_round_trip() -> CliTestResult {
+    project_registry_register_link_anchor_list_show_round_trip_body(&TestBackend::sqlite(
+        "project-registry",
+    ))
+}
+
+#[test]
+fn project_registry_register_link_anchor_list_show_round_trip_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("project-registry-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    project_registry_register_link_anchor_list_show_round_trip_body(&backend)
+}
+
 #[test]
 fn emit_ingest_batch_classified_plugin_path_round_trip() {
     use crate::events::EventType;

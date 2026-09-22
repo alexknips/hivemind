@@ -15,9 +15,10 @@ use crate::queries::{
     DecidedBy, DecisionBlockerResults, DecisionBrief, DecisionSearchResults, DecisionStatus,
     DecisionView, DecisionsAddedSinceResults, DecisionsChangedSinceResults, HistoryChangeKind,
     HypothesisStatus, MatchReason, MisfiledDecisionCandidate, NeighborhoodView, OutcomeReason,
-    QualityTier, QueryResponse, ReadOnlyExport, ReadOnlyExportFormat as QueryReadOnlyExportFormat,
-    ReadOnlyExportQueryKind, RecentActivityResults, RecentDecisionsResults, ResolveOutcome,
-    ScoredDecision, SituationalResults, SupersessionChain,
+    ProjectListResults, ProjectOutcome, QualityTier, QueryResponse, ReadOnlyExport,
+    ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
+    RecentActivityResults, RecentDecisionsResults, ResolveOutcome, ScoredDecision,
+    SituationalResults, SupersessionChain,
 };
 use crate::{HivemindError, Result};
 
@@ -1246,6 +1247,144 @@ pub(crate) struct SupersedeCommandOutput {
     pub(crate) superseded_event_id: EventId,
     pub(crate) old_decision_status: DecisionStatus,
     pub(crate) new_decision_status: DecisionStatus,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ProjectRegisterOutput {
+    pub(crate) event_id: EventId,
+    pub(crate) handle: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) purpose: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ProjectLinkOutput {
+    pub(crate) event_id: EventId,
+    pub(crate) from: String,
+    pub(crate) to: String,
+    pub(crate) kind: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct ProjectAnchorOutput {
+    pub(crate) event_id: EventId,
+    pub(crate) handle: String,
+    pub(crate) anchor_kind: &'static str,
+    pub(crate) value: String,
+}
+
+pub(crate) fn format_project_register_output(
+    as_json: bool,
+    output: &ProjectRegisterOutput,
+) -> Result<String> {
+    if as_json {
+        return format_json_value(true, output);
+    }
+    let mut rendered = format!("event_id={} handle={}", output.event_id, output.handle);
+    if let Some(name) = &output.display_name {
+        let _ = write!(rendered, " display_name={}", summary_cell(name));
+    }
+    if let Some(purpose) = &output.purpose {
+        let _ = write!(rendered, " purpose={}", summary_cell(purpose));
+    }
+    Ok(rendered)
+}
+
+pub(crate) fn format_project_link_output(
+    as_json: bool,
+    output: &ProjectLinkOutput,
+) -> Result<String> {
+    if as_json {
+        return format_json_value(true, output);
+    }
+    Ok(format!(
+        "event_id={} from={} to={} kind={}",
+        output.event_id, output.from, output.to, output.kind
+    ))
+}
+
+pub(crate) fn format_project_anchor_output(
+    as_json: bool,
+    output: &ProjectAnchorOutput,
+) -> Result<String> {
+    if as_json {
+        return format_json_value(true, output);
+    }
+    Ok(format!(
+        "event_id={} handle={} anchor_kind={} value={}",
+        output.event_id,
+        output.handle,
+        output.anchor_kind,
+        summary_cell(&output.value)
+    ))
+}
+
+pub(crate) fn format_project_list_output(
+    as_json: bool,
+    response: &QueryResponse<ProjectListResults>,
+) -> Result<String> {
+    if as_json {
+        return format_json_value(true, response);
+    }
+    let mut output = render_project_list_summary(&response.data);
+    append_truncation_notice(
+        &mut output,
+        response.truncated,
+        response.data.next_cursor.as_deref(),
+    );
+    Ok(output)
+}
+
+pub(crate) fn render_project_list_summary(results: &ProjectListResults) -> String {
+    if results.items.is_empty() {
+        return "No projects registered".to_owned();
+    }
+    let mut output = String::new();
+    for project in &results.items {
+        let _ = writeln!(
+            output,
+            "project\t{}\t{}\tanchors={}\tpart_of={}\tdepends_on={}",
+            project.handle,
+            summary_cell(project.display_name.as_deref().unwrap_or("-")),
+            project.anchors.len(),
+            project
+                .part_of
+                .as_ref()
+                .map_or("-", |fact| fact.to.as_str()),
+            project.depends_on.len(),
+        );
+    }
+    output.trim_end().to_owned()
+}
+
+pub(crate) fn format_project_show_output(
+    as_json: bool,
+    response: &QueryResponse<ProjectOutcome>,
+) -> Result<String> {
+    if as_json {
+        return format_json_value(true, response);
+    }
+    Ok(render_project_outcome_summary(&response.data))
+}
+
+pub(crate) fn render_project_outcome_summary(outcome: &ProjectOutcome) -> String {
+    match outcome {
+        ProjectOutcome::NotFound => "outcome=not_found".to_owned(),
+        ProjectOutcome::Found { project } => format!(
+            "outcome=found\thandle={}\tpersonal={}\tdisplay_name={}\tanchors={}\tpart_of={}\tdepends_on={}",
+            project.handle,
+            project.personal,
+            summary_cell(project.display_name.as_deref().unwrap_or("-")),
+            project.anchors.len(),
+            project
+                .part_of
+                .as_ref()
+                .map_or("-", |fact| fact.to.as_str()),
+            project.depends_on.len(),
+        ),
+    }
 }
 
 #[derive(Debug, Serialize)]
