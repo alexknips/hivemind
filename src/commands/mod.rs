@@ -1893,7 +1893,7 @@ fn validate_project_handle(handle: &str) -> Result<()> {
     }
 
     let len = handle.chars().count();
-    if len < MIN_PROJECT_HANDLE_LEN || len > MAX_PROJECT_HANDLE_LEN {
+    if !(MIN_PROJECT_HANDLE_LEN..=MAX_PROJECT_HANDLE_LEN).contains(&len) {
         return Err(CommandError::Validation(format!(
             "project handle must be {MIN_PROJECT_HANDLE_LEN}-{MAX_PROJECT_HANDLE_LEN} characters: {handle}"
         ))
