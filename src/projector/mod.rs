@@ -549,6 +549,57 @@ fn capture_node_text(kind: NodeKind, id: &str, props: &GraphProperties) -> Strin
     }
 }
 
+/// Derives a readable label from a legacy option id for events that predate the
+/// `option_labels` field (hivemind-zdsh.10 migration). The pre-opaque-id generator
+/// (`commands::generate_option_id`, before this bead) built ids as
+/// `option-<slugified-label>-<uuid>`, so the label text is recoverable by stripping the
+/// `option-` prefix and the trailing UUID and turning the remaining slug into words.
+///
+/// Deliberately conservative: requires *both* the exact `option-` prefix *and* a real trailing
+/// UUID to actually be present and stripped, not just "whatever's left after removing a
+/// prefix". Custom option-id schemes (e.g. a colon-namespaced `org:launch:option:public-now`
+/// used by some fixtures, or a short deterministic test id like `option-001-b`) don't match
+/// that specific old shape and must return `None` unchanged rather than have an arbitrary
+/// hyphen swapped for a space — that would invent a label distinction that was never
+/// captured, not migrate one that was (AGENTS.md §6: no invented confidence).
+fn derive_legacy_option_label(option_id: &str) -> Option<String> {
+    let without_prefix = option_id.strip_prefix("option-")?;
+    let without_uuid = strip_trailing_uuid(without_prefix)?;
+    let derived = without_uuid
+        .split(['-', '_'])
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if derived.is_empty() {
+        None
+    } else {
+        Some(derived)
+    }
+}
+
+/// Strips a trailing canonical-form UUID (36 chars: 8-4-4-4-12 hex digits) and its separating
+/// hyphen from `s`, returning `None` when `s` doesn't end in one.
+fn strip_trailing_uuid(s: &str) -> Option<&str> {
+    if s.len() <= 37 {
+        return None;
+    }
+    let split_at = s.len() - 37;
+    if s.as_bytes()[split_at] != b'-' {
+        return None;
+    }
+    let tail = &s[split_at + 1..];
+    is_uuid_like(tail).then(|| &s[..split_at])
+}
+
+fn is_uuid_like(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() == 36
+        && bytes.iter().enumerate().all(|(i, &b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
+}
+
 fn option_node_id(decision_id: &str, label: &str) -> String {
     let slug: String = label
         .chars()
@@ -734,10 +785,8 @@ fn project_decision_proposed(
 
     // `None` when option_labels is shorter (events predating this field, or a caller that
     // never learned the label) — every reader of the "label" property (brief.rs, render.rs,
-    // summarize.rs) already falls back to the option id when the property is absent, so
-    // storing nothing here is equivalent for display. It also keeps search indexing (which
-    // treats "label" as a distinct searchable field from "id") from indexing the id twice
-    // under two field names. Shared by the options loop below and the chosen-option upsert.
+    // summarize.rs) already falls back to the option id when the property is absent. Shared
+    // by the options loop below and the chosen-option upsert.
     let option_label = |option_id: &str| -> Option<String> {
         payload
             .option_ids
@@ -745,12 +794,37 @@ fn project_decision_proposed(
             .position(|id| id == option_id)
             .and_then(|index| payload.option_labels.get(index).cloned())
     };
+    let option_description = |option_id: &str| -> Option<String> {
+        payload
+            .option_ids
+            .iter()
+            .position(|id| id == option_id)
+            .and_then(|index| payload.option_descriptions.get(index).cloned())
+    };
+    // Historical events predate the option_labels field entirely and so never carry a real
+    // label (hivemind-zdsh.10 migration). Those events' option ids are themselves a slug of
+    // the label text (e.g. "option-other-rejected-options-<uuid>") from the id-generation
+    // scheme that predated opaque ids; derive a readable label from that slug once, here at
+    // projection time, rather than showing the raw id. `derive_legacy_option_label` returns
+    // `None` (kept as Null, not re-indexed as a second copy of the id) when the id doesn't
+    // decode into anything more readable than itself.
+    let label_or_derived = |option_id: &str| -> GraphValue {
+        match option_label(option_id) {
+            Some(label) => GraphValue::String(label),
+            None => {
+                derive_legacy_option_label(option_id).map_or(GraphValue::Null, GraphValue::String)
+            }
+        }
+    };
 
     for option_id in &payload.option_ids {
         // ubs:ignore: per-option props copy; each Option node needs a fresh map with a distinct "label" entry
         let mut option_properties = origin_properties.clone();
-        let label_value = option_label(option_id).map_or(GraphValue::Null, GraphValue::String);
-        option_properties.insert("label".to_owned(), label_value); // ubs:ignore: per-option label key; alloc differs per iteration — unavoidable with BTreeMap<String,…> properties map
+        option_properties.insert("label".to_owned(), label_or_derived(option_id)); // ubs:ignore: per-option label key; alloc differs per iteration — unavoidable with BTreeMap<String,…> properties map
+        option_properties.insert(
+            "description".to_owned(),
+            option_description(option_id).map_or(GraphValue::Null, GraphValue::String),
+        ); // ubs:ignore: per-option description key; alloc differs per iteration — unavoidable with BTreeMap<String,…> properties map
         graph.upsert_node(NodeKind::Option, option_id, &option_properties)?;
         graph.upsert_edge(
             RelationKind::HasOption,
@@ -763,9 +837,10 @@ fn project_decision_proposed(
     if let Some(chosen_option_id) = &payload.chosen_option_id {
         // ubs:ignore: per-option props copy; the chosen option needs its own map with a distinct "label" entry, mirroring the options loop above
         let mut option_properties = origin_properties.clone();
+        option_properties.insert("label".to_owned(), label_or_derived(chosen_option_id));
         option_properties.insert(
-            "label".to_owned(),
-            option_label(chosen_option_id).map_or(GraphValue::Null, GraphValue::String),
+            "description".to_owned(),
+            option_description(chosen_option_id).map_or(GraphValue::Null, GraphValue::String),
         );
         graph.upsert_node(NodeKind::Option, chosen_option_id, &option_properties)?;
         graph.upsert_edge(

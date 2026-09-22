@@ -479,6 +479,7 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 topic_keys: Vec::new(),
                 option_ids: Vec::new(),
                 option_labels: Vec::new(),
+                option_descriptions: Vec::new(),
                 chosen_option_id: None,
                 hypothesis_ids: Vec::new(),
                 evidence_ids: Vec::new(),

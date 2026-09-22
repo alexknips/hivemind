@@ -430,10 +430,10 @@ fn search_decisions_tool_returns_fts_query_response() {
     );
     assert_eq!(
         structured["data"]["items"][0]["matched_fields"],
-        // hivemind-zdsh.3: option.label now carries the real label ("gateway") instead of
-        // being empty, so it matches too, alongside option.id (whose generated slug also
-        // embeds the label).
-        serde_json::json!(["option.id", "option.label"])
+        // hivemind-zdsh.10: option ids are opaque now (no longer a slug of the label), so
+        // option.id no longer matches "gateway". The MCP tool's auto-generated description
+        // ("Option generated from MCP value 'gateway'") does, alongside option.label.
+        serde_json::json!(["option.description", "option.label"])
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -1707,10 +1707,12 @@ mod transport_parity {
                 data["chosen_option"]["label"], "blue-green",
                 "{name}: chosen_option label must be the real label, not the generated id"
             ); // ubs:ignore: test-only assertion
+               // hivemind-zdsh.10: option ids are opaque now (no longer a slug of the label), so
+               // this only checks the "option-" prefix shared with every generated option id.
             assert!(
                 data["chosen_option"]["option_id"]
                     .as_str()
-                    .is_some_and(|id| id.starts_with("option-blue-green-")),
+                    .is_some_and(|id| id.starts_with("option-")),
                 "{name}: chosen_option.option_id = {:?}",
                 data["chosen_option"]["option_id"]
             ); // ubs:ignore: test-only assertion

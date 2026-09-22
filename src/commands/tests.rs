@@ -80,6 +80,89 @@ fn record_option_returns_option_id_without_writing_event() {
 }
 
 #[test]
+fn record_option_id_is_opaque_not_derived_from_label() {
+    // hivemind-zdsh.10: the id used to be `option-<slugified-label>-<uuid>`, which made the id
+    // and the label the same data wearing two hats (and produced 90+ char ids). The id must
+    // now be an opaque handle with no trace of the label text.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option(
+            "actor:carol",
+            "Adopt a fully managed queue",
+            "Ship async queue",
+        )
+        .expect("record option succeeds");
+
+    assert!(!option_id.contains("adopt"));
+    assert!(!option_id.contains("managed"));
+    assert!(option_id.len() < 60, "id should be short: {option_id}");
+}
+
+#[test]
+fn record_option_rejects_overlong_label() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let label = "x".repeat(81);
+    assert!(commands
+        .record_option("actor:carol", &label, "description")
+        .is_err());
+}
+
+#[test]
+fn record_option_rejects_label_that_encodes_the_choice() {
+    // hivemind-zdsh.10 FINDING 3: the choice must never be encoded in the label — CHOSE is the
+    // only representation of which option was picked.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    assert!(commands
+        .record_option(
+            "actor:carol",
+            "Personal project default: agent as PM bridge - chosen",
+            "description"
+        )
+        .is_err());
+}
+
+#[test]
+fn record_option_rejects_rejected_options_bucket_label() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    assert!(commands
+        .record_option("actor:carol", "Other rejected options", "description")
+        .is_err());
+}
+
+#[test]
+fn record_option_rejects_numbered_answer_bundle_label() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    assert!(commands
+        .record_option(
+            "actor:carol",
+            "Alex's answers 1a-2-3a-4a-5a-6a",
+            "description"
+        )
+        .is_err());
+}
+
+#[test]
+fn record_option_allows_a_short_clean_label() {
+    // A lone numbered reference or version-looking token must not trip the bundling heuristic.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    assert!(commands
+        .record_option("actor:carol", "Ship phase 1 with v2 API", "description")
+        .is_ok());
+}
+
+#[test]
 fn actor_id_is_required_for_all_entity_commands() {
     let ledger = InMemoryEventLedger::new();
     let commands = Commands::new(&ledger);
@@ -114,7 +197,7 @@ fn propose_decision_fans_out_relation_events_with_causation_linkage() {
             rationale: "Need robust ingestion",
             topic_keys: &["Infra / Queue".to_owned()],
             option_ids: &[option_a.clone(), option_b.clone()],
-            option_labels: &[],
+            option_labels: &["A".to_owned(), "B".to_owned()],
             chosen_option_id: Some(option_b.as_str()),
             decided_by: None,
             still_proposed: false,
@@ -297,7 +380,7 @@ fn direct_agent_decision_persists_agent_provenance() {
                 rationale: "Agent-written decisions must be distinguishable from CLI writes",
                 topic_keys: &["Integrations".to_owned()],
                 option_ids: &[option_id],
-                option_labels: &[],
+                option_labels: &["Keep substrate small".to_owned()],
                 chosen_option_id: None,
                 decided_by: None,
                 still_proposed: false,
@@ -348,7 +431,7 @@ fn accept_and_reject_invariant_for_same_actor_is_enforced() {
             rationale: "Need progress",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
-            option_labels: &[],
+            option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
             still_proposed: false,
@@ -385,7 +468,7 @@ fn propose_decision_with_decided_by_emits_accepted_event_from_that_actor() {
             rationale: "The human chose; the agent is only writing it down",
             topic_keys: &["governance".to_owned()],
             option_ids: std::slice::from_ref(&option_id),
-            option_labels: &[],
+            option_labels: &["Ship it".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: Some("human:alex"),
             still_proposed: false,
@@ -428,7 +511,7 @@ fn propose_decision_decided_by_requires_chosen_option_id() {
         rationale: "Still an open proposal",
         topic_keys: &["governance".to_owned()],
         option_ids: &[option_id],
-        option_labels: &[],
+        option_labels: &["A".to_owned()],
         chosen_option_id: None,
         decided_by: Some("human:alex"),
         still_proposed: false,
@@ -501,7 +584,7 @@ fn propose_decision_still_proposed_keeps_chosen_option_open() {
             rationale: "Awaiting someone else's decision",
             topic_keys: &["Core".to_owned()],
             option_ids: std::slice::from_ref(&option_id),
-            option_labels: &[],
+            option_labels: &["A".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
             still_proposed: true,
@@ -825,6 +908,66 @@ fn supersede_rejects_new_title_over_max_length() {
 }
 
 #[test]
+fn propose_decision_persists_option_descriptions_on_the_event() {
+    // hivemind-zdsh.10: a description captured alongside an option's label used to be
+    // discarded after `record_option` validated it — it never reached the ledger. It must now
+    // land on the `DecisionProposed` event, index-aligned with option_ids/option_labels.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_a = commands
+        .record_option(
+            "actor:alice",
+            "Amazon SQS",
+            "Fully managed, less ops burden",
+        )
+        .expect("option a");
+    let option_b = commands
+        .record_option("actor:alice", "Kafka", "More control, more ops burden")
+        .expect("option b");
+
+    commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Pick a queue",
+            rationale: "Need durable delivery",
+            topic_keys: &["infra".to_owned()],
+            option_ids: &[option_a, option_b],
+            option_labels: &["Amazon SQS".to_owned(), "Kafka".to_owned()],
+            chosen_option_id: None,
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect("propose decision");
+
+    let events = ledger.read(0, 20).expect("read events");
+    let proposal = events
+        .iter()
+        .find(|event| event.event_type == EventType::DecisionProposed)
+        .expect("proposal event present");
+    let descriptions = proposal
+        .payload
+        .get("option_descriptions")
+        .and_then(|value| value.as_array())
+        .expect("option_descriptions array")
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        descriptions,
+        vec![
+            "Fully managed, less ops burden",
+            "More control, more ops burden",
+        ]
+    );
+}
+
+#[test]
 fn supersede_requires_both_decisions_to_exist() {
     let ledger = InMemoryEventLedger::new();
     let commands = Commands::new(&ledger);
@@ -843,7 +986,7 @@ fn supersede_requires_both_decisions_to_exist() {
             rationale: "rationale",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_a],
-            option_labels: &[],
+            option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
             still_proposed: false,
@@ -861,7 +1004,7 @@ fn supersede_requires_both_decisions_to_exist() {
             rationale: "rationale",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_b],
-            option_labels: &[],
+            option_labels: &["B".to_owned()],
             chosen_option_id: None,
             decided_by: None,
             still_proposed: false,
@@ -896,7 +1039,7 @@ fn disagree_records_reason_and_is_idempotent_for_same_actor() {
             rationale: "rationale",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
-            option_labels: &[],
+            option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
             still_proposed: false,
@@ -955,7 +1098,7 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
             rationale: "rationale",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
-            option_labels: &[],
+            option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
             still_proposed: false,
@@ -1061,7 +1204,7 @@ fn attach_evidence_requires_existing_endpoints() {
             rationale: "rationale",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
-            option_labels: &[],
+            option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
             still_proposed: false,
@@ -1458,7 +1601,7 @@ fn propose_decision_normalizes_topic_keys() {
                 "Ops___SRE   Alerts".to_owned(),
             ],
             option_ids: &[option_id],
-            option_labels: &[],
+            option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
             still_proposed: false,

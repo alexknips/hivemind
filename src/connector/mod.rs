@@ -1800,6 +1800,7 @@ fn emit_decision_proposed<L: EventLedger>(
             topic_keys: effective_topic_keys,
             option_ids: vec![option_id.to_owned()],
             option_labels: vec!["As stated in the imported document".to_owned()],
+            option_descriptions: Vec::new(),
             chosen_option_id: None,
             hypothesis_ids: vec![],
             evidence_ids: vec![],

@@ -154,7 +154,7 @@ fn local_tenant_is_isolated_from_named_tenants() -> TestResult<()> {
         rationale: "Only the local tenant should see this",
         topic_keys: &["architecture".to_owned()],
         option_ids: &[local_opt, local_opt_b.clone()],
-        option_labels: &[],
+        option_labels: &["Local option A".to_owned(), "Local option B".to_owned()],
         chosen_option_id: Some(&local_opt_b),
         decided_by: None,
         still_proposed: false,

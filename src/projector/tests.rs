@@ -801,6 +801,196 @@ fn decision_proposed_without_option_labels_stores_no_label() -> Result<()> {
 }
 
 #[test]
+fn decision_proposed_with_option_descriptions_stores_description_per_option() -> Result<()> {
+    // hivemind-zdsh.10: a description captured alongside a label used to be discarded before
+    // it ever reached the ledger. It must land on each Option node's `description` property,
+    // index-aligned with option_ids the same way option_labels is.
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:described",
+            "title": "Pick a queue",
+            "rationale": "Need durable delivery",
+            "topic_keys": ["infra"],
+            "option_ids": ["option:sqs", "option:kafka"],
+            "option_labels": ["Amazon SQS", "Kafka"],
+            "option_descriptions": ["Fully managed", "More control"],
+            "chosen_option_id": "option:kafka",
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    assert_eq!(
+        nodes
+            .get(&(NodeKind::Option, "option:sqs".to_owned()))
+            .and_then(|p| p.get("description")),
+        Some(&GraphValue::String("Fully managed".to_owned()))
+    );
+    assert_eq!(
+        nodes
+            .get(&(NodeKind::Option, "option:kafka".to_owned()))
+            .and_then(|p| p.get("description")),
+        Some(&GraphValue::String("More control".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn decision_proposed_without_option_descriptions_stores_no_description() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:undescribed",
+            "title": "Pick a queue",
+            "rationale": "Need durable delivery",
+            "topic_keys": ["infra"],
+            "option_ids": ["option:legacy"],
+            "option_labels": ["Amazon SQS"],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    assert_eq!(
+        graph
+            .nodes()
+            .get(&(NodeKind::Option, "option:legacy".to_owned()))
+            .and_then(|p| p.get("description")),
+        Some(&GraphValue::Null)
+    );
+    Ok(())
+}
+
+#[test]
+fn decision_proposed_legacy_slug_option_id_derives_readable_label() -> Result<()> {
+    // hivemind-zdsh.10 migration: events from before option_labels existed carry option ids in
+    // the old `option-<slugified-label>-<uuid>` shape. Re-projection must derive a readable
+    // label from that slug once, rather than showing the raw id or leaving it Null.
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:legacy-slug",
+            "title": "Pick a queue",
+            "rationale": "Need durable delivery",
+            "topic_keys": ["infra"],
+            "option_ids": ["option-other-rejected-options-a1b2c3d4-e5f6-47f8-9abc-1234567890ab"],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    assert_eq!(
+        graph
+            .nodes()
+            .get(&(
+                NodeKind::Option,
+                "option-other-rejected-options-a1b2c3d4-e5f6-47f8-9abc-1234567890ab".to_owned()
+            ))
+            .and_then(|p| p.get("label")),
+        Some(&GraphValue::String("other rejected options".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn decision_proposed_bare_opaque_option_id_without_label_stores_null() -> Result<()> {
+    // A new-scheme opaque id ("option-<uuid>", nothing left after stripping the prefix but the
+    // uuid itself) must not get word-split into meaningless hex chunks when no label is
+    // present — it falls back to Null like any other id with nothing to derive.
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:opaque",
+            "title": "Pick a queue",
+            "rationale": "Need durable delivery",
+            "topic_keys": ["infra"],
+            "option_ids": ["option-a1b2c3d4-e5f6-47f8-9abc-1234567890ab"],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    assert_eq!(
+        graph
+            .nodes()
+            .get(&(
+                NodeKind::Option,
+                "option-a1b2c3d4-e5f6-47f8-9abc-1234567890ab".to_owned()
+            ))
+            .and_then(|p| p.get("label")),
+        Some(&GraphValue::Null)
+    );
+    Ok(())
+}
+
+#[test]
+fn decision_proposed_option_id_without_a_real_uuid_suffix_stores_null() -> Result<()> {
+    // hivemind-zdsh.10 regression guard: the legacy-label deriver must not fire on ids that
+    // merely share the "option-" prefix without a genuine trailing UUID — e.g. a short
+    // deterministic test/seed id ("option-001-b") or a differently-namespaced scheme
+    // ("org:launch:option:public-now" doesn't even share the prefix). Firing on these would
+    // invent a label distinction (swapping a hyphen for a space) that was never captured.
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:no-real-uuid",
+            "title": "Pick a queue",
+            "rationale": "Need durable delivery",
+            "topic_keys": ["infra"],
+            "option_ids": ["option-001-b", "org:launch:option:public-now"],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    assert_eq!(
+        nodes
+            .get(&(NodeKind::Option, "option-001-b".to_owned()))
+            .and_then(|p| p.get("label")),
+        Some(&GraphValue::Null)
+    );
+    assert_eq!(
+        nodes
+            .get(&(NodeKind::Option, "org:launch:option:public-now".to_owned()))
+            .and_then(|p| p.get("label")),
+        Some(&GraphValue::Null)
+    );
+    Ok(())
+}
+
+#[test]
 fn classified_batch_decision_projects_node_and_actor_edges() -> Result<()> {
     let ledger = InMemoryEventLedger::new();
     ledger.append(event(

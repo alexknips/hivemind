@@ -190,9 +190,16 @@ pub struct DecisionProposedPayload {
     pub option_ids: Vec<String>,
     /// Human-readable label per `option_ids` entry, index-aligned. `#[serde(default)]` so
     /// events from before this field existed still replay: the projector falls back to the
-    /// raw option id when a label is missing (see `project_decision_proposed`).
+    /// raw option id when a label is missing (see `project_decision_proposed`). The write
+    /// layer (`commands::propose_decision_with_id`) requires a label for every option going
+    /// forward; this stays optional at the event/replay layer so historical events without it
+    /// keep replaying.
     #[serde(default)]
     pub option_labels: Vec<String>,
+    /// Optional human-readable description per `option_ids` entry, index-aligned with
+    /// `option_labels`. `#[serde(default)]` so events predating this field still replay.
+    #[serde(default)]
+    pub option_descriptions: Vec<String>,
     pub chosen_option_id: Option<String>,
     #[serde(default)]
     pub hypothesis_ids: Vec<String>,
@@ -1015,6 +1022,7 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty_values("payload.topic_keys", &payload.topic_keys)?;
             require_non_empty_values("payload.option_ids", &payload.option_ids)?;
             require_non_empty_values("payload.option_labels", &payload.option_labels)?;
+            require_non_empty_values("payload.option_descriptions", &payload.option_descriptions)?;
             require_optional_non_empty(
                 "payload.chosen_option_id",
                 payload.chosen_option_id.as_deref(),

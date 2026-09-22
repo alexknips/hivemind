@@ -128,6 +128,10 @@ impl CommandContext {
 #[derive(Default)]
 struct CommandState {
     option_ids: HashSet<OptionId>,
+    /// Description captured alongside each option's label at `record_option_with_id` time.
+    /// `propose_decision_with_id` reads this back to persist it onto the `DecisionProposed`
+    /// event — the only place a description is durably stored (see hivemind-zdsh.10).
+    option_descriptions: HashMap<OptionId, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -518,7 +522,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("label", label)?;
         require_non_empty("description", description)?;
 
-        let option_id = generate_option_id(label);
+        let option_id = generate_option_id();
         self.record_option_with_id(actor_id, &option_id, label, description)?;
         Ok(option_id)
     }
@@ -534,9 +538,13 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("option_id", option_id)?;
         require_non_empty("label", label)?;
         require_non_empty("description", description)?;
+        validate_option_label(label)?;
 
         let mut state = self.lock_state()?;
         state.option_ids.insert(option_id.to_owned());
+        state
+            .option_descriptions
+            .insert(option_id.to_owned(), description.to_owned());
         Ok(option_id.to_owned())
     }
 
@@ -657,9 +665,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             return Err(CommandError::Validation("option_ids must not be empty".to_owned()).into());
         }
 
-        if !input.option_labels.is_empty() && input.option_labels.len() != input.option_ids.len() {
+        if input.option_labels.len() != input.option_ids.len() {
             return Err(CommandError::Validation(
-                "option_labels must be empty or match option_ids length".to_owned(),
+                "option_labels must have exactly one label per option_id (hivemind-zdsh.10: a \
+                 label is a required part of the option entity, not optional)"
+                    .to_owned(),
             )
             .into());
         }
@@ -709,8 +719,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
-        {
+        let option_descriptions: Vec<String> = {
             let state = self.lock_state()?;
+            let mut descriptions = Vec::with_capacity(input.option_ids.len());
             for option_id in input.option_ids {
                 if !state.option_ids.contains(option_id) {
                     return Err(CommandError::Invariant(format!(
@@ -718,8 +729,20 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                     ))
                     .into());
                 }
+                // Recorded by `record_option_with_id` when this option_id was created; every
+                // current caller records before proposing, so this is always populated for
+                // ids that passed the existence check above. Empty string, not an error, for
+                // the theoretical case of a pre-existing id that skipped that step.
+                descriptions.push(
+                    state
+                        .option_descriptions
+                        .get(option_id)
+                        .cloned()
+                        .unwrap_or_default(),
+                );
             }
-        }
+            descriptions
+        };
 
         if let Some(chosen_option_id) = input.chosen_option_id {
             let chosen_option_is_candidate = input.option_ids.iter().any(|option_id| {
@@ -761,6 +784,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 topic_keys: normalized_topic_keys,
                 option_ids: input.option_ids.to_vec(),
                 option_labels: input.option_labels.to_vec(),
+                option_descriptions,
                 chosen_option_id: input.chosen_option_id.map(ToOwned::to_owned),
                 hypothesis_ids: input.hypothesis_ids.to_vec(),
                 evidence_ids: input.evidence_ids.to_vec(),
@@ -2033,10 +2057,94 @@ fn generate_entity_id(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4())
 }
 
-fn generate_option_id(label: &str) -> String {
-    let slug = normalize_topic_key(label);
-    let slug = if slug.is_empty() { "option" } else { &slug };
-    format!("option-{slug}-{}", Uuid::new_v4())
+/// Option ids are opaque (hivemind-zdsh.10): the id used to be a slug of the whole label
+/// (`option-<slugified-label>-<uuid>`), which produced 90+ character ids and made the id and
+/// the label the same piece of data wearing two hats. The label is the only place option text
+/// lives now; the id is just a handle, matching `generate_entity_id` for every other node kind.
+fn generate_option_id() -> String {
+    generate_entity_id("option")
+}
+
+/// Upper bound on a captured option label (hivemind-zdsh.10 FIX). Labels are meant to be one
+/// short human-readable name for the option, not a summary paragraph — everything longer than
+/// this is a sign the caller bundled several answers or a rationale into one option.
+const MAX_OPTION_LABEL_LEN: usize = 80;
+
+/// Content quality gate for a captured option label, run once at `record_option_with_id` time —
+/// the single choke point every capture path (`capture_decision` MCP/API tool, `hivemind emit
+/// decision.proposed`, and `supersede`) routes an option label through before it ever reaches
+/// the ledger. Three failure modes observed in the wild (hivemind-zdsh.10 audit, decisions
+/// ca4da326 / 502c4375 / others):
+///   1. The label re-encodes the choice itself ("...-chosen-...") — `CHOSE` is the only
+///      representation of which option was picked; a label must not duplicate that.
+///   2. A "bucket" option that stands in for several distinct rejected options at once
+///      ("other rejected options") instead of one real option per candidate.
+///   3. Several numbered answers bundled into a single option label (e.g. "1a-2-3a-4a-5a-6a").
+///
+/// This only gates *new* captures — replay of historical events never calls it, so ledger
+/// history written before this check existed keeps replaying unchanged.
+fn validate_option_label(label: &str) -> Result<()> {
+    let trimmed = label.trim();
+    if trimmed.chars().count() > MAX_OPTION_LABEL_LEN {
+        return Err(CommandError::Validation(format!(
+            "option label exceeds {MAX_OPTION_LABEL_LEN} characters ({} chars): {trimmed:?} — \
+             keep the label to one short name for the option; put detail in the description",
+            trimmed.chars().count()
+        ))
+        .into());
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("chosen") {
+        return Err(CommandError::Validation(format!(
+            "option label must not encode the decision outcome (found 'chosen' in {trimmed:?}); \
+             the CHOSE edge (chosen_option_id) is the only representation of which option was picked"
+        ))
+        .into());
+    }
+    if lower.contains("rejected options") {
+        return Err(CommandError::Validation(format!(
+            "option label reads as a bucket of rejected options ({trimmed:?}); capture each \
+             rejected option as its own option instead of grouping them into one"
+        ))
+        .into());
+    }
+    if bundles_numbered_answers(&lower) {
+        return Err(CommandError::Validation(format!(
+            "option label appears to bundle multiple numbered answers into one option \
+             ({trimmed:?}); capture each answer as its own option"
+        ))
+        .into());
+    }
+
+    Ok(())
+}
+
+/// Heuristic for "several numbered answers packed into one label" (e.g.
+/// "alex-s-answers-1a-2-common-parent-3a-4a-5a-6a-plus-child-as-evid"): tokenize on non-
+/// alphanumeric boundaries and count tokens that look like a short numbered-answer reference
+/// (1-2 digits optionally followed by a single letter, e.g. "1a", "2", "6a"). Three or more
+/// such tokens in one label is treated as bundling rather than a single legitimate reference
+/// (a lone "phase 1" or a version like "v2" doesn't trip this; a 4-digit run like a year
+/// doesn't either).
+fn bundles_numbered_answers(lower_label: &str) -> bool {
+    lower_label
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|token| is_numbered_answer_token(token))
+        .count()
+        >= 3
+}
+
+fn is_numbered_answer_token(token: &str) -> bool {
+    let digit_count = token.chars().take_while(char::is_ascii_digit).count();
+    if digit_count == 0 || digit_count > 2 {
+        return false;
+    }
+    match token[digit_count..].chars().collect::<Vec<_>>().as_slice() {
+        [] => true,
+        [c] => c.is_ascii_lowercase(),
+        _ => false,
+    }
 }
 
 fn repeat_uuid(count: usize) -> Vec<Uuid> {

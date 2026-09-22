@@ -2023,10 +2023,10 @@ fn search_cli_alias_uses_fts_surface_with_time_filters() {
     assert_eq!(query["data"]["items"][0]["decision"]["id"], decision_id);
     assert_eq!(
         query["data"]["items"][0]["matched_fields"],
-        // hivemind-zdsh.3: option.label now carries the real label ("gateway") instead of
-        // being empty, so it matches too, alongside option.id (whose generated slug also
-        // embeds the label).
-        serde_json::json!(["option.id", "option.label"])
+        // hivemind-zdsh.10: option ids are opaque now (no longer a slug of the label), so
+        // option.id no longer matches "gateway". The CLI's auto-generated description
+        // ("Option generated from CLI value 'gateway'") does, alongside option.label.
+        serde_json::json!(["option.description", "option.label"])
     );
     assert_eq!(
         query["data"]["filters"]["since"],
@@ -2188,8 +2188,15 @@ fn digest_cli_returns_decisions_in_window() {
         summary.contains("Pick serialization format"),
         "summary must mention the decision title"
     ); // ubs:ignore: test-only assertion
+       // hivemind-zdsh.10: option ids are opaque now, so options attached in the same proposal
+       // no longer have a stable relative order (previously an accident of the old id scheme
+       // embedding the label — sorting by id happened to sort alphabetically by label). Assert
+       // content, not a specific order.
     assert!(
-        summary.contains("Options: json, msgpack — Chose: msgpack"),
+        summary.contains("Options:")
+            && summary.contains("json")
+            && summary.contains("msgpack")
+            && summary.contains("Chose: msgpack"),
         "summary must render option labels, not raw option ids (hivemind-zdsh.3): {summary}"
     ); // ubs:ignore: test-only assertion
     assert!(
@@ -2257,12 +2264,14 @@ fn decision_capture_with_decided_by_is_the_acceptance_test_for_ledger_fidelity()
         summary.contains("(accepted)"),
         "a decision captured with decided_by must land as accepted, not stuck at proposed: {summary}"
     ); // ubs:ignore: test-only assertion
+       // hivemind-zdsh.10: option ids are opaque now, so the two options attached in this single
+       // proposal no longer have a stable relative order (previously an accident of the old id
+       // scheme embedding the label). Assert content, not a specific order.
     assert!(
-        summary.contains(
-            "Options: Keep recorder and decider as the same actor, \
-             Let capture name decided_by separately from the recording actor — \
-             Chose: Let capture name decided_by separately from the recording actor"
-        ),
+        summary.contains("Keep recorder and decider as the same actor")
+            && summary.contains("Let capture name decided_by separately from the recording actor")
+            && summary
+                .contains("Chose: Let capture name decided_by separately from the recording actor"),
         "digest must render option titles, not raw option ids: {summary}"
     ); // ubs:ignore: test-only assertion
     assert!(

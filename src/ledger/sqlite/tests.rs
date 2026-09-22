@@ -224,7 +224,7 @@ fn write_shared_decision(
             rationale: "Tenant-specific rationale",
             topic_keys: &["tenant-isolation".to_owned()],
             option_ids: &["option-shared".to_owned()],
-            option_labels: &[],
+            option_labels: &["Shared".to_owned()],
             chosen_option_id: None,
             decided_by: None,
             still_proposed: false,
