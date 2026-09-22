@@ -557,7 +557,7 @@ fn propose_decision_chosen_option_defaults_to_self_accepted() {
             rationale: "The proposer is the decider here",
             topic_keys: &["Core".to_owned()],
             option_ids: std::slice::from_ref(&option_id),
-            option_labels: &[],
+            option_labels: &["A".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
             still_proposed: false,
