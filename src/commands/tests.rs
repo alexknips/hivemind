@@ -163,6 +163,19 @@ fn record_option_allows_a_short_clean_label() {
 }
 
 #[test]
+fn record_option_handles_non_ascii_label_without_panicking() {
+    // hivemind-zdsh.10 regression: the numbered-answer-token scan must not byte-index into a
+    // token derived from a multi-byte UTF-8 label. Two numbered-looking tokens stay under the
+    // bundling threshold, so this must succeed rather than panic or misfire.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    assert!(commands
+        .record_option("actor:carol", "café 1a 2", "description")
+        .is_ok());
+}
+
+#[test]
 fn actor_id_is_required_for_all_entity_commands() {
     let ledger = InMemoryEventLedger::new();
     let commands = Commands::new(&ledger);

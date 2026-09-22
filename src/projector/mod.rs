@@ -584,11 +584,12 @@ fn strip_trailing_uuid(s: &str) -> Option<&str> {
         return None;
     }
     let split_at = s.len() - 37;
-    if s.as_bytes()[split_at] != b'-' {
+    if s.as_bytes().get(split_at) != Some(&b'-') {
         return None;
     }
-    let tail = &s[split_at + 1..];
-    is_uuid_like(tail).then(|| &s[..split_at])
+    let tail = s.get(split_at + 1..)?;
+    let head = s.get(..split_at)?;
+    is_uuid_like(tail).then_some(head)
 }
 
 fn is_uuid_like(s: &str) -> bool {

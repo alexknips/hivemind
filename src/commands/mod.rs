@@ -2136,11 +2136,12 @@ fn bundles_numbered_answers(lower_label: &str) -> bool {
 }
 
 fn is_numbered_answer_token(token: &str) -> bool {
-    let digit_count = token.chars().take_while(char::is_ascii_digit).count();
+    let mut chars = token.chars();
+    let digit_count = chars.by_ref().take_while(char::is_ascii_digit).count();
     if digit_count == 0 || digit_count > 2 {
         return false;
     }
-    match token[digit_count..].chars().collect::<Vec<_>>().as_slice() {
+    match chars.as_str().chars().collect::<Vec<_>>().as_slice() {
         [] => true,
         [c] => c.is_ascii_lowercase(),
         _ => false,

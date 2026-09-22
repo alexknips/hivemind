@@ -991,6 +991,52 @@ fn decision_proposed_option_id_without_a_real_uuid_suffix_stores_null() -> Resul
 }
 
 #[test]
+fn strip_trailing_uuid_does_not_panic_on_non_char_boundary_split() {
+    // hivemind-zdsh.10 regression: `split_at` is `s.len() - 37`, a byte offset. For a non-ASCII
+    // `s` that offset can land inside a multi-byte UTF-8 character instead of on a char
+    // boundary. Slicing there must return None, not panic.
+    let s = format!("\u{e9}{}", "a".repeat(36)); // 'é' is 2 bytes, so len - 37 == 1 (mid-char)
+    assert_eq!(s.len(), 38);
+    assert!(!s.is_char_boundary(1));
+    assert_eq!(strip_trailing_uuid(&s), None);
+}
+
+#[test]
+fn decision_proposed_non_ascii_legacy_looking_option_id_does_not_panic() -> Result<()> {
+    // End-to-end regression for the same non-char-boundary case, through full re-projection:
+    // a legacy-shaped id whose non-ASCII content shifts the trailing-UUID split point off a
+    // char boundary must project to Null, not panic the whole replay.
+    let non_ascii_id = format!("option-\u{e9}{}", "a".repeat(36));
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:non-ascii-legacy",
+            "title": "Pick a queue",
+            "rationale": "Need durable delivery",
+            "topic_keys": ["infra"],
+            "option_ids": [non_ascii_id.clone()],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    assert_eq!(
+        graph
+            .nodes()
+            .get(&(NodeKind::Option, non_ascii_id))
+            .and_then(|p| p.get("label")),
+        Some(&GraphValue::Null)
+    );
+    Ok(())
+}
+
+#[test]
 fn classified_batch_decision_projects_node_and_actor_edges() -> Result<()> {
     let ledger = InMemoryEventLedger::new();
     ledger.append(event(
