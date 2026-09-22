@@ -2681,6 +2681,185 @@ fn memory_graph_failure_attribution_real_graph() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// scan_misfiled_decisions (hivemind-zdsh.14)
+// ---------------------------------------------------------------------------
+
+fn misfiled_topic_fixture() -> Result<MemoryGraph> {
+    graph_from_events([
+        test_event(
+            1,
+            EventType::DecisionProposed,
+            "agent:gc:polecat:gc-h9n78",
+            json!({
+                "decision_id": "decision:misfiled-beadline",
+                "title": "Beadline decision filed in the wrong ledger",
+                "rationale": "Test fixture",
+                "topic_keys": ["beadline", "infra"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:00:01Z",
+        ),
+        test_event(
+            2,
+            EventType::DecisionProposed,
+            "agent:gc:polecat:gc-h9n78",
+            json!({
+                "decision_id": "decision:misfiled-gc",
+                "title": "GC decision filed in the wrong ledger",
+                "rationale": "Test fixture",
+                "topic_keys": ["gc"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:00:02Z",
+        ),
+        test_event(
+            3,
+            EventType::DecisionProposed,
+            "agent:gc:polecat:gc-h9n78",
+            json!({
+                "decision_id": "decision:misfiled-multi",
+                "title": "Decision naming two foreign ledgers",
+                "rationale": "Test fixture",
+                "topic_keys": ["gc", "beadline"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:00:03Z",
+        ),
+        test_event(
+            4,
+            EventType::DecisionProposed,
+            "human:alex",
+            json!({
+                "decision_id": "decision:properly-filed",
+                "title": "Decision that actually belongs here",
+                "rationale": "Test fixture",
+                "topic_keys": ["hivemind-ui-work"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-01T00:00:04Z",
+        ),
+    ])
+}
+
+#[test]
+fn memory_graph_scan_misfiled_decisions_flags_foreign_topics() -> Result<()> {
+    let graph = misfiled_topic_fixture()?;
+
+    // Deliberately un-normalized casing — the scan normalizes its own input
+    // the same way capture normalizes topic keys, so this must still match.
+    let scan = scan_misfiled_decisions(
+        &graph,
+        &MisfiledScanRequest {
+            foreign_topic_keys: vec!["Beadline".to_owned(), "GC".to_owned()],
+            limit: 100,
+            cursor: None,
+        },
+    )?;
+
+    assert_eq!(scan.result_count, 3);
+    assert!(!scan.truncated);
+
+    let ids: BTreeSet<_> = scan.data.iter().map(|c| c.decision_id.clone()).collect();
+    assert_eq!(
+        ids,
+        BTreeSet::from([
+            "decision:misfiled-beadline".to_owned(),
+            "decision:misfiled-gc".to_owned(),
+            "decision:misfiled-multi".to_owned(),
+        ])
+    );
+    assert!(!ids.contains("decision:properly-filed"));
+
+    let multi = scan
+        .data
+        .iter()
+        .find(|c| c.decision_id == "decision:misfiled-multi")
+        .expect("decision:misfiled-multi flagged");
+    let matched: BTreeSet<_> = multi.matched_topic_keys.iter().cloned().collect();
+    assert_eq!(
+        matched,
+        BTreeSet::from(["gc".to_owned(), "beadline".to_owned()])
+    );
+    assert_eq!(multi.actor_ids, vec!["agent:gc:polecat:gc-h9n78".to_owned()]);
+
+    Ok(())
+}
+
+#[test]
+fn memory_graph_scan_misfiled_decisions_requires_foreign_topic_keys() {
+    let graph = misfiled_topic_fixture().expect("fixture builds");
+
+    let error = scan_misfiled_decisions(
+        &graph,
+        &MisfiledScanRequest {
+            foreign_topic_keys: Vec::new(),
+            limit: 100,
+            cursor: None,
+        },
+    )
+    .expect_err("empty foreign_topic_keys must be rejected");
+    assert!(error.to_string().contains("foreign_topic_keys"));
+}
+
+#[test]
+fn memory_graph_scan_misfiled_decisions_paginates() -> Result<()> {
+    let graph = misfiled_topic_fixture()?;
+
+    let first_page = scan_misfiled_decisions(
+        &graph,
+        &MisfiledScanRequest {
+            foreign_topic_keys: vec!["beadline".to_owned(), "gc".to_owned()],
+            limit: 2,
+            cursor: None,
+        },
+    )?;
+    assert_eq!(first_page.result_count, 2);
+    assert!(first_page.truncated);
+
+    let cursor = misfiled_next_cursor(0, first_page.result_count).expect("cursor present");
+    let second_page = scan_misfiled_decisions(
+        &graph,
+        &MisfiledScanRequest {
+            foreign_topic_keys: vec!["beadline".to_owned(), "gc".to_owned()],
+            limit: 2,
+            cursor: Some(cursor),
+        },
+    )?;
+    assert_eq!(second_page.result_count, 1);
+    assert!(!second_page.truncated);
+
+    let mut all_ids: Vec<String> = first_page
+        .data
+        .iter()
+        .chain(second_page.data.iter())
+        .map(|c| c.decision_id.clone())
+        .collect();
+    all_ids.sort();
+    assert_eq!(
+        all_ids,
+        vec![
+            "decision:misfiled-beadline".to_owned(),
+            "decision:misfiled-gc".to_owned(),
+            "decision:misfiled-multi".to_owned(),
+        ]
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // ContextGraph — minimal test double for context.rs
 // ---------------------------------------------------------------------------
 

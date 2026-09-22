@@ -14,10 +14,10 @@ use crate::queries::{
     derive_decision_status, derive_hypothesis_status, BlockerNotificationCandidates, CompactView,
     DecidedBy, DecisionBlockerResults, DecisionBrief, DecisionSearchResults, DecisionStatus,
     DecisionView, DecisionsAddedSinceResults, DecisionsChangedSinceResults, HistoryChangeKind,
-    HypothesisStatus, MatchReason, NeighborhoodView, OutcomeReason, QualityTier, QueryResponse,
-    ReadOnlyExport, ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
-    RecentActivityResults, RecentDecisionsResults, ResolveOutcome, ScoredDecision,
-    SituationalResults, SupersessionChain,
+    HypothesisStatus, MatchReason, MisfiledDecisionCandidate, NeighborhoodView, OutcomeReason,
+    QualityTier, QueryResponse, ReadOnlyExport, ReadOnlyExportFormat as QueryReadOnlyExportFormat,
+    ReadOnlyExportQueryKind, RecentActivityResults, RecentDecisionsResults, ResolveOutcome,
+    ScoredDecision, SituationalResults, SupersessionChain,
 };
 use crate::{HivemindError, Result};
 
@@ -372,6 +372,24 @@ pub(crate) fn render_scan_quality_summary(decisions: &[ScoredDecision]) -> Strin
 
 fn quality_tier_label(tier: QualityTier) -> &'static str {
     tier.as_str()
+}
+
+pub(crate) fn render_misfiled_scan_summary(candidates: &[MisfiledDecisionCandidate]) -> String {
+    if candidates.is_empty() {
+        return "No misfiled candidates found".to_owned();
+    }
+    let mut output = String::new();
+    for candidate in candidates {
+        let _ = writeln!(
+            output,
+            "misfiled\t{}\t{}\ttopics={}\tactors={}",
+            candidate.decision_id,
+            candidate.title,
+            candidate.matched_topic_keys.join(","),
+            candidate.actor_ids.join(",")
+        );
+    }
+    output.trim_end().to_owned()
 }
 
 pub(crate) fn render_supersession_summary(chain: &SupersessionChain) -> String {

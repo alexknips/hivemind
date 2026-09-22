@@ -35,11 +35,12 @@ use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
     context_next_cursor, get_decision, get_decision_context, get_decision_context_candidates,
     get_decision_quality_candidates, get_decision_quality_score, get_failure_attribution,
-    get_recent_decisions, get_relevant_decisions, outcome_next_cursor, scan_decision_quality,
-    scorer_next_cursor, search_decisions_any, DecisionContextRequest,
-    DecisionQualityCandidatesRequest, DecisionStatus, FailureAttributionRequest, QualityTier,
-    QueryContext, RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest,
-    ScorerConfig, SearchDecisionRequest,
+    get_recent_decisions, get_relevant_decisions, misfiled_next_cursor, outcome_next_cursor,
+    scan_decision_quality, scan_misfiled_decisions, scorer_next_cursor, search_decisions_any,
+    DecisionContextRequest, DecisionQualityCandidatesRequest, DecisionStatus,
+    FailureAttributionRequest, MisfiledScanRequest, QualityTier, QueryContext,
+    RecentDecisionFilterRequest, RecentDecisionsRequest, ScanQualityRequest, ScorerConfig,
+    SearchDecisionRequest,
 };
 use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
@@ -337,6 +338,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "decision_context_candidates" => tool_decision_context_candidates(arguments, config),
         "score_decision" => tool_score_decision(arguments, config),
         "scan_decision_quality" => tool_scan_decision_quality(arguments, config),
+        "scan_misfiled_decisions" => tool_scan_misfiled_decisions(arguments, config),
         "analyze_failure_modes" => tool_analyze_failure_modes(arguments, config),
         "get_relevant_decisions" => tool_get_relevant_decisions(arguments, config),
         "get_situational_decisions" => tool_get_situational_decisions(arguments, config),
@@ -740,6 +742,30 @@ pub fn tool_definitions() -> Vec<Value> {
                         "type": "string",
                         "enum": ["clean", "minor_concerns", "significant_concerns", "high_concern"],
                         "description": "Only return decisions at this tier or worse. Omit for all. Use 'significant_concerns' or 'high_concern' for precision-biased alerting."
+                    }
+                }
+            }
+        }),
+        json!({
+            "name": "scan_misfiled_decisions",
+            "description": "Flag decisions carrying a caller-named \"foreign\" topic key — a decision tagged with another ledger's name most likely belongs there instead (hivemind-zdsh.14). Deterministic exact-match only, no LLM, no inference beyond topic-key membership: HiveMind does not yet know which project a ledger belongs to (hivemind-s15q A1/A3), so the caller supplies the foreign keys. Read-only report — never moves a decision (that needs hivemind-s15q C1, not built yet).",
+            "inputSchema": {
+                "type": "object",
+                "required": ["foreign_topic_keys"],
+                "properties": {
+                    "foreign_topic_keys": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                        "description": "Topic keys that indicate a decision belongs to a different ledger (e.g. another rig's name)."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results to return (1–1000, default 25)."
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Pagination cursor from a previous response's `next_cursor` field."
                     }
                 }
             }
@@ -1179,6 +1205,40 @@ fn tool_scan_decision_quality(
     let skip: usize = cursor.as_deref().and_then(|c| c.parse().ok()).unwrap_or(0);
     let next_cursor = if response.truncated {
         scorer_next_cursor(skip, response.result_count)
+    } else {
+        None
+    };
+
+    Ok(json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "next_cursor": next_cursor,
+        "data": response.data,
+    }))
+}
+
+fn tool_scan_misfiled_decisions(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let foreign_topic_keys = require_string_array(&args, "foreign_topic_keys")?;
+    let limit = optional_usize(&args, "limit")?.unwrap_or(25);
+    let cursor = optional_string(&args, "cursor")?;
+
+    let request = MisfiledScanRequest {
+        foreign_topic_keys,
+        limit,
+        cursor: cursor.clone(),
+    };
+
+    let graph = open_memory_graph(config)?;
+    let response = scan_misfiled_decisions(&graph, &request)?;
+
+    let skip: usize = cursor.as_deref().and_then(|c| c.parse().ok()).unwrap_or(0);
+    let next_cursor = if response.truncated {
+        misfiled_next_cursor(skip, response.result_count)
     } else {
         None
     };

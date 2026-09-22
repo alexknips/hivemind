@@ -9,6 +9,7 @@ mod decision;
 mod decision_log;
 mod history;
 mod inhouse_scorer;
+mod misfiled;
 mod neighborhood;
 mod outcome;
 mod relevant;
@@ -53,6 +54,9 @@ pub use history::*;
 pub use inhouse_scorer::{
     get_decision_quality_score, scan_decision_quality, scorer_next_cursor, QualityTier,
     ScanQualityRequest, ScoredDecision, ScorerConfig, ScorerReason, SupersessionSpeed,
+};
+pub use misfiled::{
+    misfiled_next_cursor, scan_misfiled_decisions, MisfiledDecisionCandidate, MisfiledScanRequest,
 };
 pub use neighborhood::{
     get_decision_neighborhood, NeighborEdge, NeighborNode, NeighborhoodRequest, NeighborhoodRoot,

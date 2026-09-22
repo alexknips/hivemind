@@ -1110,6 +1110,11 @@ pub enum QueryCommand {
     /// Bulk in-house quality scan: scores all decisions (or a filtered subset).
     #[command(name = "scan_decision_quality")]
     ScanDecisionQuality(QueryScanDecisionQualityArgs),
+    /// Flag decisions carrying a caller-named "foreign" topic key — a decision
+    /// tagged with another ledger's name most likely belongs there instead.
+    /// Read-only: report only, never moves anything (see hivemind-s15q C1).
+    #[command(name = "scan_misfiled_decisions")]
+    ScanMisfiledDecisions(QueryScanMisfiledDecisionsArgs),
     /// "What should I know before I touch this?" — decisions bearing on the working
     /// situation (touched paths / a diff / the current branch / cwd), no question needed.
     #[command(name = "situational")]
@@ -1654,6 +1659,22 @@ pub enum QueryQualityTier {
     MinorConcerns,
     SignificantConcerns,
     HighConcern,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryScanMisfiledDecisionsArgs {
+    /// Topic keys that indicate a decision belongs to a different ledger
+    /// (e.g. another rig's name). At least one is required.
+    #[arg(long = "foreign-topic", value_delimiter = ',')]
+    pub foreign_topic_keys: Vec<String>,
+
+    /// Maximum results to return (1–1000, default 25).
+    #[arg(long, default_value_t = 25)]
+    pub limit: usize,
+
+    /// Pagination cursor from a previous response.
+    #[arg(long)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

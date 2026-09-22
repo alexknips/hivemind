@@ -33,15 +33,16 @@ use crate::queries::{
     get_decision, get_decision_brief, get_decision_neighborhood, get_decision_quality_score,
     get_decisions_added_since, get_decisions_changed_since, get_recent_activity,
     get_recent_decisions, get_relevant_decisions, get_situational_decisions,
-    get_supersession_chain, resolve_decision_by_description, scan_decision_quality,
-    scorer_next_cursor, search_decisions, search_decisions_any, ActiveDecisionBlockersRequest,
-    BlockerNotificationCandidatesRequest, ChangedSinceRequest, DecisionBlockerFilters,
-    DecisionLogExport, DecisionLogRequest, DecisionStatus, DecisionsAddedSinceFilterRequest,
-    DecisionsAddedSinceRequest, HistoryFilterRequest, NeighborhoodRequest, QualityTier,
-    QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest, RecentActivityRequest,
-    RecentDecisionEntry, RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome,
-    ResolvedCandidate, ScanQualityRequest, ScorerConfig, ScorerReason, SearchDecisionRequest,
-    SituationalRequest, SupersessionSpeed,
+    get_supersession_chain, misfiled_next_cursor, resolve_decision_by_description,
+    scan_decision_quality, scan_misfiled_decisions, scorer_next_cursor, search_decisions,
+    search_decisions_any, ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest,
+    ChangedSinceRequest, DecisionBlockerFilters, DecisionLogExport, DecisionLogRequest,
+    DecisionStatus, DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
+    HistoryFilterRequest, MisfiledScanRequest, NeighborhoodRequest, QualityTier, QueryContext,
+    ReadOnlyExportQuery, ReadOnlyExportRequest, RecentActivityRequest, RecentDecisionEntry,
+    RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome, ResolvedCandidate,
+    ScanQualityRequest, ScorerConfig, ScorerReason, SearchDecisionRequest, SituationalRequest,
+    SupersessionSpeed,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -78,7 +79,7 @@ use super::render::{
     render_active_blockers_summary, render_added_since_summary,
     render_blocker_notifications_summary, render_changed_since_summary,
     render_compact_view_summary, render_decision_brief_summary, render_decision_list_summary,
-    render_decision_summary, render_dot, render_neighborhood_summary,
+    render_decision_summary, render_dot, render_misfiled_scan_summary, render_neighborhood_summary,
     render_read_only_export_summary, render_recall_summary, render_recent_activity_summary,
     render_recent_decisions_summary, render_resolve_outcome_summary, render_scan_quality_summary,
     render_scored_decision_summary, render_search_summary, render_situational_summary,
@@ -1685,6 +1686,7 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
         | QueryCommand::GetBlockerNotificationCandidates(_)
         | QueryCommand::ScoreDecision(_)
         | QueryCommand::ScanDecisionQuality(_)
+        | QueryCommand::ScanMisfiledDecisions(_)
         | QueryCommand::GetSituationalDecisions(_) => {
             return Err(
                 CliError::InvalidInput("query requires graph-backed execution".to_owned()).into(),
@@ -2443,6 +2445,30 @@ fn run_query_with_graph(
                 query.summary,
                 &response,
                 |d: &Vec<_>| render_scan_quality_summary(d),
+                next_cursor.as_deref(),
+            )?
+        }
+        QueryCommand::ScanMisfiledDecisions(args) => {
+            let request = MisfiledScanRequest {
+                foreign_topic_keys: args.foreign_topic_keys.clone(),
+                limit: args.limit,
+                cursor: args.cursor.clone(),
+            };
+            let response = scan_misfiled_decisions(graph, &request)?;
+            let skip: usize = args
+                .cursor
+                .as_deref()
+                .and_then(|c| c.parse().ok())
+                .unwrap_or(0);
+            let next_cursor = if response.truncated {
+                misfiled_next_cursor(skip, response.result_count)
+            } else {
+                None
+            };
+            format_query_response(
+                query.summary,
+                &response,
+                |d: &Vec<_>| render_misfiled_scan_summary(d),
                 next_cursor.as_deref(),
             )?
         }

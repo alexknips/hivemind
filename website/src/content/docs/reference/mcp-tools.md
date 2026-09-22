@@ -1,9 +1,9 @@
 ---
 title: MCP Tools
-description: Reference for all 23 tools exposed by the HiveMind MCP server.
+description: Reference for all 24 tools exposed by the HiveMind MCP server.
 ---
 
-The HiveMind MCP server exposes 23 tools. Write tools append events to the
+The HiveMind MCP server exposes 24 tools. Write tools append events to the
 ledger and require an explicit `actor_id`. Read tools query the graph and never
 write. Layer-3 tools add ranked summaries or compact views.
 
@@ -344,6 +344,20 @@ Bulk in-house quality scan: scores all decisions (or a filtered subset) using th
 | `limit` | integer | — | Maximum results to return (1–1000, default 25). |
 | `min_tier` | string | — | Only return decisions at this tier or worse. Omit for all. Use 'significant_concerns' or 'high_concern' for precision-biased alerting. |
 | `since_event_origin` | integer | — | Minimum ledger event offset (inclusive). Filter to decisions proposed at or after this offset. Use 0 or omit for all. |
+
+---
+
+### `scan_misfiled_decisions`
+
+Flag decisions carrying a caller-named "foreign" topic key — a decision tagged with another ledger's name most likely belongs there instead (hivemind-zdsh.14). Deterministic exact-match only, no LLM, no inference beyond topic-key membership: HiveMind does not yet know which project a ledger belongs to (hivemind-s15q A1/A3), so the caller supplies the foreign keys. Read-only report — never moves a decision (that needs hivemind-s15q C1, not built yet).
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `foreign_topic_keys` | string[] | ✓ | Topic keys that indicate a decision belongs to a different ledger (e.g. another rig's name). |
+| `cursor` | string | — | Pagination cursor from a previous response's `next_cursor` field. |
+| `limit` | integer | — | Maximum results to return (1–1000, default 25). |
 
 ---
 

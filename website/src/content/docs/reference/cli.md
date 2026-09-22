@@ -408,6 +408,21 @@ hivemind query scan_decision_quality
   [--min-tier <tier>]               # clean|minor_concerns|significant_concerns|high_concern
 ```
 
+### `query scan_misfiled_decisions`
+
+Flags decisions carrying a caller-named "foreign" topic key — a decision
+tagged with another ledger's name most likely belongs there instead.
+Deterministic exact-match only, no LLM: HiveMind does not yet know which
+project a ledger belongs to, so the caller supplies the foreign keys.
+Read-only report — never moves a decision.
+
+```
+hivemind query scan_misfiled_decisions
+  --foreign-topic <key>[,<key>...]  # required; repeatable or comma-separated
+  [--limit <n>]                     # 1–1000, default 25
+  [--cursor <token>]                # pagination cursor from a previous response
+```
+
 ## Other commands
 
 ### `tenant create`
