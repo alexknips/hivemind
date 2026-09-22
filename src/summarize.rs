@@ -756,6 +756,7 @@ mod tests {
             option_labels: &owned_option_labels,
             chosen_option_id: chosen_id.as_deref(),
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         };

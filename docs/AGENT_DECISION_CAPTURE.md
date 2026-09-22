@@ -38,6 +38,12 @@ fan-out relation events carry:
 Use `--evidence` and `--hypotheses` with existing evidence and hypothesis ids
 when the decision depends on already captured context.
 
+`--chose <option>` means the decision was already made: the command
+self-accepts it immediately after proposing, from `--actor` (or from
+`--decided-by <actor-id>` when the actual decider differs from the recording
+actor). Pass `--still-proposed` to keep a genuine open recommendation at
+`proposed` instead of self-accepting it.
+
 ## Claude
 
 ```bash

@@ -195,6 +195,7 @@ fn run_worker() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })?;

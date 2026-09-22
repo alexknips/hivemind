@@ -66,11 +66,15 @@ pub struct DecisionProposalInput<'a> {
     pub option_labels: &'a [String],
     pub chosen_option_id: Option<&'a str>,
     /// Actor who actually made the decision, when it differs from `actor_id` (the recording
-    /// actor/scribe). `Some` also advances the decision straight to `accepted` by emitting a
-    /// `decision.accepted` event from this actor immediately after the proposal — requires
-    /// `chosen_option_id` to be `Some` (see `propose_decision`). `None` leaves the decision at
-    /// `proposed`, unchanged from before this field existed.
+    /// actor/scribe) — e.g. an agent scribing a decision a specific human made. Requires
+    /// `chosen_option_id` to be `Some`. Mutually exclusive with `still_proposed`.
     pub decided_by: Option<&'a str>,
+    /// Keep the decision at `proposed` even though `chosen_option_id` is set, for a genuine
+    /// open recommendation awaiting someone else's decision. Defaults to `false`: per
+    /// hivemind-zdsh.8, a `chosen_option_id` means the decision was already made, so
+    /// `propose_decision` auto-accepts it immediately after proposing — from `decided_by`
+    /// when given, otherwise self-accepted from `actor_id` — unless this is `true`.
+    pub still_proposed: bool,
     pub hypothesis_ids: &'a [String],
     pub evidence_ids: &'a [String],
 }
@@ -544,6 +548,14 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
+        if input.still_proposed && input.decided_by.is_some() {
+            return Err(CommandError::Validation(
+                "still_proposed conflicts with decided_by — decided_by already asserts who decided"
+                    .to_owned(),
+            )
+            .into());
+        }
+
         let normalized_topic_keys: Vec<String> = input
             .topic_keys
             .iter()
@@ -612,8 +624,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
         self.propose_decision_with_id(input, &decision_id, event_uuids)?;
 
-        if let Some(decided_by) = input.decided_by {
-            self.accept_decision(&decision_id, decided_by)?;
+        if !input.still_proposed && input.chosen_option_id.is_some() {
+            let decider = input.decided_by.unwrap_or(input.actor_id);
+            self.accept_decision(&decision_id, decider)?;
         }
 
         Ok(decision_id)
@@ -1037,6 +1050,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             option_labels: &option_labels,
             chosen_option_id: chosen_option_id.as_deref(),
             decided_by: None,
+            // Unread here: this goes through `propose_decision_with_id`, which never
+            // auto-accepts (only `propose_decision` does). Superseding decisions stay
+            // `proposed` until separately accepted — out of scope for hivemind-zdsh.8.
+            still_proposed: true,
             hypothesis_ids: input.hypothesis_ids,
             evidence_ids: input.evidence_ids,
         };

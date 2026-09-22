@@ -116,6 +116,7 @@ fn propose_decision_fans_out_relation_events_with_causation_linkage() {
             option_labels: &[],
             chosen_option_id: Some(option_b.as_str()),
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: std::slice::from_ref(&hypothesis_id),
             evidence_ids: std::slice::from_ref(&evidence_id),
         })
@@ -189,6 +190,7 @@ fn direct_agent_decision_persists_agent_provenance() {
                 option_labels: &[],
                 chosen_option_id: None,
                 decided_by: None,
+                still_proposed: false,
                 hypothesis_ids: &[],
                 evidence_ids: &[],
             })
@@ -237,6 +239,7 @@ fn accept_and_reject_invariant_for_same_actor_is_enforced() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -271,6 +274,7 @@ fn propose_decision_with_decided_by_emits_accepted_event_from_that_actor() {
             option_labels: &[],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: Some("human:alex"),
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -311,6 +315,7 @@ fn propose_decision_decided_by_requires_chosen_option_id() {
         option_labels: &[],
         chosen_option_id: None,
         decided_by: Some("human:alex"),
+        still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],
     });
@@ -321,9 +326,48 @@ fn propose_decision_decided_by_requires_chosen_option_id() {
 }
 
 #[test]
-fn propose_decision_without_decided_by_stays_proposed() {
-    // Unchanged behavior: a chosen option alone does not imply review/acceptance — that
-    // stays a deliberate, separate step unless the caller names who decided.
+fn propose_decision_chosen_option_defaults_to_self_accepted() {
+    // hivemind-zdsh.8: a chosen option means the decision was already made. Without
+    // decided_by naming a different decider, propose_decision self-accepts from actor_id
+    // instead of leaving the decision stuck at `proposed` forever.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option");
+    let decision_id = commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Chosen option, no decided_by",
+            rationale: "The proposer is the decider here",
+            topic_keys: &["Core".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: Some(option_id.as_str()),
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
+        .expect("propose");
+
+    let events = ledger.read(0, 20).expect("read events");
+    let accepted = events
+        .iter()
+        .find(|event| event.event_type == EventType::DecisionAccepted)
+        .expect("a chosen option without still_proposed must self-accept");
+    assert_eq!(accepted.actor_id, "actor:alice");
+    assert_eq!(
+        accepted.payload.get("decision_id").and_then(|v| v.as_str()),
+        Some(decision_id.as_str())
+    );
+}
+
+#[test]
+fn propose_decision_still_proposed_keeps_chosen_option_open() {
+    // The explicit opt-out: a genuine open recommendation awaiting someone else's decision
+    // stays `proposed` even though a chosen option is given.
     let ledger = InMemoryEventLedger::new();
     let commands = Commands::new(&ledger);
 
@@ -333,13 +377,14 @@ fn propose_decision_without_decided_by_stays_proposed() {
     commands
         .propose_decision(DecisionProposalInput {
             actor_id: "actor:alice",
-            title: "Proposed with a leaning but not accepted",
-            rationale: "No decided_by given",
+            title: "Proposed with a leaning but not decided",
+            rationale: "Awaiting someone else's decision",
             topic_keys: &["Core".to_owned()],
             option_ids: std::slice::from_ref(&option_id),
             option_labels: &[],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            still_proposed: true,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -350,7 +395,34 @@ fn propose_decision_without_decided_by_stays_proposed() {
         !events
             .iter()
             .any(|event| event.event_type == EventType::DecisionAccepted),
-        "no decided_by must mean no accept event"
+        "still_proposed must mean no accept event"
+    );
+}
+
+#[test]
+fn propose_decision_still_proposed_conflicts_with_decided_by() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option");
+    let result = commands.propose_decision(DecisionProposalInput {
+        actor_id: "actor:alice",
+        title: "Contradictory flags",
+        rationale: "still_proposed and decided_by disagree about whether this is decided",
+        topic_keys: &["Core".to_owned()],
+        option_ids: std::slice::from_ref(&option_id),
+        option_labels: &[],
+        chosen_option_id: Some(option_id.as_str()),
+        decided_by: Some("human:alex"),
+        still_proposed: true,
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+    });
+    assert!(
+        result.is_err(),
+        "still_proposed together with decided_by must be rejected"
     );
 }
 
@@ -375,6 +447,7 @@ fn propose_decision_rejects_mismatched_option_labels_length() {
         option_labels: &["Only one label".to_owned()],
         chosen_option_id: None,
         decided_by: None,
+        still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],
     });
@@ -403,6 +476,7 @@ fn supersede_requires_both_decisions_to_exist() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -418,6 +492,7 @@ fn supersede_requires_both_decisions_to_exist() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -450,6 +525,7 @@ fn disagree_records_reason_and_is_idempotent_for_same_actor() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -506,6 +582,7 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -609,6 +686,7 @@ fn attach_evidence_requires_existing_endpoints() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -1003,6 +1081,7 @@ fn propose_decision_normalizes_topic_keys() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })

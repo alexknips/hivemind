@@ -41,6 +41,8 @@ fn local_slack_and_agent_capture_share_one_query_path() -> TestResult<()> {
         "The demo should validate provenance before adding real Slack credentials",
     )?;
 
+    // hivemind-zdsh.8: each capture below sets a chosen option, so all three
+    // self-accept immediately instead of staying `proposed` — status is `accepted`.
     let search = run_cli_json(
         &hivemind_dir,
         vec![
@@ -49,7 +51,7 @@ fn local_slack_and_agent_capture_share_one_query_path() -> TestResult<()> {
             "--topic".to_owned(),
             "integrations".to_owned(),
             "--status".to_owned(),
-            "proposed".to_owned(),
+            "accepted".to_owned(),
             "--source".to_owned(),
             "slack,agent".to_owned(),
             "--limit".to_owned(),
@@ -89,7 +91,7 @@ fn local_slack_and_agent_capture_share_one_query_path() -> TestResult<()> {
             "--topic".to_owned(),
             "integrations".to_owned(),
             "--status".to_owned(),
-            "proposed".to_owned(),
+            "accepted".to_owned(),
             "--source".to_owned(),
             "slack,agent".to_owned(),
             "--limit".to_owned(),
@@ -245,7 +247,7 @@ fn demo_report(rows: &[ProvenanceRow]) -> Value {
         "command": "cargo test --test local_capture_demo -- --nocapture",
         "query": {
             "topic": "integrations",
-            "status": "proposed",
+            "status": "accepted",
             "sources": ["slack", "agent"]
         },
         "proposal_provenance": entries,

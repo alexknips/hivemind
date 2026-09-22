@@ -45,9 +45,13 @@ pub(super) struct CaptureDecisionRequest {
     chosen_option_label: Option<String>,
     /// Actor who actually made the decision, when it differs from the authenticated caller
     /// (`ctx.actor_id`, the recorder). Requires `chosen_option_label`. See `decided_by` on
-    /// `DecisionProposalInput`.
+    /// `DecisionProposalInput`. Mutually exclusive with `still_proposed`.
     #[serde(default)]
     decided_by: Option<String>,
+    /// Keep the decision at `proposed` even though `chosen_option_label` is set. See
+    /// `still_proposed` on `DecisionProposalInput`.
+    #[serde(default)]
+    still_proposed: bool,
     #[serde(default)]
     hypothesis_ids: Vec<String>,
     #[serde(default)]
@@ -340,6 +344,7 @@ fn capture_decision_blocking(
             option_labels: &option_labels,
             chosen_option_id: chosen_option_id.as_deref(),
             decided_by: req.decided_by.as_deref(),
+            still_proposed: req.still_proposed,
             hypothesis_ids: &req.hypothesis_ids,
             evidence_ids: &req.evidence_ids,
         })

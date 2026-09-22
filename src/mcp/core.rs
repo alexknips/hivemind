@@ -43,8 +43,8 @@ use crate::queries::{
 use crate::summarize::{RecallRequest, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT};
 
 use super::args::{
-    default_option_description, optional_datetime, optional_option_labels, optional_string,
-    optional_string_array, optional_usize, require_string, require_string_array,
+    default_option_description, optional_bool, optional_datetime, optional_option_labels,
+    optional_string, optional_string_array, optional_usize, require_string, require_string_array,
 };
 
 // ---------------------------------------------------------------------------
@@ -174,8 +174,12 @@ pub(crate) struct CaptureDecisionArgs {
     pub(crate) chosen_option_label: Option<String>,
     /// Actor who actually made the decision, when it differs from `actor_id` (the recording
     /// actor — an agent scribing a decision a human made, for example). Requires
-    /// `chosen_option_label`. See `decided_by` on `DecisionProposalInput`.
+    /// `chosen_option_label`. See `decided_by` on `DecisionProposalInput`. Mutually exclusive
+    /// with `still_proposed`.
     pub(crate) decided_by: Option<String>,
+    /// Keep the decision at `proposed` even though `chosen_option_label` is set. See
+    /// `still_proposed` on `DecisionProposalInput`.
+    pub(crate) still_proposed: bool,
     pub(crate) hypothesis_ids: Vec<String>,
     pub(crate) evidence_ids: Vec<String>,
 }
@@ -244,6 +248,7 @@ impl CaptureDecisionArgs {
 
         let chosen_option_label = optional_string(args, "chosen_option_label")?;
         let decided_by = optional_string(args, "decided_by")?;
+        let still_proposed = optional_bool(args, "still_proposed")?;
         let hypothesis_ids = optional_string_array(args, "hypothesis_ids")?;
         let evidence_ids = optional_string_array(args, "evidence_ids")?;
 
@@ -261,6 +266,7 @@ impl CaptureDecisionArgs {
             options,
             chosen_option_label,
             decided_by,
+            still_proposed,
             hypothesis_ids,
             evidence_ids,
         })
@@ -315,6 +321,7 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
             option_labels: &option_labels,
             chosen_option_id: chosen_option_id.as_deref(),
             decided_by: args.decided_by.as_deref(),
+            still_proposed: args.still_proposed,
             hypothesis_ids: &args.hypothesis_ids,
             evidence_ids: &args.evidence_ids,
         })
@@ -325,6 +332,7 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
         "option_ids": option_ids,
         "chosen_option_id": chosen_option_id,
         "decided_by": args.decided_by,
+        "still_proposed": args.still_proposed,
     })))
 }
 

@@ -126,6 +126,14 @@ pub(crate) fn optional_usize(
     }
 }
 
+pub(crate) fn optional_bool(args: &Map<String, Value>, field: &str) -> Result<bool, (i32, String)> {
+    match args.get(field) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(b)) => Ok(*b),
+        Some(_) => Err((INVALID_PARAMS, format!("`{field}` must be a boolean"))),
+    }
+}
+
 pub(crate) fn optional_datetime(
     args: &Map<String, Value>,
     field: &str,

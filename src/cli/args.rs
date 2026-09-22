@@ -713,8 +713,17 @@ pub struct EmitDecisionProposedArgs {
     /// (`--actor`/`--actor-id`). Requires `--chose`. Immediately advances the decision to
     /// `accepted` via a `decision.accepted` event from this actor — e.g. an agent recording a
     /// decision a human made: `--actor-id agent:claude:session --decided-by human:alex`.
+    /// Mutually exclusive with `--still-proposed`.
     #[arg(long = "decided-by")]
     pub decided_by: Option<String>,
+
+    /// Keep the decision at `proposed` even though `--chose` is set, for a genuine open
+    /// recommendation awaiting someone else's decision. By default (this flag absent), a
+    /// chosen option means the decision was already made: it auto-accepts immediately after
+    /// proposing, from `--decided-by` when given, otherwise self-accepted from the recording
+    /// actor.
+    #[arg(long = "still-proposed")]
+    pub still_proposed: bool,
 
     #[arg(long = "hypotheses", value_delimiter = ',')]
     pub hypothesis_ids: Vec<String>,

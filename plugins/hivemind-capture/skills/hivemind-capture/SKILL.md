@@ -502,7 +502,10 @@ the keyless plugin path and its own Haiku call. Do not invent a
 - Write the rationale in durable organizational language. Avoid "because we
   discussed it" or "seems best" as the only why.
 - Include all meaningful options in `--options`, and set `--chose` only when a
-  selected option exists.
+  selected option exists. `--chose` means the decision was already made — it
+  self-accepts immediately (or accepts from `--decided-by` when someone else
+  decided). Pass `--still-proposed` instead when floating a leaning that still
+  awaits someone else's decision.
 - Do not invent evidence, hypothesis, or decision ids. Query first if unsure.
 - Prefer `decision.capture` for new bundled proposals. Use direct event verbs
   only for status transitions or graph relations that already have ids.

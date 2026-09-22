@@ -1,7 +1,7 @@
 ---
 name: capture-decision
 description: Capture one HiveMind decision in the configured ledger using the legacy kind-locked path
-argument-hint: '--title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option] [--source agent|human]'
+argument-hint: '--title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option] [--decided-by actor-id] [--still-proposed] [--source agent|human]'
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/capture-decision.sh:*)
 disable-model-invocation: true
 ---
@@ -27,6 +27,11 @@ Default to `--source agent`, which records `actor_id=agent:claude:<name>`
 (a stable identity, preferring Gas City's `GC_AGENT`/`GC_ALIAS` over a raw
 session id) and `source=agent`. Use `--source human` only when the user
 explicitly asks you to record their decision as a human write.
+
+`--chose option` means the decision was already made: it self-accepts
+immediately (or accepts from `--decided-by <actor-id>` when someone else
+decided). Pass `--still-proposed` instead to float a leaning that still
+awaits someone else's decision.
 
 Do not query, rank, summarize, or infer related decisions before capturing.
 This command is a write-layer path only.

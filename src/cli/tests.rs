@@ -1938,7 +1938,9 @@ fn search_decisions_cli_returns_query_response(
         "--topic",
         "infra",
         "--status",
-        "proposed",
+        // hivemind-zdsh.8: --chose self-accepts by default, so this decision is
+        // `accepted`, not `proposed`.
+        "accepted",
         "--actor-id",
         "agent-1",
         "--source",
@@ -2329,7 +2331,9 @@ fn ledger_history_cli_queries_and_exports_read_only_summary() {
         "--topic",
         "infra",
         "--status",
-        "proposed",
+        // hivemind-zdsh.8: --chose self-accepts by default, so this decision is
+        // `accepted`, not `proposed`.
+        "accepted",
         "--source",
         "cli",
         "--limit",
@@ -2345,7 +2349,7 @@ fn ledger_history_cli_queries_and_exports_read_only_summary() {
     );
     assert_eq!(
         recent_decisions["data"]["items"][0]["status"],
-        serde_json::json!("proposed")
+        serde_json::json!("accepted")
     );
 
     let empty_recent_decisions = run(&Cli::parse_from([
@@ -2378,7 +2382,7 @@ fn ledger_history_cli_queries_and_exports_read_only_summary() {
     ]))
     .expect("recent decisions summary query succeeds");
     assert!(recent_summary.contains(&decision_id));
-    assert!(recent_summary.contains("proposed"));
+    assert!(recent_summary.contains("accepted"));
 
     let changed = run(&Cli::parse_from([
         "hivemind",

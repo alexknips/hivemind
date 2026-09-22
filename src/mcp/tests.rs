@@ -460,8 +460,7 @@ fn recent_decisions_tool_returns_recent_query_response() {
                 "title": "Keep recent decisions discoverable",
                 "rationale": "Agents need a bounded recent decisions query",
                 "topic_keys": ["query"],
-                "options": [{"label": "recent_decisions"}],
-                "chosen_option_label": "recent_decisions"
+                "options": [{"label": "recent_decisions"}]
             }
         }
     })

@@ -140,6 +140,7 @@ fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
         option_ids: vec!["local-ledger".to_owned(), "spreadsheet".to_owned()],
         chosen_option_id: Some("local-ledger".to_owned()),
         decided_by: None,
+        still_proposed: false,
         hypothesis_ids: Vec::new(),
         evidence_ids: Vec::new(),
     };
@@ -152,7 +153,9 @@ fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
         &SearchDecisionRequest {
             query: Some("quickstart".to_owned()),
             topic_keys: vec!["quickstart".to_owned()],
-            statuses: vec![DecisionStatus::Proposed],
+            // hivemind-zdsh.8: a chosen option self-accepts by default, so the demo
+            // decision captured above lands as `accepted`, not `proposed`.
+            statuses: vec![DecisionStatus::Accepted],
             actor_ids: vec![cli.actor.clone()],
             sources: vec!["cli".to_owned()],
             since: None,
@@ -1452,6 +1455,7 @@ fn propose_decision_from_option_labels<L: EventLedger>(
         option_labels: &args.option_ids,
         chosen_option_id: chosen_option_id.as_deref(),
         decided_by: args.decided_by.as_deref(),
+        still_proposed: args.still_proposed,
         hypothesis_ids: &args.hypothesis_ids,
         evidence_ids: &args.evidence_ids,
     })

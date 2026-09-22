@@ -26,6 +26,11 @@ For decisions, keep using structured decision fields:
 /hivemind-capture:capture "selected direction" --kind decision --title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option]
 ```
 
+`--chose option` means the decision was already made: it self-accepts
+immediately (or accepts from `--decided-by <actor-id>` when someone else
+decided). Pass `--still-proposed` instead to float a leaning that still
+awaits someone else's decision.
+
 When `--kind` is omitted, the helper delegates classification to the configured
 `hivemind-classifier` subagent if it is installed; otherwise it emits nothing.
 The helper recognizes blocker, decision-request, and notification as schema

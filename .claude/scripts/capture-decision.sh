@@ -14,8 +14,10 @@ Options:
   --agent-session SESSION    Claude session id for --source agent.
   --hivemind-dir DIR         Ledger directory. Defaults to $HIVEMIND_DIR or ./hivemind.
 
-Additional decision.capture flags such as --evidence and --hypotheses are
-forwarded to the HiveMind CLI.
+Additional decision.capture flags such as --decided-by, --still-proposed,
+--evidence, and --hypotheses are forwarded to the HiveMind CLI. --chose means
+the decision was already made — it self-accepts unless --still-proposed is
+also given.
 USAGE
 }
 

@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash(.claude/scripts/capture-decision.sh:*)
-argument-hint: --title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option] [--source human|agent]
+argument-hint: --title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option] [--decided-by actor-id] [--still-proposed] [--source human|agent]
 description: Capture a HiveMind decision in the local ledger
 ---
 
@@ -21,6 +21,12 @@ Use `--source agent` only when you are recording an autonomous Claude Code
 decision; that records `actor_id=agent:claude:<name>` (a stable identity,
 preferring Gas City's `GC_AGENT`/`GC_ALIAS` over a raw session id) and
 `source=agent`.
+
+`--chose option` means the decision was already made: it self-accepts
+immediately (or accepts from `--decided-by <actor-id>` when someone else,
+such as the human who asked for this capture, actually decided). Pass
+`--still-proposed` instead to float a leaning that still awaits someone
+else's decision.
 
 Do not query, rank, summarize, or infer related decisions. This command is a
 write-layer capture path only.
