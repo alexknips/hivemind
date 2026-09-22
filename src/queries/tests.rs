@@ -2566,6 +2566,121 @@ fn memory_graph_quality_candidates_bulk_and_since_filter() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// get_decision_context_candidates / scan_decision_quality / get_decision_quality_score /
+// get_failure_attribution against a REAL MemoryGraph (hivemind-bbnw.1). The outcome.rs
+// bulk shape already has real-MemoryGraph coverage above (hivemind-kj0i), but nothing
+// exercised context.rs's bulk shape or the MCP-facing scan_decision_quality /
+// score_decision / analyze_failure_modes entry points against a real MemoryGraph — a
+// dispatch-table gap in any of them (memory.rs or postgres.rs) would have gone
+// undetected by the hand-rolled ContextGraph/OutcomeGraph fixtures below.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn memory_graph_context_candidates_bulk_and_since_filter() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+
+    let all = get_decision_context_candidates(
+        &graph,
+        &DecisionContextRequest {
+            limit: 100,
+            ..Default::default()
+        },
+    )?;
+    assert_eq!(all.result_count, 7);
+    assert!(!all.truncated);
+    assert!(all.data.iter().any(|c| c.decision_id == "decision:clean"));
+
+    let since = get_decision_context_candidates(
+        &graph,
+        &DecisionContextRequest {
+            since_event_origin: Some(15),
+            limit: 100,
+            ..Default::default()
+        },
+    )?;
+    let ids: BTreeSet<_> = since.data.iter().map(|c| c.decision_id.clone()).collect();
+    assert_eq!(
+        ids,
+        BTreeSet::from(["decision:contested".to_owned(), "decision:thin".to_owned()])
+    );
+
+    Ok(())
+}
+
+#[test]
+fn memory_graph_scan_decision_quality_scores_real_graph() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+
+    let scan = scan_decision_quality(
+        &graph,
+        &ScanQualityRequest {
+            limit: 100,
+            ..Default::default()
+        },
+        &ScorerConfig::default(),
+    )?;
+    assert_eq!(scan.result_count, 7);
+    assert!(!scan.truncated);
+
+    let clean = scan
+        .data
+        .iter()
+        .find(|s| s.decision_id == "decision:clean")
+        .expect("decision:clean scored");
+    assert_eq!(clean.tier, QualityTier::Clean);
+    assert!(clean.reasons.is_empty());
+
+    let stale = scan
+        .data
+        .iter()
+        .find(|s| s.decision_id == "decision:stale-direct")
+        .expect("decision:stale-direct scored");
+    assert!(stale
+        .reasons
+        .iter()
+        .any(|r| matches!(r, ScorerReason::PremisedOnRefuted { .. })));
+
+    Ok(())
+}
+
+#[test]
+fn memory_graph_get_decision_quality_score_single_decision() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+
+    let scored =
+        get_decision_quality_score(&graph, "decision:contested", &ScorerConfig::default())?
+            .data
+            .expect("decision:contested exists");
+    assert!(scored
+        .reasons
+        .iter()
+        .any(|r| matches!(r, ScorerReason::Contested { .. })));
+
+    assert!(get_decision_quality_score(
+        &graph,
+        "decision:does-not-exist",
+        &ScorerConfig::default()
+    )?
+    .data
+    .is_none());
+
+    Ok(())
+}
+
+#[test]
+fn memory_graph_failure_attribution_real_graph() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+
+    let report = get_failure_attribution(&graph, &FailureAttributionRequest::default())?.data;
+    assert_eq!(report.corpus_stats.total_decisions, 7);
+    // decision:old, decision:stale-direct, decision:stale-option, decision:contested.
+    assert_eq!(report.corpus_stats.failed_decisions, 4);
+    assert!(!report.by_source.is_empty());
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // ContextGraph — minimal test double for context.rs
 // ---------------------------------------------------------------------------
 

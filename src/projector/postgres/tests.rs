@@ -17,9 +17,11 @@ use crate::projector::{
 };
 use crate::queries::{
     get_decision, get_decision_brief, get_decision_context, get_decision_context_candidates,
-    get_decision_outcome, get_decision_quality_candidates, get_supersession_chain,
-    resolve_decision_by_description, search_decisions, DecisionContextRequest,
-    DecisionQualityCandidatesRequest, QueryContext,
+    get_decision_outcome, get_decision_quality_candidates, get_decision_quality_score,
+    get_failure_attribution, get_supersession_chain, resolve_decision_by_description,
+    scan_decision_quality, search_decisions, DecisionContextRequest,
+    DecisionQualityCandidatesRequest, FailureAttributionRequest, QueryContext, ScanQualityRequest,
+    ScorerConfig,
 };
 use crate::summarize::{recall_decisions, RecallRequest, RECALL_MAX_LIMIT};
 use crate::Result;
@@ -490,6 +492,80 @@ fn get_decision_context_candidates_matches_memory() -> Result<()> {
         if memory_since != pg_since {
             return Err(test_error(format!(
                 "get_decision_context_candidates since-filter mismatch: memory={memory_since:?} pg={pg_since:?}"
+            )));
+        }
+        Ok(())
+    })
+}
+
+// ── scan_decision_quality / get_decision_quality_score / get_failure_attribution parity
+//    (hivemind-bbnw.1) — these MCP-facing entry points chain through
+//    get_decision_quality_candidates and get_decision_context_candidates above, but had no
+//    direct parity coverage of their own; a dispatch-table gap specific to how they call
+//    through (e.g. a cursor/limit combination neither of the callers above exercises) would
+//    have gone undetected.
+
+#[test]
+fn scan_decision_quality_matches_memory() -> Result<()> {
+    with_postgres_graph("scan-quality-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = outcome_fixture_ledger()?;
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        let request = ScanQualityRequest {
+            limit: 100,
+            ..Default::default()
+        };
+        let memory_scored =
+            scan_decision_quality(&memory, &request, &ScorerConfig::default())?.data;
+        let pg_scored = scan_decision_quality(pg, &request, &ScorerConfig::default())?.data;
+        if memory_scored != pg_scored {
+            return Err(test_error(format!(
+                "scan_decision_quality mismatch: memory={memory_scored:?} pg={pg_scored:?}"
+            )));
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn get_decision_quality_score_matches_memory() -> Result<()> {
+    with_postgres_graph("quality-score-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = outcome_fixture_ledger()?;
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        for decision_id in ["decision:clean", "decision:contested", "decision:missing"] {
+            let memory_result =
+                get_decision_quality_score(&memory, decision_id, &ScorerConfig::default())?.data;
+            let pg_result =
+                get_decision_quality_score(pg, decision_id, &ScorerConfig::default())?.data;
+            if memory_result != pg_result {
+                return Err(test_error(format!(
+                    "get_decision_quality_score mismatch for {decision_id}: memory={memory_result:?} pg={pg_result:?}"
+                )));
+            }
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn get_failure_attribution_matches_memory() -> Result<()> {
+    with_postgres_graph("failure-attribution-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = outcome_fixture_ledger()?;
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        let request = FailureAttributionRequest::default();
+        let memory_report = get_failure_attribution(&memory, &request)?.data;
+        let pg_report = get_failure_attribution(pg, &request)?.data;
+        if memory_report != pg_report {
+            return Err(test_error(format!(
+                "get_failure_attribution mismatch: memory={memory_report:?} pg={pg_report:?}"
             )));
         }
         Ok(())
