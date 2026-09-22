@@ -31,6 +31,7 @@ src/queries/history/tests.rs
 src/queries/resolve/tests.rs
 src/queries/brief/tests.rs
 src/queries/decision_log/tests.rs
+src/queries/projects/tests.rs
 src/commands/tests.rs
 src/mcp/tests.rs
 src/events/tests.rs
