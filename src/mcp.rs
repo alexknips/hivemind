@@ -54,7 +54,7 @@ use core::{
 /// negotiation in `initialize` and the spec link in docs stay in sync.
 const PROTOCOL_VERSION: &str = "2025-03-26";
 const SERVER_NAME: &str = "hivemind";
-const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+const SERVER_VERSION: &str = crate::VERSION;
 
 const JSONRPC_PARSE_ERROR: i32 = -32700;
 const JSONRPC_INVALID_REQUEST: i32 = -32600;

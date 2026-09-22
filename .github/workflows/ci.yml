@@ -125,6 +125,8 @@ jobs:
           context: .
           push: false
           tags: hivemind:ci
+          build-args: |
+            GIT_SHA=${{ github.sha }}
 
   dependency-audit:
     name: Dependency audit

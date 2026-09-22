@@ -396,11 +396,13 @@ fn parses_global_flags_and_emit_subcommand() {
 }
 
 #[test]
-fn cli_version_comes_from_cargo_package_version() {
-    assert_eq!(
-        Cli::command().get_version(),
-        Some(env!("CARGO_PKG_VERSION"))
-    );
+fn cli_version_is_cargo_semver_plus_build_sha() {
+    let command = Cli::command();
+    let version = command.get_version().unwrap();
+    assert_eq!(version, crate::VERSION);
+    let (semver, sha) = version.split_once('+').expect("version must be semver+sha");
+    assert_eq!(semver, env!("CARGO_PKG_VERSION"));
+    assert!(!sha.is_empty(), "build sha must not be empty");
 }
 
 #[test]

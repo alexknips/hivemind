@@ -38,6 +38,7 @@
 //! - `GET  /v1/decisions/map[?alpha=0.5]`          — 2-D spectral decision map
 //! - `GET  /v1/graph`                              — full decision graph (JSON)
 //! - `GET  /v1/health`                             — liveness probe
+//! - `GET  /v1/version`                            — build version + commit sha
 //!
 //! ## SPA serving
 //!
@@ -442,6 +443,7 @@ fn build_router(state: AppState) -> Router {
     let cors = build_cors_layer(&state.cors_origins);
     let router = Router::new()
         .route("/v1/health", get(handlers::health_handler))
+        .route("/v1/version", get(handlers::version_handler))
         // Static routes before dynamic /:id to avoid ambiguity
         .route("/v1/decisions/search", get(handlers::search_handler))
         .route("/v1/decisions/relevant", get(handlers::relevant_handler))

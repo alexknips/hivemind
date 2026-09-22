@@ -19,7 +19,7 @@ use crate::summarize::DIGEST_MAX_DECISIONS;
 #[command(
     name = "hivemind",
     about = "Organizational decision-memory ledger and query CLI",
-    version,
+    version = crate::VERSION,
     subcommand_required = true,
     arg_required_else_help = true
 )]

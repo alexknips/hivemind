@@ -49,7 +49,13 @@ Verify:
 ```bash
 curl http://localhost:8080/v1/health
 # {"status":"ok"}
+curl http://localhost:8080/v1/version
+# {"version":"0.6.0+d2d203d1a2b3","cargo_version":"0.6.0","sha":"d2d203d1a2b3"}
 ```
+
+`/v1/health` and `/v1/version` are both unauthenticated liveness/build probes.
+Like `hivemind --version` locally, `/v1/version`'s `sha` is what the running
+container was actually built from, not what a tag or `:latest` claims.
 
 > **Search note:** `GET /v1/decisions/search` and `GET /v1/decisions/recall` work on both
 > backends — SQLite goes through FTS5, Postgres goes through a portable in-memory term
@@ -424,10 +430,30 @@ container.
 ## Upgrading
 
 ```bash
+./scripts/cell-update.sh [ref]   # default ref: origin/master
+```
+
+Builds the server image from the given ref (default `origin/master`), tags
+it by commit sha — never `:latest`, which only moves when a `v*` tag is
+pushed (see `.github/workflows/release.yml`) and can otherwise sit behind
+master for weeks — restarts the `hivemind` service with it, and waits for
+`/v1/health` before declaring success. On failure the previous container is
+left running; nothing is torn down until the replacement is confirmed
+healthy. Confirm what's actually running with `curl
+http://localhost:8080/v1/version`.
+
+Equivalent by hand, without the health check or sha tagging:
+
+```bash
 git pull
 docker compose build --no-cache
 docker compose up -d
 ```
+
+Note: with `image:` and `build:` both set in `docker-compose.yml`, a bare
+`docker compose up -d` reuses whatever image already carries that tag
+locally rather than pulling — so `docker compose build` must run first, or
+this silently keeps serving the old container.
 
 Postgres schema migrations run automatically at startup.
 

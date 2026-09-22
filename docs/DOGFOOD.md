@@ -98,29 +98,33 @@ helper, MCP server defaults, or `decision.capture` `--agent-tool` and
 Install or build the CLI first. Agent capture helpers look for `hivemind` on
 `PATH`, then fall back to a local debug binary or `cargo run` from this checkout.
 
-**Install to PATH (recommended for Gas Town rigs):** run `make install` (or
-the equivalent `cargo install --path . --locked --bin hivemind`) so the MCP
-config, capture scripts, and plugin all resolve `hivemind` without a
+**Install to PATH (recommended for Gas Town rigs):** run `make install` so
+the MCP config, capture scripts, and plugin all resolve `hivemind` without a
 repo-relative path:
 
 ```bash
 make install
-hivemind --version  # should print hivemind 0.6.0+
+hivemind --version  # <cargo semver>+<build sha>, e.g. hivemind 0.6.0+d2d203d1a2b3
 ```
 
-This builds the CLI from the current checkout and installs it into cargo's
-install root (`~/.cargo/bin` by default), which is on `$PATH` for a standard
-Rust toolchain install. Re-run `make install` after every rebase or pull so
-PATH never resolves a stale binary. If cargo's install root is not on your
-`$PATH`, either add it or copy the built binary to a directory that is:
+This builds the CLI from the current checkout and installs it to
+`~/.local/bin/hivemind`. That is deliberate, not cargo's default install root
+(`~/.cargo/bin`): on Gas Town rigs `~/.local/bin` comes first on `$PATH`, so
+installing to `~/.cargo/bin` instead gets silently shadowed by whatever is
+already sitting in `~/.local/bin` — `make install` "succeeds" but `hivemind`
+on PATH keeps resolving a stale binary (this is exactly how the fleet ran a
+two-week-old build while master kept moving, hivemind-zdsh.7). Re-run `make
+install` after every rebase or pull, and confirm with `--version` — the sha
+suffix makes a stale binary visible instead of silent.
 
-```bash
-cargo build
-cp ./target/debug/hivemind ~/.local/bin/hivemind
-```
+To install a specific ref (e.g. `origin/master`) without checking it out —
+useful for a script or dog order that shouldn't disturb the caller's own
+checkout — use `scripts/install-local.sh [ref]` instead; it builds the ref
+in a disposable git worktree and installs to the same `~/.local/bin`.
 
-If `hivemind` is not installed on `PATH`, replace `hivemind` in the examples
-below with `./target/debug/hivemind` from the repository root.
+If `~/.local/bin` is not on your `$PATH`, add it. If `hivemind` is not
+installed on `PATH` at all, replace `hivemind` in the examples below with
+`./target/debug/hivemind` from the repository root.
 
 ### Claude Code
 

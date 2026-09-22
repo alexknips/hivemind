@@ -22,8 +22,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Exact commit this image is built from. .dockerignore excludes .git from
+# the build context, so build.rs can't `git rev-parse` here — CI and
+# scripts/cell-update.sh both pass it explicitly instead (hivemind-zdsh.7).
+ARG GIT_SHA=unknown
+ENV HIVEMIND_BUILD_SHA=$GIT_SHA
+
 # Cache dependency compilation separately from application code
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs ./
 RUN mkdir -p src && \
     echo "fn main() {}" > src/main.rs && \
     echo "" > src/lib.rs && \

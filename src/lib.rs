@@ -28,3 +28,13 @@ pub(crate) mod util;
 pub use error::{
     CliError, CommandError, HivemindError, LedgerError, ProjectorError, QueryError, Result,
 };
+
+/// Commit this binary was built from (short sha), embedded by `build.rs`.
+/// "unknown" only when built outside any git checkout with no
+/// `HIVEMIND_BUILD_SHA` override (e.g. a stray source tarball).
+pub const BUILD_SHA: &str = env!("HIVEMIND_BUILD_SHA");
+
+/// `<cargo semver>+<build sha>` — what `--version` and `/v1/version` report.
+/// Cargo.toml's bare semver only moves on a tagged release; this suffix is
+/// what makes every build between releases distinguishable (hivemind-zdsh.7).
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("HIVEMIND_BUILD_SHA"));

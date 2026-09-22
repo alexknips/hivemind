@@ -232,6 +232,17 @@ fn backend_healthy(backend: &ApiBackend) -> bool {
     }
 }
 
+/// Unauthenticated like `/v1/health`: the deployed build is not tenant data,
+/// and the whole point is letting a freshness check confirm what's running
+/// without first needing a token (hivemind-zdsh.7).
+pub(super) async fn version_handler() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "version": crate::VERSION,
+        "cargo_version": env!("CARGO_PKG_VERSION"),
+        "sha": crate::BUILD_SHA,
+    }))
+}
+
 pub(super) async fn post_decisions_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
