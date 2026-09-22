@@ -45,6 +45,41 @@ decision id is known, emit `decision.superseded` with the same actor identity.
 If it is not known, do not invent an id; make the supersession relationship clear
 in the new decision rationale.
 
+## Capture Once, At One Granularity
+
+A capture-worthy exchange can span one message or a whole session, and can
+carry one choice or several — a numbered list of design answers, several
+linked decisions made together. Before your first `decision.capture` for that
+exchange, decide its shape and hold it for the rest of the exchange:
+
+- **One decision** when several answers only make sense together as a single
+  design; the rationale spells out each part inline.
+- **Several decisions** when each answer has its own options and chosen
+  option and could later be superseded, accepted, or queried on its own.
+
+Never do both for the same exchange. A bundled capture followed by per-item
+captures of the same content — or per-item captures followed by a rollup that
+just restates them — is a duplicate recording of one decision, not two
+decisions.
+
+Before capturing, check whether the ground is already recorded — not only to
+verify your own write afterward (step 6 below). This matters most at the
+start of a session, after a restart, or when resuming a conversation someone
+else may have already captured pieces of: your own transcript does not carry
+a prior session's writes, and `query recall` is not scoped to your own actor
+by default, so it surfaces decisions any actor already recorded. This is a
+deterministic free-text lookup, not the similarity/ranking/inference this
+skill otherwise avoids:
+
+```bash
+hivemind --hivemind-dir "$HIVEMIND_DIR" query recall "<free-text description of what you're about to capture>"
+```
+
+or, if the `hivemind-context` plugin is installed, its fluent
+`/hivemind-context:recall "<free text>"` verb. A hit that already covers this
+ground means: don't capture it again — extend it with new evidence, accept or
+reject it, or supersede it, using the existing decision id.
+
 ## Capture Workflow
 
 Use the HiveMind CLI as the write transport. Skills improve recall, but the

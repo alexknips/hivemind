@@ -59,7 +59,17 @@ Do NOT call this for synthetic test data or routing chatter. Do not invoke
   session nudges, agent assignment, or queue plumbing.
 - Routine implementation progress, todos, code formatting, branch names, status
   reports, or private scratch reasoning.
-- Reworded duplicates of a capture already made in the same context.
+- Reworded duplicates of a capture already made in the same context — this
+  includes a rollup that restates choices already captured individually, and
+  individual captures of choices already captured as one bundled decision.
+  Decide once, per exchange, whether it is one decision or several, and never
+  capture it both ways.
+
+Before nudging a capture, and especially at the start of a session, after a
+restart, or when resuming a conversation someone else may have already
+captured pieces of, check `hivemind-context`'s `recall` for the topic — your
+own transcript does not carry a prior session's writes. A hit that already
+covers this ground means: don't nudge another capture.
 
 If the signal is ambiguous, keep working and wait for a clearer decision,
 evidence, hypothesis, or blocker. Never infer importance with search,
