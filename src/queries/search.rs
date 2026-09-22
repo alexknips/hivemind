@@ -849,8 +849,8 @@ fn collect_graph_search_results(
                     option_ids: option_ids.clone(),
                     evidence_ids: evidence_ids.clone(),
                     hypotheses: hypotheses.clone(),
-                    quote: quote.clone(),
-                    question: question.clone(),
+                    quote: quote.clone(), // ubs:ignore: clone necessary — building owned DecisionView
+                    question: question.clone(), // ubs:ignore: clone necessary — building owned DecisionView
                 },
                 rank: match_info.rank,
                 matched_fields: match_info.matched_fields,
