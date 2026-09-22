@@ -613,6 +613,8 @@ project for non-coders, anyone registers, parent const";
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect_err("run-on title over the cap must be rejected");
     let message = error.to_string();
@@ -644,6 +646,8 @@ fn propose_decision_rejects_title_at_max_len_plus_one() {
         still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],
+        quote: None,
+        question: None,
     });
     assert!(
         result.is_err(),
@@ -674,6 +678,8 @@ fn propose_decision_accepts_title_at_exactly_max_len() {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect("title exactly at the cap must be accepted");
 }
@@ -700,6 +706,8 @@ fn propose_decision_rejects_multi_sentence_title() {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect_err("a title with two sentences must be rejected");
     assert!(
@@ -732,6 +740,8 @@ fn propose_decision_rejects_numbered_list_title() {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect_err("a numbered-list title must be rejected");
     assert!(
@@ -764,6 +774,8 @@ fn propose_decision_accepts_title_with_single_trailing_period_and_version_dots()
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect("a single trailing period plus version dots must be accepted");
 }
@@ -789,6 +801,8 @@ fn supersede_rejects_new_title_over_max_length() {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect("decision");
 
