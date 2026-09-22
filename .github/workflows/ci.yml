@@ -245,6 +245,20 @@ jobs:
         # bypasses the empty contract via UBS's extension-hint fallback. Drop this
         # flag once upstream ships/repairs contract.json.
         #
+        # --no-cargo (mayor scope-add on hivemind-zdsh.7, 2026-09-22): skips
+        # every cargo phase, including the audit/deny/udeps/outdated category
+        # this step's cargo-audit install used to feed — polecats were
+        # copying this command verbatim to reproduce locally and eating a
+        # cold `cargo clippy --all-features` kuzu build (4-60 min) for a
+        # category they didn't need. Side effect: category 14 (dependency
+        # hygiene) no longer runs here at all, so the "Advisories found by
+        # cargo-audit" finding described below never fires and
+        # --baseline/--new-only is currently a dormant no-op for this step.
+        # Left in place rather than deleted: it costs nothing to keep and
+        # resumes working unchanged if --no-cargo is ever dropped. The
+        # dependency-audit job above is unaffected either way — it runs its
+        # own independent `cargo audit` and is the real vulnerability gate.
+        #
         # --baseline=.github/ubs-baseline.json --new-only (hivemind-eako.3):
         # now that cargo-audit runs here, category 14 (dependency hygiene)
         # reports every `cargo audit` line matching "Vulnerability|RUSTSEC" as
@@ -278,7 +292,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ubs --ci --only=rust --include-ext=rs --format=json \
+          ubs --ci --only=rust --include-ext=rs --no-cargo --format=json \
             --baseline=.github/ubs-baseline.json --new-only \
             --report-json=/tmp/ubs-critical-summary.json . >/dev/null
           criticals="$(jq -r '.totals.critical // 0' /tmp/ubs-critical-summary.json)"
@@ -307,22 +321,26 @@ jobs:
       # runtime panic surfaces (hivemind-gofiy), loop allocation inventory (hivemind-41n8s).
       - name: Run UBS warning baseline scan
         # --include-ext=rs: see hivemind-0qwf comment on the critical-scan step above.
+        # --no-cargo: see the critical-scan step above (hivemind-zdsh.7 mayor
+        # scope-add) — same reasoning applies here.
         #
         # `|| true` on the ubs invocation (hivemind-eako.3): this step only
         # gates on .totals.warning, but ubs's own exit code reflects
-        # .totals.critical too, and this job now installs cargo-audit (see
-        # the critical-scan step above), so this step's un-suppressed
-        # category-14 scan sees the same 12 allow-listed advisories as
-        # criticals and ubs itself exits 1 -- which, under `set -e`, aborted
-        # this step before the warnings check below ever ran. This step
-        # doesn't use --baseline/--new-only (it has no reason to filter
-        # criticals), so it tolerates that nonzero exit and judges the run
-        # solely by the warning count it actually wrote to the report file.
+        # .totals.critical too. Historically (before --no-cargo) this job
+        # installed cargo-audit and this step's un-suppressed category-14 scan
+        # saw the same 12 allow-listed advisories as criticals and ubs itself
+        # exited 1 -- which, under `set -e`, aborted this step before the
+        # warnings check below ever ran. --no-cargo now skips category 14
+        # entirely, so that specific cause is moot, but `|| true` stays as a
+        # general safeguard: this step doesn't use --baseline/--new-only (it
+        # has no reason to filter criticals) and judges the run solely by the
+        # warning count it actually wrote to the report file, regardless of
+        # ubs's own exit code.
         shell: bash
         run: |
           set -euo pipefail
           baseline_warnings=308
-          ~/.local/bin/ubs --ci --only=rust --include-ext=rs --report-json=/tmp/ubs-warning-summary.json . || true
+          ~/.local/bin/ubs --ci --only=rust --include-ext=rs --no-cargo --report-json=/tmp/ubs-warning-summary.json . || true
           warnings="$(jq -r '.totals.warning' /tmp/ubs-warning-summary.json)"
           if [ "${warnings}" -gt "${baseline_warnings}" ]; then
             echo "UBS warning count grew from ${baseline_warnings} to ${warnings}."

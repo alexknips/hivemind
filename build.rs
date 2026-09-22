@@ -34,9 +34,7 @@ fn main() {
 }
 
 fn short(sha: &str) -> String {
-    let sha = sha.trim();
-    let len = sha.len().min(12);
-    sha[..len].to_string()
+    sha.trim().chars().take(12).collect()
 }
 
 fn git_head_sha() -> Option<String> {
