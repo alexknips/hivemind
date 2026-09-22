@@ -485,6 +485,7 @@ project for non-coders, anyone registers, parent const";
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -515,6 +516,7 @@ fn propose_decision_rejects_title_at_max_len_plus_one() {
         option_labels: &[],
         chosen_option_id: None,
         decided_by: None,
+        still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],
     });
@@ -544,6 +546,7 @@ fn propose_decision_accepts_title_at_exactly_max_len() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -569,6 +572,7 @@ fn propose_decision_rejects_multi_sentence_title() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -600,6 +604,7 @@ fn propose_decision_rejects_numbered_list_title() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -631,6 +636,7 @@ fn propose_decision_accepts_title_with_single_trailing_period_and_version_dots()
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
@@ -655,6 +661,7 @@ fn supersede_rejects_new_title_over_max_length() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
         })
