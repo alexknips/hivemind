@@ -12,7 +12,8 @@ use crate::events::{
 use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
 use super::{
-    normalize_topic_key, Commands, DecisionProposalInput, SupersedeInput, MAX_TOPIC_KEY_LEN,
+    normalize_topic_key, Commands, DecisionProposalInput, SupersedeInput, MAX_TITLE_LEN,
+    MAX_TOPIC_KEY_LEN,
 };
 
 #[test]
@@ -452,6 +453,229 @@ fn propose_decision_rejects_mismatched_option_labels_length() {
         evidence_ids: &[],
     });
     assert!(result.is_err());
+}
+
+#[test]
+fn propose_decision_rejects_six_clause_run_on_title() {
+    // hivemind-zdsh.12: the actual offending title from decision-04ea64f9 (mayor audit
+    // 2026-09-20..22), a 200+ character six-clause run-on. It has no terminal punctuation
+    // at all -- length alone is what must reject it.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option");
+
+    let run_on_title = "Projects model: one project per decision (the common parent when a \
+change spans two), visible personal projects, checked-in nearest-wins markers, current \
+project for non-coders, anyone registers, parent const";
+    assert!(
+        run_on_title.chars().count() > MAX_TITLE_LEN,
+        "fixture must actually exceed the cap to exercise the rejection"
+    );
+
+    let error = commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: run_on_title,
+            rationale: "rationale",
+            topic_keys: &["Core".to_owned()],
+            option_ids: &[option_id],
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
+        .expect_err("run-on title over the cap must be rejected");
+    let message = error.to_string();
+    assert!(
+        message.contains(&MAX_TITLE_LEN.to_string()),
+        "error must name the rule (the 120-char cap): {message}"
+    );
+}
+
+#[test]
+fn propose_decision_rejects_title_at_max_len_plus_one() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option");
+
+    let title: String = "x".repeat(MAX_TITLE_LEN + 1);
+    let result = commands.propose_decision(DecisionProposalInput {
+        actor_id: "actor:alice",
+        title: &title,
+        rationale: "rationale",
+        topic_keys: &["Core".to_owned()],
+        option_ids: &[option_id],
+        option_labels: &[],
+        chosen_option_id: None,
+        decided_by: None,
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+    });
+    assert!(
+        result.is_err(),
+        "title one char over the cap must be rejected"
+    );
+}
+
+#[test]
+fn propose_decision_accepts_title_at_exactly_max_len() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option");
+
+    let title: String = "x".repeat(MAX_TITLE_LEN);
+    commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: &title,
+            rationale: "rationale",
+            topic_keys: &["Core".to_owned()],
+            option_ids: &[option_id],
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
+        .expect("title exactly at the cap must be accepted");
+}
+
+#[test]
+fn propose_decision_rejects_multi_sentence_title() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option");
+
+    let error = commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Use SQLite for slice 1. Migrate to Postgres later.",
+            rationale: "rationale",
+            topic_keys: &["Core".to_owned()],
+            option_ids: &[option_id],
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
+        .expect_err("a title with two sentences must be rejected");
+    assert!(
+        error.to_string().contains("single sentence"),
+        "error must name the rule: {error}"
+    );
+}
+
+#[test]
+fn propose_decision_rejects_numbered_list_title() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option");
+
+    // Parenthesis-style markers ("1)"/"2)"), not periods, so this exercises the
+    // numbered-list rule specifically rather than tripping the sentence-count rule first.
+    let error = commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "1) Use SQLite 2) Add WAL mode",
+            rationale: "rationale",
+            topic_keys: &["Core".to_owned()],
+            option_ids: &[option_id],
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
+        .expect_err("a numbered-list title must be rejected");
+    assert!(
+        error.to_string().contains("numbered list"),
+        "error must name the rule: {error}"
+    );
+}
+
+#[test]
+fn propose_decision_accepts_title_with_single_trailing_period_and_version_dots() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option");
+
+    // Guards against false positives: a normal trailing period, and non-terminal periods
+    // inside a version number ("v1.2.3"), must not be mistaken for multiple sentences.
+    commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Ship v1.2.3 to prod.",
+            rationale: "rationale",
+            topic_keys: &["Core".to_owned()],
+            option_ids: &[option_id],
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
+        .expect("a single trailing period plus version dots must be accepted");
+}
+
+#[test]
+fn supersede_rejects_new_title_over_max_length() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option");
+    let old_decision_id = commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Decision A",
+            rationale: "rationale",
+            topic_keys: &["Core".to_owned()],
+            option_ids: &[option_id],
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+        })
+        .expect("decision");
+
+    let new_title: String = "y".repeat(MAX_TITLE_LEN + 1);
+    let result = commands.supersede(SupersedeInput {
+        actor_id: "actor:alice",
+        old_decision_id: &old_decision_id,
+        new_title: &new_title,
+        new_rationale: "New rationale",
+        topic_keys: &[],
+        option_labels: &["Replacement".to_owned()],
+        chosen_option_label: None,
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+    });
+    assert!(
+        result.is_err(),
+        "supersede's new_title must honor the same cap as propose_decision's title"
+    );
 }
 
 #[test]

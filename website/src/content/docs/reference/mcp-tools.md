@@ -27,7 +27,7 @@ Record a decision with rationale, topic keys, and at least one option. Defaults 
 |-----------|------|----------|-------------|
 | `options` | object[] | ✓ |  |
 | `rationale` | string | ✓ |  |
-| `title` | string | ✓ |  |
+| `title` | string | ✓ | A name, not a summary: one sentence, at most 120 characters. Longer reasoning goes in `rationale`. |
 | `topic_keys` | string[] | ✓ |  |
 | `actor_id` | string | — | Optional capturing actor override. Defaults to `agent:<tool>:<name>`. |
 | `chosen_option_label` | string | — | Label of the option that was accepted; must match one of `options[].label`. Setting this means the decision was already made — see `still_proposed` to keep it open instead. |
@@ -89,7 +89,7 @@ Propose a replacement decision and mark it as superseding an old decision. Wraps
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `rationale` | string | ✓ |  |
-| `title` | string | ✓ |  |
+| `title` | string | ✓ | A name, not a summary: one sentence, at most 120 characters. Longer reasoning goes in `rationale`. |
 | `actor_id` | string | — | Superseding actor. Defaults to `agent:<tool>:<name>` when omitted. |
 | `chosen_option_label` | string | — |  |
 | `description` | string | — | Free-text match for the decision to supersede. Required when `old_decision_id` is omitted. |

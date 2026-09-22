@@ -29,6 +29,9 @@ pub const MAX_TOPIC_KEY_LEN: usize = 64;
 pub const MIN_PROJECT_HANDLE_LEN: usize = 2;
 pub const MAX_PROJECT_HANDLE_LEN: usize = 40;
 pub const PERSONAL_PROJECT_HANDLE_PREFIX: &str = "personal:";
+/// A title is a name, not a summary: one short sentence a reader can scan in a list.
+/// Longer reasoning belongs in `rationale`, which has no such cap.
+pub const MAX_TITLE_LEN: usize = 120;
 
 #[derive(Debug, Clone)]
 pub struct DecisionProposalEventUuids {
@@ -534,7 +537,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
     pub fn propose_decision(&self, input: DecisionProposalInput<'_>) -> Result<DecisionId> {
         require_valid_actor_id(input.actor_id)?;
-        require_non_empty("title", input.title)?;
+        validate_title("title", input.title)?;
         require_non_empty("rationale", input.rationale)?;
 
         if input.option_ids.is_empty() {
@@ -640,7 +643,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     ) -> Result<DecisionProposalEventIds> {
         require_valid_actor_id(input.actor_id)?;
         require_non_empty("decision_id", decision_id)?;
-        require_non_empty("title", input.title)?;
+        validate_title("title", input.title)?;
         require_non_empty("rationale", input.rationale)?;
 
         if input.option_ids.is_empty() {
@@ -1000,7 +1003,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     pub fn supersede(&self, input: SupersedeInput<'_>) -> Result<SupersedeOutcome> {
         require_valid_actor_id(input.actor_id)?;
         require_non_empty("old_decision_id", input.old_decision_id)?;
-        require_non_empty("new_title", input.new_title)?;
+        validate_title("new_title", input.new_title)?;
         require_non_empty("new_rationale", input.new_rationale)?;
         require_optional_non_empty("chosen_option_label", input.chosen_option_label)?;
 
@@ -1929,6 +1932,68 @@ fn validate_project_handle(handle: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// A decision title is a name, not a summary: at most `MAX_TITLE_LEN` characters, one
+/// sentence, no numbered list. Longer reasoning belongs in `rationale`. Rejects rather than
+/// truncates, so a run-on never silently loses its tail (hivemind-zdsh.12).
+fn validate_title(field: &'static str, title: &str) -> Result<()> {
+    require_non_empty(field, title)?;
+
+    let trimmed = title.trim();
+    let char_count = trimmed.chars().count();
+    if char_count > MAX_TITLE_LEN {
+        return Err(CommandError::Validation(format!(
+            "{field} must be at most {MAX_TITLE_LEN} characters (got {char_count}); it is a name, not a summary — move the rest to rationale"
+        ))
+        .into());
+    }
+
+    let terminal_marks = count_terminal_punctuation(trimmed);
+    if terminal_marks > 1 {
+        return Err(CommandError::Validation(format!(
+            "{field} must be a single sentence: found {terminal_marks} terminal punctuation marks ('.', '!', '?'); split into title + rationale"
+        ))
+        .into());
+    }
+
+    if looks_like_numbered_list(trimmed) {
+        return Err(CommandError::Validation(format!(
+            "{field} must not be a numbered list (found two or more '1.'/'2)'-style markers); move list items to rationale"
+        ))
+        .into());
+    }
+
+    Ok(())
+}
+
+/// Counts '.'/'!'/'?' that sit at a sentence boundary (end of string, or followed by
+/// whitespace) — so decimal/version punctuation like "v1.2.3" does not count as multiple
+/// sentences.
+fn count_terminal_punctuation(text: &str) -> usize {
+    let chars: Vec<char> = text.chars().collect();
+    chars
+        .iter()
+        .enumerate()
+        .filter(|(i, &c)| {
+            matches!(c, '.' | '!' | '?') && chars.get(i + 1).is_none_or(|next| next.is_whitespace())
+        })
+        .count()
+}
+
+/// True when the text contains two or more whitespace-delimited numbered-list markers, e.g.
+/// "1. Do X 2. Do Y" — a title enumerating several clauses instead of naming one decision.
+fn looks_like_numbered_list(text: &str) -> bool {
+    let markers = text
+        .split_whitespace()
+        .filter(|token| {
+            let stripped = token.trim_end_matches(['.', ')', ':']);
+            !stripped.is_empty()
+                && stripped != *token
+                && stripped.bytes().all(|b| b.is_ascii_digit())
+        })
+        .count();
+    markers >= 2
 }
 
 fn generate_entity_id(prefix: &str) -> String {

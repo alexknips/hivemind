@@ -21,7 +21,7 @@
       "required": ["decision_id", "title", "rationale", "topic_keys", "option_ids", "chosen_option_id", "hypothesis_ids", "evidence_ids"],
       "properties": {
         "decision_id": { "$ref": "#/$defs/id" },
-        "title": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
         "rationale": { "type": "string", "minLength": 1 },
         "topic_keys": { "$ref": "#/$defs/id_array" },
         "option_ids": { "$ref": "#/$defs/id_array" },

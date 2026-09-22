@@ -373,7 +373,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "required": ["title", "rationale", "topic_keys", "options"],
                 "properties": {
                     "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<name>`." },
-                    "title": { "type": "string" },
+                    "title": { "type": "string", "maxLength": 120, "description": "A name, not a summary: one sentence, at most 120 characters. Longer reasoning goes in `rationale`." },
                     "rationale": { "type": "string" },
                     "topic_keys": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
                     "options": {
@@ -446,7 +446,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "old_decision_id": { "type": "string" },
                     "description": { "type": "string", "description": "Free-text match for the decision to supersede. Required when `old_decision_id` is omitted." },
                     "topic": { "type": "string", "description": "Optional topic_key filter narrowing the `description` match." },
-                    "title": { "type": "string" },
+                    "title": { "type": "string", "maxLength": 120, "description": "A name, not a summary: one sentence, at most 120 characters. Longer reasoning goes in `rationale`." },
                     "rationale": { "type": "string" },
                     "topic_keys": { "type": "array", "items": { "type": "string" } },
                     "options": {
