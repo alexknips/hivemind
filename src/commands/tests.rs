@@ -188,6 +188,7 @@ fn propose_decision_stores_paired_quote_and_question() {
             option_labels: &[],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             quote: Some("1a"),
@@ -228,6 +229,7 @@ fn propose_decision_rejects_quote_without_question() {
             option_labels: &[],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             quote: Some("1a"),
@@ -260,6 +262,7 @@ fn propose_decision_rejects_question_without_quote() {
             option_labels: &[],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             quote: None,
@@ -464,6 +467,8 @@ fn propose_decision_chosen_option_defaults_to_self_accepted() {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect("propose");
 
@@ -536,6 +541,8 @@ fn propose_decision_still_proposed_conflicts_with_decided_by() {
         still_proposed: true,
         hypothesis_ids: &[],
         evidence_ids: &[],
+        quote: None,
+        question: None,
     });
     assert!(
         result.is_err(),
