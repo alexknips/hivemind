@@ -191,10 +191,17 @@ pub enum ProjectCommand {
     /// List registered (shared) projects, paged. Personal projects never
     /// appear here — resolve one directly with `project show`.
     List(ProjectListArgs),
-    /// Show one project by handle. An unknown handle is a successful
-    /// envelope with outcome `not_found`, never an error. A `personal:<actor>`
-    /// address always resolves to a derived project.
+    /// Show one project by handle, or the actor's current-project setting
+    /// with `--current`. An unknown handle is a successful envelope with
+    /// outcome `not_found`, never an error. A `personal:<actor>` address
+    /// always resolves to a derived project.
     Show(ProjectShowArgs),
+    /// Set or clear the actor's current project: a one-time, per-machine
+    /// setting consulted (below any folder marker or rig anchor) for
+    /// captures with no repo context, such as chat. Local to this
+    /// `--hivemind-dir` and actor — never a ledger fact. Setting an
+    /// unregistered handle is refused with a register hint.
+    Use(ProjectUseArgs),
 }
 
 #[derive(Debug, Clone, Args)]
@@ -284,8 +291,24 @@ pub struct ProjectListArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct ProjectShowArgs {
-    /// Project handle, or a personal address (personal:<actor-id>).
-    pub handle: String,
+    /// Project handle, or a personal address (personal:<actor-id>). Omit
+    /// this and pass --current instead to show the current-project setting.
+    pub handle: Option<String>,
+
+    /// Show the actor's current-project setting instead of a specific handle.
+    #[arg(long)]
+    pub current: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProjectUseArgs {
+    /// Handle to set as the current project. Omit this and pass --clear
+    /// instead to clear the setting.
+    pub handle: Option<String>,
+
+    /// Clear the current-project setting instead of setting it.
+    #[arg(long)]
+    pub clear: bool,
 }
 
 #[derive(Debug, Clone, Args)]

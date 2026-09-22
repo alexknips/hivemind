@@ -4471,6 +4471,172 @@ fn project_registry_register_link_anchor_list_show_round_trip_postgres() -> CliT
     project_registry_register_link_anchor_list_show_round_trip_body(&backend)
 }
 
+fn project_use_and_show_current_round_trip_body(backend: &TestBackend) -> CliTestResult {
+    let tenant_label = backend.tenant.clone().unwrap_or_else(|| "local".to_owned());
+
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &["--actor", "human:alice", "project", "register", "billing"],
+    )))?;
+
+    // Nothing set yet: show --current reports no handle, not an error --
+    // omission is data (same honesty rule as `show` on an unknown handle).
+    let unset_output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--json",
+            "--actor",
+            "human:alice",
+            "project",
+            "show",
+            "--current",
+        ],
+    )))?;
+    ensure_json_eq(
+        &serde_json::from_str(&unset_output)?,
+        serde_json::json!({"actor": "human:alice", "tenant": tenant_label}),
+        "project show --current golden (unset)",
+    )?;
+
+    // Setting an unregistered handle is refused with a register hint.
+    let refusal = run(&Cli::parse_from(cli_args(
+        backend,
+        &["--actor", "human:alice", "project", "use", "nonexistent"],
+    )))
+    .expect_err("unregistered handle is refused");
+    assert!(refusal
+        .to_string()
+        .contains("hivemind project register nonexistent"));
+
+    let use_output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--json",
+            "--actor",
+            "human:alice",
+            "project",
+            "use",
+            "billing",
+        ],
+    )))?;
+    ensure_json_eq(
+        &serde_json::from_str(&use_output)?,
+        serde_json::json!({"actor": "human:alice", "tenant": tenant_label, "handle": "billing"}),
+        "project use golden",
+    )?;
+
+    let show_current_output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--json",
+            "--actor",
+            "human:alice",
+            "project",
+            "show",
+            "--current",
+        ],
+    )))?;
+    ensure_json_eq(
+        &serde_json::from_str(&show_current_output)?,
+        serde_json::json!({"actor": "human:alice", "tenant": tenant_label, "handle": "billing"}),
+        "project show --current golden (set)",
+    )?;
+
+    // A different actor's setting is independent.
+    let other_actor_output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--json",
+            "--actor",
+            "human:bob",
+            "project",
+            "show",
+            "--current",
+        ],
+    )))?;
+    ensure_json_eq(
+        &serde_json::from_str(&other_actor_output)?,
+        serde_json::json!({"actor": "human:bob", "tenant": tenant_label}),
+        "project show --current golden (other actor, unset)",
+    )?;
+
+    let clear_output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--json",
+            "--actor",
+            "human:alice",
+            "project",
+            "use",
+            "--clear",
+        ],
+    )))?;
+    ensure_json_eq(
+        &serde_json::from_str(&clear_output)?,
+        serde_json::json!({"actor": "human:alice", "tenant": tenant_label}),
+        "project use --clear golden",
+    )?;
+
+    let after_clear_output = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--json",
+            "--actor",
+            "human:alice",
+            "project",
+            "show",
+            "--current",
+        ],
+    )))?;
+    ensure_json_eq(
+        &serde_json::from_str(&after_clear_output)?,
+        serde_json::json!({"actor": "human:alice", "tenant": tenant_label}),
+        "project show --current golden (after clear)",
+    )?;
+
+    // Mutually exclusive flags are refused, not silently resolved one way.
+    let both = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "project",
+            "use",
+            "billing",
+            "--clear",
+        ],
+    )));
+    assert!(both.is_err());
+    let neither = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "project",
+            "show",
+            "billing",
+            "--current",
+        ],
+    )));
+    assert!(neither.is_err());
+
+    Ok(())
+}
+
+#[test]
+fn project_use_and_show_current_round_trip() -> CliTestResult {
+    project_use_and_show_current_round_trip_body(&TestBackend::sqlite("project-use"))
+}
+
+#[test]
+fn project_use_and_show_current_round_trip_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("project-use-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    project_use_and_show_current_round_trip_body(&backend)
+}
+
 #[test]
 fn emit_ingest_batch_classified_plugin_path_round_trip() {
     use crate::events::EventType;

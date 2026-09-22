@@ -1,4 +1,5 @@
 mod args;
+mod current_project;
 mod render;
 pub mod run;
 

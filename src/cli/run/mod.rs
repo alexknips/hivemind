@@ -39,10 +39,10 @@ use crate::queries::{
     ChangedSinceRequest, DecisionBlockerFilters, DecisionLogExport, DecisionLogRequest,
     DecisionStatus, DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
     HistoryFilterRequest, MisfiledScanRequest, NeighborhoodRequest, ProjectListRequest,
-    QualityTier, QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest, RecentActivityRequest,
-    RecentDecisionEntry, RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome,
-    ResolvedCandidate, ScanQualityRequest, ScorerConfig, ScorerReason, SearchDecisionRequest,
-    SituationalRequest, SupersessionSpeed,
+    ProjectOutcome, QualityTier, QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest,
+    RecentActivityRequest, RecentDecisionEntry, RecentDecisionFilterRequest,
+    RecentDecisionsRequest, ResolveOutcome, ResolvedCandidate, ScanQualityRequest, ScorerConfig,
+    ScorerReason, SearchDecisionRequest, SituationalRequest, SupersessionSpeed,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -66,29 +66,31 @@ use super::args::{
     EmitDecisionProposedArgs, EmitRelationKind, ExportArgs, GraphBackend, ImportArgs,
     ImportCommand, ImportConnectorCommand, ImportDocumentsArgs, IngestArgs, IngestCommand,
     IngestSlackThreadArgs, MapArgs, McpArgs, ProjectAnchorArgs, ProjectArgs, ProjectCommand,
-    ProjectLinkArgs, ProjectListArgs, ProjectRegisterArgs, ProjectShowArgs, QualityScanArgs,
-    QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand,
-    QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs,
-    QueryQualityTier, QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
-    QuerySearchDecisionsArgs, QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs,
-    SlackAppArgs, SlackAppCommand, SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs,
-    TuiArgs,
+    ProjectLinkArgs, ProjectListArgs, ProjectRegisterArgs, ProjectShowArgs, ProjectUseArgs,
+    QualityScanArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs,
+    QueryCommand, QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs,
+    QueryHistoryFilterArgs, QueryQualityTier, QueryRecentActivityArgs, QueryRecentDecisionsArgs,
+    QueryRelationKind, QuerySearchDecisionsArgs, QuerySituationalArgs, QuickstartArgs, ReviewArgs,
+    ServeArgs, SlackAppArgs, SlackAppCommand, SupersedeArgs, TenantArgs, TenantCommand,
+    TenantCreateArgs, TuiArgs,
 };
+use super::current_project::CurrentProjectStore;
 use super::render::{
-    append_truncation_notice, decision_status_label, format_disagree_output, format_export_output,
-    format_import_output, format_json_value, format_output, format_prepare_documents_output,
-    format_project_anchor_output, format_project_link_output, format_project_list_output,
-    format_project_register_output, format_project_show_output, format_query_response,
-    format_review_output, format_supersede_output, render_active_blockers_summary,
-    render_added_since_summary, render_blocker_notifications_summary, render_changed_since_summary,
+    append_truncation_notice, decision_status_label, format_current_project_output,
+    format_disagree_output, format_export_output, format_import_output, format_json_value,
+    format_output, format_prepare_documents_output, format_project_anchor_output,
+    format_project_link_output, format_project_list_output, format_project_register_output,
+    format_project_show_output, format_query_response, format_review_output,
+    format_supersede_output, render_active_blockers_summary, render_added_since_summary,
+    render_blocker_notifications_summary, render_changed_since_summary,
     render_compact_view_summary, render_decision_brief_summary, render_decision_list_summary,
     render_decision_summary, render_dot, render_misfiled_scan_summary, render_neighborhood_summary,
     render_read_only_export_summary, render_recall_summary, render_recent_activity_summary,
     render_recent_decisions_summary, render_resolve_outcome_summary, render_scan_quality_summary,
     render_scored_decision_summary, render_search_summary, render_situational_summary,
-    render_supersession_summary, DisagreeCommandOutput, ExportReport, OutputEnvelope,
-    ProjectAnchorOutput, ProjectLinkOutput, ProjectRegisterOutput, ReviewActionOutput,
-    ReviewCommandOutput, SupersedeCommandOutput,
+    render_supersession_summary, CurrentProjectOutput, DisagreeCommandOutput, ExportReport,
+    OutputEnvelope, ProjectAnchorOutput, ProjectLinkOutput, ProjectRegisterOutput,
+    ReviewActionOutput, ReviewCommandOutput, SupersedeCommandOutput,
 };
 #[cfg(feature = "shared-backend-postgres")]
 use super::render::{MigrateReport, ParityCheckResult};
@@ -3337,6 +3339,7 @@ fn run_project(cli: &Cli, args: &ProjectArgs) -> Result<String> {
         ProjectCommand::Anchor(anchor_args) => run_project_anchor(cli, anchor_args),
         ProjectCommand::List(list_args) => run_project_list(cli, list_args),
         ProjectCommand::Show(show_args) => run_project_show(cli, show_args),
+        ProjectCommand::Use(use_args) => run_project_use(cli, use_args),
     }
 }
 
@@ -3433,13 +3436,109 @@ fn run_project_list(cli: &Cli, args: &ProjectListArgs) -> Result<String> {
 }
 
 fn run_project_show(cli: &Cli, args: &ProjectShowArgs) -> Result<String> {
+    if args.current {
+        if args.handle.is_some() {
+            return Err(CliError::InvalidInput(
+                "project show takes either a handle or --current, not both".to_owned(),
+            )
+            .into());
+        }
+        return run_project_show_current(cli);
+    }
+
+    let Some(handle) = args.handle.as_deref() else {
+        return Err(CliError::InvalidInput(
+            "project show requires a handle, or --current to show the current-project setting"
+                .to_owned(),
+        )
+        .into());
+    };
+
     let tenant_id = cli_tenant(cli)?;
     let ledger = open_ledger(cli)?;
     let scoped_ledger = TenantScopedLedger::new(&ledger, tenant_id);
 
-    let response = get_project(&scoped_ledger, &args.handle)?;
+    let response = get_project(&scoped_ledger, handle)?;
 
     format_project_show_output(cli.json, &response)
+}
+
+fn run_project_show_current(cli: &Cli) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
+    let store = CurrentProjectStore::new(&cli.hivemind_dir);
+    let handle = store.get(tenant_id.as_str(), cli.actor.trim())?;
+
+    format_current_project_output(
+        cli.json,
+        &CurrentProjectOutput {
+            actor: cli.actor.trim().to_owned(),
+            tenant: tenant_id.as_str().to_owned(),
+            handle,
+        },
+    )
+}
+
+/// Set or clear the actor's current-project setting (`--hivemind-dir`, per
+/// tenant + actor). This is deliberately NOT a ledger write -- Alex, choice
+/// 5a: "local per machine, no fact in the record" -- so `--clear` never
+/// needs the ledger at all. Setting a handle validates it against the
+/// project registry first (same `get_project` read `project show` uses) so
+/// the setting can never point at a typo (A3's refusal rule).
+fn run_project_use(cli: &Cli, args: &ProjectUseArgs) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
+    let actor = cli.actor.trim();
+    let store = CurrentProjectStore::new(&cli.hivemind_dir);
+
+    match (args.handle.as_deref(), args.clear) {
+        (Some(_), true) => Err(CliError::InvalidInput(
+            "project use takes either a handle or --clear, not both".to_owned(),
+        )
+        .into()),
+        (None, false) => Err(CliError::InvalidInput(
+            "project use requires a handle, or --clear to clear the current-project setting"
+                .to_owned(),
+        )
+        .into()),
+        (None, true) => {
+            store.clear(tenant_id.as_str(), actor)?;
+            format_current_project_output(
+                cli.json,
+                &CurrentProjectOutput {
+                    actor: actor.to_owned(),
+                    tenant: tenant_id.as_str().to_owned(),
+                    handle: None,
+                },
+            )
+        }
+        (Some(handle), false) => {
+            let handle = handle.trim();
+            if handle.is_empty() {
+                return Err(
+                    CliError::InvalidInput("project handle must not be empty".to_owned()).into(),
+                );
+            }
+
+            let ledger = open_ledger(cli)?;
+            let scoped_ledger = TenantScopedLedger::new(&ledger, tenant_id.clone());
+            let response = get_project(&scoped_ledger, handle)?;
+            if matches!(response.data, ProjectOutcome::NotFound) {
+                return Err(CliError::InvalidInput(format!(
+                    "no project called '{handle}': run `hivemind project register {handle}` to register it"
+                ))
+                .into());
+            }
+
+            store.set(tenant_id.as_str(), actor, handle)?;
+            format_current_project_output(
+                cli.json,
+                &CurrentProjectOutput {
+                    actor: actor.to_owned(),
+                    tenant: tenant_id.as_str().to_owned(),
+                    handle: Some(handle.to_owned()),
+                },
+            )
+        }
+    }
 }
 
 struct ExportWriteSummary {

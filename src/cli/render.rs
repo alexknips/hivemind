@@ -1378,6 +1378,29 @@ pub(crate) fn format_project_show_output(
     Ok(render_project_outcome_summary(&response.data))
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct CurrentProjectOutput {
+    pub(crate) actor: String,
+    pub(crate) tenant: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) handle: Option<String>,
+}
+
+pub(crate) fn format_current_project_output(
+    as_json: bool,
+    output: &CurrentProjectOutput,
+) -> Result<String> {
+    if as_json {
+        return format_json_value(true, output);
+    }
+    Ok(format!(
+        "actor={}\ttenant={}\thandle={}",
+        output.actor,
+        output.tenant,
+        output.handle.as_deref().unwrap_or("(none)")
+    ))
+}
+
 pub(crate) fn render_project_outcome_summary(outcome: &ProjectOutcome) -> String {
     match outcome {
         ProjectOutcome::NotFound => "outcome=not_found".to_owned(),

@@ -131,10 +131,26 @@ resolve one directly with `project show`.
 
 ```
 hivemind project show <handle>
+hivemind project show --current
 ```
 
 Shows one project by handle, or a personal address
-(`personal:<actor-id>`), which always resolves.
+(`personal:<actor-id>`), which always resolves. `--current` shows the
+actor's current-project setting (see `project use`) instead.
+
+### `project use`
+
+```
+hivemind --actor human:<id> project use <handle>
+hivemind --actor human:<id> project use --clear
+```
+
+Sets or clears the actor's **current project**: a one-time, per-machine
+setting for captures with no repo or folder context (e.g. chat), consulted
+below any folder marker or rig anchor. Local to `--hivemind-dir` and the
+actor — it is never a ledger fact, so setting or clearing it appends no
+event. Setting an unregistered handle is refused with a hint to register it
+first.
 
 ## Emit commands
 
@@ -517,7 +533,7 @@ the known-tenant check on later `--tenant <tenant-id>` opens. See
 [Tenants](#tenants) above for the full contract, including the Postgres
 provisioning route this command does not apply to.
 
-### `project register` / `link` / `unlink` / `anchor` / `list` / `show`
+### `project register` / `link` / `unlink` / `anchor` / `list` / `show` / `use`
 
 ```
 hivemind project register <handle> [--display-name <name>] [--purpose <text>]
@@ -526,11 +542,15 @@ hivemind project unlink --from <handle> --to <handle> --kind <part_of|depends_on
 hivemind project anchor --handle <handle> --kind <folder|rig|jira|linear|github|channel> --value <value>
 hivemind project list [--limit <n>] [--cursor <cursor>]
 hivemind project show <handle>
+hivemind project show --current
+hivemind project use <handle>
+hivemind project use --clear
 ```
 
 Manage the project registry. See [Projects](#projects) above for the full
-contract, including the `personal:<actor-id>` address and the `not_found`
-envelope on `show`.
+contract, including the `personal:<actor-id>` address, the `not_found`
+envelope on `show`, and the actor-local `use`/`show --current`
+current-project setting.
 
 ### `quickstart`
 
