@@ -32,6 +32,10 @@ pub const PERSONAL_PROJECT_HANDLE_PREFIX: &str = "personal:";
 /// A title is a name, not a summary: one short sentence a reader can scan in a list.
 /// Longer reasoning belongs in `rationale`, which has no such cap.
 pub const MAX_TITLE_LEN: usize = 120;
+/// Minimum trimmed length for `rationale` — see `require_readable_rationale`.
+pub const MIN_RATIONALE_CHARS: usize = 20;
+/// Minimum whitespace-separated word count for `rationale` — see `require_readable_rationale`.
+pub const MIN_RATIONALE_WORDS: usize = 4;
 
 #[derive(Debug, Clone)]
 pub struct DecisionProposalEventUuids {
@@ -573,6 +577,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
 
         require_quote_pairing(input.quote, input.question)?;
+        require_readable_rationale(input.rationale, input.quote.is_some())?;
 
         let normalized_topic_keys: Vec<String> = input
             .topic_keys
@@ -704,6 +709,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
 
         require_quote_pairing(input.quote, input.question)?;
+        require_readable_rationale(input.rationale, input.quote.is_some())?;
 
         let normalized_topic_keys: Vec<String> = input
             .topic_keys
@@ -1936,6 +1942,102 @@ fn require_quote_pairing(quote: Option<&str>, question: Option<&str>) -> Result<
         .into());
     }
     Ok(())
+}
+
+/// `rationale` must be readable on its own, without the source conversation — the write-time
+/// half of Alex's finding-6 ruling (hivemind-763i, follow-up to hivemind-zdsh.13's optional
+/// `quote`/`question`): a real minimum length, at least a full sentence's worth of words, and
+/// — unless `quote`/`question` already carry the verbatim answer inline — no bare reference
+/// into a numbered list that exists only in the source chat (the audited "verbatim: 1a, 2 this
+/// seems weird..." shape). `has_quote_pair` must reflect a value already validated by
+/// `require_quote_pairing` (quote and question both present or both absent).
+fn require_readable_rationale(rationale: &str, has_quote_pair: bool) -> Result<()> {
+    let trimmed = rationale.trim();
+
+    if trimmed.chars().count() < MIN_RATIONALE_CHARS {
+        return Err(CommandError::Validation(format!(
+            "rationale must be at least {MIN_RATIONALE_CHARS} characters — a decision's why must be readable without the source conversation, not a stub"
+        ))
+        .into());
+    }
+
+    if trimmed.split_whitespace().count() < MIN_RATIONALE_WORDS {
+        return Err(CommandError::Validation(format!(
+            "rationale must be at least {MIN_RATIONALE_WORDS} words — write a full sentence, not a fragment"
+        ))
+        .into());
+    }
+
+    if !has_quote_pair {
+        if let Some(reference) = find_bare_list_reference(trimmed) {
+            return Err(CommandError::Validation(format!(
+                "rationale references a bare list item ({reference:?}) that only makes sense against a list that isn't in the rationale itself — either write the rationale as self-contained prose, or pair quote with question to carry the verbatim words and the question they answer"
+            ))
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+/// Finds the first enumerated-list-style token in `text`, e.g. `"1a"` or `"2. a"`: a run of
+/// up to 3 digits, bounded by a non-word character (or the string edge) on both sides, that is
+/// followed either directly, or — with a literal `.` and optional spaces — by a single
+/// freestanding letter. Deliberately narrow: "TLS 1.2 support" and "24x7" do not match, since
+/// this targets the shape of a citation into an external numbered list, not any digit near a
+/// letter. A regex-class heuristic, not a parser — some legitimate prose (e.g. a sentence that
+/// both ends in "N." and is immediately followed by a one-letter word) can still trip it; the
+/// `quote`/`question` pair is the escape hatch for a rationale that legitimately needs to carry
+/// one of these tokens.
+fn find_bare_list_reference(text: &str) -> Option<String> {
+    fn is_word_char(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    while i < len {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+
+        let digit_start = i;
+        let mut digit_end = i;
+        while digit_end < len && chars[digit_end].is_ascii_digit() {
+            digit_end += 1;
+        }
+        let before_ok = digit_start == 0 || !is_word_char(chars[digit_start - 1]);
+        i = digit_end;
+
+        if digit_end - digit_start > 3 || !before_ok {
+            continue;
+        }
+
+        // Case A: digit run directly followed by one freestanding letter, e.g. "1a".
+        if digit_end < len && chars[digit_end].is_ascii_alphabetic() {
+            let letter_end = digit_end + 1;
+            if letter_end >= len || !is_word_char(chars[letter_end]) {
+                return Some(chars[digit_start..letter_end].iter().collect());
+            }
+        }
+
+        // Case B: digit run, a period, optional spaces, then one freestanding letter, e.g. "2. a".
+        if digit_end < len && chars[digit_end] == '.' {
+            let mut letter_start = digit_end + 1;
+            while letter_start < len && chars[letter_start] == ' ' {
+                letter_start += 1;
+            }
+            if letter_start < len && chars[letter_start].is_ascii_alphabetic() {
+                let letter_end = letter_start + 1;
+                if letter_end >= len || !is_word_char(chars[letter_end]) {
+                    return Some(chars[digit_start..letter_end].iter().collect());
+                }
+            }
+        }
+    }
+    None
 }
 
 const fn relation_kind_name(relation_kind: RelationKind) -> &'static str {

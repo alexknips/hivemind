@@ -207,7 +207,7 @@ fn propose_decision_fans_out_relation_events_with_causation_linkage() {
         .propose_decision(DecisionProposalInput {
             actor_id: "actor:alice",
             title: "Pick queue strategy",
-            rationale: "Need robust ingestion",
+            rationale: "Need robust ingestion that survives a burst of traffic",
             topic_keys: &["Infra / Queue".to_owned()],
             option_ids: &[option_a.clone(), option_b.clone()],
             option_labels: &["A".to_owned(), "B".to_owned()],
@@ -374,6 +374,132 @@ fn propose_decision_rejects_question_without_quote() {
 }
 
 #[test]
+fn propose_decision_rejects_rationale_shorter_than_the_minimum_length() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    let error = commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Decision with a stub rationale",
+            rationale: "Because yes",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect_err("a too-short rationale must be refused");
+    assert!(
+        error.to_string().contains("must be at least 20 characters"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn propose_decision_rejects_rationale_with_too_few_words() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    let error = commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Decision with a fragment rationale",
+            rationale: "Obviously-the-right-call",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect_err("a rationale with too few words must be refused");
+    assert!(
+        error.to_string().contains("must be at least 4 words"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn propose_decision_rejects_rationale_with_a_bare_list_reference() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    let error = commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Decision citing an external list",
+            rationale: "Per the notes: verbatim 1a, 2. a clearer alternative was rejected",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect_err("a bare list-item reference must be refused without quote/question");
+    assert!(
+        error
+            .to_string()
+            .contains("rationale references a bare list item"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error.to_string().contains("pair quote with question"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn propose_decision_allows_a_list_shaped_rationale_when_quote_and_question_are_given() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Decision citing an external list, explained inline",
+            rationale: "Per the notes: verbatim 1a, 2. a clearer alternative was rejected",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: Some("1a"),
+            question: Some("Should the numbered alternative be adopted instead?"),
+        })
+        .expect("quote/question pair is the escape hatch for a list-shaped rationale");
+}
+
+#[test]
 fn direct_agent_decision_persists_agent_provenance() {
     let dir = std::env::temp_dir().join(format!("hivemind-agent-provenance-{}", Uuid::new_v4()));
     let actor_id = "agent:codex:furiosa";
@@ -441,7 +567,7 @@ fn accept_and_reject_invariant_for_same_actor_is_enforced() {
         .propose_decision(DecisionProposalInput {
             actor_id: "actor:alice",
             title: "Pick one",
-            rationale: "Need progress",
+            rationale: "Need to make progress on this before the deadline",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
             option_labels: &["A".to_owned()],
@@ -996,7 +1122,7 @@ fn supersede_requires_both_decisions_to_exist() {
         .propose_decision(DecisionProposalInput {
             actor_id: "actor:alice",
             title: "Decision A",
-            rationale: "rationale",
+            rationale: "This is a self-contained rationale for the test decision.",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_a],
             option_labels: &["A".to_owned()],
@@ -1014,7 +1140,7 @@ fn supersede_requires_both_decisions_to_exist() {
         .propose_decision(DecisionProposalInput {
             actor_id: "actor:alice",
             title: "Decision B",
-            rationale: "rationale",
+            rationale: "This is a self-contained rationale for the test decision.",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_b],
             option_labels: &["B".to_owned()],
@@ -1049,7 +1175,7 @@ fn disagree_records_reason_and_is_idempotent_for_same_actor() {
         .propose_decision(DecisionProposalInput {
             actor_id: "actor:alice",
             title: "Decision A",
-            rationale: "rationale",
+            rationale: "This is a self-contained rationale for the test decision.",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
             option_labels: &["A".to_owned()],
@@ -1108,7 +1234,7 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
         .propose_decision(DecisionProposalInput {
             actor_id: "actor:alice",
             title: "Decision A",
-            rationale: "rationale",
+            rationale: "This is a self-contained rationale for the test decision.",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
             option_labels: &["A".to_owned()],
@@ -1127,7 +1253,7 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
             actor_id: "actor:alice",
             old_decision_id: &old_decision_id,
             new_title: "Decision B",
-            new_rationale: "New rationale",
+            new_rationale: "New rationale that explains the replacement decision.",
             topic_keys: &[],
             option_labels: &["Replacement".to_owned()],
             chosen_option_label: None,
@@ -1141,7 +1267,7 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
             actor_id: "actor:alice",
             old_decision_id: &old_decision_id,
             new_title: "Decision B",
-            new_rationale: "New rationale",
+            new_rationale: "New rationale that explains the replacement decision.",
             topic_keys: &[],
             option_labels: &["Replacement".to_owned()],
             chosen_option_label: None,
@@ -1192,7 +1318,7 @@ fn first_class_disagree_and_supersede_require_existing_targets() {
             actor_id: "actor:alice",
             old_decision_id: "decision-missing",
             new_title: "Decision B",
-            new_rationale: "New rationale",
+            new_rationale: "New rationale that explains the replacement decision.",
             topic_keys: &["Core".to_owned()],
             option_labels: &["Replacement".to_owned()],
             chosen_option_label: None,
@@ -1214,7 +1340,7 @@ fn attach_evidence_requires_existing_endpoints() {
         .propose_decision(DecisionProposalInput {
             actor_id: "actor:alice",
             title: "Decision A",
-            rationale: "rationale",
+            rationale: "This is a self-contained rationale for the test decision.",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
             option_labels: &["A".to_owned()],
@@ -1608,7 +1734,7 @@ fn propose_decision_normalizes_topic_keys() {
         .propose_decision(DecisionProposalInput {
             actor_id: "actor:alice",
             title: "Normalize topics",
-            rationale: "Keep consistent filters",
+            rationale: "Keep topic filters consistent across every capture surface",
             topic_keys: &[
                 "  Crème brûlée API!!  ".to_owned(),
                 "Ops___SRE   Alerts".to_owned(),

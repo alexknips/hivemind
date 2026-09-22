@@ -39,6 +39,8 @@ struct OptionInput {
 #[derive(Debug, Deserialize)]
 pub(super) struct CaptureDecisionRequest {
     title: String,
+    /// Self-contained why, readable without the source conversation. See
+    /// `require_readable_rationale` on `Commands`.
     rationale: String,
     topic_keys: Vec<String>,
     options: Vec<OptionInput>,
@@ -83,6 +85,8 @@ pub(super) struct DisagreeRequest {
 #[derive(Debug, Deserialize)]
 pub(super) struct SupersedeRequest {
     title: String,
+    /// Self-contained why, readable without the source conversation. See
+    /// `require_readable_rationale` on `Commands`.
     rationale: String,
     #[serde(default)]
     topic_keys: Vec<String>,

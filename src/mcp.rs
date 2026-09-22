@@ -374,7 +374,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<name>`." },
                     "title": { "type": "string", "maxLength": 120, "description": "A name, not a summary: one sentence, at most 120 characters. Longer reasoning goes in `rationale`." },
-                    "rationale": { "type": "string" },
+                    "rationale": { "type": "string", "description": "Self-contained why, readable without the source conversation: at least 20 characters and 4 words, and not a bare reference into an external numbered list like \"1a\" or \"2. a\" — pair `quote` with `question` instead of embedding one." },
                     "topic_keys": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
                     "options": {
                         "type": "array",
@@ -449,7 +449,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "description": { "type": "string", "description": "Free-text match for the decision to supersede. Required when `old_decision_id` is omitted." },
                     "topic": { "type": "string", "description": "Optional topic_key filter narrowing the `description` match." },
                     "title": { "type": "string", "maxLength": 120, "description": "A name, not a summary: one sentence, at most 120 characters. Longer reasoning goes in `rationale`." },
-                    "rationale": { "type": "string" },
+                    "rationale": { "type": "string", "description": "Self-contained why, readable without the source conversation: at least 20 characters and 4 words, and not a bare reference into an external numbered list like \"1a\" or \"2. a\"." },
                     "topic_keys": { "type": "array", "items": { "type": "string" } },
                     "options": {
                         "type": "array",

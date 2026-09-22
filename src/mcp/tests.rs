@@ -580,7 +580,7 @@ fn disagree_decision_tool_contests_and_defaults_actor() {
             "arguments": {
                 "actor_id": "agent:test:1",
                 "title": "Keep auth as-is",
-                "rationale": "Avoids migration work",
+                "rationale": "Avoids migration work and keeps the schema stable",
                 "topic_keys": ["auth"],
                 "options": [{"label": "keep"}]
             }
@@ -649,7 +649,7 @@ fn disagree_decision_tool_ambiguous_description_does_not_write() {
                 "name": "capture_decision",
                 "arguments": {
                     "title": format!("Adopt async queue for {topic}"),
-                    "rationale": "because reasons",
+                    "rationale": "because those are the reasons we discussed",
                     "topic_keys": [topic],
                     "options": [{"label": "async"}]
                 }
@@ -709,7 +709,7 @@ fn supersede_decision_tool_marks_old_and_is_idempotent() {
             "arguments": {
                 "actor_id": "agent:test:1",
                 "title": "Use shared admin token",
-                "rationale": "Fastest path",
+                "rationale": "Fastest path to ship given the deadline",
                 "topic_keys": ["auth"],
                 "options": [{"label": "shared-token"}]
             }
@@ -1469,7 +1469,7 @@ mod transport_parity {
 
         let seed = json!({
             "title": "Use shared admin token",
-            "rationale": "Fastest path",
+            "rationale": "Fastest path to ship given the deadline",
             "topic_keys": ["auth"],
             "options": [{"label": "shared-token"}],
         });
@@ -1686,7 +1686,7 @@ mod transport_parity {
     async fn get_decision_outcome_resolves_by_decision_id() {
         let setup_args = json!({
             "title": "Adopt blue-green deploys",
-            "rationale": "Zero-downtime releases",
+            "rationale": "Zero-downtime releases keep users unaffected during deploys",
             "topic_keys": ["deploy"],
             "options": [{"label": "blue-green"}],
             "chosen_option_label": "blue-green",
@@ -1852,7 +1852,7 @@ mod transport_parity {
             "capture_decision",
             json!({
                 "title": "Keep auth as-is",
-                "rationale": "Avoids migration work",
+                "rationale": "Avoids migration work and keeps the schema stable",
                 "topic_keys": ["auth"],
                 "options": [{"label": "keep"}],
             }),

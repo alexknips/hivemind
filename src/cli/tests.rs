@@ -581,7 +581,7 @@ fn emit_proposes_decision_with_cli_option_labels() {
         "--title",
         "Pick queue",
         "--rationale",
-        "Need durable ingestion",
+        "Need durable ingestion under heavy load",
         "--topic-keys",
         "infra,queue",
         "--options",
@@ -779,7 +779,7 @@ fn supersede_cli_proposes_replacement_marks_old_and_is_idempotent() {
         "--title",
         "Use shared admin token",
         "--rationale",
-        "Fastest path",
+        "Fastest path to ship given the deadline",
         "--topic-keys",
         "auth",
         "--options",
@@ -883,7 +883,7 @@ fn supersede_cli_records_agent_source_for_agent_actor() {
         "--title",
         "Use shared admin token",
         "--rationale",
-        "Fastest path",
+        "Fastest path to ship given the deadline",
         "--topic-keys",
         "auth",
         "--options",
@@ -1007,7 +1007,7 @@ fn disagree_fluent_ambiguous_description_short_circuits_without_writing_body(
                 "--title",
                 &format!("Adopt async queue for {topic}"),
                 "--rationale",
-                "because reasons",
+                "because those are the reasons we discussed",
                 "--topic-keys",
                 topic,
                 "--options",
@@ -1092,7 +1092,7 @@ fn disagree_fluent_pick_disambiguates_and_hash_handle_reuses_it_body(
                 "--title",
                 &format!("Adopt async queue for {topic}"),
                 "--rationale",
-                "because reasons",
+                "because those are the reasons we discussed",
                 "--topic-keys",
                 topic,
                 "--options",
@@ -1178,7 +1178,7 @@ fn disagree_fluent_topic_narrows_ambiguous_to_resolved_body(
                 "--title",
                 &format!("Adopt async queue for {topic}"),
                 "--rationale",
-                "because reasons",
+                "because those are the reasons we discussed",
                 "--topic-keys",
                 topic,
                 "--options",
@@ -1240,7 +1240,7 @@ fn supersede_fluent_description_resolves_uniquely_and_records_body(
             "--title",
             "Use shared admin token",
             "--rationale",
-            "Fastest path",
+            "Fastest path to ship given the deadline",
             "--topic-keys",
             "auth",
             "--options",
@@ -1311,7 +1311,7 @@ fn supersede_fluent_ambiguous_description_short_circuits_without_writing_body(
                 "--title",
                 &format!("Adopt async queue for {topic}"),
                 "--rationale",
-                "because reasons",
+                "because those are the reasons we discussed",
                 "--topic-keys",
                 topic,
                 "--options",
@@ -1451,7 +1451,7 @@ fn query_chain_and_why_aliases_resolve_by_description() -> CliTestResult {
         "--title",
         "Use shared admin token",
         "--rationale",
-        "Fastest path",
+        "Fastest path to ship given the deadline",
         "--topic-keys",
         "auth",
         "--options",
@@ -1918,7 +1918,7 @@ fn search_decisions_cli_returns_query_response(
         "--title",
         "Pick queue",
         "--rationale",
-        "Need durable ingestion",
+        "Need durable ingestion under heavy load",
         "--topic-keys",
         "infra,queue",
         "--options",
@@ -2296,7 +2296,7 @@ fn ledger_history_cli_queries_and_exports_read_only_summary() {
         "--title",
         "Pick queue",
         "--rationale",
-        "Need durable ingestion",
+        "Need durable ingestion under heavy load",
         "--topic-keys",
         "infra,queue",
         "--options",
@@ -2926,7 +2926,7 @@ fn import_documents_cli_reports_changed_same_id_as_conflict_without_writes() {
     let document_path = scratch_dir.join("decision.md");
     std::fs::write(
         &document_path,
-        "Decision:\n  id: conflict-demo\n  title: Keep first title\n  status: proposed\n  topic_keys: conflict\n  rationale: First rationale.\n  options:\n    - first option\n",
+        "Decision:\n  id: conflict-demo\n  title: Keep first title\n  status: proposed\n  topic_keys: conflict\n  rationale: First rationale for this decision.\n  options:\n    - first option\n",
     )
     .expect("write initial doc");
 
@@ -2947,7 +2947,7 @@ fn import_documents_cli_reports_changed_same_id_as_conflict_without_writes() {
 
     std::fs::write(
         &document_path,
-        "Decision:\n  id: conflict-demo\n  title: Changed title\n  status: proposed\n  topic_keys: conflict\n  rationale: Changed rationale.\n  options:\n    - first option\n",
+        "Decision:\n  id: conflict-demo\n  title: Changed title\n  status: proposed\n  topic_keys: conflict\n  rationale: Changed rationale after further review.\n  options:\n    - first option\n",
     )
     .expect("write changed doc");
 
@@ -3069,7 +3069,7 @@ fn import_documents_cli_can_resolve_conflict_as_supersession() {
     let document_path = scratch_dir.join("decision.md");
     std::fs::write(
         &document_path,
-        "Decision:\n  id: conflict-demo\n  title: Keep first title\n  status: accepted\n  actor: actor:alice\n  topic_keys: conflict\n  rationale: First rationale.\n  options:\n    - first option\n  chose: first option\n",
+        "Decision:\n  id: conflict-demo\n  title: Keep first title\n  status: accepted\n  actor: actor:alice\n  topic_keys: conflict\n  rationale: First rationale for this decision.\n  options:\n    - first option\n  chose: first option\n",
     )
     .expect("write initial doc");
 
@@ -3090,7 +3090,7 @@ fn import_documents_cli_can_resolve_conflict_as_supersession() {
 
     std::fs::write(
         &document_path,
-        "Decision:\n  id: conflict-demo\n  title: Superseding title\n  status: accepted\n  actor: actor:bob\n  topic_keys: conflict\n  rationale: Replacement rationale.\n  options:\n    - second option\n  chose: second option\n",
+        "Decision:\n  id: conflict-demo\n  title: Superseding title\n  status: accepted\n  actor: actor:bob\n  topic_keys: conflict\n  rationale: Replacement rationale for the superseding decision.\n  options:\n    - second option\n  chose: second option\n",
     )
     .expect("write changed doc");
 
@@ -3166,7 +3166,7 @@ fn import_documents_cli_can_resolve_conflict_by_contesting_existing_decision() {
     let document_path = scratch_dir.join("decision.md");
     std::fs::write(
         &document_path,
-        "Decision:\n  id: conflict-demo\n  title: Keep first title\n  status: accepted\n  actor: actor:alice\n  topic_keys: conflict\n  rationale: First rationale.\n  options:\n    - first option\n  chose: first option\n",
+        "Decision:\n  id: conflict-demo\n  title: Keep first title\n  status: accepted\n  actor: actor:alice\n  topic_keys: conflict\n  rationale: First rationale for this decision.\n  options:\n    - first option\n  chose: first option\n",
     )
     .expect("write initial doc");
 
@@ -3259,7 +3259,7 @@ fn import_documents_cli_can_resolve_conflict_by_adding_context() {
     let document_path = scratch_dir.join("decision.md");
     std::fs::write(
         &document_path,
-        "Decision:\n  id: conflict-demo\n  title: Keep first title\n  status: proposed\n  topic_keys: conflict\n  rationale: First rationale.\n  options:\n    - first option\n",
+        "Decision:\n  id: conflict-demo\n  title: Keep first title\n  status: proposed\n  topic_keys: conflict\n  rationale: First rationale for this decision.\n  options:\n    - first option\n",
     )
     .expect("write initial doc");
 
@@ -3280,7 +3280,7 @@ fn import_documents_cli_can_resolve_conflict_by_adding_context() {
 
     std::fs::write(
         &document_path,
-        "Decision:\n  id: conflict-demo\n  title: Changed title\n  status: proposed\n  topic_keys: conflict\n  rationale: Changed rationale.\n  options:\n    - first option\n  evidence:\n    - New evidence from re-import.\n  hypotheses:\n    - New assumption from re-import.\n",
+        "Decision:\n  id: conflict-demo\n  title: Changed title\n  status: proposed\n  topic_keys: conflict\n  rationale: Changed rationale after further review.\n  options:\n    - first option\n  evidence:\n    - New evidence from re-import.\n  hypotheses:\n    - New assumption from re-import.\n",
     )
     .expect("write changed doc");
 
@@ -5208,7 +5208,7 @@ fn import_documents_cli_blocks_path_used_when_extractor_present() {
     let doc_path = root.join("decision.md");
     std::fs::write(
         &doc_path,
-        "Decision:\n  id: lang-choice\n  title: Choose Rust for the CLI\n  status: accepted\n  topic_keys: lang\n  rationale: Performance matters.\n  options:\n    - Rust\n    - Python\n  chose: Rust\n",
+        "Decision:\n  id: lang-choice\n  title: Choose Rust for the CLI\n  status: accepted\n  topic_keys: lang\n  rationale: Performance matters more than familiarity here.\n  options:\n    - Rust\n    - Python\n  chose: Rust\n",
     )
     .expect("write decision block");
 
@@ -5319,7 +5319,7 @@ fn export_writes_prunes_and_is_idempotent_body(backend: &TestBackend) -> CliTest
             "--title",
             "Use bearer tokens for sessions",
             "--rationale",
-            "Simpler client integration",
+            "Simpler client integration with fewer moving parts",
             "--topic-keys",
             "auth",
             "--options",

@@ -335,7 +335,7 @@ async fn disagree_updates_decision_status() {
             "/v1/decisions",
             serde_json::json!({
                 "title": "Use SQLite for all storage",
-                "rationale": "Simple and embeddable",
+                "rationale": "Simple and embeddable, no separate server to run",
                 "topic_keys": ["storage"],
                 "options": [{ "label": "SQLite" }]
             }),
@@ -382,7 +382,7 @@ async fn supersede_links_old_to_new_decision() {
             "/v1/decisions",
             serde_json::json!({
                 "title": "Use bearer tokens for auth",
-                "rationale": "Simple to implement",
+                "rationale": "Simple to implement and easy to revoke per session",
                 "topic_keys": ["auth"],
                 "options": [{ "label": "bearer-tokens" }],
                 "chosen_option_label": "bearer-tokens"

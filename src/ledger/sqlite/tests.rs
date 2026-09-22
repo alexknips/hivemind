@@ -221,7 +221,7 @@ fn write_shared_decision(
         DecisionProposalInput {
             actor_id: "actor:test",
             title,
-            rationale: "Tenant-specific rationale",
+            rationale: "Tenant-specific rationale for the isolation test",
             topic_keys: &["tenant-isolation".to_owned()],
             option_ids: &["option-shared".to_owned()],
             option_labels: &["Shared".to_owned()],

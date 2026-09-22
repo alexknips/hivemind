@@ -548,6 +548,9 @@ pub struct SupersedeArgs {
     #[arg(long)]
     pub title: String,
 
+    /// Self-contained why, readable without the source conversation: at least 20 characters
+    /// and 4 words, and not a bare reference into an external numbered list like "1a" or
+    /// "2. a".
     #[arg(long)]
     pub rationale: String,
 
@@ -711,6 +714,9 @@ pub struct SlackEnqueueCaptureArgs {
     #[arg(long)]
     pub title: String,
 
+    /// Self-contained why, readable without the source conversation: at least 20 characters
+    /// and 4 words, and not a bare reference into an external numbered list like "1a" or
+    /// "2. a".
     #[arg(long)]
     pub rationale: String,
 
@@ -845,6 +851,9 @@ pub struct EmitDecisionProposedArgs {
     #[arg(long)]
     pub title: String,
 
+    /// Self-contained why, readable without the source conversation: at least 20 characters
+    /// and 4 words, and not a bare reference into an external numbered list like "1a" or
+    /// "2. a" — pair `--quote` with `--question` instead of embedding one.
     #[arg(long)]
     pub rationale: String,
 

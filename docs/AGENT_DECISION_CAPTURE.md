@@ -55,6 +55,14 @@ no stated question is unreadable once the source conversation is gone
 (hivemind-zdsh.13). `--rationale` still carries the self-contained summary of
 why, independent of any quote.
 
+`--rationale` is refused, on every capture surface (CLI, MCP, REST), unless
+it stands on its own: at least 20 characters and 4 words, and free of a bare
+reference into a numbered list that exists only in the source chat — the
+same "1a"/"2. a" shape `--quote`/`--question` exist to carry instead
+(hivemind-763i, follow-up to hivemind-zdsh.13). If the rationale legitimately
+needs one of those tokens (e.g. quoting someone else's outline), pair
+`--quote`/`--question` rather than folding it into `--rationale`.
+
 ## Claude
 
 ```bash
