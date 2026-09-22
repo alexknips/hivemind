@@ -72,10 +72,9 @@ pub fn scan_misfiled_decisions(
         .filter(|key| !key.is_empty())
         .collect();
     if foreign.is_empty() {
-        return Err(query_error(
-            "foreign_topic_keys must contain at least one non-empty key",
-        )
-        .into());
+        return Err(
+            query_error("foreign_topic_keys must contain at least one non-empty key").into(),
+        );
     }
 
     // One bounded fetch, same tradeoff `scan_decision_quality` already makes:
@@ -115,9 +114,9 @@ pub fn scan_misfiled_decisions(
 
     let skip: usize = match request.cursor.as_deref() {
         None => 0,
-        Some(cursor) => cursor
-            .parse::<usize>()
-            .map_err(|error| query_error(format!("cursor must be a non-negative offset: {error}")))?,
+        Some(cursor) => cursor.parse::<usize>().map_err(|error| {
+            query_error(format!("cursor must be a non-negative offset: {error}"))
+        })?,
     };
     let limit = if request.limit == 0 {
         MAX_QUERY_RESULTS

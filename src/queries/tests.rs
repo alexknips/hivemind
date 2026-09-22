@@ -2792,7 +2792,10 @@ fn memory_graph_scan_misfiled_decisions_flags_foreign_topics() -> Result<()> {
         matched,
         BTreeSet::from(["gc".to_owned(), "beadline".to_owned()])
     );
-    assert_eq!(multi.actor_ids, vec!["agent:gc:polecat:gc-h9n78".to_owned()]);
+    assert_eq!(
+        multi.actor_ids,
+        vec!["agent:gc:polecat:gc-h9n78".to_owned()]
+    );
 
     Ok(())
 }
