@@ -140,6 +140,13 @@ fi
 # ── capture via HTTP ──────────────────────────────────────────────────────────
 section "Capture — HTTP"
 
+# still_proposed: this decision gets disagreed with later in this script by
+# the same actor ("Review — disagree + supersede"). Self-accept-by-default
+# (hivemind-zdsh.8) would make this actor the acceptor, and the ledger
+# invariant refuses one actor both accepting and rejecting the same decision
+# (a changed mind is a supersede, not a disagreement with oneself — mayor
+# ruling on hivemind-zdsh.8, option c). Keeping it proposed here makes the
+# later disagree a legitimate lone rejection instead.
 decision_resp=$(curl_json POST /v1/decisions '{
   "title": "e2e-smoke: use Postgres for shared storage",
   "rationale": "SQLite is single-writer; Postgres supports concurrent tenants",
@@ -148,7 +155,8 @@ decision_resp=$(curl_json POST /v1/decisions '{
     {"label": "postgres", "description": "Postgres with connection pool"},
     {"label": "sqlite",   "description": "SQLite WAL mode"}
   ],
-  "chosen_option_label": "postgres"
+  "chosen_option_label": "postgres",
+  "still_proposed": true
 }')
 
 if echo "$decision_resp" | jq -e '.decision_id' > /dev/null 2>&1; then
@@ -520,11 +528,23 @@ section "Fluent CLI leg (in-container, both backends)"
 
 CLI_IC_TENANT="$TENANT"
 CLI_IC_ACTOR="agent:e2e:smoke-cli-incontainer"
+# Disagreement is another actor's act (mayor ruling on hivemind-zdsh.8,
+# option c): CLI_IC_ACTOR self-accepts IC_D1 below via --chose, so the actor
+# that later disagrees must differ, or the ledger invariant refuses one
+# actor both accepting and rejecting the same decision. Using a second actor
+# here also makes the disagree a REAL contest (accepted + rejected), not a
+# lone rejection, matching what the "contests" assertion below claims.
+CLI_IC_REVIEWER="agent:e2e:smoke-cli-incontainer-reviewer"
 CLI_IC_TOPIC="smokeclifluent"
 
 hm_ic() {
   docker compose exec -T hivemind hivemind \
     --tenant "$CLI_IC_TENANT" --actor "$CLI_IC_ACTOR" --json "$@" 2>&1
+}
+
+hm_ic_reviewer() {
+  docker compose exec -T hivemind hivemind \
+    --tenant "$CLI_IC_TENANT" --actor "$CLI_IC_REVIEWER" --json "$@" 2>&1
 }
 
 if ! command -v docker > /dev/null 2>&1 \
@@ -600,7 +620,7 @@ else
   ic_offset_before=$(hm_ic query get_recent_activity --limit 1) || true
   IC_OFFSET_BEFORE=$(echo "$ic_offset_before" | jq -r '.data.items[0].event_origin // empty')
 
-  ic_disagree_ambig=$(hm_ic disagree "adopt async retry queue" \
+  ic_disagree_ambig=$(hm_ic_reviewer disagree "adopt async retry queue" \
     --reason "e2e smoke: ambiguous — must not resolve or write") || true
   if echo "$ic_disagree_ambig" | jq -e \
       '.data.outcome == "ambiguous" and (.data.candidates | length) == 2' > /dev/null 2>&1; then
@@ -617,7 +637,7 @@ else
     fail "CLI (in-container): ledger offset moved after ambiguous disagree — before=$IC_OFFSET_BEFORE after=$IC_OFFSET_AFTER"
   fi
 
-  ic_disagree_pick=$(hm_ic disagree "adopt async retry queue" --pick 2 \
+  ic_disagree_pick=$(hm_ic_reviewer disagree "adopt async retry queue" --pick 2 \
     --reason "e2e smoke: retries hide a slower systemic bottleneck") || true
   if echo "$ic_disagree_pick" | jq -e --arg id "$IC_D1_ID" '.decision_id == $id' > /dev/null 2>&1; then
     pass "CLI (in-container): disagree --pick 2 — resolves and contests the ingestion decision"
