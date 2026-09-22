@@ -189,6 +189,10 @@ pub struct RecentDecisionEntry {
     pub decision_id: String,
     pub title: String,
     pub rationale: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
     pub status: DecisionStatus,
     pub topic_keys: Vec<String>,
     pub actor_ids: Vec<String>,
@@ -479,6 +483,8 @@ pub fn get_recent_decisions(
                 decision_id,
                 title: payload.title,
                 rationale: payload.rationale,
+                quote: payload.quote,
+                question: payload.question,
                 status,
                 topic_keys,
                 actor_ids,

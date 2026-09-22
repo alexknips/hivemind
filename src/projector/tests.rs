@@ -651,6 +651,80 @@ fn decision_proposed_without_expressed_confidence_stores_null() -> Result<()> {
 }
 
 #[test]
+fn decision_proposed_with_quote_and_question_stores_both_on_node() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:quoted",
+            "title": "Personal projects are visible tenant-wide",
+            "rationale": "Spelled out: a personal project is visible to the whole tenant.",
+            "topic_keys": ["projects"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": [],
+            "quote": "1a",
+            "question": "Should a personal project be visible to the whole tenant?"
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let properties = graph
+        .nodes()
+        .get(&(NodeKind::Decision, "decision:quoted".to_owned()))
+        .cloned()
+        .expect("decision node projected");
+    assert_eq!(
+        properties.get("quote"),
+        Some(&GraphValue::String("1a".to_owned())),
+        "quote must be stored on the Decision node"
+    );
+    assert_eq!(
+        properties.get("question"),
+        Some(&GraphValue::String(
+            "Should a personal project be visible to the whole tenant?".to_owned()
+        )),
+        "question must be stored on the Decision node"
+    );
+    Ok(())
+}
+
+#[test]
+fn decision_proposed_without_quote_stores_null() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:unquoted",
+            "title": "Use REST",
+            "rationale": "Standard practice",
+            "topic_keys": ["api"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let properties = graph
+        .nodes()
+        .get(&(NodeKind::Decision, "decision:unquoted".to_owned()))
+        .cloned()
+        .expect("decision node projected");
+    assert_eq!(properties.get("quote"), Some(&GraphValue::Null));
+    assert_eq!(properties.get("question"), Some(&GraphValue::Null));
+    Ok(())
+}
+
+#[test]
 fn decision_proposed_with_option_labels_stores_label_per_option() -> Result<()> {
     // hivemind-zdsh.3: option_labels must land on each Option node's `label` property so
     // digests/summaries can render titles instead of raw generated option ids.

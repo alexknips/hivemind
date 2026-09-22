@@ -198,6 +198,52 @@ fn blocker_report_requires_decision_or_topic_anchor() {
 }
 
 #[test]
+fn decision_proposed_rejects_quote_without_question() {
+    let mut event: Event = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/decision.proposed.json"
+    ))
+    .unwrap();
+    event.payload["quote"] = json!("1a");
+
+    assert!(matches!(
+        validate(&event),
+        Err(EventValidationError::RequiresPairedField(
+            "payload.quote",
+            "payload.question"
+        ))
+    ));
+}
+
+#[test]
+fn decision_proposed_rejects_question_without_quote() {
+    let mut event: Event = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/decision.proposed.json"
+    ))
+    .unwrap();
+    event.payload["question"] = json!("Should a personal project be visible to the whole tenant?");
+
+    assert!(matches!(
+        validate(&event),
+        Err(EventValidationError::RequiresPairedField(
+            "payload.question",
+            "payload.quote"
+        ))
+    ));
+}
+
+#[test]
+fn decision_proposed_accepts_paired_quote_and_question() {
+    let mut event: Event = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/decision.proposed.json"
+    ))
+    .unwrap();
+    event.payload["quote"] = json!("1a");
+    event.payload["question"] = json!("Should a personal project be visible to the whole tenant?");
+
+    assert!(validate(&event).is_ok());
+}
+
+#[test]
 fn notification_sent_requires_source_event_ids() {
     let mut event: Event = serde_json::from_str(include_str!(
         "../../tests/fixtures/v0/notification.sent.json"

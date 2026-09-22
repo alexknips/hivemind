@@ -32,6 +32,9 @@ pub(crate) fn render_compact_view_summary(view: &Option<CompactView>) -> String 
         "CompactView: {} [{:?}]\n  rationale: {}\n",
         v.decision.id, v.decision.status, v.decision.rationale,
     );
+    if let (Some(question), Some(quote)) = (&v.decision.question, &v.decision.quote) {
+        out.push_str(&format!("  answers: {question}\n  quote: \"{quote}\"\n"));
+    }
     if let Some(chain) = &v.supersession_chain {
         out.push_str(&format!(
             "  superseded {} earlier decision(s); oldest: {}\n",
@@ -426,6 +429,10 @@ pub(crate) fn render_decision_brief_summary(brief: &Option<DecisionBrief>) -> St
         decision_status_label(brief.status)
     );
     let _ = writeln!(output, "  rationale: {}", summary_cell(&brief.rationale));
+    if let (Some(question), Some(quote)) = (&brief.question, &brief.quote) {
+        let _ = writeln!(output, "  answers: {}", summary_cell(question));
+        let _ = writeln!(output, "  quote: \"{}\"", summary_cell(quote));
+    }
     if let Some(chosen) = &brief.chosen_option {
         let _ = writeln!(output, "  chose: {}", summary_cell(&chosen.label));
     }
@@ -1063,7 +1070,7 @@ fn graph_edges(graph: &impl GraphView) -> Result<BTreeSet<DotEdge>> {
 fn node_dump_query(kind: NodeKind) -> String {
     let projection = match kind {
         NodeKind::Decision => {
-            "node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys"
+            "node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys, node.quote AS quote, node.question AS question"
         }
         NodeKind::DecisionRequest => {
             "node.id AS id, node.decision_id AS decision_id, node.topic_keys AS topic_keys, node.reason AS reason, node.priority AS priority, node.required_owner_id AS required_owner_id, node.authority_class AS authority_class, node.requested_by AS requested_by, node.client_request_id AS client_request_id"
@@ -1097,6 +1104,8 @@ fn node_properties_from_row(kind: NodeKind, row: &GraphRow) -> GraphProperties {
             insert_if_present(&mut properties, row, "title");
             insert_if_present(&mut properties, row, "rationale");
             insert_if_present(&mut properties, row, "topic_keys");
+            insert_if_present(&mut properties, row, "quote");
+            insert_if_present(&mut properties, row, "question");
         }
         NodeKind::DecisionRequest => {
             insert_if_present(&mut properties, row, "decision_id");

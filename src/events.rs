@@ -201,6 +201,14 @@ pub struct DecisionProposedPayload {
     /// Expressed confidence from the decider's own words: low | medium | high. Never system-computed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expressed_confidence: Option<String>,
+    /// Verbatim words of the decider, self-contained (not a reference like "1a" into an
+    /// external numbered list). Always paired with `question` — see `require_quote_pairing`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    /// The question `quote` answers, spelled out in the capturer's own words. Always paired
+    /// with `quote`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -984,6 +992,9 @@ pub enum EventValidationError {
     #[error("{0} contains a non-positive event id")]
     InvalidEventIdListValue(&'static str),
 
+    #[error("{0} requires {1} — a verbatim quote with no stated question, or a question with no quote, is unreadable once the source conversation is gone")]
+    RequiresPairedField(&'static str, &'static str),
+
     #[error("payload does not match event type {event_type:?}: {source}")]
     Payload {
         event_type: EventType,
@@ -1010,6 +1021,16 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             )?;
             require_non_empty_values("payload.hypothesis_ids", &payload.hypothesis_ids)?;
             require_non_empty_values("payload.evidence_ids", &payload.evidence_ids)?;
+            require_optional_non_empty("payload.quote", payload.quote.as_deref())?;
+            require_optional_non_empty("payload.question", payload.question.as_deref())?;
+            if payload.quote.is_some() != payload.question.is_some() {
+                let (present, missing) = if payload.quote.is_some() {
+                    ("payload.quote", "payload.question")
+                } else {
+                    ("payload.question", "payload.quote")
+                };
+                return Err(EventValidationError::RequiresPairedField(present, missing));
+            }
             Ok(EventPayload::DecisionProposed(payload))
         }
         EventType::DecisionRequested => {

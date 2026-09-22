@@ -149,6 +149,8 @@ fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
         still_proposed: false,
         hypothesis_ids: Vec::new(),
         evidence_ids: Vec::new(),
+        quote: None,
+        question: None,
     };
     let decision_id = propose_decision_from_option_labels(&commands, &cli.actor, &decision_args)?;
 
@@ -1464,6 +1466,8 @@ fn propose_decision_from_option_labels<L: EventLedger>(
         still_proposed: args.still_proposed,
         hypothesis_ids: &args.hypothesis_ids,
         evidence_ids: &args.evidence_ids,
+        quote: args.quote.as_deref(),
+        question: args.question.as_deref(),
     })
 }
 
@@ -1840,6 +1844,10 @@ fn render_review_item<W: IoWrite>(
     writeln!(output, "Actors: {}", display_review_list(&item.actor_ids)).map_err(cli_io_error)?;
     writeln!(output, "Topics: {}", display_review_list(&item.topic_keys)).map_err(cli_io_error)?;
     writeln!(output, "Rationale: {}", item.rationale).map_err(cli_io_error)?;
+    if let (Some(question), Some(quote)) = (&item.question, &item.quote) {
+        writeln!(output, "Answers: {question}").map_err(cli_io_error)?;
+        writeln!(output, "Quote: \"{quote}\"").map_err(cli_io_error)?;
+    }
     writeln!(output, "Options:").map_err(cli_io_error)?;
     if item.option_ids.is_empty() {
         writeln!(output, "  - <none>").map_err(cli_io_error)?;

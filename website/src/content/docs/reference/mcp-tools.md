@@ -34,6 +34,8 @@ Record a decision with rationale, topic keys, and at least one option. Defaults 
 | `decided_by` | string | — | Actor who actually made the decision, when it differs from `actor_id` (the recording actor/scribe) — e.g. `human:alex@example.com` when an agent is writing down a decision a human made. Requires `chosen_option_label`. Mutually exclusive with `still_proposed`. |
 | `evidence_ids` | string[] | — |  |
 | `hypothesis_ids` | string[] | — |  |
+| `question` | string | — | The question `quote` answers, spelled out in the capturer's own words. Requires `quote`. |
+| `quote` | string | — | Verbatim words of the decider, self-contained — not a bare reference like "1a" into an external numbered list. Requires `question`. A quote with no stated question is unreadable once the source conversation is gone. |
 | `still_proposed` | boolean | — | Keep the decision at `proposed` even though `chosen_option_label` is set, for a genuine open recommendation awaiting someone else's decision. Defaults to false, which self-accepts (or accepts from `decided_by`) immediately after proposing. |
 
 ---

@@ -33,6 +33,13 @@ pub struct DecisionView {
     pub option_ids: Vec<String>,
     pub evidence_ids: Vec<String>,
     pub hypotheses: Vec<HypothesisContext>,
+    /// Verbatim words of the decider, self-contained. Always present together with
+    /// `question` (hivemind-zdsh.13).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    /// The question `quote` answers, spelled out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
 }
 
 pub fn get_decision(
@@ -41,7 +48,7 @@ pub fn get_decision(
 ) -> Result<QueryResponse<Option<DecisionView>>> {
     let started = Instant::now();
     let rows = graph.query(
-        "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys LIMIT 1;",
+        "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys, d.quote AS quote, d.question AS question LIMIT 1;",
         &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
     )?;
 
@@ -50,6 +57,8 @@ pub fn get_decision(
         let title = optional_string(row, "title").unwrap_or_default();
         let rationale = optional_string(row, "rationale").unwrap_or_default();
         let topic_keys = optional_string_list(row, "topic_keys");
+        let quote = optional_string(row, "quote");
+        let question = optional_string(row, "question");
         let status = derive_decision_status(graph, &id)?;
         let option_ids = neighbor_ids(
             graph,
@@ -93,6 +102,8 @@ pub fn get_decision(
             option_ids,
             evidence_ids,
             hypotheses,
+            quote,
+            question,
         })
     } else {
         None

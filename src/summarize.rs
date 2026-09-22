@@ -202,6 +202,10 @@ fn render_single(view: &DecisionView, option_labels: &[(String, String)]) -> Str
         parts.push(format!("Topics: {}", view.topic_keys.join(", ")));
     }
     parts.push(format!("Why: {}", view.rationale));
+    if let (Some(question), Some(quote)) = (&view.question, &view.quote) {
+        parts.push(format!("Answers: {question}"));
+        parts.push(format!("Quote: \"{quote}\""));
+    }
     if !option_labels.is_empty() {
         let labels: Vec<&str> = option_labels.iter().map(|(_, l)| l.as_str()).collect();
         parts.push(format!("Options: {}", labels.join("; ")));
@@ -443,6 +447,10 @@ pub struct DigestEntry {
     pub decision_id: String,
     pub title: String,
     pub rationale: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
     pub topic_keys: Vec<String>,
     pub status: DecisionStatus,
     pub actor_ids: Vec<String>,
@@ -582,6 +590,8 @@ fn build_digest_entry(
         decision_id: d.id.clone(), // ubs:ignore: clone necessary — building owned DigestEntry from borrowed DecisionView
         title: d.title.clone(),    // ubs:ignore: clone necessary — building owned DigestEntry
         rationale: d.rationale.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
+        quote: d.quote.clone(),    // ubs:ignore: clone necessary — building owned DigestEntry
+        question: d.question.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
         topic_keys: d.topic_keys.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
         status: d.status,
         actor_ids: ctx.actor_ids.clone(), // ubs:ignore: clone necessary — building owned DigestEntry from borrowed SearchGraphContext
@@ -653,6 +663,10 @@ fn render_digest_text(
 
             let rationale = trim_rationale(&entry.rationale, RATIONALE_TRIM_CHARS);
             let _ = writeln!(out, "  Why: {rationale}");
+            if let (Some(question), Some(quote)) = (&entry.question, &entry.quote) {
+                let _ = writeln!(out, "  Answers: {question}");
+                let _ = writeln!(out, "  Quote: \"{quote}\"");
+            }
 
             if !entry.option_labels.is_empty() {
                 let opts = entry.option_labels.join(", ");
@@ -759,6 +773,8 @@ mod tests {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         };
         commands.propose_decision(input).unwrap() // ubs:ignore: test-only helper; panicking is correct in tests
     }

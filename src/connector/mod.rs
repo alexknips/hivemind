@@ -1804,6 +1804,8 @@ fn emit_decision_proposed<L: EventLedger>(
             hypothesis_ids: vec![],
             evidence_ids: vec![],
             expressed_confidence: None,
+            quote: None,
+            question: None,
         }),
     )
     .tenant_id(tenant_id.clone()) // ubs:ignore: EventBuilder::tenant_id() requires owned TenantId

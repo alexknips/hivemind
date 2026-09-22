@@ -293,6 +293,8 @@ pub fn import_slack_thread<L: EventLedger>(
         still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: std::slice::from_ref(&evidence_id),
+        quote: None,
+        question: None,
     })?;
 
     Ok(SlackIngestOutcome::Imported {
@@ -1726,6 +1728,8 @@ fn write_document_decision_events<L: EventLedger>(
             still_proposed: true,
             hypothesis_ids: &identities.hypothesis_ids,
             evidence_ids: &identities.evidence_ids,
+            quote: None,
+            question: None,
         },
         &identities.decision_id,
         identities.proposal_event_uuids.clone(),

@@ -855,6 +855,17 @@ pub struct EmitDecisionProposedArgs {
 
     #[arg(long = "evidence", value_delimiter = ',')]
     pub evidence_ids: Vec<String>,
+
+    /// Verbatim words of the decider, self-contained — not a bare reference like "1a" into
+    /// an external numbered list. Requires `--question`. A quote with no stated question is
+    /// unreadable once the source conversation is gone (hivemind-zdsh.13).
+    #[arg(long = "quote", requires = "question")]
+    pub quote: Option<String>,
+
+    /// The question `--quote` answers, spelled out in the capturer's own words. Requires
+    /// `--quote`.
+    #[arg(long = "question", requires = "quote")]
+    pub question: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]

@@ -59,6 +59,13 @@ pub struct DecisionBrief {
     pub decision_id: String,
     pub title: String,
     pub rationale: String,
+    /// Verbatim words of the decider, self-contained. Always present together with
+    /// `question` (hivemind-zdsh.13).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    /// The question `quote` answers, spelled out.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
     /// Display-only; `event_origin` stays canonical for resolver ranking (SEARCH_DESIGN.md).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub occurred_at: Option<DateTime<Utc>>,
@@ -112,6 +119,8 @@ pub fn get_decision_brief(
         decision_id: decision.id,
         title: decision.title,
         rationale: decision.rationale,
+        quote: decision.quote,
+        question: decision.question,
         occurred_at,
         chosen_option,
         rejected_options,

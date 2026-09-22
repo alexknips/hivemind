@@ -392,7 +392,9 @@ pub fn tool_definitions() -> Vec<Value> {
                     "decided_by": { "type": "string", "description": "Actor who actually made the decision, when it differs from `actor_id` (the recording actor/scribe) — e.g. `human:alex@example.com` when an agent is writing down a decision a human made. Requires `chosen_option_label`. Mutually exclusive with `still_proposed`." },
                     "still_proposed": { "type": "boolean", "description": "Keep the decision at `proposed` even though `chosen_option_label` is set, for a genuine open recommendation awaiting someone else's decision. Defaults to false, which self-accepts (or accepts from `decided_by`) immediately after proposing." },
                     "hypothesis_ids": { "type": "array", "items": { "type": "string" } },
-                    "evidence_ids": { "type": "array", "items": { "type": "string" } }
+                    "evidence_ids": { "type": "array", "items": { "type": "string" } },
+                    "quote": { "type": "string", "description": "Verbatim words of the decider, self-contained — not a bare reference like \"1a\" into an external numbered list. Requires `question`. A quote with no stated question is unreadable once the source conversation is gone." },
+                    "question": { "type": "string", "description": "The question `quote` answers, spelled out in the capturer's own words. Requires `quote`." }
                 }
             }
         }),

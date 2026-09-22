@@ -151,6 +151,8 @@ hivemind emit decision.proposed
   [--chose <option>]
   [--decided-by <actor-id>]
   [--still-proposed]
+  [--quote <text>]
+  [--question <text>]
 ```
 
 Prints the new decision ID on success. Add `--json` for a structured envelope.
@@ -171,6 +173,13 @@ agent:claude:session --decided-by human:alex`; the accept event comes from
 set, for a genuine open recommendation awaiting someone else's decision.
 Mutually exclusive with `--decided-by`.
 
+`--quote <text>` captures the verbatim words of the decider, self-contained —
+not a bare reference like `"1a"` into a numbered list that only makes sense
+next to the source conversation. It requires `--question <text>`: the
+question those words answer, spelled out in the capturer's own words. Neither
+flag works without the other — a quote with no stated question is unreadable
+once the source conversation is gone.
+
 ### `emit decision.capture`
 
 Noninteractive shorthand for agent use. Defaults actor to a stable
@@ -185,6 +194,8 @@ hivemind emit decision.capture
   [--chose <option>]
   [--decided-by <actor-id>]
   [--still-proposed]
+  [--quote <text>]
+  [--question <text>]
 ```
 
 ### `emit decision.accepted`

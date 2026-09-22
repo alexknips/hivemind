@@ -483,6 +483,8 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 hypothesis_ids: Vec::new(),
                 evidence_ids: Vec::new(),
                 expressed_confidence: None,
+                quote: None,
+                question: None,
             }),
         ),
         (

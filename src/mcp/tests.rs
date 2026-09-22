@@ -269,6 +269,67 @@ fn capture_decision_decided_by_without_chosen_option_is_rejected() {
 }
 
 #[test]
+fn capture_decision_quote_without_question_is_rejected() {
+    let dir = unique_dir("quote-invalid");
+    let config = McpConfig::new(&dir).with_session_id("scribe-session");
+
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "actor_id": "agent:claude:hivemind-crew",
+                "title": "Quote with no stated question",
+                "rationale": "a quote with no question should be rejected",
+                "topic_keys": ["governance"],
+                "options": [{"label": "A"}],
+                "quote": "1a"
+            }
+        }
+    })
+    .to_string();
+
+    let responses = drive(&config, &[capture.as_str()]);
+    let result = &responses[0]["result"];
+    assert_eq!(result["isError"], serde_json::Value::Bool(true));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn capture_decision_stores_paired_quote_and_question() {
+    let dir = unique_dir("quote-valid");
+    let config = McpConfig::new(&dir).with_session_id("scribe-session");
+
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "actor_id": "agent:claude:hivemind-crew",
+                "title": "Personal projects are visible tenant-wide",
+                "rationale": "Spelled out: a personal project is visible to the whole tenant.",
+                "topic_keys": ["projects"],
+                "options": [{"label": "A"}],
+                "quote": "1a",
+                "question": "Should a personal project be visible to the whole tenant?"
+            }
+        }
+    })
+    .to_string();
+
+    let responses = drive(&config, &[capture.as_str()]);
+    let result = &responses[0]["result"];
+    assert_ne!(result.get("isError"), Some(&serde_json::Value::Bool(true)));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn write_tools_default_actor_to_configured_agent_session() {
     let dir = unique_dir("default-actor");
     let config = McpConfig::new(&dir)

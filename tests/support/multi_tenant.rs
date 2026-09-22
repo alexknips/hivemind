@@ -71,6 +71,8 @@ pub fn seed_tenant<L: EventLedger>(ledger: &L, name: &'static str) -> TestResult
             still_proposed: false,
             hypothesis_ids: &hyp_refs,
             evidence_ids: &ev_refs,
+            quote: None,
+            question: None,
         })?;
         decision_ids.push(decision_id);
     }

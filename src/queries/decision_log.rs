@@ -137,6 +137,8 @@ struct DecisionEntry {
     id: String,
     title: String,
     rationale: String,
+    quote: Option<String>,
+    question: Option<String>,
     status: DecisionStatus,
     occurred_at: Option<DateTime<Utc>>,
     event_origin: Option<i64>,
@@ -260,6 +262,8 @@ fn build_entry(
         id: decision.id,
         title: decision.title,
         rationale: decision.rationale,
+        quote: decision.quote,
+        question: decision.question,
         status: decision.status,
         occurred_at: brief.occurred_at,
         event_origin,
@@ -580,10 +584,16 @@ fn render_options_section(entry: &DecisionEntry) -> String {
 }
 
 fn render_decision_section(entry: &DecisionEntry) -> String {
-    match &entry.chosen_option {
+    let base = match &entry.chosen_option {
         Some(chosen) => format!("**{}**\n\n{}", chosen.label, entry.rationale),
         None if entry.rationale.trim().is_empty() => "None recorded.".to_owned(),
         None => entry.rationale.clone(), // ubs:ignore: clone necessary — other match arms return owned String, entry stays borrowed
+    };
+    match (&entry.question, &entry.quote) {
+        (Some(question), Some(quote)) => {
+            format!("{base}\n\n**Answers:** {question}\n\n**Quote:** \"{quote}\"")
+        }
+        _ => base,
     }
 }
 

@@ -704,6 +704,20 @@ fn project_decision_proposed(
             // Display-only: `event_origin` stays canonical for resolver/search ranking
             // (SEARCH_DESIGN.md). occurred_at gives DecisionBrief a human-readable "when".
             ("occurred_at", occurred_at),
+            (
+                "quote",
+                payload
+                    .quote
+                    .as_deref()
+                    .map_or(GraphValue::Null, |q| GraphValue::String(q.to_owned())),
+            ),
+            (
+                "question",
+                payload
+                    .question
+                    .as_deref()
+                    .map_or(GraphValue::Null, |q| GraphValue::String(q.to_owned())),
+            ),
         ],
     );
     graph.upsert_node(

@@ -230,6 +230,8 @@ fn write_shared_decision(
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         },
         "decision-shared",
         DecisionProposalEventUuids {

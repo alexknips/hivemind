@@ -180,7 +180,7 @@ impl GraphView for MemoryGraph {
             return Ok(rows);
         }
 
-        if cypher.contains("RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys LIMIT 1;") {
+        if cypher.contains("RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys, d.quote AS quote, d.question AS question LIMIT 1;") {
             let decision_id = required_param_string(params, "id")?;
             let nodes = self.nodes_snapshot()?;
             if let Some(properties) = nodes.get(&(NodeKind::Decision, decision_id.to_owned())) {
@@ -197,6 +197,14 @@ impl GraphView for MemoryGraph {
                     (
                         "topic_keys".to_owned(),
                         graph_property_or_default(properties, "topic_keys"),
+                    ),
+                    (
+                        "quote".to_owned(),
+                        graph_property_or_default(properties, "quote"),
+                    ),
+                    (
+                        "question".to_owned(),
+                        graph_property_or_default(properties, "question"),
                     ),
                 ])]);
             }

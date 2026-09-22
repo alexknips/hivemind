@@ -56,6 +56,13 @@ pub(super) struct CaptureDecisionRequest {
     hypothesis_ids: Vec<String>,
     #[serde(default)]
     evidence_ids: Vec<String>,
+    /// Verbatim words of the decider, self-contained. Requires `question`. See `quote` on
+    /// `DecisionProposalInput`.
+    #[serde(default)]
+    quote: Option<String>,
+    /// The question `quote` answers, spelled out. Requires `quote`.
+    #[serde(default)]
+    question: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -334,6 +341,12 @@ fn capture_decision_blocking(
         ));
     }
 
+    if req.quote.is_some() != req.question.is_some() {
+        return Err(ApiError::validation(
+            "quote and question must be given together — a verbatim answer needs the question it answers spelled out, not a bare reference like '1a' into an external list",
+        ));
+    }
+
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
             actor_id: &ctx.actor_id,
@@ -347,6 +360,8 @@ fn capture_decision_blocking(
             still_proposed: req.still_proposed,
             hypothesis_ids: &req.hypothesis_ids,
             evidence_ids: &req.evidence_ids,
+            quote: req.quote.as_deref(),
+            question: req.question.as_deref(),
         })
         .map_err(to_api_error)?;
 

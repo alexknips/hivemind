@@ -120,6 +120,8 @@ fn propose_decision_fans_out_relation_events_with_causation_linkage() {
             still_proposed: false,
             hypothesis_ids: std::slice::from_ref(&hypothesis_id),
             evidence_ids: std::slice::from_ref(&evidence_id),
+            quote: None,
+            question: None,
         })
         .expect("propose decision");
 
@@ -169,6 +171,110 @@ fn propose_decision_fans_out_relation_events_with_causation_linkage() {
 }
 
 #[test]
+fn propose_decision_stores_paired_quote_and_question() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Personal projects are visible tenant-wide",
+            rationale: "Spelled out: a personal project is visible to the whole tenant.",
+            topic_keys: &["projects".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: Some(option_id.as_str()),
+            decided_by: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: Some("1a"),
+            question: Some("Should a personal project be visible to the whole tenant?"),
+        })
+        .expect("propose decision with paired quote/question");
+
+    let events = ledger.read(0, 20).expect("read events");
+    let proposal = events
+        .iter()
+        .find(|event| event.event_type == EventType::DecisionProposed)
+        .expect("proposal event present");
+    assert_eq!(
+        proposal.payload.get("quote").and_then(|v| v.as_str()),
+        Some("1a")
+    );
+    assert_eq!(
+        proposal.payload.get("question").and_then(|v| v.as_str()),
+        Some("Should a personal project be visible to the whole tenant?")
+    );
+}
+
+#[test]
+fn propose_decision_rejects_quote_without_question() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    let error = commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Decision with an unexplained quote",
+            rationale: "Rationale text",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: Some(option_id.as_str()),
+            decided_by: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: Some("1a"),
+            question: None,
+        })
+        .expect_err("quote without question must be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("quote and question must be given together"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn propose_decision_rejects_question_without_quote() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    let error = commands
+        .propose_decision(DecisionProposalInput {
+            actor_id: "actor:alice",
+            title: "Decision with a question but no quote",
+            rationale: "Rationale text",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: Some(option_id.as_str()),
+            decided_by: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: Some("Should a personal project be visible to the whole tenant?"),
+        })
+        .expect_err("question without quote must be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("quote and question must be given together"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn direct_agent_decision_persists_agent_provenance() {
     let dir = std::env::temp_dir().join(format!("hivemind-agent-provenance-{}", Uuid::new_v4()));
     let actor_id = "agent:codex:furiosa";
@@ -194,6 +300,8 @@ fn direct_agent_decision_persists_agent_provenance() {
                 still_proposed: false,
                 hypothesis_ids: &[],
                 evidence_ids: &[],
+                quote: None,
+                question: None,
             })
             .expect("agent decision proposed")
     };
@@ -243,6 +351,8 @@ fn accept_and_reject_invariant_for_same_actor_is_enforced() {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect("propose");
 
@@ -278,6 +388,8 @@ fn propose_decision_with_decided_by_emits_accepted_event_from_that_actor() {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect("propose with decided_by");
 
@@ -319,6 +431,8 @@ fn propose_decision_decided_by_requires_chosen_option_id() {
         still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],
+        quote: None,
+        question: None,
     });
     assert!(
         result.is_err(),
@@ -388,6 +502,8 @@ fn propose_decision_still_proposed_keeps_chosen_option_open() {
             still_proposed: true,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect("propose");
 
@@ -451,6 +567,8 @@ fn propose_decision_rejects_mismatched_option_labels_length() {
         still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],
+        quote: None,
+        question: None,
     });
     assert!(result.is_err());
 }
@@ -710,6 +828,8 @@ fn supersede_requires_both_decisions_to_exist() {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect("decision a");
 
@@ -726,6 +846,8 @@ fn supersede_requires_both_decisions_to_exist() {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect("decision b");
 
@@ -759,6 +881,8 @@ fn disagree_records_reason_and_is_idempotent_for_same_actor() {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect("decision");
 
@@ -816,6 +940,8 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect("decision");
 
@@ -920,6 +1046,8 @@ fn attach_evidence_requires_existing_endpoints() {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect("decision");
     let evidence_id = commands
@@ -1315,6 +1443,8 @@ fn propose_decision_normalizes_topic_keys() {
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            quote: None,
+            question: None,
         })
         .expect("propose");
 

@@ -44,6 +44,17 @@ self-accepts it immediately after proposing, from `--actor` (or from
 actor). Pass `--still-proposed` to keep a genuine open recommendation at
 `proposed` instead of self-accepting it.
 
+When the decision comes from a human's verbatim answer to a question you
+asked, use `--quote` and `--question` together instead of folding the quote
+into `--rationale`: `--quote "1a" --question "Should a personal project be
+visible to the whole tenant?"`. `--quote` is the decider's own words,
+self-contained; `--question` is what those words answer, spelled out in your
+own words — not a bare reference like `"1a"` that only makes sense next to
+the source conversation. Neither flag works without the other: a quote with
+no stated question is unreadable once the source conversation is gone
+(hivemind-zdsh.13). `--rationale` still carries the self-contained summary of
+why, independent of any quote.
+
 ## Claude
 
 ```bash

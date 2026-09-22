@@ -151,6 +151,8 @@ fn emit_test_decision(
             hypothesis_ids: vec![],
             evidence_ids: vec![],
             expressed_confidence: None,
+            quote: None,
+            question: None,
         }),
     )
     .tenant_id(tenant_id.clone())

@@ -670,6 +670,8 @@ fn collect_graph_search_results(
     for (id, row) in decision_rows {
         let title = optional_string(&row, "title").unwrap_or_default();
         let rationale = optional_string(&row, "rationale").unwrap_or_default();
+        let quote = optional_string(&row, "quote");
+        let question = optional_string(&row, "question");
         let event_origin = optional_int(&row, "event_origin").unwrap_or(0);
         let decision_topic_keys = optional_string_list(&row, "topic_keys");
         if !topic_keys.is_empty()
@@ -847,6 +849,8 @@ fn collect_graph_search_results(
                     option_ids: option_ids.clone(),
                     evidence_ids: evidence_ids.clone(),
                     hypotheses: hypotheses.clone(),
+                    quote: quote.clone(),
+                    question: question.clone(),
                 },
                 rank: match_info.rank,
                 matched_fields: match_info.matched_fields,

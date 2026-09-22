@@ -26,8 +26,11 @@ Options:
 
 Decision captures forward decision.capture flags such as --title, --rationale,
 --topic-keys, --options, --chose, --decided-by, --still-proposed, --evidence,
-and --hypotheses. --chose means the decision was already made — it
-self-accepts unless --still-proposed is also given.
+--hypotheses, --quote, and --question. --chose means the decision was already
+made — it self-accepts unless --still-proposed is also given. --quote (the
+decider's verbatim words) requires --question (the question those words
+answer, spelled out) — a quote with no stated question is unreadable once the
+source conversation is gone.
 USAGE
 }
 
@@ -337,7 +340,7 @@ while [[ $# -gt 0 ]]; do
       HIVEMIND_DIR="${2:-}"
       shift 2
       ;;
-    --title|--rationale|--topic-keys|--options|--chose|--decided-by|--hypotheses|--evidence)
+    --title|--rationale|--topic-keys|--options|--chose|--decided-by|--hypotheses|--evidence|--quote|--question)
       FORWARDED+=("$1" "${2:-}")
       shift 2
       ;;

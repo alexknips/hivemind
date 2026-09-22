@@ -182,6 +182,11 @@ pub(crate) struct CaptureDecisionArgs {
     pub(crate) still_proposed: bool,
     pub(crate) hypothesis_ids: Vec<String>,
     pub(crate) evidence_ids: Vec<String>,
+    /// Verbatim words of the decider, self-contained. Requires `question`. See `quote` on
+    /// `DecisionProposalInput`.
+    pub(crate) quote: Option<String>,
+    /// The question `quote` answers, spelled out. Requires `quote`.
+    pub(crate) question: Option<String>,
 }
 
 impl CaptureDecisionArgs {
@@ -258,6 +263,15 @@ impl CaptureDecisionArgs {
             ));
         }
 
+        let quote = optional_string(args, "quote")?;
+        let question = optional_string(args, "question")?;
+
+        if quote.is_some() != question.is_some() {
+            return Err(CoreError::InvalidArgument(
+                "quote and question must be given together — a verbatim answer needs the question it answers spelled out, not a bare reference like '1a' into an external list".to_owned(),
+            ));
+        }
+
         Ok(Self {
             actor_id,
             title,
@@ -269,6 +283,8 @@ impl CaptureDecisionArgs {
             still_proposed,
             hypothesis_ids,
             evidence_ids,
+            quote,
+            question,
         })
     }
 }
@@ -324,6 +340,8 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
             still_proposed: args.still_proposed,
             hypothesis_ids: &args.hypothesis_ids,
             evidence_ids: &args.evidence_ids,
+            quote: args.quote.as_deref(),
+            question: args.question.as_deref(),
         })
         .map_err(CoreError::from)?;
 

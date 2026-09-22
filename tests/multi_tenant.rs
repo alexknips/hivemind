@@ -160,6 +160,8 @@ fn local_tenant_is_isolated_from_named_tenants() -> TestResult<()> {
         still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],
+        quote: None,
+        question: None,
     })?;
 
     let local_dataset = multi_tenant::TenantDataset {

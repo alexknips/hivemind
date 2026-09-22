@@ -978,6 +978,11 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
         lines.push(Line::from(""));
         lines.push(Line::from("rationale:"));
         lines.extend(wrapped_lines(&detail.rationale));
+        if let (Some(question), Some(quote)) = (&detail.question, &detail.quote) {
+            lines.push(Line::from(""));
+            lines.push(Line::from(format!("answers: {question}")));
+            lines.push(Line::from(format!("quote: \"{quote}\"")));
+        }
         lines.push(Line::from(""));
         lines.push(Line::from(format!(
             "chosen option: {}",

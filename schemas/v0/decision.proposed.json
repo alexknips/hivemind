@@ -32,7 +32,17 @@
         },
         "chosen_option_id": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
         "hypothesis_ids": { "$ref": "#/$defs/id_array" },
-        "evidence_ids": { "$ref": "#/$defs/id_array" }
+        "evidence_ids": { "$ref": "#/$defs/id_array" },
+        "quote": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Verbatim words of the decider, self-contained. Always present together with question."
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The question quote answers, spelled out. Always present together with quote."
+        }
       }
     }
   },

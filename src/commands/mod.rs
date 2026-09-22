@@ -80,6 +80,11 @@ pub struct DecisionProposalInput<'a> {
     pub still_proposed: bool,
     pub hypothesis_ids: &'a [String],
     pub evidence_ids: &'a [String],
+    /// Verbatim words of the decider, self-contained. Requires `question` — see
+    /// `propose_decision`.
+    pub quote: Option<&'a str>,
+    /// The question `quote` answers, spelled out. Requires `quote`.
+    pub question: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -559,6 +564,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
+        require_quote_pairing(input.quote, input.question)?;
+
         let normalized_topic_keys: Vec<String> = input
             .topic_keys
             .iter()
@@ -686,6 +693,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
+        require_quote_pairing(input.quote, input.question)?;
+
         let normalized_topic_keys: Vec<String> = input
             .topic_keys
             .iter()
@@ -756,6 +765,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 hypothesis_ids: input.hypothesis_ids.to_vec(),
                 evidence_ids: input.evidence_ids.to_vec(),
                 expressed_confidence: None,
+                quote: input.quote.map(ToOwned::to_owned),
+                question: input.question.map(ToOwned::to_owned),
             }),
             None,
             event_uuids.proposal,
@@ -1059,6 +1070,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             still_proposed: true,
             hypothesis_ids: input.hypothesis_ids,
             evidence_ids: input.evidence_ids,
+            // Superseding decisions don't carry a quote/question in this slice
+            // (hivemind-zdsh.13 scoped this to decision.capture/decision.proposed).
+            quote: None,
+            question: None,
         };
         if let Some(existing) =
             self.find_matching_supersede(input.old_decision_id, &proposal_props)?
@@ -1879,6 +1894,24 @@ fn payload_value_matches(event: &Event, key: &str, expected: &str) -> bool {
 
 fn same_identifier(left: &str, right: &str) -> bool {
     left.eq(right)
+}
+
+/// `quote` and `question` must be given together: a verbatim quote answering no stated
+/// question is unreadable once the source conversation is gone (hivemind-zdsh.13).
+fn require_quote_pairing(quote: Option<&str>, question: Option<&str>) -> Result<()> {
+    if let Some(value) = quote {
+        require_non_empty("quote", value)?;
+    }
+    if let Some(value) = question {
+        require_non_empty("question", value)?;
+    }
+    if quote.is_some() != question.is_some() {
+        return Err(CommandError::Validation(
+            "quote and question must be given together — a verbatim answer needs the question it answers spelled out, not a bare reference like '1a' into an external list".to_owned(),
+        )
+        .into());
+    }
+    Ok(())
 }
 
 const fn relation_kind_name(relation_kind: RelationKind) -> &'static str {
