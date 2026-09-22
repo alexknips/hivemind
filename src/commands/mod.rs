@@ -12,8 +12,9 @@ use crate::events::{
     CaptureItem, DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload,
     DecisionScoredPayload, DecisionSupersededPayload, Event, EventBuilder, EventId, EventPayload,
     EventProvenance, EventType, EvidenceRecordedPayload, HypothesisRecordedPayload,
-    IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn, RelationAddedPayload,
-    RelationKind, TenantId,
+    IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn, ProjectAnchorKind,
+    ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
+    RelationAddedPayload, RelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::util::require_non_empty;
@@ -25,6 +26,9 @@ pub type HypothesisId = String;
 pub type OptionId = String;
 
 pub const MAX_TOPIC_KEY_LEN: usize = 64;
+pub const MIN_PROJECT_HANDLE_LEN: usize = 2;
+pub const MAX_PROJECT_HANDLE_LEN: usize = 40;
+pub const PERSONAL_PROJECT_HANDLE_PREFIX: &str = "personal:";
 
 #[derive(Debug, Clone)]
 pub struct DecisionProposalEventUuids {
@@ -209,6 +213,206 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }),
             None,
             event_uuid,
+        )?;
+
+        self.append_event(event)
+    }
+
+    /// Register a shared project. Personal projects (handles under the reserved
+    /// `personal:` prefix) are derived from the actor, never registered — see
+    /// `validate_project_handle`.
+    pub fn register_project(
+        &self,
+        actor_id: &str,
+        handle: &str,
+        display_name: Option<&str>,
+        purpose: Option<&str>,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        validate_project_handle(handle)?;
+        require_optional_non_empty("display_name", display_name)?;
+        require_optional_non_empty("purpose", purpose)?;
+
+        if let Some(existing) = self.find_project_registered(handle)? {
+            let existing_name = existing.display_name.unwrap_or(existing.handle);
+            return Err(CommandError::Invariant(format!(
+                "project handle already registered: {handle} (existing project: {existing_name})"
+            ))
+            .into());
+        }
+
+        let event = self.event_with_uuid(
+            actor_id,
+            EventPayload::ProjectRegistered(ProjectRegisteredPayload {
+                handle: handle.to_owned(),
+                display_name: display_name.map(ToOwned::to_owned),
+                purpose: purpose.map(ToOwned::to_owned),
+            }),
+            None,
+            Uuid::new_v4(),
+        )?;
+
+        self.append_event(event)
+    }
+
+    /// Link two registered projects. `part_of` allows at most one active parent per
+    /// project (a tree of any depth); `depends_on` has no such limit.
+    pub fn link_project(
+        &self,
+        actor_id: &str,
+        from: &str,
+        to: &str,
+        kind: ProjectLinkKind,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("from", from)?;
+        require_non_empty("to", to)?;
+
+        if same_identifier(from, to) {
+            return Err(
+                CommandError::Validation("a project cannot link to itself".to_owned()).into(),
+            );
+        }
+        if !self.project_exists(from)? {
+            return Err(CommandError::Invariant(format!("project does not exist: {from}")).into());
+        }
+        if !self.project_exists(to)? {
+            return Err(CommandError::Invariant(format!("project does not exist: {to}")).into());
+        }
+        if kind == ProjectLinkKind::PartOf {
+            if let Some(existing_parent) = self.project_part_of_parent(from)? {
+                if !same_identifier(&existing_parent, to) {
+                    return Err(CommandError::Invariant(format!(
+                        "project {from} already has a part_of parent: {existing_parent}"
+                    ))
+                    .into());
+                }
+            }
+        }
+
+        let event = self.event_with_uuid(
+            actor_id,
+            EventPayload::ProjectLinked(ProjectLinkPayload {
+                from: from.to_owned(),
+                to: to.to_owned(),
+                kind,
+            }),
+            None,
+            Uuid::new_v4(),
+        )?;
+
+        self.append_event(event)
+    }
+
+    /// Remove a currently active link between two projects. Refused when no such link
+    /// is active — an unlink never silently creates the fact it claims to be retracting.
+    pub fn unlink_project(
+        &self,
+        actor_id: &str,
+        from: &str,
+        to: &str,
+        kind: ProjectLinkKind,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("from", from)?;
+        require_non_empty("to", to)?;
+
+        if !self.project_link_exists(from, to, kind)? {
+            return Err(CommandError::Invariant(format!(
+                "no active {} link from {from} to {to}",
+                kind.as_str()
+            ))
+            .into());
+        }
+
+        let event = self.event_with_uuid(
+            actor_id,
+            EventPayload::ProjectUnlinked(ProjectLinkPayload {
+                from: from.to_owned(),
+                to: to.to_owned(),
+                kind,
+            }),
+            None,
+            Uuid::new_v4(),
+        )?;
+
+        self.append_event(event)
+    }
+
+    /// Anchor a registered project to a place in the world. Rig anchor values are unique
+    /// per tenant — folder-marker overlap is enforced by the checked-in marker file, not
+    /// centrally here.
+    pub fn anchor_project(
+        &self,
+        actor_id: &str,
+        handle: &str,
+        anchor_kind: ProjectAnchorKind,
+        value: &str,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("handle", handle)?;
+        require_non_empty("value", value)?;
+
+        if !self.project_exists(handle)? {
+            return Err(
+                CommandError::Invariant(format!("project does not exist: {handle}")).into(),
+            );
+        }
+
+        if anchor_kind == ProjectAnchorKind::Rig {
+            if let Some(owner) = self.rig_anchor_owner(value)? {
+                if !same_identifier(&owner, handle) {
+                    return Err(CommandError::Invariant(format!(
+                        "rig anchor already claimed by project {owner}: {value}"
+                    ))
+                    .into());
+                }
+            }
+        }
+
+        let event = self.event_with_uuid(
+            actor_id,
+            EventPayload::ProjectAnchored(ProjectAnchorPayload {
+                handle: handle.to_owned(),
+                anchor_kind,
+                value: value.to_owned(),
+            }),
+            None,
+            Uuid::new_v4(),
+        )?;
+
+        self.append_event(event)
+    }
+
+    /// Remove a currently active anchor. Refused when no such anchor is active.
+    pub fn unanchor_project(
+        &self,
+        actor_id: &str,
+        handle: &str,
+        anchor_kind: ProjectAnchorKind,
+        value: &str,
+    ) -> Result<EventId> {
+        require_non_empty("actor_id", actor_id)?;
+        require_non_empty("handle", handle)?;
+        require_non_empty("value", value)?;
+
+        if !self.project_anchor_exists(handle, anchor_kind, value)? {
+            return Err(CommandError::Invariant(format!(
+                "no active {} anchor on project {handle}: {value}",
+                anchor_kind.as_str()
+            ))
+            .into());
+        }
+
+        let event = self.event_with_uuid(
+            actor_id,
+            EventPayload::ProjectUnanchored(ProjectAnchorPayload {
+                handle: handle.to_owned(),
+                anchor_kind,
+                value: value.to_owned(),
+            }),
+            None,
+            Uuid::new_v4(),
         )?;
 
         self.append_event(event)
@@ -1096,6 +1300,172 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         })
     }
 
+    fn project_exists(&self, handle: &str) -> Result<bool> {
+        self.scan_events(|event| {
+            // ubs:ignore: project handles are public ledger IDs, not timing-sensitive secrets.
+            let has_matching_handle = payload_value_matches(event, "handle", handle);
+            event.event_type == EventType::ProjectRegistered && has_matching_handle
+        })
+    }
+
+    /// Registration is permanent in this slice (no `project.unregistered` event exists),
+    /// so the first match is the only match — same one-pass-to-first-hit shape as
+    /// `find_decision_event_id` above.
+    fn find_project_registered(&self, handle: &str) -> Result<Option<ProjectRegisteredPayload>> {
+        let mut offset = 0;
+        const PAGE_SIZE: usize = 1024;
+
+        loop {
+            let events = self
+                .ledger
+                .read_for_tenant(&self.context.tenant_id, offset, PAGE_SIZE)?;
+            if events.is_empty() {
+                return Ok(None);
+            }
+
+            for event in &events {
+                if event.event_type != EventType::ProjectRegistered {
+                    continue;
+                }
+                let Some(event_handle) = payload_value_as_str(event, "handle") else {
+                    continue;
+                };
+                if same_identifier(event_handle, handle) {
+                    let payload: ProjectRegisteredPayload =
+                        serde_json::from_value(event.payload.clone()).map_err(|error| {
+                            CommandError::Invariant(format!(
+                                "corrupt project.registered payload for handle {handle}: {error}"
+                            ))
+                        })?;
+                    return Ok(Some(payload));
+                }
+            }
+
+            if let Some(last_event_id) = events.last().and_then(|event| event.event_id) {
+                offset = last_event_id;
+            } else {
+                return Ok(None);
+            }
+        }
+    }
+
+    /// Currently active `project.linked` facts: every link added, minus every link that a
+    /// later `project.unlinked` retracted. Single streaming pass, same shape as
+    /// `find_matching_supersede`'s scan below.
+    fn active_project_links(&self) -> Result<Vec<(String, String, ProjectLinkKind)>> {
+        let mut links: Vec<(String, String, ProjectLinkKind)> = Vec::new();
+
+        self.ledger
+            .replay_from_for_tenant(&self.context.tenant_id, 0, &mut |event| {
+                match event.event_type {
+                    EventType::ProjectLinked => {
+                        if let Ok(payload) =
+                            serde_json::from_value::<ProjectLinkPayload>(event.payload.clone())
+                        {
+                            links.push((payload.from, payload.to, payload.kind));
+                        }
+                    }
+                    EventType::ProjectUnlinked => {
+                        if let Ok(payload) =
+                            serde_json::from_value::<ProjectLinkPayload>(event.payload.clone())
+                        {
+                            links.retain(|(from, to, kind)| {
+                                !(same_identifier(from, &payload.from)
+                                    && same_identifier(to, &payload.to)
+                                    && *kind == payload.kind)
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })?;
+
+        Ok(links)
+    }
+
+    fn project_part_of_parent(&self, handle: &str) -> Result<Option<String>> {
+        Ok(self
+            .active_project_links()?
+            .into_iter()
+            .find(|(from, _, kind)| {
+                *kind == ProjectLinkKind::PartOf && same_identifier(from, handle)
+            })
+            .map(|(_, to, _)| to))
+    }
+
+    fn project_link_exists(&self, from: &str, to: &str, kind: ProjectLinkKind) -> Result<bool> {
+        Ok(self
+            .active_project_links()?
+            .into_iter()
+            .any(|(link_from, link_to, link_kind)| {
+                same_identifier(&link_from, from)
+                    && same_identifier(&link_to, to)
+                    && link_kind == kind
+            }))
+    }
+
+    /// Currently active `project.anchored` facts: every anchor added, minus every anchor
+    /// that a later `project.unanchored` retracted. Same net-of-adds-and-removes shape as
+    /// `active_project_links`.
+    fn active_project_anchors(&self) -> Result<Vec<(String, ProjectAnchorKind, String)>> {
+        let mut anchors: Vec<(String, ProjectAnchorKind, String)> = Vec::new();
+
+        self.ledger
+            .replay_from_for_tenant(&self.context.tenant_id, 0, &mut |event| {
+                match event.event_type {
+                    EventType::ProjectAnchored => {
+                        if let Ok(payload) =
+                            serde_json::from_value::<ProjectAnchorPayload>(event.payload.clone())
+                        {
+                            anchors.push((payload.handle, payload.anchor_kind, payload.value));
+                        }
+                    }
+                    EventType::ProjectUnanchored => {
+                        if let Ok(payload) =
+                            serde_json::from_value::<ProjectAnchorPayload>(event.payload.clone())
+                        {
+                            anchors.retain(|(handle, anchor_kind, value)| {
+                                !(same_identifier(handle, &payload.handle)
+                                    && *anchor_kind == payload.anchor_kind
+                                    && same_identifier(value, &payload.value))
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })?;
+
+        Ok(anchors)
+    }
+
+    fn rig_anchor_owner(&self, value: &str) -> Result<Option<String>> {
+        Ok(self
+            .active_project_anchors()?
+            .into_iter()
+            .find(|(_, anchor_kind, anchor_value)| {
+                *anchor_kind == ProjectAnchorKind::Rig && same_identifier(anchor_value, value)
+            })
+            .map(|(handle, _, _)| handle))
+    }
+
+    fn project_anchor_exists(
+        &self,
+        handle: &str,
+        anchor_kind: ProjectAnchorKind,
+        value: &str,
+    ) -> Result<bool> {
+        Ok(self
+            .active_project_anchors()?
+            .into_iter()
+            .any(|(anchor_handle, kind, anchor_value)| {
+                same_identifier(&anchor_handle, handle)
+                    && kind == anchor_kind
+                    && same_identifier(&anchor_value, value)
+            }))
+    }
+
     fn decision_exists(&self, decision_id: &str) -> Result<bool> {
         self.scan_events(|event| {
             // ubs:ignore: decision IDs are public ledger IDs, not timing-sensitive secrets.
@@ -1508,6 +1878,39 @@ fn require_optional_non_empty(field: &'static str, value: Option<&str>) -> Resul
     } else {
         Ok(())
     }
+}
+
+/// Handle format: lowercase letters, digits, dashes; 2-40 chars; the `personal:` prefix is
+/// reserved for the actor-derived personal project address and is never typed or registered.
+fn validate_project_handle(handle: &str) -> Result<()> {
+    require_non_empty("handle", handle)?;
+
+    if handle.starts_with(PERSONAL_PROJECT_HANDLE_PREFIX) {
+        return Err(CommandError::Validation(format!(
+            "project handle must not use the reserved \"{PERSONAL_PROJECT_HANDLE_PREFIX}\" prefix: {handle}"
+        ))
+        .into());
+    }
+
+    let len = handle.chars().count();
+    if len < MIN_PROJECT_HANDLE_LEN || len > MAX_PROJECT_HANDLE_LEN {
+        return Err(CommandError::Validation(format!(
+            "project handle must be {MIN_PROJECT_HANDLE_LEN}-{MAX_PROJECT_HANDLE_LEN} characters: {handle}"
+        ))
+        .into());
+    }
+
+    if !handle
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(CommandError::Validation(format!(
+            "project handle must contain only lowercase letters, digits, and dashes: {handle}"
+        ))
+        .into());
+    }
+
+    Ok(())
 }
 
 fn generate_entity_id(prefix: &str) -> String {

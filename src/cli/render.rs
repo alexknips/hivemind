@@ -659,6 +659,11 @@ fn event_type_label(event_type: EventType) -> &'static str {
         EventType::IngestBatchClassified => "ingest.batch_classified",
         EventType::DecisionScored => "decision.scored",
         EventType::DecisionMetadataDerived => "decision.metadata_derived",
+        EventType::ProjectRegistered => "project.registered",
+        EventType::ProjectLinked => "project.linked",
+        EventType::ProjectUnlinked => "project.unlinked",
+        EventType::ProjectAnchored => "project.anchored",
+        EventType::ProjectUnanchored => "project.unanchored",
     }
 }
 
@@ -1024,6 +1029,9 @@ fn node_dump_query(kind: NodeKind) -> String {
             "node.id AS id, node.label AS label, node.description AS description"
         }
         NodeKind::Hypothesis => "node.id AS id, node.statement AS statement",
+        NodeKind::Project => {
+            "node.id AS id, node.handle AS handle, node.display_name AS display_name, node.purpose AS purpose, node.anchors AS anchors"
+        }
     };
     format!(
         "MATCH (node:`{}`) RETURN {projection} ORDER BY node.id;",
@@ -1076,6 +1084,12 @@ fn node_properties_from_row(kind: NodeKind, row: &GraphRow) -> GraphProperties {
             insert_if_present(&mut properties, row, "description");
         }
         NodeKind::Hypothesis => insert_if_present(&mut properties, row, "statement"),
+        NodeKind::Project => {
+            insert_if_present(&mut properties, row, "handle");
+            insert_if_present(&mut properties, row, "display_name");
+            insert_if_present(&mut properties, row, "purpose");
+            insert_if_present(&mut properties, row, "anchors");
+        }
     }
     properties
 }
@@ -1107,6 +1121,7 @@ fn node_color(kind: NodeKind) -> &'static str {
         NodeKind::Notification => "#d2b4de",
         NodeKind::Option => "#f9e79f",
         NodeKind::Hypothesis => "#f5cba7",
+        NodeKind::Project => "#aed6f1",
     }
 }
 

@@ -13,7 +13,7 @@ use crate::ledger::{
 };
 use crate::projector::memory::MemoryGraph;
 use crate::projector::{
-    project_from_ledger, GraphParams, GraphValue, GraphView, NodeKind, RelationKind,
+    project_from_ledger, GraphParams, GraphRow, GraphValue, GraphView, NodeKind, RelationKind,
 };
 use crate::queries::{
     get_decision, get_decision_brief, get_decision_context, get_decision_context_candidates,
@@ -70,6 +70,126 @@ fn postgres_projection_matches_memory_for_all_node_and_edge_types() -> Result<()
                 return Err(test_error(format!(
                     "edge mismatch for {}: memory={memory_rows:?} pg={pg_rows:?}",
                     relation.table_name()
+                )));
+            }
+        }
+
+        Ok(())
+    })
+}
+
+#[test]
+fn postgres_projects_projection_matches_memory_with_links_and_anchors() -> Result<()> {
+    with_postgres_graph("projects-links-anchors", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = InMemoryEventLedger::new();
+        for event in [
+            make_event(
+                EventType::ProjectRegistered,
+                "actor:alice",
+                json!({"handle": "platform", "display_name": "Platform"}),
+            ),
+            make_event(
+                EventType::ProjectRegistered,
+                "actor:alice",
+                json!({"handle": "billing", "display_name": "Billing"}),
+            ),
+            make_event(
+                EventType::ProjectRegistered,
+                "actor:alice",
+                json!({"handle": "auth", "display_name": "Auth"}),
+            ),
+            make_event(
+                EventType::ProjectLinked,
+                "actor:alice",
+                json!({"from": "billing", "to": "platform", "kind": "part_of"}),
+            ),
+            make_event(
+                EventType::ProjectLinked,
+                "actor:alice",
+                json!({"from": "billing", "to": "auth", "kind": "depends_on"}),
+            ),
+            make_event(
+                EventType::ProjectAnchored,
+                "actor:alice",
+                json!({"handle": "billing", "anchor_kind": "folder", "value": "services/billing"}),
+            ),
+            make_event(
+                EventType::ProjectAnchored,
+                "actor:alice",
+                json!({"handle": "billing", "anchor_kind": "rig", "value": "hivemind"}),
+            ),
+        ] {
+            ledger.append(event)?;
+        }
+
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        let node_cypher = "MATCH (node:`Project`) RETURN node.id AS id, node.handle AS handle, node.display_name AS display_name, node.anchors AS anchors ORDER BY node.id;";
+        let memory_rows = memory.query(node_cypher, &GraphParams::new())?;
+        let pg_rows = pg.query(node_cypher, &GraphParams::new())?;
+        if memory_rows != pg_rows {
+            return Err(test_error(format!(
+                "project node mismatch: memory={memory_rows:?} pg={pg_rows:?}"
+            )));
+        }
+        if memory_rows.len() != 3 {
+            return Err(test_error(format!(
+                "expected 3 project nodes, got {}",
+                memory_rows.len()
+            )));
+        }
+
+        let billing = pg_rows
+            .iter()
+            .find(|row| row.get("id") == Some(&GraphValue::String("billing".to_owned())))
+            .ok_or_else(|| test_error("billing project node missing on postgres"))?;
+        match billing.get("anchors") {
+            Some(GraphValue::StringList(values)) => {
+                let mut sorted = values.clone();
+                sorted.sort();
+                let expected = vec![
+                    "folder:services/billing".to_owned(),
+                    "rig:hivemind".to_owned(),
+                ];
+                if sorted != expected {
+                    return Err(test_error(format!(
+                        "unexpected anchors on postgres: {sorted:?}"
+                    )));
+                }
+            }
+            other => {
+                return Err(test_error(format!(
+                    "expected anchors StringList on postgres, got {other:?}"
+                )))
+            }
+        }
+
+        for (relation, expected_to) in [("PART_OF", "platform"), ("DEPENDS_ON", "auth")] {
+            let cypher = format!(
+                "MATCH (from:`Project`)-[:`{relation}`]->(to:`Project`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;"
+            );
+            let memory_rows = memory.query(&cypher, &GraphParams::new())?;
+            let pg_rows = pg.query(&cypher, &GraphParams::new())?;
+            if memory_rows != pg_rows {
+                return Err(test_error(format!(
+                    "{relation} mismatch: memory={memory_rows:?} pg={pg_rows:?}"
+                )));
+            }
+            let expected_row = GraphRow::from([
+                (
+                    "from_id".to_owned(),
+                    GraphValue::String("billing".to_owned()),
+                ),
+                (
+                    "to_id".to_owned(),
+                    GraphValue::String(expected_to.to_owned()),
+                ),
+            ]);
+            if pg_rows != vec![expected_row] {
+                return Err(test_error(format!(
+                    "unexpected {relation} rows on postgres: {pg_rows:?}"
                 )));
             }
         }

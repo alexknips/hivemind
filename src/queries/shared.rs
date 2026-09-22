@@ -103,6 +103,9 @@ pub(crate) fn node_rows(
         NodeKind::Notification => format!(
             "MATCH (node:`{table}`) RETURN node.id AS id, node.blocker_id AS blocker_id, node.recipient_actor_id AS recipient_actor_id, node.channel AS channel, node.threshold_rule AS threshold_rule, node.source_event_ids AS source_event_ids, node.dedupe_key AS dedupe_key, node.sent_at AS sent_at, node.ack_at AS ack_at, node.snooze_until AS snooze_until, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
         ),
+        NodeKind::Project => format!(
+            "MATCH (node:`{table}`) RETURN node.id AS id, node.handle AS handle, node.display_name AS display_name, node.purpose AS purpose, node.anchors AS anchors, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
+        ),
     };
 
     let mut rows_by_id = BTreeMap::new();

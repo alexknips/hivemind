@@ -49,6 +49,10 @@ const NODE_DDL: &[(NodeKind, &str)] = &[
         NodeKind::Notification,
         "CREATE NODE TABLE IF NOT EXISTS `Notification` (id STRING, blocker_id STRING, recipient_actor_id STRING, channel STRING, threshold_rule STRING, source_event_ids STRING[], dedupe_key STRING, sent_at STRING, ack_at STRING, snooze_until STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
+    (
+        NodeKind::Project,
+        "CREATE NODE TABLE IF NOT EXISTS `Project` (id STRING, handle STRING, display_name STRING, purpose STRING, anchors STRING[], tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+    ),
 ];
 
 const RELATION_DDL: &[(RelationKind, &str)] = &[
@@ -139,6 +143,14 @@ const RELATION_DDL: &[(RelationKind, &str)] = &[
     (
         RelationKind::Refutes,
         "CREATE REL TABLE IF NOT EXISTS `REFUTES` (FROM `Evidence` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::PartOf,
+        "CREATE REL TABLE IF NOT EXISTS `PART_OF` (FROM `Project` TO `Project`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::DependsOn,
+        "CREATE REL TABLE IF NOT EXISTS `DEPENDS_ON` (FROM `Project` TO `Project`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
 ];
 

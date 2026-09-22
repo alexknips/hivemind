@@ -64,6 +64,31 @@ const FIXTURES: &[(&str, &str, EventType)] = &[
         include_str!("../../tests/fixtures/v0/notification.acknowledged.json"),
         EventType::NotificationAcknowledged,
     ),
+    (
+        include_str!("../../schemas/v0/project.registered.json"),
+        include_str!("../../tests/fixtures/v0/project.registered.json"),
+        EventType::ProjectRegistered,
+    ),
+    (
+        include_str!("../../schemas/v0/project.linked.json"),
+        include_str!("../../tests/fixtures/v0/project.linked.json"),
+        EventType::ProjectLinked,
+    ),
+    (
+        include_str!("../../schemas/v0/project.unlinked.json"),
+        include_str!("../../tests/fixtures/v0/project.unlinked.json"),
+        EventType::ProjectUnlinked,
+    ),
+    (
+        include_str!("../../schemas/v0/project.anchored.json"),
+        include_str!("../../tests/fixtures/v0/project.anchored.json"),
+        EventType::ProjectAnchored,
+    ),
+    (
+        include_str!("../../schemas/v0/project.unanchored.json"),
+        include_str!("../../tests/fixtures/v0/project.unanchored.json"),
+        EventType::ProjectUnanchored,
+    ),
 ];
 
 #[test]

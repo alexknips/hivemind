@@ -1,0 +1,16 @@
+{
+  "event_id": 23,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe23",
+  "correlation_id": "session-1",
+  "causation_event_id": null,
+  "type": "project.anchored",
+  "actor_id": "agent-a",
+  "source": "agent",
+  "source_ref": "agent:codex:session-1",
+  "payload": {
+    "handle": "billing",
+    "anchor_kind": "folder",
+    "value": "services/billing"
+  },
+  "ts": "2026-09-21T20:48:43Z"
+}

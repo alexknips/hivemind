@@ -10,8 +10,9 @@ use crate::events::{
     self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionProposedPayload,
     DecisionRequestedPayload, DecisionScoredPayload, Event, EventId, EventPayload,
     EvidenceRecordedPayload, HypothesisRecordedPayload, IngestBatchClassifiedPayload,
-    NotificationAcknowledgedPayload, NotificationSentPayload, RelationKind as EventRelationKind,
-    TenantId,
+    NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
+    ProjectAnchorPayload, ProjectLinkKind, ProjectRegisteredPayload,
+    RelationKind as EventRelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -52,10 +53,13 @@ pub enum NodeKind {
     Notification,
     Option,
     Hypothesis,
+    /// Shared project. Personal projects never get a node — they're derived from the
+    /// actor id at query time, never registered (see `commands::register_project`).
+    Project,
 }
 
 impl NodeKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Decision,
         Self::DecisionRequest,
         Self::Actor,
@@ -64,6 +68,7 @@ impl NodeKind {
         Self::Notification,
         Self::Option,
         Self::Hypothesis,
+        Self::Project,
     ];
 
     pub const fn table_name(self) -> &'static str {
@@ -76,6 +81,7 @@ impl NodeKind {
             Self::Notification => "Notification",
             Self::Option => "Option",
             Self::Hypothesis => "Hypothesis",
+            Self::Project => "Project",
         }
     }
 }
@@ -117,10 +123,14 @@ pub enum RelationKind {
     ParticipatedBy,
     /// Actor that initiated the session that produced this decision.
     InitiatedBy,
+    /// `from` project is part of `to` project (at most one active parent per project).
+    PartOf,
+    /// `from` project depends on `to` project (one hop, not transitive by default).
+    DependsOn,
 }
 
 impl RelationKind {
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 27] = [
         Self::ProposedBy,
         Self::DecisionRequestedBy,
         Self::DecisionRequestForDecision,
@@ -146,6 +156,8 @@ impl RelationKind {
         Self::SameAs,
         Self::ParticipatedBy,
         Self::InitiatedBy,
+        Self::PartOf,
+        Self::DependsOn,
     ];
 
     pub const fn table_name(self) -> &'static str {
@@ -175,6 +187,8 @@ impl RelationKind {
             Self::SameAs => "SAME_AS",
             Self::ParticipatedBy => "PARTICIPATED_BY",
             Self::InitiatedBy => "INITIATED_BY",
+            Self::PartOf => "PART_OF",
+            Self::DependsOn => "DEPENDS_ON",
         }
     }
 
@@ -202,6 +216,7 @@ impl RelationKind {
             Self::Supports | Self::Refutes => (NodeKind::Evidence, NodeKind::Hypothesis),
             Self::SameAs => (NodeKind::Decision, NodeKind::Decision),
             Self::ParticipatedBy | Self::InitiatedBy => (NodeKind::Decision, NodeKind::Actor),
+            Self::PartOf | Self::DependsOn => (NodeKind::Project, NodeKind::Project),
         }
     }
 }
@@ -305,6 +320,22 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
         }
         EventPayload::DecisionMetadataDerived(_) => {
             // Derived metadata is stored in the ledger only; graph projection deferred to layer 3
+        }
+        EventPayload::ProjectRegistered(payload) => {
+            project_project_registered(graph, &payload, &origin_properties)?
+        }
+        EventPayload::ProjectLinked(payload) => {
+            let kind = project_link_relation_kind(payload.kind);
+            graph.upsert_edge(kind, &payload.from, &payload.to, &origin_properties)?;
+        }
+        EventPayload::ProjectUnlinked(_) => {
+            // GraphView has no remove_edge; retraction is recorded in the ledger only
+        }
+        EventPayload::ProjectAnchored(payload) => {
+            project_project_anchored(graph, &payload, &origin_properties)?
+        }
+        EventPayload::ProjectUnanchored(payload) => {
+            project_project_unanchored(graph, &payload, &origin_properties)?
         }
     }
 
@@ -508,7 +539,9 @@ fn capture_node_text(kind: NodeKind, id: &str, props: &GraphProperties) -> Strin
         // Actor nodes have no text property; use the ID as a scoring proxy so
         // gold_as_captures() IDs (e.g. "mia") match the produced Actor node ID.
         NodeKind::Actor => return id.to_owned(),
-        NodeKind::Notification => return String::new(),
+        // No capture kind ever produces a Project node (see `project_capture`'s match);
+        // this arm exists only for exhaustiveness.
+        NodeKind::Notification | NodeKind::Project => return String::new(),
     };
     match props.get(key) {
         Some(GraphValue::String(s)) => s.clone(),
@@ -624,6 +657,13 @@ fn relation_kind(kind: EventRelationKind) -> RelationKind {
         EventRelationKind::Supports => RelationKind::Supports,
         EventRelationKind::Refutes => RelationKind::Refutes,
         EventRelationKind::SameAs => RelationKind::SameAs,
+    }
+}
+
+const fn project_link_relation_kind(kind: ProjectLinkKind) -> RelationKind {
+    match kind {
+        ProjectLinkKind::PartOf => RelationKind::PartOf,
+        ProjectLinkKind::DependsOn => RelationKind::DependsOn,
     }
 }
 
@@ -841,6 +881,88 @@ fn project_hypothesis_recorded(
         [("statement", GraphValue::String(payload.statement.clone()))],
     );
     graph.upsert_node(NodeKind::Hypothesis, &payload.hypothesis_id, &props)
+}
+
+fn project_project_registered(
+    graph: &impl GraphView,
+    payload: &ProjectRegisteredPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let props = props_extend(
+        origin_properties,
+        [
+            ("handle", GraphValue::String(payload.handle.clone())),
+            (
+                "display_name",
+                optional_string_value(payload.display_name.as_deref()),
+            ),
+            ("purpose", optional_string_value(payload.purpose.as_deref())),
+            ("anchors", GraphValue::StringList(Vec::new())),
+        ],
+    );
+    graph.upsert_node(NodeKind::Project, &payload.handle, &props)
+}
+
+/// Encodes one anchor as a single self-describing string (`"{kind}:{value}"`) so it can
+/// live in the `anchors` StringList property on the Project node instead of a separate
+/// edge table — matching the approved record shape's "props ... anchors[]".
+fn encode_project_anchor(anchor_kind: ProjectAnchorKind, value: &str) -> String {
+    format!("{}:{value}", anchor_kind.as_str())
+}
+
+/// `upsert_node` merges properties by key (last write wins per key, never appends into an
+/// existing list — see `GraphView::upsert_node`), so accumulating the `anchors` list across
+/// multiple `project.anchored`/`project.unanchored` events needs a read before the write.
+/// Reuses the existing "all nodes of a kind" query shape (see `map::load_decisions`) rather
+/// than adding a new query pattern to every `GraphView` backend: memory/postgres already
+/// return every stored property for that shape regardless of the requested columns, and Kuzu
+/// (real Cypher) returns exactly the two columns named here.
+fn current_project_anchors(graph: &impl GraphView, handle: &str) -> Result<Vec<String>> {
+    let rows = graph.query(
+        "MATCH (node:`Project`) RETURN node.id AS id, node.anchors AS anchors ORDER BY node.id;",
+        &GraphParams::new(),
+    )?;
+    for row in &rows {
+        if matches!(row.get("id"), Some(GraphValue::String(id)) if id == handle) {
+            return Ok(match row.get("anchors") {
+                Some(GraphValue::StringList(values)) => values.clone(),
+                _ => Vec::new(),
+            });
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn project_project_anchored(
+    graph: &impl GraphView,
+    payload: &ProjectAnchorPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let entry = encode_project_anchor(payload.anchor_kind, &payload.value);
+    let mut anchors = current_project_anchors(graph, &payload.handle)?;
+    if !anchors.contains(&entry) {
+        anchors.push(entry);
+    }
+    let props = props_extend(
+        origin_properties,
+        [("anchors", GraphValue::StringList(anchors))],
+    );
+    graph.upsert_node(NodeKind::Project, &payload.handle, &props)
+}
+
+fn project_project_unanchored(
+    graph: &impl GraphView,
+    payload: &ProjectAnchorPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let entry = encode_project_anchor(payload.anchor_kind, &payload.value);
+    let mut anchors = current_project_anchors(graph, &payload.handle)?;
+    anchors.retain(|existing| existing != &entry);
+    let props = props_extend(
+        origin_properties,
+        [("anchors", GraphValue::StringList(anchors))],
+    );
+    graph.upsert_node(NodeKind::Project, &payload.handle, &props)
 }
 
 fn project_blocker_reported(

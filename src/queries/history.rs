@@ -1405,7 +1405,12 @@ impl DecisionIndex {
                 | EventPayload::IngestBatchReceived(_)
                 | EventPayload::IngestBatchClassified(_)
                 | EventPayload::DecisionScored(_)
-                | EventPayload::DecisionMetadataDerived(_) => {}
+                | EventPayload::DecisionMetadataDerived(_)
+                | EventPayload::ProjectRegistered(_)
+                | EventPayload::ProjectLinked(_)
+                | EventPayload::ProjectUnlinked(_)
+                | EventPayload::ProjectAnchored(_)
+                | EventPayload::ProjectUnanchored(_) => {}
             }
         }
         Ok(index)
@@ -1523,7 +1528,12 @@ fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
         | EventPayload::IngestBatchReceived(_)
         | EventPayload::IngestBatchClassified(_)
         | EventPayload::DecisionScored(_)
-        | EventPayload::DecisionMetadataDerived(_) => HistoryChangeKind::ContextChange,
+        | EventPayload::DecisionMetadataDerived(_)
+        | EventPayload::ProjectRegistered(_)
+        | EventPayload::ProjectLinked(_)
+        | EventPayload::ProjectUnlinked(_)
+        | EventPayload::ProjectAnchored(_)
+        | EventPayload::ProjectUnanchored(_) => HistoryChangeKind::ContextChange,
     }
 }
 
@@ -1587,7 +1597,12 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
         | EventPayload::IngestBatchReceived(_)
         | EventPayload::IngestBatchClassified(_)
         | EventPayload::DecisionScored(_)
-        | EventPayload::DecisionMetadataDerived(_) => {}
+        | EventPayload::DecisionMetadataDerived(_)
+        | EventPayload::ProjectRegistered(_)
+        | EventPayload::ProjectLinked(_)
+        | EventPayload::ProjectUnlinked(_)
+        | EventPayload::ProjectAnchored(_)
+        | EventPayload::ProjectUnanchored(_) => {}
     }
     ids.into_iter().collect()
 }
@@ -1709,7 +1724,12 @@ fn affected_nodes_for_event(event: &Event, payload: &EventPayload) -> Vec<Affect
         EventPayload::IngestBatchReceived(_)
         | EventPayload::IngestBatchClassified(_)
         | EventPayload::DecisionScored(_)
-        | EventPayload::DecisionMetadataDerived(_) => {}
+        | EventPayload::DecisionMetadataDerived(_)
+        | EventPayload::ProjectRegistered(_)
+        | EventPayload::ProjectLinked(_)
+        | EventPayload::ProjectUnlinked(_)
+        | EventPayload::ProjectAnchored(_)
+        | EventPayload::ProjectUnanchored(_) => {}
     }
     nodes.into_iter().collect()
 }

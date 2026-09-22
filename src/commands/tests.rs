@@ -6,7 +6,9 @@ use proptest::prelude::*;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::events::{EventProvenance, EventSource, EventType, RelationKind};
+use crate::events::{
+    EventProvenance, EventSource, EventType, ProjectAnchorKind, ProjectLinkKind, RelationKind,
+};
 use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
 use super::{
@@ -672,6 +674,312 @@ fn relate_evidence_to_hypothesis_requires_supports_or_refutes_and_is_idempotent(
         })
         .count();
     assert_eq!(relation_events, 1);
+}
+
+#[test]
+fn register_project_appends_project_registered_event() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    commands
+        .register_project(
+            "actor:alice",
+            "billing",
+            Some("Billing"),
+            Some("Per-seat and per-org pricing decisions"),
+        )
+        .expect("register succeeds");
+
+    let events = ledger.read(0, 10).expect("read succeeds");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, EventType::ProjectRegistered);
+    assert_eq!(
+        events[0].payload.get("handle").and_then(|v| v.as_str()),
+        Some("billing")
+    );
+    assert_eq!(
+        events[0]
+            .payload
+            .get("display_name")
+            .and_then(|v| v.as_str()),
+        Some("Billing")
+    );
+}
+
+#[test]
+fn register_project_rejects_bad_handle_format() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    // Too short.
+    assert!(commands
+        .register_project("actor:alice", "a", None, None)
+        .is_err());
+    // Uppercase not allowed.
+    assert!(commands
+        .register_project("actor:alice", "Billing", None, None)
+        .is_err());
+    // Underscore not allowed.
+    assert!(commands
+        .register_project("actor:alice", "bill_ing", None, None)
+        .is_err());
+    // Longer than 40 chars.
+    assert!(commands
+        .register_project("actor:alice", &"b".repeat(41), None, None)
+        .is_err());
+    // The "personal:" prefix is reserved.
+    assert!(commands
+        .register_project("actor:alice", "personal:alice", None, None)
+        .is_err());
+
+    assert!(ledger.read(0, 10).expect("read succeeds").is_empty());
+}
+
+#[test]
+fn register_project_rejects_duplicate_handle_naming_existing_project() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    commands
+        .register_project("actor:alice", "billing", Some("Billing"), None)
+        .expect("first registration succeeds");
+
+    let error = commands
+        .register_project("actor:bob", "billing", Some("Billing Team"), None)
+        .expect_err("duplicate handle is refused");
+    let message = error.to_string();
+    assert!(message.contains("billing"), "message was: {message}");
+    assert!(message.contains("Billing"), "message was: {message}");
+
+    let events = ledger.read(0, 10).expect("read succeeds");
+    assert_eq!(events.len(), 1, "duplicate registration must not append");
+}
+
+#[test]
+fn link_project_requires_both_endpoints_registered() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    commands
+        .register_project("actor:alice", "billing", None, None)
+        .expect("register billing");
+
+    assert!(commands
+        .link_project(
+            "actor:alice",
+            "billing",
+            "platform",
+            ProjectLinkKind::PartOf
+        )
+        .is_err());
+    assert!(commands
+        .link_project(
+            "actor:alice",
+            "platform",
+            "billing",
+            ProjectLinkKind::PartOf
+        )
+        .is_err());
+
+    assert!(ledger
+        .read(0, 10)
+        .expect("read succeeds")
+        .iter()
+        .all(|event| event.event_type != EventType::ProjectLinked));
+}
+
+#[test]
+fn link_project_rejects_self_link() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    commands
+        .register_project("actor:alice", "billing", None, None)
+        .expect("register billing");
+
+    assert!(commands
+        .link_project(
+            "actor:alice",
+            "billing",
+            "billing",
+            ProjectLinkKind::DependsOn
+        )
+        .is_err());
+}
+
+#[test]
+fn link_project_part_of_allows_only_one_active_parent() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    for handle in ["billing", "platform", "auth"] {
+        commands
+            .register_project("actor:alice", handle, None, None)
+            .expect("register");
+    }
+
+    commands
+        .link_project(
+            "actor:alice",
+            "billing",
+            "platform",
+            ProjectLinkKind::PartOf,
+        )
+        .expect("first parent succeeds");
+
+    // A second, different part_of parent is refused.
+    assert!(commands
+        .link_project("actor:alice", "billing", "auth", ProjectLinkKind::PartOf)
+        .is_err());
+
+    // depends_on has no such limit.
+    assert!(commands
+        .link_project("actor:alice", "billing", "auth", ProjectLinkKind::DependsOn)
+        .is_ok());
+}
+
+#[test]
+fn unlink_project_requires_an_active_link() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    for handle in ["billing", "platform"] {
+        commands
+            .register_project("actor:alice", handle, None, None)
+            .expect("register");
+    }
+
+    assert!(commands
+        .unlink_project(
+            "actor:alice",
+            "billing",
+            "platform",
+            ProjectLinkKind::PartOf
+        )
+        .is_err());
+
+    commands
+        .link_project(
+            "actor:alice",
+            "billing",
+            "platform",
+            ProjectLinkKind::PartOf,
+        )
+        .expect("link succeeds");
+    commands
+        .unlink_project(
+            "actor:alice",
+            "billing",
+            "platform",
+            ProjectLinkKind::PartOf,
+        )
+        .expect("unlink succeeds");
+
+    // Once unlinked, a new part_of parent is accepted again.
+    commands
+        .register_project("actor:alice", "auth", None, None)
+        .expect("register auth");
+    assert!(commands
+        .link_project("actor:alice", "billing", "auth", ProjectLinkKind::PartOf)
+        .is_ok());
+}
+
+#[test]
+fn anchor_project_requires_registered_project() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    assert!(commands
+        .anchor_project(
+            "actor:alice",
+            "billing",
+            ProjectAnchorKind::Folder,
+            "services/billing",
+        )
+        .is_err());
+}
+
+#[test]
+fn anchor_project_rejects_duplicate_rig_anchor_value() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    for handle in ["hivemind", "hivemind-ui"] {
+        commands
+            .register_project("actor:alice", handle, None, None)
+            .expect("register");
+    }
+
+    commands
+        .anchor_project(
+            "actor:alice",
+            "hivemind",
+            ProjectAnchorKind::Rig,
+            "hivemind",
+        )
+        .expect("first rig anchor succeeds");
+
+    // A different project claiming the same rig value is refused.
+    assert!(commands
+        .anchor_project(
+            "actor:alice",
+            "hivemind-ui",
+            ProjectAnchorKind::Rig,
+            "hivemind",
+        )
+        .is_err());
+
+    // Folder anchors are not centrally unique — no refusal for a repeated folder value.
+    commands
+        .anchor_project(
+            "actor:alice",
+            "hivemind",
+            ProjectAnchorKind::Folder,
+            "services/billing",
+        )
+        .expect("first folder anchor succeeds");
+    assert!(commands
+        .anchor_project(
+            "actor:alice",
+            "hivemind-ui",
+            ProjectAnchorKind::Folder,
+            "services/billing",
+        )
+        .is_ok());
+}
+
+#[test]
+fn unanchor_project_requires_an_active_anchor() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    commands
+        .register_project("actor:alice", "billing", None, None)
+        .expect("register billing");
+
+    assert!(commands
+        .unanchor_project("actor:alice", "billing", ProjectAnchorKind::Rig, "billing",)
+        .is_err());
+
+    commands
+        .anchor_project("actor:alice", "billing", ProjectAnchorKind::Rig, "billing")
+        .expect("anchor succeeds");
+    commands
+        .unanchor_project("actor:alice", "billing", ProjectAnchorKind::Rig, "billing")
+        .expect("unanchor succeeds");
+
+    // Once retracted, a different project may claim the same rig value.
+    commands
+        .register_project("actor:alice", "billing-two", None, None)
+        .expect("register billing-two");
+    assert!(commands
+        .anchor_project(
+            "actor:alice",
+            "billing-two",
+            ProjectAnchorKind::Rig,
+            "billing",
+        )
+        .is_ok());
 }
 
 #[test]

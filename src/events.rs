@@ -85,6 +85,16 @@ pub enum EventType {
     DecisionScored,
     #[serde(rename = "decision.metadata_derived")]
     DecisionMetadataDerived,
+    #[serde(rename = "project.registered")]
+    ProjectRegistered,
+    #[serde(rename = "project.linked")]
+    ProjectLinked,
+    #[serde(rename = "project.unlinked")]
+    ProjectUnlinked,
+    #[serde(rename = "project.anchored")]
+    ProjectAnchored,
+    #[serde(rename = "project.unanchored")]
+    ProjectUnanchored,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -659,6 +669,86 @@ pub struct RelationRemovedPayload {
     pub to_id: String,
 }
 
+/// A project's own handle is never `part_of`/`depends_on` another project's handle by
+/// accident: the two kinds are wire-distinct so a link event can never be mistaken for a
+/// decision-graph `RelationKind` (see `events::RelationKind` above), even though both use
+/// the word "relation" informally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectLinkKind {
+    #[serde(rename = "part_of")]
+    PartOf,
+    #[serde(rename = "depends_on")]
+    DependsOn,
+}
+
+impl ProjectLinkKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PartOf => "part_of",
+            Self::DependsOn => "depends_on",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProjectAnchorKind {
+    #[serde(rename = "folder")]
+    Folder,
+    #[serde(rename = "rig")]
+    Rig,
+    #[serde(rename = "jira")]
+    Jira,
+    #[serde(rename = "linear")]
+    Linear,
+    #[serde(rename = "github")]
+    Github,
+    #[serde(rename = "channel")]
+    Channel,
+}
+
+impl ProjectAnchorKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Folder => "folder",
+            Self::Rig => "rig",
+            Self::Jira => "jira",
+            Self::Linear => "linear",
+            Self::Github => "github",
+            Self::Channel => "channel",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectRegisteredPayload {
+    pub handle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
+}
+
+/// Shared shape for both `project.linked` and `project.unlinked` — an unlink is the same
+/// fact recorded again, not a mutation of the original (nothing is ever deleted from the
+/// ledger; see AGENTS.md section 1, "forget responsibly").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectLinkPayload {
+    pub from: String,
+    pub to: String,
+    pub kind: ProjectLinkKind,
+}
+
+/// Shared shape for both `project.anchored` and `project.unanchored`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectAnchorPayload {
+    pub handle: String,
+    pub anchor_kind: ProjectAnchorKind,
+    pub value: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventPayload {
     DecisionProposed(DecisionProposedPayload),
@@ -678,6 +768,11 @@ pub enum EventPayload {
     IngestBatchClassified(IngestBatchClassifiedPayload),
     DecisionScored(DecisionScoredPayload),
     DecisionMetadataDerived(DecisionMetadataDerivedPayload),
+    ProjectRegistered(ProjectRegisteredPayload),
+    ProjectLinked(ProjectLinkPayload),
+    ProjectUnlinked(ProjectLinkPayload),
+    ProjectAnchored(ProjectAnchorPayload),
+    ProjectUnanchored(ProjectAnchorPayload),
 }
 
 impl EventPayload {
@@ -700,6 +795,11 @@ impl EventPayload {
             Self::IngestBatchClassified(_) => EventType::IngestBatchClassified,
             Self::DecisionScored(_) => EventType::DecisionScored,
             Self::DecisionMetadataDerived(_) => EventType::DecisionMetadataDerived,
+            Self::ProjectRegistered(_) => EventType::ProjectRegistered,
+            Self::ProjectLinked(_) => EventType::ProjectLinked,
+            Self::ProjectUnlinked(_) => EventType::ProjectUnlinked,
+            Self::ProjectAnchored(_) => EventType::ProjectAnchored,
+            Self::ProjectUnanchored(_) => EventType::ProjectUnanchored,
         }
     }
 
@@ -722,6 +822,11 @@ impl EventPayload {
             Self::IngestBatchClassified(payload) => serde_json::to_value(payload),
             Self::DecisionScored(payload) => serde_json::to_value(payload),
             Self::DecisionMetadataDerived(payload) => serde_json::to_value(payload),
+            Self::ProjectRegistered(payload) => serde_json::to_value(payload),
+            Self::ProjectLinked(payload) => serde_json::to_value(payload),
+            Self::ProjectUnlinked(payload) => serde_json::to_value(payload),
+            Self::ProjectAnchored(payload) => serde_json::to_value(payload),
+            Self::ProjectUnanchored(payload) => serde_json::to_value(payload),
         }
     }
 }
@@ -1045,6 +1150,37 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty("payload.derivation_model", &payload.derivation_model)?;
             require_non_empty("payload.schema_version", &payload.schema_version)?;
             Ok(EventPayload::DecisionMetadataDerived(payload))
+        }
+        EventType::ProjectRegistered => {
+            let payload: ProjectRegisteredPayload = parse_payload(event)?;
+            require_non_empty("payload.handle", &payload.handle)?;
+            require_optional_non_empty("payload.display_name", payload.display_name.as_deref())?;
+            require_optional_non_empty("payload.purpose", payload.purpose.as_deref())?;
+            Ok(EventPayload::ProjectRegistered(payload))
+        }
+        EventType::ProjectLinked => {
+            let payload: ProjectLinkPayload = parse_payload(event)?;
+            require_non_empty("payload.from", &payload.from)?;
+            require_non_empty("payload.to", &payload.to)?;
+            Ok(EventPayload::ProjectLinked(payload))
+        }
+        EventType::ProjectUnlinked => {
+            let payload: ProjectLinkPayload = parse_payload(event)?;
+            require_non_empty("payload.from", &payload.from)?;
+            require_non_empty("payload.to", &payload.to)?;
+            Ok(EventPayload::ProjectUnlinked(payload))
+        }
+        EventType::ProjectAnchored => {
+            let payload: ProjectAnchorPayload = parse_payload(event)?;
+            require_non_empty("payload.handle", &payload.handle)?;
+            require_non_empty("payload.value", &payload.value)?;
+            Ok(EventPayload::ProjectAnchored(payload))
+        }
+        EventType::ProjectUnanchored => {
+            let payload: ProjectAnchorPayload = parse_payload(event)?;
+            require_non_empty("payload.handle", &payload.handle)?;
+            require_non_empty("payload.value", &payload.value)?;
+            Ok(EventPayload::ProjectUnanchored(payload))
         }
     }
 }

@@ -1,0 +1,16 @@
+{
+  "event_id": 22,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe22",
+  "correlation_id": "session-1",
+  "causation_event_id": null,
+  "type": "project.unlinked",
+  "actor_id": "agent-a",
+  "source": "agent",
+  "source_ref": "agent:codex:session-1",
+  "payload": {
+    "from": "billing",
+    "to": "platform",
+    "kind": "part_of"
+  },
+  "ts": "2026-09-21T20:47:43Z"
+}

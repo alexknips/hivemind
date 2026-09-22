@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivemind.local/schemas/v0/project.registered.json",
+  "title": "project.registered event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_uuid", "type", "actor_id", "source", "payload"],
+  "properties": {
+    "event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "event_uuid": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": ["string", "null"], "minLength": 1 },
+    "causation_event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "type": { "const": "project.registered" },
+    "actor_id": { "type": "string", "minLength": 1 },
+    "source": { "enum": ["cli", "agent", "human", "slack", "document", "api"] },
+    "source_ref": { "type": ["string", "null"], "minLength": 1 },
+    "ts": { "type": ["string", "null"], "format": "date-time" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handle"],
+      "properties": {
+        "handle": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "pattern": "^[a-z0-9-]+$",
+          "description": "Unique per tenant; the \"personal:\" prefix is reserved and never registered."
+        },
+        "display_name": { "type": ["string", "null"], "minLength": 1 },
+        "purpose": { "type": ["string", "null"], "minLength": 1 }
+      }
+    }
+  }
+}

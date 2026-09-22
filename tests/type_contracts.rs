@@ -9,8 +9,10 @@ use hivemind::events::{
     DecisionSupersededPayload, Event, EventBuilder, EventEnvelope, EventPayload, EventSource,
     EventType, EventValidationError, EvidenceRecordedPayload, HypothesisRecordedPayload,
     ImportanceFactors, IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn,
-    NotificationAcknowledgedPayload, NotificationSentPayload, QualityDim, QualityDims,
-    RelationAddedPayload, RelationKind as EventRelationKind, RelationRemovedPayload,
+    NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
+    ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
+    QualityDim, QualityDims, RelationAddedPayload, RelationKind as EventRelationKind,
+    RelationRemovedPayload,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};
@@ -18,7 +20,7 @@ use hivemind::{CliError, CommandError, HivemindError, LedgerError, ProjectorErro
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const EVENT_TYPES: [EventType; 17] = [
+const EVENT_TYPES: [EventType; 22] = [
     EventType::DecisionProposed,
     EventType::DecisionRequested,
     EventType::DecisionAccepted,
@@ -36,6 +38,11 @@ const EVENT_TYPES: [EventType; 17] = [
     EventType::IngestBatchClassified,
     EventType::DecisionScored,
     EventType::DecisionMetadataDerived,
+    EventType::ProjectRegistered,
+    EventType::ProjectLinked,
+    EventType::ProjectUnlinked,
+    EventType::ProjectAnchored,
+    EventType::ProjectUnanchored,
 ];
 
 const EVENT_RELATION_KINDS: [EventRelationKind; 7] = [
@@ -48,7 +55,7 @@ const EVENT_RELATION_KINDS: [EventRelationKind; 7] = [
     EventRelationKind::SameAs,
 ];
 
-const NODE_KINDS: [NodeKind; 8] = [
+const NODE_KINDS: [NodeKind; 9] = [
     NodeKind::Decision,
     NodeKind::DecisionRequest,
     NodeKind::Actor,
@@ -57,9 +64,10 @@ const NODE_KINDS: [NodeKind; 8] = [
     NodeKind::Notification,
     NodeKind::Option,
     NodeKind::Hypothesis,
+    NodeKind::Project,
 ];
 
-const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 25] = [
+const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 27] = [
     ProjectorRelationKind::ProposedBy,
     ProjectorRelationKind::DecisionRequestedBy,
     ProjectorRelationKind::DecisionRequestForDecision,
@@ -85,6 +93,8 @@ const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 25] = [
     ProjectorRelationKind::SameAs,
     ProjectorRelationKind::ParticipatedBy,
     ProjectorRelationKind::InitiatedBy,
+    ProjectorRelationKind::PartOf,
+    ProjectorRelationKind::DependsOn,
 ];
 
 const DECISION_STATUSES: [DecisionStatus; 5] = [
@@ -355,6 +365,11 @@ fn event_type_name(event_type: EventType) -> &'static str {
         EventType::IngestBatchClassified => "ingest.batch_classified",
         EventType::DecisionScored => "decision.scored",
         EventType::DecisionMetadataDerived => "decision.metadata_derived",
+        EventType::ProjectRegistered => "project.registered",
+        EventType::ProjectLinked => "project.linked",
+        EventType::ProjectUnlinked => "project.unlinked",
+        EventType::ProjectAnchored => "project.anchored",
+        EventType::ProjectUnanchored => "project.unanchored",
     }
 }
 
@@ -377,6 +392,11 @@ fn payload_variant_type(payload: &EventPayload) -> EventType {
         EventPayload::IngestBatchClassified(_) => EventType::IngestBatchClassified,
         EventPayload::DecisionScored(_) => EventType::DecisionScored,
         EventPayload::DecisionMetadataDerived(_) => EventType::DecisionMetadataDerived,
+        EventPayload::ProjectRegistered(_) => EventType::ProjectRegistered,
+        EventPayload::ProjectLinked(_) => EventType::ProjectLinked,
+        EventPayload::ProjectUnlinked(_) => EventType::ProjectUnlinked,
+        EventPayload::ProjectAnchored(_) => EventType::ProjectAnchored,
+        EventPayload::ProjectUnanchored(_) => EventType::ProjectUnanchored,
     }
 }
 
@@ -431,6 +451,19 @@ fn typed_payload_from_value(
         EventType::DecisionScored => EventPayload::DecisionScored(serde_json::from_value(payload)?),
         EventType::DecisionMetadataDerived => {
             EventPayload::DecisionMetadataDerived(serde_json::from_value(payload)?)
+        }
+        EventType::ProjectRegistered => {
+            EventPayload::ProjectRegistered(serde_json::from_value(payload)?)
+        }
+        EventType::ProjectLinked => EventPayload::ProjectLinked(serde_json::from_value(payload)?),
+        EventType::ProjectUnlinked => {
+            EventPayload::ProjectUnlinked(serde_json::from_value(payload)?)
+        }
+        EventType::ProjectAnchored => {
+            EventPayload::ProjectAnchored(serde_json::from_value(payload)?)
+        }
+        EventType::ProjectUnanchored => {
+            EventPayload::ProjectUnanchored(serde_json::from_value(payload)?)
         }
     })
 }
@@ -668,6 +701,46 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 },
             }),
         ),
+        (
+            EventType::ProjectRegistered,
+            EventPayload::ProjectRegistered(ProjectRegisteredPayload {
+                handle: "contract-test".to_owned(),
+                display_name: Some("Contract Test".to_owned()),
+                purpose: Some("Contract tests need one valid project payload".to_owned()),
+            }),
+        ),
+        (
+            EventType::ProjectLinked,
+            EventPayload::ProjectLinked(ProjectLinkPayload {
+                from: "contract-test".to_owned(),
+                to: "contract-test-parent".to_owned(),
+                kind: ProjectLinkKind::PartOf,
+            }),
+        ),
+        (
+            EventType::ProjectUnlinked,
+            EventPayload::ProjectUnlinked(ProjectLinkPayload {
+                from: "contract-test".to_owned(),
+                to: "contract-test-parent".to_owned(),
+                kind: ProjectLinkKind::PartOf,
+            }),
+        ),
+        (
+            EventType::ProjectAnchored,
+            EventPayload::ProjectAnchored(ProjectAnchorPayload {
+                handle: "contract-test".to_owned(),
+                anchor_kind: ProjectAnchorKind::Rig,
+                value: "hivemind".to_owned(),
+            }),
+        ),
+        (
+            EventType::ProjectUnanchored,
+            EventPayload::ProjectUnanchored(ProjectAnchorPayload {
+                handle: "contract-test".to_owned(),
+                anchor_kind: ProjectAnchorKind::Rig,
+                value: "hivemind".to_owned(),
+            }),
+        ),
     ]
 }
 
@@ -690,6 +763,11 @@ fn payload_json(payload: &EventPayload) -> Value {
         EventPayload::IngestBatchClassified(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionScored(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionMetadataDerived(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::ProjectRegistered(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::ProjectLinked(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::ProjectUnlinked(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::ProjectAnchored(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::ProjectUnanchored(payload) => serde_json::to_value(payload).unwrap(),
     }
 }
 
@@ -715,6 +793,14 @@ fn shape_compatible(left: EventType, right: EventType) -> bool {
         (EventType::DecisionAccepted, EventType::DecisionRejected)
             | (EventType::RelationAdded, EventType::RelationRemoved)
             | (EventType::RelationRemoved, EventType::RelationAdded)
+            // project.linked and project.unlinked share the identical ProjectLinkPayload
+            // shape (an unlink is the same fact recorded again, never a delete).
+            | (EventType::ProjectLinked, EventType::ProjectUnlinked)
+            | (EventType::ProjectUnlinked, EventType::ProjectLinked)
+            // project.anchored and project.unanchored share the identical
+            // ProjectAnchorPayload shape for the same reason.
+            | (EventType::ProjectAnchored, EventType::ProjectUnanchored)
+            | (EventType::ProjectUnanchored, EventType::ProjectAnchored)
     )
 }
 
@@ -772,6 +858,7 @@ fn node_kind_contract(kind: NodeKind) -> &'static str {
         NodeKind::Notification => "Notification",
         NodeKind::Option => "Option",
         NodeKind::Hypothesis => "Hypothesis",
+        NodeKind::Project => "Project",
     }
 }
 
@@ -850,6 +937,8 @@ fn projector_relation_contract(kind: ProjectorRelationKind) -> (&'static str, No
             ("PARTICIPATED_BY", NodeKind::Decision, NodeKind::Actor)
         }
         ProjectorRelationKind::InitiatedBy => ("INITIATED_BY", NodeKind::Decision, NodeKind::Actor),
+        ProjectorRelationKind::PartOf => ("PART_OF", NodeKind::Project, NodeKind::Project),
+        ProjectorRelationKind::DependsOn => ("DEPENDS_ON", NodeKind::Project, NodeKind::Project),
     }
 }
 

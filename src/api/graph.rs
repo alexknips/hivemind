@@ -82,15 +82,19 @@ fn graph_blocking(
             .map_err(graph_err)?;
         for row in rows {
             let id = row_string(&row, "id").unwrap_or_default();
-            let label = row
-                .get("title")
-                .or_else(|| row.get("label"))
-                .or_else(|| row.get("statement"))
-                .or_else(|| row.get("content"))
-                .and_then(|v| match v {
-                    GraphValue::String(s) => Some(s.into()),
-                    _ => None,
-                });
+            // `.get(key)` on a Null-valued key (e.g. an unset "display_name") returns
+            // `Some(GraphValue::Null)`, which would short-circuit `.or_else` before it ever
+            // tries the next candidate key — so filter to String values before chaining.
+            let string_field = |key: &str| match row.get(key) {
+                Some(GraphValue::String(s)) => Some(s.clone()),
+                _ => None,
+            };
+            let label = string_field("title")
+                .or_else(|| string_field("label"))
+                .or_else(|| string_field("statement"))
+                .or_else(|| string_field("content"))
+                .or_else(|| string_field("display_name"))
+                .or_else(|| string_field("handle"));
             if matches!(kind, NodeKind::Decision) {
                 let obj: serde_json::Map<String, serde_json::Value> = row
                     .iter()
@@ -167,6 +171,7 @@ fn graph_node_query(kind: NodeKind) -> String {
         NodeKind::Notification => "node.id AS id",
         NodeKind::Option => "node.id AS id, node.label AS label, node.description AS description",
         NodeKind::Hypothesis => "node.id AS id, node.statement AS statement",
+        NodeKind::Project => "node.id AS id, node.handle AS handle, node.display_name AS display_name",
     };
     format!(
         "MATCH (node:`{}`) RETURN {projection} ORDER BY node.id;",

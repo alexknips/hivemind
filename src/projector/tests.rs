@@ -282,6 +282,140 @@ fn refuses_to_project_events_without_ledger_origin() {
 }
 
 #[test]
+fn projects_registered_links_and_anchors_projects() -> Result<()> {
+    use super::memory::MemoryGraph;
+
+    let ledger = InMemoryEventLedger::new();
+    for event in [
+        event(
+            EventType::ProjectRegistered,
+            "actor:alice",
+            json!({"handle": "platform", "display_name": "Platform"}),
+        ),
+        event(
+            EventType::ProjectRegistered,
+            "actor:alice",
+            json!({"handle": "billing", "display_name": "Billing"}),
+        ),
+        event(
+            EventType::ProjectRegistered,
+            "actor:alice",
+            json!({"handle": "auth", "display_name": "Auth"}),
+        ),
+        event(
+            EventType::ProjectLinked,
+            "actor:alice",
+            json!({"from": "billing", "to": "platform", "kind": "part_of"}),
+        ),
+        event(
+            EventType::ProjectLinked,
+            "actor:alice",
+            json!({"from": "billing", "to": "auth", "kind": "depends_on"}),
+        ),
+        event(
+            EventType::ProjectAnchored,
+            "actor:alice",
+            json!({"handle": "billing", "anchor_kind": "folder", "value": "services/billing"}),
+        ),
+        event(
+            EventType::ProjectAnchored,
+            "actor:alice",
+            json!({"handle": "billing", "anchor_kind": "rig", "value": "hivemind"}),
+        ),
+    ] {
+        ledger.append(event)?;
+    }
+
+    let graph = MemoryGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let project_rows = graph.query(
+        "MATCH (node:`Project`) RETURN node.id AS id, node.handle AS handle, node.display_name AS display_name, node.anchors AS anchors ORDER BY node.id;",
+        &GraphParams::new(),
+    )?;
+    assert_eq!(project_rows.len(), 3);
+
+    let billing = project_rows
+        .iter()
+        .find(|row| row.get("id") == Some(&GraphValue::String("billing".to_owned())))
+        .expect("billing project node exists");
+    assert_eq!(
+        billing.get("display_name"),
+        Some(&GraphValue::String("Billing".to_owned()))
+    );
+    match billing.get("anchors") {
+        Some(GraphValue::StringList(values)) => {
+            let mut sorted = values.clone();
+            sorted.sort();
+            assert_eq!(
+                sorted,
+                vec![
+                    "folder:services/billing".to_owned(),
+                    "rig:hivemind".to_owned(),
+                ]
+            );
+        }
+        other => panic!("expected anchors StringList, got {other:?}"),
+    }
+
+    let part_of_rows = graph.query(
+        "MATCH (from:`Project`)-[:`PART_OF`]->(to:`Project`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;",
+        &GraphParams::new(),
+    )?;
+    assert_eq!(
+        part_of_rows,
+        vec![GraphRow::from([
+            (
+                "from_id".to_owned(),
+                GraphValue::String("billing".to_owned())
+            ),
+            (
+                "to_id".to_owned(),
+                GraphValue::String("platform".to_owned())
+            ),
+        ])]
+    );
+
+    let depends_on_rows = graph.query(
+        "MATCH (from:`Project`)-[:`DEPENDS_ON`]->(to:`Project`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;",
+        &GraphParams::new(),
+    )?;
+    assert_eq!(
+        depends_on_rows,
+        vec![GraphRow::from([
+            (
+                "from_id".to_owned(),
+                GraphValue::String("billing".to_owned())
+            ),
+            ("to_id".to_owned(), GraphValue::String("auth".to_owned())),
+        ])]
+    );
+
+    // Unanchoring the folder marker removes only that anchor from the list.
+    ledger.append(event(
+        EventType::ProjectUnanchored,
+        "actor:alice",
+        json!({"handle": "billing", "anchor_kind": "folder", "value": "services/billing"}),
+    ))?;
+    project_from_ledger(&ledger, &graph, 7)?;
+
+    let project_rows = graph.query(
+        "MATCH (node:`Project`) RETURN node.id AS id, node.anchors AS anchors ORDER BY node.id;",
+        &GraphParams::new(),
+    )?;
+    let billing = project_rows
+        .iter()
+        .find(|row| row.get("id") == Some(&GraphValue::String("billing".to_owned())))
+        .expect("billing project node exists");
+    assert_eq!(
+        billing.get("anchors"),
+        Some(&GraphValue::StringList(vec!["rig:hivemind".to_owned()]))
+    );
+
+    Ok(())
+}
+
+#[test]
 #[ignore = "performance benchmark; run in isolated environment"]
 fn recording_graph_rebuild_of_10k_events_stays_fast() -> Result<()> {
     let ledger = InMemoryEventLedger::new();

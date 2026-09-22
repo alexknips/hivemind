@@ -109,6 +109,11 @@ fn event_type_as_str(event_type: EventType) -> &'static str {
         EventType::IngestBatchClassified => "ingest.batch_classified",
         EventType::DecisionScored => "decision.scored",
         EventType::DecisionMetadataDerived => "decision.metadata_derived",
+        EventType::ProjectRegistered => "project.registered",
+        EventType::ProjectLinked => "project.linked",
+        EventType::ProjectUnlinked => "project.unlinked",
+        EventType::ProjectAnchored => "project.anchored",
+        EventType::ProjectUnanchored => "project.unanchored",
     }
 }
 
@@ -131,6 +136,11 @@ fn parse_event_type(value: &str) -> Result<EventType> {
         "ingest.batch_classified" => Ok(EventType::IngestBatchClassified),
         "decision.scored" => Ok(EventType::DecisionScored),
         "decision.metadata_derived" => Ok(EventType::DecisionMetadataDerived),
+        "project.registered" => Ok(EventType::ProjectRegistered),
+        "project.linked" => Ok(EventType::ProjectLinked),
+        "project.unlinked" => Ok(EventType::ProjectUnlinked),
+        "project.anchored" => Ok(EventType::ProjectAnchored),
+        "project.unanchored" => Ok(EventType::ProjectUnanchored),
         other => Err(storage_error(format!("unknown event type in row: {other}")).into()),
     }
 }

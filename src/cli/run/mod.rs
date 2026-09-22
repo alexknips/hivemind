@@ -1739,7 +1739,12 @@ fn reviewed_decision_ids_by_actor(
             | EventPayload::IngestBatchReceived(_)
             | EventPayload::IngestBatchClassified(_)
             | EventPayload::DecisionScored(_)
-            | EventPayload::DecisionMetadataDerived(_) => {}
+            | EventPayload::DecisionMetadataDerived(_)
+            | EventPayload::ProjectRegistered(_)
+            | EventPayload::ProjectLinked(_)
+            | EventPayload::ProjectUnlinked(_)
+            | EventPayload::ProjectAnchored(_)
+            | EventPayload::ProjectUnanchored(_) => {}
         }
     }
     Ok(reviewed)
@@ -1780,7 +1785,12 @@ impl ReviewLedgerContext {
                 | EventPayload::IngestBatchReceived(_)
                 | EventPayload::IngestBatchClassified(_)
                 | EventPayload::DecisionScored(_)
-                | EventPayload::DecisionMetadataDerived(_) => {}
+                | EventPayload::DecisionMetadataDerived(_)
+                | EventPayload::ProjectRegistered(_)
+                | EventPayload::ProjectLinked(_)
+                | EventPayload::ProjectUnlinked(_)
+                | EventPayload::ProjectAnchored(_)
+                | EventPayload::ProjectUnanchored(_) => {}
             }
         }
         Ok(context)
