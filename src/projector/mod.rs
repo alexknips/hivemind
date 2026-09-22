@@ -925,7 +925,7 @@ fn current_project_anchors(graph: &impl GraphView, handle: &str) -> Result<Vec<S
     for row in &rows {
         if matches!(row.get("id"), Some(GraphValue::String(id)) if id == handle) {
             return Ok(match row.get("anchors") {
-                Some(GraphValue::StringList(values)) => values.clone(),
+                Some(GraphValue::StringList(values)) => values.clone(), // ubs:ignore: clone necessary — GraphRow holds borrowed ref, function returns owned Vec<String>
                 _ => Vec::new(),
             });
         }

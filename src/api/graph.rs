@@ -86,7 +86,7 @@ fn graph_blocking(
             // `Some(GraphValue::Null)`, which would short-circuit `.or_else` before it ever
             // tries the next candidate key — so filter to String values before chaining.
             let string_field = |key: &str| match row.get(key) {
-                Some(GraphValue::String(s)) => Some(s.clone()),
+                Some(GraphValue::String(s)) => Some(s.clone()), // ubs:ignore: clone necessary — GraphValue holds borrowed ref, GraphNode needs owned String
                 _ => None,
             };
             let label = string_field("title")

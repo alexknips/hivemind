@@ -1332,6 +1332,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 };
                 if same_identifier(event_handle, handle) {
                     let payload: ProjectRegisteredPayload =
+                        // ubs:ignore: clone necessary — event borrowed from paginated Vec, from_value needs owned Value
                         serde_json::from_value(event.payload.clone()).map_err(|error| {
                             CommandError::Invariant(format!(
                                 "corrupt project.registered payload for handle {handle}: {error}"
