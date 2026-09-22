@@ -34,7 +34,7 @@ pub(crate) struct CurrentProjectStore {
 impl CurrentProjectStore {
     pub(crate) fn new(hivemind_dir: &Path) -> Self {
         Self {
-            path: hivemind_dir.join(CURRENT_PROJECT_FILE_NAME),
+            path: hivemind_dir.join("current-project.json"),
         }
     }
 
