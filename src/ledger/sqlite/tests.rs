@@ -21,6 +21,7 @@ use crate::ledger::contract_tests::{
 use crate::ledger::EventLedger;
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::get_decision;
+use crate::util::require_agent_actor_id;
 use crate::Result;
 
 use super::super::backend_error::storage_error;
@@ -82,6 +83,40 @@ fn tenant_scoped_sqlite_ledger_isolates_commands_and_queries() -> Result<()> {
 
         Ok(())
     })
+}
+
+// `require_agent_actor_id` gates `SqliteUserStore::mint_agent_token` (and its Postgres
+// twin); its unit tests live in this UBS-ignored module rather than inline in `util.rs`
+// so the assertion-heavy tests do not count against the production warning baseline.
+#[test]
+fn require_agent_actor_id_accepts_well_shaped_id() {
+    assert!(require_agent_actor_id("agent:claude:gastown-crew").is_ok());
+}
+
+#[test]
+fn require_agent_actor_id_rejects_human_shaped_id() {
+    assert!(require_agent_actor_id("human:alex@example.com").is_err());
+}
+
+#[test]
+fn require_agent_actor_id_rejects_missing_name() {
+    assert!(require_agent_actor_id("agent:claude").is_err());
+    assert!(require_agent_actor_id("agent:claude:").is_err());
+}
+
+#[test]
+fn require_agent_actor_id_rejects_missing_tool() {
+    assert!(require_agent_actor_id("agent::hook").is_err());
+}
+
+#[test]
+fn require_agent_actor_id_rejects_bare_uuid() {
+    assert!(require_agent_actor_id("550e8400-e29b-41d4-a716-446655440000").is_err());
+}
+
+#[test]
+fn require_agent_actor_id_accepts_uuid_shaped_name_segment() {
+    assert!(require_agent_actor_id("agent:claude:550e8400-e29b-41d4-a716-446655440000").is_ok());
 }
 
 #[test]
