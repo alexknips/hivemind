@@ -33,9 +33,11 @@ docker compose ps
 
 ```
 NAME        STATUS                   PORTS
-hivemind    Up (healthy)             0.0.0.0:8080->8080/tcp
+hivemind    Up (healthy)             127.0.0.1:8080->8080/tcp
 postgres    Up (healthy)
 ```
+
+The port is published on `127.0.0.1`, so only this machine can reach the cell; to expose it deliberately, set `HIVEMIND_PUBLISH_ADDR` in `.env` to the interface address to publish on, or put a TLS reverse proxy in front (see [Exposing the cell deliberately](https://github.com/alexknips/hivemind/blob/master/docs/SELF_HOSTING.md#exposing-the-cell-deliberately)).
 
 ---
 
