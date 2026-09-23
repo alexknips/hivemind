@@ -59,7 +59,7 @@ fn every_write_path_event_validates_against_its_schema() {
         .propose_decision(DecisionProposalInput {
             actor_id: actor,
             title: "Use option A",
-            rationale: "Contract test rationale",
+            rationale: "Option A is the simplest fit for this contract test scenario.",
             topic_keys: &["conformance".to_owned()],
             option_ids: &[option_a.clone(), option_b.clone()],
             option_labels: &["Option A".to_owned(), "Option B".to_owned()],
@@ -81,7 +81,7 @@ fn every_write_path_event_validates_against_its_schema() {
         .propose_decision(DecisionProposalInput {
             actor_id: actor,
             title: "A decision someone disagrees with",
-            rationale: "Contract test rationale",
+            rationale: "This decision exists so the test can exercise disagreement.",
             topic_keys: &["conformance".to_owned()],
             option_ids: &[rejected_option],
             option_labels: &["Rejected option".to_owned()],
@@ -107,7 +107,7 @@ fn every_write_path_event_validates_against_its_schema() {
         .propose_decision(DecisionProposalInput {
             actor_id: actor,
             title: "An old decision",
-            rationale: "Contract test rationale",
+            rationale: "This decision exists so the test can exercise supersession.",
             topic_keys: &["conformance".to_owned()],
             option_ids: &[old_option],
             option_labels: &["Old option".to_owned()],
@@ -125,7 +125,7 @@ fn every_write_path_event_validates_against_its_schema() {
             actor_id: actor,
             old_decision_id: &old_decision_id,
             new_title: "The replacement decision",
-            new_rationale: "Contract test rationale",
+            new_rationale: "The replacement decision better fits the contract test scenario.",
             topic_keys: &[],
             option_labels: &["New option".to_owned()],
             chosen_option_label: None,
