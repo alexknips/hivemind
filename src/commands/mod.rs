@@ -482,9 +482,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         causation_event_id: Option<EventId>,
     ) -> Result<EventId> {
         require_valid_actor_id(actor_id)?;
-        if batch_ids.is_empty() {
+        let Some(first_batch_id) = batch_ids.first() else {
             return Err(CommandError::Validation("batch_ids must not be empty".into()).into());
-        }
+        };
         for batch_id in batch_ids {
             require_non_empty("batch_id", batch_id)?;
         }
@@ -494,7 +494,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         let event = self.event_with_uuid(
             actor_id,
             EventPayload::IngestBatchClassified(IngestBatchClassifiedPayload {
-                batch_id: batch_ids[0].clone(),
+                batch_id: first_batch_id.clone(),
                 batch_ids: batch_ids.to_vec(),
                 classifier_model: classifier_model.to_owned(),
                 schema_version: schema_version.to_owned(),

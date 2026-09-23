@@ -239,8 +239,9 @@ pub struct PendingBatch {
     pub submitted_at: Option<DateTime<Utc>>,
     pub actor_id: String,
     pub turn_count: usize,
-    /// `session_id` from the originating `IngestBatchReceived` event; used to
-    /// group batches for session-grouped classification (hivemind-zdsh.18).
+    /// `session_id` from the originating `IngestBatchReceived` event; lets a
+    /// classifier scope `classify-queue list` to one session and submit that
+    /// session's batches together (hivemind-zdsh.18).
     pub session_id: String,
     pub agent_tool: String,
     /// Rendered turn text (see [`render_batch_text`]) — what a classifier
@@ -249,51 +250,14 @@ pub struct PendingBatch {
     pub batch_text: String,
 }
 
-/// Pending batches from one ingest session, grouped for session-grouped
-/// classification: one model call classifies a whole session's turns
-/// instead of one call per batch (hivemind-zdsh.18 cadence decision, bead
-/// comment 2026-09-23). Batches with an empty `session_id` (no session
-/// context on ingest) each form their own single-batch group.
-#[derive(Debug, Clone, Serialize)]
-pub struct PendingSessionGroup {
-    pub session_id: String,
-    pub agent_tool: String,
-    pub actor_id: String,
-    pub batches: Vec<PendingBatch>,
-}
-
-/// Groups pending batches by `session_id`, preserving first-seen order of
-/// both groups and batches within a group.
-pub fn group_pending_by_session(batches: Vec<PendingBatch>) -> Vec<PendingSessionGroup> {
-    let mut order: Vec<String> = Vec::new();
-    let mut groups: std::collections::HashMap<String, PendingSessionGroup> =
-        std::collections::HashMap::new();
-
-    for batch in batches {
-        let key = if batch.session_id.is_empty() {
-            format!("batch:{}", batch.batch_id)
-        } else {
-            batch.session_id.clone()
-        };
-        groups
-            .entry(key.clone())
-            .or_insert_with(|| {
-                order.push(key.clone());
-                PendingSessionGroup {
-                    session_id: batch.session_id.clone(),
-                    agent_tool: batch.agent_tool.clone(),
-                    actor_id: batch.actor_id.clone(),
-                    batches: Vec::new(),
-                }
-            })
-            .batches
-            .push(batch);
-    }
-
-    order
-        .into_iter()
-        .filter_map(|key| groups.remove(&key))
-        .collect()
+/// Reads an optional string field from a raw event payload; absent or
+/// non-string values read as the empty string.
+fn payload_string(payload: &serde_json::Value, key: &str) -> String {
+    payload
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// Extracts the set of batch ids a raw `ingest.batch_classified` event
@@ -351,25 +315,13 @@ pub fn list_pending_batches_for_ledger(
                             .and_then(|v| v.as_array())
                             .map(|a| a.len())
                             .unwrap_or(0);
-                        let session_id = event
-                            .payload
-                            .get("session_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_owned();
-                        let agent_tool = event
-                            .payload
-                            .get("agent_tool")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_owned();
                         received.push(PendingBatch {
                             batch_id: batch_id.to_owned(), // ubs:ignore: &str from JSON, must be owned
                             submitted_at: event.ts,
                             actor_id: event.actor_id.clone(), // ubs:ignore: field copy from Event borrow
                             turn_count,
-                            session_id,
-                            agent_tool,
+                            session_id: payload_string(&event.payload, "session_id"),
+                            agent_tool: payload_string(&event.payload, "agent_tool"),
                             batch_text: render_batch_text(event),
                         });
                     }
@@ -443,11 +395,7 @@ pub fn daily_cap_status(
     ledger: &impl EventLedger,
     tenant_id: &TenantId,
 ) -> crate::Result<DailyCapStatus> {
-    let day_start = Utc::now()
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .unwrap()
-        .and_utc(); // ubs:ignore: midnight is always a valid time
+    let today = Utc::now().date_naive();
     let mut offset = 0u64;
     const PAGE: usize = 256;
     let mut classified_today = 0usize;
@@ -459,7 +407,7 @@ pub fn daily_cap_status(
         }
         for event in &events {
             if event.event_type == EventType::IngestBatchClassified
-                && event.ts.is_some_and(|ts| ts >= day_start)
+                && event.ts.is_some_and(|ts| ts.date_naive() >= today)
             {
                 classified_today += 1;
             }
