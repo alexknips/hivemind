@@ -165,7 +165,7 @@ fn every_write_path_event_validates_against_its_schema() {
     commands
         .record_ingest_batch_classified(
             actor,
-            "batch:contract-test",
+            &["batch:contract-test".to_owned()],
             "claude-haiku-4-5-20251001",
             "1",
             vec![CaptureItem {
