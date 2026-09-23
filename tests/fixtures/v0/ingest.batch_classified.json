@@ -11,6 +11,7 @@
     "batch_id": "session-abc:0-512",
     "classifier_model": "claude-haiku-4-5-20251001",
     "schema_version": "1",
+    "batch_ids": ["session-abc:0-512", "session-abc:512-1024"],
     "captures": [
       {
         "kind": "decision",

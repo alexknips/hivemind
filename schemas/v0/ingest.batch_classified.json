@@ -23,6 +23,11 @@
         "batch_id": { "type": "string", "minLength": 1 },
         "classifier_model": { "type": "string", "minLength": 1 },
         "schema_version": { "type": "string", "minLength": 1 },
+        "batch_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "All batch ids this single classification call covers, in submission order. Omitted or empty on events predating session-grouped classification (hivemind-zdsh.18); readers fall back to batch_id."
+        },
         "captures": {
           "type": "array",
           "items": {

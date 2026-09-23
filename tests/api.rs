@@ -1496,6 +1496,9 @@ mod classify_queue_postgres {
             workos_audience: None,
             spa_dir: None,
             cors_origins: vec![],
+            slack_client_id: None,
+            slack_client_secret: None,
+            slack_signing_secret: None,
         };
         hivemind::api::create_router(&config)
     }

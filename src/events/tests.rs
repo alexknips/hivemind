@@ -306,6 +306,41 @@ fn capture_item_decodes_current_array_accepted_rejected_by() {
 }
 
 #[test]
+fn ingest_batch_classified_grouped_batch_ids_matches_schema() {
+    // hivemind-zdsh.18: session-grouped classification writes `batch_ids`
+    // (plural) covering every batch the one model call classified. The
+    // fixture carries two batch ids; confirm the published v0 schema
+    // accepts it and Rust deserialization/validation round-trips it.
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../schemas/v0/ingest.batch_classified.json"
+    ))
+    .unwrap();
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/ingest.batch_classified.json"
+    ))
+    .unwrap();
+
+    let validator = jsonschema::validator_for(&schema).expect("schema compiles");
+    assert!(
+        validator.is_valid(&fixture),
+        "grouped fixture matches schema"
+    );
+
+    let event: Event = serde_json::from_value(fixture).expect("fixture deserializes");
+    let payload = validate(&event).expect("fixture validates");
+    let EventPayload::IngestBatchClassified(payload) = payload else {
+        panic!("expected IngestBatchClassified payload, got {payload:?}");
+    };
+    assert_eq!(
+        payload.batch_ids,
+        vec![
+            "session-abc:0-512".to_owned(),
+            "session-abc:512-1024".to_owned()
+        ]
+    );
+}
+
+#[test]
 fn blocker_notification_events_require_source_provenance() {
     let mut event: Event = serde_json::from_str(include_str!(
         "../../tests/fixtures/v0/blocker.reported.json"
