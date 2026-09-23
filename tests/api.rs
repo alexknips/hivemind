@@ -1500,7 +1500,7 @@ mod classify_queue_postgres {
         hivemind::api::create_router(&config)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn classify_queue_submit_covers_multiple_batches_over_postgres() {
         let Some(pg_url) = skip_if_no_postgres() else {
             eprintln!("skipping classify-queue Postgres test; set {TEST_DATABASE_URL_ENV}");
@@ -1508,7 +1508,19 @@ mod classify_queue_postgres {
         };
         let admin_key = "classify-queue-test-admin-key";
         let tenant_id = unique_tenant("cq-test");
-        let app = app_postgres(&pg_url);
+        // create_router synchronously opens the r2d2/postgres pool and runs
+        // schema init, which calls into the `postgres` crate's own internal
+        // blocking runtime. Calling that directly from this async test body
+        // panics with "Cannot start a runtime from within a runtime" — same
+        // failure class as the extract_ctx bug fixed in
+        // src/ledger/postgres/tests.rs (async_safety_tests). spawn_blocking
+        // moves it off the Tokio worker thread, matching that fix.
+        let app = tokio::task::spawn_blocking({
+            let pg_url = pg_url.clone();
+            move || app_postgres(&pg_url)
+        })
+        .await
+        .expect("spawn_blocking join must not panic");
 
         // Provision a tenant; its token authenticates every call below —
         // Postgres mode ignores x-hivemind-actor/x-hivemind-tenant headers
@@ -1606,7 +1618,7 @@ mod classify_queue_postgres {
         assert_eq!(body["data"]["root"]["id"], decision_id, "{body}"); // ubs:ignore
 
         let (status, body) = call(
-            app,
+            app.clone(),
             authed_get(&format!("/v1/decisions/{decision_id}"), &token),
         )
         .await;
@@ -1615,6 +1627,19 @@ mod classify_queue_postgres {
             body["data"]["title"], "Use Postgres-backed classify-queue test",
             "{body}"
         );
+
+        // `app` is the last live Router clone, so dropping it here would tear
+        // down the r2d2/postgres connection pool synchronously: the
+        // `postgres` crate's Client::drop calls block_on internally
+        // (postgres-0.19.14/src/connection.rs:66), which panics with
+        // "Cannot start a runtime from within a runtime" on this Tokio
+        // worker thread — same failure class as the connect-time panic
+        // above. spawn_blocking moves the drop off the worker thread, same
+        // as the connect/query/drop pattern in
+        // src/ledger/postgres/tests.rs's async_safety_tests.
+        tokio::task::spawn_blocking(move || drop(app))
+            .await
+            .expect("dropping app must not panic");
     }
 }
 
