@@ -1,4 +1,25 @@
 //! Write-layer commands: validate invariants and append events to the ledger; the sole entry point for all mutations.
+//!
+//! # Grounding invariants (what a decision rests on)
+//!
+//! Enforced by `propose_decision` / `propose_decision_with_id` (at capture) and
+//! `ground_decision` (later); each has a test in `commands/tests.rs`:
+//!
+//! - `Grounding::Declared` with no premise decision, evidence item or hypothesis is a
+//!   `Validation` error — a bet counts, because it is a hypothesis of kind `bet`.
+//!   `Grounding::NotAsked` (raw emit, classifier ingest, document import, Slack) is never
+//!   refused.
+//! - Every premise decision id must exist in the tenant and must not be the decision being
+//!   proposed or grounded.
+//! - A superseded or rejected premise is allowed: the ledger is append-only, the link is
+//!   recorded, and the caller is told via `DecisionProposalEventIds::premise_stale`.
+//! - At capture, one `FOLLOWS_FROM` (decision -> premise) per premise is fanned out with
+//!   `causation_event_id` = the proposal event. `ground_decision` appends `FOLLOWS_FROM` /
+//!   `BASED_ON` / `ASSUMES` with no causation, which is how "at capture" and "added later"
+//!   stay distinguishable without a new field.
+//! - `expressed_confidence`, when present, is `low`, `medium` or `high`.
+//! - `record_bet` with no statement records `Judgement call: <decision title>`;
+//!   `would_change_if`, when present, is non-empty.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -318,6 +339,38 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             Uuid::new_v4(),
         )?;
         Ok(hypothesis_id)
+    }
+
+    /// Record a bet: a hypothesis of `HypothesisKind::Bet`, the "nothing yet, a declared gap"
+    /// answer to "what does this rest on?". A bare bet (`statement` absent or blank) records
+    /// `Judgement call: <decision title>` so the node reads standalone — that default is why
+    /// the caller passes the title of the decision the bet grounds. The title is only read,
+    /// and only required, when the statement is defaulted.
+    pub fn record_bet(
+        &self,
+        actor_id: &str,
+        statement: Option<&str>,
+        decision_title: &str,
+        check_by: Option<DateTime<Utc>>,
+        would_change_if: Option<&str>,
+    ) -> Result<HypothesisId> {
+        let default_statement;
+        let statement = match statement {
+            Some(text) if !text.trim().is_empty() => text,
+            _ => {
+                require_non_empty("decision_title", decision_title)?;
+                default_statement = format!("Judgement call: {}", decision_title.trim());
+                default_statement.as_str()
+            }
+        };
+
+        self.record_hypothesis_with_kind(
+            actor_id,
+            statement,
+            HypothesisKind::Bet,
+            check_by,
+            would_change_if,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -927,24 +980,15 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
-        let mut premise_stale = Vec::new();
+        let mut stale_premises = Vec::new();
         for premise_id in input.grounding.premise_decision_ids() {
-            if same_identifier(premise_id, decision_id) {
-                return Err(CommandError::Validation(
-                    "a decision cannot be its own premise".to_owned(),
-                )
-                .into());
-            }
-            if !self.decision_exists(premise_id)? {
-                return Err(CommandError::Invariant(format!(
-                    "decision does not exist: {premise_id}"
-                ))
-                .into());
-            }
+            require_not_own_premise(decision_id, premise_id)?;
+            self.require_decision_exists(premise_id)?;
             if self.decision_is_stale(premise_id)? {
-                premise_stale.push(premise_id.clone());
+                stale_premises.push(premise_id);
             }
         }
+        let premise_stale: Vec<DecisionId> = stale_premises.into_iter().cloned().collect();
 
         let root_event = self.event_with_uuid(
             input.actor_id,
@@ -1412,23 +1456,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("decision_id", decision_id)?;
         require_non_empty("premise_decision_id", premise_decision_id)?;
 
-        if same_identifier(decision_id, premise_decision_id) {
-            return Err(CommandError::Validation(
-                "a decision cannot be its own premise".to_owned(),
-            )
-            .into());
-        }
-        if !self.decision_exists(decision_id)? {
-            return Err(
-                CommandError::Invariant(format!("decision does not exist: {decision_id}")).into(),
-            );
-        }
-        if !self.decision_exists(premise_decision_id)? {
-            return Err(CommandError::Invariant(format!(
-                "decision does not exist: {premise_decision_id}"
-            ))
-            .into());
-        }
+        require_not_own_premise(decision_id, premise_decision_id)?;
+        self.require_decision_exists(decision_id)?;
+        self.require_decision_exists(premise_decision_id)?;
 
         self.append_relation_event_with_uuid(
             actor_id,
@@ -1460,43 +1490,17 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
-        if !self.decision_exists(input.decision_id)? {
-            return Err(CommandError::Invariant(format!(
-                "decision does not exist: {}",
-                input.decision_id
-            ))
-            .into());
-        }
+        self.require_decision_exists(input.decision_id)?;
 
         for premise_id in input.premise_decision_ids {
-            if same_identifier(premise_id, input.decision_id) {
-                return Err(CommandError::Validation(
-                    "a decision cannot be its own premise".to_owned(),
-                )
-                .into());
-            }
-            if !self.decision_exists(premise_id)? {
-                return Err(CommandError::Invariant(format!(
-                    "decision does not exist: {premise_id}"
-                ))
-                .into());
-            }
+            require_not_own_premise(input.decision_id, premise_id)?;
+            self.require_decision_exists(premise_id)?;
         }
         for evidence_id in input.evidence_ids {
-            if !self.evidence_exists(evidence_id)? {
-                return Err(CommandError::Invariant(format!(
-                    "evidence does not exist: {evidence_id}"
-                ))
-                .into());
-            }
+            self.require_evidence_exists(evidence_id)?;
         }
         for hypothesis_id in input.hypothesis_ids {
-            if !self.hypothesis_exists(hypothesis_id)? {
-                return Err(CommandError::Invariant(format!(
-                    "hypothesis does not exist: {hypothesis_id}"
-                ))
-                .into());
-            }
+            self.require_hypothesis_exists(hypothesis_id)?;
         }
 
         let mut event_ids = Vec::new();
@@ -1906,14 +1910,33 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
         for premise_id in grounding.premise_decision_ids() {
-            if !self.decision_exists(premise_id)? {
-                return Err(CommandError::Invariant(format!(
-                    "decision does not exist: {premise_id}"
-                ))
-                .into());
-            }
+            self.require_decision_exists(premise_id)?;
         }
         Ok(())
+    }
+
+    /// `Ok` when the tenant's ledger holds a `decision.proposed` for `decision_id`, else the
+    /// `decision does not exist` invariant error. One place for the message so callers in a
+    /// loop over premise ids stay allocation-free on the happy path.
+    fn require_decision_exists(&self, decision_id: &str) -> Result<()> {
+        if self.decision_exists(decision_id)? {
+            return Ok(());
+        }
+        Err(CommandError::Invariant(format!("decision does not exist: {decision_id}")).into())
+    }
+
+    fn require_evidence_exists(&self, evidence_id: &str) -> Result<()> {
+        if self.evidence_exists(evidence_id)? {
+            return Ok(());
+        }
+        Err(CommandError::Invariant(format!("evidence does not exist: {evidence_id}")).into())
+    }
+
+    fn require_hypothesis_exists(&self, hypothesis_id: &str) -> Result<()> {
+        if self.hypothesis_exists(hypothesis_id)? {
+            return Ok(());
+        }
+        Err(CommandError::Invariant(format!("hypothesis does not exist: {hypothesis_id}")).into())
     }
 
     fn actor_has_decision_event(
@@ -2426,6 +2449,17 @@ fn require_valid_expressed_confidence(value: Option<&str>) -> Result<()> {
         ))
         .into()),
     }
+}
+
+/// A decision follows from *other* decisions; naming itself as its own premise is a
+/// self-loop in the premise graph, never a grounding.
+fn require_not_own_premise(decision_id: &str, premise_id: &str) -> Result<()> {
+    if same_identifier(decision_id, premise_id) {
+        return Err(
+            CommandError::Validation("a decision cannot be its own premise".to_owned()).into(),
+        );
+    }
+    Ok(())
 }
 
 const fn relation_kind_name(relation_kind: RelationKind) -> &'static str {

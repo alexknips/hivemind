@@ -2131,6 +2131,62 @@ fn propose_decision_reports_stale_premise_when_superseded() {
 }
 
 #[test]
+fn propose_decision_reports_only_rejected_or_superseded_premises_as_stale() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let live_premise = propose_minimal_decision(&commands, "Premise that stays live");
+    let rejected_premise = propose_minimal_decision(&commands, "Premise that gets rejected");
+    commands
+        .disagree(
+            "actor:bob",
+            &rejected_premise,
+            "Rejected so the test has a stale premise",
+        )
+        .expect("reject premise");
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let premise_ids = vec![live_premise.clone(), rejected_premise.clone()];
+    let result = commands
+        .propose_decision_with_id(
+            DecisionProposalInput {
+                grounding: Grounding::Declared {
+                    premise_decision_ids: &premise_ids,
+                    evidence_ids: &[],
+                    hypothesis_ids: &[],
+                },
+                expressed_confidence: None,
+                actor_id: "actor:alice",
+                title: "Rests on one live and one rejected decision",
+                rationale: "Rationale text long enough for the readable floor",
+                topic_keys: &["topic".to_owned()],
+                option_ids: std::slice::from_ref(&option_id),
+                option_labels: &["A".to_owned()],
+                chosen_option_id: None,
+                decided_by: None,
+                still_proposed: true,
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+                quote: None,
+                question: None,
+            },
+            "decision-with-mixed-premises",
+            super::DecisionProposalEventUuids {
+                proposal: Uuid::new_v4(),
+                has_option: vec![Uuid::new_v4()],
+                chose: None,
+                assumes: Vec::new(),
+                based_on: Vec::new(),
+                follows_from: vec![Uuid::new_v4(), Uuid::new_v4()],
+            },
+        )
+        .expect("both premises are linked; only the rejected one is reported stale");
+
+    assert_eq!(result.premise_stale, vec![rejected_premise]);
+}
+
+#[test]
 fn propose_decision_validates_expressed_confidence_vocabulary() {
     let ledger = InMemoryEventLedger::new();
     let commands = Commands::new(&ledger);
@@ -2442,6 +2498,219 @@ fn ground_decision_rejects_self_premise() {
             .to_string()
             .contains("a decision cannot be its own premise"),
         "unexpected error: {error}"
+    );
+}
+
+fn recorded_hypothesis_payload(
+    ledger: &InMemoryEventLedger,
+    hypothesis_id: &str,
+) -> serde_json::Value {
+    ledger
+        .read(0, 50)
+        .expect("read events")
+        .into_iter()
+        .find(|event| {
+            event.event_type == EventType::HypothesisRecorded
+                && event.payload.get("hypothesis_id").and_then(|v| v.as_str())
+                    == Some(hypothesis_id)
+        })
+        .expect("hypothesis event")
+        .payload
+}
+
+#[test]
+fn record_bet_without_statement_defaults_to_judgement_call_title() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let hypothesis_id = commands
+        .record_bet(
+            "actor:alice",
+            None,
+            "  Keep the embedded database for slice one  ",
+            None,
+            None,
+        )
+        .expect("a bare bet records the default statement");
+
+    let payload = recorded_hypothesis_payload(&ledger, &hypothesis_id);
+    assert_eq!(
+        payload.get("statement").and_then(|v| v.as_str()),
+        Some("Judgement call: Keep the embedded database for slice one")
+    );
+    assert_eq!(payload.get("kind").and_then(|v| v.as_str()), Some("bet"));
+}
+
+#[test]
+fn record_bet_with_blank_statement_defaults_like_a_bare_bet() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let hypothesis_id = commands
+        .record_bet(
+            "actor:alice",
+            Some("   "),
+            "Adopt the new queue",
+            None,
+            None,
+        )
+        .expect("a blank statement is a bare bet");
+
+    let payload = recorded_hypothesis_payload(&ledger, &hypothesis_id);
+    assert_eq!(
+        payload.get("statement").and_then(|v| v.as_str()),
+        Some("Judgement call: Adopt the new queue")
+    );
+}
+
+#[test]
+fn record_bet_with_statement_keeps_it_verbatim_and_carries_bet_fields() {
+    use chrono::TimeZone;
+
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let check_by = chrono::Utc.with_ymd_and_hms(2026, 11, 1, 0, 0, 0).unwrap();
+
+    let hypothesis_id = commands
+        .record_bet(
+            "actor:alice",
+            Some("Customers will not notice the migration"),
+            "",
+            Some(check_by),
+            Some("Support tickets about the migration exceed ten"),
+        )
+        .expect("an explicit statement needs no decision title");
+
+    let payload = recorded_hypothesis_payload(&ledger, &hypothesis_id);
+    assert_eq!(
+        payload.get("statement").and_then(|v| v.as_str()),
+        Some("Customers will not notice the migration")
+    );
+    assert_eq!(payload.get("kind").and_then(|v| v.as_str()), Some("bet"));
+    assert!(payload.get("check_by").and_then(|v| v.as_str()).is_some());
+    assert_eq!(
+        payload.get("would_change_if").and_then(|v| v.as_str()),
+        Some("Support tickets about the migration exceed ten")
+    );
+}
+
+#[test]
+fn record_bet_without_statement_or_title_is_refused_and_writes_nothing() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let error = commands
+        .record_bet("actor:alice", None, "   ", None, None)
+        .expect_err("nothing to default from");
+    assert!(
+        error.to_string().contains("decision_title"),
+        "unexpected error: {error}"
+    );
+    assert!(ledger.read(0, 10).expect("read events").is_empty());
+}
+
+#[test]
+fn link_follows_from_rejects_nonexistent_decision_or_premise() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = propose_minimal_decision(&commands, "A decision that exists");
+
+    let missing_premise = commands
+        .link_follows_from(&decision_id, "decision-missing-premise", "actor:bob")
+        .expect_err("a missing premise must be refused");
+    assert!(
+        missing_premise
+            .to_string()
+            .contains("decision does not exist: decision-missing-premise"),
+        "unexpected error: {missing_premise}"
+    );
+
+    let missing_decision = commands
+        .link_follows_from("decision-missing-source", &decision_id, "actor:bob")
+        .expect_err("a missing source decision must be refused");
+    assert!(
+        missing_decision
+            .to_string()
+            .contains("decision does not exist: decision-missing-source"),
+        "unexpected error: {missing_decision}"
+    );
+}
+
+#[test]
+fn ground_decision_rejects_nonexistent_targets_and_writes_nothing() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = propose_minimal_decision(&commands, "Decision to ground");
+    let events_before = ledger.read(0, 100).expect("read events").len();
+
+    let missing_decision = commands
+        .ground_decision(GroundInput {
+            actor_id: "actor:bob",
+            decision_id: "decision-missing-target",
+            premise_decision_ids: std::slice::from_ref(&decision_id),
+            evidence_ids: &[],
+            hypothesis_ids: &[],
+        })
+        .expect_err("a missing target decision must be refused");
+    assert!(
+        missing_decision
+            .to_string()
+            .contains("decision does not exist: decision-missing-target"),
+        "unexpected error: {missing_decision}"
+    );
+
+    let missing_premise = commands
+        .ground_decision(GroundInput {
+            actor_id: "actor:bob",
+            decision_id: &decision_id,
+            premise_decision_ids: &["decision-missing-premise".to_owned()],
+            evidence_ids: &[],
+            hypothesis_ids: &[],
+        })
+        .expect_err("a missing premise must be refused");
+    assert!(
+        missing_premise
+            .to_string()
+            .contains("decision does not exist: decision-missing-premise"),
+        "unexpected error: {missing_premise}"
+    );
+
+    let missing_evidence = commands
+        .ground_decision(GroundInput {
+            actor_id: "actor:bob",
+            decision_id: &decision_id,
+            premise_decision_ids: &[],
+            evidence_ids: &["evidence-missing".to_owned()],
+            hypothesis_ids: &[],
+        })
+        .expect_err("missing evidence must be refused");
+    assert!(
+        missing_evidence
+            .to_string()
+            .contains("evidence does not exist: evidence-missing"),
+        "unexpected error: {missing_evidence}"
+    );
+
+    let missing_hypothesis = commands
+        .ground_decision(GroundInput {
+            actor_id: "actor:bob",
+            decision_id: &decision_id,
+            premise_decision_ids: &[],
+            evidence_ids: &[],
+            hypothesis_ids: &["hypothesis-missing".to_owned()],
+        })
+        .expect_err("a missing hypothesis must be refused");
+    assert!(
+        missing_hypothesis
+            .to_string()
+            .contains("hypothesis does not exist: hypothesis-missing"),
+        "unexpected error: {missing_hypothesis}"
+    );
+
+    assert_eq!(
+        ledger.read(0, 100).expect("read events").len(),
+        events_before,
+        "every refusal happens before any grounding event is appended"
     );
 }
 

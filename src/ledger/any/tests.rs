@@ -5,8 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
 use crate::ledger::contract_tests::{
-    assert_dedup_by_event_uuid, assert_monotonic_append, assert_read_offset_and_limit,
-    assert_replay_from_zero_in_order,
+    assert_dedup_by_event_uuid, assert_grounding_events_round_trip, assert_monotonic_append,
+    assert_read_offset_and_limit, assert_replay_from_zero_in_order,
 };
 
 fn temp_hivemind_dir(prefix: &str) -> PathBuf {
@@ -59,6 +59,7 @@ fn contract_tests_pass_against_any_ledger_sqlite() -> Result<()> {
     with_sqlite_any_ledger("contract-dedup", assert_dedup_by_event_uuid)?;
     with_sqlite_any_ledger("contract-replay", assert_replay_from_zero_in_order)?;
     with_sqlite_any_ledger("contract-offset-limit", assert_read_offset_and_limit)?;
+    with_sqlite_any_ledger("contract-grounding", assert_grounding_events_round_trip)?;
     Ok(())
 }
 

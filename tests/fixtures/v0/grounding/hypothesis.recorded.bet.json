@@ -1,0 +1,18 @@
+{
+  "event_id": 6,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe16",
+  "correlation_id": "session-1",
+  "causation_event_id": null,
+  "type": "hypothesis.recorded",
+  "actor_id": "agent-a",
+  "source": "agent",
+  "source_ref": "agent:codex:session-1",
+  "payload": {
+    "hypothesis_id": "hyp-latency-holds-at-10x",
+    "statement": "Judgement call: Keep the embedded database for slice 1",
+    "kind": "bet",
+    "check_by": "2026-10-01T00:00:00Z",
+    "would_change_if": "A 10x load test shows p99 write latency above 50ms"
+  },
+  "ts": "2026-05-17T20:45:43Z"
+}

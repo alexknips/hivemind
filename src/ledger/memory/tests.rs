@@ -1,8 +1,8 @@
 // Parent module gates this file with #[cfg(test)]; repeat the marker so UBS can filter test-only assertions.
 #[cfg(test)]
 use crate::ledger::contract_tests::{
-    assert_dedup_by_event_uuid, assert_monotonic_append, assert_read_offset_and_limit,
-    assert_replay_from_zero_in_order,
+    assert_dedup_by_event_uuid, assert_grounding_events_round_trip, assert_monotonic_append,
+    assert_read_offset_and_limit, assert_replay_from_zero_in_order,
 };
 use crate::Result;
 
@@ -30,4 +30,10 @@ fn replay_from_zero_is_ordered() -> Result<()> {
 fn read_applies_offset_and_limit() -> Result<()> {
     let ledger = InMemoryEventLedger::new();
     assert_read_offset_and_limit(&ledger)
+}
+
+#[test]
+fn grounding_events_round_trip() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    assert_grounding_events_round_trip(&ledger)
 }

@@ -23,7 +23,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use hivemind::commands::{Commands, DecisionProposalInput, Grounding, SupersedeInput};
+use hivemind::commands::{Commands, DecisionProposalInput, GroundInput, Grounding, SupersedeInput};
 use hivemind::connector;
 use hivemind::events::{
     CaptureItem, DecisionScoredPayload, EventType, ImportanceFactors, IngestTurn,
@@ -292,6 +292,61 @@ fn every_write_path_event_validates_against_its_schema() {
         )
         .expect("unanchor project");
 
+    // -- grounding (hivemind-gwhr.1): a bet hypothesis with kind/check_by/would_change_if, a
+    // decision that follows from a premise at capture (relation.added FOLLOWS_FROM with
+    // causation), later grounding without causation, and a standalone FOLLOWS_FROM link --
+    let check_by = chrono::DateTime::parse_from_rfc3339("2026-10-01T00:00:00Z")
+        .expect("valid rfc3339")
+        .with_timezone(&chrono::Utc);
+    let bet_id = commands
+        .record_bet(
+            actor,
+            None,
+            "A decision resting on a bet",
+            Some(check_by),
+            Some("A load test shows the assumption does not hold"),
+        )
+        .expect("record bet");
+    let grounded_option = commands
+        .record_option(actor, "Grounded option", "n/a")
+        .expect("record grounded option");
+    let premise_ids = [decision_id.clone()];
+    let grounded_decision_id = commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::Declared {
+                premise_decision_ids: &premise_ids,
+                evidence_ids: &[],
+                hypothesis_ids: std::slice::from_ref(&bet_id),
+            },
+            expressed_confidence: Some("medium"),
+            actor_id: actor,
+            title: "A decision that follows from another",
+            rationale: "This decision names a premise so the test can exercise grounding.",
+            topic_keys: &["conformance".to_owned()],
+            option_ids: std::slice::from_ref(&grounded_option),
+            option_labels: &["Grounded option".to_owned()],
+            chosen_option_id: Some(&grounded_option),
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: std::slice::from_ref(&bet_id),
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect("propose grounded decision");
+    commands
+        .ground_decision(GroundInput {
+            actor_id: actor,
+            decision_id: &grounded_decision_id,
+            premise_decision_ids: std::slice::from_ref(&old_decision_id),
+            evidence_ids: std::slice::from_ref(&evidence_id),
+            hypothesis_ids: &[],
+        })
+        .expect("ground decision later");
+    commands
+        .link_follows_from(&old_decision_id, &decision_id, actor)
+        .expect("link follows_from");
+
     // -- validate every emitted event against its schemas/v0 file --
     let events = ledger.read(0, 1000).expect("read events");
     assert!(
@@ -323,6 +378,23 @@ fn every_write_path_event_validates_against_its_schema() {
             "expected the write path exercise above to produce a {expected:?} event"
         );
     }
+
+    assert!(
+        events.iter().any(|event| {
+            event.event_type == EventType::HypothesisRecorded
+                && event.payload["kind"] == "bet"
+                && event.payload["check_by"].is_string()
+                && event.payload["would_change_if"].is_string()
+        }),
+        "expected a bet hypothesis carrying check_by and would_change_if"
+    );
+    assert!(
+        events.iter().any(|event| {
+            event.event_type == EventType::RelationAdded
+                && event.payload["relation"] == "FOLLOWS_FROM"
+        }),
+        "expected a FOLLOWS_FROM relation.added event"
+    );
 
     for event in &events {
         let event_name = schema_file_stem(event.event_type);
