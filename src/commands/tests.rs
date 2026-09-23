@@ -1106,6 +1106,8 @@ fn propose_decision_persists_option_descriptions_on_the_event() {
 
     commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Pick a queue",
             rationale: "Need durable delivery with minimal operational overhead",
