@@ -10,7 +10,7 @@ use rusqlite::OptionalExtension;
 use uuid::Uuid;
 
 use crate::commands::{
-    CommandContext, Commands, DecisionProposalEventUuids, DecisionProposalInput,
+    CommandContext, Commands, DecisionProposalEventUuids, DecisionProposalInput, Grounding,
 };
 use crate::error::CommandError;
 use crate::events::{Event, EventProvenance, TenantId};
@@ -254,6 +254,8 @@ fn write_shared_decision(
     )?;
     commands.propose_decision_with_id(
         DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:test",
             title,
             rationale: "Tenant-specific rationale for the isolation test",
@@ -275,6 +277,7 @@ fn write_shared_decision(
             chose: None,
             assumes: Vec::new(),
             based_on: Vec::new(),
+            follows_from: Vec::new(),
         },
     )?;
     Ok(())

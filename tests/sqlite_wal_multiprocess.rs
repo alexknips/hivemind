@@ -6,7 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use hivemind::commands::{Commands, DecisionProposalInput};
+use hivemind::commands::{Commands, DecisionProposalInput, Grounding};
 use hivemind::events::EventType;
 use hivemind::ledger::{EventLedger, SqliteEventLedger};
 
@@ -187,6 +187,8 @@ fn run_worker() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let title = format!("Shared ledger write {worker_index}/{decision_index}");
 
         commands.propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: &actor_id,
             title: &title,
             rationale: "Exercise concurrent writes from independent HiveMind processes.",

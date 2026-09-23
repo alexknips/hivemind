@@ -21,7 +21,8 @@
       "required": ["relation", "from_id", "to_id"],
       "properties": {
         "relation": {
-          "enum": ["SAME_AS"]
+          "$comment": "FOLLOWS_FROM is removable so a grounding can be retyped later (relation.removed + relation.added), attributed.",
+          "enum": ["SAME_AS", "FOLLOWS_FROM"]
         },
         "from_id": { "type": "string", "minLength": 1 },
         "to_id": { "type": "string", "minLength": 1 }

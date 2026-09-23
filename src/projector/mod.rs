@@ -127,10 +127,12 @@ pub enum RelationKind {
     PartOf,
     /// `from` project depends on `to` project (one hop, not transitive by default).
     DependsOn,
+    /// `from` decision follows from `to` decision — a premise in the broad sense.
+    FollowsFrom,
 }
 
 impl RelationKind {
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::ProposedBy,
         Self::DecisionRequestedBy,
         Self::DecisionRequestForDecision,
@@ -158,6 +160,7 @@ impl RelationKind {
         Self::InitiatedBy,
         Self::PartOf,
         Self::DependsOn,
+        Self::FollowsFrom,
     ];
 
     pub const fn table_name(self) -> &'static str {
@@ -189,6 +192,7 @@ impl RelationKind {
             Self::InitiatedBy => "INITIATED_BY",
             Self::PartOf => "PART_OF",
             Self::DependsOn => "DEPENDS_ON",
+            Self::FollowsFrom => "FOLLOWS_FROM",
         }
     }
 
@@ -217,6 +221,7 @@ impl RelationKind {
             Self::SameAs => (NodeKind::Decision, NodeKind::Decision),
             Self::ParticipatedBy | Self::InitiatedBy => (NodeKind::Decision, NodeKind::Actor),
             Self::PartOf | Self::DependsOn => (NodeKind::Project, NodeKind::Project),
+            Self::FollowsFrom => (NodeKind::Decision, NodeKind::Decision),
         }
     }
 }
@@ -709,6 +714,7 @@ fn relation_kind(kind: EventRelationKind) -> RelationKind {
         EventRelationKind::Supports => RelationKind::Supports,
         EventRelationKind::Refutes => RelationKind::Refutes,
         EventRelationKind::SameAs => RelationKind::SameAs,
+        EventRelationKind::FollowsFrom => RelationKind::FollowsFrom,
     }
 }
 
@@ -968,9 +974,32 @@ fn project_hypothesis_recorded(
 ) -> Result<()> {
     let props = props_extend(
         origin_properties,
-        [("statement", GraphValue::String(payload.statement.clone()))],
+        [
+            ("statement", GraphValue::String(payload.statement.clone())),
+            (
+                "kind",
+                GraphValue::String(hypothesis_kind_str(payload.kind).to_owned()),
+            ),
+            (
+                "check_by",
+                payload
+                    .check_by
+                    .map_or(GraphValue::Null, |ts| GraphValue::String(ts.to_rfc3339())),
+            ),
+            (
+                "would_change_if",
+                optional_string_value(payload.would_change_if.as_deref()),
+            ),
+        ],
     );
     graph.upsert_node(NodeKind::Hypothesis, &payload.hypothesis_id, &props)
+}
+
+const fn hypothesis_kind_str(kind: events::HypothesisKind) -> &'static str {
+    match kind {
+        events::HypothesisKind::Assumption => "assumption",
+        events::HypothesisKind::Bet => "bet",
+    }
 }
 
 fn project_project_registered(

@@ -7,13 +7,14 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::events::{
-    EventProvenance, EventSource, EventType, ProjectAnchorKind, ProjectLinkKind, RelationKind,
+    EventProvenance, EventSource, EventType, HypothesisKind, ProjectAnchorKind, ProjectLinkKind,
+    RelationKind,
 };
 use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
 use super::{
-    normalize_topic_key, Commands, DecisionProposalInput, SupersedeInput, MAX_TITLE_LEN,
-    MAX_TOPIC_KEY_LEN,
+    normalize_topic_key, Commands, DecisionProposalInput, GroundInput, Grounding, SupersedeInput,
+    MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN,
 };
 
 #[test]
@@ -205,6 +206,8 @@ fn propose_decision_fans_out_relation_events_with_causation_linkage() {
 
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Pick queue strategy",
             rationale: "Need robust ingestion that survives a burst of traffic",
@@ -276,6 +279,8 @@ fn propose_decision_stores_paired_quote_and_question() {
 
     commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Personal projects are visible tenant-wide",
             rationale: "Spelled out: a personal project is visible to the whole tenant.",
@@ -317,6 +322,8 @@ fn propose_decision_rejects_quote_without_question() {
 
     let error = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision with an unexplained quote",
             rationale: "Rationale text",
@@ -350,6 +357,8 @@ fn propose_decision_rejects_question_without_quote() {
 
     let error = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision with a question but no quote",
             rationale: "Rationale text",
@@ -514,6 +523,8 @@ fn direct_agent_decision_persists_agent_provenance() {
             .expect("option recorded");
         commands
             .propose_decision(DecisionProposalInput {
+                grounding: Grounding::NotAsked,
+                expressed_confidence: None,
                 actor_id,
                 title: "Record direct agent provenance",
                 rationale: "Agent-written decisions must be distinguishable from CLI writes",
@@ -565,6 +576,8 @@ fn accept_and_reject_invariant_for_same_actor_is_enforced() {
         .expect("option");
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Pick one",
             rationale: "Need to make progress on this before the deadline",
@@ -602,6 +615,8 @@ fn propose_decision_with_decided_by_emits_accepted_event_from_that_actor() {
         .expect("option");
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "agent:claude:scribe",
             title: "Human decides, agent records",
             rationale: "The human chose; the agent is only writing it down",
@@ -645,6 +660,8 @@ fn propose_decision_decided_by_requires_chosen_option_id() {
         .record_option("agent:claude:scribe", "A", "Option A")
         .expect("option");
     let result = commands.propose_decision(DecisionProposalInput {
+        grounding: Grounding::NotAsked,
+        expressed_confidence: None,
         actor_id: "agent:claude:scribe",
         title: "No chosen option yet",
         rationale: "Still an open proposal",
@@ -678,6 +695,8 @@ fn propose_decision_chosen_option_defaults_to_self_accepted() {
         .expect("option");
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Chosen option, no decided_by",
             rationale: "The proposer is the decider here",
@@ -718,6 +737,8 @@ fn propose_decision_still_proposed_keeps_chosen_option_open() {
         .expect("option");
     commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Proposed with a leaning but not decided",
             rationale: "Awaiting someone else's decision",
@@ -752,6 +773,8 @@ fn propose_decision_still_proposed_conflicts_with_decided_by() {
         .record_option("actor:alice", "A", "Option A")
         .expect("option");
     let result = commands.propose_decision(DecisionProposalInput {
+        grounding: Grounding::NotAsked,
+        expressed_confidence: None,
         actor_id: "actor:alice",
         title: "Contradictory flags",
         rationale: "still_proposed and decided_by disagree about whether this is decided",
@@ -785,6 +808,8 @@ fn propose_decision_rejects_mismatched_option_labels_length() {
         .expect("option b");
 
     let result = commands.propose_decision(DecisionProposalInput {
+        grounding: Grounding::NotAsked,
+        expressed_confidence: None,
         actor_id: "actor:alice",
         title: "Mismatched labels",
         rationale: "option_labels shorter than option_ids and non-empty",
@@ -824,6 +849,8 @@ project for non-coders, anyone registers, parent const";
 
     let error = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: run_on_title,
             rationale: "rationale",
@@ -857,6 +884,8 @@ fn propose_decision_rejects_title_at_max_len_plus_one() {
 
     let title: String = "x".repeat(MAX_TITLE_LEN + 1);
     let result = commands.propose_decision(DecisionProposalInput {
+        grounding: Grounding::NotAsked,
+        expressed_confidence: None,
         actor_id: "actor:alice",
         title: &title,
         rationale: "rationale",
@@ -889,6 +918,8 @@ fn propose_decision_accepts_title_at_exactly_max_len() {
     let title: String = "x".repeat(MAX_TITLE_LEN);
     commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: &title,
             rationale: "This rationale is long enough to pass the minimum checks.",
@@ -917,6 +948,8 @@ fn propose_decision_rejects_multi_sentence_title() {
 
     let error = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Use SQLite for slice 1. Migrate to Postgres later.",
             rationale: "rationale",
@@ -951,6 +984,8 @@ fn propose_decision_rejects_numbered_list_title() {
     // numbered-list rule specifically rather than tripping the sentence-count rule first.
     let error = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "1) Use SQLite 2) Add WAL mode",
             rationale: "rationale",
@@ -985,6 +1020,8 @@ fn propose_decision_accepts_title_with_single_trailing_period_and_version_dots()
     // inside a version number ("v1.2.3"), must not be mistaken for multiple sentences.
     commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Ship v1.2.3 to prod.",
             rationale: "This rationale is long enough to pass the minimum checks.",
@@ -1012,6 +1049,8 @@ fn supersede_rejects_new_title_over_max_length() {
         .expect("option");
     let old_decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision A",
             rationale: "This rationale is long enough to pass the minimum checks.",
@@ -1120,6 +1159,8 @@ fn supersede_requires_both_decisions_to_exist() {
 
     let decision_a = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision A",
             rationale: "This is a self-contained rationale for the test decision.",
@@ -1138,6 +1179,8 @@ fn supersede_requires_both_decisions_to_exist() {
 
     let decision_b = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision B",
             rationale: "This is a self-contained rationale for the test decision.",
@@ -1173,6 +1216,8 @@ fn disagree_records_reason_and_is_idempotent_for_same_actor() {
         .expect("option");
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision A",
             rationale: "This is a self-contained rationale for the test decision.",
@@ -1232,6 +1277,8 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
         .expect("option");
     let old_decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision A",
             rationale: "This is a self-contained rationale for the test decision.",
@@ -1338,6 +1385,8 @@ fn attach_evidence_requires_existing_endpoints() {
         .expect("option");
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision A",
             rationale: "This is a self-contained rationale for the test decision.",
@@ -1732,6 +1781,8 @@ fn propose_decision_normalizes_topic_keys() {
         .expect("option");
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Normalize topics",
             rationale: "Keep topic filters consistent across every capture surface",
@@ -1788,6 +1839,600 @@ fn normalize_topic_key_handles_unicode_whitespace_punctuation_and_length_cap() {
     let normalized = normalize_topic_key(&input);
     assert_eq!(normalized.len(), MAX_TOPIC_KEY_LEN);
     assert!(normalized.chars().all(|character| character == 'a'));
+}
+
+// ── Grounding (hivemind-gwhr.1): FOLLOWS_FROM, hypothesis kind/check_by/would_change_if ──
+
+fn propose_minimal_decision(commands: &Commands<'_, InMemoryEventLedger>, title: &str) -> String {
+    let option_id = commands
+        .record_option("actor:alice", "Only option", "The only option")
+        .expect("record option");
+    commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id: "actor:alice",
+            title,
+            rationale: "Rationale text",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            still_proposed: true,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect("propose minimal decision")
+}
+
+#[test]
+fn propose_decision_with_declared_grounding_creates_follows_from_edge_with_causation() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let premise_id = propose_minimal_decision(&commands, "Prior goal decision");
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let premise_ids = vec![premise_id.clone()];
+
+    let decision_id = commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::Declared {
+                premise_decision_ids: &premise_ids,
+                evidence_ids: &[],
+                hypothesis_ids: &[],
+            },
+            expressed_confidence: None,
+            actor_id: "actor:alice",
+            title: "Follows from the prior goal",
+            rationale: "Consistent with the earlier decision",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            still_proposed: true,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect("propose decision with declared grounding");
+
+    let events = ledger.read(0, 20).expect("read events");
+    let proposal = events
+        .iter()
+        .find(|event| {
+            event.event_type == EventType::DecisionProposed
+                && event.payload.get("decision_id").and_then(|v| v.as_str())
+                    == Some(decision_id.as_str())
+        })
+        .expect("proposal event");
+    let proposal_id = proposal.event_id.expect("proposal event id");
+
+    let follows_from = events
+        .iter()
+        .find(|event| {
+            event.event_type == EventType::RelationAdded
+                && event.payload.get("relation") == Some(&json!(RelationKind::FollowsFrom))
+        })
+        .expect("FOLLOWS_FROM relation event present");
+    assert_eq!(
+        follows_from.payload.get("from_id").and_then(|v| v.as_str()),
+        Some(decision_id.as_str())
+    );
+    assert_eq!(
+        follows_from.payload.get("to_id").and_then(|v| v.as_str()),
+        Some(premise_id.as_str())
+    );
+    assert_eq!(follows_from.causation_event_id, Some(proposal_id));
+}
+
+#[test]
+fn propose_decision_rejects_declared_grounding_with_nothing_named() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    let error = commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::Declared {
+                premise_decision_ids: &[],
+                evidence_ids: &[],
+                hypothesis_ids: &[],
+            },
+            expressed_confidence: None,
+            actor_id: "actor:alice",
+            title: "Decision with declared-but-empty grounding",
+            rationale: "Rationale text",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            still_proposed: true,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect_err("declared-but-empty grounding must be refused");
+    assert!(
+        error.to_string().contains(
+            "grounding must name at least one premise decision, evidence item or hypothesis"
+        ),
+        "unexpected error: {error}"
+    );
+
+    // record_option only stages an id in in-memory CommandState (no ledger event of its
+    // own — see the option_ids field); nothing else has been written, so "nothing written
+    // on refusal" means the ledger is still empty here.
+    assert_eq!(ledger.read(0, 20).expect("read events").len(), 0);
+}
+
+#[test]
+fn propose_decision_rejects_self_premise() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    // Self-premise can only be caught inside propose_decision_with_id, where the real
+    // decision id already exists — use it directly with a matching id.
+    let decision_id = "decision-self-premise";
+    let premise_ids = vec![decision_id.to_owned()];
+    let error = commands
+        .propose_decision_with_id(
+            DecisionProposalInput {
+                grounding: Grounding::Declared {
+                    premise_decision_ids: &premise_ids,
+                    evidence_ids: &[],
+                    hypothesis_ids: &[],
+                },
+                expressed_confidence: None,
+                actor_id: "actor:alice",
+                title: "A decision naming itself as a premise",
+                rationale: "Rationale text",
+                topic_keys: &["topic".to_owned()],
+                option_ids: std::slice::from_ref(&option_id),
+                option_labels: &[],
+                chosen_option_id: None,
+                decided_by: None,
+                still_proposed: true,
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+                quote: None,
+                question: None,
+            },
+            decision_id,
+            super::DecisionProposalEventUuids {
+                proposal: Uuid::new_v4(),
+                has_option: vec![Uuid::new_v4()],
+                chose: None,
+                assumes: Vec::new(),
+                based_on: Vec::new(),
+                follows_from: vec![Uuid::new_v4()],
+            },
+        )
+        .expect_err("self-premise must be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("a decision cannot be its own premise"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn propose_decision_rejects_nonexistent_premise() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let premise_ids = vec!["decision-does-not-exist".to_owned()];
+
+    let error = commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::Declared {
+                premise_decision_ids: &premise_ids,
+                evidence_ids: &[],
+                hypothesis_ids: &[],
+            },
+            expressed_confidence: None,
+            actor_id: "actor:alice",
+            title: "Decision naming a premise that doesn't exist",
+            rationale: "Rationale text",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            still_proposed: true,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect_err("nonexistent premise must be refused");
+    assert!(
+        error.to_string().contains("decision does not exist"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn propose_decision_reports_stale_premise_when_superseded() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let premise_id = propose_minimal_decision(&commands, "Premise that will be superseded");
+    let successor_id = propose_minimal_decision(&commands, "Successor decision");
+    commands
+        .supersede_decision(&premise_id, &successor_id, "actor:alice")
+        .expect("supersede premise");
+
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let premise_ids = vec![premise_id.clone()];
+    let decision_id = "decision-with-stale-premise";
+    let result = commands
+        .propose_decision_with_id(
+            DecisionProposalInput {
+                grounding: Grounding::Declared {
+                    premise_decision_ids: &premise_ids,
+                    evidence_ids: &[],
+                    hypothesis_ids: &[],
+                },
+                expressed_confidence: None,
+                actor_id: "actor:alice",
+                title: "Rests on a since-superseded decision",
+                rationale: "Rationale text",
+                topic_keys: &["topic".to_owned()],
+                option_ids: std::slice::from_ref(&option_id),
+                option_labels: &[],
+                chosen_option_id: None,
+                decided_by: None,
+                still_proposed: true,
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+                quote: None,
+                question: None,
+            },
+            decision_id,
+            super::DecisionProposalEventUuids {
+                proposal: Uuid::new_v4(),
+                has_option: vec![Uuid::new_v4()],
+                chose: None,
+                assumes: Vec::new(),
+                based_on: Vec::new(),
+                follows_from: vec![Uuid::new_v4()],
+            },
+        )
+        .expect("append-only: a stale premise is still linked, not refused");
+
+    assert_eq!(result.premise_stale, vec![premise_id]);
+}
+
+#[test]
+fn propose_decision_validates_expressed_confidence_vocabulary() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    let error = commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: Some("very high"),
+            actor_id: "actor:alice",
+            title: "Decision with an invalid confidence word",
+            rationale: "Rationale text",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            still_proposed: true,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect_err("invalid expressed_confidence must be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("expressed_confidence must be low, medium, or high"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn propose_decision_stores_expressed_confidence_from_input() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    let decision_id = commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: Some("medium"),
+            actor_id: "actor:alice",
+            title: "Decision with a stated confidence",
+            rationale: "Rationale text",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &[],
+            chosen_option_id: None,
+            decided_by: None,
+            still_proposed: true,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect("propose decision with expressed_confidence");
+
+    let events = ledger.read(0, 20).expect("read events");
+    let proposal = events
+        .iter()
+        .find(|event| {
+            event.event_type == EventType::DecisionProposed
+                && event.payload.get("decision_id").and_then(|v| v.as_str())
+                    == Some(decision_id.as_str())
+        })
+        .expect("proposal event");
+    assert_eq!(
+        proposal
+            .payload
+            .get("expressed_confidence")
+            .and_then(|v| v.as_str()),
+        Some("medium")
+    );
+}
+
+#[test]
+fn record_hypothesis_defaults_to_assumption_kind() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let hypothesis_id = commands
+        .record_hypothesis("actor:alice", "The cache will help")
+        .expect("record hypothesis");
+
+    let events = ledger.read(0, 5).expect("read events");
+    let event = events
+        .iter()
+        .find(|event| {
+            event.event_type == EventType::HypothesisRecorded
+                && event.payload.get("hypothesis_id").and_then(|v| v.as_str())
+                    == Some(hypothesis_id.as_str())
+        })
+        .expect("hypothesis event");
+    assert_eq!(
+        event.payload.get("kind").and_then(|v| v.as_str()),
+        Some("assumption"),
+        "kind is #[serde(default)] (missing on old events defaults to assumption on replay), \
+         not skip_serializing_if — new events always state it explicitly"
+    );
+}
+
+#[test]
+fn record_hypothesis_with_kind_records_bet_fields() {
+    use chrono::TimeZone;
+
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let check_by = chrono::Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+
+    let hypothesis_id = commands
+        .record_hypothesis_with_kind(
+            "actor:alice",
+            "Latency stays under 50ms at 10x load",
+            HypothesisKind::Bet,
+            Some(check_by),
+            Some("A 10x load test shows p99 above 50ms"),
+        )
+        .expect("record bet hypothesis");
+
+    let events = ledger.read(0, 5).expect("read events");
+    let event = events
+        .iter()
+        .find(|event| {
+            event.event_type == EventType::HypothesisRecorded
+                && event.payload.get("hypothesis_id").and_then(|v| v.as_str())
+                    == Some(hypothesis_id.as_str())
+        })
+        .expect("hypothesis event");
+    assert_eq!(
+        event.payload.get("kind").and_then(|v| v.as_str()),
+        Some("bet")
+    );
+    assert!(event
+        .payload
+        .get("check_by")
+        .and_then(|v| v.as_str())
+        .is_some());
+    assert_eq!(
+        event
+            .payload
+            .get("would_change_if")
+            .and_then(|v| v.as_str()),
+        Some("A 10x load test shows p99 above 50ms")
+    );
+}
+
+#[test]
+fn record_hypothesis_with_kind_rejects_empty_would_change_if() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let error = commands
+        .record_hypothesis_with_kind(
+            "actor:alice",
+            "A bet with a blank would_change_if",
+            HypothesisKind::Bet,
+            None,
+            Some("   "),
+        )
+        .expect_err("empty would_change_if must be refused");
+    assert!(
+        error.to_string().contains("would_change_if"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn link_follows_from_creates_edge_without_causation() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let premise_id = propose_minimal_decision(&commands, "Premise decision");
+    let decision_id = propose_minimal_decision(&commands, "Decision that follows from it");
+
+    let event_id = commands
+        .link_follows_from(&decision_id, &premise_id, "actor:bob")
+        .expect("link follows_from");
+
+    let events = ledger.read(0, 20).expect("read events");
+    let relation = events
+        .iter()
+        .find(|event| event.event_id == Some(event_id))
+        .expect("relation event present");
+    assert_eq!(relation.causation_event_id, None);
+    assert_eq!(
+        relation.payload.get("relation"),
+        Some(&json!(RelationKind::FollowsFrom))
+    );
+}
+
+#[test]
+fn link_follows_from_rejects_self_premise() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = propose_minimal_decision(&commands, "A decision");
+
+    let error = commands
+        .link_follows_from(&decision_id, &decision_id, "actor:bob")
+        .expect_err("self-premise must be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("a decision cannot be its own premise"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn attach_evidence_names_follows_from_when_target_is_a_decision() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = propose_minimal_decision(&commands, "Decision A");
+    let other_decision_id = propose_minimal_decision(&commands, "Decision B");
+
+    let error = commands
+        .attach_evidence(&decision_id, &other_decision_id, "actor:bob")
+        .expect_err("BASED_ON must keep refusing a decision target");
+    assert!(
+        error.to_string().contains("FOLLOWS_FROM"),
+        "error should name FOLLOWS_FROM as the right relation: {error}"
+    );
+}
+
+#[test]
+fn ground_decision_appends_grounding_without_causation() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let premise_id = propose_minimal_decision(&commands, "Premise decision");
+    let decision_id = propose_minimal_decision(&commands, "Decision to ground later");
+    let evidence_id = commands
+        .record_evidence("actor:bob", "Later-attached evidence")
+        .expect("record evidence");
+    let hypothesis_id = commands
+        .record_hypothesis("actor:bob", "Later-attached assumption")
+        .expect("record hypothesis");
+
+    let premise_ids = vec![premise_id.clone()];
+    let evidence_ids = vec![evidence_id.clone()];
+    let hypothesis_ids = vec![hypothesis_id.clone()];
+    let event_ids = commands
+        .ground_decision(GroundInput {
+            actor_id: "actor:bob",
+            decision_id: &decision_id,
+            premise_decision_ids: &premise_ids,
+            evidence_ids: &evidence_ids,
+            hypothesis_ids: &hypothesis_ids,
+        })
+        .expect("ground decision");
+    assert_eq!(event_ids.len(), 3);
+
+    let events = ledger.read(0, 30).expect("read events");
+    for event_id in &event_ids {
+        let event = events
+            .iter()
+            .find(|event| event.event_id == Some(*event_id))
+            .expect("grounding event present");
+        assert_eq!(
+            event.causation_event_id, None,
+            "later grounding never carries causation"
+        );
+    }
+}
+
+#[test]
+fn ground_decision_rejects_nothing_named() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = propose_minimal_decision(&commands, "Decision to ground");
+
+    let error = commands
+        .ground_decision(GroundInput {
+            actor_id: "actor:bob",
+            decision_id: &decision_id,
+            premise_decision_ids: &[],
+            evidence_ids: &[],
+            hypothesis_ids: &[],
+        })
+        .expect_err("empty grounding must be refused");
+    assert!(
+        error.to_string().contains(
+            "grounding must name at least one premise decision, evidence item or hypothesis"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn ground_decision_rejects_self_premise() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = propose_minimal_decision(&commands, "Decision to ground");
+    let premise_ids = vec![decision_id.clone()];
+
+    let error = commands
+        .ground_decision(GroundInput {
+            actor_id: "actor:bob",
+            decision_id: &decision_id,
+            premise_decision_ids: &premise_ids,
+            evidence_ids: &[],
+            hypothesis_ids: &[],
+        })
+        .expect_err("self-premise must be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("a decision cannot be its own premise"),
+        "unexpected error: {error}"
+    );
 }
 
 proptest! {

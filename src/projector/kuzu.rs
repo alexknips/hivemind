@@ -39,7 +39,7 @@ const NODE_DDL: &[(NodeKind, &str)] = &[
     ),
     (
         NodeKind::Hypothesis,
-        "CREATE NODE TABLE IF NOT EXISTS `Hypothesis` (id STRING, statement STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Hypothesis` (id STRING, statement STRING, kind STRING, check_by STRING, would_change_if STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Blocker,
@@ -151,6 +151,10 @@ const RELATION_DDL: &[(RelationKind, &str)] = &[
     (
         RelationKind::DependsOn,
         "CREATE REL TABLE IF NOT EXISTS `DEPENDS_ON` (FROM `Project` TO `Project`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::FollowsFrom,
+        "CREATE REL TABLE IF NOT EXISTS `FOLLOWS_FROM` (FROM `Decision` TO `Decision`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
 ];
 

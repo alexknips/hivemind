@@ -399,6 +399,101 @@ fn node_properties_round_trip_through_postgres() -> Result<()> {
     })
 }
 
+// ── Grounding (hivemind-gwhr.1): FOLLOWS_FROM + hypothesis kind/check_by/would_change_if ──
+
+#[test]
+fn follows_from_and_hypothesis_kind_match_memory() -> Result<()> {
+    with_postgres_graph("grounding-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = InMemoryEventLedger::new();
+        for event in [
+            make_event(
+                EventType::HypothesisRecorded,
+                "actor:alice",
+                json!({
+                    "hypothesis_id": "hypothesis:bet",
+                    "statement": "Latency stays under 50ms at 10x load",
+                    "kind": "bet",
+                    "check_by": "2026-10-01T00:00:00Z",
+                    "would_change_if": "A 10x load test shows p99 above 50ms"
+                }),
+            ),
+            make_event(
+                EventType::DecisionProposed,
+                "actor:alice",
+                json!({
+                    "decision_id": "decision:premise",
+                    "title": "Earlier decision",
+                    "rationale": "Established earlier",
+                    "topic_keys": ["architecture"],
+                    "option_ids": [],
+                    "chosen_option_id": null,
+                    "hypothesis_ids": [],
+                    "evidence_ids": []
+                }),
+            ),
+            make_event(
+                EventType::DecisionProposed,
+                "actor:alice",
+                json!({
+                    "decision_id": "decision:follower",
+                    "title": "Later decision",
+                    "rationale": "Follows from the earlier one",
+                    "topic_keys": ["architecture"],
+                    "option_ids": [],
+                    "chosen_option_id": null,
+                    "hypothesis_ids": [],
+                    "evidence_ids": []
+                }),
+            ),
+            make_event(
+                EventType::RelationAdded,
+                "actor:alice",
+                json!({
+                    "relation": "FOLLOWS_FROM",
+                    "from_id": "decision:follower",
+                    "to_id": "decision:premise"
+                }),
+            ),
+        ] {
+            ledger.append(event)?;
+        }
+
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        let edge_cypher = "MATCH (from:`Decision`)-[:`FOLLOWS_FROM`]->(to:`Decision`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id;";
+        let memory_edges = memory.query(edge_cypher, &GraphParams::new())?;
+        let pg_edges = pg.query(edge_cypher, &GraphParams::new())?;
+        if memory_edges != pg_edges || memory_edges.is_empty() {
+            return Err(test_error(format!(
+                "FOLLOWS_FROM edge mismatch: memory={memory_edges:?} pg={pg_edges:?}"
+            )));
+        }
+
+        let node_cypher = "MATCH (node:`Hypothesis` {id: $id}) RETURN node.kind AS kind, node.check_by AS check_by, node.would_change_if AS would_change_if;";
+        let params = GraphParams::from([(
+            "id".to_owned(),
+            GraphValue::String("hypothesis:bet".to_owned()),
+        )]);
+        let memory_rows = memory.query(node_cypher, &params)?;
+        let pg_rows = pg.query(node_cypher, &params)?;
+        if memory_rows != pg_rows {
+            return Err(test_error(format!(
+                "hypothesis kind/check_by/would_change_if mismatch: memory={memory_rows:?} pg={pg_rows:?}"
+            )));
+        }
+        if pg_rows.first().and_then(|row| row.get("kind"))
+            != Some(&GraphValue::String("bet".to_owned()))
+        {
+            return Err(test_error(format!(
+                "expected kind=bet on postgres: {pg_rows:?}"
+            )));
+        }
+        Ok(())
+    })
+}
+
 // ── Resolve-by-description parity (hivemind-tenv.1) ────────────────────────────
 //
 // `resolve_decision_by_description` reuses `collect_graph_search_results`'s tier system

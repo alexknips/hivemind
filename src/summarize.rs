@@ -727,7 +727,7 @@ fn render_digest_text(
 #[cfg(test)]
 mod tests {
     use super::*; // ubs:ignore: test-only glob import; standard Rust test module idiom
-    use crate::commands::{Commands, DecisionProposalInput, SupersedeInput};
+    use crate::commands::{Commands, DecisionProposalInput, Grounding, SupersedeInput};
     use crate::events::TenantId;
     use crate::ledger::InMemoryEventLedger;
     use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
@@ -762,6 +762,8 @@ mod tests {
                 .map(|i| option_ids[i].clone()) // ubs:ignore: test-only; index bounds safe (position returns valid index)
         });
         let input = DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: actor,
             title,
             rationale,

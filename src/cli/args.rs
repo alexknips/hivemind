@@ -957,6 +957,24 @@ pub struct EmitHypothesisRecordedArgs {
 
     #[arg(long)]
     pub statement: String,
+
+    /// assumption (default) or bet — a declared gap with nothing behind it yet.
+    #[arg(long, value_enum, default_value_t = EmitHypothesisKind::Assumption)]
+    pub kind: EmitHypothesisKind,
+
+    /// When to check whether the bet paid off. RFC3339 timestamp or YYYY-MM-DD date.
+    #[arg(long = "check-by")]
+    pub check_by: Option<String>,
+
+    /// What would change our mind, in the decider's own words.
+    #[arg(long = "would-change-if")]
+    pub would_change_if: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EmitHypothesisKind {
+    Assumption,
+    Bet,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1063,6 +1081,10 @@ pub enum EmitRelationKind {
     Refutes,
     #[value(alias = "based_on")]
     BasedOn,
+    /// Links `--from` (the decision) to `--to` (the decision it follows from) — a premise
+    /// in the broad sense, distinct from `Supersedes` (the parent still stands).
+    #[value(alias = "follows_from")]
+    FollowsFrom,
 }
 
 #[derive(Debug, Clone, Args)]

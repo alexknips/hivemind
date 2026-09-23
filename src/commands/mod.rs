@@ -4,14 +4,14 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::error::CommandError;
 use crate::events::{
     CaptureItem, DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload,
     DecisionScoredPayload, DecisionSupersededPayload, Event, EventBuilder, EventId, EventPayload,
-    EventProvenance, EventType, EvidenceRecordedPayload, HypothesisRecordedPayload,
+    EventProvenance, EventType, EvidenceRecordedPayload, HypothesisKind, HypothesisRecordedPayload,
     IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn, ProjectAnchorKind,
     ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
     RelationAddedPayload, RelationKind, TenantId,
@@ -44,12 +44,65 @@ pub struct DecisionProposalEventUuids {
     pub chose: Option<Uuid>,
     pub assumes: Vec<Uuid>,
     pub based_on: Vec<Uuid>,
+    pub follows_from: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionProposalEventIds {
     pub proposal_event_id: EventId,
     pub relation_event_ids: Vec<EventId>,
+    /// Premise decision ids named in `Grounding::Declared` that were already superseded or
+    /// rejected at capture time. Append-only: the premise link is still recorded (honesty
+    /// about staleness is the renderer's job, not a write-time gate), but the caller needs
+    /// this to build an honest reply.
+    pub premise_stale: Vec<DecisionId>,
+}
+
+/// What a proposed decision rests on, named at the moment of capture. `Declared` requires
+/// at least one id across the three lists — a bet is declared separately as a hypothesis
+/// of `HypothesisKind::Bet` in `hypothesis_ids`, so an all-empty `Declared` really does mean
+/// nothing was named. `NotAsked` is reserved for paths that never ask the question: raw
+/// `emit decision.proposed`, `ingest.batch_classified`, document import, and Slack capture.
+/// Grounding is a write-time validation gate only — it is never itself persisted; the graph
+/// already derives "grounded" from the FOLLOWS_FROM/BASED_ON/ASSUMES edges it produces.
+#[derive(Debug, Clone, Copy)]
+pub enum Grounding<'a> {
+    Declared {
+        premise_decision_ids: &'a [String],
+        evidence_ids: &'a [String],
+        hypothesis_ids: &'a [String],
+    },
+    NotAsked,
+}
+
+impl<'a> Grounding<'a> {
+    fn premise_decision_ids(self) -> &'a [String] {
+        match self {
+            Self::Declared {
+                premise_decision_ids,
+                ..
+            } => premise_decision_ids,
+            Self::NotAsked => &[],
+        }
+    }
+
+    /// True only for `Declared` with nothing named across all three lists — the one shape
+    /// `propose_decision`/`propose_decision_with_id` refuse. `NotAsked` is never empty in
+    /// this sense: the question was never posed, so there is nothing to be empty about.
+    fn declared_and_empty(&self) -> bool {
+        match self {
+            Self::Declared {
+                premise_decision_ids,
+                evidence_ids,
+                hypothesis_ids,
+            } => {
+                premise_decision_ids.is_empty()
+                    && evidence_ids.is_empty()
+                    && hypothesis_ids.is_empty()
+            }
+            Self::NotAsked => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +142,11 @@ pub struct DecisionProposalInput<'a> {
     pub quote: Option<&'a str>,
     /// The question `quote` answers, spelled out. Requires `quote`.
     pub question: Option<&'a str>,
+    /// What this decision rests on. See `Grounding`.
+    pub grounding: Grounding<'a>,
+    /// Expressed confidence from the decider's own words: low | medium | high. Never
+    /// system-computed. Validated against that fixed vocabulary when present.
+    pub expressed_confidence: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +160,19 @@ pub struct SupersedeInput<'a> {
     pub chosen_option_label: Option<&'a str>,
     pub hypothesis_ids: &'a [String],
     pub evidence_ids: &'a [String],
+}
+
+/// Input to `Commands::ground_decision`: give an already-proposed decision its grounding
+/// after the fact. Unlike `Grounding::Declared` on `DecisionProposalInput`, this is not
+/// mutually exclusive with `NotAsked` — grounding an existing decision is always a
+/// deliberate act, so there is nothing to make optional.
+#[derive(Debug, Clone, Copy)]
+pub struct GroundInput<'a> {
+    pub actor_id: &'a str,
+    pub decision_id: &'a str,
+    pub premise_decision_ids: &'a [String],
+    pub evidence_ids: &'a [String],
+    pub hypothesis_ids: &'a [String],
 }
 
 pub struct Commands<'a, L: EventLedger> {
@@ -210,26 +281,69 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("statement", statement)?;
 
         let hypothesis_id = generate_entity_id("hypothesis");
-        self.record_hypothesis_with_id(actor_id, &hypothesis_id, statement, Uuid::new_v4())?;
+        self.record_hypothesis_with_id(
+            actor_id,
+            &hypothesis_id,
+            statement,
+            HypothesisKind::Assumption,
+            None,
+            None,
+            Uuid::new_v4(),
+        )?;
         Ok(hypothesis_id)
     }
 
+    /// Like `record_hypothesis`, but for a caller (e.g. `emit hypothesis.recorded --kind
+    /// bet`) that names the full grounding shape up front instead of taking the assumption
+    /// default.
+    pub fn record_hypothesis_with_kind(
+        &self,
+        actor_id: &str,
+        statement: &str,
+        kind: HypothesisKind,
+        check_by: Option<DateTime<Utc>>,
+        would_change_if: Option<&str>,
+    ) -> Result<HypothesisId> {
+        require_valid_actor_id(actor_id)?;
+        require_non_empty("statement", statement)?;
+
+        let hypothesis_id = generate_entity_id("hypothesis");
+        self.record_hypothesis_with_id(
+            actor_id,
+            &hypothesis_id,
+            statement,
+            kind,
+            check_by,
+            would_change_if,
+            Uuid::new_v4(),
+        )?;
+        Ok(hypothesis_id)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn record_hypothesis_with_id(
         &self,
         actor_id: &str,
         hypothesis_id: &str,
         statement: &str,
+        kind: HypothesisKind,
+        check_by: Option<DateTime<Utc>>,
+        would_change_if: Option<&str>,
         event_uuid: Uuid,
     ) -> Result<EventId> {
         require_valid_actor_id(actor_id)?;
         require_non_empty("hypothesis_id", hypothesis_id)?;
         require_non_empty("statement", statement)?;
+        require_optional_non_empty("would_change_if", would_change_if)?;
 
         let event = self.event_with_uuid(
             actor_id,
             EventPayload::HypothesisRecorded(HypothesisRecordedPayload {
                 hypothesis_id: hypothesis_id.to_owned(),
                 statement: statement.to_owned(),
+                kind,
+                check_by,
+                would_change_if: would_change_if.map(ToOwned::to_owned),
             }),
             None,
             event_uuid,
@@ -590,6 +704,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
         require_quote_pairing(input.quote, input.question)?;
         require_readable_rationale(input.rationale, input.quote.is_some())?;
+        require_valid_expressed_confidence(input.expressed_confidence)?;
 
         let normalized_topic_keys: Vec<String> = input
             .topic_keys
@@ -648,12 +763,15 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }
         }
 
+        self.validate_grounding_premises(input.grounding)?;
+
         let event_uuids = DecisionProposalEventUuids {
             proposal: Uuid::new_v4(),
             has_option: repeat_uuid(input.option_ids.len()),
             chose: input.chosen_option_id.map(|_| Uuid::new_v4()),
             assumes: repeat_uuid(input.hypothesis_ids.len()),
             based_on: repeat_uuid(input.evidence_ids.len()),
+            follows_from: repeat_uuid(input.grounding.premise_decision_ids().len()),
         };
         let decision_id = generate_entity_id("decision");
 
@@ -712,6 +830,14 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
+        if event_uuids.follows_from.len() != input.grounding.premise_decision_ids().len() {
+            return Err(CommandError::Validation(
+                "follows_from event UUID count must match grounding's premise_decision_ids"
+                    .to_owned(),
+            )
+            .into());
+        }
+
         if input.chosen_option_id.is_some() != event_uuids.chose.is_some() {
             return Err(CommandError::Validation(
                 "chose event UUID must be present exactly when chosen_option_id is present"
@@ -722,6 +848,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
         require_quote_pairing(input.quote, input.question)?;
         require_readable_rationale(input.rationale, input.quote.is_some())?;
+        require_valid_expressed_confidence(input.expressed_confidence)?;
 
         let normalized_topic_keys: Vec<String> = input
             .topic_keys
@@ -793,6 +920,32 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }
         }
 
+        if input.grounding.declared_and_empty() {
+            return Err(CommandError::Validation(
+                "grounding must name at least one premise decision, evidence item or hypothesis (a bet counts)".to_owned(),
+            )
+            .into());
+        }
+
+        let mut premise_stale = Vec::new();
+        for premise_id in input.grounding.premise_decision_ids() {
+            if same_identifier(premise_id, decision_id) {
+                return Err(CommandError::Validation(
+                    "a decision cannot be its own premise".to_owned(),
+                )
+                .into());
+            }
+            if !self.decision_exists(premise_id)? {
+                return Err(CommandError::Invariant(format!(
+                    "decision does not exist: {premise_id}"
+                ))
+                .into());
+            }
+            if self.decision_is_stale(premise_id)? {
+                premise_stale.push(premise_id.clone());
+            }
+        }
+
         let root_event = self.event_with_uuid(
             input.actor_id,
             EventPayload::DecisionProposed(DecisionProposedPayload {
@@ -806,7 +959,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 chosen_option_id: input.chosen_option_id.map(ToOwned::to_owned),
                 hypothesis_ids: input.hypothesis_ids.to_vec(),
                 evidence_ids: input.evidence_ids.to_vec(),
-                expressed_confidence: None,
+                expressed_confidence: input.expressed_confidence.map(ToOwned::to_owned),
                 quote: input.quote.map(ToOwned::to_owned),
                 question: input.question.map(ToOwned::to_owned),
             }),
@@ -864,9 +1017,26 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             )?);
         }
 
+        for (premise_id, event_uuid) in input
+            .grounding
+            .premise_decision_ids()
+            .iter()
+            .zip(event_uuids.follows_from)
+        {
+            relation_event_ids.push(self.append_relation_event_with_uuid(
+                input.actor_id,
+                root_event_id,
+                RelationKind::FollowsFrom,
+                decision_id,
+                premise_id,
+                event_uuid,
+            )?);
+        }
+
         Ok(DecisionProposalEventIds {
             proposal_event_id: root_event_id,
             relation_event_ids,
+            premise_stale,
         })
     }
 
@@ -1098,6 +1268,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .transpose()?;
 
         let proposal_props = DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: input.actor_id,
             title: input.new_title,
             rationale: input.new_rationale,
@@ -1149,6 +1321,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 chose: chosen_option_id.as_ref().map(|_| Uuid::new_v4()),
                 assumes: repeat_uuid(input.hypothesis_ids.len()),
                 based_on: repeat_uuid(input.evidence_ids.len()),
+                // Superseding decisions don't name premises in this slice (see the
+                // `grounding: Grounding::NotAsked` comment on `proposal_props` above).
+                follows_from: Vec::new(),
             },
         )?;
         let superseded_event_id = self.supersede_decision_with_uuid(
@@ -1192,9 +1367,15 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             );
         }
         if !self.evidence_exists(evidence_id)? {
-            return Err(
-                CommandError::Invariant(format!("evidence does not exist: {evidence_id}")).into(),
-            );
+            let hint = if self.decision_exists(evidence_id)? {
+                " (that id is a decision — use FOLLOWS_FROM to link a decision to a decision it follows from, not BASED_ON)"
+            } else {
+                ""
+            };
+            return Err(CommandError::Invariant(format!(
+                "evidence does not exist: {evidence_id}{hint}"
+            ))
+            .into());
         }
 
         self.append_relation_event_with_uuid(
@@ -1205,6 +1386,152 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             evidence_id,
             event_uuid,
         )
+    }
+
+    /// Links `decision_id` to `premise_decision_id` as a `FOLLOWS_FROM` premise, without
+    /// causation (this is always a standalone link, never part of a proposal's fan-out —
+    /// see `propose_decision_with_id` for the at-capture case). Existence and not-self only;
+    /// cycle refusal is a verb-level rule that needs a graph walk (gwhr.4's `ground` CLI).
+    pub fn link_follows_from(
+        &self,
+        decision_id: &str,
+        premise_decision_id: &str,
+        actor_id: &str,
+    ) -> Result<EventId> {
+        self.link_follows_from_with_uuid(decision_id, premise_decision_id, actor_id, Uuid::new_v4())
+    }
+
+    pub fn link_follows_from_with_uuid(
+        &self,
+        decision_id: &str,
+        premise_decision_id: &str,
+        actor_id: &str,
+        event_uuid: Uuid,
+    ) -> Result<EventId> {
+        require_valid_actor_id(actor_id)?;
+        require_non_empty("decision_id", decision_id)?;
+        require_non_empty("premise_decision_id", premise_decision_id)?;
+
+        if same_identifier(decision_id, premise_decision_id) {
+            return Err(CommandError::Validation(
+                "a decision cannot be its own premise".to_owned(),
+            )
+            .into());
+        }
+        if !self.decision_exists(decision_id)? {
+            return Err(
+                CommandError::Invariant(format!("decision does not exist: {decision_id}")).into(),
+            );
+        }
+        if !self.decision_exists(premise_decision_id)? {
+            return Err(CommandError::Invariant(format!(
+                "decision does not exist: {premise_decision_id}"
+            ))
+            .into());
+        }
+
+        self.append_relation_event_with_uuid(
+            actor_id,
+            0,
+            RelationKind::FollowsFrom,
+            decision_id,
+            premise_decision_id,
+            event_uuid,
+        )
+    }
+
+    /// Give an existing decision its grounding after the fact, attributed to `actor_id`
+    /// (never the proposal's actor unless they're the same). Appends `FOLLOWS_FROM` /
+    /// `BASED_ON` / `ASSUMES` with no causation — see `Grounding` for why "at capture" vs
+    /// "later" needs no new field. Existence and not-self checks only; cycle refusal for
+    /// premises is a verb-level rule the `ground` CLI (gwhr.4) applies before calling this,
+    /// since it needs a graph walk this ledger-only layer doesn't have.
+    pub fn ground_decision(&self, input: GroundInput<'_>) -> Result<Vec<EventId>> {
+        require_valid_actor_id(input.actor_id)?;
+        require_non_empty("decision_id", input.decision_id)?;
+
+        if input.premise_decision_ids.is_empty()
+            && input.evidence_ids.is_empty()
+            && input.hypothesis_ids.is_empty()
+        {
+            return Err(CommandError::Validation(
+                "grounding must name at least one premise decision, evidence item or hypothesis (a bet counts)".to_owned(),
+            )
+            .into());
+        }
+
+        if !self.decision_exists(input.decision_id)? {
+            return Err(CommandError::Invariant(format!(
+                "decision does not exist: {}",
+                input.decision_id
+            ))
+            .into());
+        }
+
+        for premise_id in input.premise_decision_ids {
+            if same_identifier(premise_id, input.decision_id) {
+                return Err(CommandError::Validation(
+                    "a decision cannot be its own premise".to_owned(),
+                )
+                .into());
+            }
+            if !self.decision_exists(premise_id)? {
+                return Err(CommandError::Invariant(format!(
+                    "decision does not exist: {premise_id}"
+                ))
+                .into());
+            }
+        }
+        for evidence_id in input.evidence_ids {
+            if !self.evidence_exists(evidence_id)? {
+                return Err(CommandError::Invariant(format!(
+                    "evidence does not exist: {evidence_id}"
+                ))
+                .into());
+            }
+        }
+        for hypothesis_id in input.hypothesis_ids {
+            if !self.hypothesis_exists(hypothesis_id)? {
+                return Err(CommandError::Invariant(format!(
+                    "hypothesis does not exist: {hypothesis_id}"
+                ))
+                .into());
+            }
+        }
+
+        let mut event_ids = Vec::new();
+        for premise_id in input.premise_decision_ids {
+            event_ids.push(self.append_relation_event(
+                input.actor_id,
+                0,
+                RelationKind::FollowsFrom,
+                input.decision_id,
+                premise_id,
+            )?);
+        }
+        for evidence_id in input.evidence_ids {
+            event_ids.push(self.append_relation_event(
+                input.actor_id,
+                0,
+                RelationKind::BasedOn,
+                input.decision_id,
+                evidence_id,
+            )?);
+        }
+        let assumes_from_id = self
+            .chosen_option_for_decision(input.decision_id)?
+            .unwrap_or_else(|| input.decision_id.to_owned());
+        for hypothesis_id in input.hypothesis_ids {
+            event_ids.push(self.append_relation_event(
+                input.actor_id,
+                0,
+                RelationKind::Assumes,
+                &assumes_from_id,
+                hypothesis_id,
+            )?);
+        }
+
+        Ok(event_ids)
     }
 
     pub fn assume_hypothesis_with_uuid(
@@ -1550,6 +1877,43 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             let has_matching_id = payload_value_matches(event, "decision_id", decision_id);
             event.event_type == EventType::DecisionProposed && has_matching_id
         })
+    }
+
+    /// A premise decision is stale once it has been superseded (as the old side of a
+    /// `decision.superseded`) or rejected. Append-only: staleness is reported, never a
+    /// reason to refuse the link — honesty about it is the renderer's job (`premise_stale`
+    /// on `DecisionProposalEventIds`, `PremiseSuperseded`/`PremiseRejected` in gwhr.3).
+    fn decision_is_stale(&self, decision_id: &str) -> Result<bool> {
+        self.scan_events(|event| match event.event_type {
+            // ubs:ignore: decision IDs are public ledger IDs, not timing-sensitive secrets.
+            EventType::DecisionSuperseded => {
+                payload_value_matches(event, "old_decision_id", decision_id)
+            }
+            EventType::DecisionRejected => payload_value_matches(event, "decision_id", decision_id),
+            _ => false,
+        })
+    }
+
+    /// Shared "declared but empty" and premise-existence validation, run by both
+    /// `propose_decision` (fail fast before generating the decision id) and
+    /// `propose_decision_with_id` (which additionally refuses a self-premise and collects
+    /// `premise_stale` once the real decision id exists).
+    fn validate_grounding_premises(&self, grounding: Grounding<'_>) -> Result<()> {
+        if grounding.declared_and_empty() {
+            return Err(CommandError::Validation(
+                "grounding must name at least one premise decision, evidence item or hypothesis (a bet counts)".to_owned(),
+            )
+            .into());
+        }
+        for premise_id in grounding.premise_decision_ids() {
+            if !self.decision_exists(premise_id)? {
+                return Err(CommandError::Invariant(format!(
+                    "decision does not exist: {premise_id}"
+                ))
+                .into());
+            }
+        }
+        Ok(())
     }
 
     fn actor_has_decision_event(
@@ -2052,6 +2416,18 @@ fn find_bare_list_reference(text: &str) -> Option<String> {
     None
 }
 
+/// Expressed confidence is a fixed, decider-stated vocabulary — never a system-computed
+/// score (see `DecisionProposalInput::expressed_confidence`).
+fn require_valid_expressed_confidence(value: Option<&str>) -> Result<()> {
+    match value {
+        None | Some("low") | Some("medium") | Some("high") => Ok(()),
+        Some(other) => Err(CommandError::Validation(format!(
+            "expressed_confidence must be low, medium, or high (got: {other})"
+        ))
+        .into()),
+    }
+}
+
 const fn relation_kind_name(relation_kind: RelationKind) -> &'static str {
     match relation_kind {
         RelationKind::BasedOn => "BASED_ON",
@@ -2061,6 +2437,7 @@ const fn relation_kind_name(relation_kind: RelationKind) -> &'static str {
         RelationKind::Supports => "SUPPORTS",
         RelationKind::Refutes => "REFUTES",
         RelationKind::SameAs => "SAME_AS",
+        RelationKind::FollowsFrom => "FOLLOWS_FROM",
     }
 }
 

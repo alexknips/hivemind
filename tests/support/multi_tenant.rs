@@ -1,4 +1,4 @@
-use hivemind::commands::{CommandContext, Commands, DecisionProposalInput};
+use hivemind::commands::{CommandContext, Commands, DecisionProposalInput, Grounding};
 use hivemind::events::{EventProvenance, TenantId};
 use hivemind::ledger::EventLedger;
 use hivemind::projector::memory::MemoryGraph;
@@ -60,6 +60,8 @@ pub fn seed_tenant<L: EventLedger>(ledger: &L, name: &'static str) -> TestResult
         };
 
         let decision_id = commands.propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: &planner,
             title: &format!("{name}: choice #{i:02} — {topic}"),
             rationale: &format!("Rationale for {name} decision {i}: {topic} tradeoff evaluated"),

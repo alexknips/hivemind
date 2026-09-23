@@ -21,8 +21,8 @@
       "required": ["relation", "from_id", "to_id"],
       "properties": {
         "relation": {
-          "$comment": "ASSUMES is the canonical wire value; PREMISED_ON is the accepted human-readable alias (serialised as ASSUMES in the ledger).",
-          "enum": ["BASED_ON", "HAS_OPTION", "CHOSE", "ASSUMES", "PREMISED_ON", "SUPPORTS", "REFUTES"]
+          "$comment": "ASSUMES is the canonical wire value; PREMISED_ON is the accepted human-readable alias (serialised as ASSUMES in the ledger). FOLLOWS_FROM links a decision to a prior decision it follows from (a premise in the broad sense), distinct from BASED_ON/ASSUMES (a claim about the world) and from decision.superseded (the parent still stands).",
+          "enum": ["BASED_ON", "HAS_OPTION", "CHOSE", "ASSUMES", "PREMISED_ON", "SUPPORTS", "REFUTES", "FOLLOWS_FROM"]
         },
         "from_id": { "type": "string", "minLength": 1 },
         "to_id": { "type": "string", "minLength": 1 }

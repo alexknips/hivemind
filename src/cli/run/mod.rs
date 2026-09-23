@@ -7,10 +7,11 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::commands::{CommandContext, Commands, DecisionProposalInput, SupersedeInput};
+use crate::commands::{CommandContext, Commands, DecisionProposalInput, Grounding, SupersedeInput};
 use crate::error::CliError;
 use crate::events::{
-    CaptureItem, Event, EventPayload, EventProvenance, RelationKind as EventRelationKind, TenantId,
+    CaptureItem, Event, EventPayload, EventProvenance, HypothesisKind,
+    RelationKind as EventRelationKind, TenantId,
 };
 use crate::identity::{
     agent_actor_id, default_agent_session, default_agent_tool, default_human_actor_id,
@@ -63,16 +64,16 @@ use super::args::{
     ClassifyQueueArgs, ClassifyQueueCommand, ClassifyQueueListArgs, ClassifyQueueSubmitArgs, Cli,
     Command, ConnectorArgs, ConnectorAuthArgs, ConnectorCommand, DecisionCaptureSource, DigestArgs,
     DisagreeArgs, DumpArgs, DumpFormat, EmitArgs, EmitCaptureProvenanceArgs, EmitCommand,
-    EmitDecisionProposedArgs, EmitRelationKind, ExportArgs, GraphBackend, ImportArgs,
-    ImportCommand, ImportConnectorCommand, ImportDocumentsArgs, IngestArgs, IngestCommand,
-    IngestSlackThreadArgs, MapArgs, McpArgs, ProjectAnchorArgs, ProjectArgs, ProjectCommand,
-    ProjectLinkArgs, ProjectListArgs, ProjectRegisterArgs, ProjectShowArgs, ProjectUseArgs,
-    QualityScanArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs,
-    QueryCommand, QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs,
-    QueryHistoryFilterArgs, QueryQualityTier, QueryRecentActivityArgs, QueryRecentDecisionsArgs,
-    QueryRelationKind, QuerySearchDecisionsArgs, QuerySituationalArgs, QuickstartArgs, ReviewArgs,
-    ServeArgs, SlackAppArgs, SlackAppCommand, SupersedeArgs, TenantArgs, TenantCommand,
-    TenantCreateArgs, TuiArgs,
+    EmitDecisionProposedArgs, EmitHypothesisKind, EmitRelationKind, ExportArgs, GraphBackend,
+    ImportArgs, ImportCommand, ImportConnectorCommand, ImportDocumentsArgs, IngestArgs,
+    IngestCommand, IngestSlackThreadArgs, MapArgs, McpArgs, ProjectAnchorArgs, ProjectArgs,
+    ProjectCommand, ProjectLinkArgs, ProjectListArgs, ProjectRegisterArgs, ProjectShowArgs,
+    ProjectUseArgs, QualityScanArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority,
+    QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus, QueryExportKind,
+    QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs, QueryQualityTier,
+    QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
+    QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
+    SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs, TuiArgs,
 };
 use super::current_project::CurrentProjectStore;
 use super::render::{
@@ -749,7 +750,22 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
         }
         EmitCommand::HypothesisRecorded(args) => {
             let (actor_id, commands) = emit_actor_and_commands(cli, &ledger, &args.provenance)?;
-            let hypothesis_id = commands.record_hypothesis(&actor_id, &args.statement)?;
+            let kind = match args.kind {
+                EmitHypothesisKind::Assumption => HypothesisKind::Assumption,
+                EmitHypothesisKind::Bet => HypothesisKind::Bet,
+            };
+            let check_by = args
+                .check_by
+                .as_deref()
+                .map(|value| parse_check_by_date("--check-by", value))
+                .transpose()?;
+            let hypothesis_id = commands.record_hypothesis_with_kind(
+                &actor_id,
+                &args.statement,
+                kind,
+                check_by,
+                args.would_change_if.as_deref(),
+            )?;
             OutputEnvelope::new("emit", "hypothesis_id", hypothesis_id)
         }
         EmitCommand::OptionRecorded(args) => {
@@ -773,6 +789,9 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
                     EventRelationKind::Refutes,
                     &cli.actor,
                 )?,
+                EmitRelationKind::FollowsFrom => {
+                    commands.link_follows_from(&args.from_id, &args.to_id, &cli.actor)?
+                }
             };
 
             OutputEnvelope::new("emit", "event_id", event_id.to_string())
@@ -1597,6 +1616,11 @@ fn propose_decision_from_option_labels<L: EventLedger>(
         evidence_ids: &args.evidence_ids,
         quote: args.quote.as_deref(),
         question: args.question.as_deref(),
+        // Naming premises/evidence/assumptions by description at capture (the "what does
+        // this rest on?" question) is hivemind-gwhr.2's CLI surface; this raw/shared path
+        // pre-dates it, so it deliberately doesn't gate on grounding yet.
+        grounding: Grounding::NotAsked,
+        expressed_confidence: None,
     })
 }
 
@@ -2214,6 +2238,21 @@ fn parse_utc_date(value: &str) -> Option<DateTime<Utc>> {
     NaiveDate::parse_from_str(value, "%Y-%m-%d")
         .ok()
         .map(|date| Utc.from_utc_datetime(&date.and_time(NaiveTime::MIN)))
+}
+
+/// Parses `--check-by`: an RFC3339 timestamp or a bare `YYYY-MM-DD` date (midnight UTC).
+/// No relative phrases here — a check date is a fact about the future, not "7d" from now.
+fn parse_check_by_date(flag: &'static str, value: &str) -> Result<DateTime<Utc>> {
+    let trimmed = value.trim();
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(trimmed) {
+        return Ok(parsed.with_timezone(&Utc));
+    }
+    parse_utc_date(trimmed).ok_or_else(|| {
+        CliError::InvalidInput(format!(
+            "{flag} must be an RFC3339 timestamp or a YYYY-MM-DD date (got: {value})"
+        ))
+        .into()
+    })
 }
 
 fn resolve_relative_duration(value: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {

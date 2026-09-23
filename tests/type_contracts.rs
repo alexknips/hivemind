@@ -7,12 +7,12 @@ use hivemind::events::{
     DecisionIdPayload, DecisionMetadataDerivedPayload, DecisionProposedPayload,
     DecisionRejectedPayload, DecisionRequestedPayload, DecisionScoredPayload,
     DecisionSupersededPayload, Event, EventBuilder, EventEnvelope, EventPayload, EventSource,
-    EventType, EventValidationError, EvidenceRecordedPayload, HypothesisRecordedPayload,
-    ImportanceFactors, IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn,
-    NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
-    ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
-    QualityDim, QualityDims, RelationAddedPayload, RelationKind as EventRelationKind,
-    RelationRemovedPayload,
+    EventType, EventValidationError, EvidenceRecordedPayload, HypothesisKind,
+    HypothesisRecordedPayload, ImportanceFactors, IngestBatchClassifiedPayload,
+    IngestBatchReceivedPayload, IngestTurn, NotificationAcknowledgedPayload,
+    NotificationSentPayload, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind,
+    ProjectLinkPayload, ProjectRegisteredPayload, QualityDim, QualityDims, RelationAddedPayload,
+    RelationKind as EventRelationKind, RelationRemovedPayload,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};
@@ -45,7 +45,7 @@ const EVENT_TYPES: [EventType; 22] = [
     EventType::ProjectUnanchored,
 ];
 
-const EVENT_RELATION_KINDS: [EventRelationKind; 7] = [
+const EVENT_RELATION_KINDS: [EventRelationKind; 8] = [
     EventRelationKind::BasedOn,
     EventRelationKind::HasOption,
     EventRelationKind::Chose,
@@ -53,6 +53,7 @@ const EVENT_RELATION_KINDS: [EventRelationKind; 7] = [
     EventRelationKind::Supports,
     EventRelationKind::Refutes,
     EventRelationKind::SameAs,
+    EventRelationKind::FollowsFrom,
 ];
 
 const NODE_KINDS: [NodeKind; 9] = [
@@ -67,7 +68,7 @@ const NODE_KINDS: [NodeKind; 9] = [
     NodeKind::Project,
 ];
 
-const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 27] = [
+const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 28] = [
     ProjectorRelationKind::ProposedBy,
     ProjectorRelationKind::DecisionRequestedBy,
     ProjectorRelationKind::DecisionRequestForDecision,
@@ -95,6 +96,7 @@ const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 27] = [
     ProjectorRelationKind::InitiatedBy,
     ProjectorRelationKind::PartOf,
     ProjectorRelationKind::DependsOn,
+    ProjectorRelationKind::FollowsFrom,
 ];
 
 const DECISION_STATUSES: [DecisionStatus; 5] = [
@@ -534,6 +536,9 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
             EventPayload::HypothesisRecorded(HypothesisRecordedPayload {
                 hypothesis_id: "hypothesis:minimal".to_owned(),
                 statement: "The domain model remains internally consistent".to_owned(),
+                kind: HypothesisKind::Assumption,
+                check_by: None,
+                would_change_if: None,
             }),
         ),
         (
@@ -849,6 +854,7 @@ fn event_relation_contract(kind: EventRelationKind) -> (&'static str, &'static s
         EventRelationKind::Supports => ("SUPPORTS", "supports"),
         EventRelationKind::Refutes => ("REFUTES", "refutes"),
         EventRelationKind::SameAs => ("SAME_AS", "same_as"),
+        EventRelationKind::FollowsFrom => ("FOLLOWS_FROM", "follows_from"),
     }
 }
 
@@ -943,6 +949,9 @@ fn projector_relation_contract(kind: ProjectorRelationKind) -> (&'static str, No
         ProjectorRelationKind::InitiatedBy => ("INITIATED_BY", NodeKind::Decision, NodeKind::Actor),
         ProjectorRelationKind::PartOf => ("PART_OF", NodeKind::Project, NodeKind::Project),
         ProjectorRelationKind::DependsOn => ("DEPENDS_ON", NodeKind::Project, NodeKind::Project),
+        ProjectorRelationKind::FollowsFrom => {
+            ("FOLLOWS_FROM", NodeKind::Decision, NodeKind::Decision)
+        }
     }
 }
 

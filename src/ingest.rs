@@ -10,9 +10,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::commands::{Commands, DecisionProposalEventUuids, DecisionProposalInput};
+use crate::commands::{Commands, DecisionProposalEventUuids, DecisionProposalInput, Grounding};
 use crate::error::{CliError, CommandError};
-use crate::events::{self, Event, EventPayload, EventProvenance, EventSource, EventType};
+use crate::events::{
+    self, Event, EventPayload, EventProvenance, EventSource, EventType, HypothesisKind,
+};
 use crate::ledger::EventLedger;
 use crate::util::require_non_empty;
 use crate::Result;
@@ -284,6 +286,8 @@ pub fn import_slack_thread<L: EventLedger>(
     }
 
     let decision_id = commands.propose_decision(DecisionProposalInput {
+        grounding: Grounding::NotAsked,
+        expressed_confidence: None,
         actor_id: &draft.actor_id,
         title: &draft.title,
         rationale: &draft.rationale,
@@ -1704,6 +1708,9 @@ fn write_document_decision_events<L: EventLedger>(
             actor_id,
             hypothesis_id,
             hypothesis,
+            HypothesisKind::Assumption,
+            None,
+            None,
             event_uuid,
         )?);
     }
@@ -1718,6 +1725,8 @@ fn write_document_decision_events<L: EventLedger>(
 
     let proposal_events = commands.propose_decision_with_id(
         DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id,
             title: &draft.title,
             rationale: &draft.rationale,
@@ -2246,7 +2255,8 @@ fn affected_dependencies_for_decision<L: EventLedger>(
                         }
                         events::RelationKind::Supports
                         | events::RelationKind::Refutes
-                        | events::RelationKind::SameAs => {}
+                        | events::RelationKind::SameAs
+                        | events::RelationKind::FollowsFrom => {}
                     }
                 }
                 EventPayload::DecisionSuperseded(payload)
@@ -2390,6 +2400,9 @@ fn add_conflict_context_events<L: EventLedger>(
                 actor_id,
                 &hypothesis_id,
                 hypothesis,
+                HypothesisKind::Assumption,
+                None,
+                None,
                 record_uuid,
             )?);
         }
@@ -2799,6 +2812,9 @@ impl DocumentImportIdentities {
                     "relation.based_on",
                     draft.evidence.len(),
                 ),
+                // Document import passes Grounding::NotAsked (see the propose_decision call
+                // site below) — no premises to name deterministic UUIDs for.
+                follows_from: Vec::new(),
             },
             supersedes_event_uuids: repeated_role_uuids(
                 &role_prefix,

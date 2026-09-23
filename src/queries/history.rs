@@ -1400,7 +1400,8 @@ impl DecisionIndex {
                     }
                     EventRelationKind::Supports
                     | EventRelationKind::Refutes
-                    | EventRelationKind::SameAs => {}
+                    | EventRelationKind::SameAs
+                    | EventRelationKind::FollowsFrom => {}
                 },
                 EventPayload::RelationRemoved(_)
                 | EventPayload::EvidenceRecorded(_)
@@ -1522,7 +1523,12 @@ fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
             EventRelationKind::HasOption
             | EventRelationKind::Chose
             | EventRelationKind::Assumes
-            | EventRelationKind::SameAs => HistoryChangeKind::ContextChange,
+            | EventRelationKind::SameAs
+            // At-capture FOLLOWS_FROM reads as a context change; a premise later going
+            // stale (superseded/rejected) is a separate, richer signal gwhr.3 adds
+            // (HistoryChangeKind::StalePremise, driven by decision.superseded/.rejected on
+            // the premise, not by this relation.added event itself).
+            | EventRelationKind::FollowsFrom => HistoryChangeKind::ContextChange,
         },
         EventPayload::RelationRemoved(_)
         | EventPayload::HypothesisRecorded(_)
@@ -1573,7 +1579,8 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
             EventRelationKind::BasedOn
             | EventRelationKind::HasOption
             | EventRelationKind::Chose
-            | EventRelationKind::SameAs => {
+            | EventRelationKind::SameAs
+            | EventRelationKind::FollowsFrom => {
                 ids.insert(from_id.clone());
             }
             EventRelationKind::Assumes => {
@@ -1757,7 +1764,9 @@ fn event_relation_endpoints(relation: EventRelationKind) -> (NodeKind, NodeKind)
         EventRelationKind::Supports | EventRelationKind::Refutes => {
             (NodeKind::Evidence, NodeKind::Hypothesis)
         }
-        EventRelationKind::SameAs => (NodeKind::Decision, NodeKind::Decision),
+        EventRelationKind::SameAs | EventRelationKind::FollowsFrom => {
+            (NodeKind::Decision, NodeKind::Decision)
+        }
     }
 }
 

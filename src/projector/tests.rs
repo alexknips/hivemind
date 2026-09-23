@@ -2068,3 +2068,99 @@ fn classified_batch_decision_multi_actor_accepted_by() -> Result<()> {
     }
     Ok(())
 }
+
+// ── Grounding (hivemind-gwhr.1): FOLLOWS_FROM projection, hypothesis kind/check_by/would_change_if ──
+
+#[test]
+fn relation_added_follows_from_projects_decision_to_decision_edge() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::RelationAdded,
+        "actor:alice",
+        json!({
+            "relation": "FOLLOWS_FROM",
+            "from_id": "decision:later",
+            "to_id": "decision:earlier"
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    assert!(
+        graph.edges().contains_key(&(
+            RelationKind::FollowsFrom,
+            "decision:later".to_owned(),
+            "decision:earlier".to_owned()
+        )),
+        "FOLLOWS_FROM edge must project decision -> premise decision"
+    );
+    Ok(())
+}
+
+#[test]
+fn hypothesis_recorded_with_bet_kind_stores_kind_check_by_would_change_if() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::HypothesisRecorded,
+        "actor:alice",
+        json!({
+            "hypothesis_id": "hypothesis:bet",
+            "statement": "Latency stays under 50ms at 10x load",
+            "kind": "bet",
+            "check_by": "2026-10-01T00:00:00Z",
+            "would_change_if": "A 10x load test shows p99 above 50ms"
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    let props = nodes
+        .get(&(NodeKind::Hypothesis, "hypothesis:bet".to_owned()))
+        .expect("hypothesis node present");
+    assert_eq!(
+        props.get("kind"),
+        Some(&GraphValue::String("bet".to_owned()))
+    );
+    assert_eq!(
+        props.get("check_by"),
+        Some(&GraphValue::String("2026-10-01T00:00:00+00:00".to_owned()))
+    );
+    assert_eq!(
+        props.get("would_change_if"),
+        Some(&GraphValue::String(
+            "A 10x load test shows p99 above 50ms".to_owned()
+        ))
+    );
+    Ok(())
+}
+
+#[test]
+fn hypothesis_recorded_without_kind_projects_assumption_default() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::HypothesisRecorded,
+        "actor:alice",
+        json!({
+            "hypothesis_id": "hypothesis:plain",
+            "statement": "An embedded database is enough for slice-1 write throughput."
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    let props = nodes
+        .get(&(NodeKind::Hypothesis, "hypothesis:plain".to_owned()))
+        .expect("hypothesis node present");
+    assert_eq!(
+        props.get("kind"),
+        Some(&GraphValue::String("assumption".to_owned()))
+    );
+    assert_eq!(props.get("check_by"), Some(&GraphValue::Null));
+    assert_eq!(props.get("would_change_if"), Some(&GraphValue::Null));
+    Ok(())
+}

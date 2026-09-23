@@ -21,7 +21,21 @@
       "required": ["hypothesis_id", "statement"],
       "properties": {
         "hypothesis_id": { "type": "string", "minLength": 1 },
-        "statement": { "type": "string", "minLength": 1 }
+        "statement": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": ["assumption", "bet"],
+          "description": "Omitted or absent on events predating this field; Rust default is assumption."
+        },
+        "check_by": {
+          "type": ["string", "null"],
+          "format": "date-time",
+          "description": "When to check whether the bet paid off."
+        },
+        "would_change_if": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What would change our mind, in the decider's own words."
+        }
       }
     }
   }

@@ -28,7 +28,7 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::commands::{CommandContext, Commands, DecisionProposalInput, SupersedeInput};
+use crate::commands::{CommandContext, Commands, DecisionProposalInput, Grounding, SupersedeInput};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, TenantId};
 use crate::ledger::{AnyLedger, EventLedger};
@@ -329,6 +329,8 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
 
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: &args.actor_id,
             title: &args.title,
             rationale: &args.rationale,

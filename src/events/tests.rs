@@ -341,6 +341,75 @@ fn ingest_batch_classified_grouped_batch_ids_matches_schema() {
 }
 
 #[test]
+fn hypothesis_recorded_without_kind_replays_as_assumption() {
+    // Real pre-change on-disk shape: every hypothesis.recorded event before this field
+    // existed has no `kind` at all. It must keep decoding, and default to Assumption.
+    let event: Event = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/hypothesis.recorded.json"
+    ))
+    .unwrap();
+
+    let payload = validate(&event).expect("fixture validates");
+    let EventPayload::HypothesisRecorded(payload) = payload else {
+        panic!("expected HypothesisRecorded payload");
+    };
+    assert_eq!(payload.kind, HypothesisKind::Assumption);
+    assert_eq!(payload.check_by, None);
+    assert_eq!(payload.would_change_if, None);
+}
+
+#[test]
+fn hypothesis_recorded_accepts_bet_kind_check_by_and_would_change_if() {
+    let mut event: Event = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/hypothesis.recorded.json"
+    ))
+    .unwrap();
+    event.payload["kind"] = json!("bet");
+    event.payload["check_by"] = json!("2026-10-01T00:00:00Z");
+    event.payload["would_change_if"] = json!("Latency stays under 50ms at 10x load");
+
+    let payload = validate(&event).expect("bet hypothesis validates");
+    let EventPayload::HypothesisRecorded(payload) = payload else {
+        panic!("expected HypothesisRecorded payload");
+    };
+    assert_eq!(payload.kind, HypothesisKind::Bet);
+    assert!(payload.check_by.is_some());
+    assert_eq!(
+        payload.would_change_if.as_deref(),
+        Some("Latency stays under 50ms at 10x load")
+    );
+}
+
+#[test]
+fn hypothesis_recorded_rejects_empty_would_change_if() {
+    let mut event: Event = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/hypothesis.recorded.json"
+    ))
+    .unwrap();
+    event.payload["would_change_if"] = json!("   ");
+
+    assert!(matches!(
+        validate(&event),
+        Err(EventValidationError::EmptyField("payload.would_change_if"))
+    ));
+}
+
+#[test]
+fn relation_added_accepts_follows_from_between_decisions() {
+    let mut event: Event =
+        serde_json::from_str(include_str!("../../tests/fixtures/v0/relation.added.json")).unwrap();
+    event.payload["relation"] = json!("FOLLOWS_FROM");
+    event.payload["from_id"] = json!("decision-later");
+    event.payload["to_id"] = json!("decision-earlier");
+
+    let payload = validate(&event).expect("FOLLOWS_FROM relation validates");
+    let EventPayload::RelationAdded(payload) = payload else {
+        panic!("expected RelationAdded payload");
+    };
+    assert_eq!(payload.relation, RelationKind::FollowsFrom);
+}
+
+#[test]
 fn blocker_notification_events_require_source_provenance() {
     let mut event: Event = serde_json::from_str(include_str!(
         "../../tests/fixtures/v0/blocker.reported.json"

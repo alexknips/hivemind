@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::commands::{CommandContext, Commands, DecisionProposalInput, SupersedeInput};
+use crate::commands::{CommandContext, Commands, DecisionProposalInput, Grounding, SupersedeInput};
 use crate::events::{CaptureItem, EventProvenance, IngestTurn};
 use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::projector::GraphView;
@@ -353,6 +353,8 @@ fn capture_decision_blocking(
 
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: &ctx.actor_id,
             title: &req.title,
             rationale: &req.rationale,

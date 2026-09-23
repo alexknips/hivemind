@@ -596,6 +596,203 @@ fn emit_proposes_decision_with_cli_option_labels() {
 }
 
 #[test]
+fn emit_hypothesis_recorded_defaults_to_assumption_kind() {
+    let hivemind_dir = unique_test_dir("emit-hypothesis-default");
+    let cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-1",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "hypothesis.recorded",
+        "--statement",
+        "The cache will help",
+    ]);
+
+    let output = run(&cli).expect("emit hypothesis succeeds");
+    assert!(output.starts_with("hypothesis-"));
+}
+
+#[test]
+fn emit_hypothesis_recorded_accepts_bet_kind_check_by_and_would_change_if() {
+    let hivemind_dir = unique_test_dir("emit-hypothesis-bet");
+    let cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-1",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "hypothesis.recorded",
+        "--statement",
+        "Latency stays under 50ms at 10x load",
+        "--kind",
+        "bet",
+        "--check-by",
+        "2026-10-01",
+        "--would-change-if",
+        "A 10x load test shows p99 above 50ms",
+    ]);
+
+    let output = run(&cli).expect("emit bet hypothesis succeeds");
+    assert!(output.starts_with("hypothesis-"));
+}
+
+#[test]
+fn emit_hypothesis_recorded_rejects_malformed_check_by() {
+    let hivemind_dir = unique_test_dir("emit-hypothesis-bad-date");
+    let cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-1",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "hypothesis.recorded",
+        "--statement",
+        "A bet with a garbled date",
+        "--kind",
+        "bet",
+        "--check-by",
+        "not-a-date",
+    ]);
+
+    let error = run(&cli).expect_err("malformed --check-by must be refused");
+    assert!(
+        error.to_string().contains("--check-by"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn emit_relation_added_follows_from_links_decisions() {
+    let hivemind_dir = unique_test_dir("emit-relation-follows-from");
+    let dir_str = hivemind_dir.to_str().expect("utf-8 temp path").to_owned();
+
+    let earlier_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-1",
+        "--hivemind-dir",
+        &dir_str,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Earlier decision",
+        "--rationale",
+        "Established earlier",
+        "--topic-keys",
+        "infra",
+        "--options",
+        "only",
+    ]))
+    .expect("propose earlier decision");
+
+    let later_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-1",
+        "--hivemind-dir",
+        &dir_str,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Later decision",
+        "--rationale",
+        "Follows from the earlier one",
+        "--topic-keys",
+        "infra",
+        "--options",
+        "only",
+    ]))
+    .expect("propose later decision");
+
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-1",
+        "--hivemind-dir",
+        &dir_str,
+        "emit",
+        "relation.added",
+        "--kind",
+        "follows-from",
+        "--from",
+        later_id.trim(),
+        "--to",
+        earlier_id.trim(),
+    ]))
+    .expect("emit relation.added FOLLOWS_FROM succeeds");
+    assert!(!output.is_empty());
+}
+
+#[test]
+fn emit_relation_added_based_on_names_follows_from_when_target_is_a_decision() {
+    let hivemind_dir = unique_test_dir("emit-relation-based-on-decision-target");
+    let dir_str = hivemind_dir.to_str().expect("utf-8 temp path").to_owned();
+
+    let decision_a = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-1",
+        "--hivemind-dir",
+        &dir_str,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Decision A",
+        "--rationale",
+        "Rationale",
+        "--topic-keys",
+        "infra",
+        "--options",
+        "only",
+    ]))
+    .expect("propose decision A");
+
+    let decision_b = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-1",
+        "--hivemind-dir",
+        &dir_str,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Decision B",
+        "--rationale",
+        "Rationale",
+        "--topic-keys",
+        "infra",
+        "--options",
+        "only",
+    ]))
+    .expect("propose decision B");
+
+    let error = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-1",
+        "--hivemind-dir",
+        &dir_str,
+        "emit",
+        "relation.added",
+        "--kind",
+        "based-on",
+        "--from",
+        decision_a.trim(),
+        "--to",
+        decision_b.trim(),
+    ]))
+    .expect_err("BASED_ON must keep refusing a decision target");
+    assert!(
+        error.to_string().contains("FOLLOWS_FROM"),
+        "error should name FOLLOWS_FROM: {error}"
+    );
+}
+
+#[test]
 fn disagree_cli_records_reason_contests_and_is_idempotent() {
     let hivemind_dir = unique_test_dir("disagree-cli");
     let decision_id = run(&Cli::parse_from([

@@ -343,11 +343,35 @@ pub struct EvidenceRecordedPayload {
     pub source: Option<String>,
 }
 
+/// What kind of premise a hypothesis is: a stated assumption, or an explicit bet — a
+/// declared gap with nothing behind it yet. Neither ranks above the other; each gets its
+/// own later question (assumption: did it hold? bet: did we check?). `#[serde(default)]`
+/// on `HypothesisRecordedPayload::kind` makes `Assumption` the replay default for every
+/// event recorded before this field existed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HypothesisKind {
+    #[default]
+    Assumption,
+    Bet,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HypothesisRecordedPayload {
     pub hypothesis_id: String,
     pub statement: String,
+    #[serde(default)]
+    pub kind: HypothesisKind,
+    /// When to check whether the bet paid off. Only meaningful for `kind: Bet`, but not
+    /// rejected on an assumption — honesty about staleness is the renderer's job, not a
+    /// write-time gate on what a caller chooses to track.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_by: Option<DateTime<Utc>>,
+    /// What would change our mind, in the decider's own words. Set on a bet so the node
+    /// reads standalone once the check date arrives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub would_change_if: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -371,6 +395,12 @@ pub enum RelationKind {
     Refutes,
     #[serde(rename = "SAME_AS", alias = "same_as")]
     SameAs,
+    /// A decision follows from a prior decision — a premise in the broad sense (refines it,
+    /// answers a loose end it left open, is consistent with it), distinct from `Supersedes`
+    /// (the parent still stands) and from evidence/assumption grounding (`BASED_ON`/`ASSUMES`,
+    /// which name a claim about the world, not a decision already made).
+    #[serde(rename = "FOLLOWS_FROM", alias = "follows_from")]
+    FollowsFrom,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1099,6 +1129,10 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             let payload: HypothesisRecordedPayload = parse_payload(event)?;
             require_non_empty("payload.hypothesis_id", &payload.hypothesis_id)?;
             require_non_empty("payload.statement", &payload.statement)?;
+            require_optional_non_empty(
+                "payload.would_change_if",
+                payload.would_change_if.as_deref(),
+            )?;
             Ok(EventPayload::HypothesisRecorded(payload))
         }
         EventType::RelationAdded => {
