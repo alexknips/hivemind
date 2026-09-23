@@ -38,6 +38,11 @@
         "chosen_option_id": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
         "hypothesis_ids": { "$ref": "#/$defs/id_array" },
         "evidence_ids": { "$ref": "#/$defs/id_array" },
+        "expressed_confidence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Confidence in the decider's own words: low, medium or high (validated by the commands layer at capture). Omitted when the decider stated none; never system-computed."
+        },
         "quote": {
           "type": "string",
           "minLength": 1,
