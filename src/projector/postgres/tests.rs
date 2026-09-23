@@ -424,7 +424,7 @@ fn follows_from_and_hypothesis_kind_match_memory() -> Result<()> {
                 json!({
                     "decision_id": "decision:premise",
                     "title": "Earlier decision",
-                    "rationale": "Established earlier",
+                    "rationale": "Established earlier as a standing premise decision",
                     "topic_keys": ["architecture"],
                     "option_ids": [],
                     "chosen_option_id": null,

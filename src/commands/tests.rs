@@ -392,6 +392,8 @@ fn propose_decision_rejects_rationale_shorter_than_the_minimum_length() {
 
     let error = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision with a stub rationale",
             rationale: "Because yes",
@@ -423,6 +425,8 @@ fn propose_decision_rejects_rationale_with_too_few_words() {
 
     let error = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision with a fragment rationale",
             rationale: "Obviously-the-right-call",
@@ -454,6 +458,8 @@ fn propose_decision_rejects_rationale_with_a_bare_list_reference() {
 
     let error = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision citing an external list",
             rationale: "Per the notes: verbatim 1a, 2. a clearer alternative was rejected",
@@ -491,6 +497,8 @@ fn propose_decision_allows_a_list_shaped_rationale_when_quote_and_question_are_g
 
     commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision citing an external list, explained inline",
             rationale: "Per the notes: verbatim 1a, 2. a clearer alternative was rejected",
@@ -1855,7 +1863,7 @@ fn propose_minimal_decision(commands: &Commands<'_, InMemoryEventLedger>, title:
             expressed_confidence: None,
             actor_id: "actor:alice",
             title,
-            rationale: "Rationale text",
+            rationale: "Rationale text long enough for the readable floor",
             topic_keys: &["topic".to_owned()],
             option_ids: std::slice::from_ref(&option_id),
             option_labels: &["Only option".to_owned()],
@@ -1951,7 +1959,7 @@ fn propose_decision_rejects_declared_grounding_with_nothing_named() {
             expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision with declared-but-empty grounding",
-            rationale: "Rationale text",
+            rationale: "Rationale text long enough for the readable floor",
             topic_keys: &["topic".to_owned()],
             option_ids: std::slice::from_ref(&option_id),
             option_labels: &["A".to_owned()],
@@ -2000,7 +2008,7 @@ fn propose_decision_rejects_self_premise() {
                 expressed_confidence: None,
                 actor_id: "actor:alice",
                 title: "A decision naming itself as a premise",
-                rationale: "Rationale text",
+                rationale: "Rationale text long enough for the readable floor",
                 topic_keys: &["topic".to_owned()],
                 option_ids: std::slice::from_ref(&option_id),
                 option_labels: &["A".to_owned()],
@@ -2050,7 +2058,7 @@ fn propose_decision_rejects_nonexistent_premise() {
             expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision naming a premise that doesn't exist",
-            rationale: "Rationale text",
+            rationale: "Rationale text long enough for the readable floor",
             topic_keys: &["topic".to_owned()],
             option_ids: std::slice::from_ref(&option_id),
             option_labels: &["A".to_owned()],
@@ -2095,7 +2103,7 @@ fn propose_decision_reports_stale_premise_when_superseded() {
                 expressed_confidence: None,
                 actor_id: "actor:alice",
                 title: "Rests on a since-superseded decision",
-                rationale: "Rationale text",
+                rationale: "Rationale text long enough for the readable floor",
                 topic_keys: &["topic".to_owned()],
                 option_ids: std::slice::from_ref(&option_id),
                 option_labels: &["A".to_owned()],
@@ -2136,7 +2144,7 @@ fn propose_decision_validates_expressed_confidence_vocabulary() {
             expressed_confidence: Some("very high"),
             actor_id: "actor:alice",
             title: "Decision with an invalid confidence word",
-            rationale: "Rationale text",
+            rationale: "Rationale text long enough for the readable floor",
             topic_keys: &["topic".to_owned()],
             option_ids: std::slice::from_ref(&option_id),
             option_labels: &["A".to_owned()],
@@ -2171,7 +2179,7 @@ fn propose_decision_stores_expressed_confidence_from_input() {
             expressed_confidence: Some("medium"),
             actor_id: "actor:alice",
             title: "Decision with a stated confidence",
-            rationale: "Rationale text",
+            rationale: "Rationale text long enough for the readable floor",
             topic_keys: &["topic".to_owned()],
             option_ids: std::slice::from_ref(&option_id),
             option_labels: &["A".to_owned()],
