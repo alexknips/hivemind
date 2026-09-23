@@ -132,22 +132,24 @@ def _ship_impl(
         _write_cursor(cursor_file, new_cursor)
         return
 
-    # Take the last N turns (most recent context).
-    batch = turns[-_MAX_BATCH_TURNS:]
-    batch_id = f"{session_id}:{cursor}-{new_cursor}"
+    # Ship every turn in the span, oldest first, in chunks of at most
+    # _MAX_BATCH_TURNS. Each chunk is its own batch with its own batch_id.
+    # Dropping the head of the span would lose the human prompt, which is
+    # the earliest turn.
+    api_url = api_url.rstrip("/")
+    for n, start in enumerate(range(0, len(turns), _MAX_BATCH_TURNS)):
+        envelope = {
+            "batch_id": f"{session_id}:{cursor}-{new_cursor}:{n}",
+            "agent_tool": agent_tool,
+            "session_id": session_id,
+            "turns": turns[start : start + _MAX_BATCH_TURNS],
+        }
+        # _post() raises on HTTP errors and network failures; letting that
+        # propagate (ship() catches it) stops before the cursor moves, so
+        # the next run resends the span instead of silently losing it.
+        _post(api_url, api_key, envelope)
 
-    envelope = {
-        "batch_id": batch_id,
-        "agent_tool": agent_tool,
-        "session_id": session_id,
-        "turns": batch,
-    }
-
-    # Only advance the cursor after a successful POST. _post() raises on
-    # HTTP errors and network failures; letting that propagate (ship()
-    # catches it) keeps the cursor where it is so the next run resends
-    # this same batch instead of silently losing it.
-    _post(api_url.rstrip("/"), api_key, envelope)
+    # Only advance the cursor once every chunk has been accepted.
     _write_cursor(cursor_file, new_cursor)
 
 
@@ -163,6 +165,12 @@ def _extract_turn(obj: dict) -> Optional[dict]:
 
     role = msg.get("role", turn_type)
     content = msg.get("content", [])
+    # Claude Code stores a typed user prompt as a plain string, not a list of
+    # blocks. Iterating that string would split it into single characters.
+    if isinstance(content, str):
+        content = [content]
+    elif not isinstance(content, list):
+        return None
     uuid = obj.get("uuid", "")
 
     text_parts = []

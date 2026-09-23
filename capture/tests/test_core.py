@@ -132,6 +132,28 @@ class TestExtractTurn(unittest.TestCase):
         self.assertIsNotNone(turn)
         self.assertIn("Hello from a plain string", turn["text"])
 
+    def test_typed_prompt_str_content_extracts_to_exact_text(self):
+        """Claude Code stores a typed prompt as message.content = str."""
+        prompt = "Go with option B, the shared Postgres cell."
+        turn = _extract_turn(self._make_record("user", "user", prompt))
+        self.assertIsNotNone(turn)
+        self.assertEqual(turn["text"], prompt)
+        self.assertEqual(turn["role"], "user")
+        self.assertFalse(turn["truncated"])
+
+    def test_str_content_keeps_multiline_prompt_intact(self):
+        prompt = "Decision:\n- use Postgres\n- drop SQLite"
+        turn = _extract_turn(self._make_record("user", "user", prompt))
+        self.assertEqual(turn["text"], prompt)
+
+    def test_blank_str_content_is_not_a_turn(self):
+        self.assertIsNone(_extract_turn(self._make_record("user", "user", "   ")))
+
+    def test_non_str_non_list_content_is_skipped_not_raised(self):
+        """A malformed record must not raise: an exception in extraction would
+        wedge the cursor on that line forever."""
+        self.assertIsNone(_extract_turn(self._make_record("user", "user", None)))
+
 
 class TestCursorFlow(unittest.TestCase):
     def _write_jsonl(self, path, records):
@@ -229,37 +251,106 @@ class TestCursorFlow(unittest.TestCase):
         finally:
             core_module._post = orig_post
 
-    def test_batch_truncates_to_last_max_batch_turns(self):
-        """When more new turns exist than _MAX_BATCH_TURNS, ship only the last N."""
+    def _user_turns(self, count):
+        return [
+            {"type": "user", "uuid": f"new{i}", "message": {"role": "user", "content": [{"type": "text", "text": f"new turn {i}"}]}}
+            for i in range(count)
+        ]
+
+    def _cursor_offset(self):
+        with open(os.path.join(self.cursor_dir, f"{self.session_id}.offset")) as fh:
+            return int(fh.read())
+
+    def _init_cursor_at_eof(self):
+        """Write one old record and run ship() so the cursor sits at EOF."""
         import core as core_module
+        self._write_jsonl(
+            self.jsonl_path,
+            [{"type": "user", "uuid": "old0", "message": {"role": "user", "content": [{"type": "text", "text": "old"}]}}],
+        )
+        orig_post = core_module._post
+        core_module._post = lambda url, key, env: None
+        try:
+            ship(self.session_id, self.jsonl_path, "http://localhost:8080", "")
+        finally:
+            core_module._post = orig_post
+
+    def test_span_larger_than_max_batch_ships_every_turn_in_chunks(self):
+        """A span of more than _MAX_BATCH_TURNS turns ships all of them, oldest
+        first, split across batches with distinct ids; the cursor ends at EOF."""
+        import core as core_module
+        self._init_cursor_at_eof()
         posted = []
         orig_post = core_module._post
         core_module._post = lambda url, key, env: posted.append(env)
 
         try:
-            # Write some existing content, then init cursor to EOF.
-            self._write_jsonl(
+            self._append_jsonl(self.jsonl_path, self._user_turns(10))
+
+            ship(self.session_id, self.jsonl_path, "http://localhost:8080", "")
+
+            self.assertEqual([len(env["turns"]) for env in posted], [4, 4, 2])
+            shipped_ids = [t["turn_id"] for env in posted for t in env["turns"]]
+            self.assertEqual(shipped_ids, [f"new{i}" for i in range(10)])
+            batch_ids = [env["batch_id"] for env in posted]
+            self.assertEqual(len(set(batch_ids)), 3, "each chunk needs its own batch_id")
+            self.assertEqual(self._cursor_offset(), os.path.getsize(self.jsonl_path))
+        finally:
+            core_module._post = orig_post
+
+    def test_failed_post_mid_span_leaves_cursor_and_resends_whole_span(self):
+        """If a later chunk fails, the cursor stays put so the next run resends
+        every turn of the span rather than only its tail."""
+        import core as core_module
+        self._init_cursor_at_eof()
+        offset_before = self._cursor_offset()
+        self._append_jsonl(self.jsonl_path, self._user_turns(10))
+        orig_post = core_module._post
+
+        posted = []
+
+        def _fail_on_second_chunk(url, key, env):
+            if posted:
+                raise OSError("network down")
+            posted.append(env)
+
+        core_module._post = _fail_on_second_chunk
+        try:
+            # ship() must swallow the error.
+            ship(self.session_id, self.jsonl_path, "http://localhost:8080", "")
+            self.assertEqual(len(posted), 1, "first chunk posted before the failure")
+            self.assertEqual(self._cursor_offset(), offset_before)
+
+            # Recovery: the retry ships all 10 turns and then advances.
+            retried = []
+            core_module._post = lambda url, key, env: retried.append(env)
+            ship(self.session_id, self.jsonl_path, "http://localhost:8080", "")
+            shipped_ids = [t["turn_id"] for env in retried for t in env["turns"]]
+            self.assertEqual(shipped_ids, [f"new{i}" for i in range(10)])
+            self.assertEqual(self._cursor_offset(), os.path.getsize(self.jsonl_path))
+        finally:
+            core_module._post = orig_post
+
+    def test_typed_prompt_string_content_ships_verbatim(self):
+        """A typed user prompt (content is a str) reaches the ingest payload as
+        the exact original text, not one character per token."""
+        import core as core_module
+        self._init_cursor_at_eof()
+        posted = []
+        orig_post = core_module._post
+        core_module._post = lambda url, key, env: posted.append(env)
+
+        try:
+            prompt = "Go with option B, the shared Postgres cell."
+            self._append_jsonl(
                 self.jsonl_path,
-                [{"type": "user", "uuid": "old0", "message": {"role": "user", "content": [{"type": "text", "text": "old"}]}}],
+                [{"type": "user", "uuid": "u1", "message": {"role": "user", "content": prompt}}],
             )
-            ship(self.session_id, self.jsonl_path, "http://localhost:8080", "")
-            self.assertEqual(posted, [])
 
-            # Append 5 new turns (exceeds _MAX_BATCH_TURNS=4).
-            new_turns = [
-                {"type": "user", "uuid": f"new{i}", "message": {"role": "user", "content": [{"type": "text", "text": f"new turn {i}"}]}}
-                for i in range(5)
-            ]
-            self._append_jsonl(self.jsonl_path, new_turns)
-
-            # Second run: must ship exactly _MAX_BATCH_TURNS=4, the last four.
             ship(self.session_id, self.jsonl_path, "http://localhost:8080", "")
+
             self.assertEqual(len(posted), 1)
-            batch_turns = posted[0]["turns"]
-            self.assertEqual(len(batch_turns), 4, f"expected 4 turns (max batch), got {len(batch_turns)}")
-            turn_ids = [t["turn_id"] for t in batch_turns]
-            self.assertNotIn("new0", turn_ids, "oldest turn must be dropped")
-            self.assertIn("new4", turn_ids, "newest turn must be included")
+            self.assertEqual(posted[0]["turns"][0]["text"], prompt)
         finally:
             core_module._post = orig_post
 
