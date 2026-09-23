@@ -288,6 +288,13 @@ fn dispatch_query(
         return query_option_label(client, tenant_id, params);
     }
 
+    // Grounding (hivemind-gwhr.1): a bet hypothesis's kind/check_by/would_change_if, by id.
+    if cypher.contains(
+        "RETURN node.kind AS kind, node.check_by AS check_by, node.would_change_if AS would_change_if;",
+    ) {
+        return query_hypothesis_grounding(client, tenant_id, params);
+    }
+
     // query_proposer / query_actor_ids_by_edge: decision -[relation]-> Actor, returning the
     // actor id and its "kind" (human/agent/unknown, stamped by upsert_actor). The two callers
     // differ only in whether the cypher ends "LIMIT 1;" (proposer) or "ORDER BY a.id;"
@@ -854,6 +861,42 @@ fn query_option_label(
                 .and_then(json_to_graph_value)
                 .unwrap_or(GraphValue::Null);
             GraphRow::from([("label".to_owned(), label)])
+        })
+        .into_iter()
+        .collect())
+}
+
+/// Grounding (hivemind-gwhr.1): a bet hypothesis's `kind`/`check_by`/`would_change_if`
+/// properties, by id. Mirrors `query_option_label` above — a `Null` column when the node
+/// has no such key, an empty row set when the node doesn't exist.
+fn query_hypothesis_grounding(
+    client: &mut Client,
+    tenant_id: &str,
+    params: &GraphParams,
+) -> Result<Vec<GraphRow>> {
+    let id = required_string_param(params, "id")?;
+    let row = client
+        .query_opt(
+            "SELECT properties FROM hm_nodes
+             WHERE tenant_id=$1 AND node_kind='Hypothesis' AND node_id=$2
+             LIMIT 1",
+            &[&tenant_id, &id],
+        )
+        .map_err(pg_error)?;
+    Ok(row
+        .map(|row| {
+            let props: JsonValue = row.get(0);
+            let field = |key: &str| {
+                props
+                    .get(key)
+                    .and_then(json_to_graph_value)
+                    .unwrap_or(GraphValue::Null)
+            };
+            GraphRow::from([
+                ("kind".to_owned(), field("kind")),
+                ("check_by".to_owned(), field("check_by")),
+                ("would_change_if".to_owned(), field("would_change_if")),
+            ])
         })
         .into_iter()
         .collect())

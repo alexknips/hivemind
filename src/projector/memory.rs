@@ -225,6 +225,30 @@ impl GraphView for MemoryGraph {
             return Ok(Vec::new());
         }
 
+        // Grounding (hivemind-gwhr.1): a bet hypothesis's kind/check_by/would_change_if,
+        // by id. Distinct query text from the statement lookup above (no LIMIT 1, three
+        // columns), so it needs its own literal match.
+        if cypher.contains(
+            "RETURN node.kind AS kind, node.check_by AS check_by, node.would_change_if AS would_change_if;",
+        ) {
+            let id = required_param_string(params, "id")?;
+            let nodes = self.nodes_snapshot()?;
+            if let Some(properties) = nodes.get(&(NodeKind::Hypothesis, id.to_owned())) {
+                return Ok(vec![GraphRow::from([
+                    ("kind".to_owned(), graph_property_or_default(properties, "kind")),
+                    (
+                        "check_by".to_owned(),
+                        graph_property_or_default(properties, "check_by"),
+                    ),
+                    (
+                        "would_change_if".to_owned(),
+                        graph_property_or_default(properties, "would_change_if"),
+                    ),
+                ])]);
+            }
+            return Ok(Vec::new());
+        }
+
         if cypher.contains("MATCH (o:`Option` {id: $id}) RETURN o.label AS label LIMIT 1;") {
             let id = required_param_string(params, "id")?;
             let nodes = self.nodes_snapshot()?;
