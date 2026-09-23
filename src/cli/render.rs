@@ -447,6 +447,11 @@ pub(crate) fn render_decision_brief_summary(brief: &Option<DecisionBrief>) -> St
     };
 
     let mut output = String::new();
+    write_decision_brief(&mut output, brief);
+    output.trim_end().to_owned()
+}
+
+fn write_decision_brief(output: &mut String, brief: &DecisionBrief) {
     let _ = writeln!(
         output,
         "decision: {} [{}]",
@@ -473,11 +478,11 @@ pub(crate) fn render_decision_brief_summary(brief: &Option<DecisionBrief>) -> St
             labels.join(", ")
         );
     }
-    write_decided_by(&mut output, &brief.decided_by);
+    write_decided_by(output, &brief.decided_by);
     if let Some(occurred_at) = brief.occurred_at {
         let _ = writeln!(output, "  when: {}", occurred_at.to_rfc3339());
     }
-    write_rests_on(&mut output, brief);
+    write_rests_on(output, brief);
     if brief.still_holds.held_up {
         let _ = writeln!(output, "  still holds: yes");
     } else {
@@ -521,7 +526,6 @@ pub(crate) fn render_decision_brief_summary(brief: &Option<DecisionBrief>) -> St
         let _ = writeln!(output, "  topics: {}", brief.topic_keys.join(","));
     }
     let _ = writeln!(output, "  ref: {}", brief.decision_id);
-    output.trim_end().to_owned()
 }
 
 /// Recorder and decider are distinct actors (hivemind-zdsh.9): the recorder is whoever
@@ -775,8 +779,14 @@ pub(crate) fn render_resolve_outcome_summary(outcome: &ResolveOutcome) -> String
     }
 }
 
+/// Leads with the root decision's answer (the same block `verify` prints: title, rationale,
+/// chosen and rejected options, who decided, whether it still holds), then the graph as
+/// tab-separated `root`/`node`/`edge` lines. Nodes carry a trailing `label=` when they have one.
 pub(crate) fn render_neighborhood_summary(neighborhood: &NeighborhoodView) -> String {
     let mut output = String::new();
+    if let Some(brief) = &neighborhood.root.brief {
+        write_decision_brief(&mut output, brief);
+    }
     let _ = writeln!(
         output,
         "root\t{}\t{}\tpresent={}\tnodes={}\tedges={}",
@@ -792,13 +802,17 @@ pub(crate) fn render_neighborhood_summary(neighborhood: &NeighborhoodView) -> St
             (None, Some(status)) => hypothesis_status_label(status),
             (None, None) => "",
         };
-        let _ = writeln!(
+        let _ = write!(
             output,
             "node\t{}\t{}\tstatus={}",
             node.kind.table_name(),
             node.id,
             status
         );
+        if let Some(label) = &node.label {
+            let _ = write!(output, "\tlabel={}", summary_cell(label));
+        }
+        output.push('\n');
     }
     for edge in &neighborhood.edges {
         match edge.event_origin {

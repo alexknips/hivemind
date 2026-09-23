@@ -13,7 +13,7 @@ use crate::Result;
 use super::active_blockers::{ActiveDecisionBlockersRequest, DecisionBlockerFilters};
 use super::decision::{get_hypothesis_statement, DecisionView};
 use super::grounding::GroundingState;
-use super::neighborhood::{get_decision_neighborhood, NeighborhoodRequest};
+use super::neighborhood::{neighborhood_structure, NeighborhoodRequest};
 use super::shared::{query_error, MAX_QUERY_RESULTS};
 use super::status::{DecisionStatus, HypothesisStatus};
 use super::supersession::get_supersession_chain;
@@ -137,7 +137,7 @@ pub fn get_compact_view(
 
     // 4. Neighborhood of the terminal decision
     let neighborhood =
-        get_decision_neighborhood(graph, &terminal_id, &NeighborhoodRequest::all())?.data;
+        neighborhood_structure(graph, &terminal_id, &NeighborhoodRequest::all())?.data;
 
     // 5. Active blockers scoped to this decision
     let blockers = get_active_decision_blockers(

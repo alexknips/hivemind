@@ -1372,7 +1372,10 @@ pub enum QueryCommand {
     /// Friendlier alias: `chain`.
     #[command(name = "get_supersession_chain", alias = "chain")]
     GetSupersessionChain(QueryFluentDecisionArgs),
-    /// Friendlier alias: `why`.
+    /// "Why was this decided?" — the decision's title, rationale, chosen and rejected options,
+    /// who decided, and whether it still holds, plus its one-hop graph (actors, options,
+    /// evidence, premises, supersession) with every node labelled. Takes a description or
+    /// question as well as --id. Friendlier alias: `why`.
     #[command(name = "get_decision_neighborhood", alias = "why")]
     GetDecisionNeighborhood(QueryDecisionNeighborhoodArgs),
     /// Layer-3 compact view: signal/noise filter over a decision's subgraph.

@@ -20,6 +20,7 @@ use super::shared::{
     relation_edges_by_kind, relation_sources, relation_targets,
 };
 use super::status::{derive_decision_status, derive_hypothesis_status, DecisionStatus};
+use super::terms::{resolver_terms, stem, word_stems};
 use super::{QueryContext, QueryResponse};
 
 const MAX_SNIPPETS_PER_RESULT: usize = 5;
@@ -137,7 +138,7 @@ pub fn search_decisions(
     let mut scored = collect_graph_search_results(
         graph,
         query.as_deref(),
-        &terms,
+        &SearchTerms::literal(&terms),
         &topic_keys,
         &statuses,
         &actor_ids,
@@ -226,7 +227,7 @@ pub fn search_decisions_with_ledger(
     let mut scored = collect_graph_search_results(
         graph,
         query.as_deref(),
-        &terms,
+        &SearchTerms::literal(&terms),
         &topic_keys,
         &statuses,
         &actor_ids,
@@ -318,7 +319,8 @@ pub fn search_decisions_fts_with_context(
     let cursor = normalized_query(request.cursor.as_deref());
     let offset = parse_cursor(cursor.as_deref())?;
 
-    let documents = collect_graph_search_results(graph, None, &[], &[], &[], &[], &[])?;
+    let documents =
+        collect_graph_search_results(graph, None, &SearchTerms::literal(&[]), &[], &[], &[], &[])?;
     rebuild_decision_search_fts(ledger, &documents)?;
     let fts_decision_ids = query_decision_search_fts(ledger, query.as_deref())?;
     let proposed_at = decision_proposed_at_by_id(context, ledger)?;
@@ -340,13 +342,17 @@ pub fn search_decisions_fts_with_context(
         }
 
         let match_info = match query.as_deref() {
-            Some(_) => evaluate_search_match(query.as_deref(), &terms, &document.fields)
-                .unwrap_or_else(|| SearchMatchInfo {
-                    rank: 3,
-                    matched_fields: Vec::new(),
-                    snippets: Vec::new(),
-                    matched_nodes: Vec::new(),
-                }),
+            Some(_) => evaluate_search_match(
+                query.as_deref(),
+                &SearchTerms::literal(&terms),
+                &document.fields,
+            )
+            .unwrap_or_else(|| SearchMatchInfo {
+                rank: 3,
+                matched_fields: Vec::new(),
+                snippets: Vec::new(),
+                matched_nodes: Vec::new(),
+            }),
             None => SearchMatchInfo {
                 rank: 4,
                 matched_fields: Vec::new(),
@@ -660,7 +666,7 @@ struct ScoredDecisionSearchResult {
 fn collect_graph_search_results(
     graph: &impl GraphView,
     query: Option<&str>,
-    terms: &[String],
+    terms: &SearchTerms<'_>,
     topic_keys: &[String],
     statuses: &[DecisionStatus],
     actor_ids: &[String],
@@ -912,9 +918,16 @@ pub(crate) fn collect_resolver_candidates(
     description: &str,
     topic_keys: &[String],
 ) -> Result<Vec<ResolverCandidateRow>> {
-    let terms = query_terms(Some(description));
-    let scored =
-        collect_graph_search_results(graph, Some(description), &terms, topic_keys, &[], &[], &[])?;
+    let terms = resolver_terms(description);
+    let scored = collect_graph_search_results(
+        graph,
+        Some(description),
+        &SearchTerms::stemmed(&terms),
+        topic_keys,
+        &[],
+        &[],
+        &[],
+    )?;
     Ok(scored
         .into_iter()
         .map(|scored| ResolverCandidateRow {
@@ -982,11 +995,36 @@ fn add_node_search_fields(
     }
 }
 
+/// The terms a query must find, and how a term is found in a field. Every term must match some
+/// field. `literal` terms match as a substring; `stemmed` terms (resolve-by-description) also
+/// match a field word with the same stem, so "move" finds "moves" and "moved".
+struct SearchTerms<'a> {
+    terms: &'a [String],
+    stemmed: bool,
+}
+
+impl<'a> SearchTerms<'a> {
+    fn literal(terms: &'a [String]) -> Self {
+        Self {
+            terms,
+            stemmed: false,
+        }
+    }
+
+    fn stemmed(terms: &'a [String]) -> Self {
+        Self {
+            terms,
+            stemmed: true,
+        }
+    }
+}
+
 fn evaluate_search_match(
     query: Option<&str>,
-    terms: &[String],
+    search_terms: &SearchTerms<'_>,
     fields: &[SearchField],
 ) -> Option<SearchMatchInfo> {
+    let terms = search_terms.terms;
     let Some(query) = query else {
         return Some(SearchMatchInfo {
             rank: 4,
@@ -1008,9 +1046,15 @@ fn evaluate_search_match(
 
     for field in fields {
         let value_lower = field.value.to_ascii_lowercase();
+        let mut field_stems: Option<BTreeSet<&str>> = None;
         let mut field_matched = false;
         for term in terms {
-            if value_lower.contains(term) {
+            let found = value_lower.contains(term)
+                || (search_terms.stemmed
+                    && field_stems
+                        .get_or_insert_with(|| word_stems(&value_lower))
+                        .contains(stem(term)));
+            if found {
                 matched_terms.insert(term.clone());
                 field_matched = true;
             }

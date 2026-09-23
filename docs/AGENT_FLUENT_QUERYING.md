@@ -98,6 +98,19 @@ via `with_postgres_graph`, `tests.rs:227`).
 function and extended with a recency tiebreak, wrapped in an ambiguity gate.
 No new matching logic, no configuration knobs, no learned weights.
 
+**Term handling (resolver only).** A natural question resolves the same as
+its keywords: "why did we move the demo cell to shared Postgres" finds
+"Demo cell storage moves to shared Postgres backend…".
+`resolver_terms` (`src/queries/terms.rs`) trims punctuation and drops question
+and function words (why, did, we, the, to, …) but keeps negations (not, no,
+never, without), so "do not adopt Kafka" cannot resolve to the decision that
+adopted it. Each remaining term still has to match somewhere (AND), either
+as a substring, as before, or as a field word with the same stem
+(`move`/`moves`/`moved`/`moving`; compared by whole-word equality, never by
+prefix, so `string` does not match `strategy`). A description made only of
+stop words falls back to its literal words. The ambiguity gate (§1.4) is
+unchanged, and `search` keeps literal substring matching.
+
 ### 1.2 Recency, for free
 
 Every node carries `event_origin` — the ledger offset at creation
@@ -444,6 +457,16 @@ used by list-shaped commands
 record meant to be read, not a row in a list. IDs appear only in a trailing
 "ref: <decision_id>" line — present for follow-up (`--id`, `--pick`), never
 required reading to understand the answer.
+
+**`why` reuses the brief.** `get_decision_neighborhood` (`why`) returns the
+one-hop graph and leads with this same `DecisionBrief`: `root` carries it
+flattened in beside `id` (title, rationale, chosen and rejected option
+labels, decided-by, still-holds, status), and every non-actor node carries a
+`label` — a decision's title, an option's label, a hypothesis' statement, an
+evidence item's content (clipped to 200 characters with a trailing `…`).
+`why --summary` prints the brief block first, then the graph as
+`root`/`node`/`edge` lines. `compact-view` reads the bare structure without
+the brief or labels.
 
 ---
 

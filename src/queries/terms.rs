@@ -68,3 +68,89 @@ pub fn overlap_score(query_terms: &[String], candidate_terms: &[String]) -> f64 
     let hits = unique.intersection(&candidates).count();
     hits as f64 / unique.len() as f64
 }
+
+/// Question and function words that carry no identifying signal in a natural-language
+/// description ("why did we move the demo cell to shared Postgres"). Deliberately omits
+/// negations (`not`, `no`, `never`, `without`): dropping them would let "do not adopt Kafka"
+/// resolve to the decision that adopted it.
+const RESOLVER_STOPWORDS: &[&str] = &[
+    "a", "about", "an", "and", "are", "as", "at", "be", "been", "but", "by", "can", "could", "did",
+    "do", "does", "for", "from", "had", "has", "have", "how", "i", "if", "in", "into", "is", "it",
+    "its", "me", "my", "of", "on", "or", "our", "should", "so", "than", "that", "the", "their",
+    "them", "then", "these", "they", "this", "those", "to", "us", "was", "we", "were", "what",
+    "when", "where", "which", "who", "whom", "why", "will", "with", "would", "you", "your",
+];
+
+/// Terms for resolving a free-text description to a decision: lowercased whitespace tokens with
+/// surrounding punctuation trimmed, question/function words dropped, duplicates removed. Falls
+/// back to the unfiltered tokens when every token is a stopword, so "why did we" never matches
+/// every decision. Inner punctuation is kept (`per-host`, `gc-ox429`).
+pub(crate) fn resolver_terms(description: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    for raw in description.split_whitespace() {
+        let token = raw
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_ascii_lowercase();
+        // A token that was all punctuation keeps its raw form so it still matches literally.
+        let token = if token.is_empty() {
+            raw.to_ascii_lowercase()
+        } else {
+            token
+        };
+        if !tokens.contains(&token) {
+            tokens.push(token);
+        }
+    }
+    let content: Vec<String> = tokens
+        .iter()
+        .filter(|token| !RESOLVER_STOPWORDS.contains(&token.as_str()))
+        .cloned()
+        .collect();
+    if content.is_empty() {
+        tokens
+    } else {
+        content
+    }
+}
+
+/// Reduce an English word to a stem so inflections compare equal: `move`, `moves`, `moved` and
+/// `moving` all become `mov`; `policy` and `policies` become `polic`. Plural, then `-ed`/`-ing`,
+/// then a trailing `e`/`y` are stripped, each only when at least three letters remain. Words with
+/// non-letters (ids, `per-host`, `3f2a`) are returned unchanged. Compared for equality, never as
+/// a substring, so a short stem cannot match unrelated words.
+pub(crate) fn stem(word: &str) -> &str {
+    if !word.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return word;
+    }
+    let mut root = word;
+    if let Some(stripped) = root.strip_suffix("ies").filter(|s| s.len() >= 3) {
+        root = stripped;
+    } else if let Some(stripped) = root.strip_suffix("es").filter(|s| s.len() >= 3) {
+        root = stripped;
+    } else if let Some(stripped) = root
+        .strip_suffix('s')
+        .filter(|s| s.len() >= 3 && !s.ends_with(['s', 'u', 'i']))
+    {
+        root = stripped;
+    }
+    if let Some(stripped) = root
+        .strip_suffix("ing")
+        .or_else(|| root.strip_suffix("ed"))
+        .filter(|s| s.len() >= 3)
+    {
+        root = stripped;
+    }
+    if let Some(stripped) = root.strip_suffix(['e', 'y']).filter(|s| s.len() >= 3) {
+        root = stripped;
+    }
+    root
+}
+
+/// The stem of every word in `text` (split on non-alphanumerics), for matching a stemmed term
+/// against a field's words. `text` must already be lowercase.
+pub(crate) fn word_stems(text: &str) -> BTreeSet<&str> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(stem)
+        .collect()
+}

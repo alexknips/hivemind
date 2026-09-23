@@ -46,7 +46,8 @@
       {
         "decision_status": "proposed",
         "id": "decision-005",
-        "kind": "decision"
+        "kind": "decision",
+        "label": "Seed decision 005"
       },
       {
         "id": "actor:planner",
@@ -54,30 +55,93 @@
       },
       {
         "id": "evidence-001",
-        "kind": "evidence"
+        "kind": "evidence",
+        "label": "Seed evidence 001: embedded projection replay drift packet"
       },
       {
         "id": "evidence-004",
-        "kind": "evidence"
+        "kind": "evidence",
+        "label": "Seed evidence 004: packet-capture refutes projection freshness"
       },
       {
         "id": "option-005-a",
-        "kind": "option"
+        "kind": "option",
+        "label": "option-005-a"
       },
       {
         "id": "option-005-b",
-        "kind": "option"
+        "kind": "option",
+        "label": "option-005-b"
       },
       {
         "hypothesis_status": "refuted",
         "id": "hypothesis-001",
-        "kind": "hypothesis"
+        "kind": "hypothesis",
+        "label": "The embedded graph projection remains deterministic after replay"
       }
     ],
     "root": {
+      "chosen_option": {
+        "label": "option-005-b",
+        "option_id": "option-005-b"
+      },
+      "decided_by": {
+        "proposer_id": "actor:planner",
+        "review": "unreviewed",
+        "source": "api",
+        "source_ref": "seed-dataset-v1"
+      },
+      "decision_id": "decision-005",
+      "dependents_count": 0,
+      "grounding_state": "grounded",
       "id": "decision-005",
       "kind": "decision",
-      "present": true
+      "occurred_at": "2026-01-01T00:00:15Z",
+      "present": true,
+      "rationale": "Deterministic rationale for seed decision 005",
+      "rejected_options": [
+        {
+          "label": "option-005-a",
+          "option_id": "option-005-a"
+        }
+      ],
+      "rests_on": [
+        {
+          "added": {
+            "when": "at_capture"
+          },
+          "id": "evidence-001",
+          "kind": "evidence",
+          "label": "Seed evidence 001: embedded projection replay drift packet",
+          "source": "seed",
+          "state": "recorded",
+          "ts": "2026-01-01T00:00:01Z"
+        },
+        {
+          "added": {
+            "when": "at_capture"
+          },
+          "id": "hypothesis-001",
+          "kind": "assumption",
+          "label": "The embedded graph projection remains deterministic after replay",
+          "state": "refuted"
+        }
+      ],
+      "status": "proposed",
+      "still_holds": {
+        "held_up": false,
+        "reasons": [
+          {
+            "hypothesis_id": "hypothesis-001",
+            "kind": "premised_on_refuted"
+          }
+        ]
+      },
+      "title": "Seed decision 005",
+      "topic_keys": [
+        "architecture",
+        "slice-one"
+      ]
     }
   },
   "latency_ms": 0,

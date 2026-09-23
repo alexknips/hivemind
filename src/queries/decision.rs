@@ -59,6 +59,10 @@ pub struct DecisionView {
     pub question: Option<String>,
 }
 
+/// The single-decision row shape every backend's `query` recognizes (memory.rs matches this
+/// text verbatim), shared so `get_decision_title` rides the same supported shape.
+const DECISION_ROW_QUERY: &str = "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys, d.quote AS quote, d.question AS question LIMIT 1;";
+
 impl DecisionView {
     /// Grounded, a declared bet, or nothing declared, from the premise, evidence and hypothesis
     /// ids this view carries. Only meaningful on a full view (`get_decision`, search results);
@@ -99,7 +103,7 @@ pub fn get_decision(
 ) -> Result<QueryResponse<Option<DecisionView>>> {
     let started = Instant::now();
     let rows = graph.query(
-        "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys, d.quote AS quote, d.question AS question LIMIT 1;",
+        DECISION_ROW_QUERY,
         &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
     )?;
 
@@ -188,4 +192,28 @@ pub fn get_hypothesis_statement(
     Ok(rows
         .first()
         .and_then(|row| optional_string(row, "statement")))
+}
+
+/// A decision's title alone, for labelling a neighbouring decision without `get_decision`'s
+/// status and edge lookups.
+pub(super) fn get_decision_title(
+    graph: &impl GraphView,
+    decision_id: &str,
+) -> crate::Result<Option<String>> {
+    let rows = graph.query(
+        DECISION_ROW_QUERY,
+        &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
+    )?;
+    Ok(rows.first().and_then(|row| optional_string(row, "title")))
+}
+
+pub(super) fn get_evidence_content(
+    graph: &impl GraphView,
+    evidence_id: &str,
+) -> crate::Result<Option<String>> {
+    let rows = graph.query(
+        "MATCH (e:`Evidence` {id: $id}) RETURN e.content AS content LIMIT 1;",
+        &GraphParams::from([("id".to_owned(), GraphValue::String(evidence_id.to_owned()))]),
+    )?;
+    Ok(rows.first().and_then(|row| optional_string(row, "content")))
 }

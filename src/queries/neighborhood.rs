@@ -8,6 +8,8 @@ use serde::Serialize;
 use crate::projector::{GraphView, NodeKind, RelationKind};
 use crate::Result;
 
+use super::brief::{get_decision_brief, resolve_option_label, DecisionBrief};
+use super::decision::{get_decision_title, get_evidence_content, get_hypothesis_statement};
 use super::shared::{
     decision_node_exists, neighbor_pairs, query_error, Direction, MAX_QUERY_RESULTS,
 };
@@ -16,11 +18,20 @@ use super::status::{
 };
 use super::QueryResponse;
 
+/// Node labels longer than this many characters are clipped and end in `…`, so an evidence item
+/// holding a pasted log cannot bloat a `why` answer.
+const NODE_LABEL_MAX_CHARS: usize = 200;
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct NeighborhoodRoot {
     pub id: String,
     pub kind: NodeKind,
     pub present: bool,
+    /// The root decision's answer to "why": title, rationale, chosen and rejected option
+    /// labels, status, who decided, and whether it still holds -- the same `DecisionBrief`
+    /// `verify` returns, flattened in beside the id. Absent when the decision is not present.
+    #[serde(flatten)]
+    pub brief: Option<DecisionBrief>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -31,6 +42,10 @@ pub struct NeighborNode {
     pub decision_status: Option<DecisionStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hypothesis_status: Option<HypothesisStatus>,
+    /// What the node says, so the id need not be read: a decision's title, an option's label, a
+    /// hypothesis' statement, an evidence item's content. Absent for actors (the id is the name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -141,7 +156,58 @@ const HYPOTHESIS_HOP2_RELATIONS: [(RelationKind, NodeKind, Direction); 2] = [
     ),
 ];
 
+/// The one-hop neighborhood of a decision, led by the decision's own answer: `root` carries its
+/// title, rationale, chosen/rejected option labels, status and deciders, and every non-actor
+/// node carries its label. Pure graph reads; the structure itself comes from
+/// [`neighborhood_structure`].
 pub fn get_decision_neighborhood(
+    graph: &impl GraphView,
+    decision_id: &str,
+    request: &NeighborhoodRequest,
+) -> Result<QueryResponse<NeighborhoodView>> {
+    let started = Instant::now();
+    let mut response = neighborhood_structure(graph, decision_id, request)?;
+    if !response.data.root.present {
+        return Ok(response);
+    }
+
+    let brief = get_decision_brief(graph, &response.data.root.id)?.data;
+    for node in &mut response.data.nodes {
+        node.label = match &brief {
+            Some(brief) if node.kind == NodeKind::Decision && node.id == brief.decision_id => {
+                Some(brief.title.clone())
+            }
+            _ => node_label(graph, node.kind, &node.id)?,
+        };
+    }
+    response.data.root.brief = brief;
+    response.latency_ms = started.elapsed().as_millis();
+    Ok(response)
+}
+
+fn node_label(graph: &impl GraphView, kind: NodeKind, id: &str) -> Result<Option<String>> {
+    let label = match kind {
+        NodeKind::Decision => get_decision_title(graph, id)?,
+        NodeKind::Option => Some(resolve_option_label(graph, id)?.label),
+        NodeKind::Hypothesis => get_hypothesis_statement(graph, id)?,
+        NodeKind::Evidence => get_evidence_content(graph, id)?,
+        _ => None,
+    };
+    Ok(label.map(|text| clip_label(&text)))
+}
+
+fn clip_label(text: &str) -> String {
+    if text.chars().count() <= NODE_LABEL_MAX_CHARS {
+        return text.to_owned();
+    }
+    let mut clipped: String = text.chars().take(NODE_LABEL_MAX_CHARS - 1).collect();
+    clipped.push('…');
+    clipped
+}
+
+/// The bare one-hop structure: root presence, typed nodes with derived statuses, and edges. No
+/// labels and no root brief -- for callers that only walk the graph (`compact_view`).
+pub(super) fn neighborhood_structure(
     graph: &impl GraphView,
     decision_id: &str,
     request: &NeighborhoodRequest,
@@ -157,6 +223,7 @@ pub fn get_decision_neighborhood(
         id: decision_id.to_owned(),
         kind: NodeKind::Decision,
         present: root_present,
+        brief: None,
     };
 
     if !root_present {
@@ -355,6 +422,7 @@ pub fn get_decision_neighborhood(
             kind,
             decision_status,
             hypothesis_status,
+            label: None,
         });
     }
     nodes.sort_by(|a, b| (a.kind, &a.id).cmp(&(b.kind, &b.id)));
@@ -368,3 +436,6 @@ pub fn get_decision_neighborhood(
         data: NeighborhoodView { root, nodes, edges },
     })
 }
+
+#[cfg(test)]
+mod tests;

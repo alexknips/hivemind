@@ -312,7 +312,17 @@ fn dispatch_query(
     // (or Null if the node has no `label` property — the row still exists as long as the
     // Option node itself exists, matching memory.rs's `graph_property_or_default`).
     if cypher.contains("RETURN o.label AS label") {
-        return query_option_label(client, tenant_id, params);
+        return query_node_property(client, tenant_id, params, NodeKind::Option, "label");
+    }
+
+    // neighborhood.rs's node labels: single-node text lookups by id, same Null-when-absent
+    // contract as the option label above (decision.rs's `get_hypothesis_statement` and
+    // `get_evidence_content`).
+    if cypher.contains("RETURN h.statement AS statement") {
+        return query_node_property(client, tenant_id, params, NodeKind::Hypothesis, "statement");
+    }
+    if cypher.contains("RETURN e.content AS content") {
+        return query_node_property(client, tenant_id, params, NodeKind::Evidence, "content");
     }
 
     // Grounding (hivemind-gwhr.1): a bet hypothesis's kind/check_by/would_change_if, by id.
@@ -931,31 +941,34 @@ fn query_decisions_with_origin(
 
 // ── context.rs / brief.rs query implementations (hivemind-ookw) ────────────────
 
-/// Label of a single `Option` node by id, or `None` if the node doesn't exist. When the node
-/// exists but has no `label` property, returns a row with `label: Null` — same distinction as
-/// memory.rs's `graph_property_or_default` (missing node vs. missing property are different).
-fn query_option_label(
+/// One text property of a single node by id (`Option.label`, `Hypothesis.statement`,
+/// `Evidence.content`), or no row if the node doesn't exist. When the node exists but lacks the
+/// property, returns a row with the property `Null` — same distinction as memory.rs's
+/// `graph_property_or_default` (missing node vs. missing property are different).
+fn query_node_property(
     client: &mut Client,
     tenant_id: &str,
     params: &GraphParams,
+    kind: NodeKind,
+    property: &str,
 ) -> Result<Vec<GraphRow>> {
     let id = required_string_param(params, "id")?;
     let row = client
         .query_opt(
             "SELECT properties FROM hm_nodes
-             WHERE tenant_id=$1 AND node_kind='Option' AND node_id=$2
+             WHERE tenant_id=$1 AND node_kind=$2 AND node_id=$3
              LIMIT 1",
-            &[&tenant_id, &id],
+            &[&tenant_id, &kind.table_name(), &id],
         )
         .map_err(pg_error)?;
     Ok(row
         .map(|row| {
             let props: JsonValue = row.get(0);
-            let label = props
-                .get("label")
+            let value = props
+                .get(property)
                 .and_then(json_to_graph_value)
                 .unwrap_or(GraphValue::Null);
-            GraphRow::from([("label".to_owned(), label)])
+            GraphRow::from([(property.to_owned(), value)])
         })
         .into_iter()
         .collect())

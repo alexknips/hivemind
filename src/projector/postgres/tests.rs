@@ -17,12 +17,13 @@ use crate::projector::{
 };
 use crate::queries::{
     get_decision, get_decision_brief, get_decision_brief_at, get_decision_context,
-    get_decision_context_candidates, get_decision_outcome, get_decision_outcome_at,
-    get_decision_quality_candidates, get_decision_quality_score, get_failure_attribution,
-    get_supersession_chain, grounding_of_at, resolve_decision_by_description,
-    scan_decision_quality, search_decisions, DecisionContextRequest,
-    DecisionQualityCandidatesRequest, FailureAttributionRequest, GroundingAdded, GroundingKind,
-    QueryContext, ScanQualityRequest, ScorerConfig, SearchDecisionRequest,
+    get_decision_context_candidates, get_decision_neighborhood, get_decision_outcome,
+    get_decision_outcome_at, get_decision_quality_candidates, get_decision_quality_score,
+    get_failure_attribution, get_supersession_chain, grounding_of_at,
+    resolve_decision_by_description, scan_decision_quality, search_decisions,
+    DecisionContextRequest, DecisionQualityCandidatesRequest, FailureAttributionRequest,
+    GroundingAdded, GroundingKind, NeighborhoodRequest, QueryContext, ResolveOutcome,
+    ScanQualityRequest, ScorerConfig, SearchDecisionRequest,
 };
 use crate::summarize::{recall_decisions, RecallRequest, RECALL_MAX_LIMIT};
 use crate::Result;
@@ -523,6 +524,19 @@ fn resolve_decision_by_description_matches_memory() -> Result<()> {
             )));
         }
 
+        // A natural question resolves through the same stop-word and stemming path on both
+        // backends: "why did we ..." drops the question words, "slice 1" pins decision:1.
+        let question = "why did we use Kuzu for slice 1";
+        let memory_question = resolve_decision_by_description(&memory, question, None)?.data;
+        let pg_question = resolve_decision_by_description(pg, question, None)?.data;
+        if memory_question != pg_question
+            || !matches!(&memory_question, ResolveOutcome::Resolved { candidate } if candidate.decision_id == "decision:1")
+        {
+            return Err(test_error(format!(
+                "natural-question resolution mismatch: memory={memory_question:?} pg={pg_question:?}"
+            )));
+        }
+
         // "Kuzu" alone matches both decisions at the same rank tier: both backends must agree
         // it is Ambiguous, in the same candidate order (rank asc, event_origin desc, id asc).
         let memory_ambiguous = resolve_decision_by_description(&memory, "Kuzu", None)?.data;
@@ -979,6 +993,68 @@ fn delegation_fixture_ledger() -> Result<InMemoryEventLedger> {
         ledger.append(make_event(EventType::DecisionAccepted, accepter, accepted))?;
     }
     Ok(ledger)
+}
+
+// ── get_decision_neighborhood parity (hivemind-5gwg) ────────────────────────────
+//
+// `why` composes the structural neighborhood with get_decision_brief and per-node label lookups
+// (decision title, option label, hypothesis statement, evidence content) -- the last two shapes
+// are the dispatch_query entries this bead adds.
+
+#[test]
+fn get_decision_neighborhood_matches_memory() -> Result<()> {
+    with_postgres_graph("neighborhood-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = fixture_ledger()?;
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        for decision_id in ["decision:1", "decision:2", "decision:missing"] {
+            let request = NeighborhoodRequest::all();
+            let mut memory_result = get_decision_neighborhood(&memory, decision_id, &request)?.data;
+            let mut pg_result = get_decision_neighborhood(pg, decision_id, &request)?.data;
+            // Neighbor-pair queries return the edge's event_origin on Postgres but not on the
+            // in-memory graph (a pre-existing backend difference, not what this test pins).
+            for edge in memory_result
+                .edges
+                .iter_mut()
+                .chain(pg_result.edges.iter_mut())
+            {
+                edge.event_origin = None;
+            }
+            if memory_result != pg_result {
+                return Err(test_error(format!(
+                    "get_decision_neighborhood mismatch for {decision_id}: memory={memory_result:?} pg={pg_result:?}"
+                )));
+            }
+        }
+
+        // The labels are present, not just equal: decision:1's premise, evidence and the
+        // decision that superseded it all read back as text on Postgres.
+        let view = get_decision_neighborhood(pg, "decision:1", &NeighborhoodRequest::all())?.data;
+        let label_of = |id: &str| {
+            view.nodes
+                .iter()
+                .find(|node| node.id == id)
+                .and_then(|node| node.label.clone())
+        };
+        for (id, expected) in [
+            ("hypothesis:1", "Graph projection is viable"),
+            ("evidence:1", "Kuzu supports graph projection"),
+            ("decision:2", "Use Kuzu with conservative Cypher"),
+        ] {
+            if label_of(id).as_deref() != Some(expected) {
+                return Err(test_error(format!(
+                    "expected label {expected:?} on {id}, got {:?}",
+                    label_of(id)
+                )));
+            }
+        }
+        if view.root.brief.is_none() {
+            return Err(test_error("root brief missing on Postgres".to_owned()));
+        }
+        Ok(())
+    })
 }
 
 // ── recall_decisions parity (hivemind-ot72.3) ───────────────────────────────────

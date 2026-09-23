@@ -16,6 +16,8 @@ use crate::projector::{
 };
 use crate::Result;
 
+use super::neighborhood::neighborhood_structure;
+use super::terms::{resolver_terms, stem};
 use super::*;
 
 #[derive(Debug, Default)]
@@ -1029,6 +1031,59 @@ fn text_terms_tokenizes_prose_and_drops_stopwords() {
 }
 
 #[test]
+fn stem_conflates_inflections_of_one_word() {
+    for group in [
+        vec!["move", "moves", "moved", "moving"],
+        vec!["policy", "policies"],
+        vec!["queue", "queues", "queued"],
+        vec!["process", "processes"],
+        vec!["string", "strings"],
+        vec!["need", "needs", "needed"],
+        vec!["use", "uses"],
+        vec!["add", "adds", "added", "adding"],
+    ] {
+        let stems: BTreeSet<&str> = group.iter().map(|word| stem(word)).collect();
+        assert_eq!(stems.len(), 1, "{group:?} should share one stem: {stems:?}");
+    }
+}
+
+#[test]
+fn stem_keeps_different_words_apart() {
+    assert_ne!(stem("string"), stem("strategy"));
+    assert_ne!(stem("status"), stem("stat"));
+    assert_ne!(stem("storage"), stem("store"));
+}
+
+#[test]
+fn stem_leaves_ids_and_short_words_alone() {
+    for word in ["per-host", "3f2a", "gc-ox429", "red", "bus", "1"] {
+        assert_eq!(stem(word), word);
+    }
+}
+
+#[test]
+fn resolver_terms_drop_question_words_but_keep_negations() {
+    assert_eq!(
+        resolver_terms("Why did we move the demo cell to shared Postgres?"),
+        vec!["move", "demo", "cell", "shared", "postgres"]
+    );
+    assert_eq!(
+        resolver_terms("do not adopt kafka"),
+        vec!["not", "adopt", "kafka"]
+    );
+}
+
+#[test]
+fn resolver_terms_dedupe_and_fall_back_when_only_stopwords() {
+    assert_eq!(resolver_terms("queue Queue queue"), vec!["queue"]);
+    assert_eq!(resolver_terms("why did we"), vec!["why", "did", "we"]);
+    assert_eq!(
+        resolver_terms("per-host sqlite,"),
+        vec!["per-host", "sqlite"]
+    );
+}
+
+#[test]
 fn overlap_score_is_fraction_of_query_terms_matched() {
     let query = vec!["auth".to_owned(), "postgres".to_owned(), "cache".to_owned()];
     let candidate = vec!["auth".to_owned(), "postgres".to_owned()];
@@ -1336,9 +1391,9 @@ fn get_supersession_chain_walks_both_directions() -> Result<()> {
 }
 
 #[test]
-fn get_decision_neighborhood_returns_full_one_hop() -> Result<()> {
+fn neighborhood_structure_returns_full_one_hop() -> Result<()> {
     let graph = FixtureGraph::sample();
-    let response = get_decision_neighborhood(&graph, "d1", &NeighborhoodRequest::all())?;
+    let response = neighborhood_structure(&graph, "d1", &NeighborhoodRequest::all())?;
 
     assert!(response.data.root.present);
     assert_eq!(response.data.root.id, "d1");
@@ -1398,10 +1453,10 @@ fn get_decision_neighborhood_returns_full_one_hop() -> Result<()> {
 }
 
 #[test]
-fn get_decision_neighborhood_filters_by_relation() -> Result<()> {
+fn neighborhood_structure_filters_by_relation() -> Result<()> {
     let graph = FixtureGraph::sample();
     let request = NeighborhoodRequest::with_relations([RelationKind::ProposedBy]);
-    let response = get_decision_neighborhood(&graph, "d1", &request)?;
+    let response = neighborhood_structure(&graph, "d1", &request)?;
 
     for edge in &response.data.edges {
         assert_eq!(edge.relation, RelationKind::ProposedBy);
@@ -1414,10 +1469,9 @@ fn get_decision_neighborhood_filters_by_relation() -> Result<()> {
 }
 
 #[test]
-fn get_decision_neighborhood_handles_missing_decision() -> Result<()> {
+fn neighborhood_structure_handles_missing_decision() -> Result<()> {
     let graph = FixtureGraph::sample();
-    let response =
-        get_decision_neighborhood(&graph, "no-such-decision", &NeighborhoodRequest::all())?;
+    let response = neighborhood_structure(&graph, "no-such-decision", &NeighborhoodRequest::all())?;
 
     assert!(!response.data.root.present);
     assert!(response.data.nodes.is_empty());
@@ -1427,7 +1481,7 @@ fn get_decision_neighborhood_handles_missing_decision() -> Result<()> {
 }
 
 #[test]
-fn get_decision_neighborhood_reports_branched_supersession() -> Result<()> {
+fn neighborhood_structure_reports_branched_supersession() -> Result<()> {
     let mut graph = FixtureGraph::sample();
     graph.decisions.insert(
         "branch_a".to_owned(),
@@ -1448,7 +1502,7 @@ fn get_decision_neighborhood_reports_branched_supersession() -> Result<()> {
         "branch_b".to_owned(),
     ));
 
-    let response = get_decision_neighborhood(&graph, "d1", &NeighborhoodRequest::all())?;
+    let response = neighborhood_structure(&graph, "d1", &NeighborhoodRequest::all())?;
 
     let supersedes_targets: Vec<&str> = response
         .data
@@ -1463,13 +1517,13 @@ fn get_decision_neighborhood_reports_branched_supersession() -> Result<()> {
 }
 
 #[test]
-fn get_decision_neighborhood_includes_refuting_evidence_via_hypothesis() -> Result<()> {
+fn neighborhood_structure_includes_refuting_evidence_via_hypothesis() -> Result<()> {
     let mut graph = FixtureGraph::sample();
     graph
         .edges
         .insert((RelationKind::Refutes, "e2".to_owned(), "h1".to_owned()));
 
-    let response = get_decision_neighborhood(&graph, "d1", &NeighborhoodRequest::all())?;
+    let response = neighborhood_structure(&graph, "d1", &NeighborhoodRequest::all())?;
 
     let refutes_edges: Vec<&NeighborEdge> = response
         .data
@@ -1498,9 +1552,9 @@ fn get_decision_neighborhood_includes_refuting_evidence_via_hypothesis() -> Resu
 }
 
 #[test]
-fn get_decision_neighborhood_rejects_empty_id() {
+fn neighborhood_structure_rejects_empty_id() {
     let graph = FixtureGraph::sample();
-    let error = get_decision_neighborhood(&graph, "   ", &NeighborhoodRequest::all())
+    let error = neighborhood_structure(&graph, "   ", &NeighborhoodRequest::all())
         .expect_err("empty id rejected");
     assert!(format!("{error}").contains("decision_id"));
 }

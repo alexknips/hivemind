@@ -1718,6 +1718,89 @@ fn query_chain_and_why_aliases_resolve_by_description() -> CliTestResult {
 }
 
 #[test]
+fn query_why_answers_a_natural_question_with_the_why() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("query-why-natural-question");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Demo cell storage moves to shared Postgres backend instead of per-host SQLite",
+        "--rationale",
+        "One shared ledger keeps every reader consistent without per-host sync",
+        "--topic-keys",
+        "storage",
+        "--options",
+        "Shared Postgres backend,Per-host SQLite",
+        "--chose",
+        "Shared Postgres backend",
+    ]))?;
+
+    let summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "why",
+        "why did we move the demo cell to shared Postgres",
+        "--summary",
+    ]))?;
+    for expected in [
+        "decision: Demo cell storage moves to shared Postgres backend instead of per-host SQLite",
+        "rationale: One shared ledger keeps every reader consistent without per-host sync",
+        "chose: Shared Postgres backend",
+        "rejected: Per-host SQLite",
+        "human:alice",
+        "label=Shared Postgres backend",
+        "label=Per-host SQLite",
+    ] {
+        ensure(
+            summary.contains(expected),
+            &format!("why --summary should contain {expected:?}, got:\n{summary}"),
+        )?;
+    }
+
+    let json = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "why",
+        "why did we move the demo cell to shared Postgres",
+    ]))?;
+    let json: serde_json::Value = serde_json::from_str(&json)?;
+    ensure_json_eq(
+        &json["data"]["root"]["id"],
+        serde_json::json!(decision_id),
+        "the question resolves to the captured decision",
+    )?;
+    ensure_json_eq(
+        &json["data"]["root"]["rationale"],
+        serde_json::json!("One shared ledger keeps every reader consistent without per-host sync"),
+        "root carries the rationale",
+    )?;
+    ensure_json_eq(
+        &json["data"]["root"]["chosen_option"]["label"],
+        serde_json::json!("Shared Postgres backend"),
+        "root carries the chosen option label",
+    )?;
+    ensure_json_eq(
+        &json["data"]["root"]["rejected_options"][0]["label"],
+        serde_json::json!("Per-host SQLite"),
+        "root carries the rejected option label",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn query_verify_alias_returns_decision_brief() -> CliTestResult {
     let hivemind_dir = unique_test_dir("query-verify-fluent");
     let dir = hivemind_dir.to_str().expect("utf-8 temp path");

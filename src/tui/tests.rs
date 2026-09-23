@@ -57,6 +57,7 @@ fn dot_export_renders_node_statuses_and_relation_labels() {
             id: "d1".to_owned(),
             kind: NodeKind::Decision,
             present: true,
+            brief: None,
         },
         nodes: vec![
             NeighborNode {
@@ -64,12 +65,14 @@ fn dot_export_renders_node_statuses_and_relation_labels() {
                 kind: NodeKind::Decision,
                 decision_status: Some(DecisionStatus::Accepted),
                 hypothesis_status: None,
+                label: None,
             },
             NeighborNode {
                 id: "h1".to_owned(),
                 kind: NodeKind::Hypothesis,
                 decision_status: None,
                 hypothesis_status: Some(HypothesisStatus::Refuted),
+                label: None,
             },
         ],
         edges: vec![NeighborEdge {

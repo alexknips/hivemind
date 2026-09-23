@@ -186,7 +186,7 @@ pub fn get_decision_brief_at(
     })
 }
 
-fn resolve_option_label(graph: &impl GraphView, option_id: &str) -> Result<OptionLabel> {
+pub(super) fn resolve_option_label(graph: &impl GraphView, option_id: &str) -> Result<OptionLabel> {
     let rows = graph.query(
         "MATCH (o:`Option` {id: $id}) RETURN o.label AS label LIMIT 1;",
         &GraphParams::from([("id".to_owned(), GraphValue::String(option_id.to_owned()))]),

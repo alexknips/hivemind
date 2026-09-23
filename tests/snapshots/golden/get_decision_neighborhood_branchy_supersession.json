@@ -36,17 +36,20 @@
       {
         "decision_status": "superseded",
         "id": "decision-016",
-        "kind": "decision"
+        "kind": "decision",
+        "label": "Seed decision 016"
       },
       {
         "decision_status": "proposed",
         "id": "decision-018",
-        "kind": "decision"
+        "kind": "decision",
+        "label": "Seed decision 018"
       },
       {
         "decision_status": "proposed",
         "id": "decision-019",
-        "kind": "decision"
+        "kind": "decision",
+        "label": "Seed decision 019"
       },
       {
         "id": "actor:planner",
@@ -54,17 +57,62 @@
       },
       {
         "id": "option-016-a",
-        "kind": "option"
+        "kind": "option",
+        "label": "option-016-a"
       },
       {
         "id": "option-016-b",
-        "kind": "option"
+        "kind": "option",
+        "label": "option-016-b"
       }
     ],
     "root": {
+      "chosen_option": {
+        "label": "option-016-b",
+        "option_id": "option-016-b"
+      },
+      "decided_by": {
+        "proposer_id": "actor:planner",
+        "review": "unreviewed",
+        "source": "api",
+        "source_ref": "seed-dataset-v1"
+      },
+      "decision_id": "decision-016",
+      "dependents_count": 0,
+      "grounding_state": "nothing_declared",
       "id": "decision-016",
       "kind": "decision",
-      "present": true
+      "occurred_at": "2026-01-01T00:00:26Z",
+      "present": true,
+      "rationale": "Deterministic rationale for seed decision 016",
+      "rejected_options": [
+        {
+          "label": "option-016-a",
+          "option_id": "option-016-a"
+        }
+      ],
+      "rests_on": [],
+      "status": "superseded",
+      "still_holds": {
+        "held_up": false,
+        "reasons": [
+          {
+            "by_id": "decision-019",
+            "gap_events": 21,
+            "kind": "superseded_by"
+          },
+          {
+            "kind": "thin_structure",
+            "no_options": false,
+            "nothing_declared": true
+          }
+        ]
+      },
+      "title": "Seed decision 016",
+      "topic_keys": [
+        "product",
+        "slice-one"
+      ]
     }
   },
   "latency_ms": 0,

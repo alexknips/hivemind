@@ -167,3 +167,116 @@ fn empty_description_is_rejected() {
     let error = resolve_decision_by_description(&graph, "   ", None).expect_err("empty rejected");
     assert!(format!("{error}").contains("description"));
 }
+
+const STORAGE_TITLE: &str =
+    "Demo cell storage moves to shared Postgres backend instead of per-host SQLite";
+
+fn resolved_id(graph: &MemoryGraph, description: &str) -> Result<Option<String>> {
+    Ok(
+        match resolve_decision_by_description(graph, description, None)?.data {
+            ResolveOutcome::Resolved { candidate } => Some(candidate.decision_id),
+            _ => None,
+        },
+    )
+}
+
+#[test]
+fn natural_questions_resolve_to_the_decision() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:storage", STORAGE_TITLE, &["storage"]),
+        decision_proposed(2, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])?;
+
+    for description in [
+        "Postgres",
+        "demo cell storage",
+        "move the demo cell to shared Postgres",
+        "why did we move the demo cell to shared Postgres",
+        "Why did we move the demo cell to shared Postgres?",
+        "why was demo cell storage moved to shared postgres",
+    ] {
+        assert_eq!(
+            resolved_id(&graph, description)?.as_deref(),
+            Some("d:storage"),
+            "{description:?} should resolve to the storage decision"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn inflected_words_match_their_stem() -> Result<()> {
+    let graph = graph_from_events([decision_proposed(
+        1,
+        "d:queue",
+        "Adopt async queues for billing",
+        &[],
+    )])?;
+
+    let resolved = resolved_id(&graph, "adopting an async queue for billing")?;
+
+    assert_eq!(resolved.as_deref(), Some("d:queue"));
+    Ok(())
+}
+
+#[test]
+fn stemming_compares_words_not_substrings() -> Result<()> {
+    let graph = graph_from_events([decision_proposed(
+        1,
+        "d:strategy",
+        "Use strategy pattern for retries",
+        &[],
+    )])?;
+
+    // "string" stems to "str", a prefix of "strategy": it must not match by prefix.
+    assert_eq!(resolved_id(&graph, "string")?, None);
+    // A literal substring still matches, exactly as before stemming existed.
+    assert_eq!(resolved_id(&graph, "strat")?.as_deref(), Some("d:strategy"));
+    Ok(())
+}
+
+#[test]
+fn negation_is_kept_so_it_cannot_resolve_to_the_opposite_decision() -> Result<()> {
+    let graph = graph_from_events([decision_proposed(
+        1,
+        "d:kafka",
+        "Adopt Kafka for events",
+        &[],
+    )])?;
+
+    assert_eq!(resolved_id(&graph, "do not adopt kafka")?, None);
+    assert_eq!(
+        resolved_id(&graph, "why did we adopt kafka")?.as_deref(),
+        Some("d:kafka")
+    );
+    Ok(())
+}
+
+#[test]
+fn a_question_of_only_stopwords_matches_nothing() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:billing", "Adopt async queue for billing", &[]),
+        decision_proposed(2, "d:notify", "Adopt async queue for notifications", &[]),
+    ])?;
+
+    let response = resolve_decision_by_description(&graph, "why did we", None)?;
+
+    assert_eq!(response.data, ResolveOutcome::NotFound);
+    Ok(())
+}
+
+#[test]
+fn ambiguity_gate_still_applies_to_natural_questions() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:billing", "Move billing to Postgres", &[]),
+        decision_proposed(2, "d:notify", "Move notifications to Postgres", &[]),
+    ])?;
+
+    let response = resolve_decision_by_description(&graph, "why did we move to postgres", None)?;
+
+    match response.data {
+        ResolveOutcome::Ambiguous { candidates } => assert_eq!(candidates.len(), 2),
+        other => panic!("expected Ambiguous, got {other:?}"),
+    }
+    Ok(())
+}
