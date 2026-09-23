@@ -36,6 +36,19 @@ class TestJsonlPathForSession(unittest.TestCase):
         finally:
             os.chdir(original_cwd)
 
+    def test_mangles_every_non_alnum_character_not_just_slash(self):
+        """Claude Code's real mangling replaces dots/underscores too, not just
+        '/'. A naive '/' -> '-' replace misses cwds like gc's own agent
+        worktrees (/home/ubuntu/gc/.gc/agents/mayor)."""
+        path = jsonl_path_for_session(
+            "session-abc", "/home/ubuntu/gc/.gc/agents/mayor"
+        )
+        home = os.path.expanduser("~")
+        self.assertEqual(
+            path,
+            f"{home}/.claude/projects/-home-ubuntu-gc--gc-agents-mayor/session-abc.jsonl",
+        )
+
 
 class TestExtractTurn(unittest.TestCase):
     def _make_record(self, type_, role, content):
@@ -250,7 +263,9 @@ class TestCursorFlow(unittest.TestCase):
         finally:
             core_module._post = orig_post
 
-    def test_cursor_advances_even_when_post_fails(self):
+    def test_cursor_does_not_advance_when_post_fails(self):
+        """A failed POST must not lose the batch: the cursor stays put so the
+        next run resends the same turns instead of silently dropping them."""
         self._write_jsonl(
             self.jsonl_path,
             [
@@ -286,7 +301,15 @@ class TestCursorFlow(unittest.TestCase):
 
         with open(cursor_file) as fh:
             offset_after = int(fh.read())
-        self.assertGreater(offset_after, offset_before, "cursor must advance despite POST failure")
+        self.assertEqual(offset_after, offset_before, "cursor must not advance when POST fails")
+
+        # Next run resends: same new turn arrives again, not skipped.
+        core_module._post = orig_post
+        posted = []
+        core_module._post = lambda url, key, env: posted.append(env)
+        ship(self.session_id, self.jsonl_path, "http://localhost:8080", "")
+        self.assertEqual(len(posted), 1)
+        self.assertEqual(posted[0]["turns"][0]["turn_id"], "u1")
 
         core_module._post = orig_post
 

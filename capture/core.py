@@ -13,6 +13,7 @@ Dependencies: stdlib only (json, os, urllib.request).
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from typing import Optional
@@ -23,6 +24,12 @@ _MAX_TURN_TEXT = 2000
 _MAX_BATCH_TURNS = 4
 # HTTP POST timeout in seconds.
 _POST_TIMEOUT = 3
+
+# Claude Code mangles a project directory into its transcript folder name by
+# replacing every character that isn't alphanumeric with '-' (so a cwd with
+# dots or underscores, e.g. /home/ubuntu/gc/.gc/agents/mayor, does not simply
+# become slash-for-dash).
+_NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]")
 
 
 # ---------------------------------------------------------------------------
@@ -55,11 +62,14 @@ def jsonl_path_for_session(session_id: str, project_dir: Optional[str] = None) -
     Claude Code stores transcripts at:
       ~/.claude/projects/<project-hash>/<session_id>.jsonl
 
-    where <project-hash> is the project directory path with '/' replaced by '-'.
+    where <project-hash> is the project directory path with every non-
+    alphanumeric character replaced by '-'. This is a fallback used only
+    when the caller has no transcript_path from the hook's stdin payload;
+    prefer that path when available since it is authoritative.
     """
     if project_dir is None:
         project_dir = os.getcwd()
-    project_hash = project_dir.replace("/", "-")
+    project_hash = _NON_ALNUM_RE.sub("-", project_dir)
     return os.path.expanduser(f"~/.claude/projects/{project_hash}/{session_id}.jsonl")
 
 
@@ -116,10 +126,10 @@ def _ship_impl(
     except OSError:
         return
 
-    # Advance cursor regardless of POST outcome (fire-and-forget; no retry).
-    _write_cursor(cursor_file, new_cursor)
-
     if not turns:
+        # Nothing worth shipping in this span (e.g. only non-turn records);
+        # advance past it since there is no batch to retry.
+        _write_cursor(cursor_file, new_cursor)
         return
 
     # Take the last N turns (most recent context).
@@ -133,7 +143,12 @@ def _ship_impl(
         "turns": batch,
     }
 
+    # Only advance the cursor after a successful POST. _post() raises on
+    # HTTP errors and network failures; letting that propagate (ship()
+    # catches it) keeps the cursor where it is so the next run resends
+    # this same batch instead of silently losing it.
     _post(api_url.rstrip("/"), api_key, envelope)
+    _write_cursor(cursor_file, new_cursor)
 
 
 def _extract_turn(obj: dict) -> Optional[dict]:
