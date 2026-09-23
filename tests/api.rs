@@ -31,6 +31,9 @@ fn app(hivemind_dir: PathBuf) -> axum::Router {
         workos_audience: None,
         spa_dir: None,
         cors_origins: vec![],
+        slack_client_id: None,
+        slack_client_secret: None,
+        slack_signing_secret: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -48,6 +51,9 @@ fn app_with_key(hivemind_dir: PathBuf, key: &str) -> axum::Router {
         workos_audience: None,
         spa_dir: None,
         cors_origins: vec![],
+        slack_client_id: None,
+        slack_client_secret: None,
+        slack_signing_secret: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -65,6 +71,9 @@ fn app_with_cors(hivemind_dir: PathBuf, origins: Vec<String>) -> axum::Router {
         workos_audience: None,
         spa_dir: None,
         cors_origins: origins,
+        slack_client_id: None,
+        slack_client_secret: None,
+        slack_signing_secret: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -1553,6 +1562,9 @@ async fn cors_auth_still_enforced_on_cross_origin_request() {
         workos_audience: None,
         spa_dir: None,
         cors_origins: vec![origin.to_owned()],
+        slack_client_id: None,
+        slack_client_secret: None,
+        slack_signing_secret: None,
     };
     let req = Request::builder()
         .method("GET")
@@ -1588,6 +1600,9 @@ fn app_with_admin_key(hivemind_dir: PathBuf, admin_key: &str) -> axum::Router {
         workos_audience: None,
         spa_dir: None,
         cors_origins: vec![],
+        slack_client_id: None,
+        slack_client_secret: None,
+        slack_signing_secret: None,
     };
     hivemind::api::create_router(&config)
 }

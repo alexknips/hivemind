@@ -81,6 +81,7 @@ mod auth;
 mod graph;
 mod handlers;
 mod mcp_http;
+mod slack;
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
 /// Cache key: (tenant_id, ledger_offset, alpha.to_bits())
@@ -126,6 +127,19 @@ pub struct ApiConfig {
     /// CORS headers (same-origin only). Populated from HIVEMIND_CORS_ORIGINS
     /// (comma-separated). Self-hosters are unaffected by default.
     pub cors_origins: Vec<String>,
+    /// Slack app OAuth client id (`HIVEMIND_SLACK_CLIENT_ID`). Required for
+    /// `GET /v1/slack/oauth/callback`; the Slack front door's other routes
+    /// (events, commands) don't need it — they authenticate via per-install
+    /// signing secrets instead.
+    pub slack_client_id: Option<String>,
+    /// Slack app OAuth client secret (`HIVEMIND_SLACK_CLIENT_SECRET`).
+    pub slack_client_secret: Option<String>,
+    /// App-level Slack signing secret (`HIVEMIND_SLACK_SIGNING_SECRET`) —
+    /// the one secret shown once on the Slack app's "Basic Information"
+    /// page, shared by every workspace that installs this Slack app. Used
+    /// to verify the signature-less-by-team `url_verification` handshake
+    /// and to populate new installs created via OAuth.
+    pub slack_signing_secret: Option<String>,
 }
 
 impl ApiConfig {
@@ -158,6 +172,9 @@ impl ApiConfig {
                         .collect()
                 })
                 .unwrap_or_default(),
+            slack_client_id: std::env::var("HIVEMIND_SLACK_CLIENT_ID").ok(),
+            slack_client_secret: std::env::var("HIVEMIND_SLACK_CLIENT_SECRET").ok(),
+            slack_signing_secret: std::env::var("HIVEMIND_SLACK_SIGNING_SECRET").ok(),
         }
     }
 
@@ -276,6 +293,13 @@ pub struct AppState {
     /// In-memory cache for GET /v1/decisions/map. Key: (tenant_id, ledger_offset, alpha.to_bits()).
     /// Invalidated automatically when the offset advances (new key → cache miss → recompute).
     map_cache: MapCache,
+    /// Slack app installs/queue store. `None` on the Postgres backend — see
+    /// `api::slack`'s module docs.
+    slack_store: Option<crate::slack_app::SlackAppStore>,
+    slack_client_id: Option<String>,
+    slack_client_secret: Option<String>,
+    /// App-level Slack signing secret — see `ApiConfig::slack_signing_secret`.
+    slack_app_signing_secret: Option<String>,
 }
 
 impl AppState {
@@ -306,6 +330,12 @@ impl AppState {
                 spa_dir: config.spa_dir.clone(),
                 cors_origins: config.cors_origins.clone(),
                 map_cache: Arc::new(Mutex::new(HashMap::new())),
+                // Postgres backend: no local hivemind_dir for the Slack
+                // app's JSON install/queue store — see api::slack's docs.
+                slack_store: None,
+                slack_client_id: config.slack_client_id.clone(),
+                slack_client_secret: config.slack_client_secret.clone(),
+                slack_app_signing_secret: config.slack_signing_secret.clone(),
             });
         }
 
@@ -326,6 +356,12 @@ impl AppState {
             spa_dir: config.spa_dir.clone(),
             cors_origins: config.cors_origins.clone(),
             map_cache: Arc::new(Mutex::new(HashMap::new())),
+            slack_store: Some(crate::slack_app::SlackAppStore::new(
+                config.hivemind_dir.clone(),
+            )),
+            slack_client_id: config.slack_client_id.clone(),
+            slack_client_secret: config.slack_client_secret.clone(),
+            slack_app_signing_secret: config.slack_signing_secret.clone(),
         })
     }
 }
@@ -492,7 +528,15 @@ fn build_router(state: AppState) -> Router {
             get(auth::oauth_authorization_server_handler),
         )
         // Full decision graph (read layer — no layer-3 inference)
-        .route("/v1/graph", get(graph::graph_handler));
+        .route("/v1/graph", get(graph::graph_handler))
+        // Slack front door — auth is Slack's own request signature, not
+        // extract_ctx's bearer/JWT path. See api::slack's module docs.
+        .route("/v1/slack/events", post(slack::events_handler))
+        .route("/v1/slack/commands", post(slack::commands_handler))
+        .route(
+            "/v1/slack/oauth/callback",
+            get(slack::oauth_callback_handler),
+        );
 
     #[cfg(feature = "shared-backend-postgres")]
     let router = router.route("/v1/tenants", post(auth::provision_tenant_handler));
@@ -565,6 +609,7 @@ pub async fn serve_http(state: AppState, config: &ApiConfig) -> crate::Result<()
         Arc::new(config.hivemind_dir.clone()),
         crate::events::TenantId::local(),
     );
+    slack::try_spawn_drain_loop(&state);
 
     let app = build_router(state);
     let addr = format!("0.0.0.0:{}", config.port);

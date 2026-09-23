@@ -216,6 +216,65 @@ impl SlackAppStore {
         })
     }
 
+    /// Multi-tenant drain: resolves a fresh, tenant-scoped ledger for every
+    /// queued capture individually via `resolve_ledger(&capture.team_id)`,
+    /// instead of writing the whole queue into one caller-supplied ledger
+    /// like [`Self::drain_queue`] does. Used by the HTTP API's background
+    /// drain loop, which serves many Slack workspaces — each mapped to its
+    /// own HiveMind tenant — from a single queue file. A capture whose
+    /// team_id fails to resolve (unknown/unregistered tenant) is recorded as
+    /// a failed attempt and stays queued, exactly like any other
+    /// `process_capture` error.
+    pub(crate) fn drain_queue_multi_tenant<L: EventLedger>(
+        &self,
+        resolve_ledger: impl Fn(&str) -> Result<L>,
+    ) -> Result<SlackDrainReport> {
+        let mut events = self.load_queue()?;
+        let total = events.len();
+        let mut remaining = Vec::new();
+        let mut processed = Vec::new();
+        let mut failed = Vec::new();
+
+        for mut event in events.drain(..) {
+            let outcome = match resolve_ledger(&event.capture.team_id) {
+                Ok(ledger) => process_capture(&ledger, self, &event.capture),
+                Err(error) => Err(error),
+            };
+            match outcome {
+                Ok(outcome) => {
+                    processed.push(SlackProcessedEvent {
+                        queue_id: event.id,
+                        decision_id: outcome.decision_id().to_owned(),
+                        already_imported: matches!(
+                            outcome,
+                            SlackIngestOutcome::AlreadyImported { .. }
+                        ),
+                    });
+                }
+                Err(error) => {
+                    event.attempts = event.attempts.saturating_add(1);
+                    event.last_error = Some(error.to_string());
+                    failed.push(SlackFailedEvent {
+                        queue_id: event.id.clone(),
+                        attempts: event.attempts,
+                        error: error.to_string(),
+                    });
+                    remaining.push(event);
+                }
+            }
+        }
+
+        self.save_queue(&remaining)?;
+        Ok(SlackDrainReport {
+            queued_before: total,
+            processed_count: processed.len(),
+            failed_count: failed.len(),
+            queued_after: remaining.len(),
+            processed,
+            failed,
+        })
+    }
+
     fn load_queue(&self) -> Result<Vec<QueuedSlackEvent>> {
         let path = self.queue_path();
         if !path.exists() {
@@ -268,6 +327,10 @@ pub enum SlackCaptureSurface {
     SlashCommand,
     MessageAction,
     Reaction,
+    /// Auto-detected Decision:/Rationale:/Options: markers in an `app_mention`
+    /// or `message.channels` Events API callback — the HTTP front door's own
+    /// capture surface, distinct from the modal-driven `MessageAction` shortcut.
+    EventMention,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -401,6 +464,7 @@ pub fn slack_app_manifest(
                     "commands",
                     "chat:write",
                     "reactions:read",
+                    "app_mentions:read",
                     "channels:history",
                     "groups:history",
                     "links:read"
@@ -414,7 +478,7 @@ pub fn slack_app_manifest(
             },
             "event_subscriptions": {
                 "request_url": event_request_url,
-                "bot_events": ["reaction_added"]
+                "bot_events": ["app_mention", "message.channels", "reaction_added"]
             },
             "org_deploy_enabled": false,
             "socket_mode_enabled": false,
@@ -427,7 +491,8 @@ pub fn slack_oauth_install_url(client_id: &str, redirect_uri: &str, state: &str)
     let client_id = non_empty("client_id", client_id)?;
     let redirect_uri = non_empty("redirect_uri", redirect_uri)?;
     let state = non_empty("state", state)?;
-    let scopes = "commands,chat:write,reactions:read,channels:history,groups:history,links:read";
+    let scopes =
+        "commands,chat:write,reactions:read,app_mentions:read,channels:history,groups:history,links:read";
     Ok(format!(
         "https://slack.com/oauth/v2/authorize?client_id={}&scope={}&redirect_uri={}&state={}",
         percent_encode(client_id),
@@ -859,6 +924,7 @@ fn surface_name(surface: SlackCaptureSurface) -> &'static str {
         SlackCaptureSurface::SlashCommand => "slash_command",
         SlackCaptureSurface::MessageAction => "message_action",
         SlackCaptureSurface::Reaction => "reaction",
+        SlackCaptureSurface::EventMention => "event_mention",
     }
 }
 

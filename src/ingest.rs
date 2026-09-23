@@ -112,17 +112,21 @@ fn validate_thread(thread: &SlackThreadFixture) -> Result<()> {
     Ok(())
 }
 
+/// `pub(crate)`: reused by the HTTP Slack events front door
+/// ([`crate::api`]) to extract decision markers from a single live Slack
+/// event without requiring the literal mention-text gate that
+/// [`extract_slack_decision_draft`] applies for thread-fixture imports.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SlackDecisionMarkers {
-    actor_id: String,
-    title: String,
-    rationale: String,
-    topic_keys: Vec<String>,
-    option_labels: Vec<String>,
-    chosen_option_label: Option<String>,
+pub(crate) struct SlackDecisionMarkers {
+    pub(crate) actor_id: String,
+    pub(crate) title: String,
+    pub(crate) rationale: String,
+    pub(crate) topic_keys: Vec<String>,
+    pub(crate) option_labels: Vec<String>,
+    pub(crate) chosen_option_label: Option<String>,
 }
 
-fn parse_decision_markers(thread: &SlackThreadFixture) -> Result<SlackDecisionMarkers> {
+pub(crate) fn parse_decision_markers(thread: &SlackThreadFixture) -> Result<SlackDecisionMarkers> {
     let mut actor_user_id = None;
     let mut title = None;
     let mut rationale = None;

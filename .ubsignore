@@ -37,6 +37,7 @@ src/commands/tests.rs
 src/mcp/tests.rs
 src/events/tests.rs
 src/slack_app/tests.rs
+src/api/slack/tests.rs
 src/ledger/sqlite/tests.rs
 src/ledger/postgres/tests.rs
 src/ledger/memory/tests.rs

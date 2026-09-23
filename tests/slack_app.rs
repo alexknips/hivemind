@@ -33,7 +33,7 @@ fn slack_app_installs_queues_captures_and_queries_with_citations() -> TestResult
     );
     assert_eq!(
         manifest["settings"]["event_subscriptions"]["bot_events"],
-        serde_json::json!(["reaction_added"])
+        serde_json::json!(["app_mention", "message.channels", "reaction_added"])
     );
 
     let bot_token = generated_test_secret("bot");

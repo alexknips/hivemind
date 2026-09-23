@@ -103,3 +103,51 @@ impl<L: EventLedger + ?Sized> EventLedger for TenantScopedLedger<'_, L> {
         self.ledger.latest_offset_for_tenant(&self.tenant_id)
     }
 }
+
+/// Like [`TenantScopedLedger`] but owns its base ledger instead of
+/// borrowing it. `TenantScopedLedger` needs a `&'a L` that outlives its own
+/// use, which doesn't fit a resolver closure that opens a fresh ledger
+/// value per call and must return it (e.g. the Slack multi-tenant drain
+/// loop in `api::slack`, which resolves one tenant-scoped ledger per queued
+/// capture). Same override behavior: every `EventLedger` call is pinned to
+/// `tenant_id` regardless of what the caller passes.
+#[derive(Debug)]
+pub struct TenantScopedOwnedLedger<L: EventLedger> {
+    ledger: L,
+    tenant_id: TenantId,
+}
+
+impl<L: EventLedger> TenantScopedOwnedLedger<L> {
+    pub fn new(ledger: L, tenant_id: TenantId) -> Self {
+        Self { ledger, tenant_id }
+    }
+}
+
+impl<L: EventLedger> EventLedger for TenantScopedOwnedLedger<L> {
+    fn append_for_tenant(&self, _tenant_id: &TenantId, event: Event) -> Result<EventId> {
+        self.ledger.append_for_tenant(&self.tenant_id, event)
+    }
+
+    fn read_for_tenant(
+        &self,
+        _tenant_id: &TenantId,
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
+        self.ledger.read_for_tenant(&self.tenant_id, offset, limit)
+    }
+
+    fn replay_from_for_tenant(
+        &self,
+        _tenant_id: &TenantId,
+        offset: EventId,
+        callback: &mut dyn FnMut(&Event) -> Result<()>,
+    ) -> Result<()> {
+        self.ledger
+            .replay_from_for_tenant(&self.tenant_id, offset, callback)
+    }
+
+    fn latest_offset_for_tenant(&self, _tenant_id: &TenantId) -> Result<EventId> {
+        self.ledger.latest_offset_for_tenant(&self.tenant_id)
+    }
+}

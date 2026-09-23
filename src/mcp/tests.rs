@@ -930,6 +930,9 @@ mod transport_parity {
             workos_audience: None,
             spa_dir: None,
             cors_origins: vec![],
+            slack_client_id: None,
+            slack_client_secret: None,
+            slack_signing_secret: None,
         };
         crate::api::create_router(&config)
     }

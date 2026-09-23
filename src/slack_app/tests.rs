@@ -1,8 +1,8 @@
 // Parent module gates this file with #[cfg(test)]; repeat the marker so UBS can filter test-only assertions.
 #[cfg(test)]
 use super::*;
-use crate::events::EventSource;
-use crate::ledger::InMemoryEventLedger;
+use crate::events::{EventSource, TenantId};
+use crate::ledger::{InMemoryEventLedger, TenantScopedLedger};
 
 #[test]
 fn oauth_url_escapes_query_values() {
@@ -75,6 +75,94 @@ fn reaction_capture_requires_configured_emoji() {
 
     capture.reaction_emoji = Some("hivemind".to_owned());
     process_capture(&ledger, &store, &capture).expect("configured emoji captures");
+
+    let _ = fs::remove_dir_all(scratch);
+}
+
+/// Guards the multi-tenant drain path used by the HTTP API's background
+/// drain loop (`api::slack::try_spawn_drain_loop`): each queued capture
+/// must be resolved to — and written into — its OWN team's ledger, never
+/// another team's. `process_capture`/`import_slack_thread` write via
+/// `Commands::new_with_provenance`, whose `CommandContext` defaults to
+/// `TenantId::local()`; without a per-capture `TenantScopedLedger` wrapper
+/// around whatever ledger the resolver returns, this would silently
+/// collapse every capture into one tenant regardless of `team_id`.
+#[test]
+fn drain_queue_multi_tenant_resolves_each_capture_to_its_own_tenant() {
+    let scratch = std::env::temp_dir().join(format!("hivemind-slack-app-{}", Uuid::new_v4()));
+    let store = SlackAppStore::new(&scratch);
+    store
+        .install_workspace(SlackWorkspaceInstall {
+            team_id: "TA".to_owned(),
+            team_name: "Team A".to_owned(),
+            bot_token: generated_test_secret("bot"),
+            signing_secret: generated_test_secret("signing"),
+            hivemind_url: "http://127.0.0.1:8787".to_owned(),
+            reaction_emoji: "hivemind".to_owned(),
+            actor_mappings: BTreeMap::new(),
+        })
+        .expect("install A succeeds");
+    store
+        .install_workspace(SlackWorkspaceInstall {
+            team_id: "TB".to_owned(),
+            team_name: "Team B".to_owned(),
+            bot_token: generated_test_secret("bot"),
+            signing_secret: generated_test_secret("signing"),
+            hivemind_url: "http://127.0.0.1:8787".to_owned(),
+            reaction_emoji: "hivemind".to_owned(),
+            actor_mappings: BTreeMap::new(),
+        })
+        .expect("install B succeeds");
+
+    let mut capture_a = capture();
+    capture_a.team_id = "TA".to_owned();
+    capture_a.permalink = "https://example.slack.com/archives/CA/pA".to_owned();
+    store.enqueue_capture(capture_a).expect("enqueue A");
+
+    let mut capture_b = capture();
+    capture_b.team_id = "TB".to_owned();
+    capture_b.permalink = "https://example.slack.com/archives/CB/pB".to_owned();
+    store.enqueue_capture(capture_b).expect("enqueue B");
+
+    let ledger_a = InMemoryEventLedger::default();
+    let ledger_b = InMemoryEventLedger::default();
+
+    let report = store
+        .drain_queue_multi_tenant(|team_id| {
+            let tenant_id = TenantId::new(team_id)
+                .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+            match team_id {
+                "TA" => Ok(TenantScopedLedger::new(&ledger_a, tenant_id)),
+                "TB" => Ok(TenantScopedLedger::new(&ledger_b, tenant_id)),
+                other => panic!("unexpected team_id in test: {other}"),
+            }
+        })
+        .expect("multi-tenant drain succeeds");
+
+    assert_eq!(report.processed_count, 2);
+    assert_eq!(report.failed_count, 0);
+    assert_eq!(report.queued_after, 0);
+
+    let events_a = ledger_a
+        .read_for_tenant(&TenantId::new("TA").unwrap(), 0, 100)
+        .expect("ledger A read");
+    let events_b = ledger_b
+        .read_for_tenant(&TenantId::new("TB").unwrap(), 0, 100)
+        .expect("ledger B read");
+    assert!(events_a
+        .iter()
+        .any(|event| event.event_type == EventType::DecisionProposed));
+    assert!(events_b
+        .iter()
+        .any(|event| event.event_type == EventType::DecisionProposed));
+
+    // Cross-tenant isolation: neither ledger saw the other team's capture.
+    assert!(events_a.iter().all(
+        |event| event.source_ref.as_deref() != Some("https://example.slack.com/archives/CB/pB")
+    ));
+    assert!(events_b.iter().all(
+        |event| event.source_ref.as_deref() != Some("https://example.slack.com/archives/CA/pA")
+    ));
 
     let _ = fs::remove_dir_all(scratch);
 }
