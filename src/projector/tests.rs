@@ -1124,6 +1124,98 @@ fn classified_batch_decision_projects_node_and_actor_edges() -> Result<()> {
 }
 
 #[test]
+fn classified_batch_under_agent_token_credits_named_human_not_the_token() -> Result<()> {
+    // hivemind-zdsh.19, acceptance clause 2: a batch submitted under an agent token
+    // (`agent:<tool>:<name>`) in which a human answers must yield a decision credited
+    // to that human. The token's agent identity is provenance of the session
+    // (INITIATED_BY / PARTICIPATED_BY), never the decider (PROPOSED_BY). The
+    // classifier's named-actor extraction is what sets `actor_id`; this pins that the
+    // projection keeps the two roles apart.
+    let agent_token = "agent:gastown:crew";
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:agent-token",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [{
+                "kind": "decision",
+                "title": "Ship the cell behind a feature flag",
+                "rationale": "Alex answered the agent's question: flag first, then default on",
+                "topic_keys": ["rollout"],
+                "evidence_ids": [],
+                "options": null,
+                "chosen_option": null,
+                "extraction_confidence": 0.9,
+                "expressed_confidence": null,
+                "supersedes_id": null,
+                "premised_on_ids": [],
+                "supports_ids": [],
+                "refutes_ids": [],
+                "actor_id": "human:alex@example.com",
+                "accepted_by": null,
+                "rejected_by": null,
+                "blocked_actor_id": null,
+                "decision_id": null,
+                "participants": [agent_token],
+                "session_initiator": agent_token
+            }]
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let decision_id = graph
+        .nodes()
+        .keys()
+        .find(|(kind, _)| *kind == NodeKind::Decision)
+        .map(|(_, id)| id.clone())
+        .expect("decision node from capture"); // ubs:ignore
+
+    let edges = graph.edges();
+    assert!(
+        // ubs:ignore
+        edges.contains_key(&(
+            RelationKind::ProposedBy,
+            decision_id.clone(),
+            "human:alex@example.com".to_owned()
+        )),
+        "the human who answered must be credited as proposer"
+    );
+    assert!(
+        // ubs:ignore
+        !edges.contains_key(&(
+            RelationKind::ProposedBy,
+            decision_id.clone(),
+            agent_token.to_owned()
+        )),
+        "the agent token must not be credited as proposer"
+    );
+    assert!(
+        // ubs:ignore
+        edges.contains_key(&(
+            RelationKind::InitiatedBy,
+            decision_id.clone(),
+            agent_token.to_owned()
+        )),
+        "the agent token is still recorded as the session initiator"
+    );
+    assert!(
+        // ubs:ignore
+        edges.contains_key(&(
+            RelationKind::ParticipatedBy,
+            decision_id,
+            agent_token.to_owned()
+        )),
+        "the agent token is still recorded as a session participant"
+    );
+    Ok(())
+}
+
+#[test]
 fn classified_batch_decision_supersedes_edge() -> Result<()> {
     let ledger = InMemoryEventLedger::new();
     // Seed the old decision so ensure_node_reference finds it.
