@@ -23,7 +23,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use hivemind::commands::{Commands, DecisionProposalInput, SupersedeInput};
+use hivemind::commands::{Commands, DecisionProposalInput, Grounding, SupersedeInput};
 use hivemind::connector;
 use hivemind::events::{
     CaptureItem, DecisionScoredPayload, EventType, ImportanceFactors, IngestTurn,
@@ -57,6 +57,8 @@ fn every_write_path_event_validates_against_its_schema() {
     // plus relation.added for has_option/chose/assumes/based_on --
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: actor,
             title: "Use option A",
             rationale: "Option A is the simplest fit for this contract test scenario.",
@@ -79,6 +81,8 @@ fn every_write_path_event_validates_against_its_schema() {
         .expect("record rejected option");
     let rejected_decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: actor,
             title: "A decision someone disagrees with",
             rationale: "This decision exists so the test can exercise disagreement.",
@@ -105,6 +109,8 @@ fn every_write_path_event_validates_against_its_schema() {
         .expect("record old option");
     let old_decision_id = commands
         .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
             actor_id: actor,
             title: "An old decision",
             rationale: "This decision exists so the test can exercise supersession.",
