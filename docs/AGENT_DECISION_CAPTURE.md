@@ -236,6 +236,31 @@ worker exits immediately when `ANTHROPIC_API_KEY` is absent — the rest of
 the system stays correct without it. See
 [`CAPTURE_CLASSIFIER.md`](CAPTURE_CLASSIFIER.md) for the classifier design.
 
+**Agent-shaped tokens**: `POST /v1/users` (and `.../tokens`) always mint a
+`human:<email>` token, since agents aren't users with an email or role. An
+admin mints a token bound directly to an agent identity instead, with
+`POST /v1/agent-tokens` (admin-gated, same as `/v1/users`):
+
+```bash
+curl -s -X POST "$HIVEMIND_API_URL/v1/agent-tokens" \
+  -H "Authorization: Bearer $HIVEMIND_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"agent_tool": "claude", "agent_name": "crew-gastown", "label": "gastown crew pane"}'
+```
+
+Returns `{"actor_id": "agent:claude:crew-gastown", "token_id": ..., "token_secret": "hm_tk_..."}`.
+Every write authenticated with that token — including `/v1/ingest` — is
+recorded with `actor_id=agent:claude:crew-gastown`, never a `human:...`
+identity (hivemind-zdsh.19). `actor_id` always comes from the resolved
+token record, never the `X-HiveMind-Actor` header — a caller cannot spoof a
+different actor by setting the header.
+
+This is distinct from crediting *who answered within a transcript*: the
+classifier's `actor_id`/`decided_by` extraction (only when a decider is
+explicitly named in the text) still attributes individual decisions to a
+human who spoke up inside an agent-token session, separately from the
+session's own agent actor.
+
 ## Keyless classification (Worker A)
 
 `ANTHROPIC_API_KEY` is optional. When it is absent, the server-side background

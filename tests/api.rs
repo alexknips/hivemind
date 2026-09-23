@@ -2284,3 +2284,178 @@ async fn list_users_returns_created_users() {
         "y@y.com must be listed"
     ); // ubs:ignore
 }
+
+// ---------------------------------------------------------------------------
+// Agent-token minting (hivemind-zdsh.19): an admin can mint a token bound
+// directly to an agent identity (agent:<tool>:<name>), distinct from
+// create_user's human:<email> shape.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn mint_agent_token_writes_show_agent_actor() {
+    let dir = test_ledger_dir();
+    let admin_key = "agent-token-admin";
+    let app = app_with_admin_key(dir, admin_key);
+
+    let (status, body) = call(
+        app.clone(),
+        admin_post(
+            "/v1/agent-tokens",
+            serde_json::json!({"agent_tool": "claude", "agent_name": "gastown-crew"}),
+            admin_key,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}"); // ubs:ignore
+    assert_eq!(body["actor_id"], "agent:claude:gastown-crew"); // ubs:ignore
+    let token = body["token_secret"].as_str().unwrap().to_owned();
+    assert!(token.starts_with("hm_tk_"), "token must have hm_tk_ prefix"); // ubs:ignore
+
+    // A decision captured with this token — even with a spoofed
+    // X-HiveMind-Actor header — must be credited to the minted agent
+    // identity, never the header and never a human:<email> shape.
+    let (status, dec) = call(
+        app.clone(),
+        authed_post(
+            "/v1/decisions",
+            serde_json::json!({
+                "title": "Agent token actor test",
+                "rationale": "verifying agent tokens read as agents",
+                "topic_keys": ["auth"],
+                "chosen_option_label": "a",
+                "options": [{"label": "a", "description": "option a"}]
+            }),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{dec}"); // ubs:ignore
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/decisions/search?q=Agent+token&actor_id=agent:claude:gastown-crew")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = call(app.clone(), req).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    let hits = body["data"]["items"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert!(
+        hits > 0,
+        "decision must be found under the minted agent actor, got: {body}"
+    ); // ubs:ignore
+
+    // Neither the spoofed header actor nor a human:<email> shape should have
+    // been recorded.
+    let spoofed_req = Request::builder()
+        .method("GET")
+        .uri("/v1/decisions/search?q=Agent+token&actor_id=agent:evil:spoofer")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (_, spoofed_body) = call(app.clone(), spoofed_req).await;
+    let spoofed_hits = spoofed_body["data"]["items"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(
+        spoofed_hits, 0,
+        "spoofed actor must not find the decision, got: {spoofed_body}"
+    ); // ubs:ignore
+}
+
+#[tokio::test]
+async fn mint_agent_token_requires_admin_key() {
+    let dir = test_ledger_dir();
+    let app = app_with_admin_key(dir, "real-admin");
+
+    let (status, body) = call(
+        app.clone(),
+        admin_post(
+            "/v1/agent-tokens",
+            serde_json::json!({"agent_tool": "claude", "agent_name": "gastown-crew"}),
+            "wrong-key",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn mint_agent_token_rejects_empty_tool_or_name() {
+    let dir = test_ledger_dir();
+    let admin_key = "agent-token-admin-2";
+    let app = app_with_admin_key(dir, admin_key);
+
+    let (status, body) = call(
+        app.clone(),
+        admin_post(
+            "/v1/agent-tokens",
+            serde_json::json!({"agent_tool": "", "agent_name": "gastown-crew"}),
+            admin_key,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}"); // ubs:ignore
+
+    let (status, body) = call(
+        app.clone(),
+        admin_post(
+            "/v1/agent-tokens",
+            serde_json::json!({"agent_tool": "claude", "agent_name": ""}),
+            admin_key,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn mint_agent_token_can_be_revoked() {
+    let dir = test_ledger_dir();
+    let admin_key = "agent-token-admin-3";
+    let app = app_with_admin_key(dir, admin_key);
+
+    let (_, body) = call(
+        app.clone(),
+        admin_post(
+            "/v1/agent-tokens",
+            serde_json::json!({"agent_tool": "codex", "agent_name": "gastown-polecat"}),
+            admin_key,
+        ),
+    )
+    .await;
+    let token = body["token_secret"].as_str().unwrap().to_owned();
+    let token_id = body["token_id"].as_str().unwrap().to_owned();
+
+    // Agent tokens have no associated user_id; revoke via a nil user_id path
+    // component (the handler validates token_id/tenant_id, not user_id).
+    let revoke_req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/users/{}/tokens/{token_id}", uuid::Uuid::nil()))
+        .header("authorization", format!("Bearer {admin_key}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(revoke_req).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::NO_CONTENT,
+        "revoke must succeed for an agent token"
+    ); // ubs:ignore
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/decisions/search?q=test")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = call(app.clone(), req).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "revoked agent token must be rejected"
+    ); // ubs:ignore
+}

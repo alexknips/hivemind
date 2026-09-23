@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use crate::error::LedgerError;
 use crate::events::{Event, EventId, TenantId};
+use crate::util::require_agent_actor_id;
 use crate::Result;
 
 use super::backend_error::{storage_error, unknown_tenant_error};
@@ -413,7 +414,9 @@ mod tests;
 pub const SQLITE_TOKEN_PREFIX: &str = "hm_tk_";
 
 pub struct SqliteResolvedToken {
-    pub user_id: Uuid,
+    /// `None` for an agent token minted with no associated `hm_users` row
+    /// (`mint_agent_token`).
+    pub user_id: Option<Uuid>,
     pub tenant_id: String,
     pub actor_id: String,
 }
@@ -424,6 +427,14 @@ pub struct SqliteProvisionedUser {
     pub display_name: String,
     pub role: String,
     pub token_id: Uuid,
+    pub token_secret: String,
+}
+
+/// A bearer token minted directly against an agent identity, with no
+/// associated `hm_users` row.
+pub struct SqliteProvisionedAgentToken {
+    pub token_id: Uuid,
+    pub actor_id: String,
     pub token_secret: String,
 }
 
@@ -502,6 +513,39 @@ impl SqliteUserStore {
             display_name: display_name.to_owned(),
             role: role.to_owned(),
             token_id,
+            token_secret,
+        })
+    }
+
+    /// Mint a bearer token bound directly to an agent identity
+    /// (`agent:<tool>:<name>`), with no associated `hm_users` row. Lets an
+    /// admin provision automation/role tokens that read as agents in the
+    /// ledger instead of being forced through `create_user`'s
+    /// `human:<email>` shape (hivemind-zdsh.19).
+    pub fn mint_agent_token(
+        &self,
+        tenant_id: &str,
+        actor_id: &str,
+        label: Option<&str>,
+    ) -> crate::Result<SqliteProvisionedAgentToken> {
+        require_agent_actor_id(actor_id)?;
+
+        let (token_secret, token_hash) = sqlite_generate_token_secret();
+        let token_id = Uuid::new_v4();
+
+        let conn = self.connect()?;
+        retry_sqlite_lock(|| {
+            conn.execute(
+                "INSERT INTO hm_tokens (token_id, token_hash, tenant_id, actor_id, label)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![token_id.to_string(), token_hash, tenant_id, actor_id, label],
+            )
+        })
+        .map_err(storage_error)?;
+
+        Ok(SqliteProvisionedAgentToken {
+            token_id,
+            actor_id: actor_id.to_owned(),
             token_secret,
         })
     }
@@ -593,7 +637,7 @@ impl SqliteUserStore {
                  WHERE t.token_hash = ?1 AND t.revoked_at IS NULL",
                 params![token_hash],
                 |r| {
-                    let uid_str: String = r.get(1)?;
+                    let uid_str: Option<String> = r.get(1)?;
                     Ok((r.get::<_, String>(0)?, uid_str, r.get::<_, String>(2)?))
                 },
             )
@@ -601,14 +645,13 @@ impl SqliteUserStore {
         })
         .map_err(storage_error)?;
 
-        Ok(row.and_then(|(tenant_id, uid_str, actor_id)| {
-            Uuid::parse_str(&uid_str)
-                .ok()
-                .map(|user_id| SqliteResolvedToken {
-                    tenant_id,
-                    user_id,
-                    actor_id,
-                })
+        Ok(row.map(|(tenant_id, uid_str, actor_id)| {
+            let user_id = uid_str.and_then(|s| Uuid::parse_str(&s).ok());
+            SqliteResolvedToken {
+                tenant_id,
+                user_id,
+                actor_id,
+            }
         }))
     }
 }

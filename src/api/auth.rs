@@ -528,6 +528,81 @@ pub(super) async fn create_user_handler(
     ApiError::internal("user store not initialized").into_response()
 }
 
+/// An agent identity has no email or role -- `agent_tool`/`agent_name` compose
+/// directly into `actor_id=agent:<tool>:<name>`, never `human:<email>` (which
+/// `create_user`/`mint_user_token` always produce; hivemind-zdsh.19).
+#[derive(Deserialize)]
+pub(super) struct CreateAgentTokenRequest {
+    agent_tool: String,
+    agent_name: String,
+    label: Option<String>,
+    tenant_id: Option<String>,
+}
+
+pub(super) async fn create_agent_token_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    payload: std::result::Result<Json<CreateAgentTokenRequest>, JsonRejection>,
+) -> Response {
+    if let Err(r) = check_admin_key(&state, &headers) {
+        return r;
+    }
+    let req = match payload {
+        Ok(Json(r)) => r,
+        Err(e) => return ApiError::validation(e.to_string()).into_response(),
+    };
+    let agent_tool = req.agent_tool.trim();
+    let agent_name = req.agent_name.trim();
+    if agent_tool.is_empty() || agent_name.is_empty() {
+        return ApiError::validation("agent_tool and agent_name must not be empty").into_response();
+    }
+    let actor_id = format!("agent:{agent_tool}:{agent_name}");
+
+    // Postgres path
+    #[cfg(feature = "shared-backend-postgres")]
+    if let Some(ref store) = state.tenant_store {
+        let tenant_id = req.tenant_id.clone().unwrap_or_else(|| "local".to_owned());
+        let store = Arc::clone(store);
+        let label = req.label.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let t = store
+                .mint_agent_token(&tenant_id, &actor_id, label.as_deref())
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            Ok::<_, ApiError>(serde_json::json!({
+                "actor_id": t.actor_id,
+                "token_id": t.token_id,
+                "token_secret": t.token_secret,
+            }))
+        })
+        .await;
+        return respond(result, StatusCode::CREATED);
+    }
+
+    // SQLite path
+    if let Some(ref user_store) = state.sqlite_user_store {
+        let tenant_id = req
+            .tenant_id
+            .clone()
+            .unwrap_or_else(|| crate::events::TenantId::LOCAL_VALUE.to_owned());
+        let user_store = Arc::clone(user_store);
+        let label = req.label.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let t = user_store
+                .mint_agent_token(&tenant_id, &actor_id, label.as_deref())
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+            Ok::<_, ApiError>(serde_json::json!({
+                "actor_id": t.actor_id,
+                "token_id": t.token_id,
+                "token_secret": t.token_secret,
+            }))
+        })
+        .await;
+        return respond(result, StatusCode::CREATED);
+    }
+
+    ApiError::internal("user store not initialized").into_response()
+}
+
 pub(super) async fn list_users_handler(
     State(state): State<AppState>,
     headers: HeaderMap,

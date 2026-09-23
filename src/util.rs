@@ -24,3 +24,61 @@ pub(crate) fn require_valid_actor_id(actor_id: &str) -> Result<()> {
     }
     Ok(())
 }
+
+/// The agent-token provisioning path (hivemind-zdsh.19) mints identities directly,
+/// with no `hm_users` row to derive an email from -- unlike `create_user`/
+/// `mint_user_token`, which always produce `human:<email>`. Require the
+/// `agent:<tool>:<name>` shape here so that path can't be used to mint a
+/// human-shaped or otherwise untyped identity.
+pub(crate) fn require_agent_actor_id(actor_id: &str) -> Result<()> {
+    require_valid_actor_id(actor_id)?;
+    let mut parts = actor_id.trim().splitn(3, ':');
+    let scheme = parts.next().unwrap_or_default();
+    let tool = parts.next().unwrap_or_default();
+    let name = parts.next().unwrap_or_default();
+    if scheme != "agent" || tool.is_empty() || name.is_empty() {
+        return Err(CommandError::Validation(format!(
+            "actor_id must be shaped agent:<tool>:<name> ({actor_id})"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn require_agent_actor_id_accepts_well_shaped_id() {
+        assert!(require_agent_actor_id("agent:claude:gastown-crew").is_ok());
+    }
+
+    #[test]
+    fn require_agent_actor_id_rejects_human_shaped_id() {
+        assert!(require_agent_actor_id("human:alex@example.com").is_err());
+    }
+
+    #[test]
+    fn require_agent_actor_id_rejects_missing_name() {
+        assert!(require_agent_actor_id("agent:claude").is_err());
+        assert!(require_agent_actor_id("agent:claude:").is_err());
+    }
+
+    #[test]
+    fn require_agent_actor_id_rejects_missing_tool() {
+        assert!(require_agent_actor_id("agent::hook").is_err());
+    }
+
+    #[test]
+    fn require_agent_actor_id_rejects_bare_uuid() {
+        assert!(require_agent_actor_id("550e8400-e29b-41d4-a716-446655440000").is_err());
+    }
+
+    #[test]
+    fn require_agent_actor_id_accepts_uuid_shaped_name_segment() {
+        assert!(
+            require_agent_actor_id("agent:claude:550e8400-e29b-41d4-a716-446655440000").is_ok()
+        );
+    }
+}

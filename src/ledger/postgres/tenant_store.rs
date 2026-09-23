@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::error::LedgerError;
+use crate::util::require_agent_actor_id;
 use crate::Result;
 
 use super::super::backend_error::{storage_error, unknown_tenant_error};
@@ -29,6 +30,15 @@ pub struct ResolvedToken {
     pub tenant_id: String,
     pub user_id: Option<Uuid>,
     pub actor_id: String,
+}
+
+/// A bearer token minted directly against an agent identity, with no
+/// associated `hm_users` row.
+pub struct ProvisionedAgentToken {
+    pub token_id: Uuid,
+    pub actor_id: String,
+    /// Full bearer secret — `hm_tk_<64-hex>`. Returned ONCE, never stored.
+    pub token_secret: String,
 }
 
 /// A newly created user with their first bearer token.
@@ -346,6 +356,39 @@ impl TenantStore {
             display_name: display_name.to_owned(),
             role: role.to_owned(),
             token_id,
+            token_secret,
+        })
+    }
+
+    /// Mint a bearer token bound directly to an agent identity
+    /// (`agent:<tool>:<name>`), with no associated `hm_users` row. Lets an
+    /// admin provision automation/role tokens that read as agents in the
+    /// ledger instead of being forced through `create_user`'s
+    /// `human:<email>` shape (hivemind-zdsh.19).
+    pub fn mint_agent_token(
+        &self,
+        tenant_id: &str,
+        actor_id: &str,
+        label: Option<&str>,
+    ) -> Result<ProvisionedAgentToken> {
+        require_agent_actor_id(actor_id)?;
+
+        let (token_secret, token_hash) = generate_token_secret();
+        let mut client = self.pool.get().map_err(storage_error)?;
+
+        let token_id: Uuid = client
+            .query_one(
+                "INSERT INTO hm_tokens (token_hash, tenant_id, actor_id, label)
+                 VALUES ($1, $2, $3, $4)
+                 RETURNING token_id",
+                &[&token_hash, &tenant_id, &actor_id, &label],
+            )
+            .map_err(storage_error)?
+            .get(0);
+
+        Ok(ProvisionedAgentToken {
+            token_id,
+            actor_id: actor_id.to_owned(),
             token_secret,
         })
     }

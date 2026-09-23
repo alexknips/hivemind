@@ -578,7 +578,8 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/v1/users/{user_id}/tokens/{token_id}",
             delete(auth::revoke_token_handler),
-        );
+        )
+        .route("/v1/agent-tokens", post(auth::create_agent_token_handler));
 
     // SPA static serving: API routes above take precedence via axum route order.
     // Non-API paths fall back to the SPA's index.html for client-side routing.

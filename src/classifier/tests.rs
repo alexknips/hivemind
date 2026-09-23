@@ -200,3 +200,40 @@ fn pending_batch_filter_no_classified_returns_all() {
 
     assert_eq!(pending.len(), 2);
 }
+
+// --- session_agent_actor ---
+
+#[test]
+fn session_agent_actor_prefers_already_agent_shaped_token() {
+    // A token minted through the agent-token path (hivemind-zdsh.19) is already
+    // the stable agent identity; use it as-is instead of synthesizing another one.
+    assert_eq!(
+        session_agent_actor("agent:gastown:crew", "claude"),
+        Some("agent:gastown:crew".to_owned())
+    );
+}
+
+#[test]
+fn session_agent_actor_falls_back_to_tool_for_human_token() {
+    // A human's own personal token still runs an agent tool on their behalf;
+    // that tool needs an identity distinct from the human (hivemind-zdsh.19).
+    assert_eq!(
+        session_agent_actor("human:alex@example.com", "claude"),
+        Some("agent:claude:hook".to_owned())
+    );
+}
+
+#[test]
+fn session_agent_actor_is_stable_across_different_session_ids() {
+    // Same physical agent, two different (synthetic) runs -- the identity must
+    // not depend on session_id at all, or the same agent looks like a different
+    // actor after every restart (hivemind-zdsh.9).
+    let first = session_agent_actor("human:alex@example.com", "codex");
+    let second = session_agent_actor("human:alex@example.com", "codex");
+    assert_eq!(first, second);
+}
+
+#[test]
+fn session_agent_actor_none_when_no_tool_and_not_agent_token() {
+    assert_eq!(session_agent_actor("human:alex@example.com", ""), None);
+}

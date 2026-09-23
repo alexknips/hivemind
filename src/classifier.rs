@@ -434,7 +434,28 @@ struct BatchInfo {
     /// actor_id from the IngestBatchReceived event (the batch submitter).
     actor_id: String,
     agent_tool: String,
-    session_id: String,
+}
+
+/// The session's own agent actor, distinct from whoever (human or agent) actually
+/// answered within the transcript — `CaptureItem.actor_id`, extracted by the
+/// classifier only when explicitly named in the text, is what credits the latter.
+///
+/// Prefers `batch_actor_id` when it is already agent-shaped: once a token is
+/// minted through the agent-token path (`agent:<tool>:<name>`, hivemind-zdsh.19)
+/// it IS the stable agent identity and needs no further synthesis. Otherwise
+/// falls back to a per-tool identity. Never folds the raw per-run session id into
+/// this id: that makes the same physical agent look like a different actor after
+/// every restart (hivemind-zdsh.9), which is exactly the failure this exists to
+/// avoid.
+fn session_agent_actor(batch_actor_id: &str, agent_tool: &str) -> Option<String> {
+    if batch_actor_id.starts_with("agent:") {
+        return Some(batch_actor_id.to_owned());
+    }
+    let agent_tool = agent_tool.trim();
+    if agent_tool.is_empty() {
+        return None;
+    }
+    Some(format!("agent:{agent_tool}:hook"))
 }
 
 async fn classify_pending_batches(
@@ -460,12 +481,7 @@ async fn classify_pending_batches(
             Some(batch.actor_id.clone())
         };
 
-        // Build the agent actor ID from the session; empty session_id means no agent session.
-        let agent_actor_id: Option<String> = if batch.session_id.is_empty() {
-            None
-        } else {
-            Some(format!("agent:{}:{}", batch.agent_tool, batch.session_id))
-        };
+        let agent_actor_id = session_agent_actor(&batch.actor_id, &batch.agent_tool);
 
         match call_haiku(client, api_key, &batch.batch_text).await {
             Ok((output, model)) => {
@@ -563,19 +579,12 @@ fn find_unclassified_batches(
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_owned();
-                            let session_id = event
-                                .payload
-                                .get("session_id")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_owned();
                             received.push(BatchInfo {
                                 event_id,
                                 batch_id: batch_id.to_owned(),
                                 batch_text,
                                 actor_id: event.actor_id.clone(),
                                 agent_tool,
-                                session_id,
                             });
                         }
                     }
