@@ -30,6 +30,11 @@
           "items": { "type": "string", "minLength": 1 },
           "description": "Human-readable label per option_ids entry, index-aligned. Omitted or empty on events predating this field."
         },
+        "option_descriptions": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Human-readable description per option_ids entry, index-aligned with option_labels. Omitted or empty on events predating this field."
+        },
         "chosen_option_id": { "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
         "hypothesis_ids": { "$ref": "#/$defs/id_array" },
         "evidence_ids": { "$ref": "#/$defs/id_array" },
