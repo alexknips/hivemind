@@ -239,15 +239,96 @@ pub struct PendingBatch {
     pub submitted_at: Option<DateTime<Utc>>,
     pub actor_id: String,
     pub turn_count: usize,
+    /// `session_id` from the originating `IngestBatchReceived` event; used to
+    /// group batches for session-grouped classification (hivemind-zdsh.18).
+    pub session_id: String,
+    pub agent_tool: String,
+    /// Rendered turn text (see [`render_batch_text`]) — what a classifier
+    /// actually reads. A caller never needs a second round trip to see what
+    /// it is about to classify.
+    pub batch_text: String,
 }
 
-/// Lists batches received but not yet classified (no IngestBatchClassified event).
-/// Used by `hivemind classify-queue list`.
-pub fn list_pending_batches(
-    hivemind_dir: &PathBuf,
+/// Pending batches from one ingest session, grouped for session-grouped
+/// classification: one model call classifies a whole session's turns
+/// instead of one call per batch (hivemind-zdsh.18 cadence decision, bead
+/// comment 2026-09-23). Batches with an empty `session_id` (no session
+/// context on ingest) each form their own single-batch group.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingSessionGroup {
+    pub session_id: String,
+    pub agent_tool: String,
+    pub actor_id: String,
+    pub batches: Vec<PendingBatch>,
+}
+
+/// Groups pending batches by `session_id`, preserving first-seen order of
+/// both groups and batches within a group.
+pub fn group_pending_by_session(batches: Vec<PendingBatch>) -> Vec<PendingSessionGroup> {
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: std::collections::HashMap<String, PendingSessionGroup> =
+        std::collections::HashMap::new();
+
+    for batch in batches {
+        let key = if batch.session_id.is_empty() {
+            format!("batch:{}", batch.batch_id)
+        } else {
+            batch.session_id.clone()
+        };
+        groups
+            .entry(key.clone())
+            .or_insert_with(|| {
+                order.push(key.clone());
+                PendingSessionGroup {
+                    session_id: batch.session_id.clone(),
+                    agent_tool: batch.agent_tool.clone(),
+                    actor_id: batch.actor_id.clone(),
+                    batches: Vec::new(),
+                }
+            })
+            .batches
+            .push(batch);
+    }
+
+    order
+        .into_iter()
+        .filter_map(|key| groups.remove(&key))
+        .collect()
+}
+
+/// Extracts the set of batch ids a raw `ingest.batch_classified` event
+/// payload covers: `batch_ids` when present (session-grouped submissions),
+/// falling back to the legacy singular `batch_id` for events written before
+/// `batch_ids` existed.
+fn classified_batch_ids_from_payload(payload: &serde_json::Value) -> Vec<String> {
+    let from_array: Vec<String> = payload
+        .get("batch_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !from_array.is_empty() {
+        return from_array;
+    }
+    payload
+        .get("batch_id")
+        .and_then(|v| v.as_str())
+        .map(|s| vec![s.to_owned()])
+        .unwrap_or_default()
+}
+
+/// Lists batches received but not yet classified (no `IngestBatchClassified`
+/// event covers their batch id), for `classify-queue list`. Generic over any
+/// [`EventLedger`] backend so the HTTP API (SQLite dev mode or Postgres) and
+/// the local CLI path share one implementation — see [`list_pending_batches`]
+/// for the CLI's local-SQLite convenience wrapper.
+pub fn list_pending_batches_for_ledger(
+    ledger: &impl EventLedger,
     tenant_id: &TenantId,
 ) -> crate::Result<Vec<PendingBatch>> {
-    let ledger = SqliteEventLedger::open(hivemind_dir)?;
     let mut offset = 0u64;
     const PAGE: usize = 256;
 
@@ -270,17 +351,32 @@ pub fn list_pending_batches(
                             .and_then(|v| v.as_array())
                             .map(|a| a.len())
                             .unwrap_or(0);
+                        let session_id = event
+                            .payload
+                            .get("session_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_owned();
+                        let agent_tool = event
+                            .payload
+                            .get("agent_tool")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_owned();
                         received.push(PendingBatch {
                             batch_id: batch_id.to_owned(), // ubs:ignore: &str from JSON, must be owned
                             submitted_at: event.ts,
                             actor_id: event.actor_id.clone(), // ubs:ignore: field copy from Event borrow
                             turn_count,
+                            session_id,
+                            agent_tool,
+                            batch_text: render_batch_text(event),
                         });
                     }
                 }
                 EventType::IngestBatchClassified => {
-                    if let Some(batch_id) = event.payload.get("batch_id").and_then(|v| v.as_str()) {
-                        classified_ids.insert(batch_id.to_owned()); // ubs:ignore: &str from JSON, must be owned
+                    for batch_id in classified_batch_ids_from_payload(&event.payload) {
+                        classified_ids.insert(batch_id);
                     }
                 }
                 _ => {}
@@ -298,6 +394,89 @@ pub fn list_pending_batches(
         .into_iter()
         .filter(|b| !classified_ids.contains(&b.batch_id))
         .collect())
+}
+
+/// CLI local-mode convenience: opens a SQLite ledger under `hivemind_dir` and
+/// delegates to [`list_pending_batches_for_ledger`]. `classify-queue list`
+/// uses this when not pointed at a server (`HIVEMIND_API_URL` unset).
+pub fn list_pending_batches(
+    hivemind_dir: &PathBuf,
+    tenant_id: &TenantId,
+) -> crate::Result<Vec<PendingBatch>> {
+    let ledger = SqliteEventLedger::open(hivemind_dir)?;
+    list_pending_batches_for_ledger(&ledger, tenant_id)
+}
+
+/// Default daily cap on classification calls (ledger events, not batches
+/// covered) per tenant, city-wide. Alex's chosen cadence (bead comment,
+/// 2026-09-23): classify each session in one model call at session end, not
+/// per batch or hourly, capped at ~150 calls/day; over the cap, batches wait
+/// for the next day rather than being dropped.
+pub const DEFAULT_DAILY_CLASSIFICATION_CAP: usize = 150;
+
+/// Resolves the active daily cap: `HIVEMIND_CLASSIFY_DAILY_CAP` when set to a
+/// valid positive integer, otherwise [`DEFAULT_DAILY_CLASSIFICATION_CAP`].
+/// The override exists so tests can exercise cap enforcement without writing
+/// 150 real events.
+pub fn daily_classification_cap() -> usize {
+    std::env::var("HIVEMIND_CLASSIFY_DAILY_CAP")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_DAILY_CLASSIFICATION_CAP)
+}
+
+/// Classification budget for the current UTC day, for a tenant.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct DailyCapStatus {
+    /// Number of `IngestBatchClassified` events already recorded today
+    /// (UTC) — one per classification call, regardless of how many batches
+    /// that call covered.
+    pub classified_today: usize,
+    pub cap: usize,
+    pub remaining: usize,
+}
+
+/// Counts `IngestBatchClassified` events recorded for `tenant_id` since the
+/// start of the current UTC day and returns the resulting budget.
+pub fn daily_cap_status(
+    ledger: &impl EventLedger,
+    tenant_id: &TenantId,
+) -> crate::Result<DailyCapStatus> {
+    let day_start = Utc::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc(); // ubs:ignore: midnight is always a valid time
+    let mut offset = 0u64;
+    const PAGE: usize = 256;
+    let mut classified_today = 0usize;
+
+    loop {
+        let events = ledger.read_for_tenant(tenant_id, offset, PAGE)?;
+        if events.is_empty() {
+            break;
+        }
+        for event in &events {
+            if event.event_type == EventType::IngestBatchClassified
+                && event.ts.is_some_and(|ts| ts >= day_start)
+            {
+                classified_today += 1;
+            }
+        }
+        if let Some(last) = events.last().and_then(|e| e.event_id) {
+            offset = last;
+        } else {
+            break;
+        }
+    }
+
+    let cap = daily_classification_cap();
+    Ok(DailyCapStatus {
+        classified_today,
+        cap,
+        remaining: cap.saturating_sub(classified_today),
+    })
 }
 
 struct BatchInfo {
@@ -454,8 +633,8 @@ fn find_unclassified_batches(
                     }
                 }
                 EventType::IngestBatchClassified => {
-                    if let Some(batch_id) = event.payload.get("batch_id").and_then(|v| v.as_str()) {
-                        classified_batch_ids.insert(batch_id.to_owned());
+                    for batch_id in classified_batch_ids_from_payload(&event.payload) {
+                        classified_batch_ids.insert(batch_id);
                     }
                 }
                 _ => {}
@@ -604,9 +783,10 @@ fn write_classification(
         &ledger,
         CommandContext::new(tenant_id.clone(), EventProvenance::agent(ACTOR_ID)),
     );
+    let batch_ids = [batch_id.to_owned()];
     commands.record_ingest_batch_classified(
         ACTOR_ID,
-        batch_id,
+        &batch_ids,
         model,
         SCHEMA_VERSION,
         captures,

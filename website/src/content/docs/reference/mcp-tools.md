@@ -1,9 +1,9 @@
 ---
 title: MCP Tools
-description: Reference for all 24 tools exposed by the HiveMind MCP server.
+description: Reference for all 26 tools exposed by the HiveMind MCP server.
 ---
 
-The HiveMind MCP server exposes 24 tools. Write tools append events to the
+The HiveMind MCP server exposes 26 tools. Write tools append events to the
 ledger and require an explicit `actor_id`. Read tools query the graph and never
 write. Layer-3 tools add ranked summaries or compact views.
 
@@ -373,6 +373,33 @@ Failure-mode attribution: which conditions predict decisions that do not hold up
 |-----------|------|----------|-------------|
 | `min_sample_size` | integer | — | Minimum group size required for a group to appear in top findings (default 3). Groups smaller than this are still included in breakdowns. |
 | `since_event_origin` | integer | — | Minimum ledger event offset (inclusive). Filter to decisions proposed at or after this offset. Use 0 or omit for all. |
+
+---
+
+### `classify_queue_list`
+
+List pending (unclassified) ingest batches with rendered turn text, plus today's classification budget. HTTP-transport only (hivemind-zdsh.18) — pass `session_id` to scope to one ingest session for the session-grouped classification cadence: one model call per session end, not one per batch.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | integer | — | Maximum pending batches to return (default 20). |
+| `session_id` | string | — | Only list batches from this ingest session. |
+
+---
+
+### `classify_queue_submit`
+
+Submit captures for one or more pending ingest batches as a single classification event, moving every listed batch id from pending to classified together. HTTP-transport only (hivemind-zdsh.18). Pass more than one `batch_ids` entry to cover a whole session's batches in one model call, per the session-grouped cadence. Refuses with an error once the daily classification cap is hit — batches stay pending for the next day rather than being dropped.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `batch_ids` | string[] | ✓ | Batch id(s) from `classify_queue_list`, all from the same session when more than one. |
+| `captures` | object[] | ✓ | CaptureItem objects, same shape as `capture_decision`/`capture_evidence` produce. |
+| `model` | string | — | Classifier identifier recorded on the event. Defaults to `agent:worker-a` (subscription-seat classification). |
 
 ---
 

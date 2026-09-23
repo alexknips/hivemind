@@ -477,13 +477,24 @@ pub struct ClassifyQueueListArgs {
     /// Maximum number of pending batches to return.
     #[arg(long, default_value_t = 20)]
     pub limit: usize,
+
+    /// Only list batches from this ingest session. Session-grouped
+    /// classification (hivemind-zdsh.18) uses this so one classify-queue run
+    /// at session end only sees, and later classifies, its own session's
+    /// pending batches.
+    #[arg(long = "session-id")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct ClassifyQueueSubmitArgs {
-    /// Batch ID to classify (from `classify-queue list` output).
-    #[arg(long = "batch-id")]
-    pub batch_id: String,
+    /// Batch ID(s) to classify (from `classify-queue list` output),
+    /// comma-separated. Pass more than one to submit a single classification
+    /// covering several batches from the same session in one model call
+    /// (hivemind-zdsh.18 cadence: one call per session end, not one per
+    /// batch).
+    #[arg(long = "batch-id", value_delimiter = ',', required = true)]
+    pub batch_id: Vec<String>,
 
     /// Structured captures as a JSON array of CaptureItem objects.
     #[arg(long)]

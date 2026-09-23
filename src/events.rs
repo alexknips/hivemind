@@ -504,10 +504,24 @@ pub struct CaptureItem {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IngestBatchClassifiedPayload {
+    /// The first (or only) batch id this classification covers. Kept for
+    /// events written before session-grouped submission existed, and as a
+    /// convenient single-batch accessor; `batch_ids` is authoritative when
+    /// present. Always equals `batch_ids[0]` on events written by this
+    /// version of the write path.
     pub batch_id: String,
     pub classifier_model: String,
     pub schema_version: String,
     pub captures: Vec<CaptureItem>,
+    /// All batch ids this single classification call covers, in submission
+    /// order. A session-grouped classification (hivemind-zdsh.18) covers
+    /// more than one batch with one model call and one event, so every
+    /// listed batch moves from pending to classified together. Empty on
+    /// events written before this field existed — readers use `batch_id` as
+    /// the fallback (see `classifier::classified_batch_ids_from_payload`,
+    /// which applies that same fallback over the raw event payload).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub batch_ids: Vec<String>,
 }
 
 /// One scored quality dimension: score in [0,1] plus a human-readable explanation.

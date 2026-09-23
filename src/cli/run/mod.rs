@@ -391,9 +391,16 @@ fn run_classify_queue(cli: &Cli, args: &ClassifyQueueArgs) -> Result<String> {
 }
 
 fn run_classify_queue_list(cli: &Cli, args: &ClassifyQueueListArgs) -> Result<String> {
+    if let Some(server) = ClassifyQueueServer::from_env() {
+        return server.list(cli.json, args);
+    }
+
     let tenant_id = cli_tenant(cli)?;
     let mut batches = crate::classifier::list_pending_batches(&cli.hivemind_dir, &tenant_id)
         .map_err(|e| CliError::InvalidInput(format!("ledger scan failed: {e}")))?;
+    if let Some(ref session_id) = args.session_id {
+        batches.retain(|b| &b.session_id == session_id);
+    }
     batches.truncate(args.limit);
     format_json_value(cli.json, &batches)
 }
@@ -402,8 +409,23 @@ fn run_classify_queue_submit(cli: &Cli, args: &ClassifyQueueSubmitArgs) -> Resul
     let captures: Vec<CaptureItem> = serde_json::from_str(&args.captures)
         .map_err(|e| CliError::InvalidInput(format!("--captures is not valid JSON: {e}")))?;
 
+    if let Some(server) = ClassifyQueueServer::from_env() {
+        return server.submit(cli.json, args, captures);
+    }
+
     let tenant_id = cli_tenant(cli)?;
     let ledger = open_ledger(cli)?;
+
+    let cap_status = crate::classifier::daily_cap_status(&ledger, &tenant_id)
+        .map_err(|e| CliError::InvalidInput(format!("ledger scan failed: {e}")))?;
+    if cap_status.remaining == 0 {
+        return Err(CliError::InvalidInput(format!(
+            "daily classification cap ({}) reached; batches remain pending until tomorrow (UTC)",
+            cap_status.cap
+        ))
+        .into());
+    }
+
     let commands = Commands::new_with_context(
         &ledger,
         CommandContext::new(tenant_id, EventProvenance::cli()),
@@ -420,10 +442,113 @@ fn run_classify_queue_submit(cli: &Cli, args: &ClassifyQueueSubmitArgs) -> Resul
     )?;
 
     let result = serde_json::json!({
-        "batch_id": args.batch_id,
+        "batch_ids": args.batch_id,
         "capture_count": capture_count,
     });
     format_json_value(cli.json, &result)
+}
+
+/// `classify-queue list`/`submit` talk to a server-backed cell over HTTP
+/// instead of opening a local ledger when `HIVEMIND_API_URL` is set (Option
+/// B, hivemind-zdsh.2: agents on a shared cell never hold a direct DB
+/// credential — see docs/AGENT_DECISION_CAPTURE.md's `HIVEMIND_API_URL`/
+/// `HIVEMIND_API_KEY` convention, shared with the Python capture clients).
+/// `HIVEMIND_API_URL` unset selects the local SQLite path, unchanged.
+struct ClassifyQueueServer {
+    base_url: String,
+    token: Option<String>,
+}
+
+impl ClassifyQueueServer {
+    fn from_env() -> Option<Self> {
+        let base_url = std::env::var("HIVEMIND_API_URL").ok()?;
+        let base_url = base_url.trim();
+        if base_url.is_empty() {
+            return None;
+        }
+        let token = std::env::var("HIVEMIND_API_KEY")
+            .ok()
+            .filter(|t| !t.trim().is_empty());
+        Some(Self {
+            base_url: base_url.trim_end_matches('/').to_owned(),
+            token,
+        })
+    }
+
+    fn client(&self) -> Result<reqwest::blocking::Client> {
+        reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| CliError::InvalidInput(format!("failed to build HTTP client: {e}")).into())
+    }
+
+    fn authed(
+        &self,
+        builder: reqwest::blocking::RequestBuilder,
+    ) -> reqwest::blocking::RequestBuilder {
+        match &self.token {
+            Some(token) => builder.bearer_auth(token),
+            None => builder,
+        }
+    }
+
+    fn list(&self, json_output: bool, args: &ClassifyQueueListArgs) -> Result<String> {
+        let client = self.client()?;
+        let url = format!("{}/v1/classify-queue", self.base_url);
+        let mut query: Vec<(&str, String)> = vec![("limit", args.limit.to_string())];
+        if let Some(ref session_id) = args.session_id {
+            query.push(("session_id", session_id.clone()));
+        }
+        let resp = self
+            .authed(client.get(&url).query(&query))
+            .send()
+            .map_err(|e| {
+                CliError::InvalidInput(format!("classify-queue list request failed: {e}"))
+            })?;
+        http_response_to_cli_output(resp, json_output)
+    }
+
+    fn submit(
+        &self,
+        json_output: bool,
+        args: &ClassifyQueueSubmitArgs,
+        captures: Vec<CaptureItem>,
+    ) -> Result<String> {
+        let client = self.client()?;
+        let url = format!("{}/v1/classify-queue/submit", self.base_url);
+        let body = serde_json::json!({
+            "batch_ids": args.batch_id,
+            "captures": captures,
+            "model": args.model,
+        });
+        let resp = self
+            .authed(client.post(&url).json(&body))
+            .send()
+            .map_err(|e| {
+                CliError::InvalidInput(format!("classify-queue submit request failed: {e}"))
+            })?;
+        http_response_to_cli_output(resp, json_output)
+    }
+}
+
+fn http_response_to_cli_output(
+    resp: reqwest::blocking::Response,
+    json_output: bool,
+) -> Result<String> {
+    let status = resp.status();
+    let value: serde_json::Value = resp
+        .json()
+        .map_err(|e| CliError::InvalidInput(format!("invalid JSON response: {e}")))?;
+    if !status.is_success() {
+        let message = value
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("request failed")
+            .to_owned();
+        return Err(CliError::InvalidInput(format!("server returned {status}: {message}")).into());
+    }
+    format_json_value(json_output, &value)
 }
 
 fn run_connector(cli: &Cli, args: &ConnectorArgs) -> Result<String> {
@@ -670,7 +795,7 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
             let batch_id = Uuid::new_v4().to_string();
             let _event_id = commands.record_ingest_batch_classified(
                 &actor_id,
-                &batch_id,
+                std::slice::from_ref(&batch_id),
                 &args.classifier_model,
                 &args.schema_version,
                 captures,

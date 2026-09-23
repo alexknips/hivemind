@@ -96,18 +96,27 @@ fn pending_batch_filter_excludes_classified_ids() {
             submitted_at: None,
             actor_id: "actor:test".to_owned(),
             turn_count: 1,
+            session_id: String::new(),
+            agent_tool: String::new(),
+            batch_text: String::new(),
         },
         PendingBatch {
             batch_id: "b".to_owned(),
             submitted_at: None,
             actor_id: "actor:test".to_owned(),
             turn_count: 2,
+            session_id: String::new(),
+            agent_tool: String::new(),
+            batch_text: String::new(),
         },
         PendingBatch {
             batch_id: "c".to_owned(),
             submitted_at: None,
             actor_id: "actor:test".to_owned(),
             turn_count: 3,
+            session_id: String::new(),
+            agent_tool: String::new(),
+            batch_text: String::new(),
         },
     ];
     let mut classified: HashSet<String> = HashSet::new();
@@ -130,6 +139,9 @@ fn pending_batch_filter_all_classified_yields_empty() {
         submitted_at: None,
         actor_id: "actor:test".to_owned(),
         turn_count: 0,
+        session_id: String::new(),
+        agent_tool: String::new(),
+        batch_text: String::new(),
     }];
     let mut classified: HashSet<String> = HashSet::new();
     classified.insert("x".to_owned());
@@ -165,12 +177,18 @@ fn pending_batch_filter_no_classified_returns_all() {
             submitted_at: None,
             actor_id: "actor:test".to_owned(),
             turn_count: 5,
+            session_id: String::new(),
+            agent_tool: String::new(),
+            batch_text: String::new(),
         },
         PendingBatch {
             batch_id: "q".to_owned(),
             submitted_at: None,
             actor_id: "actor:test".to_owned(),
             turn_count: 5,
+            session_id: String::new(),
+            agent_tool: String::new(),
+            batch_text: String::new(),
         },
     ];
     let classified: HashSet<String> = HashSet::new();

@@ -4239,7 +4239,7 @@ fn classify_queue_list_and_submit_round_trip() {
     ]))
     .expect("classify-queue submit succeeds");
     let submit: serde_json::Value = serde_json::from_str(&submit_output).expect("valid json");
-    assert_eq!(submit["batch_id"], serde_json::json!("batch-abc"));
+    assert_eq!(submit["batch_ids"], serde_json::json!(["batch-abc"]));
     assert_eq!(submit["capture_count"], serde_json::json!(1));
 
     // list now returns empty (batch is classified)

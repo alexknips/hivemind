@@ -200,7 +200,7 @@ fn resolve_capture_node_id_finds_decision_capture() {
     let event_id = commands
         .record_ingest_batch_classified(
             "actor:test",
-            "batch-1",
+            &["batch-1".to_owned()],
             "haiku",
             "2",
             vec![minimal_decision_capture()],
@@ -225,7 +225,7 @@ fn resolve_capture_node_id_rejects_non_decision_kind() {
     commands
         .record_ingest_batch_classified(
             "actor:test",
-            "batch-2",
+            &["batch-2".to_owned()],
             "haiku",
             "2",
             vec![evidence_capture],
@@ -244,7 +244,7 @@ fn resolve_capture_node_id_rejects_out_of_range_index() {
     commands
         .record_ingest_batch_classified(
             "actor:test",
-            "batch-3",
+            &["batch-3".to_owned()],
             "haiku",
             "2",
             vec![minimal_decision_capture()],

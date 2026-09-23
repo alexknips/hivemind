@@ -199,6 +199,8 @@ fn mcp_tools_call_blocking(
         "dump_graph" => mcp_dump_graph(backend, ctx, cache),
         "hivemind_compact_view" => mcp_compact_view(backend, ctx, args),
         "summarize_decisions" => mcp_summarize(backend, ctx, args, cache),
+        "classify_queue_list" => mcp_classify_queue_list(backend, ctx, args),
+        "classify_queue_submit" => mcp_classify_queue_submit(backend, ctx, args),
         other => return Err((-32602, format!("unknown tool: {other}"))),
     };
 
@@ -674,4 +676,94 @@ fn mcp_summarize(
     let response =
         summarize_decisions(&*graph, &request).map_err(|e| (-32603i32, e.to_string()))?;
     serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
+}
+
+/// Lists pending (unclassified) ingest batches with rendered turn text, plus
+/// today's classification budget. MCP mirror of `GET /v1/classify-queue`
+/// (hivemind-zdsh.18).
+fn mcp_classify_queue_list(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+) -> McpToolResult {
+    let session_id = mcp_opt_str(&args, "session_id")?;
+    let limit = mcp_opt_usize(&args, "limit")?.unwrap_or(20);
+
+    let ledger = backend
+        .open_ledger_for_tenant(&ctx.tenant_id)
+        .map_err(|e| (-32603i32, e.to_string()))?;
+    let mut batches = crate::classifier::list_pending_batches_for_ledger(&ledger, &ctx.tenant_id)
+        .map_err(|e| (-32603i32, e.to_string()))?;
+    if let Some(ref session_id) = session_id {
+        batches.retain(|b| &b.session_id == session_id);
+    }
+    batches.truncate(limit);
+    let budget = crate::classifier::daily_cap_status(&ledger, &ctx.tenant_id)
+        .map_err(|e| (-32603i32, e.to_string()))?;
+    Ok(serde_json::json!({ "batches": batches, "budget": budget }))
+}
+
+/// Submits captures for one or more pending batches from the same session in
+/// a single classification event — the session-grouped cadence
+/// (hivemind-zdsh.18): one model call per session end, not one per batch.
+/// Refuses with an error once the daily classification cap is hit; batches
+/// stay pending for the next day rather than being dropped. MCP mirror of
+/// `POST /v1/classify-queue/submit`.
+fn mcp_classify_queue_submit(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+) -> McpToolResult {
+    let batch_ids = mcp_req_str_array(&args, "batch_ids")?;
+    if batch_ids.is_empty() {
+        return Err((-32602, "batch_ids must not be empty".into()));
+    }
+    let captures_value = args
+        .get("captures")
+        .cloned()
+        .ok_or_else(|| (-32602, "missing `captures`".to_owned()))?;
+    let captures: Vec<crate::events::CaptureItem> = serde_json::from_value(captures_value)
+        .map_err(|e| (-32602, format!("`captures` is invalid: {e}")))?;
+    let model = mcp_opt_str(&args, "model")?.unwrap_or_else(|| "agent:worker-a".to_owned());
+
+    let ledger = backend
+        .open_ledger_for_tenant(&ctx.tenant_id)
+        .map_err(|e| (-32603i32, e.to_string()))?;
+
+    let cap_status = crate::classifier::daily_cap_status(&ledger, &ctx.tenant_id)
+        .map_err(|e| (-32603i32, e.to_string()))?;
+    if cap_status.remaining == 0 {
+        return Err((
+            -32000,
+            format!(
+                "daily classification cap ({}) reached; batches remain pending until tomorrow (UTC)",
+                cap_status.cap
+            ),
+        ));
+    }
+
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(
+            ctx.tenant_id.clone(),
+            EventProvenance::agent(ctx.actor_id.clone()),
+        ),
+    );
+    let capture_count = captures.len();
+    let event_id = commands
+        .record_ingest_batch_classified(
+            &ctx.actor_id,
+            &batch_ids,
+            &model,
+            crate::classifier::SCHEMA_VERSION,
+            captures,
+            None,
+        )
+        .map_err(|e| (-32603i32, e.to_string()))?;
+
+    Ok(serde_json::json!({
+        "batch_ids": batch_ids,
+        "capture_count": capture_count,
+        "event_id": event_id,
+    }))
 }

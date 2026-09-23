@@ -466,24 +466,36 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         self.append_event(event)
     }
 
+    /// Records one classification covering one or more ingest batches
+    /// (`batch_ids`, submission order; must be non-empty). A single event
+    /// marks every listed batch classified together — the session-grouped
+    /// path (hivemind-zdsh.18) uses this to cover a whole session's pending
+    /// batches with one model call and one event, instead of one event per
+    /// batch.
     pub fn record_ingest_batch_classified(
         &self,
         actor_id: &str,
-        batch_id: &str,
+        batch_ids: &[String],
         classifier_model: &str,
         schema_version: &str,
         captures: Vec<CaptureItem>,
         causation_event_id: Option<EventId>,
     ) -> Result<EventId> {
         require_valid_actor_id(actor_id)?;
-        require_non_empty("batch_id", batch_id)?;
+        if batch_ids.is_empty() {
+            return Err(CommandError::Validation("batch_ids must not be empty".into()).into());
+        }
+        for batch_id in batch_ids {
+            require_non_empty("batch_id", batch_id)?;
+        }
         require_non_empty("classifier_model", classifier_model)?;
         require_non_empty("schema_version", schema_version)?;
 
         let event = self.event_with_uuid(
             actor_id,
             EventPayload::IngestBatchClassified(IngestBatchClassifiedPayload {
-                batch_id: batch_id.to_owned(),
+                batch_id: batch_ids[0].clone(),
+                batch_ids: batch_ids.to_vec(),
                 classifier_model: classifier_model.to_owned(),
                 schema_version: schema_version.to_owned(),
                 captures,

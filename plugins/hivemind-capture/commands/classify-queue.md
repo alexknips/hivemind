@@ -9,15 +9,32 @@ allowed-tools: Bash(hivemind classify-queue list:*), Bash(hivemind classify-queu
 
 Drain the pending classification queue up to `$ARGUMENTS` batches (default 20).
 
+Run this once per session end (e.g. from a `Stop` hook), not per batch and not
+on an hourly timer — Worker A spends the agent's own subscription-seat model
+call to classify, and a shared daily cap (~150 classification calls city-wide;
+see `HIVEMIND_CLASSIFY_DAILY_CAP`) protects against runaway spend across every
+session in the city. Pass `--session-id` to scope listing to just the calling
+session's own batches, so concurrent sessions never redundantly process each
+other's queue.
+
+On a server-backed cell, set `HIVEMIND_API_URL` (and `HIVEMIND_API_KEY` if the
+server requires auth) so `classify-queue list`/`submit` talk to the server
+over HTTP instead of opening a local ledger — no database credential in the
+agent's environment (Option B, hivemind-zdsh.2). Leave both unset for the
+local `--hivemind-dir` SQLite path.
+
 ## Workflow
 
 **Step 1: List pending batches**
 
 ```bash
-hivemind classify-queue list --json --limit ${HIVEMIND_CQ_LIMIT:-20}
+hivemind classify-queue list --json --limit ${HIVEMIND_CQ_LIMIT:-20} \
+  ${HIVEMIND_CQ_SESSION_ID:+--session-id "$HIVEMIND_CQ_SESSION_ID"}
 ```
 
-If the list is empty, report "No pending batches" and stop.
+If the list is empty, report "No pending batches" and stop. If the request
+fails with a daily-cap message, report it and stop — the batches stay pending
+and will be picked up by a future run once the cap resets (UTC midnight).
 
 **Step 2: Classify each batch**
 
@@ -42,15 +59,19 @@ Capture an item ONLY when the conversation text shows:
 plumbing), stack traces, raw command output, status narration, todos, or private scratch
 notes. When in doubt, return an empty captures array.
 
-**Step 3: Submit each classification**
+**Step 3: Submit classifications, grouped by session**
 
-For each batch, build the captures array and submit:
+Batches from the same `session_id` came from one conversation — submit them
+together in a single call so one write covers the whole session's captures
+(pass `--batch-id` once per batch, comma-separated):
 
 ```bash
 hivemind classify-queue submit \
-  --batch-id <batch_id> \
-  --captures '<json array of CaptureItem objects>'
+  --batch-id <batch_id_1>,<batch_id_2> \
+  --captures '<json array of CaptureItem objects covering all listed batches>'
 ```
+
+A batch with no session (`session_id` empty in the list output) submits alone.
 
 Each CaptureItem JSON object must include:
 - `kind`: "decision" | "evidence" | "hypothesis" | "blocker" | "decision-request" | "notification"

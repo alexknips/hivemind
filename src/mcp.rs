@@ -789,6 +789,30 @@ pub fn tool_definitions() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "name": "classify_queue_list",
+            "description": "List pending (unclassified) ingest batches with rendered turn text, plus today's classification budget. HTTP-transport only (hivemind-zdsh.18) — pass `session_id` to scope to one ingest session for the session-grouped classification cadence: one model call per session end, not one per batch.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string", "description": "Only list batches from this ingest session." },
+                    "limit": { "type": "integer", "description": "Maximum pending batches to return (default 20)." }
+                }
+            }
+        }),
+        json!({
+            "name": "classify_queue_submit",
+            "description": "Submit captures for one or more pending ingest batches as a single classification event, moving every listed batch id from pending to classified together. HTTP-transport only (hivemind-zdsh.18). Pass more than one `batch_ids` entry to cover a whole session's batches in one model call, per the session-grouped cadence. Refuses with an error once the daily classification cap is hit — batches stay pending for the next day rather than being dropped.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["batch_ids", "captures"],
+                "properties": {
+                    "batch_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Batch id(s) from `classify_queue_list`, all from the same session when more than one." },
+                    "captures": { "type": "array", "items": { "type": "object" }, "description": "CaptureItem objects, same shape as `capture_decision`/`capture_evidence` produce." },
+                    "model": { "type": "string", "description": "Classifier identifier recorded on the event. Defaults to `agent:worker-a` (subscription-seat classification)." }
+                }
+            }
+        }),
     ]
 }
 

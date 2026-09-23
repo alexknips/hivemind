@@ -38,7 +38,7 @@ claude mcp add --transport http hivemind https://hivemind-tti3sa.fly.dev/mcp
 ```
 
 On first use, Claude Code opens your browser to the HiveMind login — sign in with
-GitHub or Google and you're connected. All 24 HiveMind tools are then available.
+GitHub or Google and you're connected. All 26 HiveMind tools are then available.
 
 ### Claude Desktop
 
@@ -152,7 +152,7 @@ Or set `HIVEMIND_DIR` and omit `--hivemind-dir`:
 
 ## Available tools
 
-The HiveMind MCP server exposes 24 tools. See [MCP Tools reference](../../reference/mcp-tools/)
+The HiveMind MCP server exposes 26 tools. See [MCP Tools reference](../../reference/mcp-tools/)
 for full parameter documentation.
 
 | Tool | Type | Description |
@@ -181,6 +181,8 @@ for full parameter documentation.
 | `scan_decision_quality` | layer-3 | Bulk quality scan across all decisions using the same scoring engine |
 | `scan_misfiled_decisions` | layer-3 | Flag decisions carrying a caller-named "foreign" topic key — report only, never moves anything |
 | `analyze_failure_modes` | layer-3 | Aggregate failure-rate patterns across authorship, review, and context |
+| `classify_queue_list` | read | List pending ingest batches with turn text, plus today's classification budget (HTTP transport only) |
+| `classify_queue_submit` | write | Submit captures for one or more pending batches as one classification event (HTTP transport only) |
 
 ---
 
@@ -200,6 +202,6 @@ The server records `source=agent` and a per-session `source_ref` for every write
 
 ## Next steps
 
-- [MCP Tools reference](../../reference/mcp-tools/) — full parameter documentation for all 24 tools
+- [MCP Tools reference](../../reference/mcp-tools/) — full parameter documentation for all 26 tools
 - [Agent Capture guide](../agent-capture/) — how agents capture decisions automatically
 - [Self-host install](../../getting-started/install/) — install the binary and run your own server

@@ -617,6 +617,7 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
             EventType::IngestBatchClassified,
             EventPayload::IngestBatchClassified(IngestBatchClassifiedPayload {
                 batch_id: "session-abc:0-512".to_owned(),
+                batch_ids: vec!["session-abc:0-512".to_owned()],
                 classifier_model: "claude-haiku-4-5-20251001".to_owned(),
                 schema_version: "1".to_owned(),
                 captures: vec![CaptureItem {

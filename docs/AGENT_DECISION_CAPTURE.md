@@ -253,8 +253,24 @@ Install the plugin and run after a session:
 /hivemind-capture:classify-queue
 ```
 
-Pass `--limit N` to cap the number of batches per run (default 20). The queue
-persists across runs; large backlogs drain across multiple invocations.
+Pass `--limit N` to cap the number of batches per run (default 20), and
+`--session-id S` to scope listing to one ingest session — the run-once-per-
+session-end cadence below relies on this so concurrent sessions never
+redundantly process each other's queue. The queue persists across runs; large
+backlogs drain across multiple invocations.
+
+`hivemind classify-queue list`/`submit` talk to a server over HTTP instead of
+opening the local SQLite ledger directly when `HIVEMIND_API_URL` is set (same
+`HIVEMIND_API_URL`/`HIVEMIND_API_KEY` variables as the Python capture clients
+above) — the agent never needs a direct database credential on a shared cell.
+`classify-queue submit --batch-id id1,id2` accepts more than one batch id to
+submit a single classification covering several batches from the same session
+in one write, matching Worker A's cadence: classify each session once at
+session end, not per batch and not on an hourly sweep. A shared daily cap
+(`HIVEMIND_CLASSIFY_DAILY_CAP`, default 150) protects against runaway spend
+across every session in a city; once hit, `submit` refuses with an error and
+the remaining batches stay pending for the next UTC day rather than being
+dropped.
 
 Both Worker A and Worker B write identical `IngestBatchClassified` events to the
 same queue. Concurrent classification is idempotent — last writer wins per batch.

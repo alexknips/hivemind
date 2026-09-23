@@ -1183,7 +1183,7 @@ async fn classifier_batch_classified_event_round_trips() {
     let classified_event_id = commands
         .record_ingest_batch_classified(
             "agent:hivemind:classifier",
-            "session-x:0-4",
+            &["session-x:0-4".to_owned()],
             "claude-haiku-4-5-20251001",
             "1",
             captures,
@@ -1244,6 +1244,381 @@ async fn classifier_batch_classified_event_round_trips() {
 }
 
 // ---------------------------------------------------------------------------
+// Classify queue (Worker A HTTP transport, hivemind-zdsh.18)
+// ---------------------------------------------------------------------------
+
+fn ingest_json(batch_id: &str, session_id: &str, agent_tool: &str, text: &str) -> Value {
+    serde_json::json!({
+        "batch_id": batch_id,
+        "agent_tool": agent_tool,
+        "session_id": session_id,
+        "turns": [
+            { "turn_id": "t1", "role": "user", "text": text, "truncated": false }
+        ]
+    })
+}
+
+#[tokio::test]
+async fn classify_queue_list_returns_pending_batches_with_turn_text() {
+    let dir = test_ledger_dir();
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/ingest",
+            ingest_json(
+                "sess-cq-1:0-10",
+                "sess-cq-1",
+                "claude",
+                "Should we cache query results with an LRU?",
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}"); // ubs:ignore
+
+    let (status, body) = call(app(dir), get_req("/v1/classify-queue")).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    let batches = body["batches"].as_array().expect("batches array"); // ubs:ignore
+    assert_eq!(batches.len(), 1, "{body}"); // ubs:ignore
+    assert_eq!(batches[0]["batch_id"], "sess-cq-1:0-10"); // ubs:ignore
+    assert_eq!(batches[0]["session_id"], "sess-cq-1"); // ubs:ignore
+    assert_eq!(batches[0]["agent_tool"], "claude"); // ubs:ignore
+    let batch_text = batches[0]["batch_text"].as_str().unwrap_or(""); // ubs:ignore
+    assert!(
+        batch_text.contains("cache query results"),
+        "batch_text must carry turn text: {batch_text}"
+    );
+    assert_eq!(body["budget"]["classified_today"], 0); // ubs:ignore
+    assert!(body["budget"]["cap"].as_u64().unwrap_or(0) > 0, "{body}"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn classify_queue_list_filters_by_session_id() {
+    let dir = test_ledger_dir();
+
+    for (batch_id, session_id) in [("s1:0-1", "session-a"), ("s2:0-1", "session-b")] {
+        let (status, body) = call(
+            app(dir.clone()),
+            post_json(
+                "/v1/ingest",
+                ingest_json(batch_id, session_id, "claude", "note"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}"); // ubs:ignore
+    }
+
+    let (status, body) = call(app(dir), get_req("/v1/classify-queue?session_id=session-a")).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    let batches = body["batches"].as_array().unwrap(); // ubs:ignore
+    assert_eq!(batches.len(), 1, "{body}"); // ubs:ignore
+    assert_eq!(batches[0]["batch_id"], "s1:0-1"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn classify_queue_submit_covers_multiple_batches_and_decision_readable_via_why() {
+    let dir = test_ledger_dir();
+
+    for batch_id in ["multi-sess:0-1", "multi-sess:1-2"] {
+        let (status, body) = call(
+            app(dir.clone()),
+            post_json(
+                "/v1/ingest",
+                ingest_json(batch_id, "multi-sess", "claude", "note"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}"); // ubs:ignore
+    }
+
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req("/v1/classify-queue?session_id=multi-sess"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["batches"].as_array().unwrap().len(), 2, "{body}"); // ubs:ignore
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/classify-queue/submit",
+            serde_json::json!({
+                "batch_ids": ["multi-sess:0-1", "multi-sess:1-2"],
+                "captures": [{
+                    "kind": "decision",
+                    "title": "Cache query results with an LRU",
+                    "rationale": "Avoids repeat queries under load",
+                    "topic_keys": ["caching"],
+                    "evidence_ids": [],
+                    "options": ["lru-cache", "no-cache"],
+                    "chosen_option": "lru-cache",
+                    "extraction_confidence": 0.9
+                }],
+                "model": "agent:worker-a"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["capture_count"], 1, "{body}"); // ubs:ignore
+    let event_id = body["event_id"].as_u64().expect("event_id"); // ubs:ignore
+
+    // Both batches move from pending to classified together.
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req("/v1/classify-queue?session_id=multi-sess"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(
+        body["batches"].as_array().unwrap().len(),
+        0,
+        "both batches must be drained: {body}"
+    );
+
+    // The resulting decision is readable via `why`.
+    let decision_id = format!("capture:{event_id}:0");
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req(&format!("/v1/decisions/why?id={decision_id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["data"]["root"]["present"], true, "{body}"); // ubs:ignore
+    assert_eq!(body["data"]["root"]["id"], decision_id, "{body}"); // ubs:ignore
+
+    // Full decision content round-trips too.
+    let (status, body) = call(app(dir), get_req(&format!("/v1/decisions/{decision_id}"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(
+        body["data"]["title"], "Cache query results with an LRU",
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn classify_queue_submit_enforces_daily_cap() {
+    let dir = test_ledger_dir();
+
+    for batch_id in ["cap-sess:0-1", "cap-sess:1-2"] {
+        let (status, body) = call(
+            app(dir.clone()),
+            post_json(
+                "/v1/ingest",
+                ingest_json(batch_id, "cap-sess", "claude", "note"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}"); // ubs:ignore
+    }
+
+    // HIVEMIND_CLASSIFY_DAILY_CAP is process-global; this test is the only
+    // one that overrides it, and every other test's ledger is a fresh temp
+    // directory with zero classifications today, so forcing the cap to 1
+    // here cannot make an unrelated concurrently-running test's single
+    // submit fail (see classifier::daily_classification_cap doc comment).
+    let saved = std::env::var("HIVEMIND_CLASSIFY_DAILY_CAP").ok();
+    unsafe { std::env::set_var("HIVEMIND_CLASSIFY_DAILY_CAP", "1") };
+
+    let submit_one = |batch_id: &'static str| {
+        post_json(
+            "/v1/classify-queue/submit",
+            serde_json::json!({
+                "batch_ids": [batch_id],
+                "captures": [],
+                "model": "agent:worker-a"
+            }),
+        )
+    };
+
+    let (status, body) = call(app(dir.clone()), submit_one("cap-sess:0-1")).await;
+    assert_eq!(status, StatusCode::OK, "first submit under cap: {body}"); // ubs:ignore
+
+    let (status, body) = call(app(dir.clone()), submit_one("cap-sess:1-2")).await;
+
+    match saved {
+        Some(v) => unsafe { std::env::set_var("HIVEMIND_CLASSIFY_DAILY_CAP", v) },
+        None => unsafe { std::env::remove_var("HIVEMIND_CLASSIFY_DAILY_CAP") },
+    }
+
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "second submit over cap: {body}"
+    ); // ubs:ignore
+    assert_eq!(body["error"]["code"], "too_many_requests"); // ubs:ignore
+
+    // The over-cap batch stays pending — not dropped.
+    let (status, body) = call(app(dir), get_req("/v1/classify-queue?session_id=cap-sess")).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    let batches = body["batches"].as_array().unwrap(); // ubs:ignore
+    assert_eq!(batches.len(), 1, "{body}"); // ubs:ignore
+    assert_eq!(batches[0]["batch_id"], "cap-sess:1-2"); // ubs:ignore
+}
+
+/// Requires the `shared-backend-postgres` feature and a live Postgres
+/// instance. Set HIVEMIND_TEST_POSTGRES_URL to run; skipped when unset (same
+/// pattern as tests/migrate.rs). CI's dedicated `rust-postgres` job always
+/// sets it, so this always runs for real there — see hivemind-zdsh.18's
+/// acceptance criteria: ingest, list, and submit over HTTP against a
+/// Postgres-backed server, not only SQLite dev mode.
+#[cfg(feature = "shared-backend-postgres")]
+mod classify_queue_postgres {
+    use super::*;
+
+    const TEST_DATABASE_URL_ENV: &str = "HIVEMIND_TEST_POSTGRES_URL";
+
+    fn skip_if_no_postgres() -> Option<String> {
+        std::env::var(TEST_DATABASE_URL_ENV)
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+    }
+
+    fn unique_tenant(prefix: &str) -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        format!("{prefix}-{nanos}-{}", std::process::id())
+    }
+
+    fn app_postgres(database_url: &str) -> axum::Router {
+        let config = hivemind::api::ApiConfig {
+            hivemind_dir: test_ledger_dir(),
+            port: 0,
+            api_key: None,
+            database_url: Some(database_url.to_owned()),
+            admin_key: Some("classify-queue-test-admin-key".to_owned()),
+            workos_domain: None,
+            workos_issuer: None,
+            workos_jwks_url: None,
+            workos_audience: None,
+            spa_dir: None,
+            cors_origins: vec![],
+        };
+        hivemind::api::create_router(&config)
+    }
+
+    #[tokio::test]
+    async fn classify_queue_submit_covers_multiple_batches_over_postgres() {
+        let Some(pg_url) = skip_if_no_postgres() else {
+            eprintln!("skipping classify-queue Postgres test; set {TEST_DATABASE_URL_ENV}");
+            return;
+        };
+        let admin_key = "classify-queue-test-admin-key";
+        let tenant_id = unique_tenant("cq-test");
+        let app = app_postgres(&pg_url);
+
+        // Provision a tenant; its token authenticates every call below —
+        // Postgres mode ignores x-hivemind-actor/x-hivemind-tenant headers
+        // and derives both from the bearer token (docs/SELF_HOSTING.md).
+        let (status, body) = call(
+            app.clone(),
+            admin_post(
+                "/v1/tenants",
+                serde_json::json!({ "tenant_id": tenant_id, "display_name": "classify-queue test" }),
+                admin_key,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "provision tenant: {body}"); // ubs:ignore
+        let token = body["token_secret"]
+            .as_str()
+            .expect("token_secret")
+            .to_owned(); // ubs:ignore
+
+        for batch_id in ["pg-sess:0-1", "pg-sess:1-2"] {
+            let (status, body) = call(
+                app.clone(),
+                authed_post(
+                    "/v1/ingest",
+                    ingest_json(batch_id, "pg-sess", "claude", "note"),
+                    &token,
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::ACCEPTED, "ingest {batch_id}: {body}");
+            // ubs:ignore
+        }
+
+        let (status, body) = call(
+            app.clone(),
+            authed_get("/v1/classify-queue?session_id=pg-sess", &token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+        let batches = body["batches"].as_array().expect("batches array"); // ubs:ignore
+        assert_eq!(batches.len(), 2, "{body}"); // ubs:ignore
+        for batch in batches {
+            assert!(
+                batch["batch_text"].as_str().unwrap_or("").contains("note"),
+                "{batch}"
+            );
+        }
+
+        let (status, body) = call(
+            app.clone(),
+            authed_post(
+                "/v1/classify-queue/submit",
+                serde_json::json!({
+                    "batch_ids": ["pg-sess:0-1", "pg-sess:1-2"],
+                    "captures": [{
+                        "kind": "decision",
+                        "title": "Use Postgres-backed classify-queue test",
+                        "rationale": "Proves the HTTP transport works against the shared backend, not only SQLite",
+                        "topic_keys": ["classify-queue"],
+                        "evidence_ids": [],
+                        "options": ["postgres", "sqlite-only"],
+                        "chosen_option": "postgres",
+                        "extraction_confidence": 0.9
+                    }],
+                    "model": "agent:worker-a"
+                }),
+                &token,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+        assert_eq!(body["capture_count"], 1, "{body}"); // ubs:ignore
+        let event_id = body["event_id"].as_u64().expect("event_id"); // ubs:ignore
+
+        let (status, body) = call(
+            app.clone(),
+            authed_get("/v1/classify-queue?session_id=pg-sess", &token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+        assert_eq!(
+            body["batches"].as_array().unwrap().len(),
+            0,
+            "both batches must be drained: {body}"
+        );
+
+        let decision_id = format!("capture:{event_id}:0");
+        let (status, body) = call(
+            app.clone(),
+            authed_get(&format!("/v1/decisions/why?id={decision_id}"), &token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+        assert_eq!(body["data"]["root"]["present"], true, "{body}"); // ubs:ignore
+        assert_eq!(body["data"]["root"]["id"], decision_id, "{body}"); // ubs:ignore
+
+        let (status, body) = call(
+            app,
+            authed_get(&format!("/v1/decisions/{decision_id}"), &token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+        assert_eq!(
+            body["data"]["title"], "Use Postgres-backed classify-queue test",
+            "{body}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // MCP Streamable HTTP transport tests
 // ---------------------------------------------------------------------------
 
@@ -1293,10 +1668,12 @@ async fn mcp_http_tools_list_returns_18_tools() {
     .await;
     assert_eq!(status, StatusCode::OK); // ubs:ignore
     let tools = body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 24); // ubs:ignore
+    assert_eq!(tools.len(), 26); // ubs:ignore
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"capture_decision")); // ubs:ignore
     assert!(names.contains(&"get_decision")); // ubs:ignore
+    assert!(names.contains(&"classify_queue_list")); // ubs:ignore
+    assert!(names.contains(&"classify_queue_submit")); // ubs:ignore
     assert!(names.contains(&"get_decision_outcome")); // ubs:ignore
     assert!(names.contains(&"get_situational_decisions")); // ubs:ignore
     assert!(names.contains(&"get_decision_neighborhood")); // ubs:ignore
@@ -1635,6 +2012,18 @@ fn authed_post(uri: &str, body: Value, token: &str) -> Request<Body> {
         // intentionally different from the token-bound actor to test spoofing prevention
         .header("x-hivemind-actor", "agent:evil:spoofer")
         .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap()
+}
+
+/// Only used by the Postgres-gated classify-queue module below; without a
+/// `#[cfg]` here it would warn as dead code under default features.
+#[cfg(feature = "shared-backend-postgres")]
+fn authed_get(uri: &str, token: &str) -> Request<Body> {
+    Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
         .unwrap()
 }
 

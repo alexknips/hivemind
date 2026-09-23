@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{CommandContext, Commands, DecisionProposalInput, SupersedeInput};
-use crate::events::{EventProvenance, IngestTurn};
+use crate::events::{CaptureItem, EventProvenance, IngestTurn};
 use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::projector::GraphView;
 use crate::queries::{
@@ -1142,5 +1142,138 @@ fn ingest_batch_blocking(
         "batch_id": req.batch_id,
         "event_id": event_id,
         "queued": true,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ClassifyQueueListParams {
+    /// Only list batches from this ingest session. Session-grouped
+    /// classification (hivemind-zdsh.18) uses this so one classify-queue run
+    /// at session end only sees, and later classifies, its own session's
+    /// pending batches.
+    session_id: Option<String>,
+    limit: Option<usize>,
+}
+
+const CLASSIFY_QUEUE_DEFAULT_LIMIT: usize = 20;
+
+pub(super) async fn classify_queue_list_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ClassifyQueueListParams>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<serde_json::Value> {
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let mut batches =
+            crate::classifier::list_pending_batches_for_ledger(&ledger, &ctx.tenant_id)
+                .map_err(to_api_error)?;
+        if let Some(ref session_id) = params.session_id {
+            batches.retain(|b| &b.session_id == session_id);
+        }
+        batches.truncate(params.limit.unwrap_or(CLASSIFY_QUEUE_DEFAULT_LIMIT));
+        let budget =
+            crate::classifier::daily_cap_status(&ledger, &ctx.tenant_id).map_err(to_api_error)?;
+        Ok(serde_json::json!({ "batches": batches, "budget": budget }))
+    })
+    .await;
+
+    respond(result, StatusCode::OK)
+}
+
+fn default_classify_model() -> String {
+    "agent:worker-a".to_owned()
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ClassifyQueueSubmitRequest {
+    /// Batch id(s) this classification covers. More than one submits a
+    /// single classification covering several batches from the same session
+    /// in one model call (hivemind-zdsh.18 cadence: one call per session
+    /// end, not one per batch).
+    batch_ids: Vec<String>,
+    captures: Vec<CaptureItem>,
+    #[serde(default = "default_classify_model")]
+    model: String,
+}
+
+pub(super) async fn classify_queue_submit_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    payload: std::result::Result<Json<ClassifyQueueSubmitRequest>, JsonRejection>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    let req = match payload {
+        Ok(Json(r)) => r,
+        Err(e) => return ApiError::validation(e.to_string()).into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let result =
+        tokio::task::spawn_blocking(move || classify_queue_submit_blocking(&backend, &ctx, req))
+            .await;
+
+    respond(result, StatusCode::OK)
+}
+
+fn classify_queue_submit_blocking(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    req: ClassifyQueueSubmitRequest,
+) -> ApiResult<serde_json::Value> {
+    if req.batch_ids.is_empty() {
+        return Err(ApiError::validation("batch_ids must not be empty"));
+    }
+    if req.model.trim().is_empty() {
+        return Err(ApiError::validation("model must not be empty"));
+    }
+
+    let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+
+    // Enforced before the write, not after: Alex's chosen cadence (bead
+    // comment, 2026-09-23) is that batches over the daily cap wait for
+    // tomorrow rather than being dropped, so a capped submit must refuse to
+    // write, not write and then explain the cap was already exceeded.
+    let cap_status =
+        crate::classifier::daily_cap_status(&ledger, &ctx.tenant_id).map_err(to_api_error)?;
+    if cap_status.remaining == 0 {
+        return Err(ApiError::too_many_requests(format!(
+            "daily classification cap ({}) reached; batches remain pending until tomorrow (UTC)",
+            cap_status.cap
+        )));
+    }
+
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(
+            ctx.tenant_id.clone(),
+            EventProvenance::agent(ctx.actor_id.clone()),
+        ),
+    );
+
+    let capture_count = req.captures.len();
+    let event_id = commands
+        .record_ingest_batch_classified(
+            &ctx.actor_id,
+            &req.batch_ids,
+            &req.model,
+            crate::classifier::SCHEMA_VERSION,
+            req.captures,
+            None,
+        )
+        .map_err(to_api_error)?;
+
+    Ok(serde_json::json!({
+        "batch_ids": req.batch_ids,
+        "capture_count": capture_count,
+        "event_id": event_id,
     }))
 }

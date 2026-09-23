@@ -25,6 +25,9 @@
 //! - `POST /v1/decisions/{id}/disagreements`        — disagree
 //! - `POST /v1/decisions/{id}/supersessions`        — supersede
 //! - `POST /v1/tenants`                            — provision tenant (Postgres, admin only)
+//! - `POST /v1/classify-queue/submit`               — submit captures for one or more
+//!   pending ingest batches (Worker A, hivemind-zdsh.18); 429 once the daily
+//!   classification cap is hit — batches stay pending, not dropped
 //!
 //! Read:
 //! - `GET  /v1/decisions/{id}`                     — get single decision
@@ -36,6 +39,8 @@
 //! - `GET  /v1/decisions/why`                       — decision neighborhood, by id or free text
 //! - `GET  /v1/decisions/verify`                    — decision brief (still holds?), by id or free text
 //! - `GET  /v1/decisions/map[?alpha=0.5]`          — 2-D spectral decision map
+//! - `GET  /v1/classify-queue[?session_id=][?limit=]` — pending ingest batches with
+//!   turn text, plus today's classification budget
 //! - `GET  /v1/graph`                              — full decision graph (JSON)
 //! - `GET  /v1/health`                             — liveness probe
 //! - `GET  /v1/version`                            — build version + commit sha
@@ -375,6 +380,10 @@ enum ApiError {
     Unauthorized(String),
     NotFound(String),
     Validation(String),
+    /// A rate/budget limit was hit (e.g. the classify-queue daily
+    /// classification cap) — the request is well-formed and the caller
+    /// should retry later, not fix its shape. Maps to 429.
+    TooManyRequests(String),
     Internal(String),
 }
 
@@ -388,6 +397,9 @@ impl ApiError {
     fn validation(msg: impl Into<String>) -> Self {
         Self::Validation(msg.into())
     }
+    fn too_many_requests(msg: impl Into<String>) -> Self {
+        Self::TooManyRequests(msg.into())
+    }
     fn internal(msg: impl Into<String>) -> Self {
         Self::Internal(msg.into())
     }
@@ -399,6 +411,7 @@ impl std::fmt::Display for ApiError {
             ApiError::Unauthorized(m)
             | ApiError::NotFound(m)
             | ApiError::Validation(m)
+            | ApiError::TooManyRequests(m)
             | ApiError::Internal(m) => write!(f, "{m}"),
         }
     }
@@ -410,6 +423,9 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "unauthorized", msg),
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, "not_found", msg),
             ApiError::Validation(msg) => (StatusCode::BAD_REQUEST, "validation_error", msg),
+            ApiError::TooManyRequests(msg) => {
+                (StatusCode::TOO_MANY_REQUESTS, "too_many_requests", msg)
+            }
             ApiError::Internal(msg) => {
                 tracing::error!(target: "hivemind::api", error = %msg, "internal server error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal_error", msg)
@@ -516,6 +532,15 @@ fn build_router(state: AppState) -> Router {
         .route("/v1/hypotheses", post(handlers::post_hypotheses_handler))
         // Transcript ingest (capture client → server)
         .route("/v1/ingest", post(handlers::post_ingest_handler))
+        // Classification work queue (Worker A, hivemind-zdsh.18)
+        .route(
+            "/v1/classify-queue",
+            get(handlers::classify_queue_list_handler),
+        )
+        .route(
+            "/v1/classify-queue/submit",
+            post(handlers::classify_queue_submit_handler),
+        )
         // MCP Streamable HTTP transport (2025-03-26)
         .route("/mcp", post(mcp_http::mcp_http_handler))
         // OAuth resource/authorization server metadata (MCP auth spec)
