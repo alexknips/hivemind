@@ -487,7 +487,7 @@ fn propose_decision_allows_a_list_shaped_rationale_when_quote_and_question_are_g
             rationale: "Per the notes: verbatim 1a, 2. a clearer alternative was rejected",
             topic_keys: &["topic".to_owned()],
             option_ids: std::slice::from_ref(&option_id),
-            option_labels: &[],
+            option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
             still_proposed: false,
@@ -1069,7 +1069,7 @@ fn propose_decision_persists_option_descriptions_on_the_event() {
         .propose_decision(DecisionProposalInput {
             actor_id: "actor:alice",
             title: "Pick a queue",
-            rationale: "Need durable delivery",
+            rationale: "Need durable delivery with minimal operational overhead",
             topic_keys: &["infra".to_owned()],
             option_ids: &[option_a, option_b],
             option_labels: &["Amazon SQS".to_owned(), "Kafka".to_owned()],
