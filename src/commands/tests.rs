@@ -891,7 +891,7 @@ fn propose_decision_accepts_title_at_exactly_max_len() {
         .propose_decision(DecisionProposalInput {
             actor_id: "actor:alice",
             title: &title,
-            rationale: "rationale",
+            rationale: "This rationale is long enough to pass the minimum checks.",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
             option_labels: &["A".to_owned()],
@@ -987,7 +987,7 @@ fn propose_decision_accepts_title_with_single_trailing_period_and_version_dots()
         .propose_decision(DecisionProposalInput {
             actor_id: "actor:alice",
             title: "Ship v1.2.3 to prod.",
-            rationale: "rationale",
+            rationale: "This rationale is long enough to pass the minimum checks.",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
             option_labels: &["A".to_owned()],
@@ -1014,7 +1014,7 @@ fn supersede_rejects_new_title_over_max_length() {
         .propose_decision(DecisionProposalInput {
             actor_id: "actor:alice",
             title: "Decision A",
-            rationale: "rationale",
+            rationale: "This rationale is long enough to pass the minimum checks.",
             topic_keys: &["Core".to_owned()],
             option_ids: &[option_id],
             option_labels: &["A".to_owned()],
@@ -1033,7 +1033,7 @@ fn supersede_rejects_new_title_over_max_length() {
         actor_id: "actor:alice",
         old_decision_id: &old_decision_id,
         new_title: &new_title,
-        new_rationale: "New rationale",
+        new_rationale: "This new rationale is long enough to pass the minimum checks.",
         topic_keys: &[],
         option_labels: &["Replacement".to_owned()],
         chosen_option_label: None,

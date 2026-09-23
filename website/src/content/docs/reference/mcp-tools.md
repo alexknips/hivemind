@@ -26,7 +26,7 @@ Record a decision with rationale, topic keys, and at least one option. Defaults 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `options` | object[] | ✓ |  |
-| `rationale` | string | ✓ |  |
+| `rationale` | string | ✓ | Self-contained why, readable without the source conversation: at least 20 characters and 4 words, and not a bare reference into an external numbered list like "1a" or "2. a" — pair `quote` with `question` instead of embedding one. |
 | `title` | string | ✓ | A name, not a summary: one sentence, at most 120 characters. Longer reasoning goes in `rationale`. |
 | `topic_keys` | string[] | ✓ |  |
 | `actor_id` | string | — | Optional capturing actor override. Defaults to `agent:<tool>:<name>`. |
@@ -90,7 +90,7 @@ Propose a replacement decision and mark it as superseding an old decision. Wraps
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `rationale` | string | ✓ |  |
+| `rationale` | string | ✓ | Self-contained why, readable without the source conversation: at least 20 characters and 4 words, and not a bare reference into an external numbered list like "1a" or "2. a". |
 | `title` | string | ✓ | A name, not a summary: one sentence, at most 120 characters. Longer reasoning goes in `rationale`. |
 | `actor_id` | string | — | Superseding actor. Defaults to `agent:<tool>:<name>` when omitted. |
 | `chosen_option_label` | string | — |  |
