@@ -138,8 +138,14 @@ fn every_write_path_event_validates_against_its_schema() {
     commands
         .attach_evidence(&decision_id, &evidence_id, actor)
         .expect("attach evidence");
-    connector::retract_same_as(&ledger, &tenant_id, &decision_id, &rejected_decision_id, actor)
-        .expect("retract same_as");
+    connector::retract_same_as(
+        &ledger,
+        &tenant_id,
+        &decision_id,
+        &rejected_decision_id,
+        actor,
+    )
+    .expect("retract same_as");
 
     // -- ingest.batch_received / ingest.batch_classified --
     commands
@@ -248,21 +254,44 @@ fn every_write_path_event_validates_against_its_schema() {
         .register_project(actor, "contract-b", Some("Contract B"), Some("Purpose B"))
         .expect("register project b");
     commands
-        .link_project(actor, "contract-a", "contract-b", ProjectLinkKind::DependsOn)
+        .link_project(
+            actor,
+            "contract-a",
+            "contract-b",
+            ProjectLinkKind::DependsOn,
+        )
         .expect("link project");
     commands
-        .unlink_project(actor, "contract-a", "contract-b", ProjectLinkKind::DependsOn)
+        .unlink_project(
+            actor,
+            "contract-a",
+            "contract-b",
+            ProjectLinkKind::DependsOn,
+        )
         .expect("unlink project");
     commands
-        .anchor_project(actor, "contract-a", ProjectAnchorKind::Rig, "contract-test-rig")
+        .anchor_project(
+            actor,
+            "contract-a",
+            ProjectAnchorKind::Rig,
+            "contract-test-rig",
+        )
         .expect("anchor project");
     commands
-        .unanchor_project(actor, "contract-a", ProjectAnchorKind::Rig, "contract-test-rig")
+        .unanchor_project(
+            actor,
+            "contract-a",
+            ProjectAnchorKind::Rig,
+            "contract-test-rig",
+        )
         .expect("unanchor project");
 
     // -- validate every emitted event against its schemas/v0 file --
     let events = ledger.read(0, 1000).expect("read events");
-    assert!(!events.is_empty(), "write path produced no events to validate");
+    assert!(
+        !events.is_empty(),
+        "write path produced no events to validate"
+    );
 
     let seen_types: Vec<EventType> = events.iter().map(|event| event.event_type).collect();
     for expected in [
