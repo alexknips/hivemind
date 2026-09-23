@@ -53,6 +53,7 @@
 //! for client-side routing (same-origin, no CORS needed).
 
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -105,7 +106,13 @@ const MAX_CONCURRENT_REQUESTS: usize = 200;
 #[derive(Debug, Clone)]
 pub struct ApiConfig {
     pub hivemind_dir: PathBuf,
+    /// Address to bind. Defaults to loopback so a default install is not
+    /// reachable from other hosts; see [`ApiConfig::check_bind_safety`].
+    pub bind: IpAddr,
     pub port: u16,
+    /// Explicit opt-in to serve without authentication on a non-loopback
+    /// `bind` (`--allow-unauthenticated-remote`).
+    pub allow_unauthenticated_remote: bool,
     /// Expected bearer token for SQLite dev mode. `None` = no auth check.
     pub api_key: Option<String>,
     /// Postgres database URL. When set, enables the multi-tenant Postgres
@@ -151,13 +158,25 @@ impl ApiConfig {
     pub fn new(hivemind_dir: impl Into<PathBuf>) -> Self {
         Self {
             hivemind_dir: hivemind_dir.into(),
+            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 8080,
-            api_key: std::env::var("HIVEMIND_API_KEY").ok(),
+            allow_unauthenticated_remote: false,
+            // An empty key is unset, not "the empty token": compared in
+            // constant time against the bearer, `Some("")` would accept every
+            // request that sends no token while looking authenticated.
+            api_key: std::env::var("HIVEMIND_API_KEY")
+                .ok()
+                .filter(|key| !key.is_empty()),
             // Not read here: the CLI resolves --database-url/HIVEMIND_DATABASE_URL via
             // LedgerConfig::from_cli and passes it through with_database_url, so a flag
             // beats the env var the same way it does for every other command.
             database_url: None,
-            admin_key: std::env::var("HIVEMIND_ADMIN_KEY").ok(),
+            // Same rule as `api_key`: compose passes `HIVEMIND_ADMIN_KEY=""`
+            // when the variable is unset, which must not unlock the admin
+            // routes for a token-less caller.
+            admin_key: std::env::var("HIVEMIND_ADMIN_KEY")
+                .ok()
+                .filter(|key| !key.is_empty()),
             workos_domain: std::env::var("WORKOS_DOMAIN").ok(),
             workos_issuer: std::env::var("WORKOS_ISSUER").ok(),
             workos_jwks_url: std::env::var("WORKOS_JWKS_URL").ok(),
@@ -186,6 +205,54 @@ impl ApiConfig {
     pub fn with_port(mut self, port: u16) -> Self {
         self.port = port;
         self
+    }
+
+    pub fn with_bind(mut self, bind: IpAddr) -> Self {
+        self.bind = bind;
+        self
+    }
+
+    pub fn with_allow_unauthenticated_remote(mut self, allow: bool) -> Self {
+        self.allow_unauthenticated_remote = allow;
+        self
+    }
+
+    /// Development mode: neither a static API key nor the Postgres tenant
+    /// store is configured, so every request is accepted without a token.
+    pub fn is_unauthenticated(&self) -> bool {
+        self.api_key.is_none() && self.database_url.is_none()
+    }
+
+    /// Human-readable auth mode for the startup log.
+    fn auth_mode(&self) -> &'static str {
+        if self.database_url.is_some() {
+            "postgres tenant tokens"
+        } else if self.api_key.is_some() {
+            "static api key"
+        } else {
+            "development (no auth)"
+        }
+    }
+
+    /// Refuses the combination that turns a default install into an open
+    /// server: development mode (no auth) on a non-loopback bind. The
+    /// explicit `allow_unauthenticated_remote` opt-in lifts the refusal.
+    pub fn check_bind_safety(&self) -> crate::Result<()> {
+        if self.is_unauthenticated()
+            && !self.bind.is_loopback()
+            && !self.allow_unauthenticated_remote
+        {
+            return Err(CliError::InvalidInput(format!(
+                "refusing to serve without authentication on non-loopback address {bind}: \
+                 neither HIVEMIND_API_KEY nor HIVEMIND_DATABASE_URL is set, so every request \
+                 would be accepted without a token. Set HIVEMIND_API_KEY, use the Postgres \
+                 backend, bind a loopback address (--bind 127.0.0.1), or pass \
+                 --allow-unauthenticated-remote to expose an unauthenticated server deliberately",
+                bind = self.bind
+            ))
+            .into());
+        }
+        Ok(())
     }
 
     /// Sets the Postgres backend URL (empty is treated as unset — same rule
@@ -613,18 +680,32 @@ fn build_router(state: AppState) -> Router {
     )
 }
 
-/// Bind to `config.port` and serve until SIGINT/SIGTERM.
+/// Bind to `config.bind:config.port` and serve until SIGINT/SIGTERM.
+///
+/// Refuses to start when [`ApiConfig::check_bind_safety`] fails, before any
+/// background worker is spawned or socket opened.
 ///
 /// `state` must be built before entering the tokio runtime (e.g. via
 /// `AppState::from_config`) to avoid the "cannot start a runtime from within
 /// a runtime" panic that r2d2/postgres triggers when pool construction runs
 /// inside an existing async context.
 pub async fn serve_http(state: AppState, config: &ApiConfig) -> crate::Result<()> {
-    if config.api_key.is_none() && config.database_url.is_none() {
+    config.check_bind_safety()?;
+
+    if config.is_unauthenticated() {
         warn!(
             target: "hivemind::api",
+            bind = %config.bind,
+            port = config.port,
             "HIVEMIND_API_KEY and HIVEMIND_DATABASE_URL not set — running in development mode (no auth)"
         );
+        if !config.bind.is_loopback() {
+            warn!(
+                target: "hivemind::api",
+                bind = %config.bind,
+                "--allow-unauthenticated-remote: serving WITHOUT authentication on a non-loopback address; anyone who can reach it can read and write the ledger"
+            );
+        }
     }
 
     crate::classifier::try_spawn(
@@ -638,14 +719,15 @@ pub async fn serve_http(state: AppState, config: &ApiConfig) -> crate::Result<()
     slack::try_spawn_drain_loop(&state);
 
     let app = build_router(state);
-    let addr = format!("0.0.0.0:{}", config.port);
-    let listener = tokio::net::TcpListener::bind(&addr)
+    let addr = SocketAddr::new(config.bind, config.port);
+    let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| CliError::InvalidInput(format!("failed to bind {addr}: {e}")))?;
 
     tracing::info!(
         target: "hivemind::api",
         addr = %listener.local_addr().unwrap(),
+        auth = config.auth_mode(),
         "HTTP API listening"
     );
 

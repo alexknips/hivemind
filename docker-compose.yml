@@ -12,7 +12,12 @@ services:
       args:
         GIT_SHA: ${HIVEMIND_BUILD_SHA:-unknown}
     ports:
-      - "${HIVEMIND_PORT:-8080}:8080"
+      # Published on loopback by default: the cell is reachable only from this
+      # host until you choose otherwise. Set HIVEMIND_PUBLISH_ADDR to a
+      # specific interface address (e.g. a tailnet IP) to expose it, or keep
+      # loopback and put a TLS reverse proxy in front — see
+      # docs/SELF_HOSTING.md, "Exposing the cell deliberately".
+      - "${HIVEMIND_PUBLISH_ADDR:-127.0.0.1}:${HIVEMIND_PORT:-8080}:8080"
     environment:
       HIVEMIND_DIR: /data
       HIVEMIND_PORT: "8080"
@@ -22,6 +27,9 @@ services:
       # Per-tenant bearer tokens are issued via POST /v1/tenants (admin-gated).
       # Set HIVEMIND_ADMIN_KEY before provisioning your first tenant.
       HIVEMIND_ADMIN_KEY: "${HIVEMIND_ADMIN_KEY:-}"
+      # Static bearer token for SQLite mode (no HIVEMIND_DATABASE_URL). An
+      # empty value counts as unset; SQLite mode without it refuses to start.
+      HIVEMIND_API_KEY: "${HIVEMIND_API_KEY:-}"
       # Optional: enable the Layer-3 ingest classifier (Claude Haiku).
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
       # Optional: comma-separated CORS origins for browser SPA access.

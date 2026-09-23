@@ -31,7 +31,9 @@ fn test_ledger_dir() -> PathBuf {
 fn app(hivemind_dir: PathBuf) -> axum::Router {
     let config = hivemind::api::ApiConfig {
         hivemind_dir,
+        bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         port: 0,
+        allow_unauthenticated_remote: false,
         api_key: None,
         database_url: None,
         admin_key: None,

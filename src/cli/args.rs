@@ -1,3 +1,4 @@
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
@@ -98,9 +99,11 @@ pub enum Command {
     /// Run an MCP (Model Context Protocol) stdio server that exposes
     /// HiveMind's capture/query surface to MCP-aware clients.
     Mcp(McpArgs),
-    /// Start the HTTP REST API server. Auth token is read from
-    /// HIVEMIND_API_KEY; when unset the server starts in development mode
-    /// with no authentication.
+    /// Start the HTTP REST API server. Binds 127.0.0.1 by default (see
+    /// --bind). Auth token is read from HIVEMIND_API_KEY; when unset the
+    /// server starts in development mode with no authentication, which is
+    /// refused on a non-loopback --bind unless --allow-unauthenticated-remote
+    /// is passed.
     Serve(ServeArgs),
     /// Migrate an existing local SQLite ledger to a remote Postgres deployment.
     /// Replays all events from the SQLite source into the named Postgres tenant,
@@ -392,9 +395,21 @@ pub enum ExportFormat {
 
 #[derive(Debug, Clone, Args)]
 pub struct ServeArgs {
+    /// Address to bind. Defaults to loopback, so the server is reachable only
+    /// from this host; pass 0.0.0.0 (or a specific interface address) to
+    /// accept connections from other hosts.
+    #[arg(long, env = "HIVEMIND_BIND", default_value_t = IpAddr::V4(Ipv4Addr::LOCALHOST))]
+    pub bind: IpAddr,
+
     /// Port to listen on.
     #[arg(long, short = 'p', env = "HIVEMIND_PORT", default_value_t = 8080)]
     pub port: u16,
+
+    /// Allow serving WITHOUT authentication on a non-loopback --bind address.
+    /// Without this flag, development mode (no HIVEMIND_API_KEY and no
+    /// HIVEMIND_DATABASE_URL) refuses to start on anything but loopback.
+    #[arg(long)]
+    pub allow_unauthenticated_remote: bool,
 }
 
 #[cfg(feature = "shared-backend-postgres")]

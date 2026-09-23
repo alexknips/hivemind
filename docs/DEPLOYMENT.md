@@ -15,14 +15,17 @@ provided Docker image.
 git clone https://github.com/alexknips/hivemind
 cd hivemind
 
-# (Optional) Set an API key — omit for development mode (no auth)
+# (Optional) Static API key for the SQLite backend. The bundled compose file
+# uses Postgres, where tenant/user tokens are issued instead.
 export HIVEMIND_API_KEY=your-secret-key
 
 # Start HiveMind + Postgres
 docker compose up --build
 ```
 
-The HTTP API is available at `http://localhost:8080`.
+The HTTP API is available at `http://localhost:8080`. Compose publishes it on
+`127.0.0.1` only; see [SELF_HOSTING.md](SELF_HOSTING.md#exposing-the-cell-deliberately)
+for exposing it to other machines.
 
 Verify it is healthy:
 
@@ -44,8 +47,9 @@ reads these from the shell or from an `.env` file in the project root.
 |---|---|---|
 | `HIVEMIND_DATABASE_URL` | *(unset)* | Postgres connection string. Also accepted as `--database-url` on the CLI and `hivemind mcp` (flag beats the env var), not only by `serve`. When set, the process connects directly to Postgres instead of the local SQLite ledger. |
 | `HIVEMIND_DIR` | `/data` | Directory where the SQLite ledger is stored. Mount a volume here for persistence. |
+| `HIVEMIND_BIND` | `127.0.0.1` (`0.0.0.0` in the Docker image) | Address the HTTP API binds. Also accepted as `--bind` on the CLI. Development mode (no `HIVEMIND_API_KEY`, no `HIVEMIND_DATABASE_URL`) refuses a non-loopback bind unless `--allow-unauthenticated-remote` is passed. |
 | `HIVEMIND_PORT` | `8080` | Port the HTTP API listens on. Also accepted as `--port` / `-p` on the CLI. |
-| `HIVEMIND_API_KEY` | *(unset)* | Static bearer token (SQLite mode only). Omit for development/trusted-network mode. |
+| `HIVEMIND_API_KEY` | *(unset)* | Static bearer token (SQLite mode only). Unset (or empty) with no `HIVEMIND_DATABASE_URL` means development mode: no auth, loopback bind only. |
 | `HIVEMIND_ADMIN_KEY` | *(unset)* | Bearer token for `POST /v1/tenants` (Postgres mode). Required before provisioning tenants. |
 | `HIVEMIND_TENANT` | `local` | Tenant to open. For the CLI and `hivemind mcp` this selects the Postgres tenant scope when `HIVEMIND_DATABASE_URL`/`--database-url` is also set (see below for what happens on an unrecognized value). Not used by `serve`, which resolves the tenant per request from the caller's auth instead. |
 | `HIVEMIND_CORS_ORIGINS` | *(unset)* | Comma-separated origins for browser cross-origin requests. |

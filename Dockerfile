@@ -58,6 +58,12 @@ COPY --from=builder /app/target/release/hivemind /usr/local/bin/hivemind
 COPY --from=spa-builder /app/website/dist /app/dist
 
 ENV HIVEMIND_DIR=/data
+# Inside the container the server must listen on every interface so the
+# published port can reach it; who can reach that port is decided by the
+# `ports:` mapping (docker-compose.yml publishes on 127.0.0.1). With no
+# HIVEMIND_API_KEY and no HIVEMIND_DATABASE_URL `serve` refuses to start on
+# this bind — an image run unauthenticated fails closed.
+ENV HIVEMIND_BIND=0.0.0.0
 ENV HIVEMIND_PORT=8080
 ENV HIVEMIND_SPA_DIR=/app/dist
 

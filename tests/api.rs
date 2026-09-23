@@ -21,7 +21,9 @@ fn test_ledger_dir() -> PathBuf {
 fn app(hivemind_dir: PathBuf) -> axum::Router {
     let config = hivemind::api::ApiConfig {
         hivemind_dir,
+        bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         port: 0,
+        allow_unauthenticated_remote: false,
         api_key: None,
         database_url: None,
         admin_key: None,
@@ -41,7 +43,9 @@ fn app(hivemind_dir: PathBuf) -> axum::Router {
 fn app_with_key(hivemind_dir: PathBuf, key: &str) -> axum::Router {
     let config = hivemind::api::ApiConfig {
         hivemind_dir,
+        bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         port: 0,
+        allow_unauthenticated_remote: false,
         api_key: Some(key.to_owned()),
         database_url: None,
         admin_key: None,
@@ -61,7 +65,9 @@ fn app_with_key(hivemind_dir: PathBuf, key: &str) -> axum::Router {
 fn app_with_cors(hivemind_dir: PathBuf, origins: Vec<String>) -> axum::Router {
     let config = hivemind::api::ApiConfig {
         hivemind_dir,
+        bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         port: 0,
+        allow_unauthenticated_remote: false,
         api_key: None,
         database_url: None,
         admin_key: None,
@@ -1486,7 +1492,9 @@ mod classify_queue_postgres {
     fn app_postgres(database_url: &str) -> axum::Router {
         let config = hivemind::api::ApiConfig {
             hivemind_dir: test_ledger_dir(),
+            bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             port: 0,
+            allow_unauthenticated_remote: false,
             api_key: None,
             database_url: Some(database_url.to_owned()),
             admin_key: Some("classify-queue-test-admin-key".to_owned()),
@@ -1957,7 +1965,9 @@ async fn cors_auth_still_enforced_on_cross_origin_request() {
     let origin = "https://alexknips.github.io";
     let config = hivemind::api::ApiConfig {
         hivemind_dir: dir,
+        bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         port: 0,
+        allow_unauthenticated_remote: false,
         api_key: Some("secret".to_owned()),
         database_url: None,
         admin_key: None,
@@ -1995,7 +2005,9 @@ async fn cors_auth_still_enforced_on_cross_origin_request() {
 fn app_with_admin_key(hivemind_dir: PathBuf, admin_key: &str) -> axum::Router {
     let config = hivemind::api::ApiConfig {
         hivemind_dir,
+        bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         port: 0,
+        allow_unauthenticated_remote: false,
         api_key: None,
         database_url: None,
         admin_key: Some(admin_key.to_owned()),

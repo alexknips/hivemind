@@ -250,7 +250,9 @@ fn run_mcp(cli: &Cli, args: &McpArgs) -> Result<String> {
 
 fn run_serve(cli: &Cli, args: &ServeArgs) -> Result<String> {
     let config = crate::api::ApiConfig::new(cli.hivemind_dir.clone())
+        .with_bind(args.bind)
         .with_port(args.port)
+        .with_allow_unauthenticated_remote(args.allow_unauthenticated_remote)
         .with_database_url(LedgerConfig::from_cli(cli).database_url);
     // Build AppState (which constructs r2d2/postgres pool) BEFORE entering
     // the tokio runtime. r2d2 pool construction internally calls block_on,

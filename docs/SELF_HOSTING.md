@@ -9,7 +9,9 @@ you control. One `docker compose up` command brings up the full stack.
 ## Prerequisites
 
 - Docker 24+ and Docker Compose v2 (`docker compose version`)
-- Port 8080 available on the host (or set `HIVEMIND_PORT`)
+- Port 8080 available on the host (or set `HIVEMIND_PORT`). It is published
+  on `127.0.0.1` only — see [Exposing the cell deliberately](#exposing-the-cell-deliberately)
+  to let other machines reach it
 
 No other dependencies: Postgres runs as a companion container; the HiveMind
 image bundles the SPA.
@@ -40,7 +42,7 @@ The server is ready when `hivemind` shows `healthy`:
 
 ```
 NAME        STATUS                   PORTS
-hivemind    Up (healthy)             0.0.0.0:8080->8080/tcp
+hivemind    Up (healthy)             127.0.0.1:8080->8080/tcp
 postgres    Up (healthy)
 ```
 
@@ -178,7 +180,13 @@ HIVEMIND_API_KEY=your-secret-key
 
 When both `HIVEMIND_API_KEY` and `HIVEMIND_DATABASE_URL` are unset the server
 starts in **development mode** — all requests are accepted without a token.
-Only use this on a trusted private network.
+That is only acceptable on loopback, so `hivemind serve` refuses to start in
+development mode on a non-loopback bind unless you pass
+`--allow-unauthenticated-remote` (see
+[Exposing the cell deliberately](#exposing-the-cell-deliberately)). In
+SQLite mode set `HIVEMIND_API_KEY` as well: per-user tokens alone do not close
+the server to requests that send no token. An empty `HIVEMIND_API_KEY` or
+`HIVEMIND_ADMIN_KEY` counts as unset.
 
 ---
 
@@ -192,8 +200,10 @@ project root, or from the shell environment.
 | `HIVEMIND_DATABASE_URL` | *(unset)* | Postgres connection string. When set enables the multi-tenant Postgres backend. Also accepted as `--database-url` on the CLI and `hivemind mcp` (flag beats the env var), not only by `serve` — see below. Unset = SQLite at `HIVEMIND_DIR`. |
 | `HIVEMIND_DIR` | `/data` | Directory for the SQLite ledger (SQLite mode only). Mount a volume here. |
 | `HIVEMIND_PORT` | `8080` | Port the HTTP API listens on inside the container. |
+| `HIVEMIND_BIND` | `127.0.0.1` (`0.0.0.0` in the Docker image) | Address `hivemind serve` binds (`--bind`). The image sets `0.0.0.0` so the published port can reach the server inside the container; exposure to the network is decided by `HIVEMIND_PUBLISH_ADDR`, not by this. Not set in `.env` for compose — it is baked into the image. |
+| `HIVEMIND_PUBLISH_ADDR` | `127.0.0.1` | Host address compose publishes `HIVEMIND_PORT` on (compose only). See [Exposing the cell deliberately](#exposing-the-cell-deliberately). |
 | `HIVEMIND_ADMIN_KEY` | *(unset)* | Bearer token for `POST /v1/tenants`, `POST /v1/users`, `GET /v1/users`, and token revocation. Required before provisioning tenants or users. |
-| `HIVEMIND_API_KEY` | *(unset)* | Static bearer token (SQLite mode only). Omit for development/trusted-network mode. |
+| `HIVEMIND_API_KEY` | *(unset)* | Static bearer token (SQLite mode only; forwarded by `docker-compose.yml`). With neither this nor `HIVEMIND_DATABASE_URL` set the server runs in development mode (no auth), which refuses a non-loopback bind. |
 | `ANTHROPIC_API_KEY` | *(unset)* | Enables the Layer-3 ingest classifier (Claude Haiku). Optional. |
 | `HIVEMIND_CORS_ORIGINS` | *(unset)* | Comma-separated origins allowed for browser cross-origin requests. |
 | `POSTGRES_PASSWORD` | `hivemind` | Password for the bundled Postgres service. Change before production. |
@@ -388,8 +398,8 @@ personal per-user token (Step 2 above) whenever that trust does not hold.
 
 ## Using the CLI / MCP from local agents
 
-The compose stack above publishes only port 8080 (`docker-compose.yml`);
-Postgres is reachable only on the compose network. An agent that wants to
+The compose stack above publishes only port 8080, on `127.0.0.1`
+(`docker-compose.yml`); Postgres is reachable only on the compose network. An agent that wants to
 run the `hivemind` CLI or `hivemind mcp` with `--database-url` /
 `HIVEMIND_DATABASE_URL` against the cell's own Postgres — instead of going
 through the HTTP API — needs one of the following.
@@ -437,12 +447,51 @@ container.
 
 ---
 
+## Exposing the cell deliberately
+
+Out of the box the cell is reachable only from the machine it runs on:
+
+- `docker-compose.yml` publishes `127.0.0.1:8080`, not every interface.
+- `hivemind serve` binds `127.0.0.1` unless told otherwise (`--bind` /
+  `HIVEMIND_BIND`). The Docker image sets `HIVEMIND_BIND=0.0.0.0` *inside* the
+  container so the published port can reach it; what the network can see is
+  decided by the `ports:` mapping.
+- On the Postgres backend, reads and writes of the ledger need a bearer token
+  (the Slack routes need a valid Slack signature instead); `/v1/health` and
+  `/v1/version` are open probes.
+
+To let other machines in, choose one:
+
+- **Reverse proxy on the same host (recommended).** Keep the loopback publish
+  and point Caddy, nginx or Traefik at `127.0.0.1:8080`; terminate TLS there.
+- **A private-network address, such as a tailnet IP.** Set
+  `HIVEMIND_PUBLISH_ADDR=<that interface's address>` in `.env` and run
+  `docker compose up -d`.
+- **Every interface.** `HIVEMIND_PUBLISH_ADDR=0.0.0.0`. Docker inserts its own
+  firewall rules for published ports, which bypass host firewalls such as
+  `ufw` — only do this behind a network-level firewall or security group.
+
+Agents on other machines then use that address in place of
+`http://localhost:8080` (for example in the `/mcp` config below).
+
+**Unauthenticated servers.** `hivemind serve` without `HIVEMIND_API_KEY` and
+without `HIVEMIND_DATABASE_URL` runs in development mode and accepts every
+request without a token. It refuses to start that way on a non-loopback
+`--bind`. `--allow-unauthenticated-remote` overrides the refusal for the rare
+case where the network itself is the boundary; the server then logs a warning
+naming the flag on every start. The startup log always states the auth mode
+and the address it bound.
+
+---
+
 ## Production checklist
 
 - [ ] Set `HIVEMIND_ADMIN_KEY` to a strong random value (`openssl rand -hex 32`)
 - [ ] Set `POSTGRES_PASSWORD` to a strong random value
 - [ ] Place a TLS-terminating reverse proxy (Caddy, nginx, Traefik) in front
-      of port 8080 — the server speaks plain HTTP
+      of the cell, proxying to `127.0.0.1:8080` — the server speaks plain HTTP
+- [ ] Keep `HIVEMIND_PUBLISH_ADDR` at its `127.0.0.1` default unless you have
+      deliberately chosen another address
 - [ ] Back up the `postgres-data` Docker volume regularly
 - [ ] Monitor `GET /v1/health` with an external uptime checker
 - [ ] Set `restart: always` in compose for unattended recovery

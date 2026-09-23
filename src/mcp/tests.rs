@@ -922,7 +922,9 @@ mod transport_parity {
     fn http_app(dir: &std::path::Path) -> axum::Router {
         let config = crate::api::ApiConfig {
             hivemind_dir: dir.to_path_buf(),
+            bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
             port: 0,
+            allow_unauthenticated_remote: false,
             api_key: None,
             database_url: None,
             admin_key: None,

@@ -4,8 +4,14 @@
 # The postgres service still starts from the base file unless you pass
 # --no-deps (which CI does so the health-wait is skipped entirely):
 #   docker compose -f docker-compose.yml -f docker-compose.e2e-sqlite.yml up -d --no-deps hivemind
+#
+# The SQLite server runs in development mode (no auth) and the image binds
+# every interface inside the container, which `serve` refuses without an
+# explicit opt-in. The opt-in is safe here: the base compose file publishes the
+# port on 127.0.0.1 only, and this stack exists solely for the CI smoke run.
 services:
   hivemind:
     image: hivemind:e2e
+    command: ["serve", "--allow-unauthenticated-remote"]
     environment:
       HIVEMIND_DATABASE_URL: ""
