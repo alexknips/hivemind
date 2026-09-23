@@ -78,6 +78,7 @@ pub fn seed_tenant<L: EventLedger>(ledger: &L, name: &'static str) -> TestResult
             evidence_ids: &ev_refs,
             quote: None,
             question: None,
+            project: None,
         })?;
         decision_ids.push(decision_id);
     }

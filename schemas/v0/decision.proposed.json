@@ -52,6 +52,15 @@
           "type": "string",
           "minLength": 1,
           "description": "The question quote answers, spelled out. Always present together with quote."
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Registered project handle the decision is filed under. Omitted means no handle was given (project_source is then personal_fallback) or the event predates the field; the projector derives the recorder's personal project from actor_id, it is never stored."
+        },
+        "project_source": {
+          "enum": ["stated", "folder_marker", "rig", "current_project", "job", "personal_fallback", "moved"],
+          "description": "How project was determined. Omitted on events predating this field; the write layer records personal_fallback whenever no project handle is given."
         }
       }
     }

@@ -13,8 +13,8 @@ use crate::events::{
 use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
 use super::{
-    normalize_topic_key, Commands, DecisionProposalInput, GroundInput, Grounding, SupersedeInput,
-    MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN,
+    normalize_topic_key, personal_project_handle, Commands, DecisionProposalInput, GroundInput,
+    Grounding, SupersedeInput, MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN,
 };
 
 #[test]
@@ -208,6 +208,7 @@ fn propose_decision_fans_out_relation_events_with_causation_linkage() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "Pick queue strategy",
             rationale: "Need robust ingestion that survives a burst of traffic",
@@ -294,6 +295,7 @@ fn propose_decision_stores_paired_quote_and_question() {
             evidence_ids: &[],
             quote: Some("1a"),
             question: Some("Should a personal project be visible to the whole tenant?"),
+            project: None,
         })
         .expect("propose decision with paired quote/question");
 
@@ -337,6 +339,7 @@ fn propose_decision_rejects_quote_without_question() {
             evidence_ids: &[],
             quote: Some("1a"),
             question: None,
+            project: None,
         })
         .expect_err("quote without question must be refused");
     assert!(
@@ -372,6 +375,7 @@ fn propose_decision_rejects_question_without_quote() {
             evidence_ids: &[],
             quote: None,
             question: Some("Should a personal project be visible to the whole tenant?"),
+            project: None,
         })
         .expect_err("question without quote must be refused");
     assert!(
@@ -392,6 +396,7 @@ fn propose_decision_rejects_rationale_shorter_than_the_minimum_length() {
 
     let error = commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
             actor_id: "actor:alice",
@@ -425,6 +430,7 @@ fn propose_decision_rejects_rationale_with_too_few_words() {
 
     let error = commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
             actor_id: "actor:alice",
@@ -458,6 +464,7 @@ fn propose_decision_rejects_rationale_with_a_bare_list_reference() {
 
     let error = commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
             actor_id: "actor:alice",
@@ -497,6 +504,7 @@ fn propose_decision_allows_a_list_shaped_rationale_when_quote_and_question_are_g
 
     commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
             actor_id: "actor:alice",
@@ -517,6 +525,338 @@ fn propose_decision_allows_a_list_shaped_rationale_when_quote_and_question_are_g
 }
 
 #[test]
+fn propose_decision_refuses_unregistered_project_handle() {
+    // Write rule (approved record shape, item 2): a stated handle must be registered,
+    // else a refusal that names the handle and the register command.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    let error = commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id: "actor:alice",
+            title: "File under an unregistered project",
+            rationale: "Billing owns this call so the record belongs under its project",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &["Option A".to_owned()],
+            chosen_option_id: Some(option_id.as_str()),
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+            project: Some("billing"),
+        })
+        .expect_err("unregistered project handle must be refused");
+    let message = error.to_string();
+    assert!(message.contains("billing"), "unexpected error: {message}");
+    assert!(
+        message.contains("hivemind project register"),
+        "refusal must name the register command: {message}"
+    );
+    assert!(ledger.read(0, 10).expect("read succeeds").is_empty());
+}
+
+#[test]
+fn propose_decision_accepts_registered_project_handle_and_records_stated_source() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands
+        .register_project("actor:alice", "billing", Some("Billing"), None)
+        .expect("register succeeds");
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id: "actor:alice",
+            title: "File under billing",
+            rationale: "Billing owns this call so the record belongs under its project",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &["Option A".to_owned()],
+            chosen_option_id: Some(option_id.as_str()),
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+            project: Some("billing"),
+        })
+        .expect("propose decision with a registered project succeeds");
+
+    let events = ledger.read(0, 10).expect("read succeeds");
+    let proposal = events
+        .iter()
+        .find(|event| event.event_type == EventType::DecisionProposed)
+        .expect("proposal event present");
+    assert_eq!(
+        proposal.payload.get("project").and_then(|v| v.as_str()),
+        Some("billing")
+    );
+    assert_eq!(
+        proposal
+            .payload
+            .get("project_source")
+            .and_then(|v| v.as_str()),
+        Some("stated")
+    );
+}
+
+#[test]
+fn propose_decision_without_project_records_personal_fallback_and_no_handle() {
+    // No handle given: the write layer records project_source = personal_fallback and
+    // leaves `project` unset on the payload -- the projector derives the personal address
+    // from actor_id, the write layer never stores it (approved record shape, item 2).
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id: "actor:alice",
+            title: "File with no project stated",
+            rationale: "No project was named so the record lands in the personal project",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &["Option A".to_owned()],
+            chosen_option_id: Some(option_id.as_str()),
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+            project: None,
+        })
+        .expect("propose decision without a project succeeds");
+
+    let events = ledger.read(0, 10).expect("read succeeds");
+    let proposal = events
+        .iter()
+        .find(|event| event.event_type == EventType::DecisionProposed)
+        .expect("proposal event present");
+    assert!(
+        proposal.payload.get("project").is_none(),
+        "no project field must be written when no handle was given"
+    );
+    assert_eq!(
+        proposal
+            .payload
+            .get("project_source")
+            .and_then(|v| v.as_str()),
+        Some("personal_fallback")
+    );
+}
+
+#[test]
+fn propose_decision_rejects_reserved_personal_prefix_as_stated_project() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+
+    let error = commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id: "actor:alice",
+            title: "State a personal project directly",
+            rationale: "Personal addresses are derived from the actor and never typed",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &["Option A".to_owned()],
+            chosen_option_id: Some(option_id.as_str()),
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+            project: Some("personal:alice"),
+        })
+        .expect_err("a stated personal: handle must be refused");
+    assert!(
+        error.to_string().contains("personal:"),
+        "unexpected error: {error}"
+    );
+    assert!(ledger.read(0, 10).expect("read succeeds").is_empty());
+}
+
+#[test]
+fn supersede_inherits_old_decision_project_when_not_restated() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands
+        .register_project("actor:alice", "billing", None, None)
+        .expect("register succeeds");
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let old_decision_id = commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id: "actor:alice",
+            title: "Decision A",
+            rationale: "Decision A is filed under billing so later readers can find it",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &["Option A".to_owned()],
+            chosen_option_id: Some(option_id.as_str()),
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+            project: Some("billing"),
+        })
+        .expect("propose decision A");
+
+    let outcome = commands
+        .supersede(SupersedeInput {
+            actor_id: "actor:alice",
+            old_decision_id: &old_decision_id,
+            new_title: "Decision B",
+            new_rationale: "Decision B replaces decision A because the billing plan changed",
+            topic_keys: &["topic".to_owned()],
+            option_labels: &["Option A".to_owned()],
+            chosen_option_label: Some("Option A"),
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            project: None,
+        })
+        .expect("supersede succeeds");
+
+    let events = ledger.read(0, 20).expect("read succeeds");
+    let new_proposal = events
+        .iter()
+        .find(|event| {
+            event.event_type == EventType::DecisionProposed
+                && event.payload.get("decision_id").and_then(|v| v.as_str())
+                    == Some(outcome.new_decision_id.as_str())
+        })
+        .expect("new proposal event present");
+    assert_eq!(
+        new_proposal.payload.get("project").and_then(|v| v.as_str()),
+        Some("billing"),
+        "supersede must inherit the old decision's project when not restated"
+    );
+    assert_eq!(
+        new_proposal
+            .payload
+            .get("project_source")
+            .and_then(|v| v.as_str()),
+        Some("stated"),
+        "the inherited project_source must carry over verbatim, not be overwritten"
+    );
+}
+
+#[test]
+fn supersede_overrides_project_when_explicitly_stated() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands
+        .register_project("actor:alice", "billing", None, None)
+        .expect("register billing succeeds");
+    commands
+        .register_project("actor:alice", "payments", None, None)
+        .expect("register payments succeeds");
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let old_decision_id = commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id: "actor:alice",
+            title: "Decision A",
+            rationale: "Decision A is filed under billing so later readers can find it",
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &["Option A".to_owned()],
+            chosen_option_id: Some(option_id.as_str()),
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+            project: Some("billing"),
+        })
+        .expect("propose decision A");
+
+    let outcome = commands
+        .supersede(SupersedeInput {
+            actor_id: "actor:alice",
+            old_decision_id: &old_decision_id,
+            new_title: "Decision B",
+            new_rationale: "Decision B replaces decision A because the billing plan changed",
+            topic_keys: &["topic".to_owned()],
+            option_labels: &["Option A".to_owned()],
+            chosen_option_label: Some("Option A"),
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            project: Some("payments"),
+        })
+        .expect("supersede succeeds");
+
+    let events = ledger.read(0, 20).expect("read succeeds");
+    let new_proposal = events
+        .iter()
+        .find(|event| {
+            event.event_type == EventType::DecisionProposed
+                && event.payload.get("decision_id").and_then(|v| v.as_str())
+                    == Some(outcome.new_decision_id.as_str())
+        })
+        .expect("new proposal event present");
+    assert_eq!(
+        new_proposal.payload.get("project").and_then(|v| v.as_str()),
+        Some("payments"),
+        "an explicit project on supersede must override the inherited one"
+    );
+}
+
+#[test]
+fn personal_project_handle_strips_session_from_agent_actor() {
+    // Personal address rule (Alex, choice 3a): agent:<tool>:<session> becomes
+    // personal:agent:<tool> -- the session is provenance, not part of the address.
+    assert_eq!(
+        personal_project_handle("agent:claude:scribe-42"),
+        "personal:agent:claude"
+    );
+    assert_eq!(
+        personal_project_handle("agent:codex:furiosa"),
+        "personal:agent:codex"
+    );
+}
+
+#[test]
+fn personal_project_handle_keeps_human_actor_id_intact() {
+    // human:<id> has no session component to remove.
+    assert_eq!(
+        personal_project_handle("human:alice"),
+        "personal:human:alice"
+    );
+}
+
+#[test]
 fn direct_agent_decision_persists_agent_provenance() {
     let dir = std::env::temp_dir().join(format!("hivemind-agent-provenance-{}", Uuid::new_v4()));
     let actor_id = "agent:codex:furiosa";
@@ -533,6 +873,7 @@ fn direct_agent_decision_persists_agent_provenance() {
             .propose_decision(DecisionProposalInput {
                 grounding: Grounding::NotAsked,
                 expressed_confidence: None,
+                project: None,
                 actor_id,
                 title: "Record direct agent provenance",
                 rationale: "Agent-written decisions must be distinguishable from CLI writes",
@@ -586,6 +927,7 @@ fn accept_and_reject_invariant_for_same_actor_is_enforced() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "Pick one",
             rationale: "Need to make progress on this before the deadline",
@@ -625,6 +967,7 @@ fn propose_decision_with_decided_by_emits_accepted_event_from_that_actor() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "agent:claude:scribe",
             title: "Human decides, agent records",
             rationale: "The human chose; the agent is only writing it down",
@@ -670,6 +1013,7 @@ fn propose_decision_decided_by_requires_chosen_option_id() {
     let result = commands.propose_decision(DecisionProposalInput {
         grounding: Grounding::NotAsked,
         expressed_confidence: None,
+        project: None,
         actor_id: "agent:claude:scribe",
         title: "No chosen option yet",
         rationale: "Still an open proposal",
@@ -705,6 +1049,7 @@ fn propose_decision_chosen_option_defaults_to_self_accepted() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "Chosen option, no decided_by",
             rationale: "The proposer is the decider here",
@@ -747,6 +1092,7 @@ fn propose_decision_still_proposed_keeps_chosen_option_open() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "Proposed with a leaning but not decided",
             rationale: "Awaiting someone else's decision",
@@ -783,6 +1129,7 @@ fn propose_decision_still_proposed_conflicts_with_decided_by() {
     let result = commands.propose_decision(DecisionProposalInput {
         grounding: Grounding::NotAsked,
         expressed_confidence: None,
+        project: None,
         actor_id: "actor:alice",
         title: "Contradictory flags",
         rationale: "still_proposed and decided_by disagree about whether this is decided",
@@ -818,6 +1165,7 @@ fn propose_decision_rejects_mismatched_option_labels_length() {
     let result = commands.propose_decision(DecisionProposalInput {
         grounding: Grounding::NotAsked,
         expressed_confidence: None,
+        project: None,
         actor_id: "actor:alice",
         title: "Mismatched labels",
         rationale: "option_labels shorter than option_ids and non-empty",
@@ -859,6 +1207,7 @@ project for non-coders, anyone registers, parent const";
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: run_on_title,
             rationale: "rationale",
@@ -894,6 +1243,7 @@ fn propose_decision_rejects_title_at_max_len_plus_one() {
     let result = commands.propose_decision(DecisionProposalInput {
         grounding: Grounding::NotAsked,
         expressed_confidence: None,
+        project: None,
         actor_id: "actor:alice",
         title: &title,
         rationale: "rationale",
@@ -928,6 +1278,7 @@ fn propose_decision_accepts_title_at_exactly_max_len() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: &title,
             rationale: "This rationale is long enough to pass the minimum checks.",
@@ -958,6 +1309,7 @@ fn propose_decision_rejects_multi_sentence_title() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "Use SQLite for slice 1. Migrate to Postgres later.",
             rationale: "rationale",
@@ -994,6 +1346,7 @@ fn propose_decision_rejects_numbered_list_title() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "1) Use SQLite 2) Add WAL mode",
             rationale: "rationale",
@@ -1030,6 +1383,7 @@ fn propose_decision_accepts_title_with_single_trailing_period_and_version_dots()
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "Ship v1.2.3 to prod.",
             rationale: "This rationale is long enough to pass the minimum checks.",
@@ -1059,6 +1413,7 @@ fn supersede_rejects_new_title_over_max_length() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "Decision A",
             rationale: "This rationale is long enough to pass the minimum checks.",
@@ -1077,6 +1432,7 @@ fn supersede_rejects_new_title_over_max_length() {
 
     let new_title: String = "y".repeat(MAX_TITLE_LEN + 1);
     let result = commands.supersede(SupersedeInput {
+        project: None,
         actor_id: "actor:alice",
         old_decision_id: &old_decision_id,
         new_title: &new_title,
@@ -1114,6 +1470,7 @@ fn propose_decision_persists_option_descriptions_on_the_event() {
 
     commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
             actor_id: "actor:alice",
@@ -1171,6 +1528,7 @@ fn supersede_requires_both_decisions_to_exist() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "Decision A",
             rationale: "This is a self-contained rationale for the test decision.",
@@ -1191,6 +1549,7 @@ fn supersede_requires_both_decisions_to_exist() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "Decision B",
             rationale: "This is a self-contained rationale for the test decision.",
@@ -1228,6 +1587,7 @@ fn disagree_records_reason_and_is_idempotent_for_same_actor() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "Decision A",
             rationale: "This is a self-contained rationale for the test decision.",
@@ -1289,6 +1649,7 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "Decision A",
             rationale: "This is a self-contained rationale for the test decision.",
@@ -1307,6 +1668,7 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
 
     let first = commands
         .supersede(SupersedeInput {
+            project: None,
             actor_id: "actor:alice",
             old_decision_id: &old_decision_id,
             new_title: "Decision B",
@@ -1321,6 +1683,7 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
     let latest_after_first = ledger.latest_offset().expect("latest offset");
     let second = commands
         .supersede(SupersedeInput {
+            project: None,
             actor_id: "actor:alice",
             old_decision_id: &old_decision_id,
             new_title: "Decision B",
@@ -1372,6 +1735,7 @@ fn first_class_disagree_and_supersede_require_existing_targets() {
         .is_err());
     assert!(commands
         .supersede(SupersedeInput {
+            project: None,
             actor_id: "actor:alice",
             old_decision_id: "decision-missing",
             new_title: "Decision B",
@@ -1397,6 +1761,7 @@ fn attach_evidence_requires_existing_endpoints() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "Decision A",
             rationale: "This is a self-contained rationale for the test decision.",
@@ -1793,6 +2158,7 @@ fn propose_decision_normalizes_topic_keys() {
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:alice",
             title: "Normalize topics",
             rationale: "Keep topic filters consistent across every capture surface",
@@ -1859,6 +2225,7 @@ fn propose_minimal_decision(commands: &Commands<'_, InMemoryEventLedger>, title:
         .expect("record option");
     commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
             actor_id: "actor:alice",
@@ -1890,6 +2257,7 @@ fn propose_decision_with_declared_grounding_creates_follows_from_edge_with_causa
 
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::Declared {
                 premise_decision_ids: &premise_ids,
                 evidence_ids: &[],
@@ -1951,6 +2319,7 @@ fn propose_decision_rejects_declared_grounding_with_nothing_named() {
 
     let error = commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::Declared {
                 premise_decision_ids: &[],
                 evidence_ids: &[],
@@ -2000,6 +2369,7 @@ fn propose_decision_rejects_self_premise() {
     let error = commands
         .propose_decision_with_id(
             DecisionProposalInput {
+                project: None,
                 grounding: Grounding::Declared {
                     premise_decision_ids: &premise_ids,
                     evidence_ids: &[],
@@ -2050,6 +2420,7 @@ fn propose_decision_rejects_nonexistent_premise() {
 
     let error = commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::Declared {
                 premise_decision_ids: &premise_ids,
                 evidence_ids: &[],
@@ -2095,6 +2466,7 @@ fn propose_decision_reports_stale_premise_when_superseded() {
     let result = commands
         .propose_decision_with_id(
             DecisionProposalInput {
+                project: None,
                 grounding: Grounding::Declared {
                     premise_decision_ids: &premise_ids,
                     evidence_ids: &[],
@@ -2151,6 +2523,7 @@ fn propose_decision_reports_only_rejected_or_superseded_premises_as_stale() {
     let result = commands
         .propose_decision_with_id(
             DecisionProposalInput {
+                project: None,
                 grounding: Grounding::Declared {
                     premise_decision_ids: &premise_ids,
                     evidence_ids: &[],
@@ -2196,6 +2569,7 @@ fn propose_decision_validates_expressed_confidence_vocabulary() {
 
     let error = commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::NotAsked,
             expressed_confidence: Some("very high"),
             actor_id: "actor:alice",
@@ -2231,6 +2605,7 @@ fn propose_decision_stores_expressed_confidence_from_input() {
 
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::NotAsked,
             expressed_confidence: Some("medium"),
             actor_id: "actor:alice",

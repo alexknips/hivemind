@@ -1075,6 +1075,7 @@ fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
         CommandContext::new(tenant_id.clone(), fluent_write_provenance(&cli.actor)),
     );
     let outcome = commands.supersede(SupersedeInput {
+        project: None,
         actor_id: &cli.actor,
         old_decision_id: &old_decision_id,
         new_title: &args.title,
@@ -1250,6 +1251,7 @@ pub(crate) fn run_review_session<R: BufRead, W: IoWrite>(
                     .and_then(|line| non_empty_owned(&line));
 
                     let outcome = commands.supersede(SupersedeInput {
+                        project: None,
                         actor_id: &cli.actor,
                         old_decision_id: &item.decision_id,
                         new_title: &title,
@@ -1603,6 +1605,7 @@ fn propose_decision_from_option_labels<L: EventLedger>(
     }
 
     commands.propose_decision(DecisionProposalInput {
+        project: None,
         actor_id,
         title: &args.title,
         rationale: &args.rationale,

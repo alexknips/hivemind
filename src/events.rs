@@ -216,6 +216,17 @@ pub struct DecisionProposedPayload {
     /// with `quote`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
+    /// Registered project handle this decision was filed under. `#[serde(default)]` so
+    /// every event predating this field still parses; a missing value means the decision
+    /// projects to the recorder's personal project (see `commands::validate_project_handle`
+    /// and `personal_project_handle`), never a migration or rewrite of old events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// How `project` was determined. The write layer always records one of these for a
+    /// freshly-written event (`Stated` when a handle was given, `PersonalFallback`
+    /// otherwise) — `None` only ever appears on events written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_source: Option<ProjectSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -778,6 +789,51 @@ impl ProjectAnchorKind {
     }
 }
 
+/// How a decision's `project` field was determined (approved record shape, item 2).
+/// Only `Stated` and `PersonalFallback` are produced by the write layer today
+/// (hivemind-s15q.3); the rest are reserved for the surfaces that determine a project
+/// from context — folder marker / rig (hivemind-s15q.12), current project
+/// (hivemind-s15q.13), capture job (hivemind-s15q.15), and an explicit move
+/// (hivemind-s15q.10) — so the wire format never needs to widen again as those land.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectSource {
+    Stated,
+    FolderMarker,
+    Rig,
+    CurrentProject,
+    Job,
+    PersonalFallback,
+    Moved,
+}
+
+impl ProjectSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stated => "stated",
+            Self::FolderMarker => "folder_marker",
+            Self::Rig => "rig",
+            Self::CurrentProject => "current_project",
+            Self::Job => "job",
+            Self::PersonalFallback => "personal_fallback",
+            Self::Moved => "moved",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "stated" => Some(Self::Stated),
+            "folder_marker" => Some(Self::FolderMarker),
+            "rig" => Some(Self::Rig),
+            "current_project" => Some(Self::CurrentProject),
+            "job" => Some(Self::Job),
+            "personal_fallback" => Some(Self::PersonalFallback),
+            "moved" => Some(Self::Moved),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectRegisteredPayload {
@@ -1083,6 +1139,7 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
                 };
                 return Err(EventValidationError::RequiresPairedField(present, missing));
             }
+            require_optional_non_empty("payload.project", payload.project.as_deref())?;
             Ok(EventPayload::DecisionProposed(payload))
         }
         EventType::DecisionRequested => {

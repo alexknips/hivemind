@@ -355,6 +355,7 @@ fn capture_decision_blocking(
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: &ctx.actor_id,
             title: &req.title,
             rationale: &req.rationale,
@@ -534,6 +535,7 @@ pub(super) async fn supersede_handler(
         );
         let outcome = commands
             .supersede(SupersedeInput {
+                project: None,
                 actor_id: &ctx.actor_id,
                 old_decision_id: &old_decision_id,
                 new_title: &req.title,

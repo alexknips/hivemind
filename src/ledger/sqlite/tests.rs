@@ -261,6 +261,7 @@ fn write_shared_decision(
         DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: "actor:test",
             title,
             rationale: "Tenant-specific rationale for the isolation test",

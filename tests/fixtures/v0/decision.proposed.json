@@ -17,7 +17,9 @@
     "option_descriptions": ["Embedded, no server dependency", "Requires a separate server process"],
     "chosen_option_id": "opt-sqlite",
     "hypothesis_ids": ["hyp-embedded-is-enough"],
-    "evidence_ids": ["ev-sqlite-wal"]
+    "evidence_ids": ["ev-sqlite-wal"],
+    "project": "hivemind",
+    "project_source": "stated"
   },
   "ts": "2026-05-17T20:40:43Z"
 }

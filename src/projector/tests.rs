@@ -725,6 +725,129 @@ fn decision_proposed_without_quote_stores_null() -> Result<()> {
 }
 
 #[test]
+fn decision_proposed_with_stated_project_stores_handle_and_source() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:billing-1",
+            "title": "Use per-seat pricing",
+            "rationale": "Simpler to reason about at our scale",
+            "topic_keys": ["pricing"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": [],
+            "project": "billing",
+            "project_source": "stated"
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let properties = graph
+        .nodes()
+        .get(&(NodeKind::Decision, "decision:billing-1".to_owned()))
+        .cloned()
+        .expect("decision node projected");
+    assert_eq!(
+        properties.get("project"),
+        Some(&GraphValue::String("billing".to_owned())),
+        "a stated project handle must be stored verbatim"
+    );
+    assert_eq!(
+        properties.get("project_source"),
+        Some(&GraphValue::String("stated".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn decision_proposed_without_project_falls_back_to_personal_address_for_agent_actor() -> Result<()>
+{
+    // No "project"/"project_source" in the payload at all -- the shape every event
+    // predating hivemind-s15q.3 has. Approved record shape item 8: "no migration, no
+    // rewrite" -- it must still project, deriving the personal address from actor_id
+    // rather than leaving the field empty.
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "agent:claude:scribe-42",
+        json!({
+            "decision_id": "decision:preexisting",
+            "title": "Use REST",
+            "rationale": "Standard practice",
+            "topic_keys": ["api"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let properties = graph
+        .nodes()
+        .get(&(NodeKind::Decision, "decision:preexisting".to_owned()))
+        .cloned()
+        .expect("decision node projected");
+    assert_eq!(
+        properties.get("project"),
+        Some(&GraphValue::String("personal:agent:claude".to_owned())),
+        "an event with no project field must project to the recorder's personal project"
+    );
+    assert_eq!(
+        properties.get("project_source"),
+        Some(&GraphValue::String("personal_fallback".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn decision_proposed_without_project_falls_back_to_personal_address_for_human_actor() -> Result<()>
+{
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "human:alice",
+        json!({
+            "decision_id": "decision:human-fallback",
+            "title": "Use REST",
+            "rationale": "Standard practice",
+            "topic_keys": ["api"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": [],
+            "project_source": "personal_fallback"
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let properties = graph
+        .nodes()
+        .get(&(NodeKind::Decision, "decision:human-fallback".to_owned()))
+        .cloned()
+        .expect("decision node projected");
+    assert_eq!(
+        properties.get("project"),
+        // human:<id> has no session component to strip.
+        Some(&GraphValue::String("personal:human:alice".to_owned()))
+    );
+    assert_eq!(
+        properties.get("project_source"),
+        Some(&GraphValue::String("personal_fallback".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
 fn decision_proposed_with_option_labels_stores_label_per_option() -> Result<()> {
     // hivemind-zdsh.3: option_labels must land on each Option node's `label` property so
     // digests/summaries can render titles instead of raw generated option ids.

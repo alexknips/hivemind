@@ -488,6 +488,8 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 expressed_confidence: None,
                 quote: None,
                 question: None,
+                project: None,
+                project_source: None,
             }),
         ),
         (

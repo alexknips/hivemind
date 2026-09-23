@@ -13,8 +13,8 @@ use crate::commands::normalize_topic_key;
 use crate::error::{CliError, CommandError};
 use crate::events::{
     DecisionProposedPayload, DecisionSupersededPayload, EventBuilder, EventId, EventPayload,
-    EventProvenance, EventType, EvidenceRecordedPayload, RelationAddedPayload, RelationKind,
-    RelationRemovedPayload, TenantId,
+    EventProvenance, EventType, EvidenceRecordedPayload, ProjectSource, RelationAddedPayload,
+    RelationKind, RelationRemovedPayload, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -1807,6 +1807,10 @@ fn emit_decision_proposed<L: EventLedger>(
             expressed_confidence: None,
             quote: None,
             question: None,
+            // No project context in a document-connector import: personal fallback, same
+            // rule the write layer applies for any other no-handle-given proposal.
+            project: None,
+            project_source: Some(ProjectSource::PersonalFallback),
         }),
     )
     .tenant_id(tenant_id.clone()) // ubs:ignore: EventBuilder::tenant_id() requires owned TenantId

@@ -764,6 +764,7 @@ mod tests {
         let input = DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: actor,
             title,
             rationale,
@@ -870,6 +871,7 @@ mod tests {
         );
         let supersede_topic_keys = ["api".to_string()];
         let supersede_input = SupersedeInput {
+            project: None,
             actor_id: "test-actor",
             old_decision_id: &old_id,
             new_title: "New Decision",

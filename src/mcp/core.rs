@@ -331,6 +331,7 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id: &args.actor_id,
             title: &args.title,
             rationale: &args.rationale,
@@ -904,6 +905,7 @@ pub(crate) fn supersede_decision<P: LedgerProvider>(
     );
     let outcome = commands
         .supersede(SupersedeInput {
+            project: None,
             actor_id: &args.actor_id,
             old_decision_id: &old_decision_id,
             new_title: &args.title,

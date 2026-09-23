@@ -5,13 +5,14 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 
+use crate::commands::personal_project_handle;
 use crate::error::ProjectorError;
 use crate::events::{
     self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionProposedPayload,
     DecisionRequestedPayload, DecisionScoredPayload, Event, EventId, EventPayload,
     EvidenceRecordedPayload, HypothesisRecordedPayload, IngestBatchClassifiedPayload,
     NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
-    ProjectAnchorPayload, ProjectLinkKind, ProjectRegisteredPayload,
+    ProjectAnchorPayload, ProjectLinkKind, ProjectRegisteredPayload, ProjectSource,
     RelationKind as EventRelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
@@ -743,6 +744,21 @@ fn project_decision_proposed(
     origin_properties: &GraphProperties,
     occurred_at: GraphValue,
 ) -> Result<()> {
+    // No `project` on the payload (every event before hivemind-s15q.3, or a fresh one
+    // written with no handle) projects to the recorder's personal project -- "no
+    // migration, no rewrite" (approved record shape, item 8). `project_source` mirrors
+    // that: absent only on pre-existing events, which read as `personal_fallback`.
+    let (project, project_source) = match &payload.project {
+        Some(handle) => (handle.clone(), payload.project_source),
+        None => (
+            personal_project_handle(actor_id),
+            Some(
+                payload
+                    .project_source
+                    .unwrap_or(ProjectSource::PersonalFallback),
+            ),
+        ),
+    };
     let decision_properties = props_extend(
         origin_properties,
         [
@@ -775,6 +791,13 @@ fn project_decision_proposed(
                     .question
                     .as_deref()
                     .map_or(GraphValue::Null, |q| GraphValue::String(q.to_owned())),
+            ),
+            ("project", GraphValue::String(project)),
+            (
+                "project_source",
+                project_source.map_or(GraphValue::Null, |source| {
+                    GraphValue::String(source.as_str().to_owned())
+                }),
             ),
         ],
     );

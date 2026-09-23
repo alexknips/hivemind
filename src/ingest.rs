@@ -288,6 +288,7 @@ pub fn import_slack_thread<L: EventLedger>(
     let decision_id = commands.propose_decision(DecisionProposalInput {
         grounding: Grounding::NotAsked,
         expressed_confidence: None,
+        project: None,
         actor_id: &draft.actor_id,
         title: &draft.title,
         rationale: &draft.rationale,
@@ -1727,6 +1728,7 @@ fn write_document_decision_events<L: EventLedger>(
         DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
+            project: None,
             actor_id,
             title: &draft.title,
             rationale: &draft.rationale,

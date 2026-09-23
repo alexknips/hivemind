@@ -202,6 +202,7 @@ fn run_worker() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             evidence_ids: &[],
             quote: None,
             question: None,
+            project: None,
         })?;
     }
 

@@ -57,6 +57,7 @@ fn every_write_path_event_validates_against_its_schema() {
     // plus relation.added for has_option/chose/assumes/based_on --
     let decision_id = commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
             actor_id: actor,
@@ -81,6 +82,7 @@ fn every_write_path_event_validates_against_its_schema() {
         .expect("record rejected option");
     let rejected_decision_id = commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
             actor_id: actor,
@@ -109,6 +111,7 @@ fn every_write_path_event_validates_against_its_schema() {
         .expect("record old option");
     let old_decision_id = commands
         .propose_decision(DecisionProposalInput {
+            project: None,
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
             actor_id: actor,
@@ -128,6 +131,7 @@ fn every_write_path_event_validates_against_its_schema() {
         .expect("propose old decision");
     commands
         .supersede(SupersedeInput {
+            project: None,
             actor_id: actor,
             old_decision_id: &old_decision_id,
             new_title: "The replacement decision",
@@ -313,6 +317,10 @@ fn every_write_path_event_validates_against_its_schema() {
     let premise_ids = [decision_id.clone()];
     let grounded_decision_id = commands
         .propose_decision(DecisionProposalInput {
+            // A stated, registered project (hivemind-s15q.3): writes project + project_source =
+            // stated, so the conformance check covers both fields; every other decision above
+            // states none and writes project_source = personal_fallback.
+            project: Some("contract-a"),
             grounding: Grounding::Declared {
                 premise_decision_ids: &premise_ids,
                 evidence_ids: &[],

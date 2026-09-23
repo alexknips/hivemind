@@ -35,7 +35,7 @@ use crate::events::{
     EventProvenance, EventType, EvidenceRecordedPayload, HypothesisKind, HypothesisRecordedPayload,
     IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn, ProjectAnchorKind,
     ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
-    RelationAddedPayload, RelationKind, TenantId,
+    ProjectSource, RelationAddedPayload, RelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::util::{require_non_empty, require_valid_actor_id};
@@ -168,6 +168,11 @@ pub struct DecisionProposalInput<'a> {
     /// Expressed confidence from the decider's own words: low | medium | high. Never
     /// system-computed. Validated against that fixed vocabulary when present.
     pub expressed_confidence: Option<&'a str>,
+    /// Registered project handle to file this decision under. `None` means no handle was
+    /// given: the write layer records `project_source = personal_fallback` and the
+    /// projector derives the recorder's personal project from `actor_id`. A handle that
+    /// isn't registered is refused (see `Commands::resolve_stated_project`).
+    pub project: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -181,6 +186,10 @@ pub struct SupersedeInput<'a> {
     pub chosen_option_label: Option<&'a str>,
     pub hypothesis_ids: &'a [String],
     pub evidence_ids: &'a [String],
+    /// Explicit project override for the superseding decision. `None` means "not
+    /// stated": the new decision inherits the old decision's `project` and
+    /// `project_source` verbatim rather than defaulting to personal fallback.
+    pub project: Option<&'a str>,
 }
 
 /// Input to `Commands::ground_decision`: give an already-proposed decision its grounding
@@ -242,6 +251,8 @@ struct DecisionProposalSnapshot {
     chosen_option_id: Option<String>,
     hypothesis_ids: Vec<String>,
     evidence_ids: Vec<String>,
+    project: Option<String>,
+    project_source: Option<ProjectSource>,
 }
 
 impl<'a, L: EventLedger> Commands<'a, L> {
@@ -844,6 +855,29 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         decision_id: &str,
         event_uuids: DecisionProposalEventUuids,
     ) -> Result<DecisionProposalEventIds> {
+        let (project, project_source) = self.resolve_stated_project(input.project)?;
+        self.propose_decision_with_id_and_project(
+            input,
+            decision_id,
+            event_uuids,
+            project,
+            project_source,
+        )
+    }
+
+    /// Core of `propose_decision_with_id`, taking an already-resolved `project`/
+    /// `project_source` pair rather than re-deriving one from `input.project`. `supersede`
+    /// calls this directly so a superseding decision can inherit its predecessor's
+    /// `project_source` verbatim (e.g. `folder_marker`) instead of it being overwritten
+    /// with `Stated` just because the inherited project happens to be a handle.
+    fn propose_decision_with_id_and_project(
+        &self,
+        input: DecisionProposalInput<'_>,
+        decision_id: &str,
+        event_uuids: DecisionProposalEventUuids,
+        project: Option<String>,
+        project_source: ProjectSource,
+    ) -> Result<DecisionProposalEventIds> {
         require_valid_actor_id(input.actor_id)?;
         require_non_empty("decision_id", decision_id)?;
         validate_title("title", input.title)?;
@@ -1006,6 +1040,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 expressed_confidence: input.expressed_confidence.map(ToOwned::to_owned),
                 quote: input.quote.map(ToOwned::to_owned),
                 question: input.question.map(ToOwned::to_owned),
+                project,
+                project_source: Some(project_source),
             }),
             None,
             event_uuids.proposal,
@@ -1311,6 +1347,21 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             })
             .transpose()?;
 
+        // The new decision inherits the old decision's project verbatim (both the handle
+        // and how it was determined) unless this call states one explicitly -- an
+        // inherited `folder_marker`/`rig`/etc. project_source stays truthful across the
+        // chain rather than being overwritten with `stated` just because a handle is
+        // present.
+        let (project, project_source) = match input.project {
+            Some(handle) => self.resolve_stated_project(Some(handle))?,
+            None => (
+                old_decision.project.clone(),
+                old_decision
+                    .project_source
+                    .unwrap_or(ProjectSource::PersonalFallback),
+            ),
+        };
+
         let proposal_props = DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
@@ -1332,6 +1383,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             // (hivemind-zdsh.13 scoped this to decision.capture/decision.proposed).
             quote: None,
             question: None,
+            project: project.as_deref(),
         };
         if let Some(existing) =
             self.find_matching_supersede(input.old_decision_id, &proposal_props)?
@@ -1356,7 +1408,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
 
         let new_decision_id = generate_entity_id("decision");
-        let proposal_event_ids = self.propose_decision_with_id(
+        let proposal_event_ids = self.propose_decision_with_id_and_project(
             proposal_props,
             &new_decision_id,
             DecisionProposalEventUuids {
@@ -1369,6 +1421,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 // `grounding: Grounding::NotAsked` comment on `proposal_props` above).
                 follows_from: Vec::new(),
             },
+            project.clone(),
+            project_source,
         )?;
         let superseded_event_id = self.supersede_decision_with_uuid(
             input.old_decision_id,
@@ -1706,6 +1760,36 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 payload_value_matches(event, "hypothesis_id", hypothesis_id);
             event.event_type == EventType::HypothesisRecorded && has_matching_id
         })
+    }
+
+    /// Resolve a decision's `project`/`project_source` pair from a caller-stated handle
+    /// (the write rule: a stated handle must be registered, else a refusal naming the
+    /// handle and the register command; no handle means personal fallback). Callers that
+    /// need to inherit an existing decision's project instead of restating one (see
+    /// `supersede`) bypass this and carry the inherited pair through directly.
+    fn resolve_stated_project(
+        &self,
+        project: Option<&str>,
+    ) -> Result<(Option<String>, ProjectSource)> {
+        let Some(handle) = project else {
+            return Ok((None, ProjectSource::PersonalFallback));
+        };
+
+        if handle.starts_with(PERSONAL_PROJECT_HANDLE_PREFIX) {
+            return Err(CommandError::Validation(format!(
+                "project must not use the reserved \"{PERSONAL_PROJECT_HANDLE_PREFIX}\" prefix -- personal projects are derived from the actor, never stated: {handle}"
+            ))
+            .into());
+        }
+
+        if !self.project_exists(handle)? {
+            return Err(CommandError::Invariant(format!(
+                "project not registered: {handle} -- register it first with `hivemind project register {handle}`"
+            ))
+            .into());
+        }
+
+        Ok((Some(handle.to_owned()), ProjectSource::Stated))
     }
 
     fn project_exists(&self, handle: &str) -> Result<bool> {
@@ -2094,6 +2178,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 && proposal.chosen_option_id.as_deref() == props.chosen_option_id
                 && proposal.hypothesis_ids == props.hypothesis_ids
                 && proposal.evidence_ids == props.evidence_ids
+                && proposal.project.as_deref() == props.project
             {
                 let relation_event_ids = relation_event_ids_by_causation
                     .get(&proposal.event_id)
@@ -2296,6 +2381,9 @@ fn decision_proposal_snapshot_from_event(event: &Event) -> Option<DecisionPropos
         chosen_option_id: payload_value_as_str(event, "chosen_option_id").map(str::to_owned),
         hypothesis_ids: payload_string_list(event, "hypothesis_ids"),
         evidence_ids: payload_string_list(event, "evidence_ids"),
+        project: payload_value_as_str(event, "project").map(str::to_owned),
+        project_source: payload_value_as_str(event, "project_source")
+            .and_then(ProjectSource::parse),
     })
 }
 
@@ -2514,6 +2602,24 @@ fn validate_project_handle(handle: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The personal project address for an actor (Alex, choice 3a): the actor id with its
+/// session component removed, then prefixed with `personal:`. `agent:<tool>:<session>`
+/// drops the session and becomes `personal:agent:<tool>`; `human:<id>` has no session
+/// component to remove and becomes `personal:human:<id>`. The session itself is never
+/// lost — it stays on the event as provenance (`agent_session`/`source_ref`), reused
+/// rather than duplicated onto a second field. Any other actor id shape (no documented
+/// session convention) is prefixed as-is rather than guessed at.
+pub fn personal_project_handle(actor_id: &str) -> String {
+    let base = match actor_id
+        .strip_prefix("agent:")
+        .and_then(|rest| rest.split_once(':'))
+    {
+        Some((tool, _session)) => format!("agent:{tool}"),
+        None => actor_id.to_owned(),
+    };
+    format!("{PERSONAL_PROJECT_HANDLE_PREFIX}{base}")
 }
 
 /// A decision title is a name, not a summary: at most `MAX_TITLE_LEN` characters, one

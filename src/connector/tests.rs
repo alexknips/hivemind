@@ -154,6 +154,8 @@ fn emit_test_decision(
             expressed_confidence: None,
             quote: None,
             question: None,
+            project: None,
+            project_source: None,
         }),
     )
     .tenant_id(tenant_id.clone())
