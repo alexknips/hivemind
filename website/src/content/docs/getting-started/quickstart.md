@@ -32,8 +32,8 @@ Choose your path:
    }
    ```
 
-   Or use the managed remote server — see [MCP Setup](../../guides/mcp-setup/) for the remote config
-   and bearer-token setup.
+   Or connect to your self-hosted cell over HTTP — see [MCP Setup](../../guides/mcp-setup/) for the
+   config and bearer-token setup.
 
 2. **Reload your MCP client**
 

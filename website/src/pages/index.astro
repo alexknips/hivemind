@@ -67,15 +67,10 @@ const base = import.meta.env.BASE_URL;
         <div class="bg-gray-900 border border-indigo-800 rounded-xl p-6 text-left">
           <div class="text-xs font-mono text-indigo-400 mb-3 uppercase tracking-wide">Connect your agent &mdash; Claude Code, Cursor, Codex</div>
           <div class="bg-gray-950 rounded-lg p-4 font-mono text-sm text-gray-300 mb-3">
-            <div class="text-gray-500 text-xs mb-2">// hosted &mdash; open beta, no install, no key</div>
-            <div><span class="text-emerald-300">claude mcp add</span> --transport http hivemind \</div>
-            <div>&nbsp;&nbsp;<span class="text-indigo-300">https://hivemind-tti3sa.fly.dev/mcp</span></div>
+            <div class="text-gray-500 text-xs mb-2">// self-host via CLI &mdash; stdio, no Docker, no API key</div>
+            <div><span class="text-emerald-300">claude mcp add</span> hivemind -- hivemind mcp</div>
           </div>
-          <p class="text-gray-400 text-sm mb-3">Then <span class="text-gray-200">sign in with GitHub or Google</span> &mdash; you&rsquo;re connected. Agents call 26 tools to capture and query decisions; nothing to install.</p>
-          <div class="bg-gray-950/60 rounded-lg p-3 font-mono text-xs text-gray-400">
-            <span class="text-gray-500">// self-host via CLI &mdash; stdio, no Docker, no API key</span><br/>
-            <span class="text-emerald-300">claude mcp add</span> hivemind -- hivemind mcp
-          </div>
+          <p class="text-gray-400 text-sm">Your instance, your data. Agents call 26 tools to capture and query decisions &mdash; see the <a href={`${base}getting-started/install/`} class="text-indigo-300 hover:text-indigo-200 underline">self-host guide</a> to install <code class="text-indigo-300">hivemind</code> or run a shared cell.</p>
         </div>
       </div>
 
@@ -93,29 +88,10 @@ const base = import.meta.env.BASE_URL;
       <p class="text-sm text-gray-500 mb-8">See how a real decision was made, step by step &mdash; options, evidence, provenance. No signup, no install.</p>
     </section>
 
-    <!-- Hosted API callout -->
+    <!-- Self-host callout -->
     <section class="border-t border-gray-800 bg-gray-900/30">
       <div class="max-w-6xl mx-auto px-6 py-16">
-        <div class="grid md:grid-cols-2 gap-8">
-          <!-- Managed / Live -->
-          <div class="bg-gradient-to-br from-indigo-950 to-purple-950 border border-indigo-700 rounded-xl p-8">
-            <div class="flex items-center gap-2 mb-4">
-              <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span class="text-xs font-mono text-emerald-400 uppercase tracking-wide">Live API</span>
-            </div>
-            <h3 class="text-xl font-bold text-white mb-3">Managed HiveMind</h3>
-            <p class="text-gray-300 text-sm leading-relaxed mb-4">
-              No local install. Connect via remote MCP at
-              <code class="text-indigo-300">hivemind-tti3sa.fly.dev/mcp</code>.
-              Sign in with GitHub or Google &mdash; no API key to paste.
-            </p>
-            <p class="text-gray-400 text-sm mb-6">
-              Early access &mdash; drop a note to get connected.
-            </p>
-            <a href="mailto:alex.knips@gmail.com" class="inline-block bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors">
-              Request access &rarr;
-            </a>
-          </div>
+        <div class="max-w-2xl mx-auto">
           <!-- Self-host -->
           <div class="bg-gray-900 border border-gray-800 rounded-xl p-8">
             <div class="flex items-center gap-2 mb-4">

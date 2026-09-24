@@ -1,20 +1,22 @@
 ---
 title: MCP Setup
-description: Connect Claude Code, Cursor, or any MCP client to HiveMind — remote or local.
+description: Connect Claude Code, Cursor, or any MCP client to your self-hosted HiveMind.
 ---
 
-HiveMind exposes its full decision-graph surface as an MCP server. You can connect via
-the **managed remote server** (no local install, GitHub/Google login) or run the
-**local stdio server** yourself as part of a self-hosted setup.
+HiveMind exposes its full decision-graph surface as an MCP server. Connect your agents
+to your **self-hosted cell** over HTTP (a shared, team-wide decision graph), or run the
+**local stdio server** yourself for single-user use.
 
 ---
 
-## Remote MCP — managed server
+## Self-hosted cell — HTTP
 
-The managed HiveMind server is live at `hivemind-tti3sa.fly.dev`. Your agents connect
-to the remote MCP endpoint and write to a shared, team-wide decision graph — no local
-binary required. **Authentication is browser-based:** on first connect your client opens
-a login page and you sign in with **GitHub or Google**. No API key or token to manage.
+Your [self-hosted cell](../../getting-started/install/) serves MCP at `/mcp`. Agents
+connect to that endpoint and write to a shared, team-wide decision graph — no local
+binary required on the agent's machine. **Authentication is a bearer token:**
+[provision a tenant](../../getting-started/install/#connect-your-agent) and use the
+`hm_tk_...` token it returns. The examples below use `http://localhost:8080/mcp`;
+substitute your cell's address.
 
 ### Claude Code
 
@@ -25,7 +27,8 @@ Add to `.mcp.json` in your project root:
   "mcpServers": {
     "hivemind": {
       "type": "http",
-      "url": "https://hivemind-tti3sa.fly.dev/mcp"
+      "url": "http://localhost:8080/mcp",
+      "headers": { "Authorization": "Bearer hm_tk_..." }
     }
   }
 }
@@ -34,11 +37,11 @@ Add to `.mcp.json` in your project root:
 Or from the CLI:
 
 ```bash
-claude mcp add --transport http hivemind https://hivemind-tti3sa.fly.dev/mcp
+claude mcp add --transport http hivemind http://localhost:8080/mcp \
+  --header "Authorization: Bearer hm_tk_..."
 ```
 
-On first use, Claude Code opens your browser to the HiveMind login — sign in with
-GitHub or Google and you're connected. All 26 HiveMind tools are then available.
+Reload Claude Code and all HiveMind tools are available.
 
 ### Claude Desktop
 
@@ -50,7 +53,8 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
   "mcpServers": {
     "hivemind": {
       "type": "http",
-      "url": "https://hivemind-tti3sa.fly.dev/mcp"
+      "url": "http://localhost:8080/mcp",
+      "headers": { "Authorization": "Bearer hm_tk_..." }
     }
   }
 }
@@ -65,7 +69,8 @@ Add to `~/.cursor/mcp.json` or the project-level `.cursor/mcp.json`:
   "mcp": {
     "servers": {
       "hivemind": {
-        "url": "https://hivemind-tti3sa.fly.dev/mcp"
+        "url": "http://localhost:8080/mcp",
+        "headers": { "Authorization": "Bearer hm_tk_..." }
       }
     }
   }
@@ -74,9 +79,9 @@ Add to `~/.cursor/mcp.json` or the project-level `.cursor/mcp.json`:
 
 ---
 
-## Local stdio MCP — self-hosted
+## Local stdio MCP
 
-If you are running your own HiveMind instance, use the local stdio server. The server
+For single-user use, run the local stdio server. The server
 is a thin transport over the same commands layer the CLI uses.
 
 ### Start the server

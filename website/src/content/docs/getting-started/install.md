@@ -73,8 +73,8 @@ Add HiveMind to Claude Code by pasting this into `.mcp.json` in your project roo
 Reload Claude Code. The HiveMind tools appear in your agent's tool list. Your instance is running.
 
 :::note
-**Your data stays on your machine.** The self-hosted cell never communicates with
-the managed hosted service. Separate deployments, separate data.
+**Your data stays on your machine.** The self-hosted cell never phones home.
+Each deployment is separate, with its own data.
 :::
 
 ---
