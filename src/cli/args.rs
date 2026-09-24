@@ -589,6 +589,15 @@ pub struct McpArgs {
     /// Agent tool name used when MCP write calls omit actor_id.
     #[arg(long = "agent-tool")]
     pub agent_tool: Option<String>,
+
+    /// When a `capture_decision` or `supersede_decision` call names no `project`, work it
+    /// out from where this server runs: the nearest `.hivemind-project` file walking up
+    /// from its working directory, then the project anchored to the city rig (`GC_RIG`),
+    /// then this actor's `hivemind project use` setting. A call that names a `project`
+    /// still wins. Off by default, so a bare server files unnamed captures under the
+    /// personal project.
+    #[arg(long = "project-from-context")]
+    pub project_from_context: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -688,6 +697,14 @@ pub struct SupersedeArgs {
     /// How `--project` was determined (default: stated). Requires `--project`.
     #[arg(long = "project-source", value_enum, requires = "project")]
     pub project_source: Option<ProjectSourceArg>,
+
+    /// When `--project` is absent, work the project out from where this runs: the nearest
+    /// `.hivemind-project` file walking up from the working directory, then the project
+    /// anchored to the city rig (`GC_RIG`), then this actor's `hivemind project use`
+    /// setting. Each records how it was determined. When none applies the new decision
+    /// still inherits the old decision's project. `--project` wins over all of these.
+    #[arg(long = "project-from-context")]
+    pub project_from_context: bool,
 
     #[command(flatten)]
     pub grounding: GroundingArgs,
@@ -1094,6 +1111,15 @@ pub struct EmitDecisionProposedArgs {
     /// How `--project` was determined (default: stated). Requires `--project`.
     #[arg(long = "project-source", value_enum, requires = "project")]
     pub project_source: Option<ProjectSourceArg>,
+
+    /// When `--project` is absent, work the project out from where this runs: the nearest
+    /// `.hivemind-project` file walking up from the working directory, then the project
+    /// anchored to the city rig (`GC_RIG`), then this actor's `hivemind project use`
+    /// setting. Each records how it was determined. When none applies the decision is
+    /// saved to the personal project and the reply reminds you the folder is not attached.
+    /// `--project` wins over all of these.
+    #[arg(long = "project-from-context")]
+    pub project_from_context: bool,
 }
 
 #[derive(Debug, Clone, Args)]

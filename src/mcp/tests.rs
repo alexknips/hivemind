@@ -3403,4 +3403,274 @@ mod transport_parity {
         let _ = std::fs::remove_dir_all(&stdio_dir);
         let _ = std::fs::remove_dir_all(&http_dir);
     }
+
+    // -----------------------------------------------------------------------
+    // Working the project out from where the stdio server runs
+    // (hivemind-s15q.12): opt-in via `--project-from-context`, stdio only.
+    // -----------------------------------------------------------------------
+
+    /// A folder tree for the context tests: `repo` carries a `.hivemind-project` naming
+    /// `billing`, `elsewhere` has no marker anywhere above it.
+    fn context_tree(label: &str) -> std::path::PathBuf {
+        let root = unique_dir(&format!("context-{label}"));
+        std::fs::create_dir_all(root.join("repo/src")).expect("create repo dir"); // ubs:ignore: test-only; panicking is correct in tests
+        std::fs::create_dir_all(root.join("elsewhere")).expect("create elsewhere dir"); // ubs:ignore: test-only; panicking is correct in tests
+        std::fs::write(root.join("repo/.hivemind-project"), "billing\n").expect("write marker"); // ubs:ignore: test-only; panicking is correct in tests
+        root
+    }
+
+    /// A ledger dir with `billing` and `payments` registered and `billing` anchored to the
+    /// rig `city-rig`.
+    fn context_ledger(label: &str) -> std::path::PathBuf {
+        let (dir, unused) = project_dirs(label, &["billing", "payments"]);
+        let _ = std::fs::remove_dir_all(&unused);
+        let ledger = SqliteEventLedger::open(&dir).expect("ledger opens"); // ubs:ignore: test-only; panicking is correct in tests
+        Commands::new(&ledger)
+            .anchor_project(
+                "human:parity",
+                "billing",
+                crate::events::ProjectAnchorKind::Rig,
+                "city-rig",
+            )
+            .expect("anchor rig"); // ubs:ignore: test-only; panicking is correct in tests
+        dir
+    }
+
+    fn stdio_call_from(
+        dir: &std::path::Path,
+        folder: std::path::PathBuf,
+        rig: Option<&str>,
+        tool: &str,
+        arguments: Value,
+    ) -> Value {
+        let config = McpConfig::new(dir)
+            .with_session_id("context-stdio")
+            .with_project_context(ProjectContextEnv::new(Some(folder), rig, "human:parity"));
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments }
+        })
+        .to_string();
+        drive(&config, &[request.as_str()])
+            .into_iter()
+            .next()
+            .expect("one response") // ubs:ignore: test-only; panicking is correct in tests
+    }
+
+    #[test]
+    fn stdio_capture_from_context_follows_the_folder_then_the_rig() {
+        let dir = context_ledger("capture-ladder");
+        let tree = context_tree("capture-ladder");
+
+        // A folder marker names the project, and the reply says how.
+        let marker = stdio_call_from(
+            &dir,
+            tree.join("repo/src"),
+            Some("city-rig"),
+            "capture_decision",
+            capture_args("Adopt async billing queue"),
+        );
+        let reply = &marker["result"]["structuredContent"];
+        assert_eq!(marker["result"]["isError"], false, "{marker:?}"); // ubs:ignore: test-only assertion
+        assert_eq!(reply["project"], "billing"); // ubs:ignore: test-only assertion
+        assert_eq!(reply["project_source"], "folder_marker"); // ubs:ignore: test-only assertion
+        assert!(
+            reply.get("project_notice").is_none() && reply.get("project_reminder").is_none(),
+            "an attached folder has nothing to be reminded about: {reply:?}"
+        ); // ubs:ignore: test-only assertion
+
+        // No marker: the rig's anchored project.
+        let rig = stdio_call_from(
+            &dir,
+            tree.join("elsewhere"),
+            Some("city-rig"),
+            "capture_decision",
+            capture_args("Adopt weekly billing exports"),
+        );
+        let reply = &rig["result"]["structuredContent"];
+        assert_eq!(reply["project"], "billing"); // ubs:ignore: test-only assertion
+        assert_eq!(reply["project_source"], "rig"); // ubs:ignore: test-only assertion
+
+        // A stated project wins over the folder and the rig.
+        let stated = stdio_call_from(
+            &dir,
+            tree.join("repo/src"),
+            Some("city-rig"),
+            "capture_decision",
+            with_args(
+                capture_args("Adopt nightly payments reports"),
+                json!({ "project": "payments" }),
+            ),
+        );
+        let reply = &stated["result"]["structuredContent"];
+        assert_eq!(reply["project"], "payments"); // ubs:ignore: test-only assertion
+        assert_eq!(reply["project_source"], "stated"); // ubs:ignore: test-only assertion
+
+        let recorded: Vec<(Value, Value)> = proposed_payloads(&dir)
+            .into_iter()
+            .map(|payload| {
+                (
+                    payload["project"].clone(),
+                    payload["project_source"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![
+                (json!("billing"), json!("folder_marker")),
+                (json!("billing"), json!("rig")),
+                (json!("payments"), json!("stated")),
+            ],
+            "the ledger records each project and how it was determined"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&tree);
+    }
+
+    #[test]
+    fn stdio_capture_from_context_with_nothing_to_go_on_falls_back_with_the_reminder() {
+        let dir = context_ledger("capture-fallback");
+        let tree = context_tree("capture-fallback");
+
+        let response = stdio_call_from(
+            &dir,
+            tree.join("elsewhere"),
+            None,
+            "capture_decision",
+            capture_args("Adopt async billing queue"),
+        );
+        let reply = &response["result"]["structuredContent"];
+        assert_eq!(reply["project_source"], "personal_fallback"); // ubs:ignore: test-only assertion
+        assert!(
+            reply["project_notice"]
+                .as_str()
+                .is_some_and(|notice| notice.contains("saved to your personal project")),
+            "{reply:?}"
+        ); // ubs:ignore: test-only assertion
+        assert_eq!(
+            reply["project_reminder"],
+            "this folder is not attached to a project yet; run hivemind project anchor ... to attach it"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&tree);
+    }
+
+    #[test]
+    fn stdio_capture_without_the_flag_never_reads_the_folder() {
+        let dir = context_ledger("capture-opt-in");
+
+        // A plain server (no `with_project_context`) files an unnamed capture under the
+        // personal project, whatever folder it happens to run in.
+        let response = stdio_call(
+            &dir,
+            "capture_decision",
+            capture_args("Adopt async billing"),
+        );
+        let reply = &response["result"]["structuredContent"];
+        assert_eq!(reply["project_source"], "personal_fallback"); // ubs:ignore: test-only assertion
+        assert!(
+            reply.get("project_reminder").is_none(),
+            "no reminder without the flag: {reply:?}"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stdio_capture_from_context_refuses_a_marker_naming_an_unregistered_project() {
+        let dir = context_ledger("capture-marker-unregistered");
+        let tree = context_tree("capture-marker-unregistered");
+        std::fs::write(tree.join("elsewhere/.hivemind-project"), "billng\n").expect("write marker"); // ubs:ignore: test-only; panicking is correct in tests
+
+        let response = stdio_call_from(
+            &dir,
+            tree.join("elsewhere"),
+            None,
+            "capture_decision",
+            capture_args("Adopt async billing queue"),
+        );
+        assert_eq!(response["result"]["isError"], true, "{response:?}"); // ubs:ignore: test-only assertion
+        let text = error_text(&response["result"]);
+        assert!(
+            text.contains("project not registered: billng")
+                && text.contains("hivemind project register billng"),
+            "{text}"
+        ); // ubs:ignore: test-only assertion
+        assert!(
+            proposed_payloads(&dir).is_empty(),
+            "a refused capture writes nothing"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&tree);
+    }
+
+    #[test]
+    fn stdio_supersede_from_context_follows_the_folder_or_inherits() {
+        let dir = context_ledger("supersede-context");
+        let tree = context_tree("supersede-context");
+
+        let old = stdio_call(
+            &dir,
+            "capture_decision",
+            with_args(
+                capture_args("Use shared admin token"),
+                json!({ "project": "payments" }),
+            ),
+        );
+        let old_id = old["result"]["structuredContent"]["decision_id"]
+            .as_str()
+            .expect("decision id") // ubs:ignore: test-only; panicking is correct in tests
+            .to_owned();
+        let supersede_args = |old_decision_id: &str, title: &str| {
+            json!({
+                "old_decision_id": old_decision_id,
+                "title": title,
+                "rationale": "Scoped tokens preserve audit boundaries",
+                "options": [{"label": "scoped-service-tokens"}],
+                "chosen_option_label": "scoped-service-tokens",
+                "grounding": [{"kind": "bet"}],
+            })
+        };
+
+        // The folder's marker names the superseding decision's project.
+        let from_folder = stdio_call_from(
+            &dir,
+            tree.join("repo/src"),
+            None,
+            "supersede_decision",
+            supersede_args(&old_id, "Use scoped service tokens"),
+        );
+        let reply = &from_folder["result"]["structuredContent"];
+        assert_eq!(reply["project"], "billing", "{reply:?}"); // ubs:ignore: test-only assertion
+        assert_eq!(reply["project_source"], "folder_marker"); // ubs:ignore: test-only assertion
+        let new_id = reply["new_decision_id"]
+            .as_str()
+            .expect("new decision id") // ubs:ignore: test-only; panicking is correct in tests
+            .to_owned();
+
+        // A folder nothing reaches leaves it unstated: the old project is inherited.
+        let inherited = stdio_call_from(
+            &dir,
+            tree.join("elsewhere"),
+            None,
+            "supersede_decision",
+            supersede_args(&new_id, "Rotate scoped service tokens monthly"),
+        );
+        let reply = &inherited["result"]["structuredContent"];
+        assert_eq!(reply["project"], "billing", "{reply:?}"); // ubs:ignore: test-only assertion
+        assert_eq!(reply["project_source"], "folder_marker"); // ubs:ignore: test-only assertion
+        assert!(
+            reply.get("project_notice").is_none() && reply.get("project_reminder").is_none(),
+            "an inherited project needs neither: {reply:?}"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&tree);
+    }
 }

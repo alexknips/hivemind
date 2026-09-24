@@ -538,3 +538,67 @@ fn decisions_in_project_rejects_an_empty_address_and_a_bad_cursor() -> Result<()
 
     Ok(())
 }
+
+#[test]
+fn get_project_by_anchor_finds_the_project_holding_an_active_anchor() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands.register_project("human:alice", "billing", Some("Billing"), None)?;
+    commands.register_project("human:alice", "auth", None, None)?;
+    commands.anchor_project(
+        "human:alice",
+        "billing",
+        ProjectAnchorKind::Rig,
+        "billing-rig",
+    )?;
+    commands.anchor_project(
+        "human:alice",
+        "auth",
+        ProjectAnchorKind::Folder,
+        "services/auth",
+    )?;
+
+    let found = get_project_by_anchor(&ledger, ProjectAnchorKind::Rig, "billing-rig")?;
+    assert_eq!(found.result_count, 1);
+    match found.data {
+        ProjectOutcome::Found { project } => assert_eq!(project.handle, "billing"),
+        other => panic!("expected Found, got {other:?}"),
+    }
+
+    // The kind is part of the key: a folder anchor is not a rig anchor with the same value.
+    let wrong_kind = get_project_by_anchor(&ledger, ProjectAnchorKind::Rig, "services/auth")?;
+    assert_eq!(wrong_kind.result_count, 0);
+    assert_eq!(wrong_kind.data, ProjectOutcome::NotFound);
+
+    let unknown = get_project_by_anchor(&ledger, ProjectAnchorKind::Rig, "no-such-rig")?;
+    assert_eq!(unknown.data, ProjectOutcome::NotFound);
+
+    assert!(
+        get_project_by_anchor(&ledger, ProjectAnchorKind::Rig, "  ").is_err(),
+        "an empty anchor value is a malformed question, not a miss"
+    );
+    Ok(())
+}
+
+#[test]
+fn get_project_by_anchor_ignores_an_unanchored_anchor() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands.register_project("human:alice", "billing", None, None)?;
+    commands.anchor_project(
+        "human:alice",
+        "billing",
+        ProjectAnchorKind::Rig,
+        "billing-rig",
+    )?;
+    commands.unanchor_project(
+        "human:alice",
+        "billing",
+        ProjectAnchorKind::Rig,
+        "billing-rig",
+    )?;
+
+    let response = get_project_by_anchor(&ledger, ProjectAnchorKind::Rig, "billing-rig")?;
+    assert_eq!(response.data, ProjectOutcome::NotFound);
+    Ok(())
+}

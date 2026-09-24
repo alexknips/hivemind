@@ -8400,3 +8400,513 @@ fn move_ambiguous_description_lists_candidates_and_pick_resolves_it_postgres() -
     };
     move_ambiguous_description_lists_candidates_and_pick_resolves_it_body(&backend)
 }
+
+// ---------------------------------------------------------------------------
+// Working the project out from context (hivemind-s15q.12): `--project-from-context` on the
+// capture verbs -- stated > folder marker > rig > current project > personal fallback.
+// ---------------------------------------------------------------------------
+
+/// `run_emit_text`, from `env`'s folder / rig / person instead of the test process's.
+fn run_emit_text_in(
+    backend: &TestBackend,
+    env: &ProjectContextEnv,
+    rest: &[&str],
+) -> std::result::Result<(String, String), Box<dyn std::error::Error>> {
+    let cli = Cli::parse_from(cli_args(backend, rest));
+    let Command::Emit(emit) = &cli.command else {
+        return Err("expected an emit command".into());
+    };
+    let mut notices = Vec::new();
+    let stdout = run_emit_in_context(&cli, emit, &mut notices, env)?;
+    Ok((stdout, String::from_utf8(notices)?))
+}
+
+fn run_supersede_text_in(
+    backend: &TestBackend,
+    env: &ProjectContextEnv,
+    rest: &[&str],
+) -> std::result::Result<(String, String), Box<dyn std::error::Error>> {
+    let cli = Cli::parse_from(cli_args(backend, rest));
+    let Command::Supersede(args) = &cli.command else {
+        return Err("expected a supersede command".into());
+    };
+    let mut notices = Vec::new();
+    let stdout = run_supersede_in_context(&cli, args, &mut notices, env)?;
+    Ok((stdout, String::from_utf8(notices)?))
+}
+
+/// A `--json` capture from `cwd` (with `rig` in the environment) by `person`, returning the
+/// reply with the decision id blanked so it can be compared whole.
+fn capture_json_in(
+    backend: &TestBackend,
+    env: &ProjectContextEnv,
+    title: &str,
+    extra: &[&str],
+) -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut rest = vec!["--json", "--actor", "human:alice"];
+    rest.extend(capture_args_for(title, extra));
+    let (stdout, _notices) = run_emit_text_in(backend, env, &rest)?;
+    let mut reply = without_bet_grounding(serde_json::from_str(&stdout)?);
+    reply["value"] = serde_json::json!("<decision-id>");
+    Ok(reply)
+}
+
+/// The folder tree the context tests share: a `platform` repo whose `services/billing`
+/// subfolder is a nested `billing` sub-project, plus a folder no marker reaches.
+struct ContextTree {
+    root: PathBuf,
+}
+
+impl ContextTree {
+    fn new(name: &str) -> Self {
+        let root = unique_test_dir(name);
+        for dir in [
+            "repo/services/billing/src",
+            "repo/services/auth",
+            "unattached/deep",
+        ] {
+            std::fs::create_dir_all(root.join(dir)).expect("create context tree dir");
+        }
+        std::fs::write(root.join("repo/.hivemind-project"), "platform\n").expect("outer marker");
+        std::fs::write(
+            root.join("repo/services/billing/.hivemind-project"),
+            "billing\n",
+        )
+        .expect("nested marker");
+        Self { root }
+    }
+
+    fn env(&self, folder: &str, rig: Option<&str>, person: &str) -> ProjectContextEnv {
+        ProjectContextEnv::new(Some(self.root.join(folder)), rig, person)
+    }
+}
+
+impl Drop for ContextTree {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn capture_from_a_folder_with_a_marker_lands_in_that_project_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    register_test_project(backend, "platform")?;
+    register_test_project(backend, "billing")?;
+    let tree = ContextTree::new("context-marker");
+
+    // The nested marker is a sub-project and, being nearest, beats the outer one.
+    let reply = capture_json_in(
+        backend,
+        &tree.env("repo/services/billing/src", None, "human:alice"),
+        "Adopt async billing queue",
+        &["--project-from-context"],
+    )?;
+    ensure_json_eq(
+        &reply,
+        serde_json::json!({
+            "subcommand": "emit",
+            "kind": "decision_id",
+            "value": "<decision-id>",
+            "project": "billing",
+            "project_source": "folder_marker",
+        }),
+        "a capture under the nested marker",
+    )?;
+
+    // A sibling folder is under the outer marker only.
+    let reply = capture_json_in(
+        backend,
+        &tree.env("repo/services/auth", None, "human:alice"),
+        "Adopt short-lived auth tokens",
+        &["--project-from-context"],
+    )?;
+    ensure_eq(reply["project"].as_str(), Some("platform"), "outer marker")?;
+    ensure_eq(
+        reply["project_source"].as_str(),
+        Some("folder_marker"),
+        "outer marker source",
+    )?;
+    ensure(
+        reply.get("project_reminder").is_none() && reply.get("project_notice").is_none(),
+        "an attached folder has nothing to be reminded about",
+    )
+}
+
+#[test]
+fn capture_from_a_folder_with_a_marker_lands_in_that_project() -> CliTestResult {
+    capture_from_a_folder_with_a_marker_lands_in_that_project_body(&TestBackend::sqlite(
+        "context-marker",
+    ))
+}
+
+#[test]
+fn capture_from_a_folder_with_a_marker_lands_in_that_project_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("context-marker-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    capture_from_a_folder_with_a_marker_lands_in_that_project_body(&backend)
+}
+
+fn context_ladder_picks_the_nearest_rung_body(backend: &TestBackend) -> CliTestResult {
+    register_test_project(backend, "platform")?;
+    register_test_project(backend, "billing")?;
+    register_test_project(backend, "ops")?;
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "project",
+            "anchor",
+            "--handle",
+            "ops",
+            "--kind",
+            "rig",
+            "--value",
+            "city-rig",
+        ],
+    )))?;
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &["--actor", "human:alice", "project", "use", "platform"],
+    )))?;
+    let tree = ContextTree::new("context-ladder");
+    let project_and_source = |reply: &serde_json::Value| {
+        (
+            reply["project"].as_str().unwrap_or_default().to_owned(),
+            reply["project_source"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+        )
+    };
+
+    // Stated beats a marker, and the caller's own account of how it got there is kept.
+    let stated = capture_json_in(
+        backend,
+        &tree.env("repo/services/billing", Some("city-rig"), "human:alice"),
+        "Adopt idempotent billing retries",
+        &["--project-from-context", "--project", "ops"],
+    )?;
+    ensure_eq(
+        project_and_source(&stated),
+        ("ops".to_owned(), "stated".to_owned()),
+        "stated beats the marker",
+    )?;
+    let stated_job = capture_json_in(
+        backend,
+        &tree.env("repo/services/billing", None, "human:alice"),
+        "Adopt nightly billing exports",
+        &[
+            "--project-from-context",
+            "--project",
+            "ops",
+            "--project-source",
+            "job",
+        ],
+    )?;
+    ensure_eq(
+        project_and_source(&stated_job),
+        ("ops".to_owned(), "job".to_owned()),
+        "stated keeps the source the caller gave",
+    )?;
+
+    // A marker beats the rig.
+    let marker = capture_json_in(
+        backend,
+        &tree.env("repo/services/billing", Some("city-rig"), "human:alice"),
+        "Adopt per-seat billing",
+        &["--project-from-context"],
+    )?;
+    ensure_eq(
+        project_and_source(&marker),
+        ("billing".to_owned(), "folder_marker".to_owned()),
+        "the marker beats the rig",
+    )?;
+
+    // No marker: the rig's project beats the current project (alice's is `platform`).
+    let rig = capture_json_in(
+        backend,
+        &tree.env("unattached/deep", Some("city-rig"), "human:alice"),
+        "Adopt weekly capacity reviews",
+        &["--project-from-context"],
+    )?;
+    ensure_eq(
+        project_and_source(&rig),
+        ("ops".to_owned(), "rig".to_owned()),
+        "the rig beats the current project",
+    )?;
+
+    // A rig nothing is anchored to, or no rig at all: the current project.
+    for (rig, title) in [
+        (Some("unregistered-rig"), "Adopt quarterly capacity plans"),
+        (None, "Adopt monthly capacity plans"),
+    ] {
+        let current = capture_json_in(
+            backend,
+            &tree.env("unattached/deep", rig, "human:alice"),
+            title,
+            &["--project-from-context"],
+        )?;
+        ensure_eq(
+            project_and_source(&current),
+            ("platform".to_owned(), "current_project".to_owned()),
+            "the current project answers when nothing nearer does",
+        )?;
+    }
+
+    // Nothing at all -- bob has no current project -- is the personal fallback, said out loud.
+    let fallback = capture_json_in(
+        backend,
+        &tree.env("unattached/deep", None, "human:bob"),
+        "Adopt biweekly capacity syncs",
+        &["--project-from-context"],
+    )?;
+    ensure_json_eq(
+        &fallback,
+        serde_json::json!({
+            "subcommand": "emit",
+            "kind": "decision_id",
+            "value": "<decision-id>",
+            "project": "personal:agent:claude",
+            "project_source": "personal_fallback",
+            "project_notice": crate::commands::PERSONAL_FALLBACK_NOTICE,
+            "project_reminder": "this folder is not attached to a project yet; run hivemind project anchor ... to attach it",
+        }),
+        "the personal fallback names the reminder",
+    )?;
+
+    // Without the flag the surroundings are never read: the same folder, the plain fallback.
+    let opt_out = capture_json_in(
+        backend,
+        &tree.env("repo/services/billing", Some("city-rig"), "human:alice"),
+        "Adopt hourly billing sweeps",
+        &[],
+    )?;
+    ensure_eq(
+        project_and_source(&opt_out),
+        (
+            "personal:agent:claude".to_owned(),
+            "personal_fallback".to_owned(),
+        ),
+        "context is opt-in",
+    )?;
+    ensure(
+        opt_out.get("project_reminder").is_none(),
+        "no reminder without the flag",
+    )
+}
+
+#[test]
+fn context_ladder_picks_the_nearest_rung() -> CliTestResult {
+    context_ladder_picks_the_nearest_rung_body(&TestBackend::sqlite("context-ladder"))
+}
+
+#[test]
+fn context_ladder_picks_the_nearest_rung_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("context-ladder-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    context_ladder_picks_the_nearest_rung_body(&backend)
+}
+
+#[test]
+fn context_fallback_text_announces_the_project_then_the_reminder() -> CliTestResult {
+    let backend = TestBackend::sqlite("context-fallback-text");
+    let tree = ContextTree::new("context-fallback-text");
+    let env = tree.env("unattached/deep", None, "human:bob");
+
+    let mut rest = vec!["--actor", "human:bob"];
+    rest.extend(capture_args_for(
+        "Adopt biweekly capacity syncs",
+        &["--project-from-context"],
+    ));
+    let (stdout, notices) = run_emit_text_in(&backend, &env, &rest)?;
+
+    ensure(
+        stdout.starts_with("decision-") && !stdout.contains(char::is_whitespace),
+        "text stdout stays the bare decision id",
+    )?;
+    ensure_eq(
+        notices.as_str(),
+        format!(
+            "project: personal:agent:claude (personal_fallback) — {}\n{}\n",
+            crate::commands::PERSONAL_FALLBACK_NOTICE,
+            "this folder is not attached to a project yet; run hivemind project anchor ... to attach it",
+        )
+        .as_str(),
+        "the fallback line, then the reminder on its own line",
+    )
+}
+
+#[test]
+fn context_marker_naming_an_unregistered_project_is_refused_with_the_register_hint() -> CliTestResult
+{
+    let backend = TestBackend::sqlite("context-marker-unregistered");
+    let tree = ContextTree::new("context-marker-unregistered");
+    std::fs::write(
+        tree.root.join("repo/services/auth/.hivemind-project"),
+        "authn\n",
+    )?;
+
+    let error = run_emit_text_in(
+        &backend,
+        &tree.env("repo/services/auth", None, "human:alice"),
+        &{
+            let mut rest = vec!["--actor", "human:alice"];
+            rest.extend(capture_args_for(
+                "Adopt short-lived auth tokens",
+                &["--project-from-context"],
+            ));
+            rest
+        },
+    )
+    .expect_err("a marker naming an unregistered project is refused");
+
+    ensure(
+        error.to_string().contains("project not registered: authn")
+            && error
+                .to_string()
+                .contains("hivemind project register authn"),
+        "the refusal names the handle and the register command",
+    )
+}
+
+fn supersede_from_context_follows_the_folder_or_inherits_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    register_test_project(backend, "platform")?;
+    register_test_project(backend, "billing")?;
+    let tree = ContextTree::new("context-supersede");
+    let supersede = |old: &str,
+                     title: &str,
+                     folder: &str|
+     -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let (stdout, _notices) = run_supersede_text_in(
+            backend,
+            &tree.env(folder, None, "human:bob"),
+            &[
+                "--json",
+                "--actor",
+                "human:bob",
+                "supersede",
+                "--old",
+                old,
+                "--title",
+                title,
+                "--rationale",
+                PROJECT_TEST_RATIONALE,
+                "--bet",
+                "--project-from-context",
+            ],
+        )?;
+        Ok(serde_json::from_str(&stdout)?)
+    };
+    let capture =
+        |title: &str, extra: &[&str]| -> std::result::Result<String, Box<dyn std::error::Error>> {
+            let (stdout, _notices) = run_emit_text(backend, &capture_args_for(title, extra))?;
+            Ok(stdout)
+        };
+
+    // The folder's marker names the superseding decision's project, whatever the old one had.
+    let old = capture("Use shared admin token", &["--project", "platform"])?;
+    let reply = supersede(&old, "Use scoped service tokens", "repo/services/billing")?;
+    ensure_eq(reply["project"].as_str(), Some("billing"), "marker project")?;
+    ensure_eq(
+        reply["project_source"].as_str(),
+        Some("folder_marker"),
+        "marker source",
+    )?;
+
+    // A folder no marker reaches leaves the project unstated: the old project is inherited,
+    // with no personal-fallback notice and no reminder about the folder.
+    let reply = supersede(
+        reply["new_decision_id"].as_str().unwrap_or_default(),
+        "Rotate scoped service tokens monthly",
+        "unattached/deep",
+    )?;
+    ensure_eq(
+        reply["project"].as_str(),
+        Some("billing"),
+        "inherited project",
+    )?;
+    ensure_eq(
+        reply["project_source"].as_str(),
+        Some("folder_marker"),
+        "inherited source",
+    )?;
+    ensure(
+        reply.get("project_notice").is_none() && reply.get("project_reminder").is_none(),
+        "an inherited project needs neither",
+    )?;
+
+    // A decision that was itself a personal fallback stays there, and the reminder says why.
+    let old = capture("Use shared deploy key", &[])?;
+    let reply = supersede(&old, "Use per-host deploy keys", "unattached/deep")?;
+    ensure_eq(
+        reply["project_source"].as_str(),
+        Some("personal_fallback"),
+        "still a fallback",
+    )?;
+    ensure_eq(
+        reply["project_reminder"].as_str(),
+        Some("this folder is not attached to a project yet; run hivemind project anchor ... to attach it"),
+        "reminder",
+    )
+}
+
+#[test]
+fn supersede_from_context_follows_the_folder_or_inherits() -> CliTestResult {
+    supersede_from_context_follows_the_folder_or_inherits_body(&TestBackend::sqlite(
+        "context-supersede",
+    ))
+}
+
+#[test]
+fn supersede_from_context_follows_the_folder_or_inherits_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("context-supersede-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    supersede_from_context_follows_the_folder_or_inherits_body(&backend)
+}
+
+#[test]
+fn project_from_context_parses_on_the_capture_verbs_and_mcp() -> CliTestResult {
+    let dir = unique_test_dir("context-flag-parse");
+    let dir = dir.to_str().expect("utf-8 temp path");
+    let argv = |rest: &[&str]| {
+        let mut argv = vec!["hivemind", "--hivemind-dir", dir];
+        argv.extend_from_slice(rest);
+        Cli::try_parse_from(argv)
+    };
+
+    ensure(
+        argv(&capture_args_for(
+            "Adopt async billing queue",
+            &["--project-from-context"],
+        ))
+        .is_ok(),
+        "emit decision.capture takes --project-from-context",
+    )?;
+    ensure(
+        argv(&[
+            "supersede",
+            "--old",
+            "decision-1",
+            "--title",
+            "T",
+            "--rationale",
+            PROJECT_TEST_RATIONALE,
+            "--project-from-context",
+        ])
+        .is_ok(),
+        "supersede takes --project-from-context",
+    )?;
+    ensure(
+        argv(&["mcp", "--project-from-context"]).is_ok(),
+        "the stdio mcp server takes --project-from-context",
+    )
+}

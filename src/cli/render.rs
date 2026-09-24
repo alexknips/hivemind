@@ -1594,6 +1594,10 @@ pub(crate) struct OutputEnvelope {
     pub(crate) placement: Option<DecisionPlacement>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) project_notice: Option<&'static str>,
+    /// Set when `--project-from-context` found no project to attach the capture to: the
+    /// folder is not attached, and how to attach it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_reminder: Option<&'static str>,
 }
 
 impl OutputEnvelope {
@@ -1604,12 +1608,18 @@ impl OutputEnvelope {
             value,
             placement: None,
             project_notice: None,
+            project_reminder: None,
         }
     }
 
     pub(crate) fn with_placement(mut self, placement: DecisionPlacement) -> Self {
         self.project_notice = placement.notice();
         self.placement = Some(placement);
+        self
+    }
+
+    pub(crate) fn with_project_reminder(mut self, reminder: Option<&'static str>) -> Self {
+        self.project_reminder = reminder;
         self
     }
 }
@@ -1635,6 +1645,9 @@ pub(crate) struct SupersedeCommandOutput {
     pub(crate) placement: DecisionPlacement,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) project_notice: Option<&'static str>,
+    /// See `OutputEnvelope::project_reminder`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_reminder: Option<&'static str>,
     /// What the new decision rests on, as recorded.
     pub(crate) rests_on: Vec<RestsOn>,
     /// Premise decisions already superseded or rejected when named.
@@ -1653,6 +1666,9 @@ pub(crate) struct CaptureCommandOutput {
     pub(crate) placement: DecisionPlacement,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) project_notice: Option<&'static str>,
+    /// See `OutputEnvelope::project_reminder`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_reminder: Option<&'static str>,
     pub(crate) rests_on: Vec<RestsOn>,
     pub(crate) premise_stale: Vec<String>,
 }

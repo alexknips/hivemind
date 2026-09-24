@@ -83,6 +83,7 @@ use super::args::{
     TuiArgs,
 };
 use super::current_project::CurrentProjectStore;
+use super::project_context::{resolve_project_in_ledger, ProjectContextEnv, ResolvedProject};
 use super::render::{
     append_truncation_notice, decision_status_label, format_capture_output,
     format_current_project_output, format_disagree_output, format_export_output,
@@ -167,9 +168,10 @@ fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
         question: None,
         project: None,
         project_source: None,
+        project_from_context: false,
     };
     let (decision_id, _placement) =
-        propose_decision_from_option_labels(&commands, &cli.actor, &decision_args)?;
+        propose_decision_from_option_labels(&commands, &cli.actor, &decision_args, None)?;
 
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
@@ -257,6 +259,9 @@ fn run_mcp(cli: &Cli, args: &McpArgs) -> Result<String> {
         if !session_id.is_empty() {
             config = config.with_session_id(session_id);
         }
+    }
+    if args.project_from_context {
+        config = config.with_project_context(ProjectContextEnv::from_process(&cli.actor));
     }
     crate::mcp::serve_stdio(&config)?;
     // The stdio loop only returns once stdin closes — no payload to print.
@@ -732,6 +737,23 @@ pub(crate) fn run_emit_with_notices<W: IoWrite>(
     emit: &EmitArgs,
     notices: &mut W,
 ) -> Result<String> {
+    run_emit_in_context(
+        cli,
+        emit,
+        notices,
+        &ProjectContextEnv::from_process(&cli.actor),
+    )
+}
+
+/// `run_emit_with_notices` with the surroundings `--project-from-context` reads -- working
+/// directory, rig, acting person -- supplied instead of taken from the process, so a test can
+/// run a capture from any folder without touching process-global state.
+pub(crate) fn run_emit_in_context<W: IoWrite>(
+    cli: &Cli,
+    emit: &EmitArgs,
+    notices: &mut W,
+    env: &ProjectContextEnv,
+) -> Result<String> {
     let ledger = open_ledger(cli)?;
     let commands = Commands::new_with_context(
         &ledger,
@@ -757,6 +779,7 @@ pub(crate) fn run_emit_with_notices<W: IoWrite>(
             )?;
             let (option_ids, chosen_option_id) =
                 record_cli_options(&commands, &actor_id, &args.decision)?;
+            let project = cli_capture_project(cli, &ledger, env, &args.decision)?;
             let proposal = commands.propose_grounded_decision(
                 DecisionProposalInput {
                     actor_id: &actor_id,
@@ -776,14 +799,12 @@ pub(crate) fn run_emit_with_notices<W: IoWrite>(
                     question: args.decision.question.as_deref(),
                     grounding: Grounding::NotAsked,
                     expressed_confidence: args.grounding.confidence.as_deref(),
-                    project: cli_determined_project(
-                        &args.decision.project,
-                        args.decision.project_source,
-                    )?,
+                    project: determined_project(&project),
                 },
                 &resolved.plan,
             )?;
-            announce_placement(cli, &proposal.placement, notices);
+            let reminder = project_reminder(&project, &proposal.placement);
+            announce_placement(cli, &proposal.placement, reminder, notices);
             return format_capture_output(
                 cli.json,
                 &CaptureCommandOutput {
@@ -791,6 +812,7 @@ pub(crate) fn run_emit_with_notices<W: IoWrite>(
                     kind: "decision_id",
                     value: proposal.decision_id,
                     project_notice: proposal.placement.notice(),
+                    project_reminder: reminder,
                     placement: proposal.placement,
                     rests_on: resolved.label(proposal.rests_on),
                     premise_stale: proposal.premise_stale,
@@ -798,9 +820,17 @@ pub(crate) fn run_emit_with_notices<W: IoWrite>(
             );
         }
         EmitCommand::DecisionProposed(args) => {
-            let (decision_id, placement) =
-                propose_decision_from_option_labels(&commands, &cli.actor, args)?;
-            OutputEnvelope::new("emit", "decision_id", decision_id).with_placement(placement)
+            let project = cli_capture_project(cli, &ledger, env, args)?;
+            let (decision_id, placement) = propose_decision_from_option_labels(
+                &commands,
+                &cli.actor,
+                args,
+                determined_project(&project),
+            )?;
+            let reminder = project_reminder(&project, &placement);
+            OutputEnvelope::new("emit", "decision_id", decision_id)
+                .with_placement(placement)
+                .with_project_reminder(reminder)
         }
         EmitCommand::DecisionAccepted(args) => {
             let event_id = commands.accept_decision(&args.decision_id, &cli.actor)?;
@@ -931,7 +961,7 @@ pub(crate) fn run_emit_with_notices<W: IoWrite>(
     };
 
     if let Some(placement) = &output.placement {
-        announce_placement(cli, placement, notices);
+        announce_placement(cli, placement, output.project_reminder, notices);
     }
     format_output(cli.json, &output)
 }
@@ -939,11 +969,21 @@ pub(crate) fn run_emit_with_notices<W: IoWrite>(
 /// Text mode only: say where a capture landed on `notices` (stderr in the CLI). JSON replies
 /// carry `project`/`project_source` in-band, and text stdout stays machine-readable (the bare
 /// id), so this is the one place a human or agent reading the terminal sees the project --
-/// and the "saved to your personal project" sentence on fallback. Best-effort: the event is
-/// already appended, so an unwritable stderr must not turn a recorded capture into an error.
-fn announce_placement<W: IoWrite>(cli: &Cli, placement: &DecisionPlacement, notices: &mut W) {
+/// and the "saved to your personal project" sentence on fallback, followed by the "this
+/// folder is not attached" reminder when `--project-from-context` found nothing to attach to.
+/// Best-effort: the event is already appended, so an unwritable stderr must not turn a
+/// recorded capture into an error.
+fn announce_placement<W: IoWrite>(
+    cli: &Cli,
+    placement: &DecisionPlacement,
+    reminder: Option<&str>,
+    notices: &mut W,
+) {
     if !cli.json {
         let _ = writeln!(notices, "{}", render_placement_line(placement));
+        if let Some(reminder) = reminder {
+            let _ = writeln!(notices, "{reminder}");
+        }
     }
 }
 
@@ -1184,6 +1224,22 @@ pub(crate) fn run_supersede_with_notices<W: IoWrite>(
     args: &SupersedeArgs,
     notices: &mut W,
 ) -> Result<String> {
+    run_supersede_in_context(
+        cli,
+        args,
+        notices,
+        &ProjectContextEnv::from_process(&cli.actor),
+    )
+}
+
+/// `run_supersede_with_notices` with the `--project-from-context` surroundings supplied; see
+/// `run_emit_in_context`.
+pub(crate) fn run_supersede_in_context<W: IoWrite>(
+    cli: &Cli,
+    args: &SupersedeArgs,
+    notices: &mut W,
+    env: &ProjectContextEnv,
+) -> Result<String> {
     let tenant_id = cli_tenant(cli)?;
     let ledger = open_ledger(cli)?;
 
@@ -1224,8 +1280,11 @@ pub(crate) fn run_supersede_with_notices<W: IoWrite>(
         &ledger,
         CommandContext::new(tenant_id.clone(), fluent_write_provenance(&cli.actor)),
     );
+    // A context that finds nothing leaves the project unstated, and the superseding decision
+    // keeps inheriting the old decision's project rather than dropping to a personal one.
+    let project = cli_supersede_project(cli, &ledger, env, args)?;
     let outcome = commands.supersede(SupersedeInput {
-        project: cli_determined_project(&args.project, args.project_source)?,
+        project: determined_project(&project),
         actor_id: &cli.actor,
         old_decision_id: &old_decision_id,
         new_title: &args.title,
@@ -1243,7 +1302,8 @@ pub(crate) fn run_supersede_with_notices<W: IoWrite>(
     let new_decision_status =
         decision_status_after_write(&ledger, &tenant_id, &outcome.new_decision_id)?;
 
-    announce_placement(cli, &outcome.placement, notices);
+    let reminder = project_reminder(&project, &outcome.placement);
+    announce_placement(cli, &outcome.placement, reminder, notices);
     format_supersede_output(
         cli.json,
         &SupersedeCommandOutput {
@@ -1255,6 +1315,7 @@ pub(crate) fn run_supersede_with_notices<W: IoWrite>(
             old_decision_status,
             new_decision_status,
             project_notice: outcome.placement.notice(),
+            project_reminder: reminder,
             placement: outcome.placement,
             rests_on: resolved.label(outcome.rests_on),
             premise_stale: outcome.premise_stale,
@@ -1773,11 +1834,12 @@ fn propose_decision_from_option_labels<L: EventLedger>(
     commands: &Commands<'_, L>,
     actor_id: &str,
     args: &EmitDecisionProposedArgs,
+    project: Option<DeterminedProject<'_>>,
 ) -> Result<(String, DecisionPlacement)> {
     let (option_ids, chosen_option_id) = record_cli_options(commands, actor_id, args)?;
 
     commands.propose_decision_placed(DecisionProposalInput {
-        project: cli_determined_project(&args.project, args.project_source)?,
+        project,
         actor_id,
         title: &args.title,
         rationale: &args.rationale,
@@ -1943,6 +2005,76 @@ fn cli_determined_project<'a>(
                 .map_or(ProjectSource::Stated, ProjectSourceArg::as_project_source),
         }),
     )
+}
+
+/// What a capture's `--project` / `--project-source` / `--project-from-context` settle on.
+///
+/// `None` means the caller stated no project and did not ask for one to be worked out: the
+/// write layer records the plain personal fallback, with no reminder about the folder. With
+/// `--project-from-context` the answer is always `Some`, from the ladder in
+/// `super::project_context` (a stated `--project` still wins it).
+fn cli_project_from_flags(
+    cli: &Cli,
+    ledger: &AnyLedger,
+    env: &ProjectContextEnv,
+    project: &Option<String>,
+    project_source: Option<ProjectSourceArg>,
+    from_context: bool,
+) -> Result<Option<ResolvedProject>> {
+    let stated = cli_determined_project(project, project_source)?;
+    if !from_context {
+        return Ok(stated.map(ResolvedProject::from));
+    }
+    resolve_project_in_ledger(stated, env, ledger, &cli_tenant(cli)?, &cli.hivemind_dir).map(Some)
+}
+
+fn cli_capture_project(
+    cli: &Cli,
+    ledger: &AnyLedger,
+    env: &ProjectContextEnv,
+    args: &EmitDecisionProposedArgs,
+) -> Result<Option<ResolvedProject>> {
+    cli_project_from_flags(
+        cli,
+        ledger,
+        env,
+        &args.project,
+        args.project_source,
+        args.project_from_context,
+    )
+}
+
+fn cli_supersede_project(
+    cli: &Cli,
+    ledger: &AnyLedger,
+    env: &ProjectContextEnv,
+    args: &SupersedeArgs,
+) -> Result<Option<ResolvedProject>> {
+    cli_project_from_flags(
+        cli,
+        ledger,
+        env,
+        &args.project,
+        args.project_source,
+        args.project_from_context,
+    )
+}
+
+/// The write layer's input for a settled project; `None` when there is nothing to pass.
+fn determined_project(project: &Option<ResolvedProject>) -> Option<DeterminedProject<'_>> {
+    project.as_ref().and_then(ResolvedProject::determined)
+}
+
+/// The "this folder is not attached" reminder for a capture's reply: only when the ladder
+/// found nothing *and* the capture really did land in the personal project (a superseding
+/// decision that inherited a shared project has nothing to be reminded about).
+fn project_reminder(
+    project: &Option<ResolvedProject>,
+    placement: &DecisionPlacement,
+) -> Option<&'static str> {
+    placement
+        .notice()
+        .and(project.as_ref().and_then(ResolvedProject::reminder))
 }
 
 fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {

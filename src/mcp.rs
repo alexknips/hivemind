@@ -26,9 +26,10 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tracing::{debug, warn};
 
+use crate::cli::project_context::{resolve_project_in_ledger, ProjectContextEnv};
 use crate::commands::{CommandContext, Commands};
 use crate::error::{CliError, CommandError, HivemindError};
-use crate::events::{EventProvenance, TenantId};
+use crate::events::{EventProvenance, ProjectSource, TenantId};
 use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool};
 use crate::ledger::{AnyLedger, LedgerConfig};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
@@ -79,6 +80,11 @@ pub struct McpConfig {
     /// Tools that don't provide a per-call `actor_id` fall back to this label
     /// prefixed with the configured agent tool.
     pub session_id: String,
+    /// Set when the server was started with `--project-from-context`: where it runs, the
+    /// rig it is in and whose current project it consults, used by the write tools for a
+    /// call that names no `project`. `None` (the default) never works a project out. stdio
+    /// only -- the HTTP server has no working directory of the caller's to look at.
+    project_context: Option<ProjectContextEnv>,
 }
 
 impl McpConfig {
@@ -93,6 +99,7 @@ impl McpConfig {
             tenant_id: TenantId::local(),
             agent_tool,
             session_id,
+            project_context: None,
         }
     }
 
@@ -115,6 +122,12 @@ impl McpConfig {
 
     pub fn with_tenant(mut self, tenant_id: TenantId) -> Self {
         self.tenant_id = tenant_id;
+        self
+    }
+
+    /// Turns on `--project-from-context` for `capture_decision` and `supersede_decision`.
+    pub(crate) fn with_project_context(mut self, env: ProjectContextEnv) -> Self {
+        self.project_context = Some(env);
         self
     }
 
@@ -459,7 +472,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "evidence_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"evidence\", evidence_id}` grounding items." },
                     "quote": { "type": "string", "description": "Verbatim words of the decider, self-contained — not a bare reference like \"1a\" into an external numbered list. Requires `question`. A quote with no stated question is unreadable once the source conversation is gone." },
                     "question": { "type": "string", "description": "The question `quote` answers, spelled out in the capturer's own words. Requires `quote`." },
-                    "project": { "type": "string", "description": "Registered project handle to file the decision under. An unknown handle is refused with the register command. Omit it and the decision is saved to the actor's personal project — the reply says so (`project_notice`). HiveMind checks the handle and never works out the project itself, so pass it whenever you know it; an HTTP-served MCP cannot see the caller's working directory." },
+                    "project": { "type": "string", "description": "Registered project handle to file the decision under. An unknown handle is refused with the register command. Omit it and the decision is saved to the actor's personal project — the reply says so (`project_notice`). HiveMind checks the handle and never works out the project itself, so pass it whenever you know it; an HTTP-served MCP cannot see the caller's working directory. A stdio server started with `--project-from-context` works it out from its own working directory when you omit it (nearest `.hivemind-project` file, then the rig, then the actor's current project; `project_source` says which), and adds `project_reminder` when the folder is not attached to any project." },
                     "project_source": { "type": "string", "enum": ["stated", "folder_marker", "rig", "current_project", "job"], "description": "How `project` was determined. Defaults to `stated`. Requires `project`." }
                 }
             }
@@ -537,7 +550,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "expressed_confidence": expressed_confidence_property(),
                     "hypothesis_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"assumption\", hypothesis_id}` grounding items." },
                     "evidence_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"evidence\", evidence_id}` grounding items." },
-                    "project": { "type": "string", "description": "Registered project handle to file the superseding decision under. An unknown handle is refused with the register command. Omit it and the new decision inherits the old decision's project. HiveMind never works out the project itself; an HTTP-served MCP cannot see the caller's working directory." },
+                    "project": { "type": "string", "description": "Registered project handle to file the superseding decision under. An unknown handle is refused with the register command. Omit it and the new decision inherits the old decision's project. HiveMind never works out the project itself; an HTTP-served MCP cannot see the caller's working directory. A stdio server started with `--project-from-context` works it out from its own working directory when you omit it, and inherits only when that finds nothing." },
                     "project_source": { "type": "string", "enum": ["stated", "folder_marker", "rig", "current_project", "job"], "description": "How `project` was determined. Defaults to `stated`. Requires `project`." }
                 }
             }
@@ -929,10 +942,64 @@ impl LedgerProvider for StdioLedgerProvider<'_> {
 fn tool_capture_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
     let actor_id = actor_id_or_default(&args, config)?;
-    let core_args = CaptureDecisionArgs::from_json(&args, actor_id)?;
+    let mut core_args = CaptureDecisionArgs::from_json(&args, actor_id)?;
+    let reminder = fill_project_from_context(
+        config,
+        &mut core_args.project,
+        &mut core_args.project_source,
+    )?;
     let provider = StdioLedgerProvider { config };
-    let output = core::capture_decision(&provider, core_args)?;
-    Ok(output.into_value())
+    let mut reply = core::capture_decision(&provider, core_args)?.into_value();
+    insert_project_reminder(&mut reply, reminder);
+    Ok(reply)
+}
+
+/// stdio only, and only under `--project-from-context`: a write call that names no `project`
+/// gets one worked out from where the server runs (folder marker, then rig, then the current
+/// project), recorded with how it was determined. A call that names a `project` is left
+/// alone. Returns the "this folder is not attached" reminder when nothing applied, for the
+/// reply. For `supersede_decision` a call that resolves to nothing stays unstated, so the new
+/// decision inherits the old one's project.
+fn fill_project_from_context(
+    config: &McpConfig,
+    project: &mut Option<String>,
+    project_source: &mut Option<ProjectSource>,
+) -> std::result::Result<Option<&'static str>, RpcError> {
+    let Some(env) = &config.project_context else {
+        return Ok(None);
+    };
+    if project.is_some() {
+        return Ok(None);
+    }
+
+    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
+    let resolved = resolve_project_in_ledger(
+        None,
+        env,
+        &ledger,
+        &config.tenant_id,
+        &config.ledger.hivemind_dir,
+    )?;
+    if let Some(determined) = resolved.determined() {
+        *project = Some(determined.handle.to_owned());
+        *project_source = Some(determined.source);
+    }
+    Ok(resolved.reminder())
+}
+
+/// Adds `project_reminder` to a write reply, but only when the decision really landed in the
+/// personal project: a superseding decision that inherited a shared project has nothing to be
+/// reminded about.
+fn insert_project_reminder(reply: &mut Value, reminder: Option<&'static str>) {
+    let Some(reminder) = reminder else {
+        return;
+    };
+    let Some(reply) = reply.as_object_mut() else {
+        return;
+    };
+    if reply.get("project_source") == Some(&json!(ProjectSource::PersonalFallback)) {
+        reply.insert("project_reminder".to_owned(), json!(reminder));
+    }
 }
 
 fn tool_capture_evidence(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
@@ -981,10 +1048,16 @@ fn tool_supersede_decision(
 ) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
     let actor_id = mcp_actor_id(&args, config)?;
-    let core_args = SupersedeDecisionArgs::from_json(&args, actor_id)?;
+    let mut core_args = SupersedeDecisionArgs::from_json(&args, actor_id)?;
+    let reminder = fill_project_from_context(
+        config,
+        &mut core_args.project,
+        &mut core_args.project_source,
+    )?;
     let provider = StdioLedgerProvider { config };
-    let output = core::supersede_decision(&provider, core_args)?;
-    Ok(output.into_value())
+    let mut reply = core::supersede_decision(&provider, core_args)?.into_value();
+    insert_project_reminder(&mut reply, reminder);
+    Ok(reply)
 }
 
 fn tool_move_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {

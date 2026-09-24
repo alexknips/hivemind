@@ -1,5 +1,6 @@
 mod args;
 mod current_project;
+pub(crate) mod project_context;
 mod render;
 pub mod run;
 
@@ -18,10 +19,12 @@ use {
     crate::HivemindError,
     chrono::Utc,
     clap::Parser,
+    project_context::ProjectContextEnv,
     run::{
         added_since_request, cli_tenant, parse_graph_backend, recent_decisions_request,
-        resolve_diff_bound, review_recent_decisions_request, run_emit_with_notices,
-        run_review_session, run_supersede_with_notices, TimeZoneSpec,
+        resolve_diff_bound, review_recent_decisions_request, run_emit_in_context,
+        run_emit_with_notices, run_review_session, run_supersede_in_context,
+        run_supersede_with_notices, TimeZoneSpec,
     },
     std::path::PathBuf,
 };

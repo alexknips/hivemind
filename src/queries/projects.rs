@@ -17,7 +17,8 @@ use crate::commands::{
     agent_actor_session, personal_project_handle, PERSONAL_PROJECT_HANDLE_PREFIX,
 };
 use crate::events::{
-    EventType, ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
+    EventType, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload,
+    ProjectRegisteredPayload,
 };
 use crate::ledger::EventLedger;
 use crate::projector::{GraphParams, GraphRow, GraphValue, GraphView, NodeKind, RelationKind};
@@ -593,6 +594,48 @@ fn project_decision_item(graph: &impl GraphView, row: &GraphRow) -> Result<Proje
         project_source: optional_string(row, "project_source"),
         occurred_at: optional_string(row, "occurred_at"),
         event_origin: optional_int(row, "event_origin"),
+    })
+}
+
+/// The registered project carrying an active anchor of `kind` with exactly `value`, one
+/// registry replay. `NotFound` when none does -- a miss is data, as on `get_project`.
+///
+/// Only rig anchors are unique per tenant (`Commands::anchor_project` refuses a second
+/// claimant), so for another kind two projects may carry the same value; the first handle in
+/// sorted order answers, deterministically. Callers that need every claimant use
+/// `list_projects`.
+pub fn get_project_by_anchor(
+    ledger: &impl EventLedger,
+    kind: ProjectAnchorKind,
+    value: &str,
+) -> Result<QueryResponse<ProjectOutcome>> {
+    let started = query_timer_start();
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(query_error("anchor value must not be empty").into());
+    }
+
+    let registry = collect_project_registry(ledger)?;
+    let outcome = registry
+        .projects
+        .iter()
+        .find(|(_, record)| {
+            record
+                .anchors
+                .iter()
+                .any(|anchor| anchor.kind == kind.as_str() && anchor.value == value)
+        })
+        .map_or(ProjectOutcome::NotFound, |(handle, record)| {
+            ProjectOutcome::Found {
+                project: project_view(handle, record, &registry),
+            }
+        });
+
+    Ok(QueryResponse {
+        result_count: usize::from(matches!(outcome, ProjectOutcome::Found { .. })),
+        truncated: false,
+        latency_ms: started.elapsed().as_millis(),
+        data: outcome,
     })
 }
 

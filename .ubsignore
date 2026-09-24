@@ -32,6 +32,7 @@ src/queries/projects/tests.rs
 src/queries/project_label/tests.rs
 src/queries/project_scope/tests.rs
 src/cli/current_project/tests.rs
+src/cli/project_context/tests.rs
 src/commands/tests.rs
 src/grounding/tests.rs
 src/mcp/tests.rs
