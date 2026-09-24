@@ -390,19 +390,42 @@ pub struct DecisionBrief {
     pub chosen_option: Option<OptionLabel>,
     pub rejected_options: Vec<OptionLabel>,   // label-resolved, rationale shared not per-option
     pub decided_by: DecidedBy,                // proposer_id, decider_ids, source, source_ref, review shape
-    pub still_holds: StillHolds,              // held_up + reasons, from DecisionOutcome
+    pub rests_on: Vec<GroundingItem>,         // what it rests on: prior decision / evidence / assumption / bet, each with state + provenance
+    pub grounding_state: GroundingState,      // grounded | bet | nothing_declared ("never asked")
+    pub expressed_confidence: Option<String>, // low | medium | high, the decider's words at capture
+    pub dependents_count: usize,              // decisions that follow from this one
+    pub still_holds: StillHolds,              // held_up + reasons (+ unchecked bets), from DecisionOutcome
     pub topic_keys: Vec<String>,
     pub status: DecisionStatus,               // proposed/accepted/contested/superseded
 }
 
 pub struct OptionLabel { pub option_id: String, pub label: String }
 pub struct DecidedBy { pub proposer_id: Option<String>, pub decider_ids: Vec<String>, pub source: String, pub source_ref: Option<String>, pub review: ReviewShape }
-pub struct StillHolds { pub held_up: bool, pub reasons: Vec<OutcomeReason> }
+pub struct StillHolds { pub held_up: bool, pub reasons: Vec<OutcomeReason>, pub unchecked: Vec<UncheckedBet> }
 ```
 
 `get_decision_brief` composes the three existing query calls plus the new
 option-label lookup — it does not duplicate their logic, and it stays
 `Layer 2`: three deterministic graph reads, no write, no LLM.
+
+**What it rests on** (hivemind-zdsh.15 §5, hivemind-gwhr.3). `rests_on` answers
+"what does this decision rest on?" from the graph: a prior decision
+(`FOLLOWS_FROM`), an observation (`BASED_ON`), an assumption or a declared bet
+(`ASSUMES`, hypothesis kind `assumption` | `bet`). Each item carries its own
+state — a decision `holds` / is `superseded` / `rejected` / `contested`; an
+assumption is `open` / `supported` / `refuted`; a bet is `open` (with its check
+date, and whether it is overdue) / `held` / `failed` — and whether it was named
+**at capture** or attributed **later** (by whom, when), read from the edge's
+causing proposal event, never blended. Staleness is never silent: a prior
+decision that was superseded or rejected adds `PremiseSuperseded` /
+`PremiseRejected` to `still_holds.reasons` and flips `held_up` (like a refuted
+assumption); a contested premise is shown but does not flip it; an overdue bet
+is reported under `still_holds.unchecked` (attention, not staleness) and does
+not. `grounding_state: nothing_declared` means "never asked" (legacy records,
+classifier extraction, document import, raw `emit decision.proposed`) and is what
+`ThinStructure.nothing_declared` reports; a premise link, evidence, an assumption
+or a declared bet all count as declared. Text renderers show labels and keep ids
+in the JSON.
 
 Every fluent verb's output, on success, leads with a `DecisionBrief` (or a
 list of them for multi-decision verbs like `get_supersession_chain`). JSON

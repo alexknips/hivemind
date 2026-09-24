@@ -34,6 +34,12 @@ Hypotheses premised on:
 
 A targeted patch might preserve the feature launch.
 
+## Rests on
+
+- **Evidence:** Enterprise customers opened priority cases while the hotfix window slipped. (at capture)
+- **Evidence:** Checkout errors rose above the incident threshold for the new pricing flag. (at capture)
+- **Assumption:** A hotfix can land before customer impact expands. — REFUTED (at capture)
+
 ## Evidence
 
 - Enterprise customers opened priority cases while the hotfix window slipped. (source: production-incident-response)

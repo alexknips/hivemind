@@ -2130,7 +2130,7 @@ fn thin_structure_still_holds_up_but_has_reason() -> Result<()> {
         r,
         OutcomeReason::ThinStructure {
             no_options: true,
-            no_evidence: true
+            nothing_declared: true
         }
     )));
     Ok(())
@@ -2501,7 +2501,7 @@ fn memory_graph_thin_structure_still_holds_up() -> Result<()> {
         r,
         OutcomeReason::ThinStructure {
             no_options: true,
-            no_evidence: true
+            nothing_declared: true
         }
     )));
     Ok(())
@@ -3317,6 +3317,8 @@ fn clean_outcome(id: &str) -> DecisionOutcome {
         contested: false,
         has_options: true,
         has_evidence: true,
+        grounding_state: super::grounding::GroundingState::Grounded,
+        unchecked: vec![],
         reasons: vec![],
     }
 }
@@ -3465,7 +3467,7 @@ fn thin_structure_both_stays_clean() {
         has_evidence: false,
         reasons: vec![OutcomeReason::ThinStructure {
             no_options: true,
-            no_evidence: true,
+            nothing_declared: true,
         }],
         ..clean_outcome("d:thin")
     };
@@ -3480,7 +3482,7 @@ fn thin_structure_both_stays_clean() {
         r,
         super::inhouse_scorer::ScorerReason::ThinStructure {
             no_options: true,
-            no_evidence: true,
+            nothing_declared: true,
             ..
         }
     )));
@@ -3538,7 +3540,7 @@ fn custom_config_changes_tier_cutoff() {
         has_evidence: false,
         reasons: vec![OutcomeReason::ThinStructure {
             no_options: true,
-            no_evidence: true,
+            nothing_declared: true,
         }],
         ..clean_outcome("d:thin")
     };
@@ -3611,7 +3613,7 @@ fn score_is_clamped_at_zero_on_extreme_compounding() {
             OutcomeReason::Contested,
             OutcomeReason::ThinStructure {
                 no_options: true,
-                no_evidence: true,
+                nothing_declared: true,
             },
         ],
         ..clean_outcome("d:worst")

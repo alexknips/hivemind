@@ -3,14 +3,16 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::events::BlockerPriority;
+use crate::events::{BlockerPriority, HypothesisKind};
 use crate::projector::{GraphView, RelationKind};
 use crate::Result;
 
 use super::active_blockers::{ActiveDecisionBlockersRequest, DecisionBlockerFilters};
 use super::decision::{get_hypothesis_statement, DecisionView};
+use super::grounding::GroundingState;
 use super::neighborhood::{get_decision_neighborhood, NeighborhoodRequest};
 use super::shared::{query_error, MAX_QUERY_RESULTS};
 use super::status::{DecisionStatus, HypothesisStatus};
@@ -30,8 +32,20 @@ pub struct CompactView {
     pub contest: Option<ContestView>,
     pub hypotheses: Vec<HypothesisSummaryView>,
     pub evidence_ids: Vec<String>,
+    /// The prior decisions this one follows from, with whether each still stands.
+    pub premises: Vec<PremiseSummaryView>,
+    /// Grounded, a declared bet, or nothing declared ("never asked").
+    pub grounding_state: GroundingState,
+    /// How many other decisions follow from this one.
+    pub dependents_count: usize,
     pub active_blockers: Vec<BlockerSummary>,
     pub elided: ElidedSummary,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PremiseSummaryView {
+    pub decision_id: String,
+    pub status: DecisionStatus,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -50,6 +64,11 @@ pub struct ContestView {
 pub struct HypothesisSummaryView {
     pub id: String,
     pub status: HypothesisStatus,
+    /// `assumption` (did it hold?) or `bet` (did we check?).
+    pub kind: HypothesisKind,
+    /// When to check a bet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_by: Option<DateTime<Utc>>,
     pub statement: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refuting_evidence_ids: Option<Vec<String>>,
@@ -226,11 +245,42 @@ pub fn get_compact_view(
         hypotheses.push(HypothesisSummaryView {
             id: hyp.id.to_owned(),
             status: hyp.status,
+            kind: hyp.kind,
+            check_by: hyp.check_by,
             statement,
             refuting_evidence_ids,
             supporting_evidence_ids,
         });
     }
+
+    // -----------------------------------------------------------------------
+    // What the decision rests on: premise decisions (with status) and who rests on it,
+    // straight from the neighborhood's FOLLOWS_FROM edges
+    // -----------------------------------------------------------------------
+    let premises: Vec<PremiseSummaryView> = neighborhood
+        .edges
+        .iter()
+        .filter(|e| e.relation == RelationKind::FollowsFrom && e.from == terminal_id)
+        .filter_map(|e| {
+            neighborhood
+                .nodes
+                .iter()
+                .find(|node| node.id == e.to)
+                .and_then(|node| node.decision_status)
+                .map(|status| PremiseSummaryView {
+                    decision_id: e.to.clone(), // ubs:ignore: owned id for the view; the neighborhood is only borrowed
+                    status,
+                })
+        })
+        .collect();
+    let dependents_count = neighborhood
+        .edges
+        .iter()
+        .filter(|e| e.relation == RelationKind::FollowsFrom && e.to == terminal_id)
+        .map(|e| e.from.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let grounding_state = terminal_decision.grounding_state();
 
     // -----------------------------------------------------------------------
     // Active blockers summary
@@ -297,6 +347,9 @@ pub fn get_compact_view(
             supersession_chain,
             contest,
             hypotheses,
+            premises,
+            grounding_state,
+            dependents_count,
             active_blockers,
             elided,
         }),

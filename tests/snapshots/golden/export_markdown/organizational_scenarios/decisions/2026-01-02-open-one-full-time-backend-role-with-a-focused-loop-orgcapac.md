@@ -34,6 +34,12 @@ Hypotheses premised on:
 
 Roadmap pressure and budget evidence favor durable capacity.
 
+## Rests on
+
+- **Evidence:** Budget can support one full-time hire but not two contractors. (at capture)
+- **Evidence:** Roadmap forecast shows two quarters of backend capacity shortfall. (at capture)
+- **Assumption:** A full-time backend hire pays off after the first onboarding month. — supported (at capture)
+
 ## Evidence
 
 - Budget can support one full-time hire but not two contractors. (source: hiring-capacity-planning)

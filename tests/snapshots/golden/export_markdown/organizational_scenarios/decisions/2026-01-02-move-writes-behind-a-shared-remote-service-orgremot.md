@@ -34,6 +34,12 @@ Hypotheses premised on:
 
 Shared state and security review both require service ownership.
 
+## Rests on
+
+- **Evidence:** Security review rejects direct database writes from every client. (at capture)
+- **Evidence:** Non-developer users need shared state across support shifts. (at capture)
+- **Assumption:** A service-owned write path can meet security and operational constraints. — supported (at capture)
+
 ## Evidence
 
 - Security review rejects direct database writes from every client. (source: remote-db-architecture-choice)

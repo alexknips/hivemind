@@ -34,6 +34,12 @@ Hypotheses premised on:
 
 Contracting keeps the team flexible while recruiting starts.
 
+## Rests on
+
+- **Evidence:** Recent contractors took longer to ramp on regulated workflows. (at capture)
+- **Evidence:** Roadmap forecast shows two quarters of backend capacity shortfall. (at capture)
+- **Assumption:** A contractor can cover the next milestone without onboarding drag. — REFUTED (at capture)
+
 ## Evidence
 
 - Recent contractors took longer to ramp on regulated workflows. (source: hiring-capacity-planning)

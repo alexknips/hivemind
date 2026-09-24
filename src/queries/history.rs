@@ -112,7 +112,10 @@ pub enum HistoryChangeKind {
     NewDecision,
     StatusChange,
     NewEvidence,
-    RefutedPremise,
+    /// Something a decision rests on no longer stands: an assumption it premises on was
+    /// refuted (a failed bet included), or a prior decision it follows from was superseded or
+    /// rejected. The row's `decision_ids` are the affected decisions, not the premise itself.
+    StalePremise,
     Supersession,
     ContextChange,
 }
@@ -382,16 +385,18 @@ pub fn get_recent_activity(
 
     let mut rows = Vec::new();
     for event in &events {
-        let row = activity_row(event, &index)?;
-        if matches_history_filters(
-            &row.actor_id,
-            row.source,
-            row.source_ref.as_deref(),
-            &row.decision_ids,
-            &filters,
-            &index,
-        ) {
-            rows.push(row);
+        let stale_row = stale_premise_activity_row(event, &index)?;
+        for row in std::iter::once(activity_row(event, &index)?).chain(stale_row) {
+            if matches_history_filters(
+                &row.actor_id,
+                row.source,
+                row.source_ref.as_deref(),
+                &row.decision_ids,
+                &filters,
+                &index,
+            ) {
+                rows.push(row);
+            }
         }
     }
     rows.sort_by_key(|row| Reverse(row.event_origin));
@@ -552,16 +557,18 @@ pub fn get_decisions_changed_since(
             if event_id <= window.since_offset || event_id > window.until_offset {
                 continue;
             }
-            let row = decision_change_row(event, &index)?;
-            if matches_history_filters(
-                &row.actor_id,
-                row.source,
-                row.source_ref.as_deref(),
-                &row.decision_ids,
-                &filters,
-                &index,
-            ) {
-                rows.push(row);
+            let stale_row = stale_premise_change_row(event, &index)?;
+            for row in std::iter::once(decision_change_row(event, &index)?).chain(stale_row) {
+                if matches_history_filters(
+                    &row.actor_id,
+                    row.source,
+                    row.source_ref.as_deref(),
+                    &row.decision_ids,
+                    &filters,
+                    &index,
+                ) {
+                    rows.push(row);
+                }
             }
         }
     }
@@ -615,7 +622,8 @@ pub fn get_decisions_added_since(
     let offset = parse_history_cursor(cursor.as_deref())?;
 
     let mut creation_events: BTreeMap<String, &Event> = BTreeMap::new();
-    let mut per_decision_changes: BTreeMap<String, Vec<(EventId, &Event)>> = BTreeMap::new();
+    let mut per_decision_changes: BTreeMap<String, Vec<(EventId, &Event, HistoryChangeKind)>> =
+        BTreeMap::new();
 
     for event in &events {
         let event_id = event_id(event)?;
@@ -629,11 +637,20 @@ pub fn get_decisions_added_since(
         if !in_window {
             continue;
         }
+        let change_kind = change_kind_for_payload(&payload);
         for decision_id in decision_ids_for_payload(&payload, &index) {
-            per_decision_changes
-                .entry(decision_id)
-                .or_default()
-                .push((event_id, event));
+            per_decision_changes.entry(decision_id).or_default().push((
+                event_id,
+                event,
+                change_kind,
+            ));
+        }
+        for decision_id in stale_premise_dependents(&payload, &index, event_id) {
+            per_decision_changes.entry(decision_id).or_default().push((
+                event_id,
+                event,
+                HistoryChangeKind::StalePremise,
+            ));
         }
     }
 
@@ -668,7 +685,7 @@ pub fn get_decisions_added_since(
             .cloned();
 
         let mut changes = Vec::with_capacity(change_events.len());
-        for (event_id_value, event) in change_events {
+        for (event_id_value, event, change_kind) in change_events {
             if creation_in_window
                 .as_ref()
                 .is_some_and(|prov| prov.event_origin == *event_id_value)
@@ -676,11 +693,10 @@ pub fn get_decisions_added_since(
                 continue;
             }
             let payload = events::validate(event).map_err(query_validation_error)?;
-            let change_kind = change_kind_for_payload(&payload);
             let affected_nodes = affected_nodes_for_event(event, &payload);
             let provenance = decision_event_provenance(event)?;
             changes.push(DecisionChange {
-                change_kind,
+                change_kind: *change_kind,
                 provenance,
                 affected_nodes,
             });
@@ -1283,6 +1299,9 @@ struct DecisionIndex {
     decisions: BTreeMap<String, DecisionIndexEntry>,
     assumed_by_hypothesis: BTreeMap<String, BTreeSet<String>>,
     option_to_decision: BTreeMap<String, String>,
+    /// Premise decision id -> the decisions that follow from it (`FOLLOWS_FROM`), each with
+    /// the ledger offset of the event that first linked it.
+    followers_of: BTreeMap<String, BTreeMap<String, EventId>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1398,10 +1417,19 @@ impl DecisionIndex {
                             .option_to_decision
                             .insert(payload.to_id, payload.from_id);
                     }
+                    EventRelationKind::FollowsFrom => {
+                        // Like the graph projection, a later relation.removed does not retract
+                        // this: retraction is recorded in the ledger only.
+                        index
+                            .followers_of
+                            .entry(payload.to_id)
+                            .or_default()
+                            .entry(payload.from_id)
+                            .or_insert_with(|| event.event_id.unwrap_or_default());
+                    }
                     EventRelationKind::Supports
                     | EventRelationKind::Refutes
-                    | EventRelationKind::SameAs
-                    | EventRelationKind::FollowsFrom => {}
+                    | EventRelationKind::SameAs => {}
                 },
                 EventPayload::RelationRemoved(_)
                 | EventPayload::EvidenceRecorded(_)
@@ -1459,6 +1487,42 @@ impl DecisionIndex {
             .map(|ids| ids.iter().cloned().collect())
             .unwrap_or_default()
     }
+
+    /// The decisions that followed from `premise_decision_id` before ledger offset `before`.
+    fn decisions_following(&self, premise_decision_id: &str, before: EventId) -> Vec<String> {
+        self.followers_of
+            .get(premise_decision_id)
+            .map(|followers| {
+                followers
+                    .iter()
+                    .filter(|(_, linked_at)| **linked_at < before)
+                    .map(|(follower, _)| follower.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// The decisions that already followed from a prior decision when this event (at ledger offset
+/// `event_offset`) superseded or rejected it: their premise no longer stands (superseded), or
+/// is in doubt (rejected). Empty for every other event. The event's own row is unchanged; these
+/// decisions get a `StalePremise` row of their own, so a premise going stale is never silent on
+/// the decisions that rested on it. A decision that only started following the premise later
+/// was stale from birth; its link is its own `ContextChange` row.
+fn stale_premise_dependents(
+    payload: &EventPayload,
+    index: &DecisionIndex,
+    event_offset: EventId,
+) -> Vec<String> {
+    match payload {
+        EventPayload::DecisionSuperseded(DecisionSupersededPayload {
+            old_decision_id, ..
+        }) => index.decisions_following(old_decision_id, event_offset),
+        EventPayload::DecisionRejected(DecisionRejectedPayload { decision_id, .. }) => {
+            index.decisions_following(decision_id, event_offset)
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn activity_row(event: &Event, index: &DecisionIndex) -> Result<ActivityRow> {
@@ -1507,6 +1571,36 @@ fn decision_change_row(event: &Event, index: &DecisionIndex) -> Result<DecisionC
     })
 }
 
+/// The second row a premise's supersession/rejection produces: the same event seen from the
+/// decisions that follow from the premise. `None` when nothing follows from it.
+fn stale_premise_activity_row(event: &Event, index: &DecisionIndex) -> Result<Option<ActivityRow>> {
+    let payload = events::validate(event).map_err(query_validation_error)?;
+    let dependents = stale_premise_dependents(&payload, index, event_id(event)?);
+    if dependents.is_empty() {
+        return Ok(None);
+    }
+    let mut row = activity_row(event, index)?;
+    row.change_kind = HistoryChangeKind::StalePremise;
+    row.decision_ids = dependents;
+    Ok(Some(row))
+}
+
+/// `stale_premise_activity_row` for the changed-since listing.
+fn stale_premise_change_row(
+    event: &Event,
+    index: &DecisionIndex,
+) -> Result<Option<DecisionChangeRow>> {
+    let payload = events::validate(event).map_err(query_validation_error)?;
+    let dependents = stale_premise_dependents(&payload, index, event_id(event)?);
+    if dependents.is_empty() {
+        return Ok(None);
+    }
+    let mut row = decision_change_row(event, index)?;
+    row.change_kind = HistoryChangeKind::StalePremise;
+    row.decision_ids = dependents;
+    Ok(Some(row))
+}
+
 fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
     match payload {
         EventPayload::DecisionProposed(_) => HistoryChangeKind::NewDecision,
@@ -1519,15 +1613,15 @@ fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
             EventRelationKind::BasedOn | EventRelationKind::Supports => {
                 HistoryChangeKind::NewEvidence
             }
-            EventRelationKind::Refutes => HistoryChangeKind::RefutedPremise,
+            EventRelationKind::Refutes => HistoryChangeKind::StalePremise,
             EventRelationKind::HasOption
             | EventRelationKind::Chose
             | EventRelationKind::Assumes
             | EventRelationKind::SameAs
-            // At-capture FOLLOWS_FROM reads as a context change; a premise later going
-            // stale (superseded/rejected) is a separate, richer signal gwhr.3 adds
-            // (HistoryChangeKind::StalePremise, driven by decision.superseded/.rejected on
-            // the premise, not by this relation.added event itself).
+            // A premise link is a context change. A premise later going stale is a separate
+            // signal: `HistoryChangeKind::StalePremise`, driven by decision.superseded /
+            // decision.rejected on the premise (see `stale_premise_dependents`), not by this
+            // relation.added event itself.
             | EventRelationKind::FollowsFrom => HistoryChangeKind::ContextChange,
         },
         EventPayload::RelationRemoved(_)

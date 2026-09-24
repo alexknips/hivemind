@@ -36,6 +36,7 @@ use super::active_blockers::{
 };
 use super::brief::{get_decision_brief, OptionLabel};
 use super::decision::{get_decision, get_hypothesis_statement};
+use super::grounding::{GroundingItem, GroundingKind, GroundingState};
 use super::outcome::OutcomeReason;
 use super::shared::{
     neighbor_pairs, node_rows, optional_int, optional_string, query_error, Direction,
@@ -150,6 +151,12 @@ struct DecisionEntry {
     rejected_options: Vec<OptionLabel>,
     hypotheses: Vec<HypothesisEntry>,
     evidence: Vec<EvidenceEntry>,
+    /// What the decision rests on, each with its state and provenance.
+    rests_on: Vec<GroundingItem>,
+    grounding_state: GroundingState,
+    expressed_confidence: Option<String>,
+    /// How many other decisions follow from this one.
+    dependents_count: usize,
     held_up: bool,
     outcome_reasons: Vec<OutcomeReason>,
     accepted_by: Vec<String>,
@@ -275,6 +282,10 @@ fn build_entry(
         rejected_options: brief.rejected_options,
         hypotheses,
         evidence,
+        rests_on: brief.rests_on,
+        grounding_state: brief.grounding_state,
+        expressed_confidence: brief.expressed_confidence,
+        dependents_count: brief.dependents_count,
         held_up: brief.still_holds.held_up,
         outcome_reasons: brief.still_holds.reasons,
         accepted_by,
@@ -437,6 +448,8 @@ fn render_decision_file(
     body.push_str(&render_options_section(entry));
     body.push_str("\n\n## Decision\n\n");
     body.push_str(&render_decision_section(entry));
+    body.push_str("\n\n## Rests on\n\n");
+    body.push_str(&render_rests_on_section(entry, filenames, titles));
     body.push_str("\n\n## Evidence\n\n");
     body.push_str(&render_evidence_section(entry));
     body.push_str("\n\n## Outcome\n\n");
@@ -597,6 +610,55 @@ fn render_decision_section(entry: &DecisionEntry) -> String {
     }
 }
 
+/// What the decision rests on: one line per item with its state and whether it was named at
+/// capture or attributed later, an honest "nothing declared" for a decision nobody asked, and
+/// how many decisions rest on this one.
+fn render_rests_on_section(
+    entry: &DecisionEntry,
+    filenames: &BTreeMap<String, String>,
+    titles: &BTreeMap<String, String>,
+) -> String {
+    let mut out = String::new();
+    if entry.grounding_state == GroundingState::NothingDeclared {
+        out.push_str("Nothing declared (never asked).");
+    } else {
+        for (i, item) in entry.rests_on.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            let (kind, label) = match item.kind {
+                GroundingKind::Decision => (
+                    "Decision",
+                    render_decision_ref(&item.id, filenames, titles, ""),
+                ),
+                GroundingKind::Evidence => ("Evidence", item.label.clone()), // ubs:ignore: clone necessary — the item is borrowed from the entry
+                GroundingKind::Assumption => ("Assumption", item.label.clone()), // ubs:ignore: clone necessary — the item is borrowed from the entry
+                GroundingKind::Bet => ("Bet", item.label.clone()), // ubs:ignore: clone necessary — the item is borrowed from the entry
+            };
+            let _ = write!(out, "- **{kind}:** {label}");
+            if let Some(state) = item.state.describe() {
+                let _ = write!(out, " — {state}");
+            }
+            let _ = write!(out, " ({})", item.added.describe());
+        }
+    }
+    if let Some(confidence) = &entry.expressed_confidence {
+        let _ = write!(
+            out,
+            "\n\nConfidence at capture: {confidence} (decider's words)"
+        );
+    }
+    if entry.dependents_count > 0 {
+        let noun = if entry.dependents_count == 1 {
+            "decision rests"
+        } else {
+            "decisions rest"
+        };
+        let _ = write!(out, "\n\n{} {noun} on this.", entry.dependents_count);
+    }
+    out
+}
+
 fn render_evidence_section(entry: &DecisionEntry) -> String {
     if entry.evidence.is_empty() {
         return "None recorded.".to_owned();
@@ -638,17 +700,23 @@ fn render_outcome_reason(reason: &OutcomeReason) -> String {
         OutcomeReason::PremisedOnRefuted { hypothesis_id } => {
             format!("Premised on refuted hypothesis {hypothesis_id}")
         }
+        OutcomeReason::PremiseSuperseded { decision_id, by_id } => {
+            format!("Follows from {decision_id}, which was superseded by {by_id}")
+        }
+        OutcomeReason::PremiseRejected { decision_id } => {
+            format!("Follows from {decision_id}, which was rejected")
+        }
         OutcomeReason::Contested => "Contested".to_owned(),
         OutcomeReason::ThinStructure {
             no_options,
-            no_evidence,
+            nothing_declared,
         } => {
             let mut parts = Vec::new();
             if *no_options {
                 parts.push("no options");
             }
-            if *no_evidence {
-                parts.push("no evidence");
+            if *nothing_declared {
+                parts.push("nothing declared about what it rests on");
             }
             format!("Thin structure: {}", parts.join(" and "))
         }

@@ -20,6 +20,7 @@
             "option-001-a",
             "option-001-b"
           ],
+          "premise_decision_ids": [],
           "rationale": "Deterministic rationale for seed decision 001",
           "status": "superseded",
           "title": "Seed decision 001",
@@ -33,6 +34,7 @@
             "actor:planner"
           ],
           "evidence_ids": [],
+          "grounding_state": "nothing_declared",
           "hypotheses": [],
           "matched_nodes": [],
           "option_ids": [
@@ -58,6 +60,7 @@
             "option-002-a",
             "option-002-b"
           ],
+          "premise_decision_ids": [],
           "rationale": "Deterministic rationale for seed decision 002",
           "status": "superseded",
           "title": "Seed decision 002",
@@ -71,6 +74,7 @@
             "actor:planner"
           ],
           "evidence_ids": [],
+          "grounding_state": "nothing_declared",
           "hypotheses": [],
           "matched_nodes": [],
           "option_ids": [

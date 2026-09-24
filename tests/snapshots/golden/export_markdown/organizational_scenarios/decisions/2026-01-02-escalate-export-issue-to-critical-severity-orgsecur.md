@@ -34,6 +34,12 @@ Hypotheses premised on:
 
 Exploit reproduction refutes the low-severity assumption.
 
+## Rests on
+
+- **Evidence:** Customer exposure logs show two enterprise tenants may be affected. (at capture)
+- **Evidence:** Manual reproduction accesses another tenant's export without authentication. (at capture)
+- **Assumption:** The export endpoint still requires tenant authentication. — REFUTED (at capture)
+
 ## Evidence
 
 - Customer exposure logs show two enterprise tenants may be affected. (source: security-vulnerability-triage)

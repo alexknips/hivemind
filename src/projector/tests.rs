@@ -2287,3 +2287,267 @@ fn hypothesis_recorded_without_kind_projects_assumption_default() -> Result<()> 
     assert_eq!(props.get("would_change_if"), Some(&GraphValue::Null));
     Ok(())
 }
+
+// ── Grounding provenance (hivemind-gwhr.3): who added a grounding edge, when, and what caused it ──
+
+fn event_caused_by(
+    event_type: EventType,
+    actor_id: &str,
+    payload: serde_json::Value,
+    causation_event_id: Option<u64>,
+) -> Event {
+    let mut event = event(event_type, actor_id, payload);
+    event.causation_event_id = causation_event_id;
+    event
+}
+
+fn edge_int(properties: &GraphProperties, key: &str) -> Option<i64> {
+    match properties.get(key) {
+        Some(GraphValue::Int(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn edge_text<'a>(properties: &'a GraphProperties, key: &str) -> Option<&'a str> {
+    match properties.get(key) {
+        Some(GraphValue::String(value)) => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+#[test]
+fn grounding_edges_carry_who_added_them_and_the_proposal_that_caused_them() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let proposal = ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:later",
+            "title": "Follows from a goal",
+            "rationale": "It is consistent with the goal we set earlier.",
+            "topic_keys": ["grounding"],
+            "option_ids": [],
+            "hypothesis_ids": ["hypothesis:1"],
+            "evidence_ids": ["evidence:1"]
+        }),
+    ))?;
+    // Fan-out at capture: caused by the proposal.
+    ledger.append(event_caused_by(
+        EventType::RelationAdded,
+        "actor:alice",
+        json!({"relation": "FOLLOWS_FROM", "from_id": "decision:later", "to_id": "decision:goal"}),
+        Some(proposal),
+    ))?;
+    // Attributed afterwards by someone else: no causing proposal.
+    ledger.append(event_caused_by(
+        EventType::RelationAdded,
+        "actor:bob",
+        json!({"relation": "FOLLOWS_FROM", "from_id": "decision:later", "to_id": "decision:other"}),
+        None,
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let edges = graph.edges();
+    let follows = |to: &str| {
+        edges
+            .get(&(
+                RelationKind::FollowsFrom,
+                "decision:later".to_owned(),
+                to.to_owned(),
+            ))
+            .expect("FOLLOWS_FROM edge present")
+    };
+    let at_capture = follows("decision:goal");
+    assert_eq!(
+        edge_int(at_capture, "causation_event_id"),
+        i64::try_from(proposal).ok()
+    );
+    assert_eq!(edge_text(at_capture, "added_by"), Some("actor:alice"));
+    assert!(edge_text(at_capture, "added_at").is_some());
+
+    let later = follows("decision:other");
+    assert_eq!(edge_int(later, "causation_event_id"), None);
+    assert_eq!(edge_text(later, "added_by"), Some("actor:bob"));
+
+    // Edges named by the proposal's own payload are at capture by definition: same causation.
+    for (kind, to) in [
+        (RelationKind::PremisedOnDirect, "hypothesis:1"),
+        (RelationKind::BasedOn, "evidence:1"),
+    ] {
+        let payload_edge = edges
+            .get(&(kind, "decision:later".to_owned(), to.to_owned()))
+            .expect("payload edge present");
+        assert_eq!(
+            edge_int(payload_edge, "causation_event_id"),
+            i64::try_from(proposal).ok(),
+            "{kind:?}"
+        );
+        assert_eq!(
+            edge_text(payload_edge, "added_by"),
+            Some("actor:alice"),
+            "{kind:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn only_grounding_edges_carry_provenance() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:1",
+            "title": "One",
+            "rationale": "Enough words to read on its own.",
+            "topic_keys": ["grounding"],
+            "option_ids": ["option:1"],
+            "chosen_option_id": "option:1"
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let edges = graph.edges();
+    let has_option = edges
+        .get(&(
+            RelationKind::HasOption,
+            "decision:1".to_owned(),
+            "option:1".to_owned(),
+        ))
+        .expect("HAS_OPTION edge present");
+    assert!(!has_option.contains_key("added_by"));
+    assert!(!has_option.contains_key("causation_event_id"));
+    Ok(())
+}
+
+#[test]
+fn evidence_recorded_projects_where_it_was_seen_and_when() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::EvidenceRecorded,
+        "actor:alice",
+        json!({
+            "evidence_id": "evidence:1",
+            "content": "27 of 27 captures carry no premise",
+            "source": "mayor audit 2026-09-22"
+        }),
+    ))?;
+    ledger.append(event(
+        EventType::EvidenceRecorded,
+        "actor:alice",
+        json!({"evidence_id": "evidence:2", "content": "No source given"}),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    let with_source = nodes
+        .get(&(NodeKind::Evidence, "evidence:1".to_owned()))
+        .expect("evidence node present");
+    assert_eq!(
+        with_source.get("evidence_source"),
+        Some(&GraphValue::String("mayor audit 2026-09-22".to_owned()))
+    );
+    assert!(edge_text(with_source, "recorded_at").is_some());
+    // The event's channel stays under `source`; the two are different facts.
+    assert_eq!(
+        with_source.get("source"),
+        Some(&GraphValue::String("agent".to_owned()))
+    );
+    let without_source = nodes
+        .get(&(NodeKind::Evidence, "evidence:2".to_owned()))
+        .expect("evidence node present");
+    assert_eq!(
+        without_source.get("evidence_source"),
+        Some(&GraphValue::Null)
+    );
+    Ok(())
+}
+
+#[test]
+fn memory_graph_serves_grounding_edges_with_provenance_oldest_first() -> Result<()> {
+    let graph = memory::MemoryGraph::default();
+    let properties = |origin: i64, by: &str, causation: Option<i64>| {
+        let mut properties = GraphProperties::from([
+            ("event_origin".to_owned(), GraphValue::Int(origin)),
+            ("added_by".to_owned(), GraphValue::String(by.to_owned())),
+            (
+                "added_at".to_owned(),
+                GraphValue::String("2026-01-01T00:00:00+00:00".to_owned()),
+            ),
+        ]);
+        if let Some(causation) = causation {
+            properties.insert("causation_event_id".to_owned(), GraphValue::Int(causation));
+        }
+        properties
+    };
+    // The same premise asserted twice: at capture, then again later by someone else.
+    graph.upsert_edge(
+        RelationKind::FollowsFrom,
+        "decision:a",
+        "decision:goal",
+        &properties(5, "actor:alice", Some(4)),
+    )?;
+    graph.upsert_edge(
+        RelationKind::FollowsFrom,
+        "decision:a",
+        "decision:goal",
+        &properties(9, "actor:bob", None),
+    )?;
+
+    let rows = graph.query(
+        "MATCH (a:`Decision` {id: $id})-[r:`FOLLOWS_FROM`]->(b:`Decision`) RETURN b.id AS id, r.event_origin AS event_origin, r.causation_event_id AS causation_event_id, r.added_by AS added_by, r.added_at AS added_at ORDER BY b.id;",
+        &GraphParams::from([("id".to_owned(), GraphValue::String("decision:a".to_owned()))]),
+    )?;
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0].get("added_by"),
+        Some(&GraphValue::String("actor:alice".to_owned()))
+    );
+    assert_eq!(rows[0].get("causation_event_id"), Some(&GraphValue::Int(4)));
+    assert_eq!(
+        rows[1].get("added_by"),
+        Some(&GraphValue::String("actor:bob".to_owned()))
+    );
+    assert_eq!(rows[1].get("causation_event_id"), Some(&GraphValue::Null));
+    Ok(())
+}
+
+#[test]
+fn memory_graph_single_node_lookup_honours_the_id_anchor() -> Result<()> {
+    let graph = memory::MemoryGraph::default();
+    for id in ["evidence:1", "evidence:2"] {
+        graph.upsert_node(
+            NodeKind::Evidence,
+            id,
+            &GraphProperties::from([(
+                "content".to_owned(),
+                GraphValue::String(format!("content of {id}")),
+            )]),
+        )?;
+    }
+
+    let anchored = graph.query(
+        "MATCH (node:`Evidence` {id: $id}) RETURN node.id AS id, node.content AS content LIMIT 1;",
+        &GraphParams::from([("id".to_owned(), GraphValue::String("evidence:2".to_owned()))]),
+    )?;
+    assert_eq!(anchored.len(), 1);
+    assert_eq!(
+        anchored[0].get("content"),
+        Some(&GraphValue::String("content of evidence:2".to_owned()))
+    );
+
+    let scan = graph.query(
+        "MATCH (node:`Evidence`) RETURN node.id AS id, node.content AS content ORDER BY node.id;",
+        &GraphParams::new(),
+    )?;
+    assert_eq!(scan.len(), 2);
+    Ok(())
+}

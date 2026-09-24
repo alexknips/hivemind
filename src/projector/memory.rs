@@ -56,12 +56,23 @@ impl GraphView for MemoryGraph {
             Some(GraphValue::String(value)) => value.clone(), // ubs:ignore: edge property copy; false positive from impl GraphWriter for.
             _ => String::new(),
         };
+        let causation_event_id = match properties.get("causation_event_id") {
+            Some(GraphValue::Int(value)) => Some(*value),
+            _ => None,
+        };
+        let optional_string = |key: &str| match properties.get(key) {
+            Some(GraphValue::String(value)) => Some(value.clone()), // ubs:ignore: edge provenance copy; the edge outlives the caller's property map
+            _ => None,
+        };
         edges.insert(MemoryEdge {
             relation: kind,
             from_id: from_id.to_owned(),
             to_id: to_id.to_owned(),
             _tenant_id: tenant_id,
             _event_origin: event_origin,
+            causation_event_id,
+            added_by: optional_string("added_by"),
+            added_at: optional_string("added_at"),
         });
         Ok(())
     }
@@ -108,11 +119,18 @@ impl GraphView for MemoryGraph {
 
         if cypher.contains("RETURN node.id AS id") {
             let kind = query_node_kind(cypher)?;
+            // `MATCH (node:`Kind` {id: $id}) RETURN node.id AS id, ...` is a single-node lookup
+            // (queries::shared::node_row); without the anchor it is the whole-kind scan.
+            let anchor = if cypher.contains("{id: $id}") {
+                Some(required_param_string(params, "id")?)
+            } else {
+                None
+            };
             let nodes = self.nodes_snapshot()?;
             let mut rows = nodes
                 .iter()
                 .filter_map(|((node_kind, id), properties)| {
-                    if *node_kind != kind {
+                    if *node_kind != kind || anchor.is_some_and(|anchor| anchor != id.as_str()) {
                         return None;
                     }
                     let mut row =
@@ -123,6 +141,48 @@ impl GraphView for MemoryGraph {
                 .collect::<Vec<_>>();
             rows.sort_by(|left, right| row_string(left, "id").cmp(row_string(right, "id")));
             return Ok(rows);
+        }
+
+        // Grounding provenance (hivemind-gwhr.3): one decision's (or option's) outgoing edges of
+        // one grounding relation with who added each, when, and its causing proposal event.
+        // A duplicate edge (same pair asserted by more than one event) yields one row per
+        // assertion, oldest first; readers keep the first, matching Postgres' first-write-wins.
+        if cypher.contains("r.causation_event_id AS causation_event_id") {
+            let relation = query_relation(cypher)?;
+            let id = required_param_string(params, "id")?;
+            let mut edges: Vec<MemoryEdge> = self
+                .edges_snapshot()?
+                .into_iter()
+                .filter(|edge| edge.relation == relation && edge.from_id == id)
+                .collect();
+            edges.sort_by(|left, right| {
+                (&left.to_id, left._event_origin).cmp(&(&right.to_id, right._event_origin))
+            });
+            return Ok(edges
+                .into_iter()
+                .map(|edge| {
+                    GraphRow::from([
+                        ("id".to_owned(), GraphValue::String(edge.to_id)),
+                        (
+                            "event_origin".to_owned(),
+                            edge._event_origin.map_or(GraphValue::Null, GraphValue::Int),
+                        ),
+                        (
+                            "causation_event_id".to_owned(),
+                            edge.causation_event_id
+                                .map_or(GraphValue::Null, GraphValue::Int),
+                        ),
+                        (
+                            "added_by".to_owned(),
+                            edge.added_by.map_or(GraphValue::Null, GraphValue::String),
+                        ),
+                        (
+                            "added_at".to_owned(),
+                            edge.added_at.map_or(GraphValue::Null, GraphValue::String),
+                        ),
+                    ])
+                })
+                .collect());
         }
 
         if cypher.contains("UNION") && cypher.contains("from_id") && cypher.contains("to_id") {
@@ -739,6 +799,10 @@ struct MemoryEdge {
     to_id: String,
     _tenant_id: String,
     _event_origin: Option<i64>,
+    /// Grounding edges only (see `projector::grounding_edge_properties`).
+    causation_event_id: Option<i64>,
+    added_by: Option<String>,
+    added_at: Option<String>,
 }
 
 fn query_relation(cypher: &str) -> Result<RelationKind> {

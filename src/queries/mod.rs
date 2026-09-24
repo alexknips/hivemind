@@ -7,6 +7,7 @@ mod compact_view;
 mod context;
 mod decision;
 mod decision_log;
+mod grounding;
 mod history;
 mod inhouse_scorer;
 mod misfiled;
@@ -40,10 +41,12 @@ pub use attribution::{
     get_failure_attribution, AttributionFinding, AttributionGroup, ConfidenceLevel, CorpusStats,
     FailureAttributionRequest, FailureModeReport, SignalBreakdown,
 };
-pub use brief::{get_decision_brief, DecidedBy, DecisionBrief, OptionLabel, StillHolds};
+pub use brief::{
+    get_decision_brief, get_decision_brief_at, DecidedBy, DecisionBrief, OptionLabel, StillHolds,
+};
 pub use compact_view::{
     get_compact_view, BlockerSummary, CompactView, ContestView, ElidedSummary,
-    HypothesisSummaryView, SupersessionSummary,
+    HypothesisSummaryView, PremiseSummaryView, SupersessionSummary,
 };
 pub use context::{
     context_next_cursor, get_decision_context, get_decision_context_candidates, AuthorshipShape,
@@ -51,6 +54,11 @@ pub use context::{
 };
 pub use decision::{get_decision, get_hypothesis_statement, DecisionView, HypothesisContext};
 pub use decision_log::{export_decision_log, DecisionLogExport, DecisionLogRequest};
+pub use grounding::{
+    dependents_count, grounding_of, grounding_of_at, grounding_state_of, rests_on_clause,
+    Grounding, GroundingAdded, GroundingItem, GroundingItemState, GroundingKind, GroundingState,
+    UncheckedBet,
+};
 pub use history::*;
 pub use inhouse_scorer::{
     get_decision_quality_score, scan_decision_quality, scorer_next_cursor, QualityTier,
@@ -64,8 +72,8 @@ pub use neighborhood::{
     NeighborhoodView,
 };
 pub use outcome::{
-    get_decision_outcome, get_decision_quality_candidates, outcome_next_cursor, DecisionOutcome,
-    DecisionQualityCandidatesRequest, OutcomeReason,
+    get_decision_outcome, get_decision_outcome_at, get_decision_quality_candidates,
+    outcome_next_cursor, DecisionOutcome, DecisionQualityCandidatesRequest, OutcomeReason,
 };
 pub use projects::{
     get_project, list_projects, ProjectAnchorView, ProjectLinkFact, ProjectListRequest,
@@ -112,5 +120,7 @@ impl QueryContext {
     }
 }
 
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 #[cfg(test)]
 mod tests;

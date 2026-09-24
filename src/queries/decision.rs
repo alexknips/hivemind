@@ -2,11 +2,16 @@
 
 use std::time::Instant;
 
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+use crate::events::HypothesisKind;
 use crate::projector::{GraphParams, GraphValue, GraphView, NodeKind, RelationKind};
 use crate::Result;
 
+use super::grounding::{
+    grounding_state_of, hypothesis_facts, premise_decision_ids, rests_on_clause, GroundingState,
+};
 use super::shared::{
     neighbor_ids, optional_string, optional_string_list, premised_on_hypothesis_ids,
     required_string,
@@ -16,10 +21,19 @@ use super::status::{
 };
 use super::QueryResponse;
 
+/// An assumption or a declared bet a decision premises on.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct HypothesisContext {
     pub id: String,
     pub status: HypothesisStatus,
+    /// `assumption` (did it hold?) or `bet` (did we check?).
+    pub kind: HypothesisKind,
+    /// When to check a bet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_by: Option<DateTime<Utc>>,
+    /// What would change our mind, in the decider's own words.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub would_change_if: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -33,6 +47,9 @@ pub struct DecisionView {
     pub option_ids: Vec<String>,
     pub evidence_ids: Vec<String>,
     pub hypotheses: Vec<HypothesisContext>,
+    /// Prior decisions this decision follows from (`FOLLOWS_FROM`): a premise in the broad
+    /// sense. Ids only; `get_decision_brief` carries the states and labels.
+    pub premise_decision_ids: Vec<String>,
     /// Verbatim words of the decider, self-contained. Always present together with
     /// `question` (hivemind-zdsh.13).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -40,6 +57,40 @@ pub struct DecisionView {
     /// The question `quote` answers, spelled out.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
+}
+
+impl DecisionView {
+    /// Grounded, a declared bet, or nothing declared, from the premise, evidence and hypothesis
+    /// ids this view carries. Only meaningful on a full view (`get_decision`, search results);
+    /// the shallow views `get_relevant_decisions` returns carry none of them.
+    pub fn grounding_state(&self) -> GroundingState {
+        grounding_state_of(
+            self.premise_decision_ids.len(),
+            self.evidence_ids.len(),
+            self.hypotheses.iter().map(|hypothesis| hypothesis.kind),
+        )
+    }
+
+    /// The one-line digest form: `rests on: decision x1, evidence x2, bet (check by 2026-10-15)`.
+    pub fn rests_on_clause(&self) -> String {
+        let assumptions = self
+            .hypotheses
+            .iter()
+            .filter(|hypothesis| hypothesis.kind == HypothesisKind::Assumption)
+            .count();
+        let bets: Vec<Option<DateTime<Utc>>> = self
+            .hypotheses
+            .iter()
+            .filter(|hypothesis| hypothesis.kind == HypothesisKind::Bet)
+            .map(|hypothesis| hypothesis.check_by)
+            .collect();
+        rests_on_clause(
+            self.premise_decision_ids.len(),
+            self.evidence_ids.len(),
+            assumptions,
+            &bets,
+        )
+    }
 }
 
 pub fn get_decision(
@@ -83,12 +134,17 @@ pub fn get_decision(
             NodeKind::Evidence,
             "evidence_id",
         )?;
+        let premise_decision_ids = premise_decision_ids(graph, &id)?;
         let hypothesis_ids = premised_on_hypothesis_ids(graph, &id)?;
         let mut hypotheses = Vec::with_capacity(hypothesis_ids.len());
         for hypothesis_id in hypothesis_ids {
+            let facts = hypothesis_facts(graph, &hypothesis_id)?;
             hypotheses.push(HypothesisContext {
                 status: derive_hypothesis_status(graph, &hypothesis_id)?,
                 id: hypothesis_id,
+                kind: facts.kind,
+                check_by: facts.check_by,
+                would_change_if: facts.would_change_if,
             });
         }
 
@@ -102,6 +158,7 @@ pub fn get_decision(
             option_ids,
             evidence_ids,
             hypotheses,
+            premise_decision_ids,
             quote,
             question,
         })

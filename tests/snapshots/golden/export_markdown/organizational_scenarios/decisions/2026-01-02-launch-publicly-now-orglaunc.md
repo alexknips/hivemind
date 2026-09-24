@@ -34,6 +34,12 @@ Hypotheses premised on:
 
 The launch window is available but quality and caveat evidence are still unresolved.
 
+## Rests on
+
+- **Evidence:** Launch copy needs a compliance caveat before broad availability. (at capture)
+- **Evidence:** Regression automation still fails checkout and billing smoke tests. (at capture)
+- **Assumption:** The full public launch is ready this week. — REFUTED (at capture)
+
 ## Evidence
 
 - Launch copy needs a compliance caveat before broad availability. (source: product-launch-readiness)

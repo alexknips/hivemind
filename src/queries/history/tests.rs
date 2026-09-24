@@ -88,7 +88,7 @@ fn changed_since_classifies_decision_history_and_paginates() -> Result<()> {
         kinds,
         vec![
             HistoryChangeKind::NewEvidence,
-            HistoryChangeKind::RefutedPremise,
+            HistoryChangeKind::StalePremise,
             HistoryChangeKind::Supersession,
         ]
     );
@@ -96,7 +96,7 @@ fn changed_since_classifies_decision_history_and_paginates() -> Result<()> {
         .data
         .items
         .iter()
-        .find(|row| row.change_kind == HistoryChangeKind::RefutedPremise)
+        .find(|row| row.change_kind == HistoryChangeKind::StalePremise)
         .expect("refuted assumption row");
     assert_eq!(refuted.decision_ids, vec!["decision-a".to_owned()]);
     assert_eq!(refuted.source_ref.as_deref(), Some("thread-1"));
@@ -478,7 +478,7 @@ fn added_since_separates_added_and_changed_with_deterministic_order() -> Result<
         .map(|change| change.change_kind)
         .collect();
     assert!(kinds.contains(&HistoryChangeKind::StatusChange));
-    assert!(kinds.contains(&HistoryChangeKind::RefutedPremise));
+    assert!(kinds.contains(&HistoryChangeKind::StalePremise));
     assert!(kinds.contains(&HistoryChangeKind::Supersession));
 
     let decision_b = &response.data.added_decisions[1];
@@ -674,5 +674,211 @@ fn added_since_filters_by_import_run_id_extracted_from_source_ref() -> Result<()
             .as_deref(),
         Some("import:2026-05-19T12:00:00Z:r1")
     );
+    Ok(())
+}
+
+// ── a premise going stale is never silent on the decisions that rest on it (hivemind-gwhr.3) ──
+
+use crate::queries::test_fixtures::Scenario;
+
+/// `d:goal` (accepted), with `d:derived` following from it at capture and `d:bystander` not.
+fn goal_with_a_derived_decision() -> Result<Scenario> {
+    let scenario = Scenario::new();
+    scenario.decision(
+        "d:goal",
+        "Ship the hosted MVP",
+        "human:alex",
+        "2026-01-01T00:00:00Z",
+    )?;
+    scenario.accept("d:goal", "human:alex", "2026-01-01T00:00:01Z")?;
+    let proposal = scenario.decision(
+        "d:derived",
+        "Use Postgres for the MVP",
+        "agent:claude:crew",
+        "2026-01-02T00:00:00Z",
+    )?;
+    scenario.relation(
+        "FOLLOWS_FROM",
+        "d:derived",
+        "d:goal",
+        "agent:claude:crew",
+        Some(proposal),
+        "2026-01-02T00:00:01Z",
+    )?;
+    scenario.decision(
+        "d:bystander",
+        "Pick a logo",
+        "human:alex",
+        "2026-01-02T00:00:02Z",
+    )?;
+    Ok(scenario)
+}
+
+fn changed_since_start(ledger: &InMemoryEventLedger) -> Result<Vec<DecisionChangeRow>> {
+    Ok(get_decisions_changed_since(
+        ledger,
+        &ChangedSinceRequest {
+            since_offset: Some(0),
+            limit: 100,
+            ..ChangedSinceRequest::default()
+        },
+    )?
+    .data
+    .items)
+}
+
+#[test]
+fn following_a_premise_is_a_context_change() -> Result<()> {
+    let scenario = goal_with_a_derived_decision()?;
+
+    let rows = changed_since_start(scenario.ledger())?;
+
+    let link = rows
+        .iter()
+        .find(|row| row.event_type == EventType::RelationAdded)
+        .expect("the FOLLOWS_FROM relation event");
+    assert_eq!(link.change_kind, HistoryChangeKind::ContextChange);
+    assert_eq!(link.decision_ids, vec!["d:derived".to_owned()]);
+    assert!(!rows
+        .iter()
+        .any(|row| row.change_kind == HistoryChangeKind::StalePremise));
+    Ok(())
+}
+
+#[test]
+fn superseding_a_premise_surfaces_the_derived_decisions_as_a_stale_premise() -> Result<()> {
+    let scenario = goal_with_a_derived_decision()?;
+    scenario.decision(
+        "d:goal-2",
+        "Ship the self-hosted MVP",
+        "human:alex",
+        "2026-02-01T00:00:00Z",
+    )?;
+    scenario.supersede("d:goal", "d:goal-2", "human:alex", "2026-02-01T00:00:01Z")?;
+
+    let rows = changed_since_start(scenario.ledger())?;
+
+    // The supersession keeps its own row...
+    let supersession = rows
+        .iter()
+        .find(|row| row.change_kind == HistoryChangeKind::Supersession)
+        .expect("the supersession row");
+    assert_eq!(
+        supersession.decision_ids,
+        vec!["d:goal".to_owned(), "d:goal-2".to_owned()]
+    );
+    // ...and the decision that rested on the old premise gets a StalePremise row for the same event.
+    let stale = rows
+        .iter()
+        .find(|row| row.change_kind == HistoryChangeKind::StalePremise)
+        .expect("a stale-premise row");
+    assert_eq!(stale.decision_ids, vec!["d:derived".to_owned()]);
+    assert_eq!(stale.event_origin, supersession.event_origin);
+    assert_eq!(stale.event_type, EventType::DecisionSuperseded);
+
+    // The same in the recent-activity feed, and nothing for the bystander.
+    let activity = get_recent_activity(scenario.ledger(), &RecentActivityRequest::default())?.data;
+    let stale_activity: Vec<_> = activity
+        .items
+        .iter()
+        .filter(|row| row.change_kind == HistoryChangeKind::StalePremise)
+        .collect();
+    assert_eq!(stale_activity.len(), 1);
+    assert_eq!(stale_activity[0].decision_ids, vec!["d:derived".to_owned()]);
+    assert!(!rows
+        .iter()
+        .any(|row| row.decision_ids.contains(&"d:bystander".to_owned())
+            && row.change_kind == HistoryChangeKind::StalePremise));
+    Ok(())
+}
+
+#[test]
+fn rejecting_a_premise_surfaces_the_derived_decisions_as_a_stale_premise() -> Result<()> {
+    let scenario = goal_with_a_derived_decision()?;
+    scenario.reject("d:goal", "human:bob", "2026-02-01T00:00:00Z")?;
+
+    let rows = changed_since_start(scenario.ledger())?;
+
+    let stale = rows
+        .iter()
+        .find(|row| row.change_kind == HistoryChangeKind::StalePremise)
+        .expect("a stale-premise row");
+    assert_eq!(stale.decision_ids, vec!["d:derived".to_owned()]);
+    assert_eq!(stale.event_type, EventType::DecisionRejected);
+    Ok(())
+}
+
+#[test]
+fn added_since_lists_the_stale_premise_on_the_derived_decision() -> Result<()> {
+    let scenario = goal_with_a_derived_decision()?;
+    scenario.decision(
+        "d:goal-2",
+        "Ship the self-hosted MVP",
+        "human:alex",
+        "2026-02-01T00:00:00Z",
+    )?;
+    scenario.supersede("d:goal", "d:goal-2", "human:alex", "2026-02-01T00:00:01Z")?;
+
+    let response = get_decisions_added_since(
+        scenario.ledger(),
+        &DecisionsAddedSinceRequest {
+            since_offset: Some(0),
+            limit: 100,
+            ..DecisionsAddedSinceRequest::default()
+        },
+    )?;
+
+    let derived = response
+        .data
+        .added_decisions
+        .iter()
+        .find(|entry| entry.decision_id == "d:derived")
+        .expect("derived decision listed");
+    let kinds: Vec<HistoryChangeKind> = derived
+        .changes_in_window
+        .iter()
+        .map(|change| change.change_kind)
+        .collect();
+    assert!(kinds.contains(&HistoryChangeKind::StalePremise));
+    // It was not itself superseded.
+    assert!(!kinds.contains(&HistoryChangeKind::Supersession));
+    Ok(())
+}
+
+#[test]
+fn a_decision_that_starts_following_a_premise_after_it_went_stale_is_not_reported_against_that_event(
+) -> Result<()> {
+    let scenario = goal_with_a_derived_decision()?;
+    scenario.decision(
+        "d:goal-2",
+        "Ship the self-hosted MVP",
+        "human:alex",
+        "2026-02-01T00:00:00Z",
+    )?;
+    scenario.supersede("d:goal", "d:goal-2", "human:alex", "2026-02-01T00:00:01Z")?;
+    // Named a stale premise after the fact: stale from birth, and its link is its own row.
+    let late = scenario.decision(
+        "d:late",
+        "Late follower",
+        "agent:claude:crew",
+        "2026-03-01T00:00:00Z",
+    )?;
+    scenario.relation(
+        "FOLLOWS_FROM",
+        "d:late",
+        "d:goal",
+        "agent:claude:crew",
+        Some(late),
+        "2026-03-01T00:00:01Z",
+    )?;
+
+    let rows = changed_since_start(scenario.ledger())?;
+
+    let stale_ids: Vec<&String> = rows
+        .iter()
+        .filter(|row| row.change_kind == HistoryChangeKind::StalePremise)
+        .flat_map(|row| row.decision_ids.iter())
+        .collect();
+    assert_eq!(stale_ids, vec![&"d:derived".to_owned()]);
     Ok(())
 }

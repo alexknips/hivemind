@@ -7,6 +7,7 @@
     "hypotheses": [
       {
         "id": "hypothesis-001",
+        "kind": "assumption",
         "status": "refuted"
       }
     ],
@@ -15,6 +16,7 @@
       "option-005-a",
       "option-005-b"
     ],
+    "premise_decision_ids": [],
     "rationale": "Deterministic rationale for seed decision 005",
     "status": "proposed",
     "title": "Seed decision 005",

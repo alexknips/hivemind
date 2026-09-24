@@ -103,7 +103,7 @@ fn brief_composes_context_and_outcome_for_a_clean_decision() -> Result<()> {
     assert!(brief.still_holds.reasons.iter().any(|reason| matches!(
         reason,
         OutcomeReason::ThinStructure {
-            no_evidence: true,
+            nothing_declared: true,
             ..
         }
     )));
@@ -169,5 +169,141 @@ fn brief_returns_none_for_missing_decision() -> Result<()> {
     let response = get_decision_brief(&graph, "does-not-exist")?;
     assert!(response.data.is_none());
     assert_eq!(response.result_count, 0);
+    Ok(())
+}
+
+// ── what the decision rests on (hivemind-gwhr.3) ─────────────────────────────────────────
+
+use crate::queries::grounding::{
+    GroundingAdded, GroundingItemState, GroundingKind, GroundingState,
+};
+use crate::queries::test_fixtures::Scenario;
+
+#[test]
+fn brief_lists_what_the_decision_rests_on_and_how_many_decisions_rest_on_it() -> Result<()> {
+    let scenario = Scenario::new();
+    scenario.decision(
+        "d:goal",
+        "Ship the hosted MVP",
+        "human:alex",
+        "2026-01-01T00:00:00Z",
+    )?;
+    scenario.accept("d:goal", "human:alex", "2026-01-01T00:00:01Z")?;
+    scenario.evidence(
+        "e:audit",
+        "27 of 27 captures carry no premise",
+        Some("mayor audit 2026-09-22"),
+        "2026-01-01T00:00:02Z",
+    )?;
+    scenario.hypothesis(
+        "h:bet",
+        "Agents answer the question instead of skipping capture",
+        "bet",
+        Some("2026-10-15T00:00:00Z"),
+        "2026-01-01T00:00:03Z",
+    )?;
+    let proposal = scenario.decision_with(
+        "d:derived",
+        "Premises are asked at capture",
+        "agent:claude:crew",
+        "2026-01-02T00:00:00Z",
+        false,
+        &["e:audit"],
+        &["h:bet"],
+        Some("high"),
+    )?;
+    scenario.relation(
+        "FOLLOWS_FROM",
+        "d:derived",
+        "d:goal",
+        "agent:claude:crew",
+        Some(proposal),
+        "2026-01-02T00:00:01Z",
+    )?;
+    let graph = scenario.graph()?;
+    let now = ts("2026-06-01T00:00:00Z");
+
+    let brief = get_decision_brief_at(&graph, "d:derived", now)?
+        .data
+        .expect("decision exists");
+
+    assert_eq!(brief.grounding_state, GroundingState::Grounded);
+    assert_eq!(brief.expressed_confidence.as_deref(), Some("high"));
+    assert_eq!(brief.dependents_count, 0);
+    let rests_on: Vec<(GroundingKind, &str, &GroundingAdded)> = brief
+        .rests_on
+        .iter()
+        .map(|item| (item.kind, item.label.as_str(), &item.added))
+        .collect();
+    assert_eq!(
+        rests_on,
+        vec![
+            (
+                GroundingKind::Decision,
+                "Ship the hosted MVP",
+                &GroundingAdded::AtCapture
+            ),
+            (
+                GroundingKind::Evidence,
+                "27 of 27 captures carry no premise",
+                &GroundingAdded::AtCapture
+            ),
+            (
+                GroundingKind::Bet,
+                "Agents answer the question instead of skipping capture",
+                &GroundingAdded::AtCapture
+            ),
+        ]
+    );
+    assert!(brief.still_holds.held_up);
+
+    // The premise knows one decision rests on it, and carries no premise of its own.
+    let goal = get_decision_brief_at(&graph, "d:goal", now)?
+        .data
+        .expect("decision exists");
+    assert_eq!(goal.dependents_count, 1);
+    assert_eq!(goal.grounding_state, GroundingState::NothingDeclared);
+    assert!(goal.rests_on.is_empty());
+    assert_eq!(goal.expressed_confidence, None);
+    Ok(())
+}
+
+#[test]
+fn brief_names_an_overdue_bet_as_unchecked_without_saying_the_decision_is_stale() -> Result<()> {
+    let scenario = Scenario::new();
+    scenario.hypothesis(
+        "h:late",
+        "Nobody will notice",
+        "bet",
+        Some("2026-02-01T00:00:00Z"),
+        "2026-01-01T00:00:00Z",
+    )?;
+    scenario.decision_with(
+        "d:1",
+        "Ship it anyway",
+        "human:alice",
+        "2026-01-02T00:00:00Z",
+        false,
+        &[],
+        &["h:late"],
+        None,
+    )?;
+    let graph = scenario.graph()?;
+
+    let brief = get_decision_brief_at(&graph, "d:1", ts("2026-06-01T00:00:00Z"))?
+        .data
+        .expect("decision exists");
+
+    assert!(brief.still_holds.held_up);
+    assert_eq!(brief.grounding_state, GroundingState::Bet);
+    assert_eq!(brief.still_holds.unchecked.len(), 1);
+    assert_eq!(brief.still_holds.unchecked[0].hypothesis_id, "h:late");
+    assert_eq!(
+        brief.rests_on[0].state,
+        GroundingItemState::BetOpen {
+            check_by: Some(ts("2026-02-01T00:00:00Z")),
+            overdue: true,
+        }
+    );
     Ok(())
 }

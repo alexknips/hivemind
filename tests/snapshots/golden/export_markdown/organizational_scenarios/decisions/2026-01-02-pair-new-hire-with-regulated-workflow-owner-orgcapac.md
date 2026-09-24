@@ -34,6 +34,11 @@ Hypotheses premised on:
 
 The onboarding plan addresses the capacity risk without losing domain context.
 
+## Rests on
+
+- **Evidence:** Recent contractors took longer to ramp on regulated workflows. (at capture)
+- **Assumption:** A full-time backend hire pays off after the first onboarding month. — supported (at capture)
+
 ## Evidence
 
 - Recent contractors took longer to ramp on regulated workflows. (source: hiring-capacity-planning)

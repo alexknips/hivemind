@@ -20,6 +20,7 @@
             "option-020-delta-mirror",
             "option-020-manual-reconciliation"
           ],
+          "premise_decision_ids": [],
           "rationale": "Deterministic rationale for seed decision 020",
           "status": "proposed",
           "title": "Seed decision 020",
@@ -35,6 +36,7 @@
           "evidence_ids": [
             "evidence-006"
           ],
+          "grounding_state": "grounded",
           "hypotheses": [],
           "matched_nodes": [
             {

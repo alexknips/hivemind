@@ -31,7 +31,7 @@ const NODE_DDL: &[(NodeKind, &str)] = &[
     ),
     (
         NodeKind::Evidence,
-        "CREATE NODE TABLE IF NOT EXISTS `Evidence` (id STRING, content STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Evidence` (id STRING, content STRING, evidence_source STRING, recorded_at STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Option,
@@ -118,7 +118,7 @@ const RELATION_DDL: &[(RelationKind, &str)] = &[
     ),
     (
         RelationKind::BasedOn,
-        "CREATE REL TABLE IF NOT EXISTS `BASED_ON` (FROM `Decision` TO `Evidence`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `BASED_ON` (FROM `Decision` TO `Evidence`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, added_by STRING, added_at STRING, causation_event_id INT64);",
     ),
     (
         RelationKind::HasOption,
@@ -130,11 +130,11 @@ const RELATION_DDL: &[(RelationKind, &str)] = &[
     ),
     (
         RelationKind::PremisedOn,
-        "CREATE REL TABLE IF NOT EXISTS `PREMISED_ON` (FROM `Option` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `PREMISED_ON` (FROM `Option` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, added_by STRING, added_at STRING, causation_event_id INT64);",
     ),
     (
         RelationKind::PremisedOnDirect,
-        "CREATE REL TABLE IF NOT EXISTS `PREMISED_ON_DIRECT` (FROM `Decision` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `PREMISED_ON_DIRECT` (FROM `Decision` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, added_by STRING, added_at STRING, causation_event_id INT64);",
     ),
     (
         RelationKind::Supports,
@@ -154,7 +154,7 @@ const RELATION_DDL: &[(RelationKind, &str)] = &[
     ),
     (
         RelationKind::FollowsFrom,
-        "CREATE REL TABLE IF NOT EXISTS `FOLLOWS_FROM` (FROM `Decision` TO `Decision`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+        "CREATE REL TABLE IF NOT EXISTS `FOLLOWS_FROM` (FROM `Decision` TO `Decision`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, added_by STRING, added_at STRING, causation_event_id INT64);",
     ),
 ];
 

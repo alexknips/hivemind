@@ -34,6 +34,11 @@ Hypotheses premised on:
 
 The core workflow works for the beta cohort.
 
+## Rests on
+
+- **Evidence:** Beta cohorts complete activation when the risky bulk import is hidden. (at capture)
+- **Assumption:** The full public launch is ready this week. — REFUTED (at capture)
+
 ## Evidence
 
 - Beta cohorts complete activation when the risky bulk import is hidden. (source: product-launch-readiness)

@@ -34,6 +34,11 @@ Hypotheses premised on:
 
 The local store is simplest while the data model is still moving.
 
+## Rests on
+
+- **Evidence:** Non-developer users need shared state across support shifts. (at capture)
+- **Assumption:** A local embedded store is enough for the first shared pilot. — REFUTED (at capture)
+
 ## Evidence
 
 - Non-developer users need shared state across support shifts. (source: remote-db-architecture-choice)

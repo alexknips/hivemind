@@ -17,6 +17,7 @@
           "hypotheses": [
             {
               "id": "hypothesis-004",
+              "kind": "assumption",
               "status": "open"
             }
           ],
@@ -25,6 +26,7 @@
             "option-021-a",
             "option-021-b"
           ],
+          "premise_decision_ids": [],
           "rationale": "Deterministic rationale for seed decision 021",
           "status": "proposed",
           "title": "Seed decision 021",
@@ -40,9 +42,11 @@
           "evidence_ids": [
             "evidence-005"
           ],
+          "grounding_state": "grounded",
           "hypotheses": [
             {
               "id": "hypothesis-004",
+              "kind": "assumption",
               "status": "open"
             }
           ],

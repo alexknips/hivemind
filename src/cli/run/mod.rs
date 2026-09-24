@@ -3385,15 +3385,24 @@ fn format_reason(reason: &ScorerReason) -> String {
         ScorerReason::Contested { deduction } => {
             format!("Contested (accepted + rejected actors disagree) (deduction: -{deduction:.2})")
         }
-        ScorerReason::ThinStructure {
-            no_options,
-            no_evidence,
+        ScorerReason::PremiseStale {
+            decision_ids,
             deduction,
         } => {
-            let detail = match (no_options, no_evidence) {
-                (true, true) => "no options and no evidence attached",
+            format!(
+                "Follows from a prior decision that no longer stands: {} (deduction: -{deduction:.2})",
+                decision_ids.join(", ")
+            )
+        }
+        ScorerReason::ThinStructure {
+            no_options,
+            nothing_declared,
+            deduction,
+        } => {
+            let detail = match (no_options, nothing_declared) {
+                (true, true) => "no options attached and nothing declared about what it rests on",
                 (true, false) => "no options attached",
-                (false, true) => "no evidence attached",
+                (false, true) => "nothing declared about what it rests on",
                 (false, false) => "thin structure",
             };
             format!("Thin structure: {detail} (deduction: -{deduction:.2})")

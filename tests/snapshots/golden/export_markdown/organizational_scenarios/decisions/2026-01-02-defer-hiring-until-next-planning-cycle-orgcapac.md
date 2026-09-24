@@ -34,6 +34,11 @@ Hypotheses premised on:
 
 Budget timing is tight and headcount can wait if scope shrinks.
 
+## Rests on
+
+- **Evidence:** Budget can support one full-time hire but not two contractors. (at capture)
+- **Assumption:** A contractor can cover the next milestone without onboarding drag. — REFUTED (at capture)
+
 ## Evidence
 
 - Budget can support one full-time hire but not two contractors. (source: hiring-capacity-planning)

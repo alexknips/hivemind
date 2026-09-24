@@ -34,6 +34,11 @@ Hypotheses premised on:
 
 The first read assumed authentication was still enforced.
 
+## Rests on
+
+- **Evidence:** Static scanner flagged an authorization bypass in export links. (at capture)
+- **Assumption:** The export endpoint still requires tenant authentication. — REFUTED (at capture)
+
 ## Evidence
 
 - Static scanner flagged an authorization bypass in export links. (source: security-vulnerability-triage)

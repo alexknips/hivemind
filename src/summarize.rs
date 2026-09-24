@@ -19,7 +19,8 @@ use crate::ledger::AnyLedger;
 use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::queries::{
     get_decision, get_supersession_chain, search_decisions_any, DecisionSearchResult,
-    DecisionStatus, DecisionView, QueryContext, QueryResponse, SearchDecisionRequest,
+    DecisionStatus, DecisionView, GroundingState, QueryContext, QueryResponse,
+    SearchDecisionRequest,
 };
 use crate::Result;
 
@@ -213,6 +214,7 @@ fn render_single(view: &DecisionView, option_labels: &[(String, String)]) -> Str
     if let Some(chosen) = chosen_label(option_labels, view.chosen_option_id.as_deref()) {
         parts.push(format!("Chose: {chosen}"));
     }
+    parts.push(view.rests_on_clause());
     if !view.hypotheses.is_empty() {
         let hyp_summary: Vec<String> = view
             .hypotheses
@@ -230,8 +232,13 @@ fn render_digest(view: &DecisionView, option_labels: &[(String, String)]) -> Str
         .unwrap_or_default();
     let rationale_short = trim_rationale(&view.rationale, RATIONALE_TRIM_CHARS);
     format!(
-        "- {} ({:?}): {} — {}{}",
-        view.id, view.status, view.title, rationale_short, chosen
+        "- {} ({:?}): {} — {}{}\n  {}",
+        view.id,
+        view.status,
+        view.title,
+        rationale_short,
+        chosen,
+        view.rests_on_clause()
     )
 }
 
@@ -458,6 +465,12 @@ pub struct DigestEntry {
     pub chosen_option_label: Option<String>,
     pub supersedes_ids: Vec<String>,
     pub superseded_by_ids: Vec<String>,
+    /// Prior decisions this one follows from.
+    pub premise_decision_ids: Vec<String>,
+    /// Grounded, a declared bet, or nothing declared ("never asked").
+    pub grounding_state: GroundingState,
+    /// The digest clause: `rests on: decision x1, evidence x2, bet (check by 2026-10-15)`.
+    pub rests_on: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -599,6 +612,9 @@ fn build_digest_entry(
         chosen_option_label,
         supersedes_ids: ctx.supersedes_decision_ids.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
         superseded_by_ids: ctx.superseded_by_decision_ids.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
+        premise_decision_ids: d.premise_decision_ids.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
+        grounding_state: ctx.grounding_state,
+        rests_on: d.rests_on_clause(),
     }
 }
 
@@ -676,6 +692,8 @@ fn render_digest_text(
                     let _ = writeln!(out, "  Options: {opts}");
                 }
             }
+
+            let _ = writeln!(out, "  {}", entry.rests_on);
 
             if !entry.actor_ids.is_empty() {
                 let _ = writeln!(out, "  By: {}", entry.actor_ids.join(", "));

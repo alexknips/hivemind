@@ -34,6 +34,12 @@ Hypotheses premised on:
 
 Cutting bulk import and adding the caveat preserves value without hiding risk.
 
+## Rests on
+
+- **Evidence:** Launch copy needs a compliance caveat before broad availability. (at capture)
+- **Evidence:** Beta cohorts complete activation when the risky bulk import is hidden. (at capture)
+- **Assumption:** A phased beta can capture value while containing support and compliance risk. — supported (at capture)
+
 ## Evidence
 
 - Launch copy needs a compliance caveat before broad availability. (source: product-launch-readiness)

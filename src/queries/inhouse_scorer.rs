@@ -95,12 +95,17 @@ pub enum ScorerReason {
         hypothesis_ids: Vec<String>,
         deduction: f64,
     },
+    /// Decision follows from at least one prior decision that was since superseded or rejected.
+    PremiseStale {
+        decision_ids: Vec<String>,
+        deduction: f64,
+    },
     /// Decision is actively contested — both accepted and rejected actors exist.
     Contested { deduction: f64 },
-    /// Decision has thin structure: no options and/or no evidence attached.
+    /// Decision has thin structure: no options and/or nothing declared about what it rests on.
     ThinStructure {
         no_options: bool,
-        no_evidence: bool,
+        nothing_declared: bool,
         deduction: f64,
     },
     /// Agent-only authorship with no human review — unverified automation.
@@ -369,6 +374,7 @@ pub(crate) fn score_from_signals(
     let mut score: f64 = 1.0;
     let mut reasons: Vec<ScorerReason> = Vec::new();
     let mut contributing_ids: Vec<String> = Vec::new();
+    let mut stale_premise_decision_ids: Vec<String> = Vec::new();
 
     // --- Outcome signals ---
 
@@ -401,6 +407,17 @@ pub(crate) fn score_from_signals(
                 contributing_ids.push(hypothesis_id.clone()); // ubs:ignore: borrowed from &OutcomeReason; must own String for Vec<String>
             }
 
+            OutcomeReason::PremiseSuperseded { decision_id, by_id } => {
+                // Collected like refuted hypotheses: one deduction for the whole set, applied
+                // after the loop.
+                stale_premise_decision_ids.push(decision_id.clone()); // ubs:ignore: borrowed from &OutcomeReason; must own String for Vec<String>
+                contributing_ids.push(by_id.clone()); // ubs:ignore: borrowed from &OutcomeReason; must own String for Vec<String>
+            }
+
+            OutcomeReason::PremiseRejected { decision_id } => {
+                stale_premise_decision_ids.push(decision_id.clone()); // ubs:ignore: borrowed from &OutcomeReason; must own String for Vec<String>
+            }
+
             OutcomeReason::Contested => {
                 let deduction = config.deduct_contested;
                 score -= deduction;
@@ -409,9 +426,11 @@ pub(crate) fn score_from_signals(
 
             OutcomeReason::ThinStructure {
                 no_options,
-                no_evidence,
+                nothing_declared,
             } => {
-                let deduction = match (*no_options, *no_evidence) {
+                // `deduct_thin_no_evidence` keeps its name: it is the weight for the
+                // "nothing declared" half of thin structure (formerly "no evidence").
+                let deduction = match (*no_options, *nothing_declared) {
                     (true, true) => config.deduct_thin_both,
                     (true, false) => config.deduct_thin_no_options,
                     (false, true) => config.deduct_thin_no_evidence,
@@ -421,7 +440,7 @@ pub(crate) fn score_from_signals(
                     score -= deduction;
                     reasons.push(ScorerReason::ThinStructure {
                         no_options: *no_options,
-                        no_evidence: *no_evidence,
+                        nothing_declared: *nothing_declared,
                         deduction,
                     });
                 }
@@ -443,6 +462,17 @@ pub(crate) fn score_from_signals(
             deduction,
         });
         // hypothesis IDs already in contributing_ids from the loop above
+    }
+
+    // A prior decision this one follows from no longer stands: same weight as a refuted
+    // hypothesis, applied once for the whole set.
+    if !stale_premise_decision_ids.is_empty() {
+        let deduction = config.deduct_stale_premises;
+        score -= deduction;
+        reasons.push(ScorerReason::PremiseStale {
+            decision_ids: stale_premise_decision_ids,
+            deduction,
+        });
     }
 
     // --- Context modifiers ---

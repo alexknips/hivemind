@@ -58,9 +58,10 @@ pub fn get_relevant_decisions(
             option_ids: Vec::new(),
             evidence_ids: Vec::new(),
             hypotheses: Vec::new(),
+            premise_decision_ids: Vec::new(),
             // Shallow view like the other fields above this query doesn't fetch
-            // (option_ids/evidence_ids/hypotheses) — callers needing quote/question
-            // follow up with get_decision.
+            // (option_ids/evidence_ids/hypotheses/premise_decision_ids) — callers needing
+            // quote/question or what the decision rests on follow up with get_decision.
             quote: None,
             question: None,
         });

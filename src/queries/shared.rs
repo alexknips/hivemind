@@ -73,40 +73,30 @@ pub(crate) fn parse_cursor(cursor: Option<&str>) -> Result<usize> {
     }
 }
 
+/// The `RETURN` column list `node_rows` / `node_row` read for one node kind. Kuzu executes the
+/// query for real, so every column named here must exist in its DDL; the memory and Postgres
+/// backends return every stored property regardless.
+fn node_return_columns(kind: NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Decision => "node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys, node.quote AS quote, node.question AS question, node.expressed_confidence AS expressed_confidence, node.occurred_at AS occurred_at, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
+        NodeKind::DecisionRequest => "node.id AS id, node.decision_id AS decision_id, node.topic_keys AS topic_keys, node.reason AS reason, node.priority AS priority, node.required_owner_id AS required_owner_id, node.authority_class AS authority_class, node.requested_by AS requested_by, node.client_request_id AS client_request_id, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
+        NodeKind::Actor => "node.id AS id, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
+        NodeKind::Evidence => "node.id AS id, node.content AS content, node.evidence_source AS evidence_source, node.recorded_at AS recorded_at, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
+        NodeKind::Option => "node.id AS id, node.label AS label, node.description AS description, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
+        NodeKind::Hypothesis => "node.id AS id, node.statement AS statement, node.kind AS kind, node.check_by AS check_by, node.would_change_if AS would_change_if, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
+        NodeKind::Blocker => "node.id AS id, node.blocked_actor_id AS blocked_actor_id, node.decision_id AS decision_id, node.topic_keys AS topic_keys, node.blocked_ref AS blocked_ref, node.blocked_ref_type AS blocked_ref_type, node.reason AS reason, node.priority AS priority, node.last_progress_at AS last_progress_at, node.required_owner_id AS required_owner_id, node.reported_at AS reported_at, node.reported_event_origin AS reported_event_origin, node.resolved_at AS resolved_at, node.resolution_event_id AS resolution_event_id, node.resolution_reason AS resolution_reason, node.resolved_event_origin AS resolved_event_origin, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
+        NodeKind::Notification => "node.id AS id, node.blocker_id AS blocker_id, node.recipient_actor_id AS recipient_actor_id, node.channel AS channel, node.threshold_rule AS threshold_rule, node.source_event_ids AS source_event_ids, node.dedupe_key AS dedupe_key, node.sent_at AS sent_at, node.ack_at AS ack_at, node.snooze_until AS snooze_until, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
+        NodeKind::Project => "node.id AS id, node.handle AS handle, node.display_name AS display_name, node.purpose AS purpose, node.anchors AS anchors, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin",
+    }
+}
+
 pub(crate) fn node_rows(
     graph: &impl GraphView,
     kind: NodeKind,
 ) -> Result<BTreeMap<String, GraphRow>> {
     let table = kind.table_name();
-    let cypher = match kind {
-        NodeKind::Decision => format!(
-            "MATCH (node:`{table}`) RETURN node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys, node.quote AS quote, node.question AS question, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
-        ),
-        NodeKind::DecisionRequest => format!(
-            "MATCH (node:`{table}`) RETURN node.id AS id, node.decision_id AS decision_id, node.topic_keys AS topic_keys, node.reason AS reason, node.priority AS priority, node.required_owner_id AS required_owner_id, node.authority_class AS authority_class, node.requested_by AS requested_by, node.client_request_id AS client_request_id, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
-        ),
-        NodeKind::Actor => format!(
-            "MATCH (node:`{table}`) RETURN node.id AS id, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
-        ),
-        NodeKind::Evidence => format!(
-            "MATCH (node:`{table}`) RETURN node.id AS id, node.content AS content, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
-        ),
-        NodeKind::Option => format!(
-            "MATCH (node:`{table}`) RETURN node.id AS id, node.label AS label, node.description AS description, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
-        ),
-        NodeKind::Hypothesis => format!(
-            "MATCH (node:`{table}`) RETURN node.id AS id, node.statement AS statement, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
-        ),
-        NodeKind::Blocker => format!(
-            "MATCH (node:`{table}`) RETURN node.id AS id, node.blocked_actor_id AS blocked_actor_id, node.decision_id AS decision_id, node.topic_keys AS topic_keys, node.blocked_ref AS blocked_ref, node.blocked_ref_type AS blocked_ref_type, node.reason AS reason, node.priority AS priority, node.last_progress_at AS last_progress_at, node.required_owner_id AS required_owner_id, node.reported_at AS reported_at, node.reported_event_origin AS reported_event_origin, node.resolved_at AS resolved_at, node.resolution_event_id AS resolution_event_id, node.resolution_reason AS resolution_reason, node.resolved_event_origin AS resolved_event_origin, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
-        ),
-        NodeKind::Notification => format!(
-            "MATCH (node:`{table}`) RETURN node.id AS id, node.blocker_id AS blocker_id, node.recipient_actor_id AS recipient_actor_id, node.channel AS channel, node.threshold_rule AS threshold_rule, node.source_event_ids AS source_event_ids, node.dedupe_key AS dedupe_key, node.sent_at AS sent_at, node.ack_at AS ack_at, node.snooze_until AS snooze_until, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
-        ),
-        NodeKind::Project => format!(
-            "MATCH (node:`{table}`) RETURN node.id AS id, node.handle AS handle, node.display_name AS display_name, node.purpose AS purpose, node.anchors AS anchors, node.source AS source, node.source_ref AS source_ref, node.event_origin AS event_origin ORDER BY node.id;"
-        ),
-    };
+    let columns = node_return_columns(kind);
+    let cypher = format!("MATCH (node:`{table}`) RETURN {columns} ORDER BY node.id;");
 
     let mut rows_by_id = BTreeMap::new();
     for mut row in graph.query(&cypher, &GraphParams::new())? {
@@ -115,6 +105,25 @@ pub(crate) fn node_rows(
         rows_by_id.insert(id, row);
     }
     Ok(rows_by_id)
+}
+
+/// One node's row by id, with the same columns `node_rows` reads, or `None` when the node does
+/// not exist. Anchored, so it costs one node lookup rather than a whole-kind scan; the row is
+/// matched on its own `id` as well, so a backend that ignores the anchor still answers right.
+pub(crate) fn node_row(
+    graph: &impl GraphView,
+    kind: NodeKind,
+    id: &str,
+) -> Result<Option<GraphRow>> {
+    let table = kind.table_name();
+    let columns = node_return_columns(kind);
+    let rows = graph.query(
+        &format!("MATCH (node:`{table}` {{id: $id}}) RETURN {columns} LIMIT 1;"),
+        &GraphParams::from([("id".to_owned(), GraphValue::String(id.to_owned()))]),
+    )?;
+    Ok(rows
+        .into_iter()
+        .find(|row| matches!(row.get("id"), Some(GraphValue::String(value)) if value == id)))
 }
 
 pub(crate) fn relation_edges_by_kind(
@@ -290,6 +299,25 @@ pub(crate) fn premised_on_hypothesis_ids(
         ids.push(required_string(&row, "hypothesis_id")?);
     }
     Ok(ids)
+}
+
+/// Returns `Some((superseder_id, supersedes_edge_event_origin))` if this decision has been superseded.
+pub(crate) fn query_superseder(
+    graph: &impl GraphView,
+    decision_id: &str,
+) -> Result<Option<(String, Option<i64>)>> {
+    let rows = graph.query(
+        "MATCH (newer:`Decision`)-[r:`SUPERSEDES`]->(d:`Decision` {id: $id}) \
+         RETURN newer.id AS superseder_id, r.event_origin AS edge_origin \
+         ORDER BY r.event_origin DESC \
+         LIMIT 1;",
+        &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
+    )?;
+    Ok(rows.first().map(|row| {
+        let superseder_id = optional_string(row, "superseder_id").unwrap_or_default();
+        let edge_origin = optional_int(row, "edge_origin");
+        (superseder_id, edge_origin)
+    }))
 }
 
 pub(crate) fn required_string(row: &GraphRow, key: &str) -> Result<String> {

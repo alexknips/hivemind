@@ -34,6 +34,11 @@ Hypotheses premised on:
 
 Automated monitoring saw a sustained checkout failure spike.
 
+## Rests on
+
+- **Evidence:** Checkout errors rose above the incident threshold for the new pricing flag. (at capture)
+- **Assumption:** The new pricing flag is causing the checkout regression. — supported (at capture)
+
 ## Evidence
 
 - Checkout errors rose above the incident threshold for the new pricing flag. (source: production-incident-response)

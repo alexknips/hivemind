@@ -82,9 +82,10 @@ they make decisions.
 
 **Decision-quality signals (planned).** HiveMind will derive per-decision
 outcome signals directly from graph structure — how quickly a decision was
-superseded, whether it was premised on a hypothesis later refuted by evidence,
-whether it remains contested and unresolved, and whether it was recorded with
-thin structure (no options considered, no evidence attached). All signals are
+superseded, whether it was premised on a hypothesis later refuted by evidence or follows
+from a prior decision since superseded or rejected, whether it remains
+contested and unresolved, and whether it was recorded with thin structure (no
+options considered, nothing declared about what it rests on). All signals are
 derivable from existing edges. No LLM required; works self-hosted.
 
 **Explainable in-house scoring (planned).** Those signals will feed a

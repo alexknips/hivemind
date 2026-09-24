@@ -13,6 +13,7 @@ use crate::projector::{GraphRow, GraphView, NodeKind, RelationKind};
 use crate::Result;
 
 use super::decision::{DecisionView, HypothesisContext};
+use super::grounding::{hypothesis_facts_from_row, GroundingState};
 use super::shared::{
     node_rows, normalized_filter_values, normalized_limit, normalized_query, normalized_statuses,
     optional_int, optional_string, optional_string_list, parse_cursor, query_error, query_terms,
@@ -99,6 +100,8 @@ pub struct SearchGraphContext {
     pub option_ids: Vec<String>,
     pub evidence_ids: Vec<String>,
     pub hypotheses: Vec<HypothesisContext>,
+    /// Whether anything was declared about what this decision rests on.
+    pub grounding_state: GroundingState,
     pub matched_nodes: Vec<SearchMatchedNode>,
 }
 
@@ -732,12 +735,20 @@ fn collect_graph_search_results(
         }
         let supersedes_decision_ids = relation_targets(&edges, &[RelationKind::Supersedes], &id);
         let superseded_by_decision_ids = relation_sources(&edges, RelationKind::Supersedes, &id);
+        let premise_decision_ids = relation_targets(&edges, &[RelationKind::FollowsFrom], &id);
 
         let mut hypotheses = Vec::with_capacity(hypothesis_ids.len());
         for hypothesis_id in &hypothesis_ids {
+            let facts = match hypothesis_rows.get(hypothesis_id) {
+                Some(row) => hypothesis_facts_from_row(row)?,
+                None => hypothesis_facts_from_row(&GraphRow::new())?,
+            };
             hypotheses.push(HypothesisContext {
                 id: hypothesis_id.clone(),
                 status: derive_hypothesis_status(graph, hypothesis_id)?,
+                kind: facts.kind,
+                check_by: facts.check_by,
+                would_change_if: facts.would_change_if,
             });
         }
 
@@ -833,25 +844,29 @@ fn collect_graph_search_results(
             continue;
         };
 
+        let decision = DecisionView {
+            id: id.clone(),
+            title,
+            rationale,
+            topic_keys: decision_topic_keys,
+            status,
+            chosen_option_id,
+            option_ids: option_ids.clone(),
+            evidence_ids: evidence_ids.clone(),
+            hypotheses: hypotheses.clone(),
+            premise_decision_ids,
+            quote: quote.clone(), // ubs:ignore: clone necessary — building owned DecisionView
+            question: question.clone(), // ubs:ignore: clone necessary — building owned DecisionView
+        };
+        let grounding_state = decision.grounding_state();
+
         scored.push(ScoredDecisionSearchResult {
             rank: match_info.rank,
-            id: id.clone(),
+            id,
             event_origin,
             fields,
             result: DecisionSearchResult {
-                decision: DecisionView {
-                    id,
-                    title,
-                    rationale,
-                    topic_keys: decision_topic_keys,
-                    status,
-                    chosen_option_id,
-                    option_ids: option_ids.clone(),
-                    evidence_ids: evidence_ids.clone(),
-                    hypotheses: hypotheses.clone(),
-                    quote: quote.clone(), // ubs:ignore: clone necessary — building owned DecisionView
-                    question: question.clone(), // ubs:ignore: clone necessary — building owned DecisionView
-                },
+                decision,
                 rank: match_info.rank,
                 matched_fields: match_info.matched_fields,
                 snippets: match_info.snippets,
@@ -862,6 +877,7 @@ fn collect_graph_search_results(
                     option_ids,
                     evidence_ids,
                     hypotheses,
+                    grounding_state,
                     matched_nodes: match_info.matched_nodes,
                 },
             },

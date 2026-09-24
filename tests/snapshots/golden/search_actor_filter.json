@@ -22,6 +22,7 @@
             "option-004-a",
             "option-004-b"
           ],
+          "premise_decision_ids": [],
           "rationale": "Deterministic rationale for seed decision 004",
           "status": "contested",
           "title": "Seed decision 004",
@@ -37,6 +38,7 @@
             "actor:planner"
           ],
           "evidence_ids": [],
+          "grounding_state": "nothing_declared",
           "hypotheses": [],
           "matched_nodes": [],
           "option_ids": [

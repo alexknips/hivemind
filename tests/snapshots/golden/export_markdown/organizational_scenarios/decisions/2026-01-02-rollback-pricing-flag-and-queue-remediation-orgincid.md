@@ -35,6 +35,13 @@ Hypotheses premised on:
 
 Rollback evidence resolves the immediate risk and preserves remediation context.
 
+## Rests on
+
+- **Evidence:** Enterprise customers opened priority cases while the hotfix window slipped. (at capture)
+- **Evidence:** Canary rollback restored checkout success rate in the affected region. (at capture)
+- **Assumption:** The new pricing flag is causing the checkout regression. — supported (at capture)
+- **Assumption:** A hotfix can land before customer impact expands. — REFUTED (at capture)
+
 ## Evidence
 
 - Enterprise customers opened priority cases while the hotfix window slipped. (source: production-incident-response)

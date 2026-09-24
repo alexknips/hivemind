@@ -5,23 +5,31 @@
 //!
 //! - `superseded`: a newer decision explicitly superseded this one; includes how
 //!   many ledger events elapsed before that happened (`gap_events`).
-//! - `stale_premises`: at least one hypothesis this decision premises on has been refuted.
+//! - `stale_premises`: something this decision rests on no longer stands — a hypothesis it
+//!   premises on has been refuted (a failed bet included), or a prior decision it follows from
+//!   has been superseded or rejected.
 //! - `contested`: the decision has both accepting and rejecting actors, unresolved.
-//! - `thin_structure`: no options and/or no evidence attached.
+//! - `thin_structure`: no options attached and/or nothing declared about what it rests on
+//!   (never asked — a premise link, evidence, an assumption or a declared bet all count).
 //!
 //! `held_up` is true when superseded, stale_premises, and contested are all absent;
 //! thin structure alone does not flip `held_up` to false — it is a quality signal,
-//! not a soundness signal.
+//! not a soundness signal. Neither does an overdue bet: it is reported as `unchecked`
+//! (attention, not staleness).
 
 use std::time::Instant;
 
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::Result;
 
+use super::grounding::{
+    grounding_state_of, premise_signals, GroundingState, StalePremise, UncheckedBet,
+};
 use super::shared::{
-    optional_int, optional_string, query_error, query_timer_start, required_string,
+    optional_int, query_error, query_superseder, query_timer_start, required_string,
     MAX_QUERY_RESULTS,
 };
 use super::QueryResponse;
@@ -44,31 +52,47 @@ pub enum OutcomeReason {
     },
     /// A hypothesis that this decision premises on has been refuted by evidence.
     PremisedOnRefuted { hypothesis_id: String },
+    /// A prior decision this decision follows from has been superseded by `by_id`.
+    PremiseSuperseded { decision_id: String, by_id: String },
+    /// A prior decision this decision follows from has been rejected.
+    PremiseRejected { decision_id: String },
     /// The decision is actively contested: at least one actor accepted it and at least one rejected it.
     Contested,
-    /// The decision has thin structure — no options listed and/or no evidence attached.
-    ThinStructure { no_options: bool, no_evidence: bool },
+    /// The decision has thin structure — no options listed and/or nothing declared about what
+    /// it rests on (`nothing_declared`: never asked, as opposed to a declared bet).
+    ThinStructure {
+        no_options: bool,
+        nothing_declared: bool,
+    },
 }
 
 /// Derived outcome record for a single decision.
 ///
 /// `reasons` is empty when the decision is clean (no negative signals).
 /// `held_up` is false when the decision is superseded, has stale premises, or is contested.
-/// Thin structure alone does NOT set `held_up = false`.
+/// Thin structure alone does NOT set `held_up = false`, and neither does an overdue bet.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct DecisionOutcome {
     pub decision_id: String,
-    /// False when superseded, stale (premised on refuted), or contested.
+    /// False when superseded, stale (a premise no longer stands), or contested.
     pub held_up: bool,
     pub superseded: bool,
     pub superseded_by: Option<String>,
     /// Ledger-event gap between decision proposal and supersession (proxy for speed).
     pub supersession_gap_events: Option<i64>,
+    /// A hypothesis it premises on was refuted, or a prior decision it follows from was
+    /// superseded or rejected. The reasons say which.
     pub stale_premises: bool,
     pub refuted_hypothesis_ids: Vec<String>,
     pub contested: bool,
     pub has_options: bool,
     pub has_evidence: bool,
+    /// Whether anything was declared about what this decision rests on.
+    pub grounding_state: GroundingState,
+    /// Bets whose check date has passed with no evidence either way. Attention, not
+    /// staleness: `held_up` is unaffected.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unchecked: Vec<UncheckedBet>,
     /// All contributing reasons, each carrying the details needed to understand it.
     pub reasons: Vec<OutcomeReason>,
 }
@@ -91,9 +115,19 @@ pub struct DecisionQualityCandidatesRequest {
 // ---------------------------------------------------------------------------
 
 /// Derive the outcome record for a single decision, or `None` if the decision does not exist.
+/// Reads the clock once, to say whether a bet's check date has passed.
 pub fn get_decision_outcome(
     graph: &impl GraphView,
     decision_id: &str,
+) -> Result<QueryResponse<Option<DecisionOutcome>>> {
+    get_decision_outcome_at(graph, decision_id, Utc::now())
+}
+
+/// `get_decision_outcome` as of `now`.
+pub fn get_decision_outcome_at(
+    graph: &impl GraphView,
+    decision_id: &str,
+    now: DateTime<Utc>,
 ) -> Result<QueryResponse<Option<DecisionOutcome>>> {
     let started = query_timer_start();
 
@@ -106,7 +140,7 @@ pub fn get_decision_outcome(
     let data = if let Some(row) = decision_rows.first() {
         let id = required_string(row, "id")?;
         let decision_event_origin = optional_int(row, "event_origin");
-        Some(derive_outcome(graph, &id, decision_event_origin)?)
+        Some(derive_outcome(graph, &id, decision_event_origin, now)?)
     } else {
         None
     };
@@ -130,6 +164,7 @@ pub fn get_decision_quality_candidates(
     request: &DecisionQualityCandidatesRequest,
 ) -> Result<QueryResponse<Vec<DecisionOutcome>>> {
     let started = Instant::now();
+    let now = Utc::now();
     let limit = if request.limit == 0 {
         MAX_QUERY_RESULTS
     } else {
@@ -169,7 +204,7 @@ pub fn get_decision_quality_candidates(
     for row in window {
         let id = required_string(row, "id")?;
         let event_origin = optional_int(row, "event_origin");
-        let outcome = derive_outcome(graph, &id, event_origin)?;
+        let outcome = derive_outcome(graph, &id, event_origin, now)?;
         if !request.only_with_signals || !outcome.reasons.is_empty() {
             outcomes.push(outcome);
         }
@@ -192,6 +227,7 @@ fn derive_outcome(
     graph: &impl GraphView,
     decision_id: &str,
     decision_event_origin: Option<i64>,
+    now: DateTime<Utc>,
 ) -> Result<DecisionOutcome> {
     let mut reasons = Vec::new();
 
@@ -213,12 +249,25 @@ fn derive_outcome(
         (None, None)
     };
 
-    // --- Signal 2: stale premises (premised on refuted hypothesis) ---
+    // --- Signal 2: stale premises (a refuted hypothesis, or a prior decision that no longer
+    // stands). A failed bet is a refuted hypothesis, so it lands here too. ---
     let raw_premise_ids = query_refuted_premises(graph, decision_id)?;
-    let stale_premises = !raw_premise_ids.is_empty();
+    let mut stale_premises = !raw_premise_ids.is_empty();
     for hyp_id in raw_premise_ids {
         reasons.push(OutcomeReason::PremisedOnRefuted {
             hypothesis_id: hyp_id,
+        });
+    }
+    let signals = premise_signals(graph, decision_id, now)?;
+    stale_premises |= !signals.stale.is_empty();
+    for stale in signals.stale {
+        reasons.push(match stale {
+            StalePremise::Superseded { decision_id, by_id } => {
+                OutcomeReason::PremiseSuperseded { decision_id, by_id }
+            }
+            StalePremise::Rejected { decision_id } => {
+                OutcomeReason::PremiseRejected { decision_id }
+            }
         });
     }
     // Reconstruct for the struct field — extracted from reasons after the loop to avoid
@@ -238,12 +287,20 @@ fn derive_outcome(
     }
 
     // --- Signal 4: thin structure ---
+    // "Nothing declared" is only true when no premise link, evidence, assumption or bet exists:
+    // a declared bet is a positive answer to "what does this rest on?", not thin.
     let has_options = query_has_options(graph, decision_id)?;
     let has_evidence = query_has_evidence(graph, decision_id)?;
-    if !has_options || !has_evidence {
+    let grounding_state = grounding_state_of(
+        signals.premise_count,
+        usize::from(has_evidence),
+        signals.hypothesis_kinds.iter().copied(),
+    );
+    let nothing_declared = grounding_state == GroundingState::NothingDeclared;
+    if !has_options || nothing_declared {
         reasons.push(OutcomeReason::ThinStructure {
             no_options: !has_options,
-            no_evidence: !has_evidence,
+            nothing_declared,
         });
     }
 
@@ -260,6 +317,8 @@ fn derive_outcome(
         contested,
         has_options,
         has_evidence,
+        grounding_state,
+        unchecked: signals.unchecked,
         reasons,
     })
 }
@@ -267,25 +326,6 @@ fn derive_outcome(
 // ---------------------------------------------------------------------------
 // Graph sub-queries
 // ---------------------------------------------------------------------------
-
-/// Returns `Some((superseder_id, supersedes_edge_event_origin))` if this decision has been superseded.
-fn query_superseder(
-    graph: &impl GraphView,
-    decision_id: &str,
-) -> Result<Option<(String, Option<i64>)>> {
-    let rows = graph.query(
-        "MATCH (newer:`Decision`)-[r:`SUPERSEDES`]->(d:`Decision` {id: $id}) \
-         RETURN newer.id AS superseder_id, r.event_origin AS edge_origin \
-         ORDER BY r.event_origin DESC \
-         LIMIT 1;",
-        &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
-    )?;
-    Ok(rows.first().map(|row| {
-        let superseder_id = optional_string(row, "superseder_id").unwrap_or_default();
-        let edge_origin = optional_int(row, "edge_origin");
-        (superseder_id, edge_origin)
-    }))
-}
 
 /// Returns the IDs of all hypotheses that this decision premises on that have been refuted.
 fn query_refuted_premises(graph: &impl GraphView, decision_id: &str) -> Result<Vec<String>> {

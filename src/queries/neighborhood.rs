@@ -72,7 +72,7 @@ impl NeighborhoodRequest {
     }
 }
 
-const DECISION_HOP1_RELATIONS: [(RelationKind, NodeKind, Direction); 9] = [
+const DECISION_HOP1_RELATIONS: [(RelationKind, NodeKind, Direction); 11] = [
     (
         RelationKind::ProposedBy,
         NodeKind::Actor,
@@ -111,6 +111,18 @@ const DECISION_HOP1_RELATIONS: [(RelationKind, NodeKind, Direction); 9] = [
     ),
     (
         RelationKind::Supersedes,
+        NodeKind::Decision,
+        Direction::Incoming,
+    ),
+    // What this decision rests on (outgoing) and what rests on it (incoming): a premise in the
+    // broad sense (hivemind-zdsh.15).
+    (
+        RelationKind::FollowsFrom,
+        NodeKind::Decision,
+        Direction::Outgoing,
+    ),
+    (
+        RelationKind::FollowsFrom,
         NodeKind::Decision,
         Direction::Incoming,
     ),

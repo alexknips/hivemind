@@ -153,6 +153,115 @@ fn upserts_follows_from_edge_between_decisions() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn grounding_edges_store_who_added_them_and_the_causing_proposal() -> Result<()> {
+    let temp_dir = test_graph_dir("grounding-provenance");
+    let graph = KuzuGraph::open(&temp_dir)?;
+    let decision_properties = GraphProperties::from([(
+        "title".to_string(),
+        GraphValue::String("A decision".to_string()),
+    )]);
+    for id in ["decision-later", "decision-earlier"] {
+        graph.upsert_node(NodeKind::Decision, id, &decision_properties)?;
+    }
+    graph.upsert_node(
+        NodeKind::Evidence,
+        "evidence-1",
+        &GraphProperties::from([
+            (
+                "content".to_string(),
+                GraphValue::String("27 of 27 captures carry no premise".to_string()),
+            ),
+            (
+                "evidence_source".to_string(),
+                GraphValue::String("mayor audit 2026-09-22".to_string()),
+            ),
+            (
+                "recorded_at".to_string(),
+                GraphValue::String("2026-01-01T00:00:00+00:00".to_string()),
+            ),
+        ]),
+    )?;
+
+    let provenance = |added_by: &str, causation: Option<i64>| {
+        let mut properties = GraphProperties::from([
+            ("event_origin".to_string(), GraphValue::Int(7)),
+            (
+                "added_by".to_string(),
+                GraphValue::String(added_by.to_string()),
+            ),
+            (
+                "added_at".to_string(),
+                GraphValue::String("2026-01-02T00:00:00+00:00".to_string()),
+            ),
+        ]);
+        if let Some(causation) = causation {
+            properties.insert("causation_event_id".to_string(), GraphValue::Int(causation));
+        }
+        properties
+    };
+    graph.upsert_edge(
+        RelationKind::FollowsFrom,
+        "decision-later",
+        "decision-earlier",
+        &provenance("actor:alice", Some(6)),
+    )?;
+    graph.upsert_edge(
+        RelationKind::BasedOn,
+        "decision-later",
+        "evidence-1",
+        &provenance("actor:bob", None),
+    )?;
+
+    let by_id = GraphParams::from([(
+        "id".to_string(),
+        GraphValue::String("decision-later".to_string()),
+    )]);
+    let follows = graph.query(
+        "MATCH (a:`Decision` {id: $id})-[r:`FOLLOWS_FROM`]->(b:`Decision`) RETURN b.id AS id, r.event_origin AS event_origin, r.causation_event_id AS causation_event_id, r.added_by AS added_by, r.added_at AS added_at ORDER BY b.id;",
+        &by_id,
+    )?;
+    assert_eq!(follows.len(), 1);
+    assert_eq!(
+        follows[0].get("causation_event_id"),
+        Some(&GraphValue::Int(6))
+    );
+    assert_eq!(
+        follows[0].get("added_by"),
+        Some(&GraphValue::String("actor:alice".to_string()))
+    );
+
+    // An edge written with no causation reads back null, not zero.
+    let based_on = graph.query(
+        "MATCH (a:`Decision` {id: $id})-[r:`BASED_ON`]->(b:`Evidence`) RETURN b.id AS id, r.event_origin AS event_origin, r.causation_event_id AS causation_event_id, r.added_by AS added_by, r.added_at AS added_at ORDER BY b.id;",
+        &by_id,
+    )?;
+    assert_eq!(based_on.len(), 1);
+    assert_eq!(
+        based_on[0].get("causation_event_id"),
+        Some(&GraphValue::Null)
+    );
+    assert_eq!(
+        based_on[0].get("added_by"),
+        Some(&GraphValue::String("actor:bob".to_string()))
+    );
+
+    let evidence = graph.query(
+        "MATCH (node:`Evidence` {id: $id}) RETURN node.id AS id, node.content AS content, node.evidence_source AS evidence_source, node.recorded_at AS recorded_at LIMIT 1;",
+        &GraphParams::from([(
+            "id".to_string(),
+            GraphValue::String("evidence-1".to_string()),
+        )]),
+    )?;
+    assert_eq!(evidence.len(), 1);
+    assert_eq!(
+        evidence[0].get("evidence_source"),
+        Some(&GraphValue::String("mayor audit 2026-09-22".to_string()))
+    );
+    let _ = fs::remove_dir_all(temp_dir);
+    Ok(())
+}
+
 fn test_graph_dir(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

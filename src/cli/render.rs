@@ -13,7 +13,8 @@ use crate::projector::{
 use crate::queries::{
     derive_decision_status, derive_hypothesis_status, BlockerNotificationCandidates, CompactView,
     DecidedBy, DecisionBlockerResults, DecisionBrief, DecisionSearchResults, DecisionStatus,
-    DecisionView, DecisionsAddedSinceResults, DecisionsChangedSinceResults, HistoryChangeKind,
+    DecisionView, DecisionsAddedSinceResults, DecisionsChangedSinceResults, GroundingAdded,
+    GroundingItem, GroundingItemState, GroundingKind, GroundingState, HistoryChangeKind,
     HypothesisStatus, MatchReason, MisfiledDecisionCandidate, NeighborhoodView, OutcomeReason,
     ProjectListResults, ProjectOutcome, QualityTier, QueryResponse, ReadOnlyExport,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
@@ -47,6 +48,22 @@ pub(crate) fn render_compact_view_summary(view: &Option<CompactView>) -> String 
             "  CONTESTED: accepted_by={:?} rejected_by={:?}\n",
             contest.accepted_by, contest.rejected_by
         ));
+    }
+    out.push_str(&format!("  {}\n", compact_rests_on(v)));
+    for premise in &v.premises {
+        if matches!(
+            premise.status,
+            DecisionStatus::Superseded | DecisionStatus::Rejected
+        ) {
+            out.push_str(&format!(
+                "  STALE: follows from {}, which is {}\n",
+                premise.decision_id,
+                decision_status_label(premise.status)
+            ));
+        }
+    }
+    if v.dependents_count > 0 {
+        out.push_str(&format!("  {}\n", dependents_line(v.dependents_count)));
     }
     out.push_str(&format!("  hypotheses: {}\n", v.hypotheses.len()));
     out.push_str(&format!("  evidence_ids: {}\n", v.evidence_ids.len()));
@@ -267,9 +284,16 @@ pub(crate) fn render_situational_summary(results: &SituationalResults) -> String
     let _ = writeln!(output, "terms\t{}", results.query_terms.join(","));
     for item in &results.matches {
         let held_up = if item.outcome.held_up {
-            "holds"
+            "holds".to_owned()
         } else {
-            "STALE"
+            // The reason rides inside the cell: STALE(premise superseded), STALE(assumption
+            // refuted), STALE(superseded), ...
+            let labels = still_holds_labels(&item.outcome.reasons);
+            if labels.is_empty() {
+                "STALE".to_owned()
+            } else {
+                format!("STALE({})", labels.join(", "))
+            }
         };
         let changed = match item.changed_since {
             Some(true) => "changed",
@@ -452,9 +476,45 @@ pub(crate) fn render_decision_brief_summary(brief: &Option<DecisionBrief>) -> St
     if let Some(occurred_at) = brief.occurred_at {
         let _ = writeln!(output, "  when: {}", occurred_at.to_rfc3339());
     }
-    let _ = writeln!(output, "  still holds: {}", brief.still_holds.held_up);
+    write_rests_on(&mut output, brief);
+    if brief.still_holds.held_up {
+        let _ = writeln!(output, "  still holds: yes");
+    } else {
+        let labels = still_holds_labels(&brief.still_holds.reasons);
+        if labels.is_empty() {
+            let _ = writeln!(output, "  still holds: NO");
+        } else {
+            let _ = writeln!(output, "  still holds: NO: {}", labels.join(", "));
+        }
+    }
     for reason in &brief.still_holds.reasons {
-        let _ = writeln!(output, "    - {}", format_outcome_reason(reason));
+        let _ = writeln!(
+            output,
+            "    - {}",
+            format_outcome_reason(reason, &brief.rests_on)
+        );
+    }
+    for unchecked in &brief.still_holds.unchecked {
+        let label = brief
+            .rests_on
+            .iter()
+            .find(|item| item.id == unchecked.hypothesis_id)
+            .map_or(unchecked.hypothesis_id.as_str(), |item| item.label.as_str());
+        let _ = writeln!(
+            output,
+            "  unchecked: bet \"{}\" — check date {} has passed, no evidence recorded either way",
+            summary_cell(label),
+            unchecked.check_by.format("%Y-%m-%d")
+        );
+    }
+    if let Some(confidence) = &brief.expressed_confidence {
+        let _ = writeln!(
+            output,
+            "  confidence at capture: {confidence} (decider's words)"
+        );
+    }
+    if brief.dependents_count > 0 {
+        let _ = writeln!(output, "  {}", dependents_line(brief.dependents_count));
     }
     if !brief.topic_keys.is_empty() {
         let _ = writeln!(output, "  topics: {}", brief.topic_keys.join(","));
@@ -501,7 +561,36 @@ fn write_decided_by(output: &mut String, decided_by: &DecidedBy) {
     }
 }
 
-fn format_outcome_reason(reason: &OutcomeReason) -> String {
+/// The short reasons a decision no longer holds, in the order they were derived and without
+/// repeats: `superseded`, `premise superseded`, `premise rejected`, `assumption refuted`,
+/// `contested`. Thin structure is a quality note, not a reason it stopped holding.
+fn still_holds_labels(reasons: &[OutcomeReason]) -> Vec<&'static str> {
+    let mut labels: Vec<&'static str> = Vec::new();
+    for reason in reasons {
+        let label = match reason {
+            OutcomeReason::SupersededBy { .. } => "superseded",
+            OutcomeReason::PremisedOnRefuted { .. } => "assumption refuted",
+            OutcomeReason::PremiseSuperseded { .. } => "premise superseded",
+            OutcomeReason::PremiseRejected { .. } => "premise rejected",
+            OutcomeReason::Contested => "contested",
+            OutcomeReason::ThinStructure { .. } => continue,
+        };
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    labels
+}
+
+/// One outcome reason as a sentence. Ids are output handles, so a premise decision is named by
+/// its title when `rests_on` carries it.
+fn format_outcome_reason(reason: &OutcomeReason, rests_on: &[GroundingItem]) -> String {
+    let named = |id: &str| -> String {
+        rests_on.iter().find(|item| item.id == id).map_or_else(
+            || id.to_owned(),
+            |item| format!("\"{}\"", summary_cell(&item.label)),
+        )
+    };
     match reason {
         OutcomeReason::SupersededBy { by_id, gap_events } => {
             let gap = gap_events
@@ -510,18 +599,141 @@ fn format_outcome_reason(reason: &OutcomeReason) -> String {
             format!("superseded by {by_id}{gap}")
         }
         OutcomeReason::PremisedOnRefuted { hypothesis_id } => {
-            format!("premised on refuted hypothesis {hypothesis_id}")
+            format!("premised on refuted hypothesis {}", named(hypothesis_id))
+        }
+        OutcomeReason::PremiseSuperseded { decision_id, by_id } => {
+            // The premise's own item carries the superseder's title; the id is the fallback.
+            let by = rests_on
+                .iter()
+                .find(|item| item.id == *decision_id)
+                .and_then(|item| match &item.state {
+                    GroundingItemState::Superseded {
+                        by_label: Some(by_label),
+                        ..
+                    } => Some(format!("\"{}\"", summary_cell(by_label))),
+                    _ => None,
+                })
+                .unwrap_or_else(|| by_id.clone()); // ubs:ignore: fallback owned copy for the sentence; the reason is only borrowed
+            format!(
+                "follows from {}, which was superseded by {by}",
+                named(decision_id)
+            )
+        }
+        OutcomeReason::PremiseRejected { decision_id } => {
+            format!("follows from {}, which was rejected", named(decision_id))
         }
         OutcomeReason::Contested => "contested: accepted and rejected actors disagree".to_owned(),
         OutcomeReason::ThinStructure {
             no_options,
-            no_evidence,
-        } => match (no_options, no_evidence) {
-            (true, true) => "thin structure: no options and no evidence attached".to_owned(),
+            nothing_declared,
+        } => match (no_options, nothing_declared) {
+            (true, true) => {
+                "thin structure: no options attached, nothing declared about what it rests on"
+                    .to_owned()
+            }
             (true, false) => "thin structure: no options attached".to_owned(),
-            (false, true) => "thin structure: no evidence attached".to_owned(),
+            (false, true) => "thin structure: nothing declared about what it rests on".to_owned(),
             (false, false) => "thin structure".to_owned(),
         },
+    }
+}
+
+/// `N decisions rest on this` (`1 decision rests on this`).
+fn dependents_line(count: usize) -> String {
+    if count == 1 {
+        "1 decision rests on this".to_owned()
+    } else {
+        format!("{count} decisions rest on this")
+    }
+}
+
+/// The `rests on:` part of the brief: one line per item with its state and whether it was named
+/// at capture or attributed later, a one-line form for a decision that is a lone bet, and an
+/// honest "nothing declared" for a decision nobody asked. Answers "what does this rest on?"
+/// with the labels a person reads; the ids stay in the JSON.
+fn write_rests_on(output: &mut String, brief: &DecisionBrief) {
+    if brief.rests_on.is_empty() {
+        let _ = writeln!(
+            output,
+            "  rests on: nothing declared (never asked; add with hivemind ground \"{}\" --rests-on-decision \"...\")",
+            summary_cell(&brief.title)
+        );
+        return;
+    }
+    if let [bet] = brief.rests_on.as_slice() {
+        if bet.kind == GroundingKind::Bet {
+            let by = match &bet.added {
+                GroundingAdded::AtCapture => format!(
+                    "declared at capture by {}",
+                    brief
+                        .decided_by
+                        .decider_ids
+                        .first()
+                        .or(brief.decided_by.proposer_id.as_ref())
+                        .map_or("unknown", String::as_str)
+                ),
+                later @ GroundingAdded::Later { .. } => later.describe(),
+            };
+            let state = match &bet.state {
+                GroundingItemState::BetOpen { check_by, overdue } => match check_by {
+                    Some(check_by) if *overdue => {
+                        format!("check by {} (OVERDUE)", check_by.format("%Y-%m-%d"))
+                    }
+                    Some(check_by) => format!("check by {}", check_by.format("%Y-%m-%d")),
+                    None => "no check date".to_owned(),
+                },
+                other => other.describe().unwrap_or_default(),
+            };
+            let _ = writeln!(
+                output,
+                "  rests on: a bet, {by}: \"{}\", {state}",
+                summary_cell(&bet.label)
+            );
+            return;
+        }
+    }
+    let _ = writeln!(output, "  rests on:");
+    for item in &brief.rests_on {
+        let _ = writeln!(output, "    {}", grounding_line(item));
+    }
+}
+
+fn grounding_line(item: &GroundingItem) -> String {
+    let kind = match item.kind {
+        GroundingKind::Decision => "decision",
+        GroundingKind::Evidence => "evidence",
+        GroundingKind::Assumption => "assumption",
+        GroundingKind::Bet => "bet",
+    };
+    let mut line = format!("{kind:<10} \"{}\"", summary_cell(&item.label));
+    if let GroundingItemState::Recorded {
+        source: Some(source),
+        ..
+    } = &item.state
+    {
+        // A document import stores its whole source reference as JSON; that is a handle for
+        // machines, not a place a person can go.
+        if !source.trim_start().starts_with('{') {
+            line.push_str(&format!(" ({})", summary_cell(source)));
+        }
+    }
+    if let Some(state) = item.state.describe() {
+        line.push_str(&format!("  {}", summary_cell(&state)));
+    }
+    line.push_str(&format!("  ({})", item.added.describe()));
+    line
+}
+
+/// The compact view's one-line answer to "what does this rest on?": the digest clause, or the
+/// honest "nothing declared" with the way to add it.
+fn compact_rests_on(view: &CompactView) -> String {
+    if view.grounding_state == GroundingState::NothingDeclared {
+        format!(
+            "rests on: nothing declared (never asked; add with hivemind ground \"{}\" --rests-on-decision \"...\")",
+            summary_cell(&view.decision.title)
+        )
+    } else {
+        view.decision.rests_on_clause()
     }
 }
 
@@ -730,7 +942,7 @@ fn change_kind_label(kind: HistoryChangeKind) -> &'static str {
         HistoryChangeKind::NewDecision => "new_decision",
         HistoryChangeKind::StatusChange => "status_change",
         HistoryChangeKind::NewEvidence => "new_evidence",
-        HistoryChangeKind::RefutedPremise => "refuted_premise",
+        HistoryChangeKind::StalePremise => "stale_premise",
         HistoryChangeKind::Supersession => "supersession",
         HistoryChangeKind::ContextChange => "context_change",
     }
@@ -1472,3 +1684,6 @@ pub(crate) struct ParityCheckResult {
     pub(crate) destination_event_count: u64,
     pub(crate) ok: bool,
 }
+
+#[cfg(test)]
+mod tests;

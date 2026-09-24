@@ -16,12 +16,13 @@ use crate::projector::{
     project_from_ledger, GraphParams, GraphRow, GraphValue, GraphView, NodeKind, RelationKind,
 };
 use crate::queries::{
-    get_decision, get_decision_brief, get_decision_context, get_decision_context_candidates,
-    get_decision_outcome, get_decision_quality_candidates, get_decision_quality_score,
-    get_failure_attribution, get_supersession_chain, resolve_decision_by_description,
+    get_decision, get_decision_brief, get_decision_brief_at, get_decision_context,
+    get_decision_context_candidates, get_decision_outcome, get_decision_outcome_at,
+    get_decision_quality_candidates, get_decision_quality_score, get_failure_attribution,
+    get_supersession_chain, grounding_of_at, resolve_decision_by_description,
     scan_decision_quality, search_decisions, DecisionContextRequest,
-    DecisionQualityCandidatesRequest, FailureAttributionRequest, QueryContext, ScanQualityRequest,
-    ScorerConfig,
+    DecisionQualityCandidatesRequest, FailureAttributionRequest, GroundingAdded, GroundingKind,
+    QueryContext, ScanQualityRequest, ScorerConfig,
 };
 use crate::summarize::{recall_decisions, RecallRequest, RECALL_MAX_LIMIT};
 use crate::Result;
@@ -1280,4 +1281,377 @@ fn outcome_fixture_ledger() -> Result<InMemoryEventLedger> {
 
 fn test_error(message: impl Into<String>) -> crate::HivemindError {
     crate::error::ProjectorError::Projection(message.into()).into()
+}
+
+// ── grounding parity (hivemind-gwhr.3) ──────────────────────────────────────────
+//
+// What a decision rests on is read through edge provenance (`added_by`, `added_at`,
+// `causation_event_id`) and single-node lookups, both of which need their own query support on
+// this backend. Every read below must agree with the in-memory graph, and the fixture makes sure
+// the interesting cases are actually present rather than agreeing on emptiness: a prior decision
+// named at capture, one attributed later, evidence with a source, an open, overdue, held and
+// failed bet, an assumption, and premises that are superseded, rejected and contested.
+
+fn grounding_scenario() -> Result<crate::queries::test_fixtures::Scenario> {
+    use crate::queries::test_fixtures::Scenario;
+
+    let s = Scenario::new();
+    s.decision(
+        "d:goal",
+        "Ship the hosted MVP",
+        "human:alex",
+        "2026-01-01T00:00:00Z",
+    )?;
+    s.accept("d:goal", "human:alex", "2026-01-01T00:00:01Z")?;
+    s.evidence(
+        "e:audit",
+        "27 of 27 captures carry no premise",
+        Some("mayor audit 2026-09-22"),
+        "2026-01-01T00:00:02Z",
+    )?;
+    s.hypothesis(
+        "h:open",
+        "Bet open",
+        "bet",
+        Some("2026-12-01T00:00:00Z"),
+        "2026-01-01T00:00:03Z",
+    )?;
+    s.hypothesis(
+        "h:late",
+        "Bet overdue",
+        "bet",
+        Some("2026-02-01T00:00:00Z"),
+        "2026-01-01T00:00:03Z",
+    )?;
+    s.hypothesis(
+        "h:held",
+        "Bet held",
+        "bet",
+        Some("2026-02-01T00:00:00Z"),
+        "2026-01-01T00:00:03Z",
+    )?;
+    s.hypothesis(
+        "h:failed",
+        "Bet failed",
+        "bet",
+        Some("2026-02-01T00:00:00Z"),
+        "2026-01-01T00:00:03Z",
+    )?;
+    s.hypothesis(
+        "h:assumed",
+        "Load stays flat",
+        "assumption",
+        None,
+        "2026-01-01T00:00:03Z",
+    )?;
+
+    // Named at capture: premise link, evidence, an open bet, an assumption through the chosen option.
+    let proposal = s.decision_with(
+        "d:derived",
+        "Premises are asked at capture",
+        "agent:claude:crew",
+        "2026-01-02T00:00:00Z",
+        true,
+        &["e:audit"],
+        &["h:open", "h:assumed"],
+        Some("high"),
+    )?;
+    s.relation(
+        "FOLLOWS_FROM",
+        "d:derived",
+        "d:goal",
+        "agent:claude:crew",
+        Some(proposal),
+        "2026-01-02T00:00:01Z",
+    )?;
+
+    // Attributed later: a premise link and an assumption, by someone else.
+    s.decision(
+        "d:later",
+        "Use Postgres",
+        "agent:claude:crew",
+        "2026-01-03T00:00:00Z",
+    )?;
+    s.relation(
+        "FOLLOWS_FROM",
+        "d:later",
+        "d:goal",
+        "human:alex",
+        None,
+        "2026-03-05T10:00:00Z",
+    )?;
+    s.relation(
+        "ASSUMES",
+        "d:later",
+        "h:assumed",
+        "human:bob",
+        None,
+        "2026-03-06T10:00:00Z",
+    )?;
+
+    // Bets that were checked, or should have been.
+    for (decision, bet) in [
+        ("d:late", "h:late"),
+        ("d:held", "h:held"),
+        ("d:failed", "h:failed"),
+    ] {
+        s.decision_with(
+            decision,
+            &format!("Decision on {bet}"),
+            "human:alice",
+            "2026-01-04T00:00:00Z",
+            false,
+            &[],
+            &[bet],
+            None,
+        )?;
+    }
+    s.evidence("e:checked", "Checked it", None, "2026-03-01T00:00:00Z")?;
+    s.relation(
+        "SUPPORTS",
+        "e:checked",
+        "h:held",
+        "agent:tester",
+        None,
+        "2026-03-01T00:00:01Z",
+    )?;
+    s.relation(
+        "REFUTES",
+        "e:checked",
+        "h:failed",
+        "agent:tester",
+        None,
+        "2026-03-01T00:00:02Z",
+    )?;
+
+    // A superseded premise, a rejected one and a contested one, each with a decision resting on it.
+    s.decision(
+        "d:premise-old",
+        "Old goal",
+        "human:alex",
+        "2026-01-05T00:00:00Z",
+    )?;
+    s.decision(
+        "d:premise-new",
+        "New goal",
+        "human:alex",
+        "2026-02-01T00:00:00Z",
+    )?;
+    s.supersede(
+        "d:premise-old",
+        "d:premise-new",
+        "human:alex",
+        "2026-02-01T00:00:01Z",
+    )?;
+    s.decision(
+        "d:premise-rejected",
+        "Rejected goal",
+        "human:alex",
+        "2026-01-05T00:00:02Z",
+    )?;
+    s.reject("d:premise-rejected", "human:bob", "2026-01-06T00:00:00Z")?;
+    s.decision(
+        "d:premise-contested",
+        "Contested goal",
+        "human:alex",
+        "2026-01-05T00:00:03Z",
+    )?;
+    s.accept("d:premise-contested", "human:alex", "2026-01-06T00:00:01Z")?;
+    s.reject("d:premise-contested", "human:bob", "2026-01-06T00:00:02Z")?;
+    for (decision, premise) in [
+        ("d:stale-superseded", "d:premise-old"),
+        ("d:stale-rejected", "d:premise-rejected"),
+        ("d:not-stale-contested", "d:premise-contested"),
+    ] {
+        let proposal = s.decision(
+            decision,
+            &format!("Follows from {premise}"),
+            "agent:claude:crew",
+            "2026-02-02T00:00:00Z",
+        )?;
+        s.relation(
+            "FOLLOWS_FROM",
+            decision,
+            premise,
+            "agent:claude:crew",
+            Some(proposal),
+            "2026-02-02T00:00:01Z",
+        )?;
+    }
+    Ok(s)
+}
+
+const GROUNDING_DECISION_IDS: [&str; 12] = [
+    "d:goal",
+    "d:derived",
+    "d:later",
+    "d:late",
+    "d:held",
+    "d:failed",
+    "d:premise-old",
+    "d:premise-rejected",
+    "d:premise-contested",
+    "d:stale-superseded",
+    "d:stale-rejected",
+    "d:not-stale-contested",
+];
+
+#[test]
+fn grounding_reads_match_memory() -> Result<()> {
+    with_postgres_graph("grounding-parity", |pg| {
+        let scenario = grounding_scenario()?;
+        let memory = scenario.graph()?;
+        project_from_ledger(scenario.ledger(), pg, 0)?;
+        let now = crate::queries::test_fixtures::ts("2026-06-01T00:00:00Z");
+
+        for decision_id in GROUNDING_DECISION_IDS {
+            let memory_grounding = grounding_of_at(&memory, decision_id, now)?;
+            let pg_grounding = grounding_of_at(pg, decision_id, now)?;
+            if memory_grounding != pg_grounding {
+                return Err(test_error(format!(
+                    "grounding_of_at mismatch for {decision_id}: memory={memory_grounding:?} pg={pg_grounding:?}"
+                )));
+            }
+            let memory_brief = get_decision_brief_at(&memory, decision_id, now)?.data;
+            let pg_brief = get_decision_brief_at(pg, decision_id, now)?.data;
+            if memory_brief != pg_brief {
+                return Err(test_error(format!(
+                    "get_decision_brief_at mismatch for {decision_id}: memory={memory_brief:?} pg={pg_brief:?}"
+                )));
+            }
+            let memory_outcome = get_decision_outcome_at(&memory, decision_id, now)?.data;
+            let pg_outcome = get_decision_outcome_at(pg, decision_id, now)?.data;
+            if memory_outcome != pg_outcome {
+                return Err(test_error(format!(
+                    "get_decision_outcome_at mismatch for {decision_id}: memory={memory_outcome:?} pg={pg_outcome:?}"
+                )));
+            }
+            let memory_view = get_decision(&memory, decision_id)?.data;
+            let pg_view = get_decision(pg, decision_id)?.data;
+            if memory_view != pg_view {
+                return Err(test_error(format!(
+                    "get_decision mismatch for {decision_id}: memory={memory_view:?} pg={pg_view:?}"
+                )));
+            }
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn grounding_states_and_stale_premises_read_right_on_postgres() -> Result<()> {
+    with_postgres_graph("grounding-states", |pg| {
+        let scenario = grounding_scenario()?;
+        project_from_ledger(scenario.ledger(), pg, 0)?;
+        let now = crate::queries::test_fixtures::ts("2026-06-01T00:00:00Z");
+
+        // Named at capture: four kinds of item, all at capture, and the premise counts a dependent.
+        let derived = get_decision_brief_at(pg, "d:derived", now)?
+            .data
+            .ok_or_else(|| test_error("d:derived missing"))?;
+        let kinds: Vec<GroundingKind> = derived.rests_on.iter().map(|item| item.kind).collect();
+        if kinds
+            != [
+                GroundingKind::Decision,
+                GroundingKind::Evidence,
+                GroundingKind::Assumption,
+                GroundingKind::Bet,
+            ]
+        {
+            return Err(test_error(format!("unexpected kinds: {kinds:?}")));
+        }
+        if !derived
+            .rests_on
+            .iter()
+            .all(|item| item.added == GroundingAdded::AtCapture)
+        {
+            return Err(test_error(format!(
+                "expected all at capture: {:?}",
+                derived.rests_on
+            )));
+        }
+        if derived.expressed_confidence.as_deref() != Some("high") {
+            return Err(test_error("expressed_confidence lost on postgres"));
+        }
+        let goal = get_decision_brief_at(pg, "d:goal", now)?
+            .data
+            .ok_or_else(|| test_error("d:goal missing"))?;
+        if goal.dependents_count != 2 {
+            return Err(test_error(format!(
+                "d:goal dependents: {}",
+                goal.dependents_count
+            )));
+        }
+
+        // Attributed later: who and when survive the round trip through hm_edges.
+        let later = grounding_of_at(pg, "d:later", now)?;
+        let later_actors: Vec<Option<String>> = later
+            .items
+            .iter()
+            .map(|item| match &item.added {
+                GroundingAdded::Later { actor_id, .. } => actor_id.clone(),
+                GroundingAdded::AtCapture => None,
+            })
+            .collect();
+        if later_actors != [Some("human:alex".to_owned()), Some("human:bob".to_owned())] {
+            return Err(test_error(format!(
+                "unexpected later attribution: {later_actors:?}"
+            )));
+        }
+
+        // Bets: overdue is reported, not stale; held is not overdue; failed is stale.
+        let late = get_decision_outcome_at(pg, "d:late", now)?
+            .data
+            .ok_or_else(|| test_error("d:late missing"))?;
+        if !late.held_up || late.unchecked.len() != 1 {
+            return Err(test_error(format!("overdue bet outcome wrong: {late:?}")));
+        }
+        let held = get_decision_outcome_at(pg, "d:held", now)?
+            .data
+            .ok_or_else(|| test_error("d:held missing"))?;
+        if !held.held_up || !held.unchecked.is_empty() {
+            return Err(test_error(format!("held bet outcome wrong: {held:?}")));
+        }
+        let failed = get_decision_outcome_at(pg, "d:failed", now)?
+            .data
+            .ok_or_else(|| test_error("d:failed missing"))?;
+        if failed.held_up || !failed.stale_premises {
+            return Err(test_error(format!("failed bet outcome wrong: {failed:?}")));
+        }
+
+        // A premise that was superseded or rejected makes its dependent stale; a contested one
+        // does not.
+        let reasons_of = |id: &str| -> Result<Vec<crate::queries::OutcomeReason>> {
+            Ok(get_decision_outcome_at(pg, id, now)?
+                .data
+                .ok_or_else(|| test_error(format!("{id} missing")))?
+                .reasons)
+        };
+        if !reasons_of("d:stale-superseded")?.contains(
+            &crate::queries::OutcomeReason::PremiseSuperseded {
+                decision_id: "d:premise-old".to_owned(),
+                by_id: "d:premise-new".to_owned(),
+            },
+        ) {
+            return Err(test_error(
+                "superseded premise did not make its dependent stale",
+            ));
+        }
+        if !reasons_of("d:stale-rejected")?.contains(
+            &crate::queries::OutcomeReason::PremiseRejected {
+                decision_id: "d:premise-rejected".to_owned(),
+            },
+        ) {
+            return Err(test_error(
+                "rejected premise did not make its dependent stale",
+            ));
+        }
+        let contested = get_decision_outcome_at(pg, "d:not-stale-contested", now)?
+            .data
+            .ok_or_else(|| test_error("d:not-stale-contested missing"))?;
+        if !contested.held_up {
+            return Err(test_error("a contested premise must not flip held_up"));
+        }
+        Ok(())
+    })
 }

@@ -4,6 +4,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -17,11 +18,13 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ratatui::{Frame, Terminal};
 
 use crate::error::CliError;
+use crate::events::HypothesisKind;
 use crate::projector::{GraphView, NodeKind, RelationKind};
 use crate::queries::{
     get_compact_view, get_decision, get_decision_neighborhood, get_supersession_chain,
     search_decisions, CompactView, DecisionSearchResult, DecisionStatus, DecisionView,
-    HypothesisStatus, NeighborhoodRequest, NeighborhoodView, SearchDecisionRequest,
+    GroundingState, HypothesisContext, HypothesisStatus, NeighborhoodRequest, NeighborhoodView,
+    SearchDecisionRequest,
 };
 use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
@@ -999,18 +1002,40 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
         let hypotheses = detail
             .hypotheses
             .iter()
-            .map(|hypothesis| {
-                format!(
-                    "{} ({})",
-                    hypothesis.id,
-                    hypothesis_status_label(hypothesis.status)
-                )
-            })
+            .map(hypothesis_summary)
             .collect::<Vec<_>>();
         lines.push(Line::from(format!(
             "hypotheses: {}",
             list_or_none(&hypotheses)
         )));
+        lines.push(Line::from(detail_rests_on(detail)));
+        let premises = premise_statuses(app.neighborhood.as_ref(), &detail.id);
+        let premise_labels = premises
+            .iter()
+            .map(|(id, status)| format!("{id} ({})", decision_status_label(*status)))
+            .collect::<Vec<_>>();
+        lines.push(Line::from(format!(
+            "follows from: {}",
+            list_or_none(&premise_labels)
+        )));
+        let dependents = dependent_ids(app.neighborhood.as_ref(), &detail.id);
+        if !dependents.is_empty() {
+            lines.push(Line::from(format!(
+                "rest on this: {}",
+                list_or_none(&dependents)
+            )));
+        }
+        if premises.iter().any(|(_, status)| {
+            matches!(
+                status,
+                DecisionStatus::Superseded | DecisionStatus::Rejected
+            )
+        }) {
+            lines.push(Line::from(vec![Span::styled(
+                "warning: a decision this one follows from no longer stands",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )]));
+        }
 
         let actors = actor_edges(app.neighborhood.as_ref());
         lines.push(Line::from(format!("actors: {}", list_or_none(&actors))));
@@ -1192,6 +1217,37 @@ fn render_compact_graph(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchA
         }
     }
 
+    lines.push(Line::from(format!("  {}", compact_rests_on(cv))));
+    for premise in &cv.premises {
+        let stale = matches!(
+            premise.status,
+            DecisionStatus::Superseded | DecisionStatus::Rejected
+        );
+        let style = if stale {
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::raw("    follows from "),
+            Span::styled(
+                premise.decision_id.as_str(),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                format!("[{}]", decision_status_label(premise.status)),
+                style,
+            ),
+        ]));
+    }
+    if cv.dependents_count > 0 {
+        lines.push(Line::from(format!(
+            "    {} decision(s) rest on this",
+            cv.dependents_count
+        )));
+    }
+
     if !cv.hypotheses.is_empty() {
         lines.push(Line::from(format!(
             "  hypotheses ({}):",
@@ -1213,6 +1269,10 @@ fn render_compact_graph(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchA
                 badge,
                 Span::raw(" "),
                 Span::styled(hyp.id.as_str(), Style::default().fg(Color::Cyan)),
+                Span::raw(format!(
+                    " ({})",
+                    hypothesis_kind_text(hyp.kind, hyp.check_by)
+                )),
                 Span::raw(": "),
                 Span::raw(hyp.statement.as_str()),
             ]));
@@ -1442,6 +1502,80 @@ fn actor_edges(neighborhood: Option<&NeighborhoodView>) -> Vec<String> {
             )
         })
         .map(|edge| format!("{}:{}", edge.relation.table_name(), edge.to))
+        .collect()
+}
+
+/// `assumption`, or `bet, check by 2026-10-15`: the kind a hypothesis row shows next to its id.
+fn hypothesis_kind_text(kind: HypothesisKind, check_by: Option<DateTime<Utc>>) -> String {
+    match (kind, check_by) {
+        (HypothesisKind::Assumption, _) => "assumption".to_owned(),
+        (HypothesisKind::Bet, Some(check_by)) => {
+            format!("bet, check by {}", check_by.format("%Y-%m-%d"))
+        }
+        (HypothesisKind::Bet, None) => "bet".to_owned(),
+    }
+}
+
+fn hypothesis_summary(hypothesis: &HypothesisContext) -> String {
+    format!(
+        "{} ({}, {})",
+        hypothesis.id,
+        hypothesis_status_label(hypothesis.status),
+        hypothesis_kind_text(hypothesis.kind, hypothesis.check_by)
+    )
+}
+
+/// The one-line answer to "what does this rest on?": the digest clause, or "nothing declared"
+/// with the way to add it.
+fn detail_rests_on(detail: &DecisionView) -> String {
+    if detail.grounding_state() == GroundingState::NothingDeclared {
+        "rests on: nothing declared (never asked)".to_owned()
+    } else {
+        detail.rests_on_clause()
+    }
+}
+
+fn compact_rests_on(view: &CompactView) -> String {
+    if view.grounding_state == GroundingState::NothingDeclared {
+        "rests on: nothing declared (never asked)".to_owned()
+    } else {
+        view.decision.rests_on_clause()
+    }
+}
+
+/// The prior decisions this decision follows from, with whether each still stands.
+fn premise_statuses(
+    neighborhood: Option<&NeighborhoodView>,
+    current_id: &str,
+) -> Vec<(String, DecisionStatus)> {
+    let Some(neighborhood) = neighborhood else {
+        return Vec::new();
+    };
+    neighborhood
+        .edges
+        .iter()
+        .filter(|edge| edge.relation == RelationKind::FollowsFrom && edge.from == current_id)
+        .filter_map(|edge| {
+            neighborhood
+                .nodes
+                .iter()
+                .find(|node| node.id == edge.to)
+                .and_then(|node| node.decision_status)
+                .map(|status| (edge.to.clone(), status)) // ubs:ignore: owned id for display; the neighborhood is only borrowed
+        })
+        .collect()
+}
+
+/// The decisions that follow from this one.
+fn dependent_ids(neighborhood: Option<&NeighborhoodView>, current_id: &str) -> Vec<String> {
+    let Some(neighborhood) = neighborhood else {
+        return Vec::new();
+    };
+    neighborhood
+        .edges
+        .iter()
+        .filter(|edge| edge.relation == RelationKind::FollowsFrom && edge.to == current_id)
+        .map(|edge| edge.from.clone()) // ubs:ignore: owned id for display; the neighborhood is only borrowed
         .collect()
 }
 

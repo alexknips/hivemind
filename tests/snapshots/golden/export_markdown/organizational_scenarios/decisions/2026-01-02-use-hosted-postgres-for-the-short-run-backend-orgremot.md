@@ -34,6 +34,11 @@ Hypotheses premised on:
 
 It satisfies the shared-service migration plan without introducing graph storage early.
 
+## Rests on
+
+- **Evidence:** Hosted Postgres meets the latency and backup constraints for the pilot. (at capture)
+- **Assumption:** A service-owned write path can meet security and operational constraints. — supported (at capture)
+
 ## Evidence
 
 - Hosted Postgres meets the latency and backup constraints for the pilot. (source: remote-db-architecture-choice)

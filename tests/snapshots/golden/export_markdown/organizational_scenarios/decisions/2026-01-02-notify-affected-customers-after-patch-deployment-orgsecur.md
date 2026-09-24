@@ -34,6 +34,11 @@ Hypotheses premised on:
 
 Legal and customer success need a consistent disclosure package.
 
+## Rests on
+
+- **Evidence:** Customer exposure logs show two enterprise tenants may be affected. (at capture)
+- **Assumption:** A feature-flagged patch can close exposure without breaking exports. — supported (at capture)
+
 ## Evidence
 
 - Customer exposure logs show two enterprise tenants may be affected. (source: security-vulnerability-triage)

@@ -280,7 +280,7 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
             &origin_properties,
         )?,
         EventPayload::EvidenceRecorded(payload) => {
-            project_evidence_recorded(graph, &payload, &origin_properties)?
+            project_evidence_recorded(graph, &payload, &origin_properties, event_timestamp(event))?
         }
         EventPayload::HypothesisRecorded(payload) => {
             project_hypothesis_recorded(graph, &payload, &origin_properties)?
@@ -298,7 +298,19 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
             } else {
                 relation_kind(payload.relation)
             };
-            graph.upsert_edge(kind, &payload.from_id, &payload.to_id, &origin_properties)?;
+            if is_grounding_relation(kind) {
+                let properties = grounding_edge_properties(
+                    &origin_properties,
+                    &event.actor_id,
+                    event_timestamp(event),
+                    event
+                        .causation_event_id
+                        .and_then(|causation| i64::try_from(causation).ok()),
+                );
+                graph.upsert_edge(kind, &payload.from_id, &payload.to_id, &properties)?;
+            } else {
+                graph.upsert_edge(kind, &payload.from_id, &payload.to_id, &origin_properties)?;
+            }
         }
         EventPayload::BlockerReported(payload) => {
             project_blocker_reported(graph, event, event_origin, &payload, &origin_properties)?
@@ -737,6 +749,44 @@ fn props_extend(
     props
 }
 
+/// The edges a decision rests on (hivemind-zdsh.15 §1): a prior decision, evidence, and an
+/// assumption or bet (directly, or through the chosen option).
+const fn is_grounding_relation(kind: RelationKind) -> bool {
+    matches!(
+        kind,
+        RelationKind::FollowsFrom
+            | RelationKind::BasedOn
+            | RelationKind::PremisedOn
+            | RelationKind::PremisedOnDirect
+    )
+}
+
+/// Provenance of a grounding edge: who added it, when, and — for an edge named at capture —
+/// the proposal event that caused it. Readers derive "at capture" vs "attributed later" from
+/// `causation_event_id == the decision's proposal event` without a new ledger field.
+/// `causation_event_id` is omitted (not written as null) when absent: Kuzu cannot store a
+/// null string into its INT64 column.
+fn grounding_edge_properties(
+    origin_properties: &GraphProperties,
+    actor_id: &str,
+    added_at: GraphValue,
+    causation_event_id: Option<i64>,
+) -> GraphProperties {
+    let mut properties = origin_properties.clone(); // ubs:ignore: one copy per grounding edge; the origin map is shared by every edge of the event
+    properties.insert(
+        "added_by".to_owned(),
+        GraphValue::String(actor_id.to_owned()),
+    );
+    properties.insert("added_at".to_owned(), added_at);
+    if let Some(causation_event_id) = causation_event_id {
+        properties.insert(
+            "causation_event_id".to_owned(),
+            GraphValue::Int(causation_event_id),
+        );
+    }
+    properties
+}
+
 fn project_decision_proposed(
     graph: &impl GraphView,
     actor_id: &str,
@@ -759,6 +809,18 @@ fn project_decision_proposed(
             ),
         ),
     };
+    // Edges named by the proposal itself are at capture by definition: their causation is
+    // the proposal event, the same value the fan-out relation events carry.
+    let proposal_event_origin = match origin_properties.get("event_origin") {
+        Some(GraphValue::Int(event_origin)) => Some(*event_origin),
+        _ => None,
+    };
+    let grounding_properties = grounding_edge_properties(
+        origin_properties,
+        actor_id,
+        occurred_at.clone(), // ubs:ignore: the timestamp is also stored on the decision node below
+        proposal_event_origin,
+    );
     let decision_properties = props_extend(
         origin_properties,
         [
@@ -891,7 +953,7 @@ fn project_decision_proposed(
             premised_on_kind,
             premised_on_from,
             hypothesis_id,
-            origin_properties,
+            &grounding_properties,
         )?;
     }
 
@@ -900,7 +962,7 @@ fn project_decision_proposed(
             RelationKind::BasedOn,
             &payload.decision_id,
             evidence_id,
-            origin_properties,
+            &grounding_properties,
         )?;
     }
     Ok(())
@@ -982,10 +1044,21 @@ fn project_evidence_recorded(
     graph: &impl GraphView,
     payload: &EvidenceRecordedPayload,
     origin_properties: &GraphProperties,
+    recorded_at: GraphValue,
 ) -> Result<()> {
+    // `source` on the node is the event's channel (cli, mcp, ...); the payload's `source` is
+    // where the observation was made (URL, file@commit, measurement) — a different fact, so
+    // it gets its own property.
     let props = props_extend(
         origin_properties,
-        [("content", GraphValue::String(payload.content.clone()))],
+        [
+            ("content", GraphValue::String(payload.content.clone())),
+            (
+                "evidence_source",
+                optional_string_value(payload.source.as_deref()),
+            ),
+            ("recorded_at", recorded_at),
+        ],
     );
     graph.upsert_node(NodeKind::Evidence, &payload.evidence_id, &props)
 }

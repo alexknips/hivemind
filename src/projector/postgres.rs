@@ -98,6 +98,9 @@ impl PostgresGraphView {
                     event_origin  bigint,
                     PRIMARY KEY (tenant_id, relation_kind, from_id, to_id)
                 );
+                ALTER TABLE hm_edges ADD COLUMN IF NOT EXISTS causation_event_id bigint;
+                ALTER TABLE hm_edges ADD COLUMN IF NOT EXISTS added_by text;
+                ALTER TABLE hm_edges ADD COLUMN IF NOT EXISTS added_at text;
                 CREATE INDEX IF NOT EXISTS hm_edges_from_idx
                     ON hm_edges (tenant_id, relation_kind, from_id);
                 CREATE INDEX IF NOT EXISTS hm_edges_to_idx
@@ -135,11 +138,26 @@ impl GraphView for PostgresGraphView {
             Some(GraphValue::Int(n)) => Some(*n),
             _ => None,
         };
+        // Grounding edges only (see `projector::grounding_edge_properties`). First write wins
+        // (DO NOTHING below): the earliest assertion of a premise is the one attributed.
+        let causation_event_id: Option<i64> = match properties.get("causation_event_id") {
+            Some(GraphValue::Int(n)) => Some(*n),
+            _ => None,
+        };
+        let text_property = |key: &str| -> Option<String> {
+            match properties.get(key) {
+                Some(GraphValue::String(value)) => Some(value.clone()), // ubs:ignore: bound as a query parameter; the property map is borrowed
+                _ => None,
+            }
+        };
+        let added_by = text_property("added_by");
+        let added_at = text_property("added_at");
         let mut client = self.pool.get().map_err(pg_error)?;
         client
             .execute(
-                "INSERT INTO hm_edges (tenant_id, relation_kind, from_id, to_id, event_origin)
-                 VALUES ($1, $2, $3, $4, $5)
+                "INSERT INTO hm_edges (tenant_id, relation_kind, from_id, to_id, event_origin,
+                                       causation_event_id, added_by, added_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                  ON CONFLICT (tenant_id, relation_kind, from_id, to_id) DO NOTHING",
                 &[
                     &self.tenant_id,
@@ -147,6 +165,9 @@ impl GraphView for PostgresGraphView {
                     &from_id,
                     &to_id,
                     &event_origin,
+                    &causation_event_id,
+                    &added_by,
+                    &added_at,
                 ],
             )
             .map_err(pg_error)?;
@@ -219,6 +240,12 @@ fn dispatch_query(
     // ── Supersession edges (incoming) ─────────────────────────────────────────
     if cypher.contains("MATCH (other:`Decision`)-[:`SUPERSEDES`]->(d:`Decision` {id: $id})") {
         return query_supersedes_incoming(client, tenant_id, params);
+    }
+
+    // ── Grounding edges with provenance (hivemind-gwhr.3) ────────────────────
+    // Must precede the neighbor-pairs check below: its RETURN list is a prefix of this one's.
+    if cypher.contains("r.causation_event_id AS causation_event_id") {
+        return query_grounding_edges(client, tenant_id, cypher, params);
     }
 
     // ── Neighbor pairs with event_origin ─────────────────────────────────────
@@ -534,6 +561,55 @@ fn query_neighbor_pairs(
         .collect())
 }
 
+/// One decision's (or option's) outgoing edges of one grounding relation, with the edge's
+/// origin and provenance columns. See `projector::grounding_edge_properties`.
+fn query_grounding_edges(
+    client: &mut Client,
+    tenant_id: &str,
+    cypher: &str,
+    params: &GraphParams,
+) -> Result<Vec<GraphRow>> {
+    let relation = parse_relation(cypher)?;
+    let id = required_string_param(params, "id")?;
+    let rows = client
+        .query(
+            "SELECT to_id, event_origin, causation_event_id, added_by, added_at FROM hm_edges
+             WHERE tenant_id=$1 AND relation_kind=$2 AND from_id=$3
+             ORDER BY to_id",
+            &[&tenant_id, &relation.table_name(), &id],
+        )
+        .map_err(pg_error)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let to_id: String = row.get(0);
+            let event_origin: Option<i64> = row.get(1);
+            let causation_event_id: Option<i64> = row.get(2);
+            let added_by: Option<String> = row.get(3);
+            let added_at: Option<String> = row.get(4);
+            GraphRow::from([
+                ("id".to_owned(), GraphValue::String(to_id)),
+                (
+                    "event_origin".to_owned(),
+                    event_origin.map_or(GraphValue::Null, GraphValue::Int),
+                ),
+                (
+                    "causation_event_id".to_owned(),
+                    causation_event_id.map_or(GraphValue::Null, GraphValue::Int),
+                ),
+                (
+                    "added_by".to_owned(),
+                    added_by.map_or(GraphValue::Null, GraphValue::String),
+                ),
+                (
+                    "added_at".to_owned(),
+                    added_at.map_or(GraphValue::Null, GraphValue::String),
+                ),
+            ])
+        })
+        .collect())
+}
+
 fn query_neighbor_ids(
     client: &mut Client,
     tenant_id: &str,
@@ -629,8 +705,27 @@ fn query_all_nodes(
     cypher: &str,
     params: &GraphParams,
 ) -> Result<Vec<GraphRow>> {
-    let _ = params;
     let kind = parse_node_kind(cypher)?;
+    // `MATCH (node:`Kind` {id: $id}) RETURN node.id AS id, ...` is a single-node lookup
+    // (queries::shared::node_row); without the anchor it is the whole-kind scan.
+    if cypher.contains("{id: $id}") {
+        let id = required_string_param(params, "id")?;
+        let row = client
+            .query_opt(
+                "SELECT node_id, properties FROM hm_nodes
+                 WHERE tenant_id=$1 AND node_kind=$2 AND node_id=$3",
+                &[&tenant_id, &kind.table_name(), &id],
+            )
+            .map_err(pg_error)?;
+        return Ok(row
+            .map(|row| {
+                let node_id: String = row.get(0);
+                let props: JsonValue = row.get(1);
+                json_props_to_row(&node_id, &props)
+            })
+            .into_iter()
+            .collect());
+    }
     let rows = client
         .query(
             "SELECT node_id, properties FROM hm_nodes

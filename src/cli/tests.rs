@@ -1778,6 +1778,160 @@ fn query_verify_alias_returns_decision_brief() -> CliTestResult {
 }
 
 #[test]
+fn query_verify_shows_what_a_decision_rests_on_and_goes_stale_when_the_premise_is_superseded(
+) -> CliTestResult {
+    let hivemind_dir = unique_test_dir("query-verify-rests-on");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let propose = |title: &str, rationale: &str| {
+        run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "human:alice",
+            "--hivemind-dir",
+            dir,
+            "emit",
+            "decision.proposed",
+            "--title",
+            title,
+            "--rationale",
+            rationale,
+            "--topic-keys",
+            "grounding",
+            "--options",
+            "only",
+        ]))
+    };
+    let goal_id = propose(
+        "Ship the hosted MVP",
+        "The hosted MVP is the goal everything else follows from",
+    )?;
+    let derived_id = propose(
+        "Use Postgres for the MVP",
+        "Consistent with shipping the hosted MVP",
+    )?;
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "relation.added",
+        "--kind",
+        "follows-from",
+        "--from",
+        derived_id.trim(),
+        "--to",
+        goal_id.trim(),
+    ]))?;
+
+    let verify_json =
+        |description: &str| -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
+            let output = run(&Cli::parse_from([
+                "hivemind",
+                "--json",
+                "--hivemind-dir",
+                dir,
+                "query",
+                "verify",
+                description,
+            ]))?;
+            Ok(serde_json::from_str(&output)?)
+        };
+
+    // The premise is listed with its state and who attributed it: added after capture, since the
+    // relation was emitted separately from the proposal.
+    let before = verify_json("Use Postgres for the MVP")?;
+    ensure_json_eq(
+        &before["data"]["grounding_state"],
+        serde_json::json!("grounded"),
+        "a decision that follows from a prior decision is grounded",
+    )?;
+    ensure_json_eq(
+        &before["data"]["rests_on"][0]["label"],
+        serde_json::json!("Ship the hosted MVP"),
+        "the premise is named by its title",
+    )?;
+    ensure_json_eq(
+        &before["data"]["rests_on"][0]["state"],
+        serde_json::json!("holds"),
+        "the premise still stands",
+    )?;
+    ensure_json_eq(
+        &before["data"]["rests_on"][0]["added"]["when"],
+        serde_json::json!("later"),
+        "a link emitted after the proposal is attributed later, not at capture",
+    )?;
+    ensure_json_eq(
+        &before["data"]["rests_on"][0]["added"]["actor_id"],
+        serde_json::json!("human:alice"),
+        "and says who attributed it",
+    )?;
+    ensure_json_eq(
+        &before["data"]["still_holds"]["held_up"],
+        serde_json::json!(true),
+        "a standing premise keeps the decision standing",
+    )?;
+
+    // Supersede the premise: the decision that rests on it is stale, and says why.
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "--hivemind-dir",
+        dir,
+        "supersede",
+        "--old",
+        goal_id.trim(),
+        "--title",
+        "Ship the self-hosted MVP",
+        "--rationale",
+        "Self-hosting replaces the hosted goal for now",
+        "--options",
+        "self-hosted",
+        "--chose",
+        "self-hosted",
+    ]))?;
+    let after = verify_json("Use Postgres for the MVP")?;
+    ensure_json_eq(
+        &after["data"]["still_holds"]["held_up"],
+        serde_json::json!(false),
+        "a superseded premise makes the decision stale",
+    )?;
+    ensure_json_eq(
+        &after["data"]["still_holds"]["reasons"][0]["kind"],
+        serde_json::json!("premise_superseded"),
+        "the reason names the premise, not a generic staleness",
+    )?;
+    ensure_json_eq(
+        &after["data"]["rests_on"][0]["state"],
+        serde_json::json!("superseded"),
+        "the premise is shown as superseded",
+    )?;
+
+    let summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "--summary",
+        "verify",
+        "Use Postgres for the MVP",
+    ]))?;
+    ensure(
+        summary.contains("still holds: NO: premise superseded"),
+        "the text answer says no, and why",
+    )?;
+    ensure(
+        summary.contains("SUPERSEDED") && summary.contains("Ship the self-hosted MVP"),
+        "the text answer names the superseding decision",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn query_compact_view_fluent_resolves_by_description() -> CliTestResult {
     let hivemind_dir = unique_test_dir("query-compact-view-fluent");
     let dir = hivemind_dir.to_str().expect("utf-8 temp path");

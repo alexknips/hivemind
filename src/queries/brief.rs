@@ -14,13 +14,14 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::projector::{GraphParams, GraphValue, GraphView};
+use crate::projector::{GraphParams, GraphValue, GraphView, NodeKind};
 use crate::Result;
 
 use super::context::{get_decision_context, ReviewShape};
 use super::decision::get_decision;
-use super::outcome::{get_decision_outcome, OutcomeReason};
-use super::shared::{optional_datetime, optional_string, query_error, query_timer_start};
+use super::grounding::{grounding_of_at, GroundingItem, GroundingState, UncheckedBet};
+use super::outcome::{get_decision_outcome_at, OutcomeReason};
+use super::shared::{node_row, optional_datetime, optional_string, query_error, query_timer_start};
 use super::status::DecisionStatus;
 use super::QueryResponse;
 
@@ -50,6 +51,10 @@ pub struct DecidedBy {
 pub struct StillHolds {
     pub held_up: bool,
     pub reasons: Vec<OutcomeReason>,
+    /// Bets whose check date has passed with no evidence either way. Attention, not staleness:
+    /// `held_up` is unaffected.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unchecked: Vec<UncheckedBet>,
 }
 
 /// Leads with the decision, then why, who decided, and whether it still holds. IDs are output
@@ -73,16 +78,37 @@ pub struct DecisionBrief {
     pub chosen_option: Option<OptionLabel>,
     pub rejected_options: Vec<OptionLabel>,
     pub decided_by: DecidedBy,
+    /// What the decision rests on, each item with its state and whether it was named at capture
+    /// or attributed later.
+    pub rests_on: Vec<GroundingItem>,
+    /// Grounded, a declared bet, or nothing declared ("never asked").
+    pub grounding_state: GroundingState,
+    /// `low`, `medium` or `high`, in the decider's own words at capture; absent when not given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expressed_confidence: Option<String>,
+    /// How many other decisions follow from this one.
+    pub dependents_count: usize,
     pub still_holds: StillHolds,
     pub topic_keys: Vec<String>,
     pub status: DecisionStatus,
 }
 
 /// Compose `get_decision` + `get_decision_context` + `get_decision_outcome` plus an
-/// `Option.label` lookup into one answer. Three deterministic graph reads, no write, no LLM.
+/// `Option.label` lookup and what the decision rests on into one answer. Deterministic graph
+/// reads, no write, no LLM. Reads the clock once, to say whether a bet's check date has passed;
+/// see `get_decision_brief_at`.
 pub fn get_decision_brief(
     graph: &impl GraphView,
     decision_id: &str,
+) -> Result<QueryResponse<Option<DecisionBrief>>> {
+    get_decision_brief_at(graph, decision_id, Utc::now())
+}
+
+/// `get_decision_brief` as of `now`.
+pub fn get_decision_brief_at(
+    graph: &impl GraphView,
+    decision_id: &str,
+    now: DateTime<Utc>,
 ) -> Result<QueryResponse<Option<DecisionBrief>>> {
     let started = query_timer_start();
 
@@ -98,10 +124,11 @@ pub fn get_decision_brief(
     let context = get_decision_context(graph, decision_id)?
         .data
         .ok_or_else(|| query_error("decision exists but has no context"))?;
-    let outcome = get_decision_outcome(graph, decision_id)?
+    let outcome = get_decision_outcome_at(graph, decision_id, now)?
         .data
         .ok_or_else(|| query_error("decision exists but has no outcome"))?;
-    let occurred_at = decision_occurred_at(graph, decision_id)?;
+    let (occurred_at, expressed_confidence) = decision_capture_facts(graph, decision_id)?;
+    let grounding = grounding_of_at(graph, decision_id, now)?;
 
     let chosen_option = match &decision.chosen_option_id {
         Some(option_id) => Some(resolve_option_label(graph, option_id)?),
@@ -131,9 +158,14 @@ pub fn get_decision_brief(
             source_ref: context.source_ref,
             review: context.review,
         },
+        rests_on: grounding.items,
+        grounding_state: grounding.state,
+        expressed_confidence,
+        dependents_count: grounding.dependents_count,
         still_holds: StillHolds {
             held_up: outcome.held_up,
             reasons: outcome.reasons,
+            unchecked: outcome.unchecked,
         },
         topic_keys: decision.topic_keys,
         status: decision.status,
@@ -162,17 +194,17 @@ fn resolve_option_label(graph: &impl GraphView, option_id: &str) -> Result<Optio
     })
 }
 
-fn decision_occurred_at(
+/// When the decision was captured (display-only) and the confidence its decider expressed then.
+fn decision_capture_facts(
     graph: &impl GraphView,
     decision_id: &str,
-) -> Result<Option<DateTime<Utc>>> {
-    let rows = graph.query(
-        "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id, d.occurred_at AS occurred_at LIMIT 1;",
-        &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
-    )?;
-    match rows.first() {
-        Some(row) => optional_datetime(row, "occurred_at"),
-        None => Ok(None),
+) -> Result<(Option<DateTime<Utc>>, Option<String>)> {
+    match node_row(graph, NodeKind::Decision, decision_id)? {
+        Some(row) => Ok((
+            optional_datetime(&row, "occurred_at")?,
+            optional_string(&row, "expressed_confidence"),
+        )),
+        None => Ok((None, None)),
     }
 }
 
