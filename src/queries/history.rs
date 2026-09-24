@@ -11,9 +11,9 @@ use serde_json::{json, Value};
 
 use crate::error::QueryError;
 use crate::events::{
-    self, DecisionAcceptedPayload, DecisionProposedPayload, DecisionRejectedPayload,
-    DecisionSupersededPayload, Event, EventId, EventPayload, EventSource, EventType,
-    RelationAddedPayload, RelationKind as EventRelationKind,
+    self, DecisionAcceptedPayload, DecisionMovedPayload, DecisionProposedPayload,
+    DecisionRejectedPayload, DecisionSupersededPayload, Event, EventId, EventPayload, EventSource,
+    EventType, RelationAddedPayload, RelationKind as EventRelationKind,
 };
 use crate::ledger::EventLedger;
 use crate::projector::NodeKind;
@@ -117,6 +117,11 @@ pub enum HistoryChangeKind {
     /// rejected. The row's `decision_ids` are the affected decisions, not the premise itself.
     StalePremise,
     Supersession,
+    /// A decision changed which project it belongs to (`decision.moved`). Its own kind,
+    /// not folded into `ContextChange`, so a move is never dropped by compaction and is
+    /// always distinguishable in history without inspecting the raw event
+    /// (approved record shape, item 3; hivemind-s15q.10).
+    ProjectMoved,
     ContextChange,
 }
 
@@ -1441,6 +1446,7 @@ impl DecisionIndex {
                 | EventPayload::IngestBatchClassified(_)
                 | EventPayload::DecisionScored(_)
                 | EventPayload::DecisionMetadataDerived(_)
+                | EventPayload::DecisionMoved(_)
                 | EventPayload::ProjectRegistered(_)
                 | EventPayload::ProjectLinked(_)
                 | EventPayload::ProjectUnlinked(_)
@@ -1608,6 +1614,7 @@ fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
             HistoryChangeKind::StatusChange
         }
         EventPayload::DecisionSuperseded(_) => HistoryChangeKind::Supersession,
+        EventPayload::DecisionMoved(_) => HistoryChangeKind::ProjectMoved,
         EventPayload::EvidenceRecorded(_) => HistoryChangeKind::NewEvidence,
         EventPayload::RelationAdded(payload) => match payload.relation {
             EventRelationKind::BasedOn | EventRelationKind::Supports => {
@@ -1659,6 +1666,9 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
         }) => {
             ids.insert(old_decision_id.clone());
             ids.insert(new_decision_id.clone());
+        }
+        EventPayload::DecisionMoved(DecisionMovedPayload { decision_id, .. }) => {
+            ids.insert(decision_id.clone());
         }
         EventPayload::DecisionRequested(payload) => {
             if let Some(decision_id) = &payload.decision_id {
@@ -1760,6 +1770,9 @@ fn affected_nodes_for_event(event: &Event, payload: &EventPayload) -> Vec<Affect
         EventPayload::DecisionSuperseded(payload) => {
             nodes.insert(affected_node(&payload.old_decision_id, NodeKind::Decision));
             nodes.insert(affected_node(&payload.new_decision_id, NodeKind::Decision));
+        }
+        EventPayload::DecisionMoved(payload) => {
+            nodes.insert(affected_node(&payload.decision_id, NodeKind::Decision));
         }
         EventPayload::EvidenceRecorded(payload) => {
             nodes.insert(affected_node(&payload.evidence_id, NodeKind::Evidence));

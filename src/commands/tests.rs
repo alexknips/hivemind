@@ -2761,6 +2761,236 @@ fn unanchor_project_requires_an_active_anchor() {
 }
 
 #[test]
+fn move_decision_appends_event_and_is_reversible() {
+    // Approved record shape, item 3: decision.moved {decision_id, from, to, reason?},
+    // and a reversal is another recorded move -- nothing is deleted or rewritten.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing", "pricing"]);
+    let decision_id = commands
+        .propose_decision(fixture.proposal(
+            "actor:alice",
+            "Per-seat pricing",
+            Some(DeterminedProject::stated("billing")),
+        ))
+        .expect("propose succeeds");
+
+    let move_event_id = commands
+        .move_decision(
+            "actor:alice",
+            &decision_id,
+            "billing",
+            "pricing",
+            Some("per-seat pricing decisions live under Pricing"),
+        )
+        .expect("move succeeds");
+
+    let events = ledger.read(0, 10).expect("read succeeds");
+    let moved = events
+        .iter()
+        .find(|event| event.event_id == Some(move_event_id))
+        .expect("move event present");
+    assert_eq!(moved.event_type, EventType::DecisionMoved);
+    assert_eq!(moved.actor_id, "actor:alice");
+    assert_eq!(
+        moved.payload.get("decision_id").and_then(|v| v.as_str()),
+        Some(decision_id.as_str())
+    );
+    assert_eq!(
+        moved.payload.get("from").and_then(|v| v.as_str()),
+        Some("billing")
+    );
+    assert_eq!(
+        moved.payload.get("to").and_then(|v| v.as_str()),
+        Some("pricing")
+    );
+    assert_eq!(
+        moved.payload.get("reason").and_then(|v| v.as_str()),
+        Some("per-seat pricing decisions live under Pricing")
+    );
+
+    // Reversal: moving it back is just another recorded move, not a rewrite.
+    commands
+        .move_decision("actor:alice", &decision_id, "pricing", "billing", None)
+        .expect("reversal succeeds");
+    let events = ledger.read(0, 10).expect("read succeeds");
+    let moves: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == EventType::DecisionMoved)
+        .collect();
+    assert_eq!(moves.len(), 2, "both moves are recorded, none rewritten");
+}
+
+#[test]
+fn move_decision_rejects_stale_from() {
+    // `from` must equal the decision's *current* project -- a caller naming a project the
+    // decision already left is refused rather than silently moving it again.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing", "pricing", "platform"]);
+    let decision_id = commands
+        .propose_decision(fixture.proposal(
+            "actor:alice",
+            "Per-seat pricing",
+            Some(DeterminedProject::stated("billing")),
+        ))
+        .expect("propose succeeds");
+    commands
+        .move_decision("actor:alice", &decision_id, "billing", "pricing", None)
+        .expect("first move succeeds");
+
+    let error = commands
+        .move_decision("actor:alice", &decision_id, "billing", "platform", None)
+        .expect_err("stale from is refused");
+    let message = error.to_string();
+    assert!(message.contains("pricing"), "message was: {message}");
+
+    let moves = ledger
+        .read(0, 10)
+        .expect("read succeeds")
+        .into_iter()
+        .filter(|event| event.event_type == EventType::DecisionMoved)
+        .count();
+    assert_eq!(moves, 1, "the rejected move must not append");
+}
+
+#[test]
+fn move_decision_rejects_matching_from_and_to() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing"]);
+    let decision_id = commands
+        .propose_decision(fixture.proposal(
+            "actor:alice",
+            "Per-seat pricing",
+            Some(DeterminedProject::stated("billing")),
+        ))
+        .expect("propose succeeds");
+
+    assert!(commands
+        .move_decision("actor:alice", &decision_id, "billing", "billing", None)
+        .is_err());
+}
+
+#[test]
+fn move_decision_rejects_unregistered_to() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing"]);
+    let decision_id = commands
+        .propose_decision(fixture.proposal(
+            "actor:alice",
+            "Per-seat pricing",
+            Some(DeterminedProject::stated("billing")),
+        ))
+        .expect("propose succeeds");
+
+    let error = commands
+        .move_decision("actor:alice", &decision_id, "billing", "pricing", None)
+        .expect_err("unregistered to is refused");
+    assert!(error.to_string().contains("pricing"));
+}
+
+#[test]
+fn move_decision_rejects_someone_elses_personal_project() {
+    // `to` may be the acting actor's own personal address only (Alex, choice 3a) -- a
+    // decision can never be moved into someone else's personal project.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing"]);
+    let decision_id = commands
+        .propose_decision(fixture.proposal(
+            "actor:alice",
+            "Per-seat pricing",
+            Some(DeterminedProject::stated("billing")),
+        ))
+        .expect("propose succeeds");
+
+    let bob_personal = personal_project_handle("actor:bob");
+    assert!(commands
+        .move_decision("actor:alice", &decision_id, "billing", &bob_personal, None)
+        .is_err());
+}
+
+#[test]
+fn move_decision_accepts_actors_own_personal_project() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing"]);
+    let decision_id = commands
+        .propose_decision(fixture.proposal(
+            "actor:alice",
+            "Per-seat pricing",
+            Some(DeterminedProject::stated("billing")),
+        ))
+        .expect("propose succeeds");
+
+    let alice_personal = personal_project_handle("actor:alice");
+    commands
+        .move_decision(
+            "actor:alice",
+            &decision_id,
+            "billing",
+            &alice_personal,
+            None,
+        )
+        .expect("moving into the actor's own personal project succeeds");
+}
+
+#[test]
+fn move_decision_from_personal_fallback_resolves_derived_handle() {
+    // A decision proposed with no stated project lands in the proposer's personal
+    // fallback (approved record shape, item 2). `from` must be that derived handle, not
+    // a typed one, even though it was never stored on the proposal event itself.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing", "pricing"]);
+    let decision_id = commands
+        .propose_decision(fixture.proposal("actor:alice", "Judgement call", None))
+        .expect("propose succeeds");
+    let alice_personal = personal_project_handle("actor:alice");
+
+    // "billing" reads like a plausible `from`, but the decision actually landed in the
+    // derived personal fallback -- naming the wrong (if registered) project is refused
+    // the same way any other stale `from` is.
+    let error = commands
+        .move_decision("actor:alice", &decision_id, "billing", "pricing", None)
+        .expect_err("billing is not this decision's current project");
+    assert!(error.to_string().contains(&alice_personal));
+    commands
+        .move_decision(
+            "actor:alice",
+            &decision_id,
+            &alice_personal,
+            "billing",
+            None,
+        )
+        .expect("moving out of the derived personal fallback succeeds");
+}
+
+#[test]
+fn move_decision_rejects_missing_decision() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands
+        .register_project("actor:alice", "billing", None, None)
+        .expect("register billing");
+    commands
+        .register_project("actor:alice", "pricing", None, None)
+        .expect("register pricing");
+
+    assert!(commands
+        .move_decision(
+            "actor:alice",
+            "decision-does-not-exist",
+            "billing",
+            "pricing",
+            None
+        )
+        .is_err());
+}
+
+#[test]
 fn propose_decision_normalizes_topic_keys() {
     let ledger = InMemoryEventLedger::new();
     let commands = Commands::new(&ledger);

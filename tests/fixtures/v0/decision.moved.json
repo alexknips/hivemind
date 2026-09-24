@@ -1,0 +1,17 @@
+{
+  "event_id": 22,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe22",
+  "correlation_id": "session-1",
+  "causation_event_id": null,
+  "type": "decision.moved",
+  "actor_id": "human:alex",
+  "source": "human",
+  "source_ref": "human:alex",
+  "payload": {
+    "decision_id": "decision-1",
+    "from": "billing",
+    "to": "pricing",
+    "reason": "per-seat pricing decisions live under Pricing, not Billing"
+  },
+  "ts": "2026-09-21T20:46:44Z"
+}

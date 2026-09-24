@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 
 use hivemind::events::{
     self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionAcceptedPayload,
-    DecisionBlockerPriority, DecisionMetadataDerivedPayload, DecisionProposedPayload,
-    DecisionRejectedPayload, DecisionRequestedPayload, DecisionScoredPayload,
-    DecisionSupersededPayload, Event, EventBuilder, EventEnvelope, EventPayload, EventSource,
-    EventType, EventValidationError, EvidenceRecordedPayload, HypothesisKind,
-    HypothesisRecordedPayload, ImportanceFactors, IngestBatchClassifiedPayload,
+    DecisionBlockerPriority, DecisionMetadataDerivedPayload, DecisionMovedPayload,
+    DecisionProposedPayload, DecisionRejectedPayload, DecisionRequestedPayload,
+    DecisionScoredPayload, DecisionSupersededPayload, Event, EventBuilder, EventEnvelope,
+    EventPayload, EventSource, EventType, EventValidationError, EvidenceRecordedPayload,
+    HypothesisKind, HypothesisRecordedPayload, ImportanceFactors, IngestBatchClassifiedPayload,
     IngestBatchReceivedPayload, IngestTurn, NotificationAcknowledgedPayload,
     NotificationSentPayload, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind,
     ProjectLinkPayload, ProjectRegisteredPayload, QualityDim, QualityDims, RelationAddedPayload,
@@ -20,7 +20,7 @@ use hivemind::{CliError, CommandError, HivemindError, LedgerError, ProjectorErro
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const EVENT_TYPES: [EventType; 22] = [
+const EVENT_TYPES: [EventType; 23] = [
     EventType::DecisionProposed,
     EventType::DecisionRequested,
     EventType::DecisionAccepted,
@@ -38,6 +38,7 @@ const EVENT_TYPES: [EventType; 22] = [
     EventType::IngestBatchClassified,
     EventType::DecisionScored,
     EventType::DecisionMetadataDerived,
+    EventType::DecisionMoved,
     EventType::ProjectRegistered,
     EventType::ProjectLinked,
     EventType::ProjectUnlinked,
@@ -368,6 +369,7 @@ fn event_type_name(event_type: EventType) -> &'static str {
         EventType::IngestBatchClassified => "ingest.batch_classified",
         EventType::DecisionScored => "decision.scored",
         EventType::DecisionMetadataDerived => "decision.metadata_derived",
+        EventType::DecisionMoved => "decision.moved",
         EventType::ProjectRegistered => "project.registered",
         EventType::ProjectLinked => "project.linked",
         EventType::ProjectUnlinked => "project.unlinked",
@@ -395,6 +397,7 @@ fn payload_variant_type(payload: &EventPayload) -> EventType {
         EventPayload::IngestBatchClassified(_) => EventType::IngestBatchClassified,
         EventPayload::DecisionScored(_) => EventType::DecisionScored,
         EventPayload::DecisionMetadataDerived(_) => EventType::DecisionMetadataDerived,
+        EventPayload::DecisionMoved(_) => EventType::DecisionMoved,
         EventPayload::ProjectRegistered(_) => EventType::ProjectRegistered,
         EventPayload::ProjectLinked(_) => EventType::ProjectLinked,
         EventPayload::ProjectUnlinked(_) => EventType::ProjectUnlinked,
@@ -455,6 +458,7 @@ fn typed_payload_from_value(
         EventType::DecisionMetadataDerived => {
             EventPayload::DecisionMetadataDerived(serde_json::from_value(payload)?)
         }
+        EventType::DecisionMoved => EventPayload::DecisionMoved(serde_json::from_value(payload)?),
         EventType::ProjectRegistered => {
             EventPayload::ProjectRegistered(serde_json::from_value(payload)?)
         }
@@ -715,6 +719,15 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
             }),
         ),
         (
+            EventType::DecisionMoved,
+            EventPayload::DecisionMoved(DecisionMovedPayload {
+                decision_id: "decision:minimal".to_owned(),
+                from: "contract-test".to_owned(),
+                to: "contract-test-parent".to_owned(),
+                reason: Some("Contract tests need one valid move payload".to_owned()),
+            }),
+        ),
+        (
             EventType::ProjectRegistered,
             EventPayload::ProjectRegistered(ProjectRegisteredPayload {
                 handle: "contract-test".to_owned(),
@@ -776,6 +789,7 @@ fn payload_json(payload: &EventPayload) -> Value {
         EventPayload::IngestBatchClassified(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionScored(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionMetadataDerived(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::DecisionMoved(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::ProjectRegistered(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::ProjectLinked(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::ProjectUnlinked(payload) => serde_json::to_value(payload).unwrap(),

@@ -329,6 +329,43 @@ fn every_write_path_event_validates_against_its_schema() {
         )
         .expect("unanchor project");
 
+    // -- decision.moved (hivemind-s15q.10), with a reason -- and its reversal --
+    let moved_option = commands
+        .record_option(actor, "Moved option", "n/a")
+        .expect("record moved option");
+    let moved_decision_id = commands
+        .propose_decision(DecisionProposalInput {
+            project: Some(DeterminedProject::stated("contract-a")),
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id: actor,
+            title: "A decision that gets moved",
+            rationale: "This decision exists so the test can exercise decision.moved.",
+            topic_keys: &["conformance".to_owned()],
+            option_ids: &[moved_option],
+            option_labels: &["Moved option".to_owned()],
+            chosen_option_id: None,
+            decided_by: None,
+            still_proposed: true,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect("propose decision to move");
+    commands
+        .move_decision(
+            actor,
+            &moved_decision_id,
+            "contract-a",
+            "contract-b",
+            Some("contract test exercising decision.moved"),
+        )
+        .expect("move decision");
+    commands
+        .move_decision(actor, &moved_decision_id, "contract-b", "contract-a", None)
+        .expect("move decision back (reversal, no reason)");
+
     // -- grounding (hivemind-gwhr.1): a bet hypothesis with kind/check_by/would_change_if, a
     // decision that follows from a premise at capture (relation.added FOLLOWS_FROM with
     // causation), later grounding without causation, and a standalone FOLLOWS_FROM link --
@@ -409,6 +446,7 @@ fn every_write_path_event_validates_against_its_schema() {
         EventType::IngestBatchReceived,
         EventType::IngestBatchClassified,
         EventType::DecisionScored,
+        EventType::DecisionMoved,
         EventType::ProjectRegistered,
         EventType::ProjectLinked,
         EventType::ProjectUnlinked,
@@ -485,6 +523,7 @@ fn schema_file_stem(event_type: EventType) -> &'static str {
         EventType::IngestBatchClassified => "ingest.batch_classified",
         EventType::DecisionScored => "decision.scored",
         EventType::DecisionMetadataDerived => "decision.metadata_derived",
+        EventType::DecisionMoved => "decision.moved",
         EventType::ProjectRegistered => "project.registered",
         EventType::ProjectLinked => "project.linked",
         EventType::ProjectUnlinked => "project.unlinked",

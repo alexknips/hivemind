@@ -85,6 +85,11 @@ pub enum EventType {
     DecisionScored,
     #[serde(rename = "decision.metadata_derived")]
     DecisionMetadataDerived,
+    /// A decision changed which project it belongs to. Recorded and reversible: a reversal
+    /// is another `decision.moved` with `from`/`to` swapped, never a rewrite of this one
+    /// (approved record shape, item 3; hivemind-s15q.10).
+    #[serde(rename = "decision.moved")]
+    DecisionMoved,
     #[serde(rename = "project.registered")]
     ProjectRegistered,
     #[serde(rename = "project.linked")]
@@ -841,6 +846,21 @@ impl ProjectSource {
     }
 }
 
+/// `decision.moved` (approved record shape, item 3). `from` must equal the decision's
+/// project at the time of the move and `to` must differ — enforced by
+/// `commands::move_decision`, not here; the event schema only shapes the wire format.
+/// Reversal is another `DecisionMovedPayload` with `from`/`to` swapped; nothing here is
+/// ever edited in place.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionMovedPayload {
+    pub decision_id: String,
+    pub from: String,
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectRegisteredPayload {
@@ -890,6 +910,7 @@ pub enum EventPayload {
     IngestBatchClassified(IngestBatchClassifiedPayload),
     DecisionScored(DecisionScoredPayload),
     DecisionMetadataDerived(DecisionMetadataDerivedPayload),
+    DecisionMoved(DecisionMovedPayload),
     ProjectRegistered(ProjectRegisteredPayload),
     ProjectLinked(ProjectLinkPayload),
     ProjectUnlinked(ProjectLinkPayload),
@@ -917,6 +938,7 @@ impl EventPayload {
             Self::IngestBatchClassified(_) => EventType::IngestBatchClassified,
             Self::DecisionScored(_) => EventType::DecisionScored,
             Self::DecisionMetadataDerived(_) => EventType::DecisionMetadataDerived,
+            Self::DecisionMoved(_) => EventType::DecisionMoved,
             Self::ProjectRegistered(_) => EventType::ProjectRegistered,
             Self::ProjectLinked(_) => EventType::ProjectLinked,
             Self::ProjectUnlinked(_) => EventType::ProjectUnlinked,
@@ -944,6 +966,7 @@ impl EventPayload {
             Self::IngestBatchClassified(payload) => serde_json::to_value(payload),
             Self::DecisionScored(payload) => serde_json::to_value(payload),
             Self::DecisionMetadataDerived(payload) => serde_json::to_value(payload),
+            Self::DecisionMoved(payload) => serde_json::to_value(payload),
             Self::ProjectRegistered(payload) => serde_json::to_value(payload),
             Self::ProjectLinked(payload) => serde_json::to_value(payload),
             Self::ProjectUnlinked(payload) => serde_json::to_value(payload),
@@ -1301,6 +1324,14 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty("payload.derivation_model", &payload.derivation_model)?;
             require_non_empty("payload.schema_version", &payload.schema_version)?;
             Ok(EventPayload::DecisionMetadataDerived(payload))
+        }
+        EventType::DecisionMoved => {
+            let payload: DecisionMovedPayload = parse_payload(event)?;
+            require_non_empty("payload.decision_id", &payload.decision_id)?;
+            require_non_empty("payload.from", &payload.from)?;
+            require_non_empty("payload.to", &payload.to)?;
+            require_optional_non_empty("payload.reason", payload.reason.as_deref())?;
+            Ok(EventPayload::DecisionMoved(payload))
         }
         EventType::ProjectRegistered => {
             let payload: ProjectRegisteredPayload = parse_payload(event)?;

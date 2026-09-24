@@ -976,6 +976,7 @@ fn event_type_label(event_type: EventType) -> &'static str {
         EventType::IngestBatchClassified => "ingest.batch_classified",
         EventType::DecisionScored => "decision.scored",
         EventType::DecisionMetadataDerived => "decision.metadata_derived",
+        EventType::DecisionMoved => "decision.moved",
         EventType::ProjectRegistered => "project.registered",
         EventType::ProjectLinked => "project.linked",
         EventType::ProjectUnlinked => "project.unlinked",
@@ -991,6 +992,7 @@ fn change_kind_label(kind: HistoryChangeKind) -> &'static str {
         HistoryChangeKind::NewEvidence => "new_evidence",
         HistoryChangeKind::StalePremise => "stale_premise",
         HistoryChangeKind::Supersession => "supersession",
+        HistoryChangeKind::ProjectMoved => "project_moved",
         HistoryChangeKind::ContextChange => "context_change",
     }
 }

@@ -85,6 +85,11 @@ const FIXTURES: &[(&str, &str, EventType)] = &[
         EventType::NotificationAcknowledged,
     ),
     (
+        include_str!("../../schemas/v0/decision.moved.json"),
+        include_str!("../../tests/fixtures/v0/decision.moved.json"),
+        EventType::DecisionMoved,
+    ),
+    (
         include_str!("../../schemas/v0/project.registered.json"),
         include_str!("../../tests/fixtures/v0/project.registered.json"),
         EventType::ProjectRegistered,

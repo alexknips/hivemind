@@ -765,6 +765,78 @@ fn decision_proposed_with_stated_project_stores_handle_and_source() -> Result<()
 }
 
 #[test]
+fn decision_moved_updates_project_without_clobbering_other_properties() -> Result<()> {
+    // Approved record shape, item 3: `decision.moved` updates the decision's project (and
+    // project_source = moved) and keeps every move readable in history. `upsert_node`
+    // merges by key (see `GraphView::upsert_node`), so title/rationale must survive a move
+    // that only names project/project_source -- verified here against the real merging
+    // `MemoryGraph`, not `RecordingGraph` (which just replaces on every call).
+    use super::memory::MemoryGraph;
+
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:billing-1",
+            "title": "Use per-seat pricing",
+            "rationale": "Simpler to reason about at our scale",
+            "topic_keys": ["pricing"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": [],
+            "project": "billing",
+            "project_source": "stated"
+        }),
+    ))?;
+    ledger.append(event(
+        EventType::DecisionMoved,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:billing-1",
+            "from": "billing",
+            "to": "pricing",
+            "reason": "per-seat pricing decisions live under Pricing"
+        }),
+    ))?;
+
+    let graph = MemoryGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let rows = graph.query(
+        "MATCH (node:`Decision` {id: $id}) RETURN node.id AS id, node.project AS project, node.project_source AS project_source, node.title AS title, node.rationale AS rationale ORDER BY node.id;",
+        &GraphParams::from([(
+            "id".to_owned(),
+            GraphValue::String("decision:billing-1".to_owned()),
+        )]),
+    )?;
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    assert_eq!(
+        row.get("project"),
+        Some(&GraphValue::String("pricing".to_owned())),
+        "the move must update the current project"
+    );
+    assert_eq!(
+        row.get("project_source"),
+        Some(&GraphValue::String("moved".to_owned()))
+    );
+    assert_eq!(
+        row.get("title"),
+        Some(&GraphValue::String("Use per-seat pricing".to_owned())),
+        "a move must not clobber properties it doesn't name"
+    );
+    assert_eq!(
+        row.get("rationale"),
+        Some(&GraphValue::String(
+            "Simpler to reason about at our scale".to_owned()
+        ))
+    );
+    Ok(())
+}
+
+#[test]
 fn decision_proposed_without_project_falls_back_to_personal_address_for_agent_actor() -> Result<()>
 {
     // No "project"/"project_source" in the payload at all -- the shape every event

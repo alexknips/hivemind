@@ -8,9 +8,9 @@ use serde::Serialize;
 use crate::commands::personal_project_handle;
 use crate::error::ProjectorError;
 use crate::events::{
-    self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionProposedPayload,
-    DecisionRequestedPayload, DecisionScoredPayload, Event, EventId, EventPayload,
-    EvidenceRecordedPayload, HypothesisRecordedPayload, IngestBatchClassifiedPayload,
+    self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionMovedPayload,
+    DecisionProposedPayload, DecisionRequestedPayload, DecisionScoredPayload, Event, EventId,
+    EventPayload, EvidenceRecordedPayload, HypothesisRecordedPayload, IngestBatchClassifiedPayload,
     NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
     ProjectAnchorPayload, ProjectLinkKind, ProjectRegisteredPayload, ProjectSource,
     RelationKind as EventRelationKind, TenantId,
@@ -354,6 +354,9 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
         }
         EventPayload::DecisionMetadataDerived(_) => {
             // Derived metadata is stored in the ledger only; graph projection deferred to layer 3
+        }
+        EventPayload::DecisionMoved(payload) => {
+            project_decision_moved(graph, &payload, &origin_properties)?;
         }
         EventPayload::ProjectRegistered(payload) => {
             project_project_registered(graph, &payload, &origin_properties)?
@@ -1474,6 +1477,31 @@ fn project_decision_scored(
         ],
     );
     graph.upsert_node(NodeKind::Decision, &payload.capture_node_id, &props)
+}
+
+/// `decision.moved` updates only `project`/`project_source` (plus the shared origin
+/// properties every mutation carries — see `project_decision_scored` above) on the existing
+/// Decision node (approved record shape, item 3). `upsert_node` merges by key (see
+/// `GraphView::upsert_node`), so every other property the decision already carries — title,
+/// rationale, options, and so on — is untouched. The move fact itself lives in the ledger
+/// and is surfaced in history (`queries::history`); this only keeps the node's current
+/// project in sync with it.
+fn project_decision_moved(
+    graph: &impl GraphView,
+    payload: &DecisionMovedPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let props = props_extend(
+        origin_properties,
+        [
+            ("project", GraphValue::String(payload.to.clone())),
+            (
+                "project_source",
+                GraphValue::String(ProjectSource::Moved.as_str().to_owned()),
+            ),
+        ],
+    );
+    graph.upsert_node(NodeKind::Decision, &payload.decision_id, &props)
 }
 
 fn project_capture(

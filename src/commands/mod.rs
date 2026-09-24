@@ -31,12 +31,12 @@ use uuid::Uuid;
 
 use crate::error::CommandError;
 use crate::events::{
-    CaptureItem, DecisionAcceptedPayload, DecisionProposedPayload, DecisionRejectedPayload,
-    DecisionScoredPayload, DecisionSupersededPayload, Event, EventBuilder, EventId, EventPayload,
-    EventProvenance, EventType, EvidenceRecordedPayload, HypothesisKind, HypothesisRecordedPayload,
-    IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn, ProjectAnchorKind,
-    ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
-    ProjectSource, RelationAddedPayload, RelationKind, TenantId,
+    CaptureItem, DecisionAcceptedPayload, DecisionMovedPayload, DecisionProposedPayload,
+    DecisionRejectedPayload, DecisionScoredPayload, DecisionSupersededPayload, Event, EventBuilder,
+    EventId, EventPayload, EventProvenance, EventType, EvidenceRecordedPayload, HypothesisKind,
+    HypothesisRecordedPayload, IngestBatchClassifiedPayload, IngestBatchReceivedPayload,
+    IngestTurn, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload,
+    ProjectRegisteredPayload, ProjectSource, RelationAddedPayload, RelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::util::{require_non_empty, require_valid_actor_id};
@@ -675,6 +675,87 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 handle: handle.to_owned(),
                 anchor_kind,
                 value: value.to_owned(),
+            }),
+            None,
+            Uuid::new_v4(),
+        )?;
+
+        self.append_event(event)
+    }
+
+    /// Move a decision to a different project (approved record shape, item 3;
+    /// hivemind-s15q.10). Rules, all enforced here:
+    ///
+    /// - the decision exists;
+    /// - `to` is a registered project handle, or the acting actor's own personal address
+    ///   (derived, never typed or registered — see `personal_project_handle`); a personal
+    ///   address that isn't the caller's own is refused the same way an unregistered
+    ///   handle is, so a decision can never be moved into someone else's personal project;
+    /// - `from` equals the decision's current project (its `decision.proposed` project, or
+    ///   the proposer's personal fallback when none was stated, with every later
+    ///   `decision.moved` applied in order) — this is optimistic concurrency in spirit: a
+    ///   caller that names a stale `from` is refused rather than silently moving the
+    ///   decision out from under a project it has already left;
+    /// - `from != to`.
+    ///
+    /// Reversal is calling this again with `from`/`to` swapped — another recorded fact,
+    /// never a rewrite or deletion of this one (forgetting responsibly, AGENTS.md section 1).
+    pub fn move_decision(
+        &self,
+        actor_id: &str,
+        decision_id: &str,
+        from: &str,
+        to: &str,
+        reason: Option<&str>,
+    ) -> Result<EventId> {
+        require_valid_actor_id(actor_id)?;
+        require_non_empty("decision_id", decision_id)?;
+        require_non_empty("from", from)?;
+        require_non_empty("to", to)?;
+        require_optional_non_empty("reason", reason)?;
+
+        if !self.decision_exists(decision_id)? {
+            return Err(
+                CommandError::Invariant(format!("decision does not exist: {decision_id}")).into(),
+            );
+        }
+
+        if same_identifier(from, to) {
+            return Err(CommandError::Validation("from and to must differ".to_owned()).into());
+        }
+
+        if to.starts_with(PERSONAL_PROJECT_HANDLE_PREFIX) {
+            let own_personal = personal_project_handle(actor_id);
+            if !same_identifier(to, &own_personal) {
+                return Err(CommandError::Validation(format!(
+                    "to must be a registered project or the acting actor's own personal project ({own_personal}): {to}"
+                ))
+                .into());
+            }
+        } else if !self.project_exists(to)? {
+            return Err(CommandError::Invariant(format!(
+                "project not registered: {to} -- register it first with `hivemind project register {to}`"
+            ))
+            .into());
+        }
+
+        let current_project = self.current_decision_project(decision_id)?.ok_or_else(|| {
+            CommandError::Invariant(format!("decision has no recorded project: {decision_id}"))
+        })?;
+        if !same_identifier(from, &current_project) {
+            return Err(CommandError::Invariant(format!(
+                "from does not match the decision's current project: expected {current_project}, got {from}"
+            ))
+            .into());
+        }
+
+        let event = self.event_with_uuid(
+            actor_id,
+            EventPayload::DecisionMoved(DecisionMovedPayload {
+                decision_id: decision_id.to_owned(),
+                from: from.to_owned(),
+                to: to.to_owned(),
+                reason: reason.map(ToOwned::to_owned),
             }),
             None,
             Uuid::new_v4(),
@@ -2150,6 +2231,47 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             let has_matching_id = payload_value_matches(event, "decision_id", decision_id);
             event.event_type == EventType::DecisionProposed && has_matching_id
         })
+    }
+
+    /// The project `decision_id` currently resolves to: its `decision.proposed` project
+    /// (or the proposer's personal fallback when none was stated — same rule as
+    /// `projector::project_decision_proposed`), with every later `decision.moved` for this
+    /// decision applied in ledger order (last move wins). `None` only when no
+    /// `decision.proposed` for `decision_id` has been seen; callers check `decision_exists`
+    /// first, so this is a defensive fallback, not an expected path.
+    ///
+    /// Reads raw payload fields (`payload_value_as_str`/`payload_value_matches`) rather than
+    /// a typed `deny_unknown_fields` struct, matching `decision_proposal_snapshot_from_event`
+    /// below: a single stray event elsewhere in the ledger must never fail a whole streaming
+    /// pass just because its shape doesn't match this decision's payload type.
+    fn current_decision_project(&self, decision_id: &str) -> Result<Option<String>> {
+        let mut current: Option<String> = None;
+
+        self.ledger
+            .replay_from_for_tenant(&self.context.tenant_id, 0, &mut |event| {
+                match event.event_type {
+                    EventType::DecisionProposed => {
+                        if payload_value_matches(event, "decision_id", decision_id) {
+                            current = Some(
+                                payload_value_as_str(event, "project")
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| personal_project_handle(&event.actor_id)),
+                            );
+                        }
+                    }
+                    EventType::DecisionMoved
+                        if payload_value_matches(event, "decision_id", decision_id) =>
+                    {
+                        if let Some(to) = payload_value_as_str(event, "to") {
+                            current = Some(to.to_owned());
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })?;
+
+        Ok(current)
     }
 
     /// A premise decision is stale once it has been superseded (as the old side of a

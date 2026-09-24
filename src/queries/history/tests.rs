@@ -677,6 +677,55 @@ fn added_since_filters_by_import_run_id_extracted_from_source_ref() -> Result<()
     Ok(())
 }
 
+#[test]
+fn changed_since_reports_a_moved_decision_as_project_moved() -> Result<()> {
+    // Approved record shape, item 3: `decision.moved` keeps every move readable in
+    // history -- its own kind, not folded into `ContextChange`, and never dropped.
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        1,
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision-a",
+            "title": "Use per-seat pricing",
+            "rationale": "Simpler to reason about at our scale",
+            "topic_keys": ["pricing"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": [],
+            "project": "billing",
+            "project_source": "stated"
+        }),
+    ))?;
+    ledger.append(event(
+        2,
+        EventType::DecisionMoved,
+        "actor:alice",
+        json!({
+            "decision_id": "decision-a",
+            "from": "billing",
+            "to": "pricing",
+            "reason": "per-seat pricing decisions live under Pricing"
+        }),
+    ))?;
+
+    let rows = changed_since_start(&ledger)?;
+    let moved = rows
+        .iter()
+        .find(|row| row.change_kind == HistoryChangeKind::ProjectMoved)
+        .expect("the move is reported");
+    assert_eq!(moved.decision_ids, vec!["decision-a".to_owned()]);
+    assert_eq!(moved.event_origin, 2);
+    assert!(moved
+        .affected_nodes
+        .iter()
+        .any(|node| node.id == "decision-a" && node.kind == NodeKind::Decision));
+
+    Ok(())
+}
+
 // ── a premise going stale is never silent on the decisions that rest on it (hivemind-gwhr.3) ──
 
 use crate::queries::test_fixtures::Scenario;
