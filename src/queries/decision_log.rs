@@ -1,4 +1,8 @@
-//! Pure Markdown projection of the decision log: one file per decision plus an `INDEX.md`.
+//! Pure Markdown projection of the decision log, grouped per project: an `INDEX.md` with one
+//! section per project, and for each project a `projects/<handle>/INDEX.md` plus one file per
+//! decision under `projects/<handle>/decisions/`. Personal projects (derived from the actor,
+//! never registered) live under `projects/personal/<actor>/`. Every decision belongs to exactly
+//! one project, so it is exported exactly once.
 //!
 //! Layer 2: deterministic graph reads composed with a single ledger-offset lookup for
 //! provenance. No LLM, no ranking, no wall clock — every timestamp rendered here comes
@@ -19,12 +23,15 @@
 //! (`src/projector/memory.rs` pattern-matches known query shapes), and reuse also means one
 //! fewer round trip per decision for evidence/decision property lookups.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 
-use crate::commands::normalize_topic_key;
+use crate::commands::{
+    normalize_topic_key, personal_project_handle, PERSONAL_PROJECT_HANDLE_PREFIX,
+};
 use crate::events::EventId;
 use crate::ledger::EventLedger;
 use crate::projector::{GraphRow, GraphView, NodeKind, RelationKind};
@@ -38,6 +45,7 @@ use super::brief::{get_decision_brief, OptionLabel};
 use super::decision::{get_decision, get_hypothesis_statement};
 use super::grounding::{GroundingItem, GroundingKind, GroundingState};
 use super::outcome::OutcomeReason;
+use super::projects::{is_known_project, registered_project_names};
 use super::shared::{
     neighbor_pairs, node_rows, optional_int, optional_string, query_error, Direction,
     MAX_QUERY_RESULTS,
@@ -46,6 +54,10 @@ use super::status::{DecisionStatus, HypothesisStatus};
 
 const MAX_SLUG_LEN: usize = 60;
 const ID8_LEN: usize = 8;
+const PROJECTS_DIR: &str = "projects";
+const PERSONAL_DIR: &str = "personal";
+const DECISIONS_DIR: &str = "decisions";
+const INDEX_FILE: &str = "INDEX.md";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -57,23 +69,57 @@ pub struct DecisionLogRequest {
     pub since: Option<DateTime<Utc>>,
     pub topics: Vec<String>,
     pub statuses: Vec<DecisionStatus>,
+    /// Only this project's decisions: a registered handle or a `personal:` address. A handle
+    /// that resolves to neither yields `DecisionLogOutcome::ProjectNotFound`, never an empty
+    /// export that reads like "that project has no decisions".
+    pub project: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DecisionLogExport {
     pub ledger_offset: EventId,
-    /// Relative path -> file content. Always includes `"INDEX.md"` plus one entry per
-    /// exported decision under `decisions/`.
+    /// Relative path -> file content. Always includes the root `"INDEX.md"`; for each project
+    /// in the export (see [`export_decision_log`]) a `projects/<dir>/INDEX.md` plus one entry
+    /// per exported decision under `projects/<dir>/decisions/`.
     pub files: BTreeMap<String, String>,
 }
 
-/// Compose per-decision facts into a full Markdown export: one file per decision plus an
-/// `INDEX.md`. Pure projection — no filesystem writes; the caller decides where these go.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DecisionLogOutcome {
+    Exported(DecisionLogExport),
+    /// A miss is data, not an error (Alex's rule, 2026-09-20): `project` is neither a
+    /// registered handle nor a personal address. Nothing was exported.
+    ProjectNotFound {
+        project: String,
+    },
+}
+
+/// Compose per-decision facts into a full Markdown export, grouped per project. Pure
+/// projection — no filesystem writes; the caller decides where these go.
+///
+/// The projects in the export are every registered project plus every project a matching
+/// decision belongs to (so a registered project with no decisions still gets its — empty —
+/// record, and a personal project appears as soon as it holds a decision); with
+/// `req.project` set, exactly that one.
 pub fn export_decision_log(
     graph: &impl GraphView,
     ledger: &impl EventLedger,
     req: &DecisionLogRequest,
-) -> Result<DecisionLogExport> {
+) -> Result<DecisionLogOutcome> {
+    let registered = registered_project_names(ledger)?;
+    let requested = match req.project.as_deref().map(str::trim) {
+        Some("") => return Err(query_error("project must not be empty").into()),
+        Some(handle) => Some(handle),
+        None => None,
+    };
+    if let Some(handle) = requested {
+        if !is_known_project(&registered, handle) {
+            return Ok(DecisionLogOutcome::ProjectNotFound {
+                project: handle.to_owned(),
+            });
+        }
+    }
+
     let ledger_offset = ledger.latest_offset()?;
     let last_event_ts = last_event_timestamp(ledger, ledger_offset)?;
 
@@ -92,7 +138,7 @@ pub fn export_decision_log(
     let mut entries = Vec::new();
     for id in decision_rows.keys() {
         let entry = build_entry(graph, id, &decision_rows, &evidence_rows)?;
-        if matches_filters(&entry, req) {
+        if matches_filters(&entry, req, requested) {
             entries.push(entry);
         }
     }
@@ -100,34 +146,74 @@ pub fn export_decision_log(
         (a.occurred_at, a.event_origin, &a.id).cmp(&(b.occurred_at, b.event_origin, &b.id))
     });
 
+    let handles: BTreeSet<&str> = match requested {
+        Some(handle) => BTreeSet::from([handle]),
+        None => registered
+            .keys()
+            .map(String::as_str)
+            .chain(entries.iter().map(|entry| entry.project.as_str()))
+            .collect(),
+    };
+    let projects = assign_projects(&handles, &registered);
+    let mut by_project: BTreeMap<&str, Vec<&DecisionEntry>> = BTreeMap::new();
+    for entry in &entries {
+        by_project
+            .entry(entry.project.as_str())
+            .or_default()
+            .push(entry);
+    }
+
     let filenames = assign_filenames(&entries);
+    let mut paths = BTreeMap::new();
+    for project in &projects {
+        for entry in members_of(&by_project, project) {
+            paths.insert(
+                entry.id.clone(), // ubs:ignore: clone necessary — owned key for the paths map, entry stays borrowed for the render loop below
+                decision_path(project, exported_filename(&filenames, &entry.id)),
+            );
+        }
+    }
 
     let mut files = BTreeMap::new();
-    for entry in &entries {
-        let filename = filenames // ubs:ignore: expect below documents a construction invariant (assign_filenames covers every entry in this same slice), not a real panic risk
-            .get(&entry.id)
-            .expect("filename assigned for every exported entry, populated just above");
-        let mut path = String::with_capacity("decisions/".len() + filename.len());
-        path.push_str("decisions/");
-        path.push_str(filename);
-        files.insert(path, render_decision_file(entry, &filenames, &titles));
+    for project in &projects {
+        let members = members_of(&by_project, project);
+        let decisions_dir = project.decisions_dir();
+        for entry in members {
+            files.insert(
+                decision_path(project, exported_filename(&filenames, &entry.id)),
+                render_decision_file(entry, &paths, &titles, &decisions_dir),
+            );
+        }
+        files.insert(
+            project.index_path(),
+            render_project_index(
+                project,
+                members,
+                req,
+                ledger_offset,
+                last_event_ts,
+                &paths,
+                &titles,
+            ),
+        );
     }
     files.insert(
-        "INDEX.md".to_owned(),
-        render_index(
-            &entries,
+        INDEX_FILE.to_owned(),
+        render_root_index(
+            &projects,
+            &by_project,
             req,
             ledger_offset,
             last_event_ts,
-            &filenames,
+            &paths,
             &titles,
         ),
     );
 
-    Ok(DecisionLogExport {
+    Ok(DecisionLogOutcome::Exported(DecisionLogExport {
         ledger_offset,
         files,
-    })
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +222,8 @@ pub fn export_decision_log(
 
 struct DecisionEntry {
     id: String,
+    /// The project this decision belongs to: a registered handle or a `personal:` address.
+    project: String,
     title: String,
     rationale: String,
     quote: Option<String>,
@@ -193,9 +281,8 @@ fn build_entry(
     let decision = get_decision(graph, id)?
         .data
         .ok_or_else(|| query_error(format!("decision {id} disappeared mid-export")))?;
-    let event_origin = decision_rows
-        .get(id)
-        .and_then(|row| optional_int(row, "event_origin"));
+    let row = decision_rows.get(id);
+    let event_origin = row.and_then(|row| optional_int(row, "event_origin"));
 
     let mut hypotheses = Vec::with_capacity(decision.hypotheses.len());
     for hyp in &decision.hypotheses {
@@ -265,8 +352,23 @@ fn build_entry(
     .data
     .items;
 
+    // A graph projected before decisions carried a project has no property: it reads as the
+    // recorder's personal project, the same rule the projector applies to old events.
+    let project = match row.and_then(|row| optional_string(row, "project")) {
+        Some(project) => project,
+        None => {
+            let proposer = brief.decided_by.proposer_id.as_deref().ok_or_else(|| {
+                query_error(format!(
+                    "decision {id} has neither a project nor a proposer to derive one from"
+                ))
+            })?;
+            personal_project_handle(proposer)
+        }
+    };
+
     Ok(DecisionEntry {
         id: decision.id,
+        project,
         title: decision.title,
         rationale: decision.rationale,
         quote: decision.quote,
@@ -296,7 +398,10 @@ fn build_entry(
     })
 }
 
-fn matches_filters(entry: &DecisionEntry, req: &DecisionLogRequest) -> bool {
+fn matches_filters(entry: &DecisionEntry, req: &DecisionLogRequest, project: Option<&str>) -> bool {
+    if project.is_some_and(|handle| entry.project != handle) {
+        return false;
+    }
     if let Some(since) = req.since {
         match entry.occurred_at {
             Some(ts) if ts >= since => {}
@@ -401,6 +506,164 @@ fn short_id(decision_id: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Projects and paths
+// ---------------------------------------------------------------------------
+
+/// One project's place in the export: where its files go and what its pages are called.
+struct ProjectSlot {
+    handle: String,
+    /// Directory of the project's files, relative to the export root.
+    dir: String,
+    /// Heading of the project's page and of its section in the root index.
+    label: String,
+}
+
+impl ProjectSlot {
+    fn shared(handle: &str, display_name: Option<&str>) -> Self {
+        Self {
+            handle: handle.to_owned(),
+            dir: format!("{PROJECTS_DIR}/{handle}"),
+            label: match display_name {
+                Some(display_name) => format!("{display_name} ({handle})"),
+                None => handle.to_owned(),
+            },
+        }
+    }
+
+    /// `slug` is the address's actor part reduced to path-safe characters; `ambiguous` appends
+    /// a short hash of the full address so the directory cannot collide with another slot's.
+    fn personal(handle: &str, slug: &str, ambiguous: bool) -> Self {
+        let dir_name = if ambiguous {
+            format!("{slug}-{}", short_hash(handle))
+        } else {
+            slug.to_owned()
+        };
+        Self {
+            handle: handle.to_owned(),
+            dir: format!("{PROJECTS_DIR}/{PERSONAL_DIR}/{dir_name}"),
+            label: format!(
+                "Personal project: {}",
+                handle
+                    .strip_prefix(PERSONAL_PROJECT_HANDLE_PREFIX)
+                    .unwrap_or(handle)
+            ),
+        }
+    }
+
+    fn decisions_dir(&self) -> String {
+        format!("{}/{DECISIONS_DIR}", self.dir)
+    }
+
+    fn index_path(&self) -> String {
+        format!("{}/{INDEX_FILE}", self.dir)
+    }
+}
+
+/// Places every project in the export, shared projects first (by handle), then personal
+/// ones. A shared handle (lowercase letters, digits, dashes) is already path-safe and lives
+/// at `projects/<handle>`; a personal address lives at `projects/personal/<actor>`, the
+/// actor part reduced to path-safe characters. Personal addresses whose reduced actor part
+/// coincides — or equals `decisions`, the name a shared project called `personal` uses for
+/// its decision files — each get a short hash of their full address appended, so two
+/// people's personal projects never write over each other.
+fn assign_projects(
+    handles: &BTreeSet<&str>,
+    registered: &BTreeMap<String, Option<String>>,
+) -> Vec<ProjectSlot> {
+    let mut slots = Vec::with_capacity(handles.len());
+    let mut personal: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for &handle in handles {
+        match handle.strip_prefix(PERSONAL_PROJECT_HANDLE_PREFIX) {
+            Some(actor) => personal.entry(path_safe(actor)).or_default().push(handle),
+            None => slots.push(ProjectSlot::shared(
+                handle,
+                registered.get(handle).and_then(Option::as_deref),
+            )),
+        }
+    }
+
+    let mut personal_slots = Vec::new();
+    for (slug, group) in &personal {
+        let ambiguous = group.len() > 1 || slug == DECISIONS_DIR;
+        for &handle in group {
+            personal_slots.push(ProjectSlot::personal(handle, slug, ambiguous));
+        }
+    }
+    personal_slots.sort_by(|a, b| a.handle.cmp(&b.handle));
+    slots.extend(personal_slots);
+    slots
+}
+
+/// Reduces `text` to `[A-Za-z0-9_-]`: `:` in `human:alex`, and the `@` and `.` of an email
+/// actor, become `-`. One safe path segment on every platform, never `.` or `..`.
+fn path_safe(text: &str) -> String {
+    let slug: String = text
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if slug.is_empty() {
+        "unnamed".to_owned()
+    } else {
+        slug
+    }
+}
+
+fn short_hash(text: &str) -> String {
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .take(4)
+        .fold(String::new(), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
+fn members_of<'a>(
+    by_project: &'a BTreeMap<&str, Vec<&'a DecisionEntry>>,
+    project: &ProjectSlot,
+) -> &'a [&'a DecisionEntry] {
+    by_project
+        .get(project.handle.as_str())
+        .map_or(&[], Vec::as_slice)
+}
+
+fn exported_filename<'a>(filenames: &'a BTreeMap<String, String>, decision_id: &str) -> &'a str {
+    filenames // ubs:ignore: expect below documents a construction invariant (assign_filenames covers every entry in this same slice), not a real panic risk
+        .get(decision_id)
+        .expect("filename assigned for every exported entry, populated just above")
+}
+
+fn decision_path(project: &ProjectSlot, filename: &str) -> String {
+    format!("{}/{DECISIONS_DIR}/{filename}", project.dir)
+}
+
+/// Markdown link target from a file in `from_dir` to `to_path`, both relative to the export
+/// root and `/`-separated (`""` is the root). A decision's supersession neighbours may
+/// belong to another project, so links are computed, never assumed to sit next to each other.
+fn relative_link(from_dir: &str, to_path: &str) -> String {
+    let from: Vec<&str> = from_dir
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let to: Vec<&str> = to_path.split('/').collect();
+    let common = from
+        .iter()
+        .zip(&to)
+        .take_while(|(from_part, to_part)| from_part == to_part)
+        .count()
+        .min(to.len().saturating_sub(1));
+    let mut link = "../".repeat(from.len().saturating_sub(common));
+    write_joined(&mut link, to.iter().skip(common), "/");
+    link
+}
+
+// ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
 
@@ -415,33 +678,35 @@ fn status_word(status: DecisionStatus) -> &'static str {
 }
 
 /// Link text/target for a cross-referenced decision: a Markdown link when it is in the
-/// exported set (has a filename), otherwise its title and id as plain text — never a dead
-/// link (design Q1/Q5 in hivemind-xw61's DESIGN).
+/// exported set (has a path), otherwise its title and id as plain text — never a dead
+/// link (design Q1/Q5 in hivemind-xw61's DESIGN). `from_dir` is the directory of the file
+/// the link is written into, so a neighbour in another project still resolves.
 fn render_decision_ref(
     decision_id: &str,
-    filenames: &BTreeMap<String, String>,
+    paths: &BTreeMap<String, String>,
     titles: &BTreeMap<String, String>,
-    link_prefix: &str,
+    from_dir: &str,
 ) -> String {
     let title = titles
         .get(decision_id)
         .cloned()
         .unwrap_or_else(|| decision_id.to_owned());
-    match filenames.get(decision_id) {
-        Some(filename) => format!("[{title}]({link_prefix}{filename})"),
+    match paths.get(decision_id) {
+        Some(path) => format!("[{title}]({})", relative_link(from_dir, path)),
         None => format!("{title} ({decision_id})"),
     }
 }
 
 fn render_decision_file(
     entry: &DecisionEntry,
-    filenames: &BTreeMap<String, String>,
+    paths: &BTreeMap<String, String>,
     titles: &BTreeMap<String, String>,
+    from_dir: &str,
 ) -> String {
     let front_matter = render_front_matter(entry);
     let mut body = String::new();
     let _ = write!(body, "# {}\n\n", entry.title);
-    body.push_str(&render_status_line(entry, filenames, titles));
+    body.push_str(&render_status_line(entry, paths, titles, from_dir));
     body.push_str("\n\n## Context\n\n");
     body.push_str(&render_context_section(entry));
     body.push_str("\n\n## Options considered\n\n");
@@ -449,11 +714,11 @@ fn render_decision_file(
     body.push_str("\n\n## Decision\n\n");
     body.push_str(&render_decision_section(entry));
     body.push_str("\n\n## Rests on\n\n");
-    body.push_str(&render_rests_on_section(entry, filenames, titles));
+    body.push_str(&render_rests_on_section(entry, paths, titles, from_dir));
     body.push_str("\n\n## Evidence\n\n");
     body.push_str(&render_evidence_section(entry));
     body.push_str("\n\n## Outcome\n\n");
-    body.push_str(&render_outcome_section(entry, filenames, titles));
+    body.push_str(&render_outcome_section(entry, paths, titles, from_dir));
     body.push_str("\n\n## Provenance\n\n");
     body.push_str(&render_provenance_section(entry));
     body.push('\n');
@@ -521,15 +786,16 @@ fn render_front_matter(entry: &DecisionEntry) -> String {
 
 fn render_status_line(
     entry: &DecisionEntry,
-    filenames: &BTreeMap<String, String>,
+    paths: &BTreeMap<String, String>,
     titles: &BTreeMap<String, String>,
+    from_dir: &str,
 ) -> String {
     match entry.status {
         DecisionStatus::Superseded if !entry.all_superseded_by.is_empty() => {
             let refs: Vec<String> = entry
                 .all_superseded_by
                 .iter()
-                .map(|id| render_decision_ref(id, filenames, titles, ""))
+                .map(|id| render_decision_ref(id, paths, titles, from_dir))
                 .collect();
             format!("Status: superseded → {}", refs.join(", "))
         }
@@ -615,8 +881,9 @@ fn render_decision_section(entry: &DecisionEntry) -> String {
 /// how many decisions rest on this one.
 fn render_rests_on_section(
     entry: &DecisionEntry,
-    filenames: &BTreeMap<String, String>,
+    paths: &BTreeMap<String, String>,
     titles: &BTreeMap<String, String>,
+    from_dir: &str,
 ) -> String {
     let mut out = String::new();
     if entry.grounding_state == GroundingState::NothingDeclared {
@@ -629,7 +896,7 @@ fn render_rests_on_section(
             let (kind, label) = match item.kind {
                 GroundingKind::Decision => (
                     "Decision",
-                    render_decision_ref(&item.id, filenames, titles, ""),
+                    render_decision_ref(&item.id, paths, titles, from_dir),
                 ),
                 GroundingKind::Evidence => ("Evidence", item.label.clone()), // ubs:ignore: clone necessary — the item is borrowed from the entry
                 GroundingKind::Assumption => ("Assumption", item.label.clone()), // ubs:ignore: clone necessary — the item is borrowed from the entry
@@ -725,8 +992,9 @@ fn render_outcome_reason(reason: &OutcomeReason) -> String {
 
 fn render_outcome_section(
     entry: &DecisionEntry,
-    filenames: &BTreeMap<String, String>,
+    paths: &BTreeMap<String, String>,
     titles: &BTreeMap<String, String>,
+    from_dir: &str,
 ) -> String {
     let mut out = String::new();
     let _ = write!(
@@ -747,7 +1015,7 @@ fn render_outcome_section(
 
     out.push_str("\n\nSupersedes: ");
     match entry.supersedes.as_deref() {
-        Some(id) => out.push_str(&render_decision_ref(id, filenames, titles, "")),
+        Some(id) => out.push_str(&render_decision_ref(id, paths, titles, from_dir)),
         None => out.push_str("None recorded."),
     }
 
@@ -760,7 +1028,7 @@ fn render_outcome_section(
             entry
                 .all_superseded_by
                 .iter()
-                .map(|id| render_decision_ref(id, filenames, titles, "")),
+                .map(|id| render_decision_ref(id, paths, titles, from_dir)),
             ", ",
         );
     }
@@ -848,20 +1116,17 @@ fn render_filters(req: &DecisionLogRequest) -> String {
             .collect::<Vec<_>>()
             .join(",")
     };
-    format!("topic={topics_text}  status={statuses_text}  since={since_text}")
+    let project_text = req.project.as_deref().map_or("any", str::trim);
+    format!(
+        "project={project_text}  topic={topics_text}  status={statuses_text}  since={since_text}"
+    )
 }
 
-fn render_index(
-    entries: &[DecisionEntry],
-    req: &DecisionLogRequest,
+fn render_generated_line(
+    out: &mut String,
     ledger_offset: EventId,
     last_event_ts: Option<DateTime<Utc>>,
-    filenames: &BTreeMap<String, String>,
-    titles: &BTreeMap<String, String>,
-) -> String {
-    let mut out = String::new();
-    out.push_str("# Decision log\n\n");
-
+) {
     let last_event_text = last_event_ts
         .map(|ts| ts.to_rfc3339())
         .unwrap_or_else(|| "none".to_owned());
@@ -869,8 +1134,9 @@ fn render_index(
         out,
         "Generated from HiveMind ledger offset {ledger_offset} (last event {last_event_text}). Do not edit; regenerate with `hivemind export`.\n"
     );
-    let _ = writeln!(out, "Filters: {}\n", render_filters(req));
+}
 
+fn render_counts<'a>(out: &mut String, entries: impl IntoIterator<Item = &'a &'a DecisionEntry>) {
     let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
     for entry in entries {
         *counts.entry(status_word(entry.status)).or_insert(0) += 1;
@@ -884,19 +1150,92 @@ fn render_index(
             .collect();
         let _ = writeln!(out, "Counts: {}\n", parts.join(", "));
     }
+}
 
+/// The root `INDEX.md`: every project in the export as its own section, each with a link to
+/// the project's own record and the table of its decisions. Reading top to bottom is the
+/// whole tenant; `projects/<dir>/INDEX.md` is one project's record on its own.
+fn render_root_index(
+    projects: &[ProjectSlot],
+    by_project: &BTreeMap<&str, Vec<&DecisionEntry>>,
+    req: &DecisionLogRequest,
+    ledger_offset: EventId,
+    last_event_ts: Option<DateTime<Utc>>,
+    paths: &BTreeMap<String, String>,
+    titles: &BTreeMap<String, String>,
+) -> String {
+    let mut out = String::new();
+    out.push_str("# Decision log\n\n");
+    render_generated_line(&mut out, ledger_offset, last_event_ts);
+    let _ = writeln!(out, "Filters: {}\n", render_filters(req));
+    render_counts(&mut out, by_project.values().flatten());
+
+    for project in projects {
+        let members = members_of(by_project, project);
+        if !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        let _ = write!(out, "## {}\n\n", project.label);
+        let _ = writeln!(
+            out,
+            "Project record: [{dir}/{INDEX_FILE}]({dir}/{INDEX_FILE})\n",
+            dir = project.dir
+        );
+        render_counts(&mut out, members);
+        render_index_table(&mut out, members, paths, titles, "");
+    }
+
+    out
+}
+
+/// One project's own `projects/<dir>/INDEX.md`: self-contained (header, filters, counts,
+/// table) so the directory can be read, or copied out, on its own.
+fn render_project_index(
+    project: &ProjectSlot,
+    members: &[&DecisionEntry],
+    req: &DecisionLogRequest,
+    ledger_offset: EventId,
+    last_event_ts: Option<DateTime<Utc>>,
+    paths: &BTreeMap<String, String>,
+    titles: &BTreeMap<String, String>,
+) -> String {
+    let mut out = String::new();
+    let _ = write!(out, "# {}\n\n", project.label);
+    render_generated_line(&mut out, ledger_offset, last_event_ts);
+    let _ = writeln!(
+        out,
+        "Project: `{}` · [All projects]({})\n",
+        project.handle,
+        relative_link(&project.dir, INDEX_FILE)
+    );
+    let _ = writeln!(out, "Filters: {}\n", render_filters(req));
+    render_counts(&mut out, members);
+    render_index_table(&mut out, members, paths, titles, &project.dir);
+    out
+}
+
+/// Newest-first table of `members`, linked relative to `from_dir` (the directory of the
+/// index the table is written into). Writes nothing for an empty project: the `Counts: none.`
+/// line above it already says so.
+fn render_index_table(
+    out: &mut String,
+    members: &[&DecisionEntry],
+    paths: &BTreeMap<String, String>,
+    titles: &BTreeMap<String, String>,
+    from_dir: &str,
+) {
+    if members.is_empty() {
+        return;
+    }
     out.push_str("| Date | Decision | Status | Topics | Decided by |\n");
     out.push_str("|---|---|---|---|---|\n");
 
-    let mut newest_first: Vec<&DecisionEntry> = entries.iter().collect();
+    let mut newest_first: Vec<&&DecisionEntry> = members.iter().collect();
     newest_first.sort_by(|a, b| {
         (b.occurred_at, b.event_origin, &b.id).cmp(&(a.occurred_at, a.event_origin, &a.id))
     });
 
     for entry in newest_first {
-        let filename = filenames // ubs:ignore: expect below documents a construction invariant (assign_filenames covers every entry in this same slice), not a real panic risk
-            .get(&entry.id)
-            .expect("filename assigned for every exported entry, populated just above");
         out.push_str("| ");
         match entry.occurred_at {
             Some(ts) => {
@@ -904,16 +1243,20 @@ fn render_index(
             }
             None => out.push_str("undated"),
         }
-        let _ = write!(out, " | [{}](decisions/{filename}) | ", entry.title);
+        let _ = write!(
+            out,
+            " | {} | ",
+            render_decision_ref(&entry.id, paths, titles, from_dir)
+        );
         match entry.status {
             DecisionStatus::Superseded if !entry.all_superseded_by.is_empty() => {
                 out.push_str("superseded → ");
                 write_joined(
-                    &mut out,
+                    out,
                     entry
                         .all_superseded_by
                         .iter()
-                        .map(|id| render_decision_ref(id, filenames, titles, "decisions/")),
+                        .map(|id| render_decision_ref(id, paths, titles, from_dir)),
                     ", ",
                 );
             }
@@ -921,17 +1264,15 @@ fn render_index(
             other => out.push_str(status_word(other)),
         }
         out.push_str(" | ");
-        write_joined(&mut out, entry.topic_keys.iter(), ", ");
+        write_joined(out, entry.topic_keys.iter(), ", ");
         out.push_str(" | ");
         if entry.accepted_by.is_empty() {
             out.push_str(entry.proposer_id.as_deref().unwrap_or_default());
         } else {
-            write_joined(&mut out, entry.accepted_by.iter(), ", ");
+            write_joined(out, entry.accepted_by.iter(), ", ");
         }
         out.push_str(" |\n");
     }
-
-    out
 }
 
 /// Writes `items` into `out` separated by `sep`, without the intermediate `Vec<String>` and

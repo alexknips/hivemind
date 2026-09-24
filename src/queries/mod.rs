@@ -53,7 +53,9 @@ pub use context::{
     DecisionContext, DecisionContextRequest, ReviewShape,
 };
 pub use decision::{get_decision, get_hypothesis_statement, DecisionView, HypothesisContext};
-pub use decision_log::{export_decision_log, DecisionLogExport, DecisionLogRequest};
+pub use decision_log::{
+    export_decision_log, DecisionLogExport, DecisionLogOutcome, DecisionLogRequest,
+};
 pub use grounding::{
     dependents_count, grounding_of, grounding_of_at, grounding_state_of, rests_on_clause,
     Grounding, GroundingAdded, GroundingItem, GroundingItemState, GroundingKind, GroundingState,

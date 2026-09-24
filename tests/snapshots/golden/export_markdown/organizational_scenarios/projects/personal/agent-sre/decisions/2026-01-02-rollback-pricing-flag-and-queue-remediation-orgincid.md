@@ -53,7 +53,7 @@ Still holds: **no**
 Reasons:
 - Premised on refuted hypothesis org:incident:hypothesis:hotfix-fast-enough
 
-Supersedes: [Attempt hotfix before rollback](2026-01-02-attempt-hotfix-before-rollback-orgincid.md)
+Supersedes: [Attempt hotfix before rollback](../../human-oncall/decisions/2026-01-02-attempt-hotfix-before-rollback-orgincid.md)
 Superseded by: None recorded.
 
 Active blockers: None recorded.

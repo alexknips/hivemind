@@ -302,6 +302,31 @@ pub fn list_projects(
     })
 }
 
+/// Registered (shared) handles with their display names, for readers that need to name
+/// projects without the full `ProjectView` (the decision log's per-project sections).
+pub(super) fn registered_project_names(
+    ledger: &impl EventLedger,
+) -> Result<BTreeMap<String, Option<String>>> {
+    Ok(collect_project_registry(ledger)?
+        .projects
+        .into_iter()
+        .map(|(handle, record)| (handle, record.display_name))
+        .collect())
+}
+
+/// The resolution rule `get_project` applies, for callers that already hold the registered
+/// handles: a personal address resolves whenever it names an actor, any other handle must
+/// be registered.
+pub(super) fn is_known_project(
+    registered: &BTreeMap<String, Option<String>>,
+    handle: &str,
+) -> bool {
+    match handle.strip_prefix(PERSONAL_PROJECT_HANDLE_PREFIX) {
+        Some(actor_part) => !actor_part.trim().is_empty(),
+        None => registered.contains_key(handle),
+    }
+}
+
 /// Resolve one project by handle. A `personal:<actor>` address always resolves to a
 /// derived view (see `personal_project_view`); any other handle is looked up in the
 /// registry and returns `ProjectOutcome::NotFound` -- not an error -- on a miss.

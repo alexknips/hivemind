@@ -6,7 +6,7 @@ use clap::Parser;
 use hivemind::cli::{run, Cli};
 use hivemind::ledger::{EventLedger, InMemoryEventLedger};
 use hivemind::projector::{memory::MemoryGraph, rebuild_graph};
-use hivemind::queries::{export_decision_log, DecisionLogRequest};
+use hivemind::queries::{export_decision_log, DecisionLogOutcome, DecisionLogRequest};
 use serde_json::json;
 
 #[allow(dead_code)]
@@ -16,6 +16,10 @@ mod seed_data;
 #[allow(dead_code)]
 #[path = "support/organizational_scenarios.rs"]
 mod organizational_scenarios;
+
+#[allow(dead_code)]
+#[path = "support/project_layout.rs"]
+mod project_layout;
 
 use seed_data::{seed_to_dir, unique_temp_dir, TestResult};
 
@@ -371,6 +375,7 @@ fn capture_export_outputs() -> TestResult<Vec<ExportOutput>> {
             "organizational_scenarios",
             organizational_scenarios::scenario_events(),
         ),
+        ("project_layout", project_layout::project_layout_events()),
     ] {
         let ledger = InMemoryEventLedger::new();
         for event in events {
@@ -378,7 +383,13 @@ fn capture_export_outputs() -> TestResult<Vec<ExportOutput>> {
         }
         let graph = MemoryGraph::default();
         rebuild_graph(&ledger, &graph)?;
-        let export = export_decision_log(&graph, &ledger, &DecisionLogRequest::default())?;
+        let DecisionLogOutcome::Exported(export) =
+            export_decision_log(&graph, &ledger, &DecisionLogRequest::default())?
+        else {
+            return Err(
+                format!("{label}: an unfiltered export cannot be project_not_found").into(),
+            );
+        };
         outputs.push(ExportOutput {
             label,
             files: export.files,

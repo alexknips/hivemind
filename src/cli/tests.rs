@@ -5691,7 +5691,12 @@ fn export_writes_prunes_and_is_idempotent_body(backend: &TestBackend) -> CliTest
 
     let out_dir = unique_test_dir("export-out");
     let out_str = out_dir.to_str().expect("utf-8 temp path").to_owned();
-    let decisions_dir = out_dir.join("decisions");
+    // Neither decision states a project, so both land in alice's personal project.
+    let decisions_dir = out_dir
+        .join("projects")
+        .join("personal")
+        .join("actor-alice")
+        .join("decisions");
 
     let first_output = run(&Cli::parse_from(cli_args(
         backend,
@@ -5701,9 +5706,14 @@ fn export_writes_prunes_and_is_idempotent_body(backend: &TestBackend) -> CliTest
     )))?;
     let first_report: serde_json::Value = serde_json::from_str(&first_output)?;
     ensure_eq(
+        first_report["outcome"].as_str(),
+        Some("exported"),
+        "a written export reports outcome=exported",
+    )?;
+    ensure_eq(
         first_report["files_written"].as_u64(),
-        Some(3),
-        "first export writes INDEX.md plus both decision files",
+        Some(4),
+        "first export writes the root INDEX.md, the project's INDEX.md and both decision files",
     )?;
     ensure_eq(
         first_report["files_removed"].as_u64(),
@@ -5713,7 +5723,7 @@ fn export_writes_prunes_and_is_idempotent_body(backend: &TestBackend) -> CliTest
     ensure_eq(
         read_dir_files(&decisions_dir)?.len(),
         2,
-        "both decisions land in decisions/ after the first export",
+        "both decisions land in the personal project's decisions/ after the first export",
     )?;
 
     // Stray files the exporter must never touch: a non-.md file inside
@@ -5757,8 +5767,8 @@ fn export_writes_prunes_and_is_idempotent_body(backend: &TestBackend) -> CliTest
     let third_report: serde_json::Value = serde_json::from_str(&third_output)?;
     ensure_eq(
         third_report["files_written"].as_u64(),
-        Some(2),
-        "narrower export writes INDEX.md plus the one remaining decision file",
+        Some(3),
+        "narrower export writes both INDEX.md files plus the one remaining decision file",
     )?;
     ensure_eq(
         third_report["files_removed"].as_u64(),
@@ -5807,6 +5817,200 @@ fn export_writes_prunes_and_is_idempotent_postgres() -> CliTestResult {
         return Ok(());
     };
     export_writes_prunes_and_is_idempotent_body(&backend)
+}
+
+fn export_per_project_body(backend: &TestBackend) -> CliTestResult {
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "project",
+            "register",
+            "billing",
+            "--display-name",
+            "Billing",
+        ],
+    )))?;
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:alice",
+            "emit",
+            "decision.proposed",
+            "--title",
+            "Adopt Postgres session store",
+            "--rationale",
+            "Durable sessions across restarts",
+            "--topic-keys",
+            "auth",
+            "--options",
+            "postgres",
+        ],
+    )))?;
+
+    let out_dir = unique_test_dir("export-per-project");
+    let out_str = out_dir.to_str().expect("utf-8 temp path").to_owned();
+    let personal_dir = out_dir
+        .join("projects")
+        .join("personal")
+        .join("actor-alice");
+    let billing_dir = out_dir.join("projects").join("billing");
+    let export = |extra: &[&str]| -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut rest = vec![
+            "--json",
+            "export",
+            "--format",
+            "markdown",
+            "--out",
+            out_str.as_str(),
+        ];
+        rest.extend_from_slice(extra);
+        Ok(serde_json::from_str(&run(&Cli::parse_from(cli_args(
+            backend, &rest,
+        )))?)?)
+    };
+
+    // Full export: the registered-but-empty project and alice's personal project each get
+    // their own record, and the root index has one section per project.
+    let full = export(&[])?;
+    ensure_eq(
+        full["files_written"].as_u64(),
+        Some(4),
+        "root INDEX.md, billing's INDEX.md, alice's INDEX.md and her decision",
+    )?;
+    ensure(
+        billing_dir.join("INDEX.md").is_file(),
+        "a registered project with no decisions still gets its record",
+    )?;
+    ensure_eq(
+        read_dir_files(&personal_dir.join("decisions"))?.len(),
+        1,
+        "the decision lands under the proposer's personal project",
+    )?;
+    let root_index = std::fs::read_to_string(out_dir.join("INDEX.md"))?;
+    ensure(
+        root_index.contains("## Billing (billing)")
+            && root_index.contains("## Personal project: actor:alice"),
+        "the root index has a section per project",
+    )?;
+
+    // What the export must leave alone, and what it now owns beyond `projects/`: the
+    // layout before per-project grouping wrote `decisions/*.md` at the root.
+    std::fs::write(billing_dir.join("notes.txt"), b"scratch")?;
+    std::fs::write(out_dir.join("README.md"), b"not managed by export")?;
+    std::fs::create_dir_all(out_dir.join("decisions"))?;
+    std::fs::write(
+        out_dir.join("decisions").join("old.md"),
+        b"stale flat layout",
+    )?;
+
+    let billing_only = export(&["--project", "billing"])?;
+    ensure_eq(
+        billing_only["files_written"].as_u64(),
+        Some(2),
+        "--project billing writes the root INDEX.md and billing's INDEX.md only",
+    )?;
+    ensure_eq(
+        billing_only["files_removed"].as_u64(),
+        Some(3),
+        "alice's project record and decision, and the stale flat-layout file, are pruned",
+    )?;
+    ensure(
+        !out_dir.join("projects").join("personal").exists(),
+        "pruning removes the directories it empties",
+    )?;
+    ensure(
+        !out_dir.join("decisions").exists(),
+        "the emptied legacy decisions/ directory goes too",
+    )?;
+    ensure_eq(
+        std::fs::read(billing_dir.join("notes.txt"))?,
+        b"scratch".to_vec(),
+        "a non-.md file inside a project directory is untouched",
+    )?;
+    ensure_eq(
+        std::fs::read(out_dir.join("README.md"))?,
+        b"not managed by export".to_vec(),
+        "a file outside the export's trees is untouched",
+    )?;
+
+    let personal_only = export(&["--project", "personal:actor:alice"])?;
+    ensure_eq(
+        personal_only["files_written"].as_u64(),
+        Some(3),
+        "a personal address resolves without being registered",
+    )?;
+    ensure_eq(
+        personal_only["files_removed"].as_u64(),
+        Some(1),
+        "billing's INDEX.md is pruned; its notes.txt keeps the directory",
+    )?;
+    ensure(
+        !billing_dir.join("INDEX.md").exists() && billing_dir.join("notes.txt").is_file(),
+        "only billing's managed file went",
+    )?;
+
+    // A typo is a not_found envelope, never an empty export, and writes nothing.
+    let missing_out = unique_test_dir("export-not-found");
+    let missing_str = missing_out.to_str().expect("utf-8 temp path").to_owned();
+    let json = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--json",
+            "export",
+            "--format",
+            "markdown",
+            "--out",
+            &missing_str,
+            "--project",
+            "billng",
+        ],
+    )))?;
+    ensure_eq(
+        serde_json::from_str::<serde_json::Value>(&json)?,
+        serde_json::json!({"outcome": "not_found", "project": "billng"}),
+        "an unknown handle is a not_found envelope",
+    )?;
+    let text = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "export",
+            "--format",
+            "markdown",
+            "--out",
+            &missing_str,
+            "--project",
+            "billng",
+        ],
+    )))?;
+    ensure_eq(
+        text.as_str(),
+        "outcome=not_found project=billng",
+        "text form of the not_found envelope",
+    )?;
+    ensure(
+        !missing_out.exists(),
+        "an unknown project must not create the output directory",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&out_dir);
+    Ok(())
+}
+
+#[test]
+fn export_groups_per_project_and_filters_by_project() -> CliTestResult {
+    export_per_project_body(&TestBackend::sqlite("export-per-project"))
+}
+
+#[test]
+fn export_groups_per_project_and_filters_by_project_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("export-per-project-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    export_per_project_body(&backend)
 }
 
 #[test]

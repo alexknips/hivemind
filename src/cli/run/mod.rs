@@ -40,11 +40,11 @@ use crate::queries::{
     get_supersession_chain, list_projects, misfiled_next_cursor, resolve_decision_by_description,
     scan_decision_quality, scan_misfiled_decisions, scorer_next_cursor, search_decisions,
     search_decisions_any, ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest,
-    ChangedSinceRequest, DecisionBlockerFilters, DecisionLogExport, DecisionLogRequest,
-    DecisionStatus, DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
-    HistoryFilterRequest, MisfiledScanRequest, NeighborhoodRequest, ProjectListRequest,
-    ProjectOutcome, QualityTier, QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest,
-    RecentActivityRequest, RecentDecisionEntry, RecentDecisionFilterRequest,
+    ChangedSinceRequest, DecisionBlockerFilters, DecisionLogExport, DecisionLogOutcome,
+    DecisionLogRequest, DecisionStatus, DecisionsAddedSinceFilterRequest,
+    DecisionsAddedSinceRequest, HistoryFilterRequest, MisfiledScanRequest, NeighborhoodRequest,
+    ProjectListRequest, ProjectOutcome, QualityTier, QueryContext, ReadOnlyExportQuery,
+    ReadOnlyExportRequest, RecentActivityRequest, RecentDecisionEntry, RecentDecisionFilterRequest,
     RecentDecisionsRequest, ResolveOutcome, ResolvedCandidate, ScanQualityRequest, ScorerConfig,
     ScorerReason, SearchDecisionRequest, SituationalRequest, SupersessionSpeed,
 };
@@ -3477,7 +3477,9 @@ fn format_reason(reason: &ScorerReason) -> String {
 // export subcommand
 // ---------------------------------------------------------------------------
 
-const EXPORT_DECISIONS_DIR: &str = "decisions";
+/// Directories the export owns besides the root `INDEX.md`: `projects/` today, and
+/// `decisions/`, where the layout before decisions were grouped per project wrote its files.
+const EXPORT_OWNED_DIRS: [&str; 2] = ["projects", "decisions"];
 
 fn run_export(cli: &Cli, args: &ExportArgs) -> Result<String> {
     // Fails before any write when --out is a plain file, not a directory.
@@ -3503,12 +3505,21 @@ fn run_export(cli: &Cli, args: &ExportArgs) -> Result<String> {
             .copied()
             .map(QueryDecisionStatus::as_decision_status)
             .collect(),
+        project: args.project.clone(),
     };
-    let export = export_decision_log(&graph, &ledger, &request)?;
+    // The export replays this tenant's project registry and stamps its ledger offset, so it
+    // reads through the tenant-scoped ledger like `project list` does, not the raw one.
+    let scoped_ledger = TenantScopedLedger::new(&ledger, tenant_id);
+    let export = match export_decision_log(&graph, &scoped_ledger, &request)? {
+        DecisionLogOutcome::Exported(export) => export,
+        DecisionLogOutcome::ProjectNotFound { project } => {
+            return format_export_output(cli.json, &ExportReport::NotFound { project });
+        }
+    };
 
     let summary = write_export_tree(&args.out, &export)?;
 
-    let report = ExportReport {
+    let report = ExportReport::Exported {
         out_dir: args.out.display().to_string(),
         ledger_offset: export.ledger_offset,
         files_written: export.files.len(),
@@ -3785,63 +3796,36 @@ struct ExportWriteSummary {
 
 /// The only filesystem I/O in the export path. Writes every file in
 /// `export.files` (relative path -> content) under `out_dir`, creating
-/// `out_dir` and `out_dir/decisions/` as needed. The export owns
-/// `out_dir/decisions/*.md` and `out_dir/INDEX.md`: any `.md` file already
-/// in `decisions/` that this run did not produce is removed so a narrower
-/// filter, or a compacted ledger, cannot leave stale files behind. Nothing
-/// else under `out_dir` — including non-`.md` files in `decisions/` and any
-/// file outside it — is touched.
+/// directories as needed. The export owns `out_dir/INDEX.md` and every `.md`
+/// file under `out_dir/projects/` — plus any left in `out_dir/decisions/` by
+/// the layout before decisions were grouped per project. Any such file this
+/// run did not produce is removed, so a narrower filter, a `--project` scope,
+/// or a compacted ledger cannot leave stale files behind, and directories
+/// the pruning empties go with them. Nothing else under
+/// `out_dir` is touched: non-`.md` files anywhere in those trees, and every
+/// file outside them.
 fn write_export_tree(out_dir: &Path, export: &DecisionLogExport) -> Result<ExportWriteSummary> {
-    let decisions_dir = out_dir.join(EXPORT_DECISIONS_DIR);
-    std::fs::create_dir_all(&decisions_dir).map_err(|error| {
-        CliError::InvalidInput(format!(
-            "cannot create export output directory {}: {error}",
-            decisions_dir.display()
-        ))
-    })?;
-
-    let produced: BTreeSet<&str> = export
+    let produced: BTreeSet<PathBuf> = export
         .files
         .keys()
-        .filter_map(|path| path.strip_prefix("decisions/"))
+        .map(|rel_path| out_dir.join(rel_path)) // ubs:ignore: rel_path keys come from decision_log::export_decision_log -- "INDEX.md" or "projects/..." built from handles restricted to [a-z0-9-], personal actor parts reduced to [A-Za-z0-9_-], and slug/id restricted to [a-z0-9-]/[A-Za-z0-9] (normalize_topic_key, short_id), so the join cannot leave out_dir
         .collect();
 
     let mut removed = 0usize;
-    let entries = std::fs::read_dir(&decisions_dir).map_err(|error| {
-        CliError::InvalidInput(format!(
-            "cannot list export decisions directory {}: {error}",
-            decisions_dir.display()
-        ))
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            CliError::InvalidInput(format!(
-                "cannot read export decisions directory {}: {error}",
-                decisions_dir.display()
-            ))
-        })?;
-        let is_file = entry
-            .file_type()
-            .map(|kind| kind.is_file())
-            .unwrap_or(false); // ubs:ignore: unwrap_or — an unreadable file type is treated as "not ours to prune", not fatal
-        let file_name = entry.file_name();
-        let Some(file_name) = file_name.to_str() else {
-            continue;
-        };
-        if !is_file || !file_name.ends_with(".md") || produced.contains(file_name) {
-            continue;
-        }
-        std::fs::remove_file(entry.path()).map_err(|error| {
-            CliError::InvalidInput(format!(
-                "cannot remove stale export file {}: {error}",
-                entry.path().display()
-            ))
-        })?;
-        removed += 1;
+    for owned in EXPORT_OWNED_DIRS {
+        removed += prune_stale_markdown(&out_dir.join(owned), &produced)?;
     }
 
     for (rel_path, content) in &export.files {
-        let full_path = out_dir.join(rel_path); // ubs:ignore: rel_path keys come from decision_log::export_decision_log -- "INDEX.md" or "decisions/<date>-<slug>-<id>.md" with slug/id restricted to [a-z0-9-]/[A-Za-z0-9] (normalize_topic_key, short_id), so the join cannot leave out_dir
+        let full_path = out_dir.join(rel_path); // ubs:ignore: same restricted rel_path keys as above, so the join cannot leave out_dir
+        if let Some(parent) = full_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                CliError::InvalidInput(format!(
+                    "cannot create export output directory {}: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
         std::fs::write(&full_path, content).map_err(|error| {
             CliError::InvalidInput(format!(
                 "cannot write export file {}: {error}",
@@ -3851,4 +3835,61 @@ fn write_export_tree(out_dir: &Path, export: &DecisionLogExport) -> Result<Expor
     }
 
     Ok(ExportWriteSummary { removed })
+}
+
+/// Removes every `.md` file under `dir` that this run did not produce, then `dir` itself
+/// and any directory below it that ends up empty (writing the new files recreates what they
+/// need). Symlinks and non-`.md` files are left alone and keep their directory alive; a
+/// missing `dir` has nothing to prune. Returns the number of files removed.
+fn prune_stale_markdown(dir: &Path, produced: &BTreeSet<PathBuf>) -> Result<usize> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(CliError::InvalidInput(format!(
+                "cannot list export directory {}: {error}",
+                dir.display()
+            ))
+            .into())
+        }
+    };
+
+    let mut removed = 0usize;
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            CliError::InvalidInput(format!(
+                "cannot read export directory {}: {error}",
+                dir.display()
+            ))
+        })?;
+        let path = entry.path();
+        // `DirEntry::file_type` does not follow symlinks, so a link is neither file nor dir.
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            removed += prune_stale_markdown(&path, produced)?;
+        } else if kind.is_file()
+            && path.extension().is_some_and(|ext| ext == "md")
+            && !produced.contains(&path)
+        {
+            std::fs::remove_file(&path).map_err(|error| {
+                CliError::InvalidInput(format!(
+                    "cannot remove stale export file {}: {error}",
+                    path.display()
+                ))
+            })?;
+            removed += 1;
+        }
+    }
+
+    if std::fs::read_dir(dir).is_ok_and(|mut rest| rest.next().is_none()) {
+        std::fs::remove_dir(dir).map_err(|error| {
+            CliError::InvalidInput(format!(
+                "cannot remove emptied export directory {}: {error}",
+                dir.display()
+            ))
+        })?;
+    }
+    Ok(removed)
 }

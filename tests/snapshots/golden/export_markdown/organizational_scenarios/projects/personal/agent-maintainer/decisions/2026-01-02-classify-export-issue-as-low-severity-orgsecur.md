@@ -14,7 +14,7 @@ superseded_by: "org:security:decision:severity-critical"
 
 # Classify export issue as low severity
 
-Status: superseded → [Escalate export issue to critical severity](2026-01-02-escalate-export-issue-to-critical-severity-orgsecur.md)
+Status: superseded → [Escalate export issue to critical severity](../../human-security/decisions/2026-01-02-escalate-export-issue-to-critical-severity-orgsecur.md)
 
 ## Context
 
@@ -51,7 +51,7 @@ Reasons:
 - Premised on refuted hypothesis org:security:hypothesis:auth-required
 
 Supersedes: None recorded.
-Superseded by: [Escalate export issue to critical severity](2026-01-02-escalate-export-issue-to-critical-severity-orgsecur.md)
+Superseded by: [Escalate export issue to critical severity](../../human-security/decisions/2026-01-02-escalate-export-issue-to-critical-severity-orgsecur.md)
 
 Active blockers: None recorded.
 

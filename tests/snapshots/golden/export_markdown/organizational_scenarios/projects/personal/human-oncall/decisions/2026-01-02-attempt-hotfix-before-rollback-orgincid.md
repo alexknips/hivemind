@@ -14,7 +14,7 @@ superseded_by: "org:incident:decision:rollback"
 
 # Attempt hotfix before rollback
 
-Status: superseded → [Rollback pricing flag and queue remediation](2026-01-02-rollback-pricing-flag-and-queue-remediation-orgincid.md)
+Status: superseded → [Rollback pricing flag and queue remediation](../../agent-sre/decisions/2026-01-02-rollback-pricing-flag-and-queue-remediation-orgincid.md)
 
 ## Context
 
@@ -54,7 +54,7 @@ Reasons:
 - Contested
 
 Supersedes: None recorded.
-Superseded by: [Rollback pricing flag and queue remediation](2026-01-02-rollback-pricing-flag-and-queue-remediation-orgincid.md)
+Superseded by: [Rollback pricing flag and queue remediation](../../agent-sre/decisions/2026-01-02-rollback-pricing-flag-and-queue-remediation-orgincid.md)
 
 Active blockers: None recorded.
 

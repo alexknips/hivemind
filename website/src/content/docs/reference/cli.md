@@ -614,21 +614,44 @@ Export the current projected graph as DOT (Graphviz) or JSON.
 
 ```
 hivemind export --format markdown --out <dir>
+  [--project <handle>]
   [--since <RFC3339>]
   [--topic <key,key,...>]
   [--status <status,status,...>]
 ```
 
-Renders the decision log as a tree of Markdown files under `--out`: one file
-per matching decision under `decisions/`, plus an `INDEX.md` summarizing all
-of them newest-first. `--format` accepts only `markdown` today. `--since`,
-`--topic`, and `--status` narrow which decisions are included and are ANDed
-together.
+Renders the decision log as a tree of Markdown files under `--out`, grouped per
+project. Every decision belongs to exactly one project, so it is written exactly
+once:
 
-`--out` is created if missing. The export **owns** `<out>/decisions/*.md`
-and `<out>/INDEX.md`: any `.md` file already in `decisions/` that this run
-did not produce is removed, so a narrower filter or a compacted ledger never
-leaves stale files behind. Nothing else under `--out` is touched. `--out`
+- `INDEX.md` — one section per project (a link to the project's own record and
+  the table of its decisions, newest-first), so reading it top to bottom is the
+  whole record.
+- `projects/<handle>/INDEX.md` — one project's record on its own, and
+  `projects/<handle>/decisions/*.md` — one file per matching decision.
+- `projects/personal/<actor>/` — the same, for a personal project (derived from
+  the recorder, never registered). The actor part is reduced to path-safe
+  characters; two personal addresses that reduce to the same name each get a
+  short hash of their full address appended, so they never share a directory.
+
+Every registered project has a record, including one with no decisions yet
+(`Counts: none.`); a personal project appears once it holds a decision. A
+supersession between projects links across them.
+
+`--project <handle>` writes only that project's files (a registered handle, or
+a `personal:<actor>` address). An unknown handle writes nothing and reports
+`outcome=not_found` — a successful envelope, never an empty tree that reads like
+"that project has no decisions". `--format` accepts only `markdown` today.
+`--since`, `--topic`, and `--status` narrow which decisions are included and are
+ANDed together with `--project`.
+
+`--out` is created if missing. The export **owns** `<out>/INDEX.md` and every
+`.md` file under `<out>/projects/` (plus any left in `<out>/decisions/` by the
+flat layout used before decisions were grouped per project): any such file this
+run did not produce is removed, and directories that empties go with it, so a
+narrower filter or a compacted ledger never leaves stale files behind. A
+`--project` run therefore leaves only that project under `projects/`, so give
+each project's record its own `--out`. Nothing else under `--out` is touched. `--out`
 pointing at an existing file fails before any write.
 
 Every byte is derived from the graph (ledger timestamps, immutable ids and
@@ -638,7 +661,9 @@ consumer is a scheduled CLI run that commits the tree to a repo, which has
 no use for a directory tree returned as one JSON payload.
 
 Prints a one-line summary (`out_dir=... ledger_offset=... files_written=...
-files_removed=...`) or, with `--json`, the same fields as a JSON object.
+files_removed=...`) or, with `--json`, the same fields as a JSON object tagged
+`"outcome": "exported"`. An unknown `--project` prints
+`outcome=not_found project=<handle>` (JSON: `{"outcome":"not_found","project":"<handle>"}`).
 
 ### `import documents`
 

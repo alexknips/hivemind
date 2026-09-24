@@ -14,7 +14,7 @@ superseded_by: "org:remote-db:decision:service-owned-writes"
 
 # Keep prototype storage embedded
 
-Status: superseded → [Move writes behind a shared remote service](2026-01-02-move-writes-behind-a-shared-remote-service-orgremot.md)
+Status: superseded → [Move writes behind a shared remote service](../../human-architect/decisions/2026-01-02-move-writes-behind-a-shared-remote-service-orgremot.md)
 
 ## Context
 
@@ -51,7 +51,7 @@ Reasons:
 - Premised on refuted hypothesis org:remote-db:hypothesis:embedded-sufficient
 
 Supersedes: None recorded.
-Superseded by: [Move writes behind a shared remote service](2026-01-02-move-writes-behind-a-shared-remote-service-orgremot.md)
+Superseded by: [Move writes behind a shared remote service](../../human-architect/decisions/2026-01-02-move-writes-behind-a-shared-remote-service-orgremot.md)
 
 Active blockers: None recorded.
 

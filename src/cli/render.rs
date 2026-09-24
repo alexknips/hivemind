@@ -1150,15 +1150,21 @@ pub(crate) fn format_prepare_documents_output(
 
 pub(crate) fn format_export_output(as_json: bool, report: &ExportReport) -> Result<String> {
     if as_json {
-        serde_json::to_string(report).map_err(|error| {
+        return serde_json::to_string(report).map_err(|error| {
             CliError::InvalidInput(format!("json serialization failed: {error}")).into()
-        })
-    } else {
-        Ok(format!(
-            "out_dir={} ledger_offset={} files_written={} files_removed={}",
-            report.out_dir, report.ledger_offset, report.files_written, report.files_removed
-        ))
+        });
     }
+    Ok(match report {
+        ExportReport::Exported {
+            out_dir,
+            ledger_offset,
+            files_written,
+            files_removed,
+        } => format!(
+            "out_dir={out_dir} ledger_offset={ledger_offset} files_written={files_written} files_removed={files_removed}"
+        ),
+        ExportReport::NotFound { project } => format!("outcome=not_found project={project}"),
+    })
 }
 
 pub fn exit_code_for_error(error: &HivemindError) -> CliExit {
@@ -1670,12 +1676,20 @@ pub(crate) fn render_project_outcome_summary(outcome: &ProjectOutcome) -> String
     }
 }
 
+/// A miss is data (Alex's rule, 2026-09-20): `--project` naming an unknown handle is a
+/// successful `not_found` envelope that wrote nothing, like `project show`.
 #[derive(Debug, Serialize)]
-pub(crate) struct ExportReport {
-    pub(crate) out_dir: String,
-    pub(crate) ledger_offset: EventId,
-    pub(crate) files_written: usize,
-    pub(crate) files_removed: usize,
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub(crate) enum ExportReport {
+    Exported {
+        out_dir: String,
+        ledger_offset: EventId,
+        files_written: usize,
+        files_removed: usize,
+    },
+    NotFound {
+        project: String,
+    },
 }
 
 #[derive(Debug, Serialize)]

@@ -50,7 +50,7 @@ Shared state and security review both require service ownership.
 Still holds: **yes**
 Reasons: None recorded.
 
-Supersedes: [Keep prototype storage embedded](2026-01-02-keep-prototype-storage-embedded-orgremot.md)
+Supersedes: [Keep prototype storage embedded](../../agent-coding/decisions/2026-01-02-keep-prototype-storage-embedded-orgremot.md)
 Superseded by: None recorded.
 
 Active blockers: None recorded.

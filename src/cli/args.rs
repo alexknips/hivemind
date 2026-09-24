@@ -134,9 +134,11 @@ pub enum Command {
     /// Pass --dry-run to preview what would be filed without calling Linear.
     #[command(name = "quality-scan")]
     QualityScan(QualityScanArgs),
-    /// Export the decision log as a tree of Markdown files: one file per
-    /// decision plus an INDEX.md. Writes to --out, which the export owns —
-    /// stale decision files from a prior run are pruned. Not a `query`
+    /// Export the decision log as a tree of Markdown files grouped per
+    /// project: an INDEX.md with one section per project, and per project a
+    /// projects/<handle>/INDEX.md plus one file per decision (personal
+    /// projects under projects/personal/<actor>/). Writes to --out, which the
+    /// export owns — stale files from a prior run are pruned. Not a `query`
     /// subcommand: query subcommands print one envelope, this one writes a
     /// directory tree.
     Export(ExportArgs),
@@ -393,10 +395,17 @@ pub struct ExportArgs {
     pub format: ExportFormat,
 
     /// Directory to write the export into. Created if missing. The export
-    /// owns `<out>/decisions/*.md` and `<out>/INDEX.md`; nothing else under
-    /// `<out>` is touched.
+    /// owns `<out>/INDEX.md` and every `.md` file under `<out>/projects/`
+    /// (plus any left in `<out>/decisions/` by the layout before decisions
+    /// were grouped per project); nothing else under `<out>` is touched.
     #[arg(long)]
     pub out: PathBuf,
+
+    /// Only export this project's decisions: a registered handle, or a
+    /// `personal:<actor>` address. An unknown handle writes nothing and
+    /// reports `outcome=not_found`.
+    #[arg(long)]
+    pub project: Option<String>,
 
     /// Only include decisions with a ledger timestamp at or after this
     /// RFC3339 instant.

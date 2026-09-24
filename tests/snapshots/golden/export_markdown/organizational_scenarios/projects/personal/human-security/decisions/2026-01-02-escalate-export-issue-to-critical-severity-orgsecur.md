@@ -51,7 +51,7 @@ Still holds: **no**
 Reasons:
 - Premised on refuted hypothesis org:security:hypothesis:auth-required
 
-Supersedes: [Classify export issue as low severity](2026-01-02-classify-export-issue-as-low-severity-orgsecur.md)
+Supersedes: [Classify export issue as low severity](../../agent-maintainer/decisions/2026-01-02-classify-export-issue-as-low-severity-orgsecur.md)
 Superseded by: None recorded.
 
 Active blockers: None recorded.
