@@ -98,7 +98,9 @@ pub use status::{
     derive_decision_status, derive_hypothesis_status, DecisionStatus, HypothesisStatus,
 };
 pub use supersession::{get_supersession_chain, SupersessionChain};
-pub use terms::{overlap_score, overlapping_terms, path_terms, text_terms};
+pub use terms::{
+    content_query, overlap_score, overlapping_terms, path_terms, text_terms, ContentQuery,
+};
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct QueryResponse<T> {

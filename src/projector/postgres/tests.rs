@@ -537,6 +537,23 @@ fn resolve_decision_by_description_matches_memory() -> Result<()> {
             )));
         }
 
+        // A word no decision contains ("finally") leaves only close candidates, best first,
+        // each listing what it lacks -- the same on both backends, never Resolved. decision:2
+        // trails decision:1: it lacks "slice" too and matches "1" only via its supersedes id.
+        let close = "why did we finally use Kuzu for slice 1";
+        let memory_close = resolve_decision_by_description(&memory, close, None)?.data;
+        let pg_close = resolve_decision_by_description(pg, close, None)?.data;
+        if memory_close != pg_close
+            || !matches!(&memory_close, ResolveOutcome::Ambiguous { candidates }
+                if candidates.first().is_some_and(|best| best.decision_id == "decision:1"
+                    && best.missing_terms == ["finally"])
+                    && candidates.iter().all(|candidate| !candidate.missing_terms.is_empty()))
+        {
+            return Err(test_error(format!(
+                "close-candidate resolution mismatch: memory={memory_close:?} pg={pg_close:?}"
+            )));
+        }
+
         // "Kuzu" alone matches both decisions at the same rank tier: both backends must agree
         // it is Ambiguous, in the same candidate order (rank asc, event_origin desc, id asc).
         let memory_ambiguous = resolve_decision_by_description(&memory, "Kuzu", None)?.data;
@@ -1071,6 +1088,20 @@ fn get_decision_neighborhood_matches_memory() -> Result<()> {
 // tests/search_ranking_parity.rs's job).
 #[test]
 fn recall_decisions_returns_same_decision_set() -> Result<()> {
+    assert_recall_parity("recall-parity", None)
+}
+
+// The documented question form: "what did we decide about X" drops the question words before
+// searching, on SQLite (FTS) and Postgres (portable matcher) alike (hivemind-5gwg).
+#[test]
+fn recall_question_form_returns_same_decision_set() -> Result<()> {
+    assert_recall_parity(
+        "recall-question-parity",
+        Some("what did we decide about Kuzu"),
+    )
+}
+
+fn assert_recall_parity(prefix: &str, question: Option<&str>) -> Result<()> {
     let Some(database_url) = std::env::var(TEST_DATABASE_URL_ENV)
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -1080,14 +1111,14 @@ fn recall_decisions_returns_same_decision_set() -> Result<()> {
     };
 
     let memory_graph = MemoryGraph::default();
-    let sqlite_dir = temp_hivemind_dir("recall-parity");
+    let sqlite_dir = temp_hivemind_dir(prefix);
     let sqlite_ledger = SqliteEventLedger::open(&sqlite_dir)?;
     for event in fixture_events() {
         sqlite_ledger.append(event)?;
     }
     project_from_ledger(&sqlite_ledger, &memory_graph, 0)?;
 
-    let tenant_id = unique_tenant("recall-parity");
+    let tenant_id = unique_tenant(prefix);
     let pg_graph = PostgresGraphView::connect_with_pool_size(&database_url, tenant_id.clone(), 2)?;
     pg_graph.wipe()?;
     let postgres_ledger = PostgresEventLedger::connect_with_pool_size(&database_url, tenant_id, 2)?;
@@ -1098,7 +1129,7 @@ fn recall_decisions_returns_same_decision_set() -> Result<()> {
 
     let context = QueryContext::local();
     let request = RecallRequest {
-        q: None,
+        q: question.map(str::to_owned),
         topic_keys: Vec::new(),
         statuses: Vec::new(),
         actor_ids: Vec::new(),

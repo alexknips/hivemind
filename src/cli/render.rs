@@ -334,7 +334,18 @@ pub(crate) fn render_situational_summary(results: &SituationalResults) -> String
 pub(crate) fn render_recall_summary(response: &crate::summarize::RecallResponse) -> String {
     let mut output = String::new();
     if response.ranked.items.is_empty() {
-        return "No decisions found matching the query.".to_owned();
+        let mut empty = "No decisions found matching the query.".to_owned();
+        if !response.ignored_words.is_empty() {
+            let _ = write!(
+                empty,
+                "\nignored question words: {}",
+                response.ignored_words.join(" ")
+            );
+        }
+        return empty;
+    }
+    if !response.ignored_words.is_empty() {
+        let _ = writeln!(output, "ignored\t{}", response.ignored_words.join(" "));
     }
     let _ = writeln!(output, "digest\t{}", summary_cell(&response.digest.summary));
     let _ = writeln!(
@@ -759,19 +770,34 @@ pub(crate) fn render_resolve_outcome_summary(outcome: &ResolveOutcome) -> String
         ),
         ResolveOutcome::Ambiguous { candidates } => {
             let mut output = String::new();
-            let _ = writeln!(
-                output,
-                "ambiguous: {} candidates match — resolve with --pick N, #N, or --id",
-                candidates.len()
-            );
-            for (index, candidate) in candidates.iter().enumerate() {
+            if candidates
+                .iter()
+                .all(|candidate| !candidate.missing_terms.is_empty())
+            {
                 let _ = writeln!(
+                    output,
+                    "close: no decision matches every word; {} close candidates — resolve with --pick N, #N, or --id",
+                    candidates.len()
+                );
+            } else {
+                let _ = writeln!(
+                    output,
+                    "ambiguous: {} candidates match — resolve with --pick N, #N, or --id",
+                    candidates.len()
+                );
+            }
+            for (index, candidate) in candidates.iter().enumerate() {
+                let _ = write!(
                     output,
                     "#{}\t{}\t{}",
                     index + 1,
                     candidate.decision_id,
                     summary_cell(&candidate.title)
                 );
+                if !candidate.missing_terms.is_empty() {
+                    let _ = write!(output, "\tmissing: {}", candidate.missing_terms.join(" "));
+                }
+                output.push('\n');
             }
             output.trim_end().to_owned()
         }

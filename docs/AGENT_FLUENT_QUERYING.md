@@ -107,9 +107,26 @@ never, without), so "do not adopt Kafka" cannot resolve to the decision that
 adopted it. Each remaining term still has to match somewhere (AND), either
 as a substring, as before, or as a field word with the same stem
 (`move`/`moves`/`moved`/`moving`; compared by whole-word equality, never by
-prefix, so `string` does not match `strategy`). A description made only of
-stop words falls back to its literal words. The ambiguity gate (§1.4) is
-unchanged, and `search` keeps literal substring matching.
+prefix, so `string` does not match `strategy`), and a repeated word counts
+once. A description made only of stop words falls back to its literal words.
+The ambiguity gate (§1.4) is unchanged, and `search` keeps literal substring
+matching.
+
+**Close candidates.** A question often names a word the record never uses
+("why did we *finally* move the demo cell..."). When no decision matches every
+term, decisions matching more than half of them (and at least two) come back as
+an `Ambiguous` list, ranked by fewest missing terms, then rank tier, then
+recency, each with `missing_terms` naming what it lacks. A close candidate is
+never `Resolved`, even when there is only one: the caller picks with `--pick`,
+`#N` or `--id`. When any decision matches every term, close candidates are
+dropped. One matching word out of two is not close enough, so an unrelated
+description is still `NotFound`.
+
+**`recall` asks the same way.** `recall_decisions` (Layer 3) drops the question
+words ("what did we decide about projects" searches for `projects`) before it
+searches, reports them as `ignored_words`, and treats a question made only of
+question words as no text filter, so `--topic` alone decides. It does not
+stem: FTS matches whole tokens.
 
 ### 1.2 Recency, for free
 

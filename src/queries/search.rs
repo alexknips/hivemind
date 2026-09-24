@@ -349,12 +349,14 @@ pub fn search_decisions_fts_with_context(
             )
             .unwrap_or_else(|| SearchMatchInfo {
                 rank: 3,
+                missing_terms: Vec::new(),
                 matched_fields: Vec::new(),
                 snippets: Vec::new(),
                 matched_nodes: Vec::new(),
             }),
             None => SearchMatchInfo {
                 rank: 4,
+                missing_terms: Vec::new(),
                 matched_fields: Vec::new(),
                 snippets: Vec::new(),
                 matched_nodes: Vec::new(),
@@ -657,6 +659,7 @@ fn fts5_query(query: &str) -> Option<String> {
 
 struct ScoredDecisionSearchResult {
     rank: u8,
+    missing_terms: Vec<String>,
     id: String,
     event_origin: i64,
     result: DecisionSearchResult,
@@ -873,6 +876,7 @@ fn collect_graph_search_results(
 
         scored.push(ScoredDecisionSearchResult {
             rank: match_info.rank,
+            missing_terms: match_info.missing_terms,
             id,
             event_origin,
             fields,
@@ -908,6 +912,8 @@ pub(crate) struct ResolverCandidateRow {
     pub(crate) rank: u8,
     pub(crate) event_origin: i64,
     pub(crate) matched_fields: Vec<String>,
+    /// Description terms this decision does not contain; empty for a full match.
+    pub(crate) missing_terms: Vec<String>,
 }
 
 /// Backend-agnostic candidate rows for resolve-by-description: reuses
@@ -922,7 +928,7 @@ pub(crate) fn collect_resolver_candidates(
     let scored = collect_graph_search_results(
         graph,
         Some(description),
-        &SearchTerms::stemmed(&terms),
+        &SearchTerms::resolver(&terms),
         topic_keys,
         &[],
         &[],
@@ -936,6 +942,7 @@ pub(crate) fn collect_resolver_candidates(
             rank: scored.rank,
             event_origin: scored.event_origin,
             matched_fields: scored.result.matched_fields,
+            missing_terms: scored.missing_terms,
         })
         .collect())
 }
@@ -971,6 +978,8 @@ impl SearchField {
 #[derive(Clone, Debug)]
 struct SearchMatchInfo {
     rank: u8,
+    /// Query terms no field matched; non-empty only for a `partial` match.
+    missing_terms: Vec<String>,
     matched_fields: Vec<String>,
     snippets: Vec<SearchSnippet>,
     matched_nodes: Vec<SearchMatchedNode>,
@@ -995,12 +1004,14 @@ fn add_node_search_fields(
     }
 }
 
-/// The terms a query must find, and how a term is found in a field. Every term must match some
-/// field. `literal` terms match as a substring; `stemmed` terms (resolve-by-description) also
-/// match a field word with the same stem, so "move" finds "moves" and "moved".
+/// The terms a query must find, and how. Every term must match some field (AND) unless `partial`.
+/// `literal` terms match as a substring. Resolve-by-description terms (`resolver`) also match a
+/// field word with the same stem ("move" finds "moves" and "moved"), and when no decision
+/// matches every term, a decision matching most of them is returned with the terms it lacks.
 struct SearchTerms<'a> {
     terms: &'a [String],
     stemmed: bool,
+    partial: bool,
 }
 
 impl<'a> SearchTerms<'a> {
@@ -1008,13 +1019,15 @@ impl<'a> SearchTerms<'a> {
         Self {
             terms,
             stemmed: false,
+            partial: false,
         }
     }
 
-    fn stemmed(terms: &'a [String]) -> Self {
+    fn resolver(terms: &'a [String]) -> Self {
         Self {
             terms,
             stemmed: true,
+            partial: true,
         }
     }
 }
@@ -1028,6 +1041,7 @@ fn evaluate_search_match(
     let Some(query) = query else {
         return Some(SearchMatchInfo {
             rank: 4,
+            missing_terms: Vec::new(),
             matched_fields: Vec::new(),
             snippets: Vec::new(),
             matched_nodes: Vec::new(),
@@ -1081,12 +1095,22 @@ fn evaluate_search_match(
         }
     }
 
-    if matched_terms.len() != terms.len() {
-        return None;
+    let missing_terms: Vec<String> = terms
+        .iter()
+        .filter(|term| !matched_terms.contains(*term))
+        .cloned()
+        .collect();
+    if !missing_terms.is_empty() {
+        // A close match must carry more than half of the terms, and at least two.
+        let matched = terms.len() - missing_terms.len();
+        if !search_terms.partial || matched < 2 || matched * 2 <= terms.len() {
+            return None;
+        }
     }
 
     Some(SearchMatchInfo {
         rank,
+        missing_terms,
         matched_fields: matched_fields.into_iter().collect(),
         snippets,
         matched_nodes: matched_nodes.into_iter().collect(),

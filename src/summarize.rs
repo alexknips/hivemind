@@ -18,9 +18,9 @@ use serde::Serialize;
 use crate::ledger::AnyLedger;
 use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::queries::{
-    get_decision, get_supersession_chain, search_decisions_any, DecisionSearchResult,
-    DecisionStatus, DecisionView, GroundingState, QueryContext, QueryResponse,
-    SearchDecisionRequest,
+    content_query, get_decision, get_supersession_chain, search_decisions_any,
+    DecisionSearchResult, DecisionStatus, DecisionView, GroundingState, QueryContext,
+    QueryResponse, SearchDecisionRequest,
 };
 use crate::Result;
 
@@ -361,7 +361,12 @@ pub struct RecallRanked {
 /// Full recall response: ranked decisions + text digest.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RecallResponse {
+    /// The question as asked.
     pub query: Option<String>,
+    /// Question words dropped before searching ("what did we decide about projects" searches for
+    /// "projects"), so an empty or narrow result is never a mystery.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ignored_words: Vec<String>,
     pub ranked: RecallRanked,
     pub digest: DecisionSummary,
 }
@@ -381,8 +386,16 @@ pub fn recall_decisions(
 
     let limit = request.limit.clamp(1, RECALL_MAX_LIMIT);
 
+    // Recall is asked as a question ("what did we decide about projects"); the question words
+    // are not in any decision, so left in they would filter every decision out.
+    let asked = request
+        .q
+        .as_deref()
+        .map(str::trim)
+        .filter(|question| !question.is_empty());
+    let content = asked.map(content_query);
     let search_req = SearchDecisionRequest {
-        query: request.q.clone(),
+        query: content.as_ref().and_then(|content| content.query.clone()),
         topic_keys: request.topic_keys.clone(),
         statuses: request.statuses.clone(),
         actor_ids: request.actor_ids.clone(),
@@ -423,7 +436,8 @@ pub fn recall_decisions(
         truncated,
         latency_ms: started.elapsed().as_millis(),
         data: RecallResponse {
-            query: search_data.query,
+            query: asked.map(str::to_owned),
+            ignored_words: content.map(|content| content.ignored).unwrap_or_default(),
             ranked: RecallRanked {
                 total_matches: search_data.total_matches,
                 truncated,

@@ -11,6 +11,11 @@
 //! project's stance that `contested` is a status, never a silently-collapsed error (AGENTS.md §6).
 //! The gate is deliberately conservative and identical for every caller (read or write verb):
 //! resolved only when exactly one candidate occupies the best rank tier.
+//!
+//! A description that names a word no decision contains ("why did we choose to move the demo
+//! cell..." when the record never says "choose") is not a dead end: when no decision matches
+//! every term, decisions matching most of them come back as an `Ambiguous` candidate list, each
+//! carrying the terms it lacks. Close candidates are never auto-resolved.
 
 use std::cmp::Reverse;
 
@@ -37,6 +42,10 @@ pub struct ResolvedCandidate {
     /// Ledger offset at creation — recency tiebreak, never a ranking input on its own.
     pub event_origin: i64,
     pub matched_fields: Vec<String>,
+    /// Description terms this decision does not contain. Empty for a full match; non-empty only
+    /// for the close candidates offered when no decision matches every term.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_terms: Vec<String>,
 }
 
 /// Outcome of a resolve-by-description call: either a confident single match, or a candidate
@@ -54,6 +63,8 @@ pub enum ResolveOutcome {
 ///
 /// Resolved iff exactly one candidate occupies the best (lowest) rank tier — no numeric recency
 /// margin, identical for read and write callers (mayor decision, hivemind-tenv.1, 2026-09-07).
+/// Only decisions matching every term compete for that; close candidates (missing some terms) are
+/// offered, as `Ambiguous`, only when there is no full match.
 pub fn resolve_decision_by_description(
     graph: &impl GraphView,
     description: &str,
@@ -72,12 +83,24 @@ pub fn resolve_decision_by_description(
         .unwrap_or_default();
 
     let mut rows = collect_resolver_candidates(graph, description, &topic_keys)?;
+    let only_close_candidates =
+        !rows.is_empty() && rows.iter().all(|row| !row.missing_terms.is_empty());
+    if !only_close_candidates {
+        rows.retain(|row| row.missing_terms.is_empty());
+    }
     rows.sort_by(|left, right| {
-        (left.rank, Reverse(left.event_origin), &left.decision_id).cmp(&(
-            right.rank,
-            Reverse(right.event_origin),
-            &right.decision_id,
-        ))
+        (
+            left.missing_terms.len(),
+            left.rank,
+            Reverse(left.event_origin),
+            &left.decision_id,
+        )
+            .cmp(&(
+                right.missing_terms.len(),
+                right.rank,
+                Reverse(right.event_origin),
+                &right.decision_id,
+            ))
     });
 
     let truncated = rows.len() > MAX_QUERY_RESULTS;
@@ -91,11 +114,14 @@ pub fn resolve_decision_by_description(
             rank: row.rank,
             event_origin: row.event_origin,
             matched_fields: row.matched_fields,
+            missing_terms: row.missing_terms,
         })
         .collect();
 
     let result_count = candidates.len();
-    let outcome = if let Some(best_rank) = candidates.first().map(|candidate| candidate.rank) {
+    let outcome = if only_close_candidates {
+        ResolveOutcome::Ambiguous { candidates }
+    } else if let Some(best_rank) = candidates.first().map(|candidate| candidate.rank) {
         let best_tier_count = candidates.iter().filter(|c| c.rank == best_rank).count();
         if best_tier_count == 1 {
             ResolveOutcome::Resolved {

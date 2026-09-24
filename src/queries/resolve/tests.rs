@@ -244,7 +244,16 @@ fn negation_is_kept_so_it_cannot_resolve_to_the_opposite_decision() -> Result<()
         &[],
     )])?;
 
-    assert_eq!(resolved_id(&graph, "do not adopt kafka")?, None);
+    // "not" is a term, so the decision that adopted Kafka is only a close candidate that says
+    // it lacks "not" -- never a resolution.
+    let response = resolve_decision_by_description(&graph, "do not adopt kafka", None)?;
+    match response.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].missing_terms, vec!["not".to_owned()]);
+        }
+        other => panic!("expected close candidate, got {other:?}"),
+    }
     assert_eq!(
         resolved_id(&graph, "why did we adopt kafka")?.as_deref(),
         Some("d:kafka")
@@ -278,5 +287,88 @@ fn ambiguity_gate_still_applies_to_natural_questions() -> Result<()> {
         ResolveOutcome::Ambiguous { candidates } => assert_eq!(candidates.len(), 2),
         other => panic!("expected Ambiguous, got {other:?}"),
     }
+    Ok(())
+}
+
+fn projects_graph() -> Result<MemoryGraph> {
+    graph_from_events([
+        decision_proposed(
+            1,
+            "d:personal",
+            "An agent's personal project is per agent kind and tool, never per session",
+            &["projects"],
+        ),
+        decision_proposed(
+            2,
+            "d:handles",
+            "Project handles are lowercase slugs of at most forty characters",
+            &["projects"],
+        ),
+        decision_proposed(3, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])
+}
+
+#[test]
+fn repeated_words_in_a_description_still_resolve() -> Result<()> {
+    let graph = projects_graph()?;
+
+    // "agent" appears twice; the duplicate must not count as an extra term to find.
+    let resolved = resolved_id(&graph, "agent personal project per agent kind")?;
+
+    assert_eq!(resolved.as_deref(), Some("d:personal"));
+    Ok(())
+}
+
+#[test]
+fn a_word_the_record_lacks_yields_close_candidates_not_not_found() -> Result<()> {
+    let graph = projects_graph()?;
+
+    let response = resolve_decision_by_description(
+        &graph,
+        "why did we finally make a personal project per agent kind",
+        None,
+    )?;
+
+    match response.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            assert_eq!(candidates[0].decision_id, "d:personal");
+            assert_eq!(candidates[0].missing_terms, vec!["finally", "make"]);
+            // Every candidate says what it lacks, and none is silently picked.
+            assert!(candidates.iter().all(|c| !c.missing_terms.is_empty()));
+        }
+        other => panic!("expected close candidates, got {other:?}"),
+    }
+    assert_eq!(response.result_count, 1);
+    Ok(())
+}
+
+#[test]
+fn a_full_match_beats_close_candidates() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:full", "Adopt async queue for billing", &[]),
+        decision_proposed(2, "d:near", "Adopt async retries for billing", &[]),
+    ])?;
+
+    // d:near matches "adopt async billing" but not "queue"; d:full matches every term.
+    let response = resolve_decision_by_description(&graph, "adopt async queue billing", None)?;
+
+    match response.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:full");
+            assert!(candidate.missing_terms.is_empty());
+        }
+        other => panic!("expected Resolved, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn one_matching_word_is_not_close_enough() -> Result<()> {
+    let graph = projects_graph()?;
+
+    // Only "billing" matches anything: 1 of 2 terms is not a close match.
+    let response = resolve_decision_by_description(&graph, "billing unicorn", None)?;
+
+    assert_eq!(response.data, ResolveOutcome::NotFound);
     Ok(())
 }

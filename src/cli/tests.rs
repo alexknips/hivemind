@@ -2552,6 +2552,125 @@ fn recall_cli_returns_ranked_decisions_and_digest() {
 }
 
 #[test]
+fn recall_answers_its_own_documented_question_form() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("query-recall-question");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    for (title, rationale) in [
+        (
+            "An agent's personal project is per agent kind and tool, never per session",
+            "A session id changes every run, so the project would fragment across sessions",
+        ),
+        (
+            "Project handles are lowercase slugs of at most forty characters",
+            "Short stable slugs stay readable in URLs and in the command line",
+        ),
+    ] {
+        run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "human:alice",
+            "--hivemind-dir",
+            dir,
+            "emit",
+            "decision.proposed",
+            "--title",
+            title,
+            "--rationale",
+            rationale,
+            "--topic-keys",
+            "projects",
+            "--options",
+            "Adopt this,Leave it open",
+            "--chose",
+            "Adopt this",
+        ]))?;
+    }
+
+    let recall =
+        |question: &str, extra: &[&str]| -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+            let mut argv = vec![
+                "hivemind",
+                "--hivemind-dir",
+                dir,
+                "query",
+                "recall",
+                question,
+            ];
+            argv.extend_from_slice(extra);
+            Ok(serde_json::from_str(&run(&Cli::parse_from(argv))?)?)
+        };
+
+    // recall's own argument-hint: "what did we decide about X".
+    let asked = recall(
+        "what did we decide about projects",
+        &["--topic", "projects"],
+    )?;
+    ensure_json_eq(
+        &asked["result_count"],
+        serde_json::json!(2),
+        "the question form returns the projects decisions",
+    )?;
+    ensure_json_eq(
+        &asked["data"]["ignored_words"],
+        serde_json::json!(["what", "did", "we", "decide", "about"]),
+        "the dropped question words are reported, not silently discarded",
+    )?;
+    ensure_json_eq(
+        &asked["data"]["query"],
+        serde_json::json!("what did we decide about projects"),
+        "the question is echoed as asked",
+    )?;
+
+    // Without the topic filter the content word still finds them.
+    let bare = recall("what did we decide about projects", &[])?;
+    ensure_json_eq(
+        &bare["result_count"],
+        serde_json::json!(2),
+        "content word alone",
+    )?;
+
+    // A question made only of question words adds no filter: the topic decides.
+    let only_question = recall("what did we decide", &["--topic", "projects"])?;
+    ensure_json_eq(
+        &only_question["result_count"],
+        serde_json::json!(2),
+        "a bare question with --topic lists the topic",
+    )?;
+
+    // A content word nothing contains still finds nothing, and says which words were ignored.
+    let none = recall("what did we decide about billing", &[])?;
+    ensure_json_eq(
+        &none["result_count"],
+        serde_json::json!(0),
+        "no decision about billing",
+    )?;
+    let summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "--summary",
+        "recall",
+        "what did we decide about billing",
+    ]))?;
+    ensure(
+        summary.contains("ignored question words: what did we decide about"),
+        &format!("empty recall names the ignored words, got: {summary}"),
+    )?;
+
+    // A query with no question words is unchanged and reports nothing ignored.
+    let plain = recall("per agent kind", &[])?;
+    ensure_json_eq(&plain["result_count"], serde_json::json!(1), "plain query")?;
+    ensure(
+        plain["data"].get("ignored_words").is_none(),
+        "no ignored_words key when nothing was dropped",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn digest_cli_returns_decisions_in_window() {
     let hivemind_dir = unique_test_dir("digest");
     let decision_id = run(&Cli::parse_from([
