@@ -24,6 +24,10 @@ use crate::queries::{
 use crate::util::parse_check_by;
 use crate::Result;
 
+mod ground;
+
+pub(crate) use ground::premise_cycle_refusal;
+
 /// The four ways to answer "what does this decision rest on?", as the MCP and REST refusals
 /// quote them. The CLI's refusal names its flags instead (`cli::run`).
 pub(crate) const WIRE_GROUNDING_REFUSAL: &str = "a captured decision must say what it rests on: pass `grounding` with at least one item — {kind:\"decision\", description|decision_id} (a decision already made), {kind:\"evidence\", content, source?} (something observed, and where), {kind:\"assumption\", statement} (something assumed), or {kind:\"bet\", statement?, would_change_if?, check_by?} (nothing yet: a declared bet)";

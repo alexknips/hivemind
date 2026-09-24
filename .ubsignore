@@ -35,6 +35,8 @@ src/cli/current_project/tests.rs
 src/cli/project_context/tests.rs
 src/commands/tests.rs
 src/grounding/tests.rs
+src/queries/follows_from/tests.rs
+src/commands/ground_later/tests.rs
 src/mcp/tests.rs
 src/events/tests.rs
 src/slack_app/tests.rs

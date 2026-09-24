@@ -1,4 +1,4 @@
 interface:
   display_name: "HiveMind Context"
   short_description: "Consult past HiveMind decisions before you change something, by description."
-  default_prompt: "Before touching a file, check HiveMind for standing decisions on it. Verify old decisions still hold before relying on them. Never guess a decision id."
+  default_prompt: "Before touching a file, check HiveMind for standing decisions on it. Verify old decisions still hold before relying on them. If a decision rests on nothing declared and you know what it rests on, add it with ground. Never guess a decision id."

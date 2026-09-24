@@ -50,6 +50,22 @@ staleness is visible). MCP `capture_decision` / `supersede_decision` and REST
 `emit decision.proposed`, classifier ingest, document import and Slack capture do
 not ask the question.
 
+### Grounding a decision after the fact
+
+A decision captured without saying what it rests on reads `nothing declared`.
+`hivemind ground "<decision description>"` adds it later, with the same grounding
+flags as capture (`--rests-on-decision`, `--rests-on-evidence` with
+`--evidence-source`, `--rests-on-assumption`, `--bet`; `--evidence` / `--hypotheses`
+for existing nodes). The decision is resolved with the same ambiguity gate as
+`supersede` (`--id ID` or `--pick N` to settle it), and nothing is written when the
+decision or a premise is ambiguous or unmatched, when nothing is named, or when a
+premise already rests on the decision being grounded (it would close a loop). The
+grounding is append-only and attributed to whoever runs it (`--actor`), with no link
+to the decision's proposal, so a reader can tell "added later" from "at capture".
+`--confidence` is not accepted: it is the decider's own words at capture. MCP
+`ground_decision` takes `description` or `decision_id` plus the same `grounding`
+array and returns the same `{outcome: "ambiguous" | "not_found"}` shapes.
+
 The command writes canonical ledger events. The decision proposal and its
 fan-out relation events carry:
 

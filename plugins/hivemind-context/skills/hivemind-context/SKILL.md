@@ -23,6 +23,8 @@ Consult HiveMind when:
 - You want to rely on an old decision and need to know if it still holds.
 - You disagree with a decision, or a decision needs to be replaced by a new
   one.
+- A decision reads "nothing declared" for what it rests on, and you know what
+  it rests on.
 
 Do not use this skill for:
 
@@ -94,14 +96,33 @@ what it wants to ask.
     --topic-keys same,topics --options a,b --chose a
   ```
 
+- **Say what it rests on** — a decision captured without saying reads
+  `nothing declared`. If you know what it rests on, add it after the fact.
+  Name a decision it follows from, something observed and where, something
+  assumed, or — when there is nothing yet — a bet. It is append-only and
+  attributed to you, not to whoever captured the decision, so a reader sees
+  it was added later:
+
+  ```bash
+  ${CLAUDE_PLUGIN_ROOT}/scripts/ground.sh "the decision that rests on nothing declared" \
+    --rests-on-decision "the earlier decision it follows from"
+
+  ${CLAUDE_PLUGIN_ROOT}/scripts/ground.sh "the decision that rests on nothing declared" \
+    --rests-on-evidence "what was observed" --evidence-source "where: URL, file@commit, test run"
+  ```
+
+  The decider's own words are not a grounding, and `--confidence` is not
+  accepted here: it is the decider's words at capture. A premise that already
+  rests on this decision is refused — it would close a loop.
+
 ## The Ambiguity Gate — Never Guess
 
 Every command above resolves your description deterministically (term match
 + topic + recency — no LLM, no similarity, no ranking model; see
 `docs/AGENT_FLUENT_QUERYING.md`). If more than one decision matches equally
 well, the CLI does not pick one for you. It returns a numbered candidate
-list and, for the write verbs (`disagree`, `supersede`), performs **no
-write**.
+list and, for the write verbs (`disagree`, `supersede`, `ground`), performs
+**no write**.
 
 When you see an ambiguous result:
 
@@ -109,7 +130,9 @@ When you see an ambiguous result:
 2. Re-invoke the same command with `--pick N` for the candidate you mean,
    or a bare `#N` (referring to the most recent ambiguous output), or
    `--id <decision_id>` / `--decision <decision_id>` / `--old <decision_id>`
-   if you already know the id.
+   if you already know the id. (`ground`'s `--rests-on-decision` premises
+   resolve the same way and refuse, with their own candidate list, when they
+   are ambiguous.)
 3. Never fabricate a `decision_id` to force a resolution. If nothing
    matches (`NotFound`), that is itself the answer — the decision does not
    exist yet, or your description needs different terms.
@@ -154,12 +177,14 @@ use the equivalent `mcp__hivemind__*` tool directly instead of the script:
 | `verify.sh` | `get_decision_outcome` |
 | `disagree.sh` | `disagree_decision` |
 | `supersede.sh` | `supersede_decision` |
+| `ground.sh` | `ground_decision` |
 
-All six are already registered on the HTTP transport (`hivemind-ot72.6`
-through `.12`), so this substitution works with no further product change.
+The first six are registered on the HTTP transport (`hivemind-ot72.6`
+through `.12`) and `ground_decision` is registered on both transports, so this
+substitution works with no further product change.
 The MCP tools take the same free-text/description arguments as the scripts
-— still never a `decision_id` you invented. For the two write verbs,
+— still never a `decision_id` you invented. For the three write verbs,
 `actor_id` follows the same rule as `hivemind-capture`'s MCP-over-HTTP
 section: pass it explicitly when the server's token is shared across more
-than one session, so disagreement/supersession provenance doesn't collapse
+than one session, so disagreement/supersession/grounding provenance doesn't collapse
 onto the token's own identity or an unstable per-connection session id.

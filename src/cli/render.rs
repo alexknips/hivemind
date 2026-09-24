@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::commands::{DecisionMoveOutcome, DecisionPlacement, RestsOn};
+use crate::commands::{DecisionMoveOutcome, DecisionPlacement, RestsOn, RestsOnKind};
 use crate::error::{CliError, CommandError};
 use crate::events::{EventId, EventType};
 use crate::ingest::{DocumentImportReport, DocumentPreparationReport};
@@ -1157,6 +1157,48 @@ pub(crate) fn format_capture_output(
     Ok(rendered)
 }
 
+/// `ground`'s reply: what was added, with the decision it was added to. Text shows labels,
+/// `--json` keeps the ids too. A premise that is already superseded or rejected is never silent.
+pub(crate) fn format_ground_output(as_json: bool, output: &GroundCommandOutput) -> Result<String> {
+    if as_json {
+        return format_json_value(true, output);
+    }
+
+    let mut rendered = format!("grounded {}", output.decision_id);
+    if let Some(title) = &output.decision_title {
+        let _ = write!(rendered, " \"{title}\"");
+    }
+    let _ = write!(
+        rendered,
+        ": added {} thing(s) it rests on, attributed to {}",
+        output.rests_on.len(),
+        output.actor_id
+    );
+    for item in &output.rests_on {
+        let kind = match item.kind {
+            RestsOnKind::Decision => "decision",
+            RestsOnKind::Evidence => "evidence",
+            RestsOnKind::Assumption => "assumption",
+            RestsOnKind::Bet => "bet",
+        };
+        match &item.label {
+            Some(label) => {
+                let _ = write!(rendered, "\n  {kind} \"{label}\" ({})", item.id);
+            }
+            None => {
+                let _ = write!(rendered, "\n  {kind} {}", item.id);
+            }
+        }
+    }
+    for premise_id in &output.premise_stale {
+        let _ = write!(
+            rendered,
+            "\npremise_stale: {premise_id} (already superseded or rejected; the link is recorded)"
+        );
+    }
+    Ok(rendered)
+}
+
 pub(crate) fn format_review_output(as_json: bool, output: &ReviewCommandOutput) -> Result<String> {
     if as_json {
         return format_json_value(true, output);
@@ -1670,6 +1712,21 @@ pub(crate) struct CaptureCommandOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) project_reminder: Option<&'static str>,
     pub(crate) rests_on: Vec<RestsOn>,
+    pub(crate) premise_stale: Vec<String>,
+}
+
+/// The `ground` reply: the decision that was grounded and what it now rests on.
+#[derive(Debug, Serialize)]
+pub(crate) struct GroundCommandOutput {
+    pub(crate) decision_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) decision_title: Option<String>,
+    /// Who the grounding is attributed to.
+    pub(crate) actor_id: String,
+    pub(crate) relation_event_ids: Vec<EventId>,
+    /// What was added, as recorded.
+    pub(crate) rests_on: Vec<RestsOn>,
+    /// Premise decisions already superseded or rejected when named.
     pub(crate) premise_stale: Vec<String>,
 }
 

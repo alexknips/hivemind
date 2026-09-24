@@ -51,7 +51,7 @@ fn tools_list_includes_all_eighteen_tools() {
     );
     assert_eq!(responses.len(), 1); // ubs:ignore: test-only; index guaranteed by test setup
     let tools = responses[0]["result"]["tools"].as_array().expect("array"); // ubs:ignore: test-only; panicking is correct in tests
-    assert_eq!(tools.len(), 27, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
+    assert_eq!(tools.len(), 28, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("string name")) // ubs:ignore: test-only; panicking is correct in tests
@@ -63,6 +63,7 @@ fn tools_list_includes_all_eighteen_tools() {
         "disagree_decision",
         "supersede_decision",
         "move_decision",
+        "ground_decision",
         "get_decision",
         "get_decision_outcome",
         "decision_quality_candidates",
@@ -3672,5 +3673,302 @@ mod transport_parity {
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&tree);
+    }
+
+    // -----------------------------------------------------------------------
+    // ground_decision (hivemind-gwhr.4)
+    // -----------------------------------------------------------------------
+
+    const GROUNDER: &str = "agent:claude:grounder";
+
+    fn ground_args(description: &str, grounding: Value) -> Value {
+        json!({
+            "actor_id": GROUNDER,
+            "description": description,
+            "grounding": grounding,
+        })
+    }
+
+    #[tokio::test]
+    async fn ground_decision_records_every_grounding_kind_attributed_to_the_grounder_across_transports(
+    ) {
+        let stdio_dir = unique_dir("parity-stdio-ground");
+        let http_dir = unique_dir("parity-http-ground");
+        seed_premise(&stdio_dir, &http_dir, "Adopt the shared admin token").await;
+        seed_premise(&stdio_dir, &http_dir, "Keep audit boundaries").await;
+
+        let args = ground_args(
+            "Adopt the shared admin token",
+            json!([
+                {"kind": "decision", "description": "Keep audit boundaries"},
+                {"kind": "evidence", "content": "the shared token leaked twice", "source": "incident 7"},
+                {"kind": "assumption", "statement": "audit logs stay append-only"},
+                {"kind": "bet", "statement": "scoped tokens are enough", "would_change_if": "a scope leaks", "check_by": "2026-12-01"},
+            ]),
+        );
+        let stdio = stdio_call(&stdio_dir, "ground_decision", args.clone());
+        let http = http_call(&http_dir, "ground_decision", args).await;
+
+        let expected = vec![
+            ("decision".to_owned(), "Keep audit boundaries".to_owned()),
+            (
+                "evidence".to_owned(),
+                "the shared token leaked twice".to_owned(),
+            ),
+            (
+                "assumption".to_owned(),
+                "audit logs stay append-only".to_owned(),
+            ),
+            ("bet".to_owned(), "scoped tokens are enough".to_owned()),
+        ];
+        for (name, response, dir) in [("stdio", &stdio, &stdio_dir), ("http", &http, &http_dir)] {
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{name}: {result:?}"); // ubs:ignore: test-only assertion
+            assert_eq!(rests_on_kinds_and_labels(result), expected, "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["actor_id"], GROUNDER,
+                "{name}: the reply names the grounder"
+            ); // ubs:ignore: test-only assertion
+
+            // Every node and edge the call wrote names the grounder and carries no causation.
+            let ledger = SqliteEventLedger::open(dir).expect("ledger opens"); // ubs:ignore: test-only; panicking is correct in tests
+            let grounded: Vec<_> = ledger
+                .read(0, 500)
+                .expect("read events") // ubs:ignore: test-only; panicking is correct in tests
+                .into_iter()
+                .filter(|event| event.actor_id == GROUNDER)
+                .collect();
+            // evidence + assumption + bet nodes, then FOLLOWS_FROM + BASED_ON + 2 ASSUMES.
+            assert_eq!(grounded.len(), 7, "{name}: {grounded:?}"); // ubs:ignore: test-only assertion
+            assert!(
+                grounded
+                    .iter()
+                    .all(|event| event.causation_event_id.is_none()),
+                "{name}: later grounding never carries causation"
+            ); // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn ground_decision_resolves_by_id_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-ground-by-id");
+        let http_dir = unique_dir("parity-http-ground-by-id");
+        let seed = json!({
+            "grounding": [{"kind": "bet"}],
+            "title": "Adopt the shared admin token",
+            "rationale": "seed for the grounding parity tests, long enough to read",
+            "topic_keys": ["parity"],
+            "options": [{"label": "only"}],
+        });
+        let stdio_seed = stdio_call(&stdio_dir, "capture_decision", seed.clone());
+        let http_seed = http_call(&http_dir, "capture_decision", seed).await;
+
+        for (name, seeded, dir) in [
+            ("stdio", &stdio_seed, &stdio_dir),
+            ("http", &http_seed, &http_dir),
+        ] {
+            let decision_id = seeded["result"]["structuredContent"]["decision_id"]
+                .as_str()
+                .expect("decision_id") // ubs:ignore: test-only; panicking is correct in tests
+                .to_owned();
+            let args = json!({
+                "actor_id": GROUNDER,
+                "decision_id": decision_id,
+                "grounding": [{"kind": "assumption", "statement": "the token stays private"}],
+            });
+            let response = if name == "stdio" {
+                stdio_call(dir, "ground_decision", args)
+            } else {
+                http_call(dir, "ground_decision", args).await
+            };
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{name}: {result:?}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["decision_id"], decision_id,
+                "{name}"
+            ); // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn ground_decision_ambiguous_or_unmatched_target_writes_nothing_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-ground-target");
+        let http_dir = unique_dir("parity-http-ground-target");
+        seed_premise(&stdio_dir, &http_dir, "Adopt the queue").await;
+        seed_premise(&stdio_dir, &http_dir, "Adopt the queue").await;
+        let stdio_offset_before = ledger_offset(&stdio_dir);
+        let http_offset_before = ledger_offset(&http_dir);
+
+        let grounding = json!([{"kind": "assumption", "statement": "must not be stranded"}]);
+        for (description, outcome) in [("Adopt the queue", "ambiguous"), ("Zebra", "not_found")] {
+            let args = ground_args(description, grounding.clone());
+            let stdio = stdio_call(&stdio_dir, "ground_decision", args.clone());
+            let http = http_call(&http_dir, "ground_decision", args).await;
+            for (name, response) in [("stdio", &stdio), ("http", &http)] {
+                let result = &response["result"];
+                assert_eq!(
+                    result["isError"], false,
+                    "{name}: {outcome} is data, not an error"
+                ); // ubs:ignore: test-only assertion
+                assert_eq!(
+                    result["structuredContent"]["data"]["outcome"], outcome,
+                    "{name}"
+                ); // ubs:ignore: test-only assertion
+            }
+        }
+        assert_eq!(
+            ledger_offset(&stdio_dir),
+            stdio_offset_before,
+            "stdio wrote"
+        ); // ubs:ignore: test-only assertion
+        assert_eq!(ledger_offset(&http_dir), http_offset_before, "http wrote"); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn ground_decision_ambiguous_or_unmatched_premise_writes_nothing_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-ground-premise");
+        let http_dir = unique_dir("parity-http-ground-premise");
+        seed_premise(&stdio_dir, &http_dir, "Adopt the shared admin token").await;
+        seed_premise(&stdio_dir, &http_dir, "Adopt the queue").await;
+        seed_premise(&stdio_dir, &http_dir, "Adopt the queue").await;
+        let stdio_offset_before = ledger_offset(&stdio_dir);
+        let http_offset_before = ledger_offset(&http_dir);
+
+        // The new assumption is named first: a refusal on the later premise must not strand it.
+        for (premise, outcome) in [("Adopt the queue", "ambiguous"), ("Zebra", "not_found")] {
+            let args = ground_args(
+                "Adopt the shared admin token",
+                json!([
+                    {"kind": "assumption", "statement": "must not be stranded"},
+                    {"kind": "decision", "description": premise},
+                ]),
+            );
+            let stdio = stdio_call(&stdio_dir, "ground_decision", args.clone());
+            let http = http_call(&http_dir, "ground_decision", args).await;
+            for (name, response) in [("stdio", &stdio), ("http", &http)] {
+                let result = &response["result"];
+                assert_eq!(
+                    result["isError"], false,
+                    "{name}: {outcome} is data, not an error"
+                ); // ubs:ignore: test-only assertion
+                let data = &result["structuredContent"]["data"];
+                assert_eq!(data["outcome"], outcome, "{name}"); // ubs:ignore: test-only assertion
+                assert_eq!(data["field"], "grounding[1]", "{name}"); // ubs:ignore: test-only assertion
+            }
+        }
+        assert_eq!(
+            ledger_offset(&stdio_dir),
+            stdio_offset_before,
+            "stdio wrote"
+        ); // ubs:ignore: test-only assertion
+        assert_eq!(ledger_offset(&http_dir), http_offset_before, "http wrote"); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn ground_decision_refuses_a_premise_that_would_close_a_loop_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-ground-cycle");
+        let http_dir = unique_dir("parity-http-ground-cycle");
+        seed_premise(&stdio_dir, &http_dir, "Choose the datastore").await;
+        seed_premise(&stdio_dir, &http_dir, "Choose the index layout").await;
+
+        // The index layout rests on the datastore choice: fine.
+        let forward = ground_args(
+            "Choose the index layout",
+            json!([{"kind": "decision", "description": "Choose the datastore"}]),
+        );
+        let stdio = stdio_call(&stdio_dir, "ground_decision", forward.clone());
+        let http = http_call(&http_dir, "ground_decision", forward).await;
+        for (name, response) in [("stdio", &stdio), ("http", &http)] {
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{name}: {result:?}"); // ubs:ignore: test-only assertion
+        }
+        let stdio_offset_before = ledger_offset(&stdio_dir);
+        let http_offset_before = ledger_offset(&http_dir);
+
+        // The datastore choice resting on the index layout would close the loop; a decision
+        // resting on itself is refused too. Both leave the assumption named alongside unwritten.
+        for (premise, expected) in [
+            ("Choose the index layout", "would close a loop"),
+            ("Choose the datastore", "cannot be its own premise"),
+        ] {
+            let backward = ground_args(
+                "Choose the datastore",
+                json!([
+                    {"kind": "assumption", "statement": "must not be stranded"},
+                    {"kind": "decision", "description": premise},
+                ]),
+            );
+            let stdio = stdio_call(&stdio_dir, "ground_decision", backward.clone());
+            let http = http_call(&http_dir, "ground_decision", backward).await;
+            for (name, response) in [("stdio", &stdio), ("http", &http)] {
+                let result = &response["result"];
+                assert_eq!(result["isError"], true, "{name}: {result:?}"); // ubs:ignore: test-only assertion
+                let text = error_text(result);
+                assert!(text.contains(expected), "{name}: {text}"); // ubs:ignore: test-only assertion
+            }
+        }
+        assert_eq!(
+            ledger_offset(&stdio_dir),
+            stdio_offset_before,
+            "stdio wrote"
+        ); // ubs:ignore: test-only assertion
+        assert_eq!(ledger_offset(&http_dir), http_offset_before, "http wrote"); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn ground_decision_requires_grounding_and_a_selector_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-ground-required");
+        let http_dir = unique_dir("parity-http-ground-required");
+        seed_premise(&stdio_dir, &http_dir, "Adopt the shared admin token").await;
+        let stdio_offset_before = ledger_offset(&stdio_dir);
+        let http_offset_before = ledger_offset(&http_dir);
+
+        for (args, expected) in [
+            (
+                json!({"description": "Adopt the shared admin token"}),
+                "nothing to ground",
+            ),
+            (
+                json!({"description": "Adopt the shared admin token", "grounding": []}),
+                "nothing to ground",
+            ),
+            (
+                json!({"grounding": [{"kind": "assumption", "statement": "an assumption"}]}),
+                "one of `decision_id` or `description` is required",
+            ),
+        ] {
+            let stdio = stdio_call(&stdio_dir, "ground_decision", args.clone());
+            let http = http_call(&http_dir, "ground_decision", args).await;
+            for (name, response) in [("stdio", &stdio), ("http", &http)] {
+                let result = &response["result"];
+                assert_eq!(result["isError"], true, "{name}: {result:?}"); // ubs:ignore: test-only assertion
+                let text = error_text(result);
+                assert!(text.contains(expected), "{name}: {text}"); // ubs:ignore: test-only assertion
+            }
+        }
+        assert_eq!(
+            ledger_offset(&stdio_dir),
+            stdio_offset_before,
+            "stdio wrote"
+        ); // ubs:ignore: test-only assertion
+        assert_eq!(ledger_offset(&http_dir), http_offset_before, "http wrote"); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
     }
 }

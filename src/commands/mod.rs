@@ -42,6 +42,26 @@
 //!   supersession, never a silent match.
 //! - A premise decision that is already superseded or rejected is allowed and reported as
 //!   `premise_stale`.
+//!
+//! # Later grounding (`ground_decision_with_plan`, hivemind-gwhr.4)
+//!
+//! The `ground` verbs (CLI `ground`, MCP `ground_decision`) resolve their words into the same
+//! `GroundingPlan` and hand it to `ground_decision_with_plan`, which enforces:
+//!
+//! - An empty plan is refused with the `Grounding::Declared` validation error. A bet counts.
+//! - The decision being grounded, every premise decision, and every pre-existing evidence or
+//!   hypothesis id must exist in the tenant; a premise must not be the decision itself; the new
+//!   nodes' own fields must be well-formed. All of it is checked BEFORE the first write, so a
+//!   refusal never leaves an orphan evidence, assumption or bet behind.
+//! - New evidence, assumptions and the bet are recorded with the grounder as actor, then linked
+//!   `FOLLOWS_FROM` / `BASED_ON` / `ASSUMES` with the grounder as actor and NO causation link — the
+//!   ledger-level difference between "attributed later" and "at capture".
+//! - A bet with no statement records `Judgement call: <the grounded decision's title>`.
+//! - A premise decision that is already superseded or rejected is allowed and reported as
+//!   `premise_stale`.
+//! - Refusing a premise that would close a `FOLLOWS_FROM` loop (the premise already rests,
+//!   transitively, on the decision being grounded) needs the graph, so it is the calling verb's
+//!   rule (`crate::grounding::premise_cycle_refusal`), applied before this function is called.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -51,8 +71,10 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
+mod ground_later;
 mod grounding;
 
+pub use ground_later::GroundedAddition;
 use grounding::{plan_grounding_nodes, IdMode};
 pub use grounding::{
     GroundedProposal, GroundingPlan, NewBet, NewEvidence, RestsOn, RestsOnKind,

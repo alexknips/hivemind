@@ -21,6 +21,7 @@
 //! Migrated so far: `capture_decision`, `get_situational_decisions`,
 //! `resolve_target`/`get_decision_neighborhood`, `get_supersession_chain`,
 //! `recall_decisions`, `supersede_decision`, `disagree_decision`, `move_decision`,
+//! `ground_decision`,
 //! `get_decision_outcome`, `hivemind_compact_view`. Later
 //! tools follow the same shape — an `Args::from_json` parser plus a
 //! `core::<tool>` function — one pair per tool, each independently
@@ -35,7 +36,8 @@ use crate::commands::{
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, ProjectSource, TenantId};
 use crate::grounding::{
-    resolve_grounding, GroundingResolution, GroundingSpec, WIRE_GROUNDING_REFUSAL,
+    premise_cycle_refusal, resolve_grounding, GroundingResolution, GroundingSpec,
+    WIRE_GROUNDING_REFUSAL,
 };
 use crate::ledger::{AnyLedger, EventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
@@ -256,11 +258,14 @@ pub(crate) struct CaptureDecisionArgs {
     pub(crate) project_source: Option<ProjectSource>,
 }
 
-/// Parse and require the wire grounding shared by `capture_decision` and `supersede_decision`:
-/// the `grounding` array (required, minItems 1) plus the deprecated `hypothesis_ids` /
-/// `evidence_ids` aliases, which map into the same spec. A call that names nothing it rests on
-/// is refused before anything is resolved or written.
-fn require_wire_grounding(args: &Map<String, Value>) -> Result<GroundingSpec, CoreError> {
+/// Parse and require the wire grounding shared by `capture_decision`, `supersede_decision` and
+/// `ground_decision`: the `grounding` array (required, minItems 1) plus the deprecated
+/// `hypothesis_ids` / `evidence_ids` aliases, which map into the same spec. A call that names
+/// nothing it rests on is refused with `refusal` before anything is resolved or written.
+fn require_wire_grounding(
+    args: &Map<String, Value>,
+    refusal: &str,
+) -> Result<GroundingSpec, CoreError> {
     let items = match args.get("grounding") {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(items)) => items.clone(),
@@ -275,9 +280,7 @@ fn require_wire_grounding(args: &Map<String, Value>) -> Result<GroundingSpec, Co
     let spec = GroundingSpec::from_wire(&items, &hypothesis_ids, &evidence_ids)
         .map_err(CoreError::InvalidArgument)?;
     if spec.is_empty() {
-        return Err(CoreError::InvalidArgument(
-            WIRE_GROUNDING_REFUSAL.to_owned(),
-        ));
+        return Err(CoreError::InvalidArgument(refusal.to_owned()));
     }
     Ok(spec)
 }
@@ -370,7 +373,7 @@ impl CaptureDecisionArgs {
             ));
         }
 
-        let grounding = require_wire_grounding(args)?;
+        let grounding = require_wire_grounding(args, WIRE_GROUNDING_REFUSAL)?;
         let expressed_confidence = optional_string(args, "expressed_confidence")?;
 
         Ok(Self {
@@ -1002,7 +1005,7 @@ impl SupersedeDecisionArgs {
             topic_keys: optional_string_array(args, "topic_keys")?,
             option_labels: optional_option_labels(args, "options")?,
             chosen_option_label: optional_string(args, "chosen_option_label")?,
-            grounding: require_wire_grounding(args)?,
+            grounding: require_wire_grounding(args, WIRE_GROUNDING_REFUSAL)?,
             expressed_confidence: optional_string(args, "expressed_confidence")?,
         })
     }
@@ -1265,5 +1268,100 @@ pub(crate) fn get_supersession_chain<P: LedgerProvider>(
         "truncated": response.truncated,
         "latency_ms": response.latency_ms,
         "data": response.data,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// ground_decision
+// ---------------------------------------------------------------------------
+
+/// The refusal for a `ground_decision` call that names nothing the decision rests on.
+const WIRE_GROUND_REFUSAL: &str = "nothing to ground: pass `grounding` with at least one item — {kind:\"decision\", description|decision_id} (a decision already made), {kind:\"evidence\", content, source?} (something observed, and where), {kind:\"assumption\", statement} (something assumed), or {kind:\"bet\", statement?, would_change_if?, check_by?} (nothing yet: a declared bet)";
+
+/// Parsed, validated arguments for the `ground_decision` tool. The decision is selected the way
+/// `disagree_decision` selects its target: `decision_id` bypasses resolution, otherwise
+/// `description` (+ optional `topic`) resolves via [`resolve_target`].
+pub(crate) struct GroundDecisionArgs {
+    pub(crate) actor_id: String,
+    pub(crate) decision_id: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) topic: Option<String>,
+    /// What the decision rests on; see [`CaptureDecisionArgs::grounding`].
+    pub(crate) grounding: GroundingSpec,
+}
+
+impl GroundDecisionArgs {
+    pub(crate) fn from_json(
+        args: &Map<String, Value>,
+        actor_id: String,
+    ) -> Result<Self, CoreError> {
+        Ok(Self {
+            actor_id,
+            decision_id: optional_string(args, "decision_id")?,
+            description: optional_string(args, "description")?,
+            topic: optional_string(args, "topic")?,
+            grounding: require_wire_grounding(args, WIRE_GROUND_REFUSAL)?,
+        })
+    }
+}
+
+/// The migrated core for the `ground_decision` MCP tool: one implementation consumed by both
+/// transports. The decision is resolved via [`resolve_target`] and every named premise via
+/// [`resolve_grounding`]; an ambiguous or not-found target or premise is returned as-is with no
+/// event appended. A premise that would close a `FOLLOWS_FROM` loop is refused as an invalid
+/// argument, also with nothing written. What is recorded is attributed to `actor_id` — the
+/// grounder — with no causation link to the decision's proposal.
+pub(crate) fn ground_decision<P: LedgerProvider>(
+    provider: &P,
+    args: GroundDecisionArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let target = resolve_target(
+        &handle,
+        args.decision_id.as_deref(),
+        args.description.as_deref(),
+        args.topic.as_deref(),
+        "decision_id",
+    )?;
+    let decision_id = match target {
+        ResolvedTarget::Id(id) => id,
+        ResolvedTarget::Ambiguous(output) => return Ok(output),
+        ResolvedTarget::NotFound(output) => return Ok(output),
+    };
+
+    let resolved = match resolve_grounding(&handle.ledger, &handle.tenant_id, args.grounding)
+        .map_err(CoreError::from)?
+    {
+        GroundingResolution::Ready(resolved) => resolved,
+        GroundingResolution::Unresolved(unresolved) => {
+            return Ok(ToolOutput(unresolved.envelope()));
+        }
+    };
+
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&handle.ledger, &handle.tenant_id, &graph).map_err(CoreError::from)?;
+    if let Some(refusal) =
+        premise_cycle_refusal(&graph, &decision_id, &resolved.plan).map_err(CoreError::from)?
+    {
+        return Err(CoreError::InvalidArgument(refusal));
+    }
+
+    let commands = Commands::new_with_context(
+        &handle.ledger,
+        CommandContext::new(
+            handle.tenant_id.clone(),
+            EventProvenance::agent(args.actor_id.clone()),
+        ),
+    );
+    let added = commands
+        .ground_decision_with_plan(&args.actor_id, &decision_id, &resolved.plan)
+        .map_err(CoreError::from)?;
+
+    Ok(ToolOutput(json!({
+        "decision_id": added.decision_id,
+        "actor_id": args.actor_id,
+        "relation_event_ids": added.relation_event_ids,
+        "rests_on": resolved.label(added.rests_on),
+        "premise_stale": added.premise_stale,
     })))
 }

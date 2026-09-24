@@ -92,6 +92,13 @@ pub enum Command {
     /// --pick N. One that matches nothing is a successful `not_found` answer. Recorded with
     /// who, when, from, to and why; reversed by moving it back.
     Move(MoveArgs),
+    /// Say what an existing decision rests on, after the fact: a decision it follows from,
+    /// something observed, something assumed, or a declared bet. Append-only and attributed to
+    /// whoever runs it (--actor), so older decisions stop reading "nothing declared" without
+    /// pretending the grounding was there at capture. Resolves the decision by description with
+    /// the same ambiguity gate as `supersede`; nothing is written when the description is
+    /// ambiguous, a premise cannot be pinned to one decision, or a premise would close a loop.
+    Ground(GroundArgs),
     Review(ReviewArgs),
     Import(ImportArgs),
     /// Run deterministic read queries. JSON is the default; pass --summary for compact text.
@@ -710,6 +717,39 @@ pub struct SupersedeArgs {
     pub grounding: GroundingArgs,
 }
 
+/// `hivemind ground`: give an existing decision what it rests on. Takes the grounding flags of
+/// `emit decision.capture` (`--rests-on-decision`, `--rests-on-evidence` with `--evidence-source`,
+/// `--rests-on-assumption`, `--bet`) except `--confidence`, which is the decider's own words at
+/// capture and cannot be added afterwards.
+#[derive(Debug, Clone, Args)]
+pub struct GroundArgs {
+    /// Free-text description to resolve to the decision being grounded (fluent alternative to
+    /// --id). A bare `#N` refers to candidate N from the previous ambiguous resolver output.
+    pub description: Option<String>,
+
+    #[arg(long = "id")]
+    pub decision_id: Option<String>,
+
+    /// Select candidate N when a description resolves ambiguously.
+    #[arg(long = "pick")]
+    pub pick: Option<usize>,
+
+    /// Narrow resolution to decisions carrying this topic key.
+    #[arg(long = "topic")]
+    pub topic: Option<String>,
+
+    /// Existing evidence ids this decision rests on (a node recorded earlier).
+    #[arg(long = "evidence", value_delimiter = ',')]
+    pub evidence_ids: Vec<String>,
+
+    /// Existing hypothesis ids this decision rests on (a node recorded earlier).
+    #[arg(long = "hypotheses", value_delimiter = ',')]
+    pub hypothesis_ids: Vec<String>,
+
+    #[command(flatten)]
+    pub grounding: GroundingArgs,
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct ReviewArgs {
     /// Glob pattern for decision actor ids to review, for example agent:*.
@@ -1005,7 +1045,8 @@ pub struct GroundingArgs {
     #[arg(long = "check-by", requires = "bet")]
     pub check_by: Option<String>,
 
-    /// Confidence in the decider's own words. Omit when they expressed none.
+    /// Confidence in the decider's own words. Omit when they expressed none. Capture only:
+    /// `ground` refuses it, because it cannot be added to a decision that already exists.
     #[arg(long = "confidence", value_parser = ["low", "medium", "high"])]
     pub confidence: Option<String>,
 }

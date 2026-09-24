@@ -47,8 +47,9 @@ use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
 use core::{
     CaptureDecisionArgs, CompactViewArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
-    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSupersessionChainArgs, LedgerHandle,
-    LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs, SupersedeDecisionArgs,
+    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSupersessionChainArgs,
+    GroundDecisionArgs, LedgerHandle, LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs,
+    SupersedeDecisionArgs,
 };
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -345,6 +346,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "disagree_decision" => tool_disagree_decision(arguments, config),
         "supersede_decision" => tool_supersede_decision(arguments, config),
         "move_decision" => tool_move_decision(arguments, config),
+        "ground_decision" => tool_ground_decision(arguments, config),
         "get_decision" => tool_get_decision(arguments, config),
         "get_decision_outcome" => tool_get_decision_outcome(arguments, config),
         "decision_quality_candidates" => tool_decision_quality_candidates(arguments, config),
@@ -435,6 +437,19 @@ fn expressed_confidence_property() -> Value {
         "enum": ["low", "medium", "high"],
         "description": "Confidence in the decider's own words. Omit when they expressed none; never estimate it."
     })
+}
+
+/// The `grounding` input of `ground_decision`: the items `capture_decision` takes, described for a
+/// call that adds them to a decision that already exists.
+fn ground_grounding_property() -> Value {
+    let mut property = grounding_property();
+    if let Some(object) = property.as_object_mut() {
+        object.insert(
+            "description".to_owned(),
+            json!("What the decision rests on — required, at least one item. Four ways to answer: a decision we already made (`{kind:\"decision\", description}` — name it the way you would describe it — or `{kind:\"decision\", decision_id}` when you hold the id), something observed (`{kind:\"evidence\", content, source?}` — the observation and where: URL, file@commit, test run, measurement), something assumed (`{kind:\"assumption\", statement}`), or nothing yet (`{kind:\"bet\", statement?, would_change_if?, check_by?}` — a declared bet). An existing node can be named by id: `{kind:\"evidence\", evidence_id}` / `{kind:\"assumption\", hypothesis_id}`. The decider's own words are not a grounding. A `description` that matches more than one decision returns a successful result shaped `{outcome: \"ambiguous\", field: \"grounding[i]\", candidates: [...]}`, and one that matches none returns `{outcome: \"not_found\", field: \"grounding[i]\", description}`; in both cases NO event is appended — re-call with that item's `decision_id`. A decision that already rests, directly or through others, on the decision being grounded cannot be its premise: that is refused as an error and nothing is written."),
+        );
+    }
+    property
 }
 
 pub fn tool_definitions() -> Vec<Value> {
@@ -568,6 +583,21 @@ pub fn tool_definitions() -> Vec<Value> {
                     "topic": { "type": "string", "description": "Narrows description resolution to decisions carrying this topic key." },
                     "to": { "type": "string", "description": "Project to move the decision to: a registered handle, or the acting actor's own personal address. Where the decision is now is read from the ledger, never passed." },
                     "reason": { "type": "string", "description": "Why the decision belongs in `to`; kept with the move and shown in the decision's history." }
+                }
+            }
+        }),
+        json!({
+            "name": "ground_decision",
+            "description": "Record what an existing decision rests on, after the fact — for a decision captured without saying (older decisions read `nothing declared`) or one whose premises came to light later. Append-only, and attributed to `actor_id` (the grounder, not the decision's proposer), so a reader sees it was added later rather than at capture. Wraps `hivemind ground`. Resolves the decision by `decision_id` or a free-text `description` (+ optional `topic`) — exactly one is required, the same fluent resolution `supersede_decision` uses. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error, with no write; re-call with `decision_id` from that list. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}`, also with no write. `grounding` names what it rests on (required). The reply lists `rests_on` (what was recorded) and `premise_stale` (named decisions already superseded or rejected). To check whether a bet held, record evidence and relate it with `emit evidence.recorded` + `relation.added` SUPPORTS|REFUTES.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["grounding"],
+                "properties": {
+                    "actor_id": { "type": "string", "description": "Grounding actor. Defaults to `agent:<tool>:<name>` when omitted." },
+                    "decision_id": { "type": "string", "description": "The decision to ground. Provide this or `description`, not both." },
+                    "description": { "type": "string", "description": "Free-text match for the decision to ground. Required when `decision_id` is omitted." },
+                    "topic": { "type": "string", "description": "Optional topic_key filter narrowing the `description` match." },
+                    "grounding": ground_grounding_property()
                 }
             }
         }),
@@ -1066,6 +1096,15 @@ fn tool_move_decision(args: Value, config: &McpConfig) -> std::result::Result<Va
     let core_args = MoveDecisionArgs::from_json(&args, actor_id)?;
     let provider = StdioLedgerProvider { config };
     let output = core::move_decision(&provider, core_args)?;
+    Ok(output.into_value())
+}
+
+fn tool_ground_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let actor_id = mcp_actor_id(&args, config)?;
+    let core_args = GroundDecisionArgs::from_json(&args, actor_id)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::ground_decision(&provider, core_args)?;
     Ok(output.into_value())
 }
 

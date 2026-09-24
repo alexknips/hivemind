@@ -8,6 +8,7 @@ mod compact_view;
 mod context;
 mod decision;
 mod decision_log;
+mod follows_from;
 mod grounding;
 mod history;
 mod inhouse_scorer;
@@ -60,6 +61,7 @@ pub use decision::{get_decision, get_hypothesis_statement, DecisionView, Hypothe
 pub use decision_log::{
     export_decision_log, DecisionLogExport, DecisionLogOutcome, DecisionLogRequest,
 };
+pub use follows_from::follows_from_path;
 pub use grounding::{
     dependents_count, grounding_of, grounding_of_at, grounding_state_of, rests_on_clause,
     Grounding, GroundingAdded, GroundingItem, GroundingItemState, GroundingKind, GroundingState,

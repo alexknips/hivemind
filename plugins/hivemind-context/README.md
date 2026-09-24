@@ -26,12 +26,14 @@ The Claude package installs:
   (write verb, strict ambiguity gate).
 - `/hivemind-context:supersede` — replace a decision by description (write
   verb, strict ambiguity gate).
+- `/hivemind-context:ground` — say what an existing decision rests on, after
+  the fact, attributed to you (write verb, strict ambiguity gate).
 - The `hivemind-context` skill, which teaches when to consult HiveMind
   before changing code, and forbids inventing decision ids.
 
 Every command maps 1:1 to one CLI verb from `hivemind-tenv.1`/`tenv.2`'s
 fluent surface (`query situational`, `query recall`, `query why`,
-`query verify`, `disagree`, `supersede`). None of them take a `decision_id`
+`query verify`, `disagree`, `supersede`, `ground`). None of them take a `decision_id`
 as primary input — free text (or `#N` from a previous ambiguous result) is
 the interface; `--id`/`--decision`/`--old`/`--pick N` remain as escape
 hatches for callers that already have one.
@@ -72,14 +74,14 @@ or pass `--hivemind-dir` to the underlying scripts.
 Read verbs (`situational`, `recall`, `why`, `verify`) run under the CLI's
 own default actor and record no new events.
 
-Write verbs (`disagree`, `supersede`) pass `--actor agent:<tool>:<name>`
+Write verbs (`disagree`, `supersede`, `ground`) pass `--actor agent:<tool>:<name>`
 explicitly, derived the same way `hivemind-capture`'s scripts derive it —
 Gas City's stable `GC_AGENT`/`GC_ALIAS` slot identity first (it survives
 process restarts), falling back to a raw per-run session id
 (`CLAUDE_SESSION_ID`/`CLAUDE_CODE_SESSION_ID` under Claude,
 `CODEX_THREAD_ID`/`CODEX_SESSION_ID`/`CODEX_TASK_ID` under Codex), then
-Gas City's session-instance variables. `run_disagree`/`run_supersede`
-(`src/cli/run/mod.rs`) derive `source` from that `--actor` value itself
+Gas City's session-instance variables. `run_disagree`/`run_supersede`/`run_ground`
+(`src/cli/run/`) derive `source` from that `--actor` value itself
 (`agent:` prefix → `EventProvenance::agent`, otherwise `::human`), so the
 emitted event's `source` field always matches its `actor_id`'s kind.
 

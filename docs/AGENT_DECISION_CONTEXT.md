@@ -69,7 +69,10 @@ An agent about to change code does not know a decision's id. It knows:
   **verify**, resolved by description;
 - that it disagrees, or that a decision needs replacing — **disagree** /
   **supersede**, both resolved by description, both write verbs with a
-  strict ambiguity gate (no write on an unresolved match).
+  strict ambiguity gate (no write on an unresolved match);
+- what an existing decision rests on, when it reads `nothing declared` —
+  **ground**, resolved by description, a write verb with the same strict
+  ambiguity gate, attributed to whoever adds it.
 
 `hivemind-context` maps each of these onto exactly one CLI verb. See
 `docs/AGENT_FLUENT_QUERYING.md` for the resolver's design (deterministic
@@ -95,8 +98,8 @@ The plugin includes:
 
 - `/hivemind-context:situational`, `/hivemind-context:recall`,
   `/hivemind-context:why`, `/hivemind-context:verify`,
-  `/hivemind-context:disagree`, `/hivemind-context:supersede` — one slash
-  command per CLI verb.
+  `/hivemind-context:disagree`, `/hivemind-context:supersede`,
+  `/hivemind-context:ground` — one slash command per CLI verb.
 - The `hivemind-context` skill, which teaches an agent when to consult
   HiveMind before changing code, how to read an ambiguous result, and
   forbids inventing a `decision_id`.

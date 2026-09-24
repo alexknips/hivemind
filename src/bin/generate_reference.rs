@@ -27,6 +27,7 @@ const WRITE_TOOLS: &[&str] = &[
     "disagree_decision",
     "supersede_decision",
     "move_decision",
+    "ground_decision",
 ];
 
 const MCP_SETUP_PATH: &str = "website/src/content/docs/guides/mcp-setup.md";

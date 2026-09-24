@@ -1,3 +1,4 @@
+mod ground;
 mod grounding;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -115,6 +116,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Disagree(args) => run_disagree(cli, args),
         Command::Supersede(args) => run_supersede(cli, args),
         Command::Move(args) => run_move(cli, args),
+        Command::Ground(args) => ground::run_ground(cli, args),
         Command::Review(args) => run_review(cli, args),
         Command::Import(import) => run_import(cli, import),
         Command::Query(query) => run_query(cli, query),
