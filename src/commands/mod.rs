@@ -2811,14 +2811,22 @@ fn validate_project_handle(handle: &str) -> Result<()> {
 /// rather than duplicated onto a second field. Any other actor id shape (no documented
 /// session convention) is prefixed as-is rather than guessed at.
 pub fn personal_project_handle(actor_id: &str) -> String {
-    let base = match actor_id
-        .strip_prefix("agent:")
-        .and_then(|rest| rest.split_once(':'))
-    {
+    let base = match split_agent_actor(actor_id) {
         Some((tool, _session)) => format!("agent:{tool}"),
         None => actor_id.to_owned(),
     };
     format!("{PERSONAL_PROJECT_HANDLE_PREFIX}{base}")
+}
+
+/// The session component of an `agent:<tool>:<session>` actor id, the part
+/// `personal_project_handle` removes from the address. `None` for a human or any other
+/// actor id shape with no documented session convention.
+pub fn agent_actor_session(actor_id: &str) -> Option<&str> {
+    split_agent_actor(actor_id).map(|(_tool, session)| session)
+}
+
+fn split_agent_actor(actor_id: &str) -> Option<(&str, &str)> {
+    actor_id.strip_prefix("agent:")?.split_once(':')
 }
 
 /// A decision title is a name, not a summary: at most `MAX_TITLE_LEN` characters, one

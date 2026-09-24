@@ -32,7 +32,7 @@ use crate::ledger::PostgresEventLedger;
 use crate::ledger::{AnyLedger, EventLedger, LedgerConfig, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
-    derive_decision_status, export_decision_log, export_read_only_summary,
+    decisions_in_project, derive_decision_status, export_decision_log, export_read_only_summary,
     get_active_decision_blockers, get_blocker_notification_candidates, get_compact_view,
     get_decision, get_decision_brief, get_decision_neighborhood, get_decision_quality_score,
     get_decisions_added_since, get_decisions_changed_since, get_project, get_recent_activity,
@@ -43,10 +43,11 @@ use crate::queries::{
     ChangedSinceRequest, DecisionBlockerFilters, DecisionLogExport, DecisionLogOutcome,
     DecisionLogRequest, DecisionStatus, DecisionsAddedSinceFilterRequest,
     DecisionsAddedSinceRequest, HistoryFilterRequest, MisfiledScanRequest, NeighborhoodRequest,
-    ProjectListRequest, ProjectOutcome, QualityTier, QueryContext, ReadOnlyExportQuery,
-    ReadOnlyExportRequest, RecentActivityRequest, RecentDecisionEntry, RecentDecisionFilterRequest,
-    RecentDecisionsRequest, ResolveOutcome, ResolvedCandidate, ScanQualityRequest, ScorerConfig,
-    ScorerReason, SearchDecisionRequest, SituationalRequest, SupersessionSpeed,
+    ProjectDecisionsRequest, ProjectListRequest, ProjectOutcome, QualityTier, QueryContext,
+    ReadOnlyExportQuery, ReadOnlyExportRequest, RecentActivityRequest, RecentDecisionEntry,
+    RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome, ResolvedCandidate,
+    ScanQualityRequest, ScorerConfig, ScorerReason, SearchDecisionRequest, SituationalRequest,
+    SupersessionSpeed,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -70,9 +71,9 @@ use super::args::{
     EmitDecisionProposedArgs, EmitHypothesisKind, EmitRelationKind, ExportArgs, GraphBackend,
     ImportArgs, ImportCommand, ImportConnectorCommand, ImportDocumentsArgs, IngestArgs,
     IngestCommand, IngestSlackThreadArgs, MapArgs, McpArgs, ProjectAnchorArgs, ProjectArgs,
-    ProjectCommand, ProjectLinkArgs, ProjectListArgs, ProjectRegisterArgs, ProjectShowArgs,
-    ProjectSourceArg, ProjectUseArgs, QualityScanArgs, QueryAddedSinceArgs, QueryArgs,
-    QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus,
+    ProjectCommand, ProjectDecisionsArgs, ProjectLinkArgs, ProjectListArgs, ProjectRegisterArgs,
+    ProjectShowArgs, ProjectSourceArg, ProjectUseArgs, QualityScanArgs, QueryAddedSinceArgs,
+    QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus,
     QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs, QueryQualityTier,
     QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
     QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
@@ -83,10 +84,10 @@ use super::render::{
     append_truncation_notice, decision_status_label, format_current_project_output,
     format_disagree_output, format_export_output, format_import_output, format_json_value,
     format_output, format_prepare_documents_output, format_project_anchor_output,
-    format_project_link_output, format_project_list_output, format_project_register_output,
-    format_project_show_output, format_query_response, format_review_output,
-    format_supersede_output, render_active_blockers_summary, render_added_since_summary,
-    render_blocker_notifications_summary, render_changed_since_summary,
+    format_project_decisions_output, format_project_link_output, format_project_list_output,
+    format_project_register_output, format_project_show_output, format_query_response,
+    format_review_output, format_supersede_output, render_active_blockers_summary,
+    render_added_since_summary, render_blocker_notifications_summary, render_changed_since_summary,
     render_compact_view_summary, render_decision_brief_summary, render_decision_list_summary,
     render_decision_summary, render_dot, render_misfiled_scan_summary, render_neighborhood_summary,
     render_placement_line, render_read_only_export_summary, render_recall_summary,
@@ -3590,6 +3591,7 @@ fn run_project(cli: &Cli, args: &ProjectArgs) -> Result<String> {
         ProjectCommand::Anchor(anchor_args) => run_project_anchor(cli, anchor_args),
         ProjectCommand::List(list_args) => run_project_list(cli, list_args),
         ProjectCommand::Show(show_args) => run_project_show(cli, show_args),
+        ProjectCommand::Decisions(decisions_args) => run_project_decisions(cli, decisions_args),
         ProjectCommand::Use(use_args) => run_project_use(cli, use_args),
     }
 }
@@ -3712,6 +3714,24 @@ fn run_project_show(cli: &Cli, args: &ProjectShowArgs) -> Result<String> {
     let response = get_project(&scoped_ledger, handle)?;
 
     format_project_show_output(cli.json, &response)
+}
+
+fn run_project_decisions(cli: &Cli, args: &ProjectDecisionsArgs) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
+    let ledger = open_ledger(cli)?;
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
+
+    let response = decisions_in_project(
+        &graph,
+        &ProjectDecisionsRequest {
+            handle: args.handle.clone(),
+            limit: args.limit,
+            cursor: args.cursor.clone(),
+        },
+    )?;
+
+    format_project_decisions_output(cli.json, &response)
 }
 
 fn run_project_show_current(cli: &Cli) -> Result<String> {

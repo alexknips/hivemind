@@ -13,9 +13,9 @@ use crate::events::{
 use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
 use super::{
-    normalize_topic_key, personal_project_handle, Commands, DecisionProposalInput,
-    DeterminedProject, GroundInput, Grounding, SupersedeInput, MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN,
-    PERSONAL_FALLBACK_NOTICE,
+    agent_actor_session, normalize_topic_key, personal_project_handle, Commands,
+    DecisionProposalInput, DeterminedProject, GroundInput, Grounding, SupersedeInput,
+    MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN, PERSONAL_FALLBACK_NOTICE,
 };
 
 #[test]
@@ -1128,6 +1128,23 @@ fn personal_project_handle_keeps_human_actor_id_intact() {
         personal_project_handle("human:alice"),
         "personal:human:alice"
     );
+}
+
+#[test]
+fn agent_actor_session_is_the_part_the_personal_address_drops() {
+    assert_eq!(
+        agent_actor_session("agent:claude:scribe-42"),
+        Some("scribe-42")
+    );
+    // Only the first colon after the tool splits; the rest is the session.
+    assert_eq!(
+        agent_actor_session("agent:codex:furiosa/session-1"),
+        Some("furiosa/session-1")
+    );
+    // No session component: a human, a bare tool address, or an unconventional id.
+    assert_eq!(agent_actor_session("human:alice"), None);
+    assert_eq!(agent_actor_session("agent:claude"), None);
+    assert_eq!(agent_actor_session("actor:bob"), None);
 }
 
 #[test]

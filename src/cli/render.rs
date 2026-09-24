@@ -17,10 +17,10 @@ use crate::queries::{
     DecisionView, DecisionsAddedSinceResults, DecisionsChangedSinceResults, GroundingAdded,
     GroundingItem, GroundingItemState, GroundingKind, GroundingState, HistoryChangeKind,
     HypothesisStatus, MatchReason, MisfiledDecisionCandidate, NeighborhoodView, OutcomeReason,
-    ProjectListResults, ProjectOutcome, QualityTier, QueryResponse, ReadOnlyExport,
-    ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
-    RecentActivityResults, RecentDecisionsResults, ResolveOutcome, ScoredDecision,
-    SituationalResults, SupersessionChain,
+    ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectListResults, ProjectOutcome, QualityTier,
+    QueryResponse, ReadOnlyExport, ReadOnlyExportFormat as QueryReadOnlyExportFormat,
+    ReadOnlyExportQueryKind, RecentActivityResults, RecentDecisionsResults, ResolveOutcome,
+    ScoredDecision, SituationalResults, SupersessionChain,
 };
 use crate::{HivemindError, Result};
 
@@ -1639,6 +1639,65 @@ pub(crate) fn format_project_show_output(
         return format_json_value(true, response);
     }
     Ok(render_project_outcome_summary(&response.data))
+}
+
+pub(crate) fn format_project_decisions_output(
+    as_json: bool,
+    response: &QueryResponse<ProjectDecisionsOutcome>,
+) -> Result<String> {
+    if as_json {
+        return format_json_value(true, response);
+    }
+    let mut output = render_project_decisions_summary(&response.data);
+    if let ProjectDecisionsOutcome::Found(page) = &response.data {
+        append_truncation_notice(&mut output, response.truncated, page.next_cursor.as_deref());
+    }
+    Ok(output)
+}
+
+/// A project's decision list: a header that says whose or which project this is and how many
+/// decisions are in it (all of them, not just this page), then one row per decision.
+pub(crate) fn render_project_decisions_summary(outcome: &ProjectDecisionsOutcome) -> String {
+    let page = match outcome {
+        ProjectDecisionsOutcome::NotFound { handle } => {
+            return format!(
+                "no project called '{handle}': run `hivemind project register {handle}` to register it"
+            );
+        }
+        ProjectDecisionsOutcome::Found(page) => page,
+    };
+
+    let mut output = project_decisions_header(page);
+    for item in &page.items {
+        let _ = write!(
+            output,
+            "\n{}\t{}\t{}\tactor={}",
+            decision_status_label(item.status),
+            item.decision_id,
+            summary_cell(&item.title),
+            item.proposed_by.as_deref().unwrap_or("-"),
+        );
+        if let Some(session) = &item.session {
+            let _ = write!(output, "\tsession={}", summary_cell(session));
+        }
+        let _ = write!(
+            output,
+            "\tproject_source={}",
+            item.project_source.as_deref().unwrap_or("-")
+        );
+    }
+    output
+}
+
+fn project_decisions_header(page: &ProjectDecisionsPage) -> String {
+    match &page.owner {
+        Some(owner) => format!(
+            "in {}'s personal project, not yet shared: {}",
+            summary_cell(owner),
+            page.total_matches
+        ),
+        None => format!("in project {}: {}", page.handle, page.total_matches),
+    }
 }
 
 #[derive(Debug, Serialize)]

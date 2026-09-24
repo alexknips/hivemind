@@ -78,8 +78,9 @@ pub use outcome::{
     outcome_next_cursor, DecisionOutcome, DecisionQualityCandidatesRequest, OutcomeReason,
 };
 pub use projects::{
-    get_project, list_projects, ProjectAnchorView, ProjectLinkFact, ProjectListRequest,
-    ProjectListResults, ProjectOutcome, ProjectView,
+    decisions_in_project, get_project, list_projects, ProjectAnchorView, ProjectDecisionItem,
+    ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectDecisionsRequest, ProjectLinkFact,
+    ProjectListRequest, ProjectListResults, ProjectOutcome, ProjectView,
 };
 pub use relevant::get_relevant_decisions;
 pub use resolve::{resolve_decision_by_description, ResolveOutcome, ResolvedCandidate};

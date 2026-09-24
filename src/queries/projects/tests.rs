@@ -1,8 +1,10 @@
 // Parent module gates this file with #[cfg(test)]; repeat the marker so UBS can filter test-only assertions.
 #[cfg(test)]
 use crate::commands::Commands;
+use crate::commands::{DecisionProposalInput, DeterminedProject, Grounding, SupersedeInput};
 use crate::events::{ProjectAnchorKind, ProjectLinkKind};
 use crate::ledger::InMemoryEventLedger;
+use crate::projector::{memory::MemoryGraph, rebuild_graph};
 use crate::Result;
 
 use super::*;
@@ -205,6 +207,332 @@ fn unanchor_retracts_the_anchor_from_subsequent_reads() -> Result<()> {
         }
         other => panic!("expected Found, got {other:?}"),
     }
+
+    Ok(())
+}
+
+/// Records decisions into a ledger for the decision-list tests: owns the option and topic
+/// data a `DecisionProposalInput` borrows, so one call proposes one decision.
+struct DecisionRecorder<'a> {
+    commands: &'a Commands<'a, InMemoryEventLedger>,
+    option_id: String,
+    option_labels: [String; 1],
+    topic_keys: [String; 1],
+}
+
+impl<'a> DecisionRecorder<'a> {
+    fn new(commands: &'a Commands<'a, InMemoryEventLedger>) -> Result<Self> {
+        Ok(Self {
+            commands,
+            option_id: commands.record_option("human:alice", "A", "Option A")?,
+            option_labels: ["Option A".to_owned()],
+            topic_keys: ["topic".to_owned()],
+        })
+    }
+
+    fn record(&self, actor_id: &str, title: &str, project: Option<&str>) -> Result<String> {
+        self.record_with(actor_id, title, project, false)
+    }
+
+    fn record_with(
+        &self,
+        actor_id: &str,
+        title: &str,
+        project: Option<&str>,
+        still_proposed: bool,
+    ) -> Result<String> {
+        self.commands.propose_decision(DecisionProposalInput {
+            actor_id,
+            title,
+            rationale: "The review list has to show what it is listing",
+            topic_keys: &self.topic_keys,
+            option_ids: std::slice::from_ref(&self.option_id),
+            option_labels: &self.option_labels,
+            chosen_option_id: Some(self.option_id.as_str()),
+            decided_by: None,
+            delegated_by: None,
+            still_proposed,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            project: project.map(DeterminedProject::stated),
+        })
+    }
+}
+
+fn graph_of(ledger: &InMemoryEventLedger) -> Result<MemoryGraph> {
+    let graph = MemoryGraph::default();
+    rebuild_graph(ledger, &graph)?;
+    Ok(graph)
+}
+
+fn list_decisions(
+    graph: &MemoryGraph,
+    handle: &str,
+    limit: usize,
+    cursor: Option<&str>,
+) -> Result<QueryResponse<ProjectDecisionsOutcome>> {
+    decisions_in_project(
+        graph,
+        &ProjectDecisionsRequest {
+            handle: handle.to_owned(),
+            limit,
+            cursor: cursor.map(str::to_owned),
+        },
+    )
+}
+
+fn found(response: QueryResponse<ProjectDecisionsOutcome>) -> ProjectDecisionsPage {
+    match response.data {
+        ProjectDecisionsOutcome::Found(page) => page,
+        other => panic!("expected Found, got {other:?}"),
+    }
+}
+
+#[test]
+fn decisions_in_project_lists_a_shared_projects_decisions_with_status_and_provenance() -> Result<()>
+{
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands.register_project("human:alice", "billing", Some("Billing"), None)?;
+    commands.register_project("human:alice", "platform", None, None)?;
+    let recorder = DecisionRecorder::new(&commands)?;
+
+    let per_seat = recorder.record("human:alice", "Price per seat", Some("billing"))?;
+    let open = recorder.record_with(
+        "agent:claude:session-1",
+        "Bill monthly",
+        Some("billing"),
+        true,
+    )?;
+    recorder.record("human:alice", "Adopt the platform SDK", Some("platform"))?;
+    recorder.record("human:alice", "Kept to myself", None)?;
+
+    let response = list_decisions(&graph_of(&ledger)?, "billing", 25, None)?;
+    assert_eq!(response.result_count, 2);
+    assert!(!response.truncated);
+    let page = found(response);
+    assert_eq!(page.handle, "billing");
+    assert!(!page.personal);
+    assert_eq!(page.owner, None);
+    assert_eq!(page.total_matches, 2);
+    assert_eq!(page.next_cursor, None);
+
+    // Oldest first, and each item carries who recorded it and how its project was decided.
+    let ids: Vec<&str> = page
+        .items
+        .iter()
+        .map(|item| item.decision_id.as_str())
+        .collect();
+    assert_eq!(ids, vec![per_seat.as_str(), open.as_str()]);
+
+    let per_seat_item = &page.items[0];
+    assert_eq!(per_seat_item.title, "Price per seat");
+    assert_eq!(per_seat_item.status, DecisionStatus::Accepted);
+    assert_eq!(per_seat_item.proposed_by.as_deref(), Some("human:alice"));
+    assert_eq!(per_seat_item.session, None);
+    assert_eq!(per_seat_item.project_source.as_deref(), Some("stated"));
+    assert!(per_seat_item.event_origin.is_some());
+
+    let open_item = &page.items[1];
+    assert_eq!(open_item.status, DecisionStatus::Proposed);
+    assert_eq!(
+        open_item.proposed_by.as_deref(),
+        Some("agent:claude:session-1")
+    );
+    assert_eq!(open_item.session.as_deref(), Some("session-1"));
+
+    Ok(())
+}
+
+#[test]
+fn a_personal_project_lists_every_session_of_one_agent_tool_and_shows_each_session() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands.register_project("human:alice", "billing", None, None)?;
+    let recorder = DecisionRecorder::new(&commands)?;
+
+    // Two sessions of one tool share one personal project; another tool, a human, and a
+    // decision filed under a shared project do not belong to it.
+    let first = recorder.record("agent:claude:session-1", "Retry with backoff", None)?;
+    let other_tool = recorder.record("agent:codex:session-1", "Cache the token", None)?;
+    let second = recorder.record("agent:claude:session-2", "Queue the exports", None)?;
+    let human = recorder.record("human:alice", "Ship on Fridays", None)?;
+    recorder.record(
+        "agent:claude:session-3",
+        "Filed in billing",
+        Some("billing"),
+    )?;
+
+    let graph = graph_of(&ledger)?;
+    let page = found(list_decisions(&graph, "personal:agent:claude", 25, None)?);
+    assert_eq!(page.handle, "personal:agent:claude");
+    assert!(page.personal);
+    assert_eq!(page.owner.as_deref(), Some("agent:claude"));
+    assert_eq!(page.total_matches, 2);
+    let listed: Vec<(&str, Option<&str>)> = page
+        .items
+        .iter()
+        .map(|item| (item.decision_id.as_str(), item.session.as_deref()))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            (first.as_str(), Some("session-1")),
+            (second.as_str(), Some("session-2")),
+        ]
+    );
+    assert!(page
+        .items
+        .iter()
+        .all(|item| item.project_source.as_deref() == Some("personal_fallback")));
+
+    // Naming the actor with its session lists the same per-tool project, under its
+    // canonical address.
+    let with_session = found(list_decisions(
+        &graph,
+        "personal:agent:claude:session-2",
+        25,
+        None,
+    )?);
+    assert_eq!(with_session.handle, "personal:agent:claude");
+    assert_eq!(with_session.items, page.items);
+
+    let codex = found(list_decisions(&graph, "personal:agent:codex", 25, None)?);
+    assert_eq!(codex.items.len(), 1);
+    assert_eq!(codex.items[0].decision_id, other_tool);
+
+    let alice = found(list_decisions(&graph, "personal:human:alice", 25, None)?);
+    assert_eq!(alice.owner.as_deref(), Some("human:alice"));
+    assert_eq!(alice.items.len(), 1);
+    assert_eq!(alice.items[0].decision_id, human);
+    assert_eq!(alice.items[0].session, None);
+
+    Ok(())
+}
+
+#[test]
+fn decisions_in_project_pages_with_truncated_flag_cursor_and_the_whole_count() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands.register_project("human:alice", "billing", None, None)?;
+    let recorder = DecisionRecorder::new(&commands)?;
+    let ids = ["First", "Second", "Third"]
+        .into_iter()
+        .map(|title| recorder.record("human:alice", title, Some("billing")))
+        .collect::<Result<Vec<_>>>()?;
+
+    let graph = graph_of(&ledger)?;
+    let first = list_decisions(&graph, "billing", 2, None)?;
+    assert!(first.truncated);
+    assert_eq!(first.result_count, 2);
+    let first = found(first);
+    assert_eq!(first.total_matches, 3, "the count covers the whole project");
+    assert_eq!(first.next_cursor.as_deref(), Some("2"));
+    assert_eq!(first.items[0].decision_id, ids[0]);
+    assert_eq!(first.items[1].decision_id, ids[1]);
+
+    let second = list_decisions(&graph, "billing", 2, first.next_cursor.as_deref())?;
+    assert!(!second.truncated);
+    let second = found(second);
+    assert_eq!(second.cursor.as_deref(), Some("2"));
+    assert_eq!(second.total_matches, 3);
+    assert_eq!(second.next_cursor, None);
+    assert_eq!(second.items.len(), 1);
+    assert_eq!(second.items[0].decision_id, ids[2]);
+
+    // A cursor past the end is an empty page, not an error.
+    let past = list_decisions(&graph, "billing", 2, Some("9"))?;
+    assert!(!past.truncated);
+    assert!(found(past).items.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn decisions_in_project_shows_a_superseded_decision_as_superseded() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands.register_project("human:alice", "billing", None, None)?;
+    let recorder = DecisionRecorder::new(&commands)?;
+    let old = recorder.record("human:alice", "Price per org", Some("billing"))?;
+    let outcome = commands.supersede(SupersedeInput {
+        actor_id: "human:alice",
+        old_decision_id: &old,
+        new_title: "Price per seat",
+        new_rationale: "Per-seat pricing replaces per-org because accounts vary too much",
+        topic_keys: &["topic".to_owned()],
+        option_labels: &["Per seat".to_owned()],
+        chosen_option_label: Some("Per seat"),
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+        project: None,
+    })?;
+
+    let page = found(list_decisions(&graph_of(&ledger)?, "billing", 25, None)?);
+    let statuses: Vec<(&str, DecisionStatus)> = page
+        .items
+        .iter()
+        .map(|item| (item.decision_id.as_str(), item.status))
+        .collect();
+    assert_eq!(
+        statuses,
+        vec![
+            (old.as_str(), DecisionStatus::Superseded),
+            // `supersede` proposes the replacement but never auto-accepts it
+            // (commands::HiveMindCommands::supersede, `still_proposed: true`).
+            (outcome.new_decision_id.as_str(), DecisionStatus::Proposed),
+        ],
+        "the replacement inherits the project, and the replaced decision says so"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn decisions_in_project_says_not_found_for_an_unregistered_handle_but_empty_for_a_known_one(
+) -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands.register_project("human:alice", "billing", None, None)?;
+    let graph = graph_of(&ledger)?;
+
+    // A typo is never an empty list.
+    let missing = list_decisions(&graph, "billng", 25, None)?;
+    assert_eq!(missing.result_count, 0);
+    assert!(!missing.truncated);
+    assert_eq!(
+        missing.data,
+        ProjectDecisionsOutcome::NotFound {
+            handle: "billng".to_owned()
+        }
+    );
+
+    // A registered project nobody recorded into yet is data: empty, and it says so.
+    let empty = found(list_decisions(&graph, "billing", 25, None)?);
+    assert_eq!(empty.total_matches, 0);
+    assert!(empty.items.is_empty());
+
+    // A personal address always resolves, even before its owner has recorded anything.
+    let personal = found(list_decisions(&graph, "personal:human:nobody", 25, None)?);
+    assert!(personal.personal);
+    assert_eq!(personal.owner.as_deref(), Some("human:nobody"));
+    assert_eq!(personal.total_matches, 0);
+
+    Ok(())
+}
+
+#[test]
+fn decisions_in_project_rejects_an_empty_address_and_a_bad_cursor() -> Result<()> {
+    let graph = graph_of(&InMemoryEventLedger::new())?;
+
+    assert!(list_decisions(&graph, "  ", 25, None).is_err());
+    assert!(list_decisions(&graph, "personal:", 25, None).is_err());
+    assert!(list_decisions(&graph, "personal:  ", 25, None).is_err());
+    assert!(list_decisions(&graph, "personal:human:alice", 25, Some("later")).is_err());
 
     Ok(())
 }

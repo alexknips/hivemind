@@ -1,0 +1,35 @@
+{
+  "data": {
+    "cursor": null,
+    "handle": "personal:actor:planner",
+    "items": [
+      {
+        "decision_id": "decision-001",
+        "event_origin": 11,
+        "occurred_at": "2026-01-01T00:00:11+00:00",
+        "project_source": "personal_fallback",
+        "proposed_by": "actor:planner",
+        "status": "superseded",
+        "title": "Seed decision 001"
+      },
+      {
+        "decision_id": "decision-002",
+        "event_origin": 12,
+        "occurred_at": "2026-01-01T00:00:12+00:00",
+        "project_source": "personal_fallback",
+        "proposed_by": "actor:planner",
+        "status": "superseded",
+        "title": "Seed decision 002"
+      }
+    ],
+    "limit": 2,
+    "next_cursor": "2",
+    "outcome": "found",
+    "owner": "actor:planner",
+    "personal": true,
+    "total_matches": 30
+  },
+  "latency_ms": 0,
+  "result_count": 2,
+  "truncated": true
+}

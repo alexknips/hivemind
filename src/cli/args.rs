@@ -201,6 +201,13 @@ pub enum ProjectCommand {
     /// outcome `not_found`, never an error. A `personal:<actor>` address
     /// always resolves to a derived project.
     Show(ProjectShowArgs),
+    /// List the decisions in one project, oldest first, paged. Give a shared
+    /// handle, or a personal address (`personal:<actor>`) to see what is still
+    /// in a personal project and not yet shared: every session of one agent
+    /// tool lists together (`personal:agent:claude`), each decision showing its
+    /// session. An unregistered handle is a successful envelope with outcome
+    /// `not_found`, never an empty list.
+    Decisions(ProjectDecisionsArgs),
     /// Set or clear the actor's current project: a one-time, per-machine
     /// setting consulted (below any folder marker or rig anchor) for
     /// captures with no repo context, such as chat. Local to this
@@ -328,6 +335,18 @@ pub struct ProjectShowArgs {
     /// Show the actor's current-project setting instead of a specific handle.
     #[arg(long)]
     pub current: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProjectDecisionsArgs {
+    /// Project handle, or a personal address (personal:<actor-id>).
+    pub handle: String,
+
+    #[arg(long, default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]

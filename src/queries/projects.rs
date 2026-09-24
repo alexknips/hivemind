@@ -1,4 +1,5 @@
-//! Project registry reads: `list_projects` and `get_project`.
+//! Project reads: the registry (`list_projects`, `get_project`) and a project's
+//! decisions (`decisions_in_project`).
 //!
 //! Reads the ledger directly rather than the projected graph. `GraphView` has no
 //! `remove_edge` (see `projector::project_event`'s `ProjectUnlinked` arm), so a
@@ -12,17 +13,21 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::commands::PERSONAL_PROJECT_HANDLE_PREFIX;
+use crate::commands::{
+    agent_actor_session, personal_project_handle, PERSONAL_PROJECT_HANDLE_PREFIX,
+};
 use crate::events::{
     EventType, ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
 };
 use crate::ledger::EventLedger;
+use crate::projector::{GraphParams, GraphRow, GraphValue, GraphView, NodeKind, RelationKind};
 use crate::Result;
 
 use super::shared::{
-    normalized_limit, normalized_query, parse_cursor, query_error, query_timer_start,
-    DEFAULT_SEARCH_LIMIT,
+    neighbor_pairs, node_row, normalized_limit, normalized_query, optional_int, optional_string,
+    parse_cursor, query_error, query_timer_start, required_string, Direction, DEFAULT_SEARCH_LIMIT,
 };
+use super::status::{derive_decision_status, DecisionStatus};
 use super::QueryResponse;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -90,6 +95,66 @@ pub struct ProjectListResults {
     pub next_cursor: Option<String>,
     pub total_matches: usize,
     pub items: Vec<ProjectView>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProjectDecisionsRequest {
+    /// A registered shared handle, or a personal address (`personal:<actor>`).
+    pub handle: String,
+    pub limit: usize,
+    pub cursor: Option<String>,
+}
+
+/// One decision in a project's list: enough to recognise it and to say where it came from.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProjectDecisionItem {
+    pub decision_id: String,
+    pub title: String,
+    pub status: DecisionStatus,
+    /// Who proposed it, as recorded (`agent:claude:session-1`, `human:alice`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposed_by: Option<String>,
+    /// The session part of an agent's actor id. A personal address groups every session of
+    /// one agent tool (`personal:agent:claude`), so this is what tells the sessions apart.
+    /// Absent for a human, who has no session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    /// How the decision's project was determined (`stated`, `personal_fallback`, ...).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_origin: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProjectDecisionsPage {
+    /// The address that was listed. For a personal project this is the canonical address
+    /// (`personal:agent:claude`), even when the request named an actor with a session.
+    pub handle: String,
+    pub personal: bool,
+    /// Whose personal project this is (`agent:claude`, `human:alice`); absent for a shared
+    /// project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    pub limit: usize,
+    pub cursor: Option<String>,
+    pub next_cursor: Option<String>,
+    /// Every decision in the project, not just this page.
+    pub total_matches: usize,
+    pub items: Vec<ProjectDecisionItem>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum ProjectDecisionsOutcome {
+    Found(ProjectDecisionsPage),
+    /// A miss is data, like `ProjectOutcome::NotFound`: an unregistered handle is never an
+    /// empty list, so a typo cannot read as "nothing recorded here".
+    NotFound {
+        handle: String,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -367,6 +432,147 @@ pub fn get_project(
         truncated: false,
         latency_ms: started.elapsed().as_millis(),
         data: outcome,
+    })
+}
+
+/// The decisions in one project, oldest first, paged. Read from the projected graph, where
+/// every decision node carries the project it belongs to (a decision recorded before
+/// projects existed projects to its recorder's personal project), so a later move needs no
+/// change here.
+///
+/// A personal address always resolves -- it comes with the identity and cannot be a typo --
+/// and is canonicalised the way the write layer derives it, so every session of one agent
+/// tool lists together and the session stays on each item. An unregistered shared handle is
+/// `NotFound`, never an empty list.
+///
+/// Oldest first keeps a page boundary stable while new decisions are recorded; `total_matches`
+/// counts the whole project, so a header can say how many are waiting.
+pub fn decisions_in_project(
+    graph: &impl GraphView,
+    request: &ProjectDecisionsRequest,
+) -> Result<QueryResponse<ProjectDecisionsOutcome>> {
+    let started = query_timer_start();
+    let limit = normalized_limit(request.limit);
+    let cursor = normalized_query(request.cursor.as_deref());
+    let offset = parse_cursor(cursor.as_deref())?;
+
+    let requested = request.handle.trim();
+    if requested.is_empty() {
+        return Err(query_error("handle must not be empty").into());
+    }
+
+    let (handle, owner) =
+        if let Some(actor_part) = requested.strip_prefix(PERSONAL_PROJECT_HANDLE_PREFIX) {
+            let actor_part = actor_part.trim();
+            if actor_part.is_empty() {
+                return Err(query_error("personal project address must name an actor").into());
+            }
+            let handle = personal_project_handle(actor_part);
+            let owner = handle
+                .strip_prefix(PERSONAL_PROJECT_HANDLE_PREFIX)
+                .unwrap_or(&handle)
+                .to_owned();
+            (handle, Some(owner))
+        } else {
+            if node_row(graph, NodeKind::Project, requested)?.is_none() {
+                return Ok(QueryResponse {
+                    result_count: 0,
+                    truncated: false,
+                    latency_ms: started.elapsed().as_millis(),
+                    data: ProjectDecisionsOutcome::NotFound {
+                        handle: requested.to_owned(),
+                    },
+                });
+            }
+            (requested.to_owned(), None)
+        };
+
+    let mut rows = project_decision_rows(graph, &handle)?;
+    rows.sort_by(|left, right| {
+        decision_origin(left)
+            .cmp(&decision_origin(right))
+            .then_with(|| row_id(left).cmp(row_id(right)))
+    });
+
+    let total_matches = rows.len();
+    let mut items = Vec::new();
+    for row in rows.into_iter().skip(offset).take(limit) {
+        items.push(project_decision_item(graph, &row)?);
+    }
+    let next_offset = offset.saturating_add(items.len());
+    let next_cursor = (next_offset < total_matches).then(|| next_offset.to_string());
+
+    Ok(QueryResponse {
+        result_count: items.len(),
+        truncated: next_cursor.is_some(),
+        latency_ms: started.elapsed().as_millis(),
+        data: ProjectDecisionsOutcome::Found(ProjectDecisionsPage {
+            personal: owner.is_some(),
+            handle,
+            owner,
+            limit,
+            cursor,
+            next_cursor,
+            total_matches,
+            items,
+        }),
+    })
+}
+
+/// Every decision node whose project is `handle`. Filtered here rather than in the query:
+/// the in-memory and Postgres graphs answer this shape by returning every decision, and a
+/// decision node without a project (a stub named only by a request or blocker) belongs to
+/// none.
+fn project_decision_rows(graph: &impl GraphView, handle: &str) -> Result<Vec<GraphRow>> {
+    let rows = graph.query(
+        "MATCH (node:`Decision`) RETURN node.id AS id, node.title AS title, node.project AS project, node.project_source AS project_source, node.occurred_at AS occurred_at, node.event_origin AS event_origin ORDER BY node.id;",
+        &GraphParams::new(),
+    )?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| optional_string(row, "project").as_deref() == Some(handle))
+        .collect())
+}
+
+fn row_id(row: &GraphRow) -> &str {
+    match row.get("id") {
+        Some(GraphValue::String(id)) => id,
+        _ => "",
+    }
+}
+
+fn decision_origin(row: &GraphRow) -> i64 {
+    optional_int(row, "event_origin").unwrap_or(i64::MAX)
+}
+
+fn project_decision_item(graph: &impl GraphView, row: &GraphRow) -> Result<ProjectDecisionItem> {
+    let decision_id = required_string(row, "id")?;
+    let status = derive_decision_status(graph, &decision_id)?;
+    let proposed_by = neighbor_pairs(
+        graph,
+        NodeKind::Decision,
+        &decision_id,
+        RelationKind::ProposedBy,
+        NodeKind::Actor,
+        Direction::Outgoing,
+    )?
+    .into_iter()
+    .next()
+    .map(|(actor_id, _origin)| actor_id);
+    let session = proposed_by
+        .as_deref()
+        .and_then(agent_actor_session)
+        .map(str::to_owned);
+
+    Ok(ProjectDecisionItem {
+        decision_id,
+        title: optional_string(row, "title").unwrap_or_default(),
+        status,
+        proposed_by,
+        session,
+        project_source: optional_string(row, "project_source"),
+        occurred_at: optional_string(row, "occurred_at"),
+        event_origin: optional_int(row, "event_origin"),
     })
 }
 

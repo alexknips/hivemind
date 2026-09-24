@@ -209,6 +209,42 @@ const QUERY_SPECS: &[QuerySpec] = &[
         args: &["query", "get_supersession_chain", "--id", "decision-016"],
         expectation: QueryExpectation::Error,
     },
+    // The seed predates projects, so every decision projects to its recorder's personal
+    // project (`actor:planner` -> `personal:actor:planner`).
+    QuerySpec {
+        name: "project_decisions_personal_truncated",
+        snapshot_file: "project_decisions_personal_truncated.json",
+        args: &[
+            "--json",
+            "project",
+            "decisions",
+            "personal:actor:planner",
+            "--limit",
+            "2",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "project_decisions_personal_last_page",
+        snapshot_file: "project_decisions_personal_last_page.json",
+        args: &[
+            "--json",
+            "project",
+            "decisions",
+            "personal:actor:planner",
+            "--limit",
+            "2",
+            "--cursor",
+            "28",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "project_decisions_not_found",
+        snapshot_file: "project_decisions_not_found.json",
+        args: &["--json", "project", "decisions", "no-such-project"],
+        expectation: QueryExpectation::Success,
+    },
 ];
 
 fn main() {

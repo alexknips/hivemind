@@ -5047,6 +5047,309 @@ fn project_registry_register_link_anchor_list_show_round_trip_postgres() -> CliT
     project_registry_register_link_anchor_list_show_round_trip_body(&backend)
 }
 
+/// Captures one decision through the CLI and returns its id. `project: None` lands it in the
+/// actor's personal project.
+fn capture_for_project_list(
+    backend: &TestBackend,
+    actor_id: &str,
+    title: &str,
+    project: Option<&str>,
+) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    let mut rest = vec![
+        "--json",
+        "emit",
+        "decision.capture",
+        "--actor-id",
+        actor_id,
+        "--title",
+        title,
+        "--rationale",
+        PROJECT_TEST_RATIONALE,
+        "--topic-keys",
+        "billing",
+        "--options",
+        "queue,sync",
+        "--chose",
+        "queue",
+    ];
+    if let Some(project) = project {
+        rest.extend(["--project", project]);
+    }
+    let reply: serde_json::Value =
+        serde_json::from_str(&run(&Cli::parse_from(cli_args(backend, &rest)))?)?;
+    Ok(reply["value"]
+        .as_str()
+        .ok_or("the capture reply names the decision id in `value`")?
+        .to_owned())
+}
+
+/// `project decisions ... --json`, with the fields that vary between runs (latency, the
+/// ledger offset, the wall-clock time) checked for presence and then removed.
+fn project_decisions_json(
+    backend: &TestBackend,
+    rest: &[&str],
+) -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut args = vec!["--json", "project", "decisions"];
+    args.extend_from_slice(rest);
+    let mut json: serde_json::Value =
+        serde_json::from_str(&run(&Cli::parse_from(cli_args(backend, &args)))?)?;
+    json["latency_ms"] = serde_json::json!(0);
+    // `.get_mut()`, not `json["data"]["items"]`: indexing a `Value` with a missing key
+    // inserts a `null` at that key as a side effect (serde_json's `IndexMut` impl), which
+    // would plant a spurious `"items": null` into the `not_found` case that has no `items`.
+    if let Some(items) = json
+        .get_mut("data")
+        .and_then(|data| data.get_mut("items"))
+        .and_then(|items| items.as_array_mut())
+    {
+        for item in items {
+            ensure(
+                item["event_origin"].is_i64() && item["occurred_at"].is_string(),
+                "every listed decision says when it was recorded",
+            )?;
+            let item = item.as_object_mut().ok_or("items are objects")?;
+            item.remove("event_origin");
+            item.remove("occurred_at");
+        }
+    }
+    Ok(json)
+}
+
+fn project_decisions_text(
+    backend: &TestBackend,
+    rest: &[&str],
+) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    let mut args = vec!["project", "decisions"];
+    args.extend_from_slice(rest);
+    Ok(run(&Cli::parse_from(cli_args(backend, &args)))?)
+}
+
+fn project_decisions_lists_shared_and_personal_projects_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    register_test_project(backend, "billing")?;
+
+    // Two sessions of one agent tool, one session of another, and one filed under billing.
+    let stated = capture_for_project_list(
+        backend,
+        "agent:claude:session-1",
+        "Adopt async billing queue",
+        Some("billing"),
+    )?;
+    let first = capture_for_project_list(
+        backend,
+        "agent:claude:session-1",
+        "Retry billing jobs with backoff",
+        None,
+    )?;
+    let second = capture_for_project_list(
+        backend,
+        "agent:claude:session-2",
+        "Export invoices nightly",
+        None,
+    )?;
+    let other_tool = capture_for_project_list(
+        backend,
+        "agent:codex:session-1",
+        "Cache the billing token",
+        None,
+    )?;
+
+    // A personal address: every session of the tool in one list, each with its session.
+    let personal = project_decisions_json(backend, &["personal:agent:claude"])?;
+    ensure_json_eq(
+        &personal,
+        serde_json::json!({
+            "result_count": 2,
+            "truncated": false,
+            "latency_ms": 0,
+            "data": {
+                "outcome": "found",
+                "handle": "personal:agent:claude",
+                "personal": true,
+                "owner": "agent:claude",
+                "limit": 25,
+                "cursor": null,
+                "next_cursor": null,
+                "total_matches": 2,
+                "items": [
+                    {
+                        "decision_id": first,
+                        "title": "Retry billing jobs with backoff",
+                        "status": "accepted",
+                        "proposed_by": "agent:claude:session-1",
+                        "session": "session-1",
+                        "project_source": "personal_fallback"
+                    },
+                    {
+                        "decision_id": second,
+                        "title": "Export invoices nightly",
+                        "status": "accepted",
+                        "proposed_by": "agent:claude:session-2",
+                        "session": "session-2",
+                        "project_source": "personal_fallback"
+                    }
+                ]
+            }
+        }),
+        "project decisions golden (personal address)",
+    )?;
+
+    // The text header says whose project it is and how many are still waiting.
+    ensure_eq(
+        project_decisions_text(backend, &["personal:agent:claude"])?,
+        format!(
+            "in agent:claude's personal project, not yet shared: 2\n\
+             accepted\t{first}\tRetry billing jobs with backoff\tactor=agent:claude:session-1\tsession=session-1\tproject_source=personal_fallback\n\
+             accepted\t{second}\tExport invoices nightly\tactor=agent:claude:session-2\tsession=session-2\tproject_source=personal_fallback"
+        ),
+        "personal project text",
+    )?;
+
+    // A limit that cuts the list says so and hands back a cursor; the count stays whole.
+    let page = project_decisions_json(backend, &["personal:agent:claude", "--limit", "1"])?;
+    ensure_json_eq(
+        &page,
+        serde_json::json!({
+            "result_count": 1,
+            "truncated": true,
+            "latency_ms": 0,
+            "data": {
+                "outcome": "found",
+                "handle": "personal:agent:claude",
+                "personal": true,
+                "owner": "agent:claude",
+                "limit": 1,
+                "cursor": null,
+                "next_cursor": "1",
+                "total_matches": 2,
+                "items": [
+                    {
+                        "decision_id": first,
+                        "title": "Retry billing jobs with backoff",
+                        "status": "accepted",
+                        "proposed_by": "agent:claude:session-1",
+                        "session": "session-1",
+                        "project_source": "personal_fallback"
+                    }
+                ]
+            }
+        }),
+        "project decisions golden (truncated, cursor)",
+    )?;
+    ensure_eq(
+        project_decisions_text(backend, &["personal:agent:claude", "--limit", "1"])?,
+        format!(
+            "in agent:claude's personal project, not yet shared: 2\n\
+             accepted\t{first}\tRetry billing jobs with backoff\tactor=agent:claude:session-1\tsession=session-1\tproject_source=personal_fallback\n\
+             truncated=true next_cursor=1"
+        ),
+        "truncated personal project text",
+    )?;
+    let rest = project_decisions_json(
+        backend,
+        &["personal:agent:claude", "--limit", "1", "--cursor", "1"],
+    )?;
+    ensure_eq(
+        rest["truncated"].as_bool(),
+        Some(false),
+        "the last page is not truncated",
+    )?;
+    ensure_eq(
+        rest["data"]["items"][0]["decision_id"].as_str(),
+        Some(second.as_str()),
+        "the cursor continues after the first decision",
+    )?;
+
+    // A shared handle lists what was filed under it, with how that was determined.
+    let shared = project_decisions_json(backend, &["billing"])?;
+    ensure_json_eq(
+        &shared,
+        serde_json::json!({
+            "result_count": 1,
+            "truncated": false,
+            "latency_ms": 0,
+            "data": {
+                "outcome": "found",
+                "handle": "billing",
+                "personal": false,
+                "limit": 25,
+                "cursor": null,
+                "next_cursor": null,
+                "total_matches": 1,
+                "items": [
+                    {
+                        "decision_id": stated,
+                        "title": "Adopt async billing queue",
+                        "status": "accepted",
+                        "proposed_by": "agent:claude:session-1",
+                        "session": "session-1",
+                        "project_source": "stated"
+                    }
+                ]
+            }
+        }),
+        "project decisions golden (shared handle)",
+    )?;
+    ensure_eq(
+        project_decisions_text(backend, &["billing"])?,
+        format!(
+            "in project billing: 1\n\
+             accepted\t{stated}\tAdopt async billing queue\tactor=agent:claude:session-1\tsession=session-1\tproject_source=stated"
+        ),
+        "shared project text",
+    )?;
+
+    // Another tool's personal project is a different list, and a personal address with
+    // nothing in it yet is still an answer.
+    let codex = project_decisions_json(backend, &["personal:agent:codex"])?;
+    ensure_eq(
+        codex["data"]["items"][0]["decision_id"].as_str(),
+        Some(other_tool.as_str()),
+        "another tool's decision lists under its own personal address",
+    )?;
+    ensure_eq(
+        project_decisions_text(backend, &["personal:human:alice"])?,
+        "in human:alice's personal project, not yet shared: 0".to_owned(),
+        "empty personal project text",
+    )?;
+
+    // A wrong handle is never an empty list.
+    let missing = project_decisions_json(backend, &["billng"])?;
+    ensure_json_eq(
+        &missing,
+        serde_json::json!({
+            "result_count": 0,
+            "truncated": false,
+            "latency_ms": 0,
+            "data": {"outcome": "not_found", "handle": "billng"}
+        }),
+        "project decisions golden (unknown handle)",
+    )?;
+    ensure_eq(
+        project_decisions_text(backend, &["billng"])?,
+        "no project called 'billng': run `hivemind project register billng` to register it"
+            .to_owned(),
+        "unknown handle text",
+    )
+}
+
+#[test]
+fn project_decisions_lists_shared_and_personal_projects() -> CliTestResult {
+    project_decisions_lists_shared_and_personal_projects_body(&TestBackend::sqlite(
+        "project-decisions",
+    ))
+}
+
+#[test]
+fn project_decisions_lists_shared_and_personal_projects_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("project-decisions-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    project_decisions_lists_shared_and_personal_projects_body(&backend)
+}
+
 fn project_use_and_show_current_round_trip_body(backend: &TestBackend) -> CliTestResult {
     let tenant_label = backend.tenant.clone().unwrap_or_else(|| "local".to_owned());
 
