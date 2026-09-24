@@ -363,14 +363,74 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
 // Tool descriptors
 // ---------------------------------------------------------------------------
 
+/// The `grounding` input shared by `capture_decision` and `supersede_decision`: "what does this
+/// decision rest on?", asked at every capture (hivemind-gwhr.2).
+fn grounding_property() -> Value {
+    json!({
+        "type": "array",
+        "minItems": 1,
+        "description": "What this decision rests on — required, at least one item. Four ways to answer: a decision we already made (`{kind:\"decision\", description}` — name it the way you would describe it — or `{kind:\"decision\", decision_id}` when you hold the id of a decision you consulted), something observed (`{kind:\"evidence\", content, source?}` — the observation and where: URL, file@commit, test run, measurement), something assumed (`{kind:\"assumption\", statement}`), or nothing yet (`{kind:\"bet\", statement?, would_change_if?, check_by?}` — a declared bet). An existing node can be named by id: `{kind:\"evidence\", evidence_id}` / `{kind:\"assumption\", hypothesis_id}`. The decider's own words are not a grounding; they go in `quote`. A `description` that matches more than one decision returns a successful result shaped `{outcome: \"ambiguous\", field: \"grounding[i]\", candidates: [...]}`, and one that matches none returns `{outcome: \"not_found\", field: \"grounding[i]\", description}`; in both cases NO event is appended — re-call with that item's `decision_id`. A capture that names nothing is refused.",
+        "items": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["kind"],
+                    "properties": {
+                        "kind": { "const": "decision" },
+                        "description": { "type": "string", "description": "The prior decision, described. Give this or `decision_id`, not both." },
+                        "decision_id": { "type": "string", "description": "The prior decision's id, as consulted." }
+                    }
+                },
+                {
+                    "type": "object",
+                    "required": ["kind"],
+                    "properties": {
+                        "kind": { "const": "evidence" },
+                        "content": { "type": "string", "description": "What was observed. Creates the evidence in this call. Give this or `evidence_id`, not both." },
+                        "source": { "type": "string", "description": "Where it was observed: URL, file@commit, test run, measurement. Only with `content`." },
+                        "evidence_id": { "type": "string", "description": "An existing evidence item." }
+                    }
+                },
+                {
+                    "type": "object",
+                    "required": ["kind"],
+                    "properties": {
+                        "kind": { "const": "assumption" },
+                        "statement": { "type": "string", "description": "What is assumed. Creates the assumption in this call. Give this or `hypothesis_id`, not both." },
+                        "hypothesis_id": { "type": "string", "description": "An existing hypothesis." }
+                    }
+                },
+                {
+                    "type": "object",
+                    "required": ["kind"],
+                    "properties": {
+                        "kind": { "const": "bet" },
+                        "statement": { "type": "string", "description": "What is being bet on. Omit to record `Judgement call: <title>`." },
+                        "would_change_if": { "type": "string", "description": "What would change our mind, in the decider's own words." },
+                        "check_by": { "type": "string", "description": "When to check whether the bet paid off: RFC3339 timestamp or YYYY-MM-DD date." }
+                    }
+                }
+            ]
+        }
+    })
+}
+
+fn expressed_confidence_property() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["low", "medium", "high"],
+        "description": "Confidence in the decider's own words. Omit when they expressed none; never estimate it."
+    })
+}
+
 pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "capture_decision",
-            "description": "Record a decision with rationale, topic keys, and at least one option. Defaults actor_id to agent:<tool>:<name> and writes source=agent. A `chosen_option_label` means the decision was already made: it self-accepts from `actor_id` by default, or from `decided_by` when the decider differs (e.g. a human decided, an agent is scribing it); pass `delegated_by` when an agent decided for itself within a scope a human delegated. Pass `still_proposed` to keep a genuine open recommendation at `proposed` instead.",
+            "description": "Record a decision with rationale, topic keys, at least one option, and what it rests on (`grounding`, required). Defaults actor_id to agent:<tool>:<name> and writes source=agent. A `chosen_option_label` means the decision was already made: it self-accepts from `actor_id` by default, or from `decided_by` when the decider differs (e.g. a human decided, an agent is scribing it); pass `delegated_by` when an agent decided for itself within a scope a human delegated. Pass `still_proposed` to keep a genuine open recommendation at `proposed` instead. The reply lists `rests_on` (what was recorded) and `premise_stale` (named decisions already superseded or rejected).",
             "inputSchema": {
                 "type": "object",
-                "required": ["title", "rationale", "topic_keys", "options"],
+                "required": ["title", "rationale", "topic_keys", "options", "grounding"],
                 "properties": {
                     "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<name>`." },
                     "title": { "type": "string", "maxLength": 120, "description": "A name, not a summary: one sentence, at most 120 characters. Longer reasoning goes in `rationale`." },
@@ -392,8 +452,10 @@ pub fn tool_definitions() -> Vec<Value> {
                     "decided_by": { "type": "string", "description": "Actor who actually made the decision, when it differs from `actor_id` (the recording actor/scribe) — e.g. `human:alex@example.com` when an agent is writing down a decision a human made. Requires `chosen_option_label`. Mutually exclusive with `still_proposed`." },
                     "delegated_by": { "type": "string", "description": "The human (`human:<name>`) whose delegated scope this decision falls within, when `actor_id` (an agent) decided it for itself — the self-acceptance carries the marker, so an agent deciding under a delegation is distinguishable from one deciding alone (no marker). Requires `chosen_option_label`. Mutually exclusive with `still_proposed`; conflicts with a `decided_by` other than `actor_id`. A standing delegation is the same value repeated on each capture in that scope." },
                     "still_proposed": { "type": "boolean", "description": "Keep the decision at `proposed` even though `chosen_option_label` is set, for a genuine open recommendation awaiting someone else's decision. Defaults to false, which self-accepts (or accepts from `decided_by`) immediately after proposing." },
-                    "hypothesis_ids": { "type": "array", "items": { "type": "string" } },
-                    "evidence_ids": { "type": "array", "items": { "type": "string" } },
+                    "grounding": grounding_property(),
+                    "expressed_confidence": expressed_confidence_property(),
+                    "hypothesis_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"assumption\", hypothesis_id}` grounding items." },
+                    "evidence_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"evidence\", evidence_id}` grounding items." },
                     "quote": { "type": "string", "description": "Verbatim words of the decider, self-contained — not a bare reference like \"1a\" into an external numbered list. Requires `question`. A quote with no stated question is unreadable once the source conversation is gone." },
                     "question": { "type": "string", "description": "The question `quote` answers, spelled out in the capturer's own words. Requires `quote`." },
                     "project": { "type": "string", "description": "Registered project handle to file the decision under. An unknown handle is refused with the register command. Omit it and the decision is saved to the actor's personal project — the reply says so (`project_notice`). HiveMind checks the handle and never works out the project itself, so pass it whenever you know it; an HTTP-served MCP cannot see the caller's working directory." },
@@ -442,10 +504,10 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "supersede_decision",
-            "description": "Propose a replacement decision and mark it as superseding an old decision. Wraps `hivemind supersede`. Resolves the old decision by `old_decision_id` or a free-text `description` (+ optional `topic`) — exactly one of `old_decision_id`/`description` is required, the same fluent resolution `get_decision_neighborhood` uses. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error, with no write; re-call with `old_decision_id` from that list. The same shape is returned when no decision contains every word but some contain most of them: each such close candidate lists the words it lacks in `missing_terms`, and none is picked for you. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}`, also with no write.",
+            "description": "Propose a replacement decision that says what it rests on (`grounding`, required) and mark it as superseding an old decision. Wraps `hivemind supersede`. Resolves the old decision by `old_decision_id` or a free-text `description` (+ optional `topic`) — exactly one of `old_decision_id`/`description` is required, the same fluent resolution `get_decision_neighborhood` uses. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error, with no write; re-call with `old_decision_id` from that list. The same shape is returned when no decision contains every word but some contain most of them: each such close candidate lists the words it lacks in `missing_terms`, and none is picked for you. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}`, also with no write.",
             "inputSchema": {
                 "type": "object",
-                "required": ["title", "rationale"],
+                "required": ["title", "rationale", "grounding"],
                 "properties": {
                     "actor_id": { "type": "string", "description": "Superseding actor. Defaults to `agent:<tool>:<name>` when omitted." },
                     "old_decision_id": { "type": "string" },
@@ -470,8 +532,10 @@ pub fn tool_definitions() -> Vec<Value> {
                         }
                     },
                     "chosen_option_label": { "type": "string" },
-                    "hypothesis_ids": { "type": "array", "items": { "type": "string" } },
-                    "evidence_ids": { "type": "array", "items": { "type": "string" } },
+                    "grounding": grounding_property(),
+                    "expressed_confidence": expressed_confidence_property(),
+                    "hypothesis_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"assumption\", hypothesis_id}` grounding items." },
+                    "evidence_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"evidence\", evidence_id}` grounding items." },
                     "project": { "type": "string", "description": "Registered project handle to file the superseding decision under. An unknown handle is refused with the register command. Omit it and the new decision inherits the old decision's project. HiveMind never works out the project itself; an HTTP-served MCP cannot see the caller's working directory." },
                     "project_source": { "type": "string", "enum": ["stated", "folder_marker", "rig", "current_project", "job"], "description": "How `project` was determined. Defaults to `stated`. Requires `project`." }
                 }

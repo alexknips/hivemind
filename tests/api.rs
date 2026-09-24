@@ -164,6 +164,7 @@ async fn capture_and_query_decision() {
         post_json(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Adopt REST for the HTTP API",
                 "rationale": "REST maps naturally to resources and is curl-friendly",
                 "topic_keys": ["api-design"],
@@ -224,6 +225,7 @@ async fn search_source_filter_matches_api_source() {
         post_json(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "actor_id": "agent:test:src-filter",
                 "title": "Source filter test decision",
                 "rationale": "Verifies source param is wired into search",
@@ -264,6 +266,7 @@ async fn search_actor_id_accepts_comma_separated_list() {
         post_json(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Actor list filter decision",
                 "rationale": "Verifies comma-separated actor_id is wired",
                 "topic_keys": ["actor-test"],
@@ -340,6 +343,7 @@ async fn disagree_updates_decision_status() {
         post_json(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Use SQLite for all storage",
                 "rationale": "Simple and embeddable, no separate server to run",
                 "topic_keys": ["storage"],
@@ -387,6 +391,7 @@ async fn supersede_links_old_to_new_decision() {
         post_json(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Use bearer tokens for auth",
                 "rationale": "Simple to implement and easy to revoke per session",
                 "topic_keys": ["auth"],
@@ -404,6 +409,7 @@ async fn supersede_links_old_to_new_decision() {
         post_json(
             &format!("/v1/decisions/{old_id}/supersessions"),
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Use bearer tokens + Ed25519 signing for auth",
                 "rationale": "Bearer alone lacks audit trail; signing adds integrity",
                 "topic_keys": ["auth"],
@@ -693,6 +699,7 @@ async fn rls_cross_tenant_decision_not_visible() {
         post_json_as_tenant(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Alpha-only architecture decision",
                 "rationale": "Belongs to alpha only — must not cross tenant boundary",
                 "topic_keys": ["isolation"],
@@ -745,6 +752,7 @@ async fn unregistered_tenant_header_is_rejected_on_read_and_write() {
         post_json_as_tenant(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Should never be captured",
                 "rationale": "the tenant does not exist",
                 "topic_keys": ["isolation"],
@@ -801,6 +809,7 @@ async fn supersede_nonexistent_decision_returns_404() {
         post_json(
             "/v1/decisions/nonexistent-id/supersessions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "New decision",
                 "rationale": "Better approach",
                 "topic_keys": ["test"],
@@ -846,6 +855,7 @@ async fn situational_route_matches_before_decision_id_route() {
         post_json(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Situational route test decision",
                 "rationale": "Verifies the static /situational route wins over /:id",
                 // A single alphanumeric token: topic_keys are matched verbatim
@@ -895,6 +905,7 @@ async fn recall_route_returns_ranked_items_and_digest() {
         post_json(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Recall route test: adopt widget caching",
                 "rationale": "Verifies GET /v1/decisions/recall returns ranked items + digest",
                 "topic_keys": ["recall-route-test"],
@@ -930,6 +941,7 @@ async fn why_resolves_by_id_and_by_description() {
         post_json(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Why route test: unique neighborhood target",
                 "rationale": "Verifies GET /v1/decisions/why by id and by description",
                 "topic_keys": ["why-route-test"],
@@ -981,6 +993,7 @@ async fn why_returns_ambiguous_outcome_for_ambiguous_description() {
             post_json(
                 "/v1/decisions",
                 serde_json::json!({
+                    "grounding": [{"kind": "bet"}],
                     "title": title,
                     "rationale": "Fixture for why-ambiguity test",
                     "topic_keys": ["why-ambiguous-test"],
@@ -1028,6 +1041,7 @@ async fn verify_resolves_by_id_and_by_description() {
         post_json(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Verify route test: unique brief target",
                 "rationale": "Verifies GET /v1/decisions/verify by id and by description",
                 "topic_keys": ["verify-route-test"],
@@ -1082,6 +1096,7 @@ async fn verify_returns_ambiguous_outcome_for_ambiguous_description() {
             post_json(
                 "/v1/decisions",
                 serde_json::json!({
+                    "grounding": [{"kind": "bet"}],
                     "title": title,
                     "rationale": "Fixture for verify-ambiguity test",
                     "topic_keys": ["verify-ambiguous-test"],
@@ -1351,6 +1366,7 @@ async fn classify_queue_submit_covers_multiple_batches_and_decision_readable_via
         post_json(
             "/v1/classify-queue/submit",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "batch_ids": ["multi-sess:0-1", "multi-sess:1-2"],
                 "captures": [{
                     "kind": "decision",
@@ -1585,6 +1601,7 @@ mod classify_queue_postgres {
             authed_post(
                 "/v1/classify-queue/submit",
                 serde_json::json!({
+                    "grounding": [{"kind": "bet"}],
                     "batch_ids": ["pg-sess:0-1", "pg-sess:1-2"],
                     "captures": [{
                         "kind": "decision",
@@ -1738,6 +1755,7 @@ async fn mcp_http_capture_and_get_decision_round_trip() {
             "params": {
                 "name": "capture_decision",
                 "arguments": {
+                    "grounding": [{"kind": "bet"}],
                     "title": "Use axum for HTTP",
                     "rationale": "Good ergonomics and async support",
                     "topic_keys": ["http", "framework"],
@@ -1828,6 +1846,7 @@ async fn graph_returns_shape_after_decision() {
         post_json(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Use SQLite for the hosted MVP",
                 "rationale": "Single binary, zero ops",
                 "topic_keys": ["persistence"],
@@ -2125,6 +2144,7 @@ async fn actor_bound_to_token_not_header() {
         authed_post(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Actor binding test",
                 "rationale": "verifying actor comes from token",
                 "topic_keys": ["auth"],
@@ -2331,6 +2351,7 @@ async fn mint_agent_token_writes_show_agent_actor() {
         authed_post(
             "/v1/decisions",
             serde_json::json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Agent token actor test",
                 "rationale": "verifying agent tokens read as agents",
                 "topic_keys": ["auth"],
@@ -2469,5 +2490,225 @@ async fn mint_agent_token_can_be_revoked() {
         status,
         StatusCode::UNAUTHORIZED,
         "revoked agent token must be rejected"
+    ); // ubs:ignore
+}
+
+// ---------------------------------------------------------------------------
+// Grounded capture (hivemind-gwhr.2): POST /v1/decisions and /supersessions ask
+// "what does this decision rest on?" exactly like the MCP tools.
+// ---------------------------------------------------------------------------
+
+fn capture_body(title: &str, grounding: Value) -> Value {
+    serde_json::json!({
+        "title": title,
+        "rationale": "Rationale text long enough for the readable floor and then some",
+        "topic_keys": ["grounding"],
+        "options": [{ "label": "adopt" }],
+        "grounding": grounding,
+    })
+}
+
+async fn ledger_offset_of(dir: &PathBuf) -> i64 {
+    use hivemind::ledger::{EventLedger, SqliteEventLedger};
+    let ledger = SqliteEventLedger::open(dir).unwrap();
+    ledger.latest_offset().unwrap() as i64
+}
+
+#[tokio::test]
+async fn capture_without_grounding_is_a_validation_error_and_writes_nothing() {
+    let dir = test_ledger_dir();
+
+    for grounding in [serde_json::json!([]), Value::Null] {
+        let (status, body) = call(
+            app(dir.clone()),
+            post_json(
+                "/v1/decisions",
+                capture_body("Adopt the new queue", grounding),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}"); // ubs:ignore
+        assert!(
+            body.to_string()
+                .contains("a captured decision must say what it rests on"),
+            "{body}"
+        ); // ubs:ignore
+    }
+    // Malformed items are named by their index.
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            capture_body(
+                "Adopt the new queue",
+                serde_json::json!([{ "kind": "opinion" }]),
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}"); // ubs:ignore
+    assert!(body.to_string().contains("grounding[0].kind"), "{body}"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn capture_records_grounding_and_replies_with_rests_on() {
+    let dir = test_ledger_dir();
+    let (_, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            capture_body(
+                "Keep the ledger append-only",
+                serde_json::json!([{ "kind": "bet" }]),
+            ),
+        ),
+    )
+    .await;
+    let goal_id = body["decision_id"].as_str().unwrap().to_owned();
+
+    let mut request = capture_body(
+        "Adopt the new queue",
+        serde_json::json!([
+            { "kind": "decision", "description": "Keep the ledger append-only" },
+            { "kind": "evidence", "content": "p95 was 180ms in run 42", "source": "ci run 42" },
+            { "kind": "assumption", "statement": "traffic stays under 1k rps" },
+            { "kind": "bet", "would_change_if": "they raise prices" },
+        ]),
+    );
+    request["expressed_confidence"] = serde_json::json!("high");
+    let (status, body) = call(app(dir.clone()), post_json("/v1/decisions", request)).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+
+    let rests_on = body["rests_on"].as_array().unwrap();
+    let kinds: Vec<&str> = rests_on
+        .iter()
+        .map(|item| item["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["decision", "evidence", "assumption", "bet"]); // ubs:ignore
+    assert_eq!(rests_on[0]["id"], goal_id); // ubs:ignore
+    assert_eq!(rests_on[0]["label"], "Keep the ledger append-only"); // ubs:ignore
+    assert_eq!(body["premise_stale"], serde_json::json!([])); // ubs:ignore
+
+    // The deprecated id aliases alone still satisfy the requirement.
+    let (_, evidence) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/evidence",
+            serde_json::json!({ "content": "an existing observation" }),
+        ),
+    )
+    .await;
+    let evidence_id = evidence["evidence_id"].as_str().unwrap().to_owned();
+    let mut aliased = capture_body("Adopt the other queue", Value::Null);
+    aliased["evidence_ids"] = serde_json::json!([evidence_id]);
+    let (status, body) = call(app(dir.clone()), post_json("/v1/decisions", aliased)).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["rests_on"][0]["kind"], "evidence"); // ubs:ignore
+    assert_eq!(body["rests_on"][0]["id"], evidence_id); // ubs:ignore
+}
+
+#[tokio::test]
+async fn capture_with_an_unresolved_premise_returns_data_and_writes_nothing() {
+    let dir = test_ledger_dir();
+    for _ in 0..2 {
+        call(
+            app(dir.clone()),
+            post_json(
+                "/v1/decisions",
+                capture_body("Adopt the queue", serde_json::json!([{ "kind": "bet" }])),
+            ),
+        )
+        .await;
+    }
+    let offset_before = ledger_offset_of(&dir).await;
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            capture_body(
+                "Ship the queue",
+                serde_json::json!([
+                    { "kind": "assumption", "statement": "must not be stranded" },
+                    { "kind": "decision", "description": "Adopt the queue" },
+                ]),
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["data"]["outcome"], "ambiguous"); // ubs:ignore
+    assert_eq!(body["data"]["field"], "grounding[1]"); // ubs:ignore
+    assert_eq!(body["data"]["candidates"].as_array().map(Vec::len), Some(2)); // ubs:ignore
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            capture_body(
+                "Ship the queue",
+                serde_json::json!([{ "kind": "decision", "description": "quantum flux capacitor" }]),
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["data"]["outcome"], "not_found"); // ubs:ignore
+    assert_eq!(body["data"]["description"], "quantum flux capacitor"); // ubs:ignore
+
+    assert_eq!(ledger_offset_of(&dir).await, offset_before); // ubs:ignore
+}
+
+#[tokio::test]
+async fn supersession_requires_and_records_grounding() {
+    let dir = test_ledger_dir();
+    let (_, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            capture_body(
+                "Use shared admin token",
+                serde_json::json!([{ "kind": "bet" }]),
+            ),
+        ),
+    )
+    .await;
+    let old_id = body["decision_id"].as_str().unwrap().to_owned();
+    let offset_before = ledger_offset_of(&dir).await;
+
+    let supersession = |grounding: Value| {
+        serde_json::json!({
+            "title": "Use scoped service tokens",
+            "rationale": "Scoped tokens preserve audit boundaries for every caller",
+            "options": ["scoped-tokens"],
+            "grounding": grounding,
+        })
+    };
+    let uri = format!("/v1/decisions/{old_id}/supersessions");
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(&uri, supersession(serde_json::json!([]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}"); // ubs:ignore
+    assert_eq!(ledger_offset_of(&dir).await, offset_before); // ubs:ignore
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            &uri,
+            supersession(serde_json::json!([
+                { "kind": "evidence", "content": "the shared token leaked twice", "source": "incident 7" }
+            ])),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["old_decision_status"], "superseded"); // ubs:ignore
+    assert_eq!(body["rests_on"][0]["kind"], "evidence"); // ubs:ignore
+    assert_eq!(
+        body["rests_on"][0]["label"],
+        "the shared token leaked twice"
     ); // ubs:ignore
 }

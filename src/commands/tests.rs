@@ -14,8 +14,9 @@ use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
 use super::{
     agent_actor_session, normalize_topic_key, personal_project_handle, Commands,
-    DecisionProposalInput, DeterminedProject, GroundInput, Grounding, SupersedeInput,
-    MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN, PERSONAL_FALLBACK_NOTICE,
+    DecisionProposalInput, DeterminedProject, GroundInput, Grounding, GroundingPlan, NewBet,
+    NewEvidence, RestsOnKind, SupersedeInput, MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN,
+    PERSONAL_FALLBACK_NOTICE,
 };
 
 #[test]
@@ -755,6 +756,8 @@ fn supersede_inherits_old_decision_project_when_not_restated() {
             hypothesis_ids: &[],
             evidence_ids: &[],
             project: None,
+            grounding: None,
+            expressed_confidence: None,
         })
         .expect("supersede succeeds");
 
@@ -829,6 +832,8 @@ fn supersede_overrides_project_when_explicitly_stated() {
             hypothesis_ids: &[],
             evidence_ids: &[],
             project: Some(DeterminedProject::stated("payments")),
+            grounding: None,
+            expressed_confidence: None,
         })
         .expect("supersede succeeds");
 
@@ -1042,6 +1047,8 @@ fn supersede_reports_the_inherited_or_stated_placement() {
             hypothesis_ids: &[],
             evidence_ids: &[],
             project,
+            grounding: None,
+            expressed_confidence: None,
         })
     };
 
@@ -1097,6 +1104,8 @@ fn supersede_of_a_personal_fallback_decision_stays_announced() {
             hypothesis_ids: &[],
             evidence_ids: &[],
             project: None,
+            grounding: None,
+            expressed_confidence: None,
         })
         .expect("supersede succeeds");
     assert_eq!(outcome.placement.project, "personal:agent:claude");
@@ -2050,6 +2059,8 @@ fn supersede_rejects_new_title_over_max_length() {
         chosen_option_label: None,
         hypothesis_ids: &[],
         evidence_ids: &[],
+        grounding: None,
+        expressed_confidence: None,
     });
     assert!(
         result.is_err(),
@@ -2291,6 +2302,8 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
             chosen_option_label: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            grounding: None,
+            expressed_confidence: None,
         })
         .expect("supersede succeeds");
     let latest_after_first = ledger.latest_offset().expect("latest offset");
@@ -2306,6 +2319,8 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
             chosen_option_label: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            grounding: None,
+            expressed_confidence: None,
         })
         .expect("retry succeeds");
 
@@ -2358,6 +2373,8 @@ fn first_class_disagree_and_supersede_require_existing_targets() {
             chosen_option_label: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            grounding: None,
+            expressed_confidence: None,
         })
         .is_err());
 }
@@ -3941,6 +3958,515 @@ fn ground_decision_rejects_nonexistent_targets_and_writes_nothing() {
         events_before,
         "every refusal happens before any grounding event is appended"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Grounded capture (hivemind-gwhr.2): propose_grounded_decision and grounded supersede
+// ---------------------------------------------------------------------------
+
+/// A proposal input with no grounding of its own — what a capture verb hands to
+/// `propose_grounded_decision` alongside its plan.
+fn grounded_input<'a>(
+    option_id: &'a String,
+    option_labels: &'a [String],
+    topic_keys: &'a [String],
+    title: &'a str,
+) -> DecisionProposalInput<'a> {
+    DecisionProposalInput {
+        grounding: Grounding::NotAsked,
+        expressed_confidence: None,
+        actor_id: "actor:alice",
+        title,
+        rationale: "Rationale text long enough for the readable floor",
+        topic_keys,
+        option_ids: std::slice::from_ref(option_id),
+        option_labels,
+        chosen_option_id: None,
+        decided_by: None,
+        still_proposed: true,
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+        quote: None,
+        question: None,
+        delegated_by: None,
+        project: None,
+    }
+}
+
+fn relation_events(ledger: &InMemoryEventLedger) -> Vec<crate::events::Event> {
+    ledger
+        .read(0, 200)
+        .expect("read events")
+        .into_iter()
+        .filter(|event| event.event_type == EventType::RelationAdded)
+        .collect()
+}
+
+fn relation_str<'a>(event: &'a crate::events::Event, key: &str) -> &'a str {
+    event
+        .payload
+        .get(key)
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+}
+
+#[test]
+fn grounded_capture_records_every_kind_and_links_them_at_capture() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let premise_id = propose_minimal_decision(&commands, "Prior goal decision");
+    let existing_evidence = commands
+        .record_evidence("actor:alice", "an evidence item recorded earlier")
+        .expect("evidence");
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let labels = ["A".to_owned()];
+    let topics = ["topic".to_owned()];
+    let check_by = chrono::DateTime::parse_from_rfc3339("2026-12-01T00:00:00Z")
+        .expect("date")
+        .with_timezone(&chrono::Utc);
+
+    let proposal = commands
+        .propose_grounded_decision(
+            DecisionProposalInput {
+                expressed_confidence: Some("high"),
+                ..grounded_input(&option_id, &labels, &topics, "Adopt the new queue")
+            },
+            &GroundingPlan {
+                premise_decision_ids: vec![premise_id.clone()],
+                evidence_ids: vec![existing_evidence.clone()],
+                hypothesis_ids: Vec::new(),
+                new_evidence: vec![NewEvidence {
+                    content: "p95 latency was 180ms in run 42".to_owned(),
+                    source: Some("ci run 42".to_owned()),
+                }],
+                new_assumptions: vec!["traffic stays under 1k rps".to_owned()],
+                bet: Some(NewBet {
+                    statement: None,
+                    would_change_if: Some("p95 rises above 300ms".to_owned()),
+                    check_by: Some(check_by),
+                }),
+            },
+        )
+        .expect("grounded capture succeeds");
+
+    let events = ledger.read(0, 200).expect("read events");
+    let proposal_event = events
+        .iter()
+        .find(|event| {
+            event.event_type == EventType::DecisionProposed
+                && relation_str(event, "decision_id") == proposal.decision_id
+        })
+        .expect("proposal event");
+    let proposal_event_id = proposal_event.event_id.expect("proposal event id");
+    assert_eq!(
+        proposal_event
+            .payload
+            .get("expressed_confidence")
+            .and_then(|value| value.as_str()),
+        Some("high")
+    );
+
+    // New evidence carries its source; the assumption and the bet differ only in kind.
+    let evidence = events
+        .iter()
+        .find(|event| {
+            event.event_type == EventType::EvidenceRecorded
+                && relation_str(event, "content").contains("p95 latency")
+        })
+        .expect("new evidence recorded");
+    assert_eq!(relation_str(evidence, "source"), "ci run 42");
+    let bet = events
+        .iter()
+        .find(|event| {
+            event.event_type == EventType::HypothesisRecorded
+                && relation_str(event, "kind") == "bet"
+        })
+        .expect("bet recorded");
+    assert_eq!(
+        relation_str(bet, "statement"),
+        "Judgement call: Adopt the new queue"
+    );
+    assert_eq!(
+        relation_str(bet, "would_change_if"),
+        "p95 rises above 300ms"
+    );
+    assert!(relation_str(bet, "check_by").starts_with("2026-12-01"));
+    let assumption = events
+        .iter()
+        .find(|event| {
+            event.event_type == EventType::HypothesisRecorded
+                && relation_str(event, "statement") == "traffic stays under 1k rps"
+        })
+        .expect("assumption recorded");
+    assert_ne!(relation_str(assumption, "kind"), "bet");
+
+    // Every grounding edge is fanned out at capture: causation = the proposal event.
+    let at_capture: Vec<_> = relation_events(&ledger)
+        .into_iter()
+        .filter(|event| relation_str(event, "relation") != "HAS_OPTION")
+        .collect();
+    for kind in ["FOLLOWS_FROM", "BASED_ON", "ASSUMES"] {
+        assert!(
+            at_capture
+                .iter()
+                .any(|event| relation_str(event, "relation") == kind),
+            "missing {kind} edge"
+        );
+    }
+    assert_eq!(at_capture.len(), 5, "1 premise + 2 evidence + 2 hypotheses");
+    for event in &at_capture {
+        assert_eq!(event.causation_event_id, Some(proposal_event_id));
+        assert_eq!(relation_str(event, "from_id"), proposal.decision_id);
+    }
+
+    // The reply lists what was recorded: decisions, evidence, assumptions, then the bet.
+    let kinds: Vec<_> = proposal.rests_on.iter().map(|item| item.kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            RestsOnKind::Decision,
+            RestsOnKind::Evidence,
+            RestsOnKind::Evidence,
+            RestsOnKind::Assumption,
+            RestsOnKind::Bet,
+        ]
+    );
+    assert_eq!(proposal.rests_on[0].id, premise_id);
+    assert_eq!(proposal.rests_on[1].id, existing_evidence);
+    assert_eq!(
+        proposal.rests_on[2].label.as_deref(),
+        Some("p95 latency was 180ms in run 42")
+    );
+    assert!(proposal.premise_stale.is_empty());
+}
+
+#[test]
+fn grounded_capture_with_an_empty_plan_is_refused_and_writes_nothing() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let labels = ["A".to_owned()];
+    let topics = ["topic".to_owned()];
+
+    let error = commands
+        .propose_grounded_decision(
+            grounded_input(&option_id, &labels, &topics, "Nothing behind this"),
+            &GroundingPlan::default(),
+        )
+        .expect_err("an empty plan must be refused");
+    assert!(
+        error
+            .to_string()
+            .contains(super::GROUNDING_REQUIRED_MESSAGE),
+        "unexpected error: {error}"
+    );
+    assert_eq!(ledger.read(0, 20).expect("read events").len(), 0);
+}
+
+#[test]
+fn grounded_capture_refusals_leave_no_orphan_node_behind() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let labels = ["A".to_owned()];
+    let topics = ["topic".to_owned()];
+    let plan = GroundingPlan {
+        new_evidence: vec![NewEvidence {
+            content: "an observation that must not be stranded".to_owned(),
+            source: None,
+        }],
+        new_assumptions: vec!["an assumption that must not be stranded".to_owned()],
+        ..GroundingPlan::default()
+    };
+
+    // A title the proposal itself refuses: the evidence and assumption above must not be written.
+    let too_long_title = "t".repeat(MAX_TITLE_LEN + 1);
+    commands
+        .propose_grounded_decision(
+            grounded_input(&option_id, &labels, &topics, &too_long_title),
+            &plan,
+        )
+        .expect_err("an over-long title must be refused");
+    // A rationale below the readable floor, likewise.
+    commands
+        .propose_grounded_decision(
+            DecisionProposalInput {
+                rationale: "1a",
+                ..grounded_input(&option_id, &labels, &topics, "Fine title")
+            },
+            &plan,
+        )
+        .expect_err("an unreadable rationale must be refused");
+    // A premise that does not exist, likewise.
+    commands
+        .propose_grounded_decision(
+            grounded_input(&option_id, &labels, &topics, "Fine title"),
+            &GroundingPlan {
+                premise_decision_ids: vec!["decision-missing".to_owned()],
+                ..plan.clone()
+            },
+        )
+        .expect_err("a missing premise must be refused");
+    // A blank new evidence item, likewise.
+    commands
+        .propose_grounded_decision(
+            grounded_input(&option_id, &labels, &topics, "Fine title"),
+            &GroundingPlan {
+                new_evidence: vec![NewEvidence {
+                    content: "   ".to_owned(),
+                    source: None,
+                }],
+                ..plan.clone()
+            },
+        )
+        .expect_err("blank evidence must be refused");
+
+    assert_eq!(
+        ledger.read(0, 50).expect("read events").len(),
+        0,
+        "no refusal may leave an evidence or hypothesis node behind"
+    );
+}
+
+#[test]
+fn grounded_capture_takes_its_grounding_only_from_the_plan() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let labels = ["A".to_owned()];
+    let topics = ["topic".to_owned()];
+    let plan = GroundingPlan {
+        new_assumptions: vec!["something we assume".to_owned()],
+        ..GroundingPlan::default()
+    };
+
+    let already_declared = commands
+        .propose_grounded_decision(
+            DecisionProposalInput {
+                grounding: Grounding::Declared {
+                    premise_decision_ids: &[],
+                    evidence_ids: &[],
+                    hypothesis_ids: &[],
+                },
+                ..grounded_input(&option_id, &labels, &topics, "Fine title")
+            },
+            &plan,
+        )
+        .expect_err("input must not carry its own grounding");
+    assert!(already_declared
+        .to_string()
+        .contains("takes its grounding from the plan"));
+    let legacy_ids = commands
+        .propose_grounded_decision(
+            DecisionProposalInput {
+                evidence_ids: &["evidence-x".to_owned()],
+                ..grounded_input(&option_id, &labels, &topics, "Fine title")
+            },
+            &plan,
+        )
+        .expect_err("input must not carry its own evidence ids");
+    assert!(legacy_ids
+        .to_string()
+        .contains("takes its grounding from the plan"));
+    assert_eq!(ledger.read(0, 20).expect("read events").len(), 0);
+}
+
+#[test]
+fn grounded_capture_records_a_stale_premise_and_reports_it() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let premise_id = propose_minimal_decision(&commands, "Premise that will be superseded");
+    let successor_id = propose_minimal_decision(&commands, "Successor decision");
+    commands
+        .supersede_decision(&premise_id, &successor_id, "actor:alice")
+        .expect("supersede premise");
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let labels = ["A".to_owned()];
+    let topics = ["topic".to_owned()];
+
+    let proposal = commands
+        .propose_grounded_decision(
+            grounded_input(&option_id, &labels, &topics, "Rests on a stale premise"),
+            &GroundingPlan {
+                premise_decision_ids: vec![premise_id.clone(), successor_id.clone()],
+                ..GroundingPlan::default()
+            },
+        )
+        .expect("a stale premise is allowed");
+    assert_eq!(proposal.premise_stale, vec![premise_id.clone()]);
+    assert_eq!(
+        relation_events(&ledger)
+            .iter()
+            .filter(|event| relation_str(event, "relation") == "FOLLOWS_FROM")
+            .count(),
+        2,
+        "the stale premise is still linked: honesty about it is the reader's job"
+    );
+}
+
+fn grounded_supersede_input<'a>(
+    old_decision_id: &'a str,
+    plan: &'a GroundingPlan,
+) -> SupersedeInput<'a> {
+    SupersedeInput {
+        actor_id: "actor:alice",
+        old_decision_id,
+        new_title: "Decision B",
+        new_rationale: "New rationale that explains the replacement decision.",
+        topic_keys: &[],
+        option_labels: &[],
+        chosen_option_label: None,
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+        grounding: Some(plan),
+        expressed_confidence: None,
+        project: None,
+    }
+}
+
+#[test]
+fn grounded_supersede_records_its_grounding_and_stays_idempotent() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let old_decision_id = propose_minimal_decision(&commands, "Decision A");
+    let premise_id = propose_minimal_decision(&commands, "Goal decision");
+    let plan = GroundingPlan {
+        premise_decision_ids: vec![premise_id.clone()],
+        new_evidence: vec![NewEvidence {
+            content: "the old approach failed twice".to_owned(),
+            source: Some("incident 7".to_owned()),
+        }],
+        bet: Some(NewBet::default()),
+        ..GroundingPlan::default()
+    };
+
+    let first = commands
+        .supersede(grounded_supersede_input(&old_decision_id, &plan))
+        .expect("grounded supersede succeeds");
+    assert_eq!(
+        first
+            .rests_on
+            .iter()
+            .map(|item| item.kind)
+            .collect::<Vec<_>>(),
+        [
+            RestsOnKind::Decision,
+            RestsOnKind::Evidence,
+            RestsOnKind::Bet
+        ]
+    );
+    let relations = relation_events(&ledger);
+    for kind in ["FOLLOWS_FROM", "BASED_ON", "ASSUMES"] {
+        assert!(
+            relations
+                .iter()
+                .any(|event| relation_str(event, "relation") == kind
+                    && !relation_str(event, "from_id").is_empty()),
+            "missing {kind} edge on the replacement"
+        );
+    }
+
+    // An identical retry finds the same nodes (deterministic ids) and the same supersession.
+    let latest_after_first = ledger.latest_offset().expect("latest offset");
+    let retry = commands
+        .supersede(grounded_supersede_input(&old_decision_id, &plan))
+        .expect("retry succeeds");
+    assert_eq!(retry.new_decision_id, first.new_decision_id);
+    assert_eq!(retry.superseded_event_id, first.superseded_event_id);
+    assert_eq!(retry.rests_on, first.rests_on);
+    assert_eq!(
+        ledger.latest_offset().expect("latest offset unchanged"),
+        latest_after_first,
+        "an identical grounded retry appends nothing"
+    );
+
+    // A retry that names a different premise is a new supersession, not a silent match.
+    let other_premise_id = propose_minimal_decision(&commands, "A different goal");
+    let different = commands
+        .supersede(grounded_supersede_input(
+            &old_decision_id,
+            &GroundingPlan {
+                premise_decision_ids: vec![other_premise_id],
+                ..plan.clone()
+            },
+        ))
+        .expect("different grounding supersedes again");
+    assert_ne!(different.new_decision_id, first.new_decision_id);
+}
+
+#[test]
+fn grounded_supersede_refuses_an_empty_plan_and_legacy_ids_and_writes_nothing() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let old_decision_id = propose_minimal_decision(&commands, "Decision A");
+    let events_before = ledger.read(0, 50).expect("read events").len();
+
+    let empty = GroundingPlan::default();
+    let error = commands
+        .supersede(grounded_supersede_input(&old_decision_id, &empty))
+        .expect_err("an empty plan must be refused");
+    assert!(error
+        .to_string()
+        .contains(super::GROUNDING_REQUIRED_MESSAGE));
+
+    let plan = GroundingPlan {
+        new_assumptions: vec!["we assume the replacement is cheaper".to_owned()],
+        ..GroundingPlan::default()
+    };
+    let error = commands
+        .supersede(SupersedeInput {
+            evidence_ids: &["evidence-x".to_owned()],
+            ..grounded_supersede_input(&old_decision_id, &plan)
+        })
+        .expect_err("legacy ids alongside a grounding must be refused");
+    assert!(error
+        .to_string()
+        .contains("takes hypothesis and evidence ids"));
+
+    // A rationale below the readable floor is refused after the plan is planned but before
+    // any node is recorded.
+    let error = commands
+        .supersede(SupersedeInput {
+            new_rationale: "1a",
+            ..grounded_supersede_input(&old_decision_id, &plan)
+        })
+        .expect_err("an unreadable rationale must be refused");
+    assert!(!error.to_string().is_empty());
+
+    assert_eq!(
+        ledger.read(0, 50).expect("read events").len(),
+        events_before,
+        "no refusal may leave a grounding node behind"
+    );
+}
+
+#[test]
+fn ungrounded_supersede_is_unchanged_and_reports_no_grounding() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let old_decision_id = propose_minimal_decision(&commands, "Decision A");
+
+    let outcome = commands
+        .supersede(SupersedeInput {
+            grounding: None,
+            ..grounded_supersede_input(&old_decision_id, &GroundingPlan::default())
+        })
+        .expect("ungrounded supersede still works for the review path");
+    assert!(outcome.rests_on.is_empty());
+    assert!(outcome.premise_stale.is_empty());
+    assert!(relation_events(&ledger)
+        .iter()
+        .all(|event| relation_str(event, "relation") != "FOLLOWS_FROM"));
 }
 
 proptest! {

@@ -112,6 +112,7 @@ fn claude_code_capture_command_writes_human_decision() -> TestResult<()> {
             "repo-command,manual-shell",
             "--chose",
             "repo-command",
+            "--bet",
         ])
         .output()?;
     assert!(
@@ -359,6 +360,7 @@ fn claude_code_plugin_capture_and_query_scripts_write_agent_decision() -> TestRe
             "plugin-command,manual-shell",
             "--chose",
             "plugin-command",
+            "--bet",
         ])
         .output()?;
     assert!(
@@ -430,6 +432,7 @@ fn query_decisions_script_finds_decisions_captured_by_a_different_session() -> T
             "cross-session,same-session",
             "--chose",
             "cross-session",
+            "--bet",
         ])
         .output()?;
     assert!(
@@ -487,6 +490,7 @@ fn codex_capture_defaults_actor_from_session_environment() -> TestResult<()> {
         .args([
             "emit",
             "decision.capture",
+            "--bet",
             "--title",
             "Capture Codex plugin decisions without setup",
             "--rationale",
@@ -548,6 +552,7 @@ fn capture_plugin_scripts_derive_codex_session_context() -> TestResult<()> {
             "manual-provenance,session-context",
             "--chose",
             "session-context",
+            "--bet",
         ])
         .output()?;
     assert!(
@@ -634,6 +639,7 @@ fn capture_plugin_defaults_to_rig_ledger_from_linked_worktree() -> TestResult<()
             "rig-ledger,worktree-ledger",
             "--chose",
             "rig-ledger",
+            "--bet",
         ])
         .output()?;
     require(
@@ -935,6 +941,104 @@ fn read_json(path: impl AsRef<Path>) -> TestResult<Value> {
         )
     })?;
     Ok(value)
+}
+
+#[test]
+fn capture_script_forwards_grounding_flags_and_refuses_an_ungrounded_capture() -> TestResult<()> {
+    // hivemind-gwhr.2: every decision capture must say what it rests on. The plugin script has to
+    // carry the value-taking grounding flags (and `--bet`'s optional statement) through to
+    // `emit decision.capture`, and a capture that names nothing must fail loudly (exit 2) with
+    // nothing written.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let hivemind_dir = unique_temp_dir("hivemind-capture-script-grounding")?;
+    let script = root.join("plugins/hivemind-capture/scripts/capture-decision.sh");
+    let base = [
+        "--title",
+        "Adopt the grounded capture script",
+        "--rationale",
+        "The plugin script should forward every grounding flag to the CLI",
+        "--topic-keys",
+        "capture,grounding",
+        "--options",
+        "forward,drop",
+        "--chose",
+        "forward",
+    ];
+    let run_script = |extra: &[&str]| -> TestResult<std::process::Output> {
+        Ok(Command::new(&script)
+            .current_dir(root)
+            .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+            .env("HIVEMIND_DIR", &hivemind_dir)
+            .env("CLAUDE_PROJECT_DIR", root)
+            .env("CLAUDE_SESSION_ID", "grounding-script-session")
+            .env_remove("GC_AGENT")
+            .env_remove("GC_ALIAS")
+            .args(base)
+            .args(extra)
+            .output()?)
+    };
+
+    let refused = run_script(&[])?;
+    assert_eq!(
+        refused.status.code(),
+        Some(2),
+        "an ungrounded capture must exit 2: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("must say what it rests on"));
+    assert_eq!(
+        SqliteEventLedger::open(&hivemind_dir)?.read(0, 100)?.len(),
+        0,
+        "a refused capture writes nothing"
+    );
+
+    let captured = run_script(&[
+        "--rests-on-evidence",
+        "the forwarded flags reached the ledger",
+        "--evidence-source",
+        "ci run 9",
+        "--rests-on-assumption",
+        "The script keeps forwarding unknown flags",
+        "--bet",
+        "The CLI keeps its grounding flag names",
+        "--would-change-if",
+        "the CLI renames a flag",
+        "--check-by",
+        "2026-12-01",
+        "--confidence",
+        "high",
+    ])?;
+    assert!(
+        captured.status.success(),
+        "grounded plugin capture failed: {}",
+        String::from_utf8_lossy(&captured.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&captured.stdout);
+    assert!(
+        stdout.contains("Captured HiveMind decision decision-"),
+        "{stdout}"
+    );
+
+    let evidence = event_with_type(&hivemind_dir, hivemind::events::EventType::EvidenceRecorded)?;
+    assert_eq!(evidence.payload["source"], "ci run 9");
+    let bet = SqliteEventLedger::open(&hivemind_dir)?
+        .read(0, 100)?
+        .into_iter()
+        .find(|event| {
+            event.event_type == hivemind::events::EventType::HypothesisRecorded
+                && event.payload.get("kind").and_then(Value::as_str) == Some("bet")
+        })
+        .ok_or("the bet should have been recorded")?;
+    assert_eq!(
+        bet.payload["statement"],
+        "The CLI keeps its grounding flag names"
+    );
+    assert_eq!(bet.payload["would_change_if"], "the CLI renames a flag");
+    let proposal = event_with_type(&hivemind_dir, hivemind::events::EventType::DecisionProposed)?;
+    assert_eq!(proposal.payload["expressed_confidence"], "high");
+
+    let _ = fs::remove_dir_all(hivemind_dir);
+    Ok(())
 }
 
 fn unique_temp_dir(label: &str) -> TestResult<std::path::PathBuf> {

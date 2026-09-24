@@ -5,7 +5,9 @@ usage() {
   cat >&2 <<'USAGE'
 Usage:
   capture.sh "<text>" --kind decision --title "..." --rationale "..." \
-    --topic-keys topic[,topic] --options option[,option] [--chose option]
+    --topic-keys topic[,topic] --options option[,option] [--chose option] \
+    (--rests-on-decision "..." | --rests-on-evidence "..." --evidence-source "..." | \
+     --rests-on-assumption "..." | --bet ["..."])
   capture.sh "<text>" --kind evidence
   capture.sh "<text>" --kind hypothesis
   capture.sh "<text>"
@@ -26,12 +28,29 @@ Options:
 
 Decision captures forward decision.capture flags such as --title, --rationale,
 --topic-keys, --options, --chose, --decided-by, --delegated-by,
---still-proposed, --evidence, --hypotheses, --quote, and --question. --chose
-means the decision was already made — it self-accepts unless --still-proposed
-is also given. --delegated-by human:NAME marks an agent deciding within a scope
-that human delegated. --quote (the decider's verbatim words) requires
---question (the question those words answer, spelled out) — a quote with no
-stated question is unreadable once the source conversation is gone.
+--still-proposed, --evidence, --hypotheses, --quote, --question, and the
+grounding flags below. --chose means the decision was already made — it
+self-accepts unless --still-proposed is also given. --delegated-by human:NAME
+marks an agent deciding within a scope that human delegated. --quote (the
+decider's verbatim words) requires --question (the question those words
+answer, spelled out) — a quote with no stated question is unreadable once the
+source conversation is gone.
+
+Every decision capture must say what it rests on; a capture that names nothing
+is refused (exit 2) and nothing is written. Answer with at least one of:
+  --rests-on-decision TEXT    A decision we already made, described the way you
+                              would describe it, '#N' from the previous
+                              ambiguous candidate list, or a decision-... id.
+                              Repeatable.
+  --rests-on-evidence TEXT    Something observed. Repeatable; pair each with
+                              --evidence-source REF (URL, file@commit, test
+                              run, measurement): one source per item, or none.
+  --rests-on-assumption TEXT  Something we assume. Repeatable.
+  --bet [TEXT]                Nothing yet: declare a bet. Optional statement,
+                              plus --would-change-if TEXT and --check-by DATE.
+Existing --evidence <id> / --hypotheses <id> also count. --confidence
+low|medium|high records the decider's own stated confidence; omit it otherwise.
+The decider's own words are not a grounding — they go in --quote.
 USAGE
 }
 
@@ -264,7 +283,8 @@ emit_decision() {
   if [[ "${#FORWARDED[@]}" -eq 0 ]]; then
     cat >&2 <<'ERROR'
 decision captures require structured decision.capture flags:
-  --title, --rationale, --topic-keys, and --options
+  --title, --rationale, --topic-keys, --options, and what the decision rests on
+  (--rests-on-decision, --rests-on-evidence, --rests-on-assumption, or --bet)
 ERROR
     exit 2
   fi
@@ -341,9 +361,18 @@ while [[ $# -gt 0 ]]; do
       HIVEMIND_DIR="${2:-}"
       shift 2
       ;;
-    --title|--rationale|--topic-keys|--options|--chose|--decided-by|--delegated-by|--hypotheses|--evidence|--quote|--question)
+    --title|--rationale|--topic-keys|--options|--chose|--decided-by|--delegated-by|--hypotheses|--evidence|--quote|--question|--rests-on-decision|--rests-on-evidence|--evidence-source|--rests-on-assumption|--would-change-if|--check-by|--confidence)
       FORWARDED+=("$1" "${2:-}")
       shift 2
+      ;;
+    --bet)
+      # Optional statement: a following argument that is not another flag belongs to --bet.
+      FORWARDED+=("$1")
+      shift
+      if [[ $# -gt 0 && "$1" != -* ]]; then
+        FORWARDED+=("$1")
+        shift
+      fi
       ;;
     --still-proposed)
       FORWARDED+=("$1")

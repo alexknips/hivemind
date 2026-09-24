@@ -83,7 +83,9 @@ pub use projects::{
     ProjectListRequest, ProjectListResults, ProjectOutcome, ProjectView,
 };
 pub use relevant::get_relevant_decisions;
-pub use resolve::{resolve_decision_by_description, ResolveOutcome, ResolvedCandidate};
+pub use resolve::{
+    resolve_decision_by_description, resolve_decision_by_id, ResolveOutcome, ResolvedCandidate,
+};
 pub use search::{
     search_decisions, search_decisions_any, search_decisions_fts,
     search_decisions_fts_with_context, search_decisions_with_ledger, DecisionSearchResult,

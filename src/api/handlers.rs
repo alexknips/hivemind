@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::{CommandContext, Commands, DecisionProposalInput, Grounding, SupersedeInput};
 use crate::events::{CaptureItem, EventProvenance, IngestTurn};
+use crate::grounding::{
+    resolve_grounding, GroundingResolution, GroundingSpec, WIRE_GROUNDING_REFUSAL,
+};
 use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::projector::GraphView;
 use crate::queries::{
@@ -59,8 +62,17 @@ pub(super) struct CaptureDecisionRequest {
     /// `still_proposed` on `DecisionProposalInput`.
     #[serde(default)]
     still_proposed: bool,
+    /// What the decision rests on: the same typed items MCP `capture_decision` takes (see
+    /// `GroundingSpec::from_wire`). Required — a capture that names nothing is refused.
+    #[serde(default)]
+    grounding: Option<Vec<serde_json::Value>>,
+    /// Confidence in the decider's own words: low | medium | high.
+    #[serde(default)]
+    expressed_confidence: Option<String>,
+    /// Deprecated alias for `{kind:"assumption", hypothesis_id}` grounding items.
     #[serde(default)]
     hypothesis_ids: Vec<String>,
+    /// Deprecated alias for `{kind:"evidence", evidence_id}` grounding items.
     #[serde(default)]
     evidence_ids: Vec<String>,
     /// Verbatim words of the decider, self-contained. Requires `question`. See `quote` on
@@ -98,8 +110,15 @@ pub(super) struct SupersedeRequest {
     #[serde(default)]
     options: Vec<String>,
     chosen_option_label: Option<String>,
+    /// What the replacement rests on; see `CaptureDecisionRequest::grounding`. Required.
+    #[serde(default)]
+    grounding: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    expressed_confidence: Option<String>,
+    /// Deprecated alias for `{kind:"assumption", hypothesis_id}` grounding items.
     #[serde(default)]
     hypothesis_ids: Vec<String>,
+    /// Deprecated alias for `{kind:"evidence", evidence_id}` grounding items.
     #[serde(default)]
     evidence_ids: Vec<String>,
 }
@@ -301,8 +320,20 @@ fn capture_decision_blocking(
     if req.options.is_empty() {
         return Err(ApiError::validation("options must not be empty"));
     }
+    let grounding_spec = wire_grounding_spec(
+        req.grounding.as_deref().unwrap_or_default(),
+        &req.hypothesis_ids,
+        &req.evidence_ids,
+    )?;
 
     let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+    // Resolve every named premise before anything is written; an ambiguous or unmatched one is
+    // returned as data, exactly like the MCP `capture_decision` tool, and nothing is appended.
+    let resolved =
+        match resolve_grounding(&ledger, &ctx.tenant_id, grounding_spec).map_err(to_api_error)? {
+            GroundingResolution::Ready(resolved) => resolved,
+            GroundingResolution::Unresolved(unresolved) => return Ok(unresolved.envelope()),
+        };
     let commands = Commands::new_with_context(
         &ledger,
         CommandContext::new(
@@ -362,33 +393,54 @@ fn capture_decision_blocking(
         ));
     }
 
-    let decision_id = commands
-        .propose_decision(DecisionProposalInput {
-            grounding: Grounding::NotAsked,
-            expressed_confidence: None,
-            project: None,
-            actor_id: &ctx.actor_id,
-            title: &req.title,
-            rationale: &req.rationale,
-            topic_keys: &req.topic_keys,
-            option_ids: &option_ids,
-            option_labels: &option_labels,
-            chosen_option_id: chosen_option_id.as_deref(),
-            decided_by: req.decided_by.as_deref(),
-            delegated_by: req.delegated_by.as_deref(),
-            still_proposed: req.still_proposed,
-            hypothesis_ids: &req.hypothesis_ids,
-            evidence_ids: &req.evidence_ids,
-            quote: req.quote.as_deref(),
-            question: req.question.as_deref(),
-        })
+    let proposal = commands
+        .propose_grounded_decision(
+            DecisionProposalInput {
+                // The plan carries every id; see `propose_grounded_decision`.
+                grounding: Grounding::NotAsked,
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+                expressed_confidence: req.expressed_confidence.as_deref(),
+                project: None,
+                actor_id: &ctx.actor_id,
+                title: &req.title,
+                rationale: &req.rationale,
+                topic_keys: &req.topic_keys,
+                option_ids: &option_ids,
+                option_labels: &option_labels,
+                chosen_option_id: chosen_option_id.as_deref(),
+                decided_by: req.decided_by.as_deref(),
+                delegated_by: req.delegated_by.as_deref(),
+                still_proposed: req.still_proposed,
+                quote: req.quote.as_deref(),
+                question: req.question.as_deref(),
+            },
+            &resolved.plan,
+        )
         .map_err(to_api_error)?;
 
     Ok(serde_json::json!({
-        "decision_id": decision_id,
+        "decision_id": proposal.decision_id,
         "option_ids": option_ids,
         "chosen_option_id": chosen_option_id,
+        "rests_on": resolved.label(proposal.rests_on),
+        "premise_stale": proposal.premise_stale,
     }))
+}
+
+/// Parse and require the REST `grounding` body: the same typed items and deprecated
+/// `hypothesis_ids` / `evidence_ids` aliases the MCP tools take, with the same refusal text.
+fn wire_grounding_spec(
+    items: &[serde_json::Value],
+    hypothesis_ids: &[String],
+    evidence_ids: &[String],
+) -> ApiResult<GroundingSpec> {
+    let spec = GroundingSpec::from_wire(items, hypothesis_ids, evidence_ids)
+        .map_err(ApiError::validation)?;
+    if spec.is_empty() {
+        return Err(ApiError::validation(WIRE_GROUNDING_REFUSAL));
+    }
+    Ok(spec)
 }
 
 pub(super) async fn post_evidence_handler(
@@ -537,7 +589,18 @@ pub(super) async fn supersede_handler(
         if req.rationale.trim().is_empty() {
             return Err(ApiError::validation("rationale must not be empty"));
         }
+        let grounding_spec = wire_grounding_spec(
+            req.grounding.as_deref().unwrap_or_default(),
+            &req.hypothesis_ids,
+            &req.evidence_ids,
+        )?;
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let resolved = match resolve_grounding(&ledger, &ctx.tenant_id, grounding_spec)
+            .map_err(to_api_error)?
+        {
+            GroundingResolution::Ready(resolved) => resolved,
+            GroundingResolution::Unresolved(unresolved) => return Ok(unresolved.envelope()),
+        };
         let commands = Commands::new_with_context(
             &ledger,
             CommandContext::new(
@@ -555,8 +618,11 @@ pub(super) async fn supersede_handler(
                 topic_keys: &req.topic_keys,
                 option_labels: &req.options,
                 chosen_option_label: req.chosen_option_label.as_deref(),
-                hypothesis_ids: &req.hypothesis_ids,
-                evidence_ids: &req.evidence_ids,
+                // The plan carries every id; see `SupersedeInput::grounding`.
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+                grounding: Some(&resolved.plan),
+                expressed_confidence: req.expressed_confidence.as_deref(),
             })
             .map_err(to_api_error)?;
 
@@ -574,6 +640,8 @@ pub(super) async fn supersede_handler(
             "superseded_event_id": outcome.superseded_event_id,
             "old_decision_status": old_status,
             "new_decision_status": new_status,
+            "rests_on": resolved.label(outcome.rests_on),
+            "premise_stale": outcome.premise_stale,
         }))
     })
     .await;

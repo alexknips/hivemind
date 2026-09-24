@@ -470,6 +470,8 @@ fn decisions_in_project_shows_a_superseded_decision_as_superseded() -> Result<()
         hypothesis_ids: &[],
         evidence_ids: &[],
         project: None,
+        grounding: None,
+        expressed_confidence: None,
     })?;
 
     let page = found(list_decisions(&graph_of(&ledger)?, "billing", 25, None)?);

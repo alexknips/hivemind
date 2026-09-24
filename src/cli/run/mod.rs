@@ -1,3 +1,5 @@
+mod grounding;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::io::{self, BufRead, Read as IoRead, Write as IoWrite};
@@ -81,22 +83,23 @@ use super::args::{
 };
 use super::current_project::CurrentProjectStore;
 use super::render::{
-    append_truncation_notice, decision_status_label, format_current_project_output,
-    format_disagree_output, format_export_output, format_import_output, format_json_value,
-    format_output, format_prepare_documents_output, format_project_anchor_output,
-    format_project_decisions_output, format_project_link_output, format_project_list_output,
-    format_project_register_output, format_project_show_output, format_query_response,
-    format_review_output, format_supersede_output, render_active_blockers_summary,
-    render_added_since_summary, render_blocker_notifications_summary, render_changed_since_summary,
+    append_truncation_notice, decision_status_label, format_capture_output,
+    format_current_project_output, format_disagree_output, format_export_output,
+    format_import_output, format_json_value, format_output, format_prepare_documents_output,
+    format_project_anchor_output, format_project_decisions_output, format_project_link_output,
+    format_project_list_output, format_project_register_output, format_project_show_output,
+    format_query_response, format_review_output, format_supersede_output,
+    render_active_blockers_summary, render_added_since_summary,
+    render_blocker_notifications_summary, render_changed_since_summary,
     render_compact_view_summary, render_decision_brief_summary, render_decision_list_summary,
     render_decision_summary, render_dot, render_misfiled_scan_summary, render_neighborhood_summary,
     render_placement_line, render_read_only_export_summary, render_recall_summary,
     render_recent_activity_summary, render_recent_decisions_summary,
     render_resolve_outcome_summary, render_scan_quality_summary, render_scored_decision_summary,
     render_search_summary, render_situational_summary, render_supersession_summary,
-    CurrentProjectOutput, DisagreeCommandOutput, ExportReport, OutputEnvelope, ProjectAnchorOutput,
-    ProjectLinkOutput, ProjectRegisterOutput, ReviewActionOutput, ReviewCommandOutput,
-    SupersedeCommandOutput,
+    CaptureCommandOutput, CurrentProjectOutput, DisagreeCommandOutput, ExportReport,
+    OutputEnvelope, ProjectAnchorOutput, ProjectLinkOutput, ProjectRegisterOutput,
+    ReviewActionOutput, ReviewCommandOutput, SupersedeCommandOutput,
 };
 #[cfg(feature = "shared-backend-postgres")]
 use super::render::{MigrateReport, ParityCheckResult};
@@ -738,9 +741,59 @@ pub(crate) fn run_emit_with_notices<W: IoWrite>(
             let (actor_id, provenance) = capture_actor_and_provenance(&args.provenance)?;
             let commands =
                 Commands::new_with_context(&ledger, cli_command_context(cli, provenance)?);
-            let (decision_id, placement) =
-                propose_decision_from_option_labels(&commands, &actor_id, &args.decision)?;
-            OutputEnvelope::new("emit", "decision_id", decision_id).with_placement(placement)
+            let spec = grounding::require_grounding(grounding::grounding_spec_from_args(
+                &cli.hivemind_dir,
+                &args.grounding,
+                &args.decision.evidence_ids,
+                &args.decision.hypothesis_ids,
+            )?)?;
+            let resolved = grounding::resolve_declared_grounding(
+                &cli.hivemind_dir,
+                &ledger,
+                &cli_tenant(cli)?,
+                spec,
+            )?;
+            let (option_ids, chosen_option_id) =
+                record_cli_options(&commands, &actor_id, &args.decision)?;
+            let proposal = commands.propose_grounded_decision(
+                DecisionProposalInput {
+                    actor_id: &actor_id,
+                    title: &args.decision.title,
+                    rationale: &args.decision.rationale,
+                    topic_keys: &args.decision.topic_keys,
+                    option_ids: &option_ids,
+                    option_labels: &args.decision.option_ids,
+                    chosen_option_id: chosen_option_id.as_deref(),
+                    decided_by: args.decision.decided_by.as_deref(),
+                    delegated_by: args.decision.delegated_by.as_deref(),
+                    still_proposed: args.decision.still_proposed,
+                    // The plan carries every id; see `propose_grounded_decision`.
+                    hypothesis_ids: &[],
+                    evidence_ids: &[],
+                    quote: args.decision.quote.as_deref(),
+                    question: args.decision.question.as_deref(),
+                    grounding: Grounding::NotAsked,
+                    expressed_confidence: args.grounding.confidence.as_deref(),
+                    project: cli_determined_project(
+                        &args.decision.project,
+                        args.decision.project_source,
+                    )?,
+                },
+                &resolved.plan,
+            )?;
+            announce_placement(cli, &proposal.placement, notices);
+            return format_capture_output(
+                cli.json,
+                &CaptureCommandOutput {
+                    subcommand: "emit",
+                    kind: "decision_id",
+                    value: proposal.decision_id,
+                    project_notice: proposal.placement.notice(),
+                    placement: proposal.placement,
+                    rests_on: resolved.label(proposal.rests_on),
+                    premise_stale: proposal.premise_stale,
+                },
+            );
         }
         EmitCommand::DecisionProposed(args) => {
             let (decision_id, placement) =
@@ -1098,6 +1151,16 @@ pub(crate) fn run_supersede_with_notices<W: IoWrite>(
     let tenant_id = cli_tenant(cli)?;
     let ledger = open_ledger(cli)?;
 
+    // The grounding flags are read (and an empty grounding refused) before the old decision is
+    // resolved: resolving a description rewrites the `#N` continuation file a premise may point
+    // at, and a supersede that names nothing it rests on should fail before doing any work.
+    let grounding_spec = grounding::require_grounding(grounding::grounding_spec_from_args(
+        &cli.hivemind_dir,
+        &args.grounding,
+        &args.evidence_ids,
+        &args.hypothesis_ids,
+    )?)?;
+
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
     let target = resolve_fluent_target(
@@ -1114,6 +1177,13 @@ pub(crate) fn run_supersede_with_notices<W: IoWrite>(
         FluentResolution::Output(output) => return Ok(output),
     };
 
+    let resolved = grounding::resolve_declared_grounding(
+        &cli.hivemind_dir,
+        &ledger,
+        &tenant_id,
+        grounding_spec,
+    )?;
+
     let commands = Commands::new_with_context(
         &ledger,
         CommandContext::new(tenant_id.clone(), fluent_write_provenance(&cli.actor)),
@@ -1127,8 +1197,11 @@ pub(crate) fn run_supersede_with_notices<W: IoWrite>(
         topic_keys: &args.topic_keys,
         option_labels: &args.option_labels,
         chosen_option_label: args.chosen_option_label.as_deref(),
-        hypothesis_ids: &args.hypothesis_ids,
-        evidence_ids: &args.evidence_ids,
+        // The plan carries every id; see `SupersedeInput::grounding`.
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+        grounding: Some(&resolved.plan),
+        expressed_confidence: args.grounding.confidence.as_deref(),
     })?;
     let old_decision_status = decision_status_after_write(&ledger, &tenant_id, &old_decision_id)?;
     let new_decision_status =
@@ -1147,6 +1220,8 @@ pub(crate) fn run_supersede_with_notices<W: IoWrite>(
             new_decision_status,
             project_notice: outcome.placement.notice(),
             placement: outcome.placement,
+            rests_on: resolved.label(outcome.rests_on),
+            premise_stale: outcome.premise_stale,
         },
     )
 }
@@ -1308,6 +1383,8 @@ pub(crate) fn run_review_session<R: BufRead, W: IoWrite>(
                         chosen_option_label: chosen_option_label.as_deref(),
                         hypothesis_ids: &item.hypothesis_ids,
                         evidence_ids: &item.evidence_ids,
+                        grounding: None,
+                        expressed_confidence: None,
                     })?;
                     let old_status =
                         decision_status_after_write(&ledger, &tenant_id, &item.decision_id)?;
@@ -1623,11 +1700,13 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
     }
 }
 
-fn propose_decision_from_option_labels<L: EventLedger>(
+/// Record the CLI's `--options` values and resolve `--chose` among them. Options live only in
+/// the `Commands` instance until a decision proposes them, so this writes nothing to the ledger.
+fn record_cli_options<L: EventLedger>(
     commands: &Commands<'_, L>,
     actor_id: &str,
     args: &EmitDecisionProposedArgs,
-) -> Result<(String, DecisionPlacement)> {
+) -> Result<(Vec<String>, Option<String>)> {
     let mut option_ids = Vec::with_capacity(args.option_ids.len());
     let mut chosen_option_id = None;
     for option_label in &args.option_ids {
@@ -1651,6 +1730,16 @@ fn propose_decision_from_option_labels<L: EventLedger>(
         .into());
     }
 
+    Ok((option_ids, chosen_option_id))
+}
+
+fn propose_decision_from_option_labels<L: EventLedger>(
+    commands: &Commands<'_, L>,
+    actor_id: &str,
+    args: &EmitDecisionProposedArgs,
+) -> Result<(String, DecisionPlacement)> {
+    let (option_ids, chosen_option_id) = record_cli_options(commands, actor_id, args)?;
+
     commands.propose_decision_placed(DecisionProposalInput {
         project: cli_determined_project(&args.project, args.project_source)?,
         actor_id,
@@ -1667,9 +1756,8 @@ fn propose_decision_from_option_labels<L: EventLedger>(
         evidence_ids: &args.evidence_ids,
         quote: args.quote.as_deref(),
         question: args.question.as_deref(),
-        // Naming premises/evidence/assumptions by description at capture (the "what does
-        // this rest on?" question) is hivemind-gwhr.2's CLI surface; this raw/shared path
-        // pre-dates it, so it deliberately doesn't gate on grounding yet.
+        // Raw `emit decision.proposed` never asks the capture question; `decision.capture`
+        // goes through `propose_grounded_decision` instead (hivemind-gwhr.2).
         grounding: Grounding::NotAsked,
         expressed_confidence: None,
     })

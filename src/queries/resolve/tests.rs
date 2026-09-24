@@ -363,6 +363,28 @@ fn a_full_match_beats_close_candidates() -> Result<()> {
 }
 
 #[test]
+fn resolve_by_id_finds_an_existing_decision_and_reports_its_title() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:goal", "Keep the ledger append-only", &["ledger"]),
+        decision_proposed(2, "d:other", "Use Postgres directly", &["storage"]),
+    ])?;
+
+    let response = resolve_decision_by_id(&graph, "  d:goal  ")?;
+    match response.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:goal");
+            assert_eq!(candidate.title, "Keep the ledger append-only");
+            assert_eq!(candidate.rank, 0);
+            assert_eq!(candidate.matched_fields, ["id"]);
+        }
+        other => panic!("expected Resolved, got {other:?}"),
+    }
+    assert_eq!(response.result_count, 1);
+    assert!(!response.truncated);
+    Ok(())
+}
+
+#[test]
 fn one_matching_word_is_not_close_enough() -> Result<()> {
     let graph = projects_graph()?;
 
@@ -370,5 +392,27 @@ fn one_matching_word_is_not_close_enough() -> Result<()> {
     let response = resolve_decision_by_description(&graph, "billing unicorn", None)?;
 
     assert_eq!(response.data, ResolveOutcome::NotFound);
+    Ok(())
+}
+
+#[test]
+fn resolve_by_id_reports_a_missing_decision_as_not_found() -> Result<()> {
+    let graph = graph_from_events([decision_proposed(
+        1,
+        "d:goal",
+        "Keep the ledger append-only",
+        &["ledger"],
+    )])?;
+
+    let response = resolve_decision_by_id(&graph, "d:missing")?;
+    assert_eq!(response.data, ResolveOutcome::NotFound);
+    assert_eq!(response.result_count, 0);
+    Ok(())
+}
+
+#[test]
+fn resolve_by_id_rejects_a_blank_id() -> Result<()> {
+    let graph = graph_from_events([])?;
+    assert!(resolve_decision_by_id(&graph, "   ").is_err());
     Ok(())
 }

@@ -1,5 +1,19 @@
+use chrono::{DateTime, NaiveDate, NaiveTime, TimeZone, Utc};
+
 use crate::error::CommandError;
 use crate::Result;
+
+/// Parses a bet's check date: an RFC3339 timestamp or a bare `YYYY-MM-DD` date (midnight UTC).
+/// No relative phrases — a check date is a fact about the future, not "7d" from now.
+pub(crate) fn parse_check_by(value: &str) -> Option<DateTime<Utc>> {
+    let trimmed = value.trim();
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(trimmed) {
+        return Some(parsed.with_timezone(&Utc));
+    }
+    NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")
+        .ok()
+        .map(|date| Utc.from_utc_datetime(&date.and_time(NaiveTime::MIN)))
+}
 
 pub(crate) fn require_non_empty(field: &'static str, value: &str) -> Result<()> {
     if value.trim().is_empty() {

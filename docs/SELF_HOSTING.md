@@ -314,6 +314,9 @@ curl -s -X POST $HM_URL/v1/decisions \
     "options": [
       {"label": "postgres", "description": "r2d2 connection pool"},
       {"label": "sqlite",   "description": "WAL mode, single writer"}
+    ],
+    "grounding": [
+      {"kind": "evidence", "content": "SQLite allows one writer at a time", "source": "https://www.sqlite.org/lockingv3.html"}
     ]
   }' | tee /tmp/decision.json
 # → {"decision_id":"decision-...","option_ids":[...],...}

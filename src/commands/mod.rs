@@ -20,6 +20,28 @@
 //! - `expressed_confidence`, when present, is `low`, `medium` or `high`.
 //! - `record_bet` with no statement records `Judgement call: <decision title>`;
 //!   `would_change_if`, when present, is non-empty.
+//!
+//! # Grounded capture (`propose_grounded_decision`, hivemind-gwhr.2)
+//!
+//! The capture verbs (CLI `emit decision.capture` and `supersede`, MCP `capture_decision` and
+//! `supersede_decision`, REST `POST /v1/decisions` and `POST /v1/decisions/{id}/supersessions`)
+//! hand a fully resolved
+//! `GroundingPlan` to `propose_grounded_decision` / `supersede`, which enforce:
+//!
+//! - An empty plan is refused with the `Grounding::Declared` validation error; nothing is
+//!   written. A bet counts.
+//! - Every rule that can refuse the proposal (title, rationale, options, premise existence,
+//!   pre-existing evidence/hypothesis ids, the new nodes' own fields) runs BEFORE the first
+//!   write, so a refusal never leaves an orphan evidence or hypothesis node behind.
+//! - New evidence, assumptions and the bet are recorded in the same call as the decision, then
+//!   linked by the same fan-out `propose_decision_with_id` performs (`BASED_ON`, `ASSUMES`,
+//!   `FOLLOWS_FROM`, all with `causation_event_id` = the proposal event).
+//! - `supersede` gives its new grounding nodes deterministic ids (the same construction as its
+//!   option ids), so an identical retry still returns the existing outcome instead of
+//!   superseding twice; a retry that names different premises, nodes or confidence is a new
+//!   supersession, never a silent match.
+//! - A premise decision that is already superseded or rejected is allowed and reported as
+//!   `premise_stale`.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -28,6 +50,14 @@ use std::sync::{Mutex, MutexGuard};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
+
+mod grounding;
+
+use grounding::{plan_grounding_nodes, IdMode};
+pub use grounding::{
+    GroundedProposal, GroundingPlan, NewBet, NewEvidence, RestsOn, RestsOnKind,
+    GROUNDING_REQUIRED_MESSAGE,
+};
 
 use crate::error::CommandError;
 use crate::events::{
@@ -189,6 +219,12 @@ pub struct SupersedeOutcome {
     pub relation_event_ids: Vec<EventId>,
     pub superseded_event_id: EventId,
     pub placement: DecisionPlacement,
+    /// What the new decision rests on, exactly as recorded. Empty for an ungrounded supersede
+    /// (`SupersedeInput::grounding` of `None`).
+    pub rests_on: Vec<RestsOn>,
+    /// Premise decisions that were already superseded or rejected when the new decision was
+    /// captured (or, for an idempotent retry, are stale now).
+    pub premise_stale: Vec<DecisionId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -257,6 +293,15 @@ pub struct SupersedeInput<'a> {
     /// stated": the new decision inherits the old decision's `project` and
     /// `project_source` verbatim rather than defaulting to personal fallback.
     pub project: Option<DeterminedProject<'a>>,
+    /// What the new decision rests on. `Some` is a declared grounding: the plan carries every
+    /// id (so `hypothesis_ids` and `evidence_ids` above must then be empty) and must name at
+    /// least one thing. `None` is `Grounding::NotAsked`: the interactive `review` supersede
+    /// carries the old decision's own `hypothesis_ids`/`evidence_ids` forward instead of asking
+    /// the capture question.
+    pub grounding: Option<&'a GroundingPlan>,
+    /// Expressed confidence from the decider's own words: low | medium | high. See
+    /// `DecisionProposalInput::expressed_confidence`.
+    pub expressed_confidence: Option<&'a str>,
 }
 
 /// Input to `Commands::ground_decision`: give an already-proposed decision its grounding
@@ -320,6 +365,7 @@ struct DecisionProposalSnapshot {
     evidence_ids: Vec<String>,
     project: Option<String>,
     project_source: Option<ProjectSource>,
+    expressed_confidence: Option<String>,
 }
 
 impl<'a, L: EventLedger> Commands<'a, L> {
@@ -432,19 +478,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         check_by: Option<DateTime<Utc>>,
         would_change_if: Option<&str>,
     ) -> Result<HypothesisId> {
-        let default_statement;
-        let statement = match statement {
-            Some(text) if !text.trim().is_empty() => text,
-            _ => {
-                require_non_empty("decision_title", decision_title)?;
-                default_statement = format!("Judgement call: {}", decision_title.trim());
-                default_statement.as_str()
-            }
-        };
-
+        let statement = bet_statement(statement, decision_title)?;
         self.record_hypothesis_with_kind(
             actor_id,
-            statement,
+            &statement,
             HypothesisKind::Bet,
             check_by,
             would_change_if,
@@ -901,6 +938,15 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         &self,
         input: DecisionProposalInput<'_>,
     ) -> Result<(DecisionId, DecisionPlacement)> {
+        self.propose_decision_detailed(input)
+            .map(|(decision_id, placement, _)| (decision_id, placement))
+    }
+
+    /// Every rule `propose_decision` can refuse a proposal for that does not need the new
+    /// decision's id and does not depend on grounding premises. Pure reads (existence scans);
+    /// `propose_grounded_decision` runs it before recording any grounding node so a refusal
+    /// never leaves an orphan behind.
+    fn validate_proposal(&self, input: &DecisionProposalInput<'_>) -> Result<()> {
         require_valid_actor_id(input.actor_id)?;
         validate_title("title", input.title)?;
         require_non_empty("rationale", input.rationale)?;
@@ -1013,6 +1059,16 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }
         }
 
+        Ok(())
+    }
+
+    /// `propose_decision` plus the event ids and `premise_stale` the caller needs to build an
+    /// honest reply.
+    pub(crate) fn propose_decision_detailed(
+        &self,
+        input: DecisionProposalInput<'_>,
+    ) -> Result<(DecisionId, DecisionPlacement, DecisionProposalEventIds)> {
+        self.validate_proposal(&input)?;
         self.validate_grounding_premises(input.grounding)?;
 
         let event_uuids = DecisionProposalEventUuids {
@@ -1031,7 +1087,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             project.as_deref(),
             Some(project_source),
         );
-        self.propose_decision_with_id_and_project(
+        let event_ids = self.propose_decision_with_id_and_project(
             input,
             &decision_id,
             event_uuids,
@@ -1049,7 +1105,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             };
         }
 
-        Ok((decision_id, placement))
+        Ok((decision_id, placement, event_ids))
     }
 
     pub fn propose_decision_with_id(
@@ -1090,14 +1146,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             return Err(CommandError::Validation("option_ids must not be empty".to_owned()).into());
         }
 
-        if input.option_labels.len() != input.option_ids.len() {
-            return Err(CommandError::Validation(
-                "option_labels must have exactly one label per option_id (hivemind-zdsh.10: a \
-                 label is a required part of the option entity, not optional)"
-                    .to_owned(),
-            )
-            .into());
-        }
+        require_aligned_option_labels(input.option_ids, input.option_labels)?;
 
         if event_uuids.has_option.len() != input.option_ids.len() {
             return Err(CommandError::Validation(
@@ -1211,10 +1260,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
 
         if input.grounding.declared_and_empty() {
-            return Err(CommandError::Validation(
-                "grounding must name at least one premise decision, evidence item or hypothesis (a bet counts)".to_owned(),
-            )
-            .into());
+            return Err(CommandError::Validation(GROUNDING_REQUIRED_MESSAGE.to_owned()).into());
         }
 
         let mut stale_premises = Vec::new();
@@ -1608,10 +1654,48 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             project.as_deref(),
             Some(project_source),
         );
+        // A declared grounding carries every evidence/hypothesis id in its plan; its new nodes
+        // get deterministic ids (like the option ids above) so an identical retry matches.
+        let planned = match input.grounding {
+            Some(plan) => {
+                if !input.hypothesis_ids.is_empty() || !input.evidence_ids.is_empty() {
+                    return Err(CommandError::Validation(
+                        "supersede takes hypothesis and evidence ids from `grounding`; leave hypothesis_ids and evidence_ids empty".to_owned(),
+                    )
+                    .into());
+                }
+                self.validate_grounding_plan(input.actor_id, plan)?;
+                let seed = format!(
+                    "{}\0{}\0{}\0{}",
+                    input.actor_id, input.old_decision_id, input.new_title, input.new_rationale
+                );
+                Some(plan_grounding_nodes(
+                    plan,
+                    input.new_title,
+                    IdMode::Deterministic(&seed),
+                )?)
+            }
+            None => None,
+        };
+        let (hypothesis_ids, evidence_ids) = match &planned {
+            Some(planned) => (
+                planned.hypothesis_ids.as_slice(),
+                planned.evidence_ids.as_slice(),
+            ),
+            None => (input.hypothesis_ids, input.evidence_ids),
+        };
+        let grounding = match (input.grounding, &planned) {
+            (Some(plan), Some(planned)) => Grounding::Declared {
+                premise_decision_ids: &plan.premise_decision_ids,
+                evidence_ids: &planned.evidence_ids,
+                hypothesis_ids: &planned.hypothesis_ids,
+            },
+            _ => Grounding::NotAsked,
+        };
 
         let proposal_props = DecisionProposalInput {
-            grounding: Grounding::NotAsked,
-            expressed_confidence: None,
+            grounding,
+            expressed_confidence: input.expressed_confidence,
             actor_id: input.actor_id,
             title: input.new_title,
             rationale: input.new_rationale,
@@ -1625,8 +1709,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             // auto-accepts (only `propose_decision` does). Superseding decisions stay
             // `proposed` until separately accepted — out of scope for hivemind-zdsh.8.
             still_proposed: true,
-            hypothesis_ids: input.hypothesis_ids,
-            evidence_ids: input.evidence_ids,
+            hypothesis_ids,
+            evidence_ids,
             // Superseding decisions don't carry a quote/question in this slice
             // (hivemind-zdsh.13 scoped this to decision.capture/decision.proposed).
             quote: None,
@@ -1636,9 +1720,13 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 source: project_source,
             }),
         };
-        if let Some(existing) =
+        if let Some(mut existing) =
             self.find_matching_supersede(input.old_decision_id, &proposal_props)?
         {
+            if let (Some(plan), Some(planned)) = (input.grounding, &planned) {
+                existing.rests_on = planned.rests_on(&plan.premise_decision_ids);
+                existing.premise_stale = self.stale_premises(&plan.premise_decision_ids)?;
+            }
             return Ok(existing);
         }
 
@@ -1658,7 +1746,21 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             )?;
         }
 
+        // Nothing below the pre-validation may refuse the proposal, so recording the grounding
+        // nodes first never strands an orphan. `validate_proposal` only knows the ids that
+        // already exist, so it sees the plan's pre-existing ids, not the new nodes'.
+        if let (Some(plan), Some(planned)) = (input.grounding, &planned) {
+            require_aligned_option_labels(&option_ids, &option_labels)?;
+            self.validate_proposal(&DecisionProposalInput {
+                hypothesis_ids: &plan.hypothesis_ids,
+                evidence_ids: &plan.evidence_ids,
+                ..proposal_props
+            })?;
+            self.record_planned_nodes(input.actor_id, planned)?;
+        }
+
         let new_decision_id = generate_entity_id("decision");
+        let premise_count = proposal_props.grounding.premise_decision_ids().len();
         let proposal_event_ids = self.propose_decision_with_id_and_project(
             proposal_props,
             &new_decision_id,
@@ -1666,11 +1768,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 proposal: Uuid::new_v4(),
                 has_option: repeat_uuid(option_ids.len()),
                 chose: chosen_option_id.as_ref().map(|_| Uuid::new_v4()),
-                assumes: repeat_uuid(input.hypothesis_ids.len()),
-                based_on: repeat_uuid(input.evidence_ids.len()),
-                // Superseding decisions don't name premises in this slice (see the
-                // `grounding: Grounding::NotAsked` comment on `proposal_props` above).
-                follows_from: Vec::new(),
+                assumes: repeat_uuid(hypothesis_ids.len()),
+                based_on: repeat_uuid(evidence_ids.len()),
+                follows_from: repeat_uuid(premise_count),
             },
             project.clone(),
             project_source,
@@ -1682,12 +1782,18 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             Uuid::new_v4(),
         )?;
 
+        let rests_on = match (input.grounding, &planned) {
+            (Some(plan), Some(planned)) => planned.rests_on(&plan.premise_decision_ids),
+            _ => Vec::new(),
+        };
         Ok(SupersedeOutcome {
             new_decision_id,
             proposal_event_id: proposal_event_ids.proposal_event_id,
             relation_event_ids: proposal_event_ids.relation_event_ids,
             superseded_event_id,
             placement,
+            rests_on,
+            premise_stale: proposal_event_ids.premise_stale,
         })
     }
 
@@ -1790,10 +1896,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             && input.evidence_ids.is_empty()
             && input.hypothesis_ids.is_empty()
         {
-            return Err(CommandError::Validation(
-                "grounding must name at least one premise decision, evidence item or hypothesis (a bet counts)".to_owned(),
-            )
-            .into());
+            return Err(CommandError::Validation(GROUNDING_REQUIRED_MESSAGE.to_owned()).into());
         }
 
         self.require_decision_exists(input.decision_id)?;
@@ -2295,10 +2398,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     /// `premise_stale` once the real decision id exists).
     fn validate_grounding_premises(&self, grounding: Grounding<'_>) -> Result<()> {
         if grounding.declared_and_empty() {
-            return Err(CommandError::Validation(
-                "grounding must name at least one premise decision, evidence item or hypothesis (a bet counts)".to_owned(),
-            )
-            .into());
+            return Err(CommandError::Validation(GROUNDING_REQUIRED_MESSAGE.to_owned()).into());
         }
         for premise_id in grounding.premise_decision_ids() {
             self.require_decision_exists(premise_id)?;
@@ -2426,6 +2526,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         let mut proposals = HashMap::new();
         let mut superseded_events = Vec::new();
         let mut relation_event_ids_by_causation: HashMap<EventId, Vec<EventId>> = HashMap::new();
+        let mut premises_by_causation: HashMap<EventId, Vec<String>> = HashMap::new();
 
         // Single streaming pass — this function must collect all DecisionProposed,
         // DecisionSuperseded, and RelationAdded events before it can reason about
@@ -2463,6 +2564,18 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                                 .entry(causation_event_id)
                                 .or_default()
                                 .push(event_id);
+                            if payload_value_matches(
+                                event,
+                                "relation",
+                                relation_kind_name(RelationKind::FollowsFrom),
+                            ) {
+                                if let Some(premise_id) = payload_value_as_str(event, "to_id") {
+                                    premises_by_causation
+                                        .entry(causation_event_id)
+                                        .or_default()
+                                        .push(premise_id.to_owned());
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -2478,6 +2591,16 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             if !same_identifier(proposal.actor_id.as_str(), props.actor_id) {
                 continue;
             }
+            // What the retry names as its grounding is part of "the same supersede": a retry
+            // with different premises or confidence is a new supersession, never a silent
+            // match that would report a `rests_on` the ledger does not hold.
+            let mut recorded_premises = premises_by_causation
+                .get(&proposal.event_id)
+                .cloned()
+                .unwrap_or_default();
+            recorded_premises.sort_unstable();
+            let mut requested_premises = props.grounding.premise_decision_ids().to_vec();
+            requested_premises.sort_unstable();
             if proposal.title == props.title
                 && proposal.rationale == props.rationale
                 && proposal.topic_keys == props.topic_keys
@@ -2486,6 +2609,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 && proposal.hypothesis_ids == props.hypothesis_ids
                 && proposal.evidence_ids == props.evidence_ids
                 && proposal.project.as_deref() == props.project.map(|project| project.handle)
+                && proposal.expressed_confidence.as_deref() == props.expressed_confidence
+                && recorded_premises == requested_premises
             {
                 let relation_event_ids = relation_event_ids_by_causation
                     .get(&proposal.event_id)
@@ -2502,6 +2627,8 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                     relation_event_ids,
                     superseded_event_id,
                     placement,
+                    rests_on: Vec::new(),
+                    premise_stale: Vec::new(),
                 }));
             }
         }
@@ -2697,6 +2824,8 @@ fn decision_proposal_snapshot_from_event(event: &Event) -> Option<DecisionPropos
         project: payload_value_as_str(event, "project").map(str::to_owned),
         project_source: payload_value_as_str(event, "project_source")
             .and_then(ProjectSource::parse),
+        expressed_confidence: payload_value_as_str(event, "expressed_confidence")
+            .map(str::to_owned),
     })
 }
 
@@ -2857,6 +2986,39 @@ fn require_valid_expressed_confidence(value: Option<&str>) -> Result<()> {
             "expressed_confidence must be low, medium, or high (got: {other})"
         ))
         .into()),
+    }
+}
+
+/// One label per option id (hivemind-zdsh.10: a label is a required part of the option entity,
+/// not optional). `propose_decision_with_id` enforces it for every proposal; the grounded paths
+/// also check it up front so a refusal never leaves an orphan grounding node behind.
+fn require_aligned_option_labels(option_ids: &[String], option_labels: &[String]) -> Result<()> {
+    if option_labels.len() != option_ids.len() {
+        return Err(CommandError::Validation(
+            "option_labels must have exactly one label per option_id (hivemind-zdsh.10: a \
+             label is a required part of the option entity, not optional)"
+                .to_owned(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The statement a bet is recorded under: the caller's own words, or `Judgement call:
+/// <decision title>` when it names none so the node reads standalone.
+fn bet_statement<'a>(
+    statement: Option<&'a str>,
+    decision_title: &str,
+) -> Result<std::borrow::Cow<'a, str>> {
+    match statement {
+        Some(text) if !text.trim().is_empty() => Ok(std::borrow::Cow::Borrowed(text)),
+        _ => {
+            require_non_empty("decision_title", decision_title)?;
+            Ok(std::borrow::Cow::Owned(format!(
+                "Judgement call: {}",
+                decision_title.trim()
+            )))
+        }
     }
 }
 

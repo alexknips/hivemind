@@ -132,7 +132,10 @@ curl -s -X POST http://localhost:8080/v1/decisions \
       {"label": "postgres", "description": "Postgres with r2d2 connection pool"},
       {"label": "sqlite",   "description": "SQLite with WAL mode"}
     ],
-    "chosen_option_label": "postgres"
+    "chosen_option_label": "postgres",
+    "grounding": [
+      {"kind": "evidence", "content": "SQLite allows one writer at a time", "source": "https://www.sqlite.org/lockingv3.html"}
+    ]
   }'
 
 # Query decisions

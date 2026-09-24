@@ -656,6 +656,9 @@ pub struct SupersedeArgs {
     /// How `--project` was determined (default: stated). Requires `--project`.
     #[arg(long = "project-source", value_enum, requires = "project")]
     pub project_source: Option<ProjectSourceArg>,
+
+    #[command(flatten)]
+    pub grounding: GroundingArgs,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -866,7 +869,7 @@ pub struct EmitArgs {
 #[derive(Debug, Clone, Subcommand)]
 pub enum EmitCommand {
     #[command(name = "decision.capture")]
-    DecisionCapture(EmitDecisionCaptureArgs),
+    DecisionCapture(Box<EmitDecisionCaptureArgs>),
     #[command(name = "decision.proposed")]
     DecisionProposed(EmitDecisionProposedArgs),
     #[command(name = "decision.accepted")]
@@ -904,6 +907,58 @@ pub struct EmitDecisionCaptureArgs {
 
     #[command(flatten)]
     pub decision: EmitDecisionProposedArgs,
+
+    #[command(flatten)]
+    pub grounding: GroundingArgs,
+}
+
+/// "What does this decision rest on?" — asked at every capture. Name at least one of:
+/// a decision we already made (`--rests-on-decision`), something observed and where
+/// (`--rests-on-evidence` with `--evidence-source`), something we assume
+/// (`--rests-on-assumption`), or, when there is nothing yet, a declared bet (`--bet`). An id
+/// of a node that already exists also counts (`--evidence`, `--hypotheses`). A capture that
+/// names none is refused and nothing is written. The decider's own words are not a grounding:
+/// they go in `--quote`.
+#[derive(Debug, Clone, Args)]
+pub struct GroundingArgs {
+    /// A decision this one follows from, named the way you would describe it, as `#N` from the
+    /// previous ambiguous candidate list, or by `decision-...` id. Repeatable. An ambiguous or
+    /// unmatched description refuses the capture and writes nothing.
+    #[arg(long = "rests-on-decision", value_name = "DESCRIPTION|#N|DECISION_ID")]
+    pub rests_on_decisions: Vec<String>,
+
+    /// Something observed that this decision rests on: the observation itself, not the decider's
+    /// opinion of it. Repeatable; creates the evidence in the same call. Pair each with
+    /// `--evidence-source`.
+    #[arg(long = "rests-on-evidence", value_name = "CONTENT")]
+    pub rests_on_evidence: Vec<String>,
+
+    /// Where the matching `--rests-on-evidence` was observed (URL, file@commit, test run,
+    /// measurement). Repeatable and index-aligned: give one per `--rests-on-evidence`, or none.
+    #[arg(long = "evidence-source", value_name = "REF")]
+    pub evidence_sources: Vec<String>,
+
+    /// Something assumed that this decision rests on. Repeatable; creates an assumption in the
+    /// same call.
+    #[arg(long = "rests-on-assumption", value_name = "STATEMENT")]
+    pub rests_on_assumptions: Vec<String>,
+
+    /// Nothing yet: declare this decision a bet. Give the statement being bet on, or leave it
+    /// off to record `Judgement call: <title>`.
+    #[arg(long = "bet", value_name = "STATEMENT", num_args = 0..=1)]
+    pub bet: Option<Option<String>>,
+
+    /// What would change our mind about the `--bet`, in the decider's own words.
+    #[arg(long = "would-change-if", requires = "bet")]
+    pub would_change_if: Option<String>,
+
+    /// When to check whether the `--bet` paid off. RFC3339 timestamp or YYYY-MM-DD date.
+    #[arg(long = "check-by", requires = "bet")]
+    pub check_by: Option<String>,
+
+    /// Confidence in the decider's own words. Omit when they expressed none.
+    #[arg(long = "confidence", value_parser = ["low", "medium", "high"])]
+    pub confidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]

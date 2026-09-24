@@ -18,8 +18,37 @@ cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
   --rationale "The local command is deterministic and does not depend on hooks" \
   --topic-keys agents,capture \
   --options direct-cli,mcp,hook \
-  --chose direct-cli
+  --chose direct-cli \
+  --rests-on-assumption "Agents already have shell access to the local ledger"
 ```
+
+## What the decision rests on
+
+Every `decision.capture` (and `supersede`) answers "what does this decision rest
+on?" with at least one of:
+
+- `--rests-on-decision <description | #N | decision-id>` — a decision already
+  made. A description is resolved by the same deterministic resolver as the
+  fluent verbs; if it matches more than one decision, or none, the capture is
+  refused with the numbered candidates (re-run with `--rests-on-decision '#N'`)
+  and nothing is written.
+- `--rests-on-evidence <observation>` with `--evidence-source <where>` — something
+  observed. Repeatable; sources are index-aligned with the evidence (one each, or
+  none).
+- `--rests-on-assumption <statement>` — something assumed. Repeatable.
+- `--bet [statement]`, optionally `--would-change-if <text>` and
+  `--check-by <date>` — nothing yet: a declared bet.
+
+An existing evidence or hypothesis id (`--evidence`, `--hypotheses`) also counts.
+`--confidence low|medium|high` records the decider's own stated confidence; omit
+it otherwise. The decider's own words are not a grounding; they go in `--quote`.
+A capture that names nothing exits 2 with the four ways to answer and writes
+nothing. The reply lists `rests_on` (what was recorded) and `premise_stale` (named
+decisions already superseded or rejected — the link is recorded, and the
+staleness is visible). MCP `capture_decision` / `supersede_decision` and REST
+`POST /v1/decisions` take the same answers as a required `grounding` array. Raw
+`emit decision.proposed`, classifier ingest, document import and Slack capture do
+not ask the question.
 
 The command writes canonical ledger events. The decision proposal and its
 fan-out relation events carry:
@@ -112,7 +141,8 @@ cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
   --rationale "The write path should validate and append events without query-time inference" \
   --topic-keys agents,capture \
   --options direct-cli,mcp \
-  --chose direct-cli
+  --chose direct-cli \
+  --rests-on-assumption "The write path stays deterministic without query-time inference"
 ```
 
 This repository also ships a project-local Claude Code command:
@@ -122,7 +152,8 @@ This repository also ships a project-local Claude Code command:
   --rationale "The write path should validate and append events without query-time inference" \
   --topic-keys agents,capture \
   --options direct-cli,mcp \
-  --chose direct-cli
+  --chose direct-cli \
+  --rests-on-assumption "The write path stays deterministic without query-time inference"
 ```
 
 The command calls `.claude/scripts/capture-decision.sh`. By default it records
@@ -173,7 +204,8 @@ cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
   --rationale "Codex can invoke the same local command in any checkout" \
   --topic-keys agents,capture \
   --options direct-cli,mcp \
-  --chose direct-cli
+  --chose direct-cli \
+  --rests-on-assumption "Codex can run a local command in any checkout"
 ```
 
 ### Codex Distribution Bundle

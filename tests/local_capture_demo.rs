@@ -160,6 +160,7 @@ fn capture_agent_decision(
         vec![
             "emit".to_owned(),
             "decision.capture".to_owned(),
+            "--bet".to_owned(),
             "--agent-tool".to_owned(),
             tool.to_owned(),
             "--agent-session".to_owned(),

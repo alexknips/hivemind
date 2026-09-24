@@ -35,7 +35,8 @@ HIVEMIND_DIR="$(mktemp -d)" hivemind emit decision.capture \
   --rationale "Verify the local binary without touching the shared dogfood ledger" \
   --topic-keys dogfood,smoke \
   --options shared-ledger,temp-ledger \
-  --chose temp-ledger
+  --chose temp-ledger \
+  --bet
 ```
 
 Back up the shared ledger before moving or deleting it. For a live backup, use

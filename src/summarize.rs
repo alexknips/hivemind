@@ -926,6 +926,8 @@ mod tests {
             chosen_option_label: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            grounding: None,
+            expressed_confidence: None,
         };
         let outcome = commands.supersede(supersede_input).unwrap(); // ubs:ignore: test-only; panicking is correct in tests
         let new_id = outcome.new_decision_id;

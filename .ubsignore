@@ -30,6 +30,7 @@ src/cli/render/tests.rs
 src/queries/projects/tests.rs
 src/cli/current_project/tests.rs
 src/commands/tests.rs
+src/grounding/tests.rs
 src/mcp/tests.rs
 src/events/tests.rs
 src/slack_app/tests.rs

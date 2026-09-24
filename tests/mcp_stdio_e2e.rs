@@ -103,6 +103,7 @@ fn mcp_stdio_server_handles_initialize_list_and_capture() {
         "params": {
             "name": "capture_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "actor_id": "agent:e2e:1",
                 "title": "Adopt MCP transport",
                 "rationale": "Reuse one server across MCP-aware agents",
@@ -236,7 +237,9 @@ fn mcp_stdio_servers_share_sqlite_wal_ledger_under_concurrent_writes(
     }
 
     let ledger = hivemind::ledger::SqliteEventLedger::open(&hivemind_dir).expect("ledger reopens"); // ubs:ignore: test-only; panicking is correct in tests
-    let expected_events = 4;
+                                                                                                    // Per capture: the bet grounding's hypothesis.recorded, decision.proposed, HAS_OPTION and
+                                                                                                    // ASSUMES (hivemind-gwhr.2: every capture names what it rests on).
+    let expected_events = 8;
     assert_eq!(
         // ubs:ignore: test-only assertion
         hivemind::ledger::EventLedger::latest_offset(&ledger).expect("latest offset"), // ubs:ignore: test-only; panicking is correct in tests
@@ -250,6 +253,7 @@ fn mcp_stdio_servers_share_sqlite_wal_ledger_under_concurrent_writes(
     let mut seen_event_ids = BTreeSet::new();
     let mut decision_event_ids = BTreeSet::new();
     let mut decision_count = 0;
+    let mut hypothesis_count = 0;
     let mut relation_count = 0;
     let mut unexpected_event_type = None;
     for (index, event) in events.iter().enumerate() {
@@ -266,6 +270,9 @@ fn mcp_stdio_servers_share_sqlite_wal_ledger_under_concurrent_writes(
                 decision_count += 1;
                 decision_event_ids.insert(event_id);
             }
+            hivemind::events::EventType::HypothesisRecorded => {
+                hypothesis_count += 1;
+            }
             hivemind::events::EventType::RelationAdded => {
                 relation_count += 1;
             }
@@ -280,7 +287,8 @@ fn mcp_stdio_servers_share_sqlite_wal_ledger_under_concurrent_writes(
         return Err(format!("unexpected event type from MCP capture: {other:?}").into());
     }
     assert_eq!(decision_count, 2); // ubs:ignore: test-only assertion
-    assert_eq!(relation_count, 2); // ubs:ignore: test-only assertion
+    assert_eq!(hypothesis_count, 2); // ubs:ignore: test-only assertion
+    assert_eq!(relation_count, 4); // ubs:ignore: test-only assertion
 
     for event in events
         .iter()
@@ -308,7 +316,7 @@ fn mcp_stdio_servers_share_sqlite_wal_ledger_under_concurrent_writes(
         Ok(())
     })
     .expect("replay succeeds"); // ubs:ignore: test-only; panicking is correct in tests
-    assert_eq!(replayed_event_ids, vec![1, 2, 3, 4]); // ubs:ignore: test-only assertion
+    assert_eq!(replayed_event_ids, vec![1, 2, 3, 4, 5, 6, 7, 8]); // ubs:ignore: test-only assertion
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);
     Ok(())
@@ -351,6 +359,7 @@ fn capture_decision_through_mcp_server(
             "params": {
                 "name": "capture_decision",
                 "arguments": {
+                    "grounding": [{"kind": "bet"}],
                     "actor_id": format!("agent:e2e:{server_index}"),
                     "title": format!("Concurrent MCP write {server_index}"),
                     "rationale": "Exercise independent MCP subprocesses sharing one WAL ledger.",
@@ -432,6 +441,7 @@ fn mcp_search_decisions_e2e() {
             "params": {
                 "name": "capture_decision",
                 "arguments": {
+                    "grounding": [{"kind": "bet"}],
                     "actor_id": "agent:test:search-e2e",
                     "title": "Use quorum-consensus for distributed writes",
                     "rationale": "Quorum-consensus ensures durability across nodes",
@@ -520,6 +530,7 @@ fn mcp_summarize_decisions_e2e() {
             "params": {
                 "name": "capture_decision",
                 "arguments": {
+                    "grounding": [{"kind": "bet"}],
                     "actor_id": "agent:test:summarize-e2e",
                     "title": "Adopt event-driven architecture",
                     "rationale": "Loose coupling via event streams reduces blast radius of failures",
@@ -576,6 +587,7 @@ fn mcp_summarize_decisions_e2e() {
             "params": {
                 "name": "supersede_decision",
                 "arguments": {
+                    "grounding": [{"kind": "bet"}],
                     "old_decision_id": decision_id,
                     "title": "Adopt event-driven architecture v2",
                     "rationale": "Adding schema registry for event contracts",
@@ -660,6 +672,7 @@ fn mcp_compact_view_e2e() {
             "params": {
                 "name": "capture_decision",
                 "arguments": {
+                    "grounding": [{"kind": "bet"}],
                     "actor_id": "agent:test:compact-e2e",
                     "title": "Deploy on bare-metal servers",
                     "rationale": "Lower operational cost at current scale",
@@ -689,6 +702,7 @@ fn mcp_compact_view_e2e() {
             "params": {
                 "name": "supersede_decision",
                 "arguments": {
+                    "grounding": [{"kind": "bet"}],
                     "old_decision_id": original_id,
                     "title": "Deploy on managed Kubernetes",
                     "rationale": "Scale requirements exceeded bare-metal maintenance budget",
@@ -792,6 +806,7 @@ fn mcp_m3_tools_are_tenant_isolated() {
                 "params": {
                     "name": "capture_decision",
                     "arguments": {
+                        "grounding": [{"kind": "bet"}],
                         "actor_id": "agent:test:tenant-a",
                         "title": "TenantA uses columnstore indexes",
                         "rationale": "Analytical workloads benefit from columnar layout",
@@ -846,6 +861,7 @@ fn mcp_m3_tools_are_tenant_isolated() {
                 "params": {
                     "name": "capture_decision",
                     "arguments": {
+                        "grounding": [{"kind": "bet"}],
                         "actor_id": "agent:test:tenant-b",
                         "title": "TenantB uses row-oriented storage",
                         "rationale": "OLTP workloads are row-access dominant",

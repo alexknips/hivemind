@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::commands::DecisionPlacement;
+use crate::commands::{DecisionPlacement, RestsOn};
 use crate::error::{CliError, CommandError};
 use crate::events::{EventId, EventType};
 use crate::ingest::{DocumentImportReport, DocumentPreparationReport};
@@ -1078,7 +1078,7 @@ pub(crate) fn format_supersede_output(
         return format_json_value(true, output);
     }
 
-    Ok(format!(
+    let mut rendered = format!(
         "proposal_event_id={} superseded_event_id={} old_decision_id={} new_decision_id={} old_status={} new_status={} project={} project_source={}",
         output.proposal_event_id,
         output.superseded_event_id,
@@ -1088,7 +1088,36 @@ pub(crate) fn format_supersede_output(
         decision_status_label(output.new_decision_status),
         output.placement.project,
         output.placement.project_source.as_str()
-    ))
+    );
+    if !output.premise_stale.is_empty() {
+        let _ = write!(
+            rendered,
+            " premise_stale={}",
+            output.premise_stale.join(",")
+        );
+    }
+    Ok(rendered)
+}
+
+/// `emit decision.capture`'s reply. Text mode stays the bare decision id every script already
+/// parses; a premise that is already superseded or rejected is the one thing that must never be
+/// silent, so it adds a line. `--json` carries the full `rests_on`.
+pub(crate) fn format_capture_output(
+    as_json: bool,
+    output: &CaptureCommandOutput,
+) -> Result<String> {
+    if as_json {
+        return format_json_value(true, output);
+    }
+
+    let mut rendered = output.value.clone();
+    for premise_id in &output.premise_stale {
+        let _ = write!(
+            rendered,
+            "\npremise_stale: {premise_id} (already superseded or rejected; the link is recorded)"
+        );
+    }
+    Ok(rendered)
 }
 
 pub(crate) fn format_review_output(as_json: bool, output: &ReviewCommandOutput) -> Result<String> {
@@ -1577,6 +1606,26 @@ pub(crate) struct SupersedeCommandOutput {
     pub(crate) placement: DecisionPlacement,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) project_notice: Option<&'static str>,
+    /// What the new decision rests on, as recorded.
+    pub(crate) rests_on: Vec<RestsOn>,
+    /// Premise decisions already superseded or rejected when named.
+    pub(crate) premise_stale: Vec<String>,
+}
+
+/// The `emit decision.capture` reply: the `OutputEnvelope` fields plus what the decision rests
+/// on and which premises were already stale.
+#[derive(Debug, Serialize)]
+pub(crate) struct CaptureCommandOutput {
+    pub(crate) subcommand: &'static str,
+    pub(crate) kind: &'static str,
+    pub(crate) value: String,
+    /// Where the decision was filed (`project`, `project_source`).
+    #[serde(flatten)]
+    pub(crate) placement: DecisionPlacement,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_notice: Option<&'static str>,
+    pub(crate) rests_on: Vec<RestsOn>,
+    pub(crate) premise_stale: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]

@@ -24,7 +24,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use hivemind::commands::{
-    Commands, DecisionProposalInput, DeterminedProject, GroundInput, Grounding, SupersedeInput,
+    Commands, DecisionProposalInput, DeterminedProject, GroundInput, Grounding, GroundingPlan,
+    NewBet, NewEvidence, SupersedeInput,
 };
 use hivemind::connector;
 use hivemind::events::{
@@ -174,8 +175,74 @@ fn every_write_path_event_validates_against_its_schema() {
             chosen_option_label: None,
             hypothesis_ids: &[],
             evidence_ids: &[],
+            grounding: None,
+            expressed_confidence: None,
         })
         .expect("supersede");
+
+    // -- grounded capture (hivemind-gwhr.2): evidence with a source, an assumption, a bet with
+    // a check date and a `would_change_if`, a FOLLOWS_FROM premise and a stated confidence, all
+    // through the real write path, for both a fresh capture and a grounded supersede --
+    let grounded_option = commands
+        .record_option(actor, "Grounded option", "n/a")
+        .expect("record grounded option");
+    let check_by = chrono::DateTime::parse_from_rfc3339("2026-12-01T00:00:00Z")
+        .expect("check_by parses")
+        .with_timezone(&chrono::Utc);
+    let grounding_plan = GroundingPlan {
+        premise_decision_ids: vec![decision_id.clone()],
+        new_evidence: vec![NewEvidence {
+            content: "Contract test observation".to_owned(),
+            source: Some("contract test run".to_owned()),
+        }],
+        new_assumptions: vec!["Contract test assumption".to_owned()],
+        bet: Some(NewBet {
+            statement: None,
+            would_change_if: Some("the contract test changes".to_owned()),
+            check_by: Some(check_by),
+        }),
+        ..GroundingPlan::default()
+    };
+    let grounded = commands
+        .propose_grounded_decision(
+            DecisionProposalInput {
+                grounding: Grounding::NotAsked,
+                expressed_confidence: Some("medium"),
+                actor_id: actor,
+                title: "A grounded decision",
+                rationale: "This decision exists so the test can exercise grounded capture.",
+                topic_keys: &["conformance".to_owned()],
+                option_ids: &[grounded_option],
+                option_labels: &["Grounded option".to_owned()],
+                chosen_option_id: None,
+                decided_by: None,
+                still_proposed: true,
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+                quote: None,
+                question: None,
+                delegated_by: None,
+                project: None,
+            },
+            &grounding_plan,
+        )
+        .expect("grounded capture");
+    commands
+        .supersede(SupersedeInput {
+            actor_id: actor,
+            old_decision_id: &grounded.decision_id,
+            new_title: "A grounded replacement",
+            new_rationale: "The grounded replacement also names what it rests on.",
+            topic_keys: &[],
+            option_labels: &["Grounded replacement".to_owned()],
+            chosen_option_label: None,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            grounding: Some(&grounding_plan),
+            expressed_confidence: Some("low"),
+            project: None,
+        })
+        .expect("grounded supersede");
 
     // -- relation.added (based_on, direct call) / relation.removed (same_as) --
     commands

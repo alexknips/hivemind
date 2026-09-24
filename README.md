@@ -259,8 +259,13 @@ hivemind --hivemind-dir ./hivemind/ emit decision.capture \
   --rationale "The local command is deterministic and does not depend on hooks" \
   --topic-keys agents,capture \
   --options direct-cli,mcp \
-  --chose direct-cli
+  --chose direct-cli \
+  --rests-on-assumption "Agents already have shell access to the local ledger"
 ```
+
+Every capture says what it rests on (a decision we already made, something
+observed, something assumed, or a declared `--bet`); one that names nothing is
+refused and nothing is written.
 
 Humans can review recent agent decisions in a guided terminal flow:
 

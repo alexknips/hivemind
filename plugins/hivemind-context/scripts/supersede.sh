@@ -8,9 +8,17 @@ Usage:
                --title "new decision title" --rationale "why the new direction" \
                [--topic-keys t,...] [--options o,...] [--chose o] \
                [--hypotheses h,...] [--evidence e,...] \
+               (--rests-on-decision "..." | --rests-on-evidence "..." \
+                --evidence-source "..." | --rests-on-assumption "..." | --bet ["..."]) \
+               [--would-change-if "..."] [--check-by DATE] [--confidence low|medium|high] \
                [--old ID] [--pick N] [--topic T]
 
-  supersede.sh '#1' --title "..." --rationale "..."   # resolve candidate #1
+  supersede.sh '#1' --title "..." --rationale "..." --bet   # resolve candidate #1
+
+The replacement must say what it rests on (a decision we already made,
+something observed, something assumed, or a declared --bet); a supersede that
+names nothing is refused and nothing is written. A '#N' given to
+--rests-on-decision refers to the previous ambiguous candidate list.
 
 Replace an existing decision by description, never by guessing an id. This
 is a WRITE verb: the ambiguity gate is strict here. If the description does

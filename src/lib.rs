@@ -9,6 +9,7 @@ pub mod connector;
 pub mod embedding;
 pub mod error;
 pub mod events;
+pub(crate) mod grounding;
 pub mod identity;
 pub mod ingest;
 pub mod ledger;

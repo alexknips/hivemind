@@ -34,6 +34,9 @@ use crate::commands::{
 };
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, ProjectSource, TenantId};
+use crate::grounding::{
+    resolve_grounding, GroundingResolution, GroundingSpec, WIRE_GROUNDING_REFUSAL,
+};
 use crate::ledger::{AnyLedger, EventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
@@ -237,8 +240,11 @@ pub(crate) struct CaptureDecisionArgs {
     /// Keep the decision at `proposed` even though `chosen_option_label` is set. See
     /// `still_proposed` on `DecisionProposalInput`.
     pub(crate) still_proposed: bool,
-    pub(crate) hypothesis_ids: Vec<String>,
-    pub(crate) evidence_ids: Vec<String>,
+    /// What the decision rests on: the `grounding` array plus the deprecated `hypothesis_ids` /
+    /// `evidence_ids` aliases. Never empty — see [`GroundingSpec::from_wire`].
+    pub(crate) grounding: GroundingSpec,
+    /// Confidence in the decider's own words: low | medium | high. Validated by the commands.
+    pub(crate) expressed_confidence: Option<String>,
     /// Verbatim words of the decider, self-contained. Requires `question`. See `quote` on
     /// `DecisionProposalInput`.
     pub(crate) quote: Option<String>,
@@ -248,6 +254,32 @@ pub(crate) struct CaptureDecisionArgs {
     pub(crate) project: Option<String>,
     /// How `project` was determined; `stated` when omitted. Requires `project`.
     pub(crate) project_source: Option<ProjectSource>,
+}
+
+/// Parse and require the wire grounding shared by `capture_decision` and `supersede_decision`:
+/// the `grounding` array (required, minItems 1) plus the deprecated `hypothesis_ids` /
+/// `evidence_ids` aliases, which map into the same spec. A call that names nothing it rests on
+/// is refused before anything is resolved or written.
+fn require_wire_grounding(args: &Map<String, Value>) -> Result<GroundingSpec, CoreError> {
+    let items = match args.get("grounding") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items.clone(),
+        Some(_) => {
+            return Err(CoreError::InvalidArgument(
+                "`grounding` must be an array".to_owned(),
+            ))
+        }
+    };
+    let hypothesis_ids = optional_string_array(args, "hypothesis_ids")?;
+    let evidence_ids = optional_string_array(args, "evidence_ids")?;
+    let spec = GroundingSpec::from_wire(&items, &hypothesis_ids, &evidence_ids)
+        .map_err(CoreError::InvalidArgument)?;
+    if spec.is_empty() {
+        return Err(CoreError::InvalidArgument(
+            WIRE_GROUNDING_REFUSAL.to_owned(),
+        ));
+    }
+    Ok(spec)
 }
 
 impl CaptureDecisionArgs {
@@ -316,8 +348,6 @@ impl CaptureDecisionArgs {
         let decided_by = optional_string(args, "decided_by")?;
         let delegated_by = optional_string(args, "delegated_by")?;
         let still_proposed = optional_bool(args, "still_proposed")?;
-        let hypothesis_ids = optional_string_array(args, "hypothesis_ids")?;
-        let evidence_ids = optional_string_array(args, "evidence_ids")?;
 
         if decided_by.is_some() && chosen_option_label.is_none() {
             return Err(CoreError::InvalidArgument(
@@ -340,6 +370,9 @@ impl CaptureDecisionArgs {
             ));
         }
 
+        let grounding = require_wire_grounding(args)?;
+        let expressed_confidence = optional_string(args, "expressed_confidence")?;
+
         Ok(Self {
             actor_id,
             title,
@@ -350,8 +383,8 @@ impl CaptureDecisionArgs {
             decided_by,
             delegated_by,
             still_proposed,
-            hypothesis_ids,
-            evidence_ids,
+            grounding,
+            expressed_confidence,
             quote,
             question,
             project,
@@ -367,6 +400,16 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
     args: CaptureDecisionArgs,
 ) -> Result<ToolOutput, CoreError> {
     let handle = provider.ledger()?;
+    // Resolve every named premise before anything is written: an ambiguous or unmatched one is
+    // returned as data (like a fluent tool's target) and no event is appended.
+    let resolved = match resolve_grounding(&handle.ledger, &handle.tenant_id, args.grounding)
+        .map_err(CoreError::from)?
+    {
+        GroundingResolution::Ready(resolved) => resolved,
+        GroundingResolution::Unresolved(unresolved) => {
+            return Ok(ToolOutput(unresolved.envelope()));
+        }
+    };
     let commands = Commands::new_with_context(
         &handle.ledger,
         CommandContext::new(
@@ -398,37 +441,43 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
         ));
     }
 
-    let (decision_id, placement) = commands
-        .propose_decision_placed(DecisionProposalInput {
-            grounding: Grounding::NotAsked,
-            expressed_confidence: None,
-            project: determined_project(args.project.as_deref(), args.project_source),
-            actor_id: &args.actor_id,
-            title: &args.title,
-            rationale: &args.rationale,
-            topic_keys: &args.topic_keys,
-            option_ids: &option_ids,
-            option_labels: &option_labels,
-            chosen_option_id: chosen_option_id.as_deref(),
-            decided_by: args.decided_by.as_deref(),
-            delegated_by: args.delegated_by.as_deref(),
-            still_proposed: args.still_proposed,
-            hypothesis_ids: &args.hypothesis_ids,
-            evidence_ids: &args.evidence_ids,
-            quote: args.quote.as_deref(),
-            question: args.question.as_deref(),
-        })
+    let proposal = commands
+        .propose_grounded_decision(
+            DecisionProposalInput {
+                // The plan carries every id; see `propose_grounded_decision`.
+                grounding: Grounding::NotAsked,
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+                expressed_confidence: args.expressed_confidence.as_deref(),
+                project: determined_project(args.project.as_deref(), args.project_source),
+                actor_id: &args.actor_id,
+                title: &args.title,
+                rationale: &args.rationale,
+                topic_keys: &args.topic_keys,
+                option_ids: &option_ids,
+                option_labels: &option_labels,
+                chosen_option_id: chosen_option_id.as_deref(),
+                decided_by: args.decided_by.as_deref(),
+                delegated_by: args.delegated_by.as_deref(),
+                still_proposed: args.still_proposed,
+                quote: args.quote.as_deref(),
+                question: args.question.as_deref(),
+            },
+            &resolved.plan,
+        )
         .map_err(CoreError::from)?;
 
     let mut reply = json!({
-        "decision_id": decision_id,
+        "decision_id": proposal.decision_id,
         "option_ids": option_ids,
         "chosen_option_id": chosen_option_id,
         "decided_by": args.decided_by,
         "delegated_by": args.delegated_by,
         "still_proposed": args.still_proposed,
+        "rests_on": resolved.label(proposal.rests_on),
+        "premise_stale": proposal.premise_stale,
     });
-    insert_placement(&mut reply, &placement);
+    insert_placement(&mut reply, &proposal.placement);
     Ok(ToolOutput(reply))
 }
 
@@ -921,8 +970,9 @@ pub(crate) struct SupersedeDecisionArgs {
     pub(crate) topic_keys: Vec<String>,
     pub(crate) option_labels: Vec<String>,
     pub(crate) chosen_option_label: Option<String>,
-    pub(crate) hypothesis_ids: Vec<String>,
-    pub(crate) evidence_ids: Vec<String>,
+    /// What the replacement rests on; see [`CaptureDecisionArgs::grounding`].
+    pub(crate) grounding: GroundingSpec,
+    pub(crate) expressed_confidence: Option<String>,
     /// Registered project handle to file the superseding decision under; omitted means it
     /// inherits the old decision's project. See [`project_args`].
     pub(crate) project: Option<String>,
@@ -948,8 +998,8 @@ impl SupersedeDecisionArgs {
             topic_keys: optional_string_array(args, "topic_keys")?,
             option_labels: optional_option_labels(args, "options")?,
             chosen_option_label: optional_string(args, "chosen_option_label")?,
-            hypothesis_ids: optional_string_array(args, "hypothesis_ids")?,
-            evidence_ids: optional_string_array(args, "evidence_ids")?,
+            grounding: require_wire_grounding(args)?,
+            expressed_confidence: optional_string(args, "expressed_confidence")?,
         })
     }
 }
@@ -979,6 +1029,15 @@ pub(crate) fn supersede_decision<P: LedgerProvider>(
         ResolvedTarget::NotFound(output) => return Ok(output),
     };
 
+    let resolved = match resolve_grounding(&handle.ledger, &handle.tenant_id, args.grounding)
+        .map_err(CoreError::from)?
+    {
+        GroundingResolution::Ready(resolved) => resolved,
+        GroundingResolution::Unresolved(unresolved) => {
+            return Ok(ToolOutput(unresolved.envelope()));
+        }
+    };
+
     let commands = Commands::new_with_context(
         &handle.ledger,
         CommandContext::new(
@@ -996,8 +1055,11 @@ pub(crate) fn supersede_decision<P: LedgerProvider>(
             topic_keys: &args.topic_keys,
             option_labels: &args.option_labels,
             chosen_option_label: args.chosen_option_label.as_deref(),
-            hypothesis_ids: &args.hypothesis_ids,
-            evidence_ids: &args.evidence_ids,
+            // The plan carries every id; see `SupersedeInput::grounding`.
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            grounding: Some(&resolved.plan),
+            expressed_confidence: args.expressed_confidence.as_deref(),
         })
         .map_err(CoreError::from)?;
 
@@ -1016,6 +1078,8 @@ pub(crate) fn supersede_decision<P: LedgerProvider>(
         "superseded_event_id": outcome.superseded_event_id,
         "old_decision_status": old_decision_status,
         "new_decision_status": new_decision_status,
+        "rests_on": resolved.label(outcome.rests_on),
+        "premise_stale": outcome.premise_stale,
     });
     insert_placement(&mut reply, &outcome.placement);
     Ok(ToolOutput(reply))

@@ -90,6 +90,93 @@ fn tools_list_includes_all_eighteen_tools() {
 }
 
 #[test]
+fn capture_and_supersede_tools_require_a_grounding_array() {
+    let tools = crate::mcp::tool_definitions();
+    for name in ["capture_decision", "supersede_decision"] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("tool {name} is listed"));
+        let schema = &tool["inputSchema"];
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .expect("required array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(
+            required.contains(&"grounding"),
+            "{name}: grounding is required"
+        );
+
+        let grounding = &schema["properties"]["grounding"];
+        assert_eq!(grounding["type"], "array", "{name}");
+        assert_eq!(grounding["minItems"], 1, "{name}: at least one answer");
+        let kinds: Vec<&str> = grounding["items"]["oneOf"]
+            .as_array()
+            .expect("oneOf items")
+            .iter()
+            .filter_map(|item| item["properties"]["kind"]["const"].as_str())
+            .collect();
+        assert_eq!(
+            kinds,
+            ["decision", "evidence", "assumption", "bet"],
+            "{name}"
+        );
+
+        assert_eq!(
+            schema["properties"]["expressed_confidence"]["enum"],
+            json!(["low", "medium", "high"]),
+            "{name}"
+        );
+        for alias in ["hypothesis_ids", "evidence_ids"] {
+            assert!(
+                schema["properties"][alias]["description"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("Deprecated alias")),
+                "{name}: {alias} is documented as a deprecated alias"
+            );
+        }
+    }
+}
+
+#[test]
+fn capture_decision_refuses_a_call_that_names_nothing_it_rests_on() {
+    let dir = unique_dir("no-grounding");
+    let config = McpConfig::new(&dir).with_session_id("no-grounding-session");
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "title": "Adopt the new queue",
+                "rationale": "Rationale text long enough for the readable floor",
+                "topic_keys": ["queue"],
+                "options": [{"label": "adopt"}]
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[request.as_str()]);
+    let result = &responses[0]["result"];
+    assert_eq!(result["isError"], true, "{result:?}");
+    let text = result["content"][0]["text"].as_str().expect("error text");
+    assert!(
+        text.contains("a captured decision must say what it rests on"),
+        "{text}"
+    );
+    let ledger = SqliteEventLedger::open(&dir).expect("ledger opens");
+    assert_eq!(
+        ledger.latest_offset().expect("latest offset"),
+        0,
+        "a refused capture writes nothing"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn notifications_produce_no_response() {
     let dir = unique_dir("notify");
     let config = McpConfig::new(&dir).with_session_id("test-session");
@@ -116,6 +203,7 @@ fn capture_then_get_round_trips_a_decision() {
         "params": {
             "name": "capture_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "actor_id": "agent:test:1",
                 "title": "Use SQLite for ledger",
                 "rationale": "Local-first storage is enough for v1",
@@ -173,6 +261,7 @@ fn capture_decision_with_decided_by_advances_to_accepted_with_correct_authorship
         "params": {
             "name": "capture_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "actor_id": "agent:claude:hivemind-crew",
                 "title": "Ledger must distinguish who decided from who recorded",
                 "rationale": "If the human delegates small decisions to agents, we track that; when the agent asks the human to choose and the human does, the human made the decision.",
@@ -252,6 +341,7 @@ fn capture_decision_decided_by_without_chosen_option_is_rejected() {
         "params": {
             "name": "capture_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "actor_id": "agent:claude:hivemind-crew",
                 "title": "Decided by without a choice",
                 "rationale": "decided_by with no chosen option should be rejected",
@@ -282,6 +372,7 @@ fn capture_decision_quote_without_question_is_rejected() {
         "params": {
             "name": "capture_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "actor_id": "agent:claude:hivemind-crew",
                 "title": "Quote with no stated question",
                 "rationale": "a quote with no question should be rejected",
@@ -312,6 +403,7 @@ fn capture_decision_stores_paired_quote_and_question() {
         "params": {
             "name": "capture_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "actor_id": "agent:claude:hivemind-crew",
                 "title": "Personal projects are visible tenant-wide",
                 "rationale": "Spelled out: a personal project is visible to the whole tenant.",
@@ -345,6 +437,7 @@ fn write_tools_default_actor_to_configured_agent_session() {
         "params": {
             "name": "capture_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "title": "Default MCP actor",
                 "rationale": "MCP write tools should not require per-call actor boilerplate",
                 "topic_keys": ["capture"],
@@ -389,6 +482,7 @@ fn search_decisions_tool_returns_fts_query_response() {
         "params": {
             "name": "capture_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "actor_id": "agent:test:search",
                 "title": "Adopt authentication boundary",
                 "rationale": "OAuth routing keeps decision search anchored",
@@ -453,6 +547,7 @@ fn recall_decisions_tool_returns_ranked_and_digest() {
         "params": {
             "name": "capture_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "actor_id": "agent:test:recall",
                 "title": "Use JWT for auth tokens",
                 "rationale": "Stateless tokens reduce session storage overhead",
@@ -520,6 +615,7 @@ fn recent_decisions_tool_returns_recent_query_response() {
         "params": {
             "name": "capture_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "actor_id": "agent:test:recent",
                 "title": "Keep recent decisions discoverable",
                 "rationale": "Agents need a bounded recent decisions query",
@@ -580,6 +676,7 @@ fn disagree_decision_tool_contests_and_defaults_actor() {
         "params": {
             "name": "capture_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "actor_id": "agent:test:1",
                 "title": "Keep auth as-is",
                 "rationale": "Avoids migration work and keeps the schema stable",
@@ -650,6 +747,7 @@ fn disagree_decision_tool_ambiguous_description_does_not_write() {
             "params": {
                 "name": "capture_decision",
                 "arguments": {
+                    "grounding": [{"kind": "bet"}],
                     "title": format!("Adopt async queue for {topic}"),
                     "rationale": "because those are the reasons we discussed",
                     "topic_keys": [topic],
@@ -709,6 +807,7 @@ fn supersede_decision_tool_marks_old_and_is_idempotent() {
         "params": {
             "name": "capture_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "actor_id": "agent:test:1",
                 "title": "Use shared admin token",
                 "rationale": "Fastest path to ship given the deadline",
@@ -731,6 +830,7 @@ fn supersede_decision_tool_marks_old_and_is_idempotent() {
         "params": {
             "name": "supersede_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "old_decision_id": old_decision_id,
                 "title": "Use scoped service tokens",
                 "rationale": "Scoped tokens preserve audit boundaries",
@@ -819,6 +919,7 @@ fn summarize_single_decision_via_mcp() {
         "params": {
             "name": "capture_decision",
             "arguments": {
+                "grounding": [{"kind": "bet"}],
                 "actor_id": "agent:test:summarize",
                 "title": "Adopt event sourcing",
                 "rationale": "Immutable log enables full audit trail",
@@ -1094,6 +1195,7 @@ mod transport_parity {
     #[tokio::test]
     async fn get_situational_decisions_matches_topic_key_across_transports() {
         let setup_args = json!({
+            "grounding": [{"kind": "bet"}],
             "title": "Use SQLite for the ledger",
             "rationale": "Local-first storage is enough for v1",
             "topic_keys": ["storage"],
@@ -1148,6 +1250,7 @@ mod transport_parity {
     #[tokio::test]
     async fn get_situational_decisions_since_offset_flags_changed_across_transports() {
         let setup_args = json!({
+            "grounding": [{"kind": "bet"}],
             "title": "Use SQLite for the ledger",
             "rationale": "Local-first storage is enough for v1",
             "topic_keys": ["storage"],
@@ -1184,6 +1287,7 @@ mod transport_parity {
     #[tokio::test]
     async fn recall_decisions_matches_topic_across_transports() {
         let setup_args = json!({
+            "grounding": [{"kind": "bet"}],
             "title": "Use SQLite for the ledger",
             "rationale": "Local-first storage is enough for v1",
             "topic_keys": ["storage"],
@@ -1230,6 +1334,7 @@ mod transport_parity {
             "capture_decision",
             "happy-chosen",
             json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Use SQLite for the ledger",
                 "rationale": "Local-first storage is enough for v1",
                 "topic_keys": ["storage"],
@@ -1268,6 +1373,7 @@ mod transport_parity {
             "capture_decision",
             "happy-unchosen",
             json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Evaluate caching layers",
                 "rationale": "Need more data before choosing",
                 "topic_keys": ["cache"],
@@ -1301,9 +1407,29 @@ mod transport_parity {
                 "unmatched-chosen-label",
                 json!({
                     "title": "t", "rationale": "r", "topic_keys": ["x"],
-                    "options": [{"label": "a"}], "chosen_option_label": "b"
+                    "options": [{"label": "a"}], "chosen_option_label": "b",
+                    "grounding": [{"kind": "bet"}]
                 }),
                 "chosen_option_label must match one of the supplied option labels",
+            ),
+            (
+                "missing-grounding",
+                json!({"title": "t", "rationale": "r", "topic_keys": ["x"], "options": [{"label": "a"}]}),
+                crate::grounding::WIRE_GROUNDING_REFUSAL,
+            ),
+            (
+                "empty-grounding",
+                json!({"title": "t", "rationale": "r", "topic_keys": ["x"], "options": [{"label": "a"}], "grounding": []}),
+                crate::grounding::WIRE_GROUNDING_REFUSAL,
+            ),
+            (
+                "malformed-grounding-item",
+                json!({
+                    "title": "t", "rationale": "r", "topic_keys": ["x"],
+                    "options": [{"label": "a"}],
+                    "grounding": [{"kind": "decision", "description": "x", "decision_id": "decision-1"}]
+                }),
+                "`grounding[0]` of kind `decision` needs exactly one of `description` or `decision_id`",
             ),
         ];
         for (label, arguments, expected_message) in cases {
@@ -1343,6 +1469,7 @@ mod transport_parity {
 
         for title in titles {
             let seed = json!({
+                "grounding": [{"kind": "bet"}],
                 "title": title,
                 "rationale": "seed for get_decision_neighborhood parity test",
                 "topic_keys": ["parity"],
@@ -1472,6 +1599,7 @@ mod transport_parity {
         let http_dir = unique_dir("parity-http-supersede-by-id");
 
         let seed = json!({
+            "grounding": [{"kind": "bet"}],
             "title": "Use shared admin token",
             "rationale": "Fastest path to ship given the deadline",
             "topic_keys": ["auth"],
@@ -1490,6 +1618,7 @@ mod transport_parity {
 
         let supersede_args = |old_decision_id: &str| {
             json!({
+                "grounding": [{"kind": "bet"}],
                 "old_decision_id": old_decision_id,
                 "title": "Use scoped service tokens",
                 "rationale": "Scoped tokens preserve audit boundaries",
@@ -1547,6 +1676,7 @@ mod transport_parity {
             "supersede-unique-desc",
             &["Use shared admin token"],
             json!({
+                "grounding": [{"kind": "bet"}],
                 "description": "shared admin token",
                 "title": "Use scoped service tokens",
                 "rationale": "Scoped tokens preserve audit boundaries",
@@ -1579,6 +1709,7 @@ mod transport_parity {
             "Adopt async queue for notifications",
         ] {
             let seed = json!({
+                "grounding": [{"kind": "bet"}],
                 "title": title,
                 "rationale": "seed for supersede_decision parity test",
                 "topic_keys": ["parity"],
@@ -1592,6 +1723,7 @@ mod transport_parity {
         let http_offset_before = ledger_offset(&http_dir);
 
         let supersede_args = json!({
+            "grounding": [{"kind": "bet"}],
             "description": "adopt async queue",
             "title": "Adopt async queue (v2)",
             "rationale": "must not be written — the match is ambiguous",
@@ -1639,6 +1771,7 @@ mod transport_parity {
         let http_dir = unique_dir("parity-http-supersede-not-found");
 
         let seed = json!({
+            "grounding": [{"kind": "bet"}],
             "title": "Adopt async billing queue",
             "rationale": "seed for supersede_decision parity test",
             "topic_keys": ["parity"],
@@ -1651,6 +1784,7 @@ mod transport_parity {
         let http_offset_before = ledger_offset(&http_dir);
 
         let supersede_args = json!({
+            "grounding": [{"kind": "bet"}],
             "description": "totally unrelated widget factory zzz",
             "title": "Irrelevant replacement",
             "rationale": "must not be written — nothing matched",
@@ -1689,6 +1823,7 @@ mod transport_parity {
     #[tokio::test]
     async fn get_decision_outcome_resolves_by_decision_id() {
         let setup_args = json!({
+            "grounding": [{"kind": "bet"}],
             "title": "Adopt blue-green deploys",
             "rationale": "Zero-downtime releases keep users unaffected during deploys",
             "topic_keys": ["deploy"],
@@ -1855,6 +1990,7 @@ mod transport_parity {
         let (stdio, http) = run_after_with_id(
             "capture_decision",
             json!({
+                "grounding": [{"kind": "bet"}],
                 "title": "Keep auth as-is",
                 "rationale": "Avoids migration work and keeps the schema stable",
                 "topic_keys": ["auth"],
@@ -2040,6 +2176,7 @@ mod transport_parity {
         let mut http_id = None;
         for title in titles {
             let seed = json!({
+                "grounding": [{"kind": "bet"}],
                 "title": title,
                 "rationale": "seed for hivemind_compact_view parity test",
                 "topic_keys": ["parity"],
@@ -2200,6 +2337,7 @@ mod transport_parity {
             "rationale": "Bounded retries avoid unbounded backlog growth under load",
             "topic_keys": ["billing"],
             "options": [{"label": "queue"}],
+            "grounding": [{"kind": "bet"}],
         })
     }
 
@@ -2314,6 +2452,85 @@ mod transport_parity {
         let _ = std::fs::remove_dir_all(&http_dir);
     }
 
+    fn rests_on_kinds_and_labels(result: &Value) -> Vec<(String, String)> {
+        result["structuredContent"]["rests_on"]
+            .as_array()
+            .expect("rests_on array") // ubs:ignore: test-only; panicking is correct in tests
+            .iter()
+            .map(|item| {
+                (
+                    item["kind"].as_str().unwrap_or_default().to_owned(),
+                    item["label"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    async fn seed_premise(stdio_dir: &std::path::Path, http_dir: &std::path::Path, title: &str) {
+        let seed = json!({
+            "grounding": [{"kind": "bet"}],
+            "title": title,
+            "rationale": "seed for the grounding parity tests, long enough to read",
+            "topic_keys": ["parity"],
+            "options": [{"label": "only"}],
+        });
+        stdio_call(stdio_dir, "capture_decision", seed.clone());
+        http_call(http_dir, "capture_decision", seed).await;
+    }
+
+    #[tokio::test]
+    async fn capture_decision_records_every_grounding_kind_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-grounded");
+        let http_dir = unique_dir("parity-http-grounded");
+        seed_premise(&stdio_dir, &http_dir, "Keep the ledger append-only").await;
+
+        let args = json!({
+            "title": "Adopt the new queue",
+            "rationale": "Durability beats latency for billing events",
+            "topic_keys": ["parity"],
+            "options": [{"label": "adopt"}],
+            "expressed_confidence": "high",
+            "grounding": [
+                {"kind": "decision", "description": "Keep the ledger append-only"},
+                {"kind": "evidence", "content": "p95 was 180ms in run 42", "source": "ci run 42"},
+                {"kind": "assumption", "statement": "traffic stays under 1k rps"},
+                {"kind": "bet", "would_change_if": "they raise prices", "check_by": "2026-12-01"},
+            ],
+        });
+        let stdio = stdio_call(&stdio_dir, "capture_decision", args.clone());
+        let http = http_call(&http_dir, "capture_decision", args).await;
+
+        let expected = vec![
+            (
+                "decision".to_owned(),
+                "Keep the ledger append-only".to_owned(),
+            ),
+            ("evidence".to_owned(), "p95 was 180ms in run 42".to_owned()),
+            (
+                "assumption".to_owned(),
+                "traffic stays under 1k rps".to_owned(),
+            ),
+            (
+                "bet".to_owned(),
+                "Judgement call: Adopt the new queue".to_owned(),
+            ),
+        ];
+        for (name, response) in [("stdio", &stdio), ("http", &http)] {
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{name}: {result:?}"); // ubs:ignore: test-only assertion
+            assert_eq!(rests_on_kinds_and_labels(result), expected, "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                result["structuredContent"]["premise_stale"],
+                json!([]),
+                "{name}: premise_stale"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
     #[tokio::test]
     async fn capture_decision_without_project_announces_the_personal_fallback_across_transports() {
         let (stdio_dir, http_dir) = project_dirs("capture-project-fallback", &["billing"]);
@@ -2362,6 +2579,54 @@ mod transport_parity {
             http["result"]["structuredContent"]["project_notice"],
             "both transports announce the fallback in the same words"
         ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn capture_decision_ambiguous_premise_writes_nothing_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-grounding-ambiguous");
+        let http_dir = unique_dir("parity-http-grounding-ambiguous");
+        seed_premise(&stdio_dir, &http_dir, "Adopt the queue").await;
+        seed_premise(&stdio_dir, &http_dir, "Adopt the queue").await;
+        let stdio_offset_before = ledger_offset(&stdio_dir);
+        let http_offset_before = ledger_offset(&http_dir);
+
+        let args = json!({
+            "title": "Ship the queue",
+            "rationale": "Rationale text long enough for the readable floor",
+            "topic_keys": ["parity"],
+            "options": [{"label": "ship"}],
+            "grounding": [
+                {"kind": "assumption", "statement": "must not be stranded"},
+                {"kind": "decision", "description": "Adopt the queue"},
+            ],
+        });
+        let stdio = stdio_call(&stdio_dir, "capture_decision", args.clone());
+        let http = http_call(&http_dir, "capture_decision", args).await;
+
+        for (name, response) in [("stdio", &stdio), ("http", &http)] {
+            let result = &response["result"];
+            assert_eq!(
+                result["isError"], false,
+                "{name}: ambiguous is data, not an error"
+            ); // ubs:ignore: test-only assertion
+            let data = &result["structuredContent"]["data"];
+            assert_eq!(data["outcome"], "ambiguous", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(data["field"], "grounding[1]", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                data["candidates"].as_array().map(Vec::len),
+                Some(2),
+                "{name}"
+            ); // ubs:ignore: test-only assertion
+        }
+        assert_eq!(
+            ledger_offset(&stdio_dir),
+            stdio_offset_before,
+            "stdio wrote"
+        ); // ubs:ignore: test-only assertion
+        assert_eq!(ledger_offset(&http_dir), http_offset_before, "http wrote"); // ubs:ignore: test-only assertion
 
         let _ = std::fs::remove_dir_all(&stdio_dir);
         let _ = std::fs::remove_dir_all(&http_dir);
@@ -2461,6 +2726,7 @@ mod transport_parity {
                     "rationale": "Scoped tokens preserve audit boundaries",
                     "options": [{"label": "scoped-service-tokens"}],
                     "chosen_option_label": "scoped-service-tokens",
+                    "grounding": [{"kind": "bet"}],
                 }),
             )
             .await;
@@ -2485,6 +2751,7 @@ mod transport_parity {
                     "rationale": "Payments owns credential rotation for both products",
                     "options": [{"label": "payments-owned"}],
                     "chosen_option_label": "payments-owned",
+                    "grounding": [{"kind": "bet"}],
                     "project": "payments",
                 }),
             )
@@ -2503,6 +2770,7 @@ mod transport_parity {
                     "rationale": "Hardware tokens remove the shared secret entirely",
                     "options": [{"label": "hardware-tokens"}],
                     "chosen_option_label": "hardware-tokens",
+                    "grounding": [{"kind": "bet"}],
                     "project": "not-registered",
                 }),
             )
@@ -2521,6 +2789,181 @@ mod transport_parity {
                 before,
                 "{name}: a refused supersede writes nothing"
             ); // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn capture_decision_unmatched_premise_writes_nothing_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-grounding-not-found");
+        let http_dir = unique_dir("parity-http-grounding-not-found");
+        seed_premise(&stdio_dir, &http_dir, "Keep the ledger append-only").await;
+        let stdio_offset_before = ledger_offset(&stdio_dir);
+        let http_offset_before = ledger_offset(&http_dir);
+
+        for (label, item, key, text) in [
+            (
+                "description",
+                json!({"kind": "decision", "description": "quantum flux capacitor"}),
+                "description",
+                "quantum flux capacitor",
+            ),
+            (
+                "id",
+                json!({"kind": "decision", "decision_id": "decision-does-not-exist"}),
+                "decision_id",
+                "decision-does-not-exist",
+            ),
+        ] {
+            let args = json!({
+                "title": "Adopt the new queue",
+                "rationale": "Rationale text long enough for the readable floor",
+                "topic_keys": ["parity"],
+                "options": [{"label": "adopt"}],
+                "grounding": [
+                    {"kind": "evidence", "content": "must not be stranded"},
+                    item,
+                ],
+            });
+            let stdio = stdio_call(&stdio_dir, "capture_decision", args.clone());
+            let http = http_call(&http_dir, "capture_decision", args).await;
+            for (name, response) in [("stdio", &stdio), ("http", &http)] {
+                let result = &response["result"];
+                assert_eq!(result["isError"], false, "{label}/{name}: a miss is data"); // ubs:ignore: test-only assertion
+                let data = &result["structuredContent"]["data"];
+                assert_eq!(data["outcome"], "not_found", "{label}/{name}"); // ubs:ignore: test-only assertion
+                assert_eq!(data["field"], "grounding[1]", "{label}/{name}"); // ubs:ignore: test-only assertion
+                assert_eq!(data[key], text, "{label}/{name}"); // ubs:ignore: test-only assertion
+            }
+        }
+        assert_eq!(
+            ledger_offset(&stdio_dir),
+            stdio_offset_before,
+            "stdio wrote"
+        ); // ubs:ignore: test-only assertion
+        assert_eq!(ledger_offset(&http_dir), http_offset_before, "http wrote"); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn capture_decision_deprecated_id_aliases_map_into_grounding_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-grounding-aliases");
+        let http_dir = unique_dir("parity-http-grounding-aliases");
+
+        for (name, dir, is_http) in [("stdio", &stdio_dir, false), ("http", &http_dir, true)] {
+            let call = |tool: &'static str, arguments: Value| {
+                let dir = dir.clone();
+                async move {
+                    if is_http {
+                        http_call(&dir, tool, arguments).await
+                    } else {
+                        stdio_call(&dir, tool, arguments)
+                    }
+                }
+            };
+            let evidence = call(
+                "capture_evidence",
+                json!({"content": "an existing observation"}),
+            )
+            .await;
+            let evidence_id = evidence["result"]["structuredContent"]["evidence_id"]
+                .as_str()
+                .expect("evidence_id") // ubs:ignore: test-only; panicking is correct in tests
+                .to_owned();
+            let hypothesis = call(
+                "capture_hypothesis",
+                json!({"statement": "an existing assumption"}),
+            )
+            .await;
+            let hypothesis_id = hypothesis["result"]["structuredContent"]["hypothesis_id"]
+                .as_str()
+                .expect("hypothesis_id") // ubs:ignore: test-only; panicking is correct in tests
+                .to_owned();
+
+            // No `grounding` at all: the aliases alone satisfy the requirement.
+            let captured = call(
+                "capture_decision",
+                json!({
+                    "title": "Adopt the new queue",
+                    "rationale": "Rationale text long enough for the readable floor",
+                    "topic_keys": ["parity"],
+                    "options": [{"label": "adopt"}],
+                    "evidence_ids": [evidence_id],
+                    "hypothesis_ids": [hypothesis_id],
+                }),
+            )
+            .await;
+            let result = &captured["result"];
+            assert_eq!(result["isError"], false, "{name}: {result:?}"); // ubs:ignore: test-only assertion
+            let kinds: Vec<String> = rests_on_kinds_and_labels(result)
+                .into_iter()
+                .map(|(kind, _)| kind)
+                .collect();
+            assert_eq!(kinds, ["evidence", "assumption"], "{name}"); // ubs:ignore: test-only assertion
+            let rests_on = result["structuredContent"]["rests_on"]
+                .as_array()
+                .expect("rests_on"); // ubs:ignore: test-only; panicking is correct in tests
+            assert_eq!(rests_on[0]["id"], json!(evidence_id), "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(rests_on[1]["id"], json!(hypothesis_id), "{name}"); // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn supersede_decision_records_grounding_and_reports_stale_premises_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-supersede-grounded");
+        let http_dir = unique_dir("parity-http-supersede-grounded");
+        seed_premise(&stdio_dir, &http_dir, "Adopt the shared admin token").await;
+        seed_premise(&stdio_dir, &http_dir, "Keep audit boundaries").await;
+
+        // Supersede the token decision by description, resting on the boundaries decision.
+        let args = json!({
+            "description": "Adopt the shared admin token",
+            "title": "Use scoped service tokens",
+            "rationale": "Scoped tokens preserve audit boundaries for every caller",
+            "options": [{"label": "scoped-tokens"}],
+            "grounding": [
+                {"kind": "decision", "description": "Keep audit boundaries"},
+                {"kind": "evidence", "content": "the shared token leaked twice", "source": "incident 7"},
+            ],
+        });
+        let stdio = stdio_call(&stdio_dir, "supersede_decision", args.clone());
+        let http = http_call(&http_dir, "supersede_decision", args).await;
+
+        let expected = vec![
+            ("decision".to_owned(), "Keep audit boundaries".to_owned()),
+            (
+                "evidence".to_owned(),
+                "the shared token leaked twice".to_owned(),
+            ),
+        ];
+        for (name, response) in [("stdio", &stdio), ("http", &http)] {
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{name}: {result:?}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["old_decision_status"], "superseded",
+                "{name}"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(rests_on_kinds_and_labels(result), expected, "{name}"); // ubs:ignore: test-only assertion
+        }
+
+        // A supersede with nothing named is refused as an invalid argument, on both transports.
+        let refused_args = json!({
+            "description": "Keep audit boundaries",
+            "title": "Use scoped service tokens again",
+            "rationale": "Scoped tokens preserve audit boundaries for every caller",
+        });
+        let stdio = stdio_call(&stdio_dir, "supersede_decision", refused_args.clone());
+        let http = http_call(&http_dir, "supersede_decision", refused_args).await;
+        for (name, response) in [("stdio", &stdio), ("http", &http)] {
+            let result = &response["result"];
+            assert_eq!(result["isError"], true, "{name}: {result:?}"); // ubs:ignore: test-only assertion
         }
 
         let _ = std::fs::remove_dir_all(&stdio_dir);

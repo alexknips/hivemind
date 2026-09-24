@@ -994,6 +994,7 @@ fn supersede_cli_proposes_replacement_marks_old_and_is_idempotent() {
         "supersede",
         "--old",
         &old_decision_id,
+        "--bet",
         "--title",
         "Use scoped service tokens",
         "--rationale",
@@ -1035,6 +1036,7 @@ fn supersede_cli_proposes_replacement_marks_old_and_is_idempotent() {
         "supersede",
         "--old",
         &old_decision_id,
+        "--bet",
         "--title",
         "Use scoped service tokens",
         "--rationale",
@@ -1098,6 +1100,7 @@ fn supersede_cli_records_agent_source_for_agent_actor() {
         "supersede",
         "--old",
         &old_decision_id,
+        "--bet",
         "--title",
         "Use scoped service tokens",
         "--rationale",
@@ -1453,6 +1456,7 @@ fn supersede_fluent_description_resolves_uniquely_and_records_body(
             "--json",
             "supersede",
             "shared admin token",
+            "--bet",
             "--title",
             "Use scoped service tokens",
             "--rationale",
@@ -1525,6 +1529,7 @@ fn supersede_fluent_ambiguous_description_short_circuits_without_writing_body(
             "--json",
             "supersede",
             "adopt async queue",
+            "--bet",
             "--title",
             "Adopt sync queue instead",
             "--rationale",
@@ -1663,6 +1668,7 @@ fn query_chain_and_why_aliases_resolve_by_description() -> CliTestResult {
         "supersede",
         "--old",
         &old_decision_id,
+        "--bet",
         "--title",
         "Use scoped service tokens",
         "--rationale",
@@ -1974,6 +1980,7 @@ fn query_verify_shows_what_a_decision_rests_on_and_goes_stale_when_the_premise_i
         "self-hosted",
         "--chose",
         "self-hosted",
+        "--bet",
     ]))?;
     let after = verify_json("Use Postgres for the MVP")?;
     ensure_json_eq(
@@ -2776,6 +2783,7 @@ fn decision_capture_with_decided_by_is_the_acceptance_test_for_ledger_fidelity()
         hivemind_dir.to_str().expect("utf-8 temp path"),
         "emit",
         "decision.capture",
+        "--bet",
         "--agent-tool",
         "claude",
         "--agent-session",
@@ -2884,6 +2892,7 @@ fn digest_shows_the_three_attribution_cases_side_by_side() {
             "Ship it,Hold it",
             "--chose",
             "Ship it",
+            "--bet",
         ];
         args.extend_from_slice(extra);
         run(&Cli::parse_from(args)).expect("capture succeeds")
@@ -4364,6 +4373,7 @@ fn emit_decision_capture_records_codex_and_claude_agent_provenance() {
         hivemind_dir.to_str().expect("utf-8 temp path"),
         "emit",
         "decision.capture",
+        "--bet",
         "--agent-tool",
         "codex",
         "--agent-session",
@@ -4389,6 +4399,7 @@ fn emit_decision_capture_records_codex_and_claude_agent_provenance() {
         hivemind_dir.to_str().expect("utf-8 temp path"),
         "emit",
         "decision.capture",
+        "--bet",
         "--agent-tool",
         "claude",
         "--agent-session",
@@ -4461,6 +4472,7 @@ fn emit_decision_capture_records_human_provenance_when_requested() {
         hivemind_dir.to_str().expect("utf-8 temp path"),
         "emit",
         "decision.capture",
+        "--bet",
         "--source",
         "human",
         "--actor-id",
@@ -5273,6 +5285,7 @@ fn capture_for_project_list(
         "queue,sync",
         "--chose",
         "queue",
+        "--bet",
     ];
     if let Some(project) = project {
         rest.extend(["--project", project]);
@@ -6827,9 +6840,21 @@ fn capture_args_for<'a>(title: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
         "queue,sync",
         "--chose",
         "queue",
+        "--bet",
     ];
     args.extend_from_slice(extra);
     args
+}
+
+/// A capture reply names what the decision rests on; the project tests compare the rest of the
+/// envelope, so check the grounding is there (one declared bet, nothing stale) and set it aside.
+fn without_bet_grounding(mut reply: serde_json::Value) -> serde_json::Value {
+    let object = reply.as_object_mut().expect("the reply is a JSON object");
+    let rests_on = object.remove("rests_on").expect("the reply names rests_on");
+    assert_eq!(rests_on[0]["kind"], "bet", "{rests_on}");
+    assert_eq!(rests_on.as_array().map(Vec::len), Some(1));
+    assert_eq!(object.remove("premise_stale"), Some(serde_json::json!([])));
+    reply
 }
 
 fn emit_capture_names_its_project_in_json_body(backend: &TestBackend) -> CliTestResult {
@@ -6851,7 +6876,7 @@ fn emit_capture_names_its_project_in_json_body(backend: &TestBackend) -> CliTest
     )?;
     reply["value"] = serde_json::json!("<decision-id>");
     ensure_json_eq(
-        &reply,
+        &without_bet_grounding(reply),
         serde_json::json!({
             "subcommand": "emit",
             "kind": "decision_id",
@@ -6906,7 +6931,7 @@ fn emit_capture_names_its_project_in_json_body(backend: &TestBackend) -> CliTest
         serde_json::from_str(&run(&Cli::parse_from(cli_args(backend, &rest)))?)?;
     reply["value"] = serde_json::json!("<decision-id>");
     ensure_json_eq(
-        &reply,
+        &without_bet_grounding(reply.clone()),
         serde_json::json!({
             "subcommand": "emit",
             "kind": "decision_id",
@@ -7067,6 +7092,7 @@ fn supersede_names_its_project_body(backend: &TestBackend) -> CliTestResult {
                 title,
                 "--rationale",
                 PROJECT_TEST_RATIONALE,
+                "--bet",
             ];
             rest.extend_from_slice(extra);
             let reply: serde_json::Value =
@@ -7149,6 +7175,7 @@ fn supersede_names_its_project_body(backend: &TestBackend) -> CliTestResult {
             "Rotate per-host deploy keys monthly",
             "--rationale",
             PROJECT_TEST_RATIONALE,
+            "--bet",
             "--project",
             "billing",
             "--project-source",
@@ -7178,6 +7205,7 @@ fn supersede_names_its_project_body(backend: &TestBackend) -> CliTestResult {
             "Use hardware tokens instead",
             "--rationale",
             PROJECT_TEST_RATIONALE,
+            "--bet",
             "--project",
             "not-registered",
         ],
@@ -7203,4 +7231,543 @@ fn supersede_names_its_project_postgres() -> CliTestResult {
         return Ok(());
     };
     supersede_names_its_project_body(&backend)
+}
+
+// ---------------------------------------------------------------------------
+// Grounded capture (hivemind-gwhr.2): "what does this decision rest on?"
+// ---------------------------------------------------------------------------
+
+fn grounding_cli(
+    hivemind_dir: &std::path::Path,
+    json: bool,
+    args: &[&str],
+) -> crate::Result<String> {
+    let mut argv = vec!["hivemind", "--actor", "agent:claude:grounding-test"];
+    if json {
+        argv.push("--json");
+    }
+    argv.extend([
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+    ]);
+    argv.extend(args.iter().copied());
+    run(&Cli::parse_from(argv))
+}
+
+/// `emit decision.capture` args for a decision titled `title`, with `grounding` appended.
+fn grounded_capture_args<'a>(title: &'a str, grounding: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "emit",
+        "decision.capture",
+        "--agent-tool",
+        "claude",
+        "--agent-session",
+        "grounding-test",
+        "--title",
+        title,
+        "--rationale",
+        "Rationale text long enough for the readable floor and then some",
+        "--topic-keys",
+        "grounding",
+        "--options",
+        "adopt,skip",
+        "--chose",
+        "adopt",
+    ];
+    args.extend(grounding.iter().copied());
+    args
+}
+
+fn ledger_event_count(hivemind_dir: &std::path::Path) -> usize {
+    SqliteEventLedger::open(hivemind_dir)
+        .expect("ledger opens")
+        .read(0, 500)
+        .expect("read events")
+        .len()
+}
+
+fn seed_decision(hivemind_dir: &std::path::Path, title: &str) -> String {
+    grounding_cli(
+        hivemind_dir,
+        false,
+        &[
+            "emit",
+            "decision.proposed",
+            "--title",
+            title,
+            "--rationale",
+            "Rationale text long enough for the readable floor and then some",
+            "--topic-keys",
+            "grounding",
+            "--options",
+            "only",
+        ],
+    )
+    .expect("seed decision")
+}
+
+#[test]
+fn decision_capture_without_grounding_is_refused_with_exit_2_and_writes_nothing() {
+    let hivemind_dir = unique_test_dir("capture-no-grounding");
+
+    let error = grounding_cli(
+        &hivemind_dir,
+        false,
+        &grounded_capture_args("Adopt the new queue", &[]),
+    )
+    .expect_err("a capture that names nothing it rests on is refused");
+
+    assert_eq!(exit_code_for_error(&error).code(), 2);
+    let message = error.to_string();
+    for flag in [
+        "--rests-on-decision",
+        "--rests-on-evidence",
+        "--rests-on-assumption",
+        "--bet",
+        "--quote",
+    ] {
+        assert!(
+            message.contains(flag),
+            "refusal must name {flag}: {message}"
+        );
+    }
+    assert!(message.contains("nothing was written"), "{message}");
+    assert_eq!(ledger_event_count(&hivemind_dir), 0);
+
+    // Raw `emit decision.proposed` never asks the question.
+    seed_decision(&hivemind_dir, "A raw decision needs no grounding");
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn decision_capture_records_every_grounding_kind_and_replies_with_rests_on() {
+    let hivemind_dir = unique_test_dir("capture-grounded");
+    let goal_id = seed_decision(&hivemind_dir, "Keep the ledger append-only");
+
+    let reply = grounding_cli(
+        &hivemind_dir,
+        true,
+        &grounded_capture_args(
+            "Adopt the new queue",
+            &[
+                "--rests-on-decision",
+                "Keep the ledger append-only",
+                "--rests-on-evidence",
+                "p95 latency was 180ms, run 42",
+                "--evidence-source",
+                "ci run 42",
+                "--rests-on-assumption",
+                "traffic stays under 1k rps",
+                "--bet",
+                "the vendor survives the year",
+                "--would-change-if",
+                "they raise prices",
+                "--check-by",
+                "2026-12-01",
+                "--confidence",
+                "high",
+            ],
+        ),
+    )
+    .expect("grounded capture succeeds");
+    let reply: serde_json::Value = serde_json::from_str(&reply).expect("json reply");
+    let decision_id = reply["value"].as_str().expect("decision id").to_owned();
+
+    let rests_on = reply["rests_on"].as_array().expect("rests_on");
+    let kinds: Vec<&str> = rests_on
+        .iter()
+        .map(|item| item["kind"].as_str().expect("kind"))
+        .collect();
+    assert_eq!(kinds, ["decision", "evidence", "assumption", "bet"]);
+    assert_eq!(rests_on[0]["id"], goal_id);
+    assert_eq!(rests_on[0]["label"], "Keep the ledger append-only");
+    assert_eq!(rests_on[1]["label"], "p95 latency was 180ms, run 42");
+    assert_eq!(rests_on[3]["label"], "the vendor survives the year");
+    assert_eq!(reply["premise_stale"], serde_json::json!([]));
+
+    let events = SqliteEventLedger::open(&hivemind_dir)
+        .expect("ledger opens")
+        .read(0, 500)
+        .expect("read events");
+    let proposal = events
+        .iter()
+        .find(|event| {
+            event.event_type == crate::events::EventType::DecisionProposed
+                && event.payload.get("decision_id").and_then(|v| v.as_str()) == Some(&decision_id)
+        })
+        .expect("proposal event");
+    assert_eq!(proposal.payload["expressed_confidence"], "high");
+    let evidence = events
+        .iter()
+        .find(|event| event.event_type == crate::events::EventType::EvidenceRecorded)
+        .expect("evidence event");
+    assert_eq!(evidence.payload["source"], "ci run 42");
+    let bet = events
+        .iter()
+        .find(|event| {
+            event.event_type == crate::events::EventType::HypothesisRecorded
+                && event.payload.get("kind").and_then(|v| v.as_str()) == Some("bet")
+        })
+        .expect("bet event");
+    assert_eq!(bet.payload["would_change_if"], "they raise prices");
+    assert!(bet.payload["check_by"]
+        .as_str()
+        .expect("check_by")
+        .starts_with("2026-12-01"));
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn decision_capture_bet_without_a_statement_records_a_judgement_call() {
+    let hivemind_dir = unique_test_dir("capture-bare-bet");
+
+    grounding_cli(
+        &hivemind_dir,
+        false,
+        &grounded_capture_args("Ship the beta", &["--bet"]),
+    )
+    .expect("a bare bet is a declared grounding");
+
+    let events = SqliteEventLedger::open(&hivemind_dir)
+        .expect("ledger opens")
+        .read(0, 500)
+        .expect("read events");
+    let bet = events
+        .iter()
+        .find(|event| event.event_type == crate::events::EventType::HypothesisRecorded)
+        .expect("bet event");
+    assert_eq!(bet.payload["statement"], "Judgement call: Ship the beta");
+    assert_eq!(bet.payload["kind"], "bet");
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn decision_capture_bet_modifiers_require_a_bet() {
+    // `--would-change-if` and `--check-by` describe a bet; without `--bet` clap refuses them
+    // while parsing (before anything runs), and with it they parse.
+    for modifier in [["--would-change-if", "x"], ["--check-by", "2026-12-01"]] {
+        let mut argv = vec![
+            "hivemind",
+            "emit",
+            "decision.capture",
+            "--title",
+            "t",
+            "--rationale",
+            "r",
+        ];
+        argv.extend(modifier);
+        assert!(
+            Cli::try_parse_from(argv.clone()).is_err(),
+            "{modifier:?} without --bet must not parse"
+        );
+        argv.push("--bet");
+        assert!(
+            Cli::try_parse_from(argv).is_ok(),
+            "{modifier:?} with --bet must parse"
+        );
+    }
+}
+
+#[test]
+fn decision_capture_evidence_sources_are_index_aligned_with_evidence() {
+    let hivemind_dir = unique_test_dir("capture-evidence-alignment");
+
+    let mismatched = grounding_cli(
+        &hivemind_dir,
+        false,
+        &grounded_capture_args(
+            "Adopt the new queue",
+            &[
+                "--rests-on-evidence",
+                "first observation",
+                "--rests-on-evidence",
+                "second observation",
+                "--evidence-source",
+                "only one source",
+            ],
+        ),
+    )
+    .expect_err("one source for two evidence items is refused");
+    assert_eq!(exit_code_for_error(&mismatched).code(), 2);
+    assert!(
+        mismatched.to_string().contains("index-aligned")
+            && mismatched
+                .to_string()
+                .contains("1 source(s) for 2 evidence item(s)"),
+        "{mismatched}"
+    );
+
+    let orphan_source = grounding_cli(
+        &hivemind_dir,
+        false,
+        &grounded_capture_args(
+            "Adopt the new queue",
+            &[
+                "--rests-on-assumption",
+                "an assumption",
+                "--evidence-source",
+                "somewhere",
+            ],
+        ),
+    )
+    .expect_err("a source with no evidence is refused");
+    assert!(
+        orphan_source
+            .to_string()
+            .contains("--evidence-source needs a matching --rests-on-evidence"),
+        "{orphan_source}"
+    );
+    assert_eq!(ledger_event_count(&hivemind_dir), 0);
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn decision_capture_with_an_ambiguous_premise_writes_nothing_and_hash_n_resolves_it() {
+    let hivemind_dir = unique_test_dir("capture-ambiguous-premise");
+    let first_id = seed_decision(&hivemind_dir, "Adopt the queue");
+    let second_id = seed_decision(&hivemind_dir, "Adopt the queue");
+    let events_before = ledger_event_count(&hivemind_dir);
+
+    let ambiguous = grounding_cli(
+        &hivemind_dir,
+        false,
+        &grounded_capture_args(
+            "Ship the queue",
+            &[
+                "--rests-on-assumption",
+                "an assumption",
+                "--rests-on-decision",
+                "Adopt the queue",
+            ],
+        ),
+    )
+    .expect_err("an ambiguous premise refuses the capture");
+    assert_eq!(exit_code_for_error(&ambiguous).code(), 2);
+    let message = ambiguous.to_string();
+    assert!(message.contains("matches 2 decisions"), "{message}");
+    assert!(
+        message.contains("#1") && message.contains("#2"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&first_id) && message.contains(&second_id),
+        "{message}"
+    );
+    assert!(message.contains("--rests-on-decision '#N'"), "{message}");
+    assert_eq!(
+        ledger_event_count(&hivemind_dir),
+        events_before,
+        "an ambiguous premise must write nothing — not even the assumption named beside it"
+    );
+
+    // The candidate list is on disk: re-running with '#1' resolves the first candidate.
+    let reply = grounding_cli(
+        &hivemind_dir,
+        true,
+        &grounded_capture_args(
+            "Ship the queue",
+            &[
+                "--rests-on-assumption",
+                "an assumption",
+                "--rests-on-decision",
+                "#1",
+            ],
+        ),
+    )
+    .expect("'#1' resolves against the previous candidate list");
+    let reply: serde_json::Value = serde_json::from_str(&reply).expect("json reply");
+    let premise = reply["rests_on"]
+        .as_array()
+        .expect("rests_on")
+        .iter()
+        .find(|item| item["kind"] == "decision")
+        .expect("decision premise");
+    assert!(premise["id"] == first_id.as_str() || premise["id"] == second_id.as_str());
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn decision_capture_with_an_unmatched_premise_writes_nothing() {
+    let hivemind_dir = unique_test_dir("capture-unmatched-premise");
+    seed_decision(&hivemind_dir, "Keep the ledger append-only");
+    let events_before = ledger_event_count(&hivemind_dir);
+
+    for premise in ["quantum flux capacitor", "decision-does-not-exist"] {
+        let error = grounding_cli(
+            &hivemind_dir,
+            false,
+            &grounded_capture_args(
+                "Adopt the new queue",
+                &[
+                    "--rests-on-evidence",
+                    "an observation that must not be stranded",
+                    "--rests-on-decision",
+                    premise,
+                ],
+            ),
+        )
+        .expect_err("an unmatched premise refuses the capture");
+        assert_eq!(exit_code_for_error(&error).code(), 2);
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("no decision matches '{premise}'")),
+            "{error}"
+        );
+    }
+    assert_eq!(ledger_event_count(&hivemind_dir), events_before);
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn decision_capture_with_only_close_premise_candidates_says_what_they_lack_and_writes_nothing() {
+    let hivemind_dir = unique_test_dir("capture-close-premise");
+    let queue_id = seed_decision(&hivemind_dir, "Adopt async queue for billing");
+    let events_before = ledger_event_count(&hivemind_dir);
+
+    let error = grounding_cli(
+        &hivemind_dir,
+        false,
+        &grounded_capture_args(
+            "Ship the billing queue",
+            &["--rests-on-decision", "adopt async queue unicorns"],
+        ),
+    )
+    .expect_err("a close-only premise is not picked for you");
+    assert_eq!(exit_code_for_error(&error).code(), 2);
+    let message = error.to_string();
+    assert!(
+        message.contains("no decision matches every word of 'adopt async queue unicorns'"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "#1 Adopt async queue for billing ({queue_id}) missing: unicorns"
+        )),
+        "{message}"
+    );
+    assert!(message.contains("--rests-on-decision '#N'"), "{message}");
+    assert_eq!(ledger_event_count(&hivemind_dir), events_before);
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn decision_capture_reports_a_stale_premise_in_json_and_text() {
+    let hivemind_dir = unique_test_dir("capture-stale-premise");
+    let old_id = seed_decision(&hivemind_dir, "Use the shared admin token");
+    let new_id = seed_decision(&hivemind_dir, "Use scoped service tokens");
+    grounding_cli(
+        &hivemind_dir,
+        false,
+        &[
+            "emit",
+            "decision.superseded",
+            "--old",
+            &old_id,
+            "--new",
+            &new_id,
+        ],
+    )
+    .expect("supersede the old decision");
+
+    let reply = grounding_cli(
+        &hivemind_dir,
+        true,
+        &grounded_capture_args("Rotate the admin token", &["--rests-on-decision", &old_id]),
+    )
+    .expect("a stale premise is allowed");
+    let reply: serde_json::Value = serde_json::from_str(&reply).expect("json reply");
+    assert_eq!(reply["premise_stale"], serde_json::json!([old_id]));
+
+    let text = grounding_cli(
+        &hivemind_dir,
+        false,
+        &grounded_capture_args(
+            "Rotate the admin token again",
+            &["--rests-on-decision", &old_id],
+        ),
+    )
+    .expect("a stale premise is allowed");
+    let mut lines = text.lines();
+    assert!(lines.next().expect("first line").starts_with("decision-"));
+    assert!(
+        lines
+            .next()
+            .expect("stale line")
+            .starts_with(&format!("premise_stale: {old_id}")),
+        "{text}"
+    );
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+fn grounded_supersede_args<'a>(old_id: &'a str, grounding: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "supersede",
+        "--old",
+        old_id,
+        "--title",
+        "Use scoped service tokens",
+        "--rationale",
+        "Scoped tokens preserve audit boundaries for every caller",
+        "--options",
+        "scoped-service-tokens",
+        "--chose",
+        "scoped-service-tokens",
+    ];
+    args.extend(grounding.iter().copied());
+    args
+}
+
+#[test]
+fn supersede_without_grounding_is_refused_and_with_grounding_records_it() {
+    let hivemind_dir = unique_test_dir("supersede-grounded");
+    let old_id = seed_decision(&hivemind_dir, "Use shared admin token");
+    let goal_id = seed_decision(&hivemind_dir, "Keep audit boundaries");
+    let events_before = ledger_event_count(&hivemind_dir);
+
+    let error = grounding_cli(&hivemind_dir, false, &grounded_supersede_args(&old_id, &[]))
+        .expect_err("a supersede that names nothing it rests on is refused");
+    assert_eq!(exit_code_for_error(&error).code(), 2);
+    assert!(error.to_string().contains("--rests-on-decision"), "{error}");
+    assert_eq!(ledger_event_count(&hivemind_dir), events_before);
+
+    let grounded = grounded_supersede_args(
+        &old_id,
+        &[
+            "--rests-on-decision",
+            "Keep audit boundaries",
+            "--rests-on-evidence",
+            "the shared token leaked twice",
+            "--evidence-source",
+            "incident 7",
+        ],
+    );
+    let reply = grounding_cli(&hivemind_dir, true, &grounded).expect("grounded supersede");
+    let reply: serde_json::Value = serde_json::from_str(&reply).expect("json reply");
+    assert_eq!(reply["old_decision_status"], "superseded");
+    let kinds: Vec<&str> = reply["rests_on"]
+        .as_array()
+        .expect("rests_on")
+        .iter()
+        .map(|item| item["kind"].as_str().expect("kind"))
+        .collect();
+    assert_eq!(kinds, ["decision", "evidence"]);
+    assert_eq!(reply["rests_on"][0]["id"], goal_id);
+
+    // An identical retry is still idempotent: same supersession, nothing appended.
+    let events_after_first = ledger_event_count(&hivemind_dir);
+    let retry = grounding_cli(&hivemind_dir, true, &grounded).expect("retry succeeds");
+    let retry: serde_json::Value = serde_json::from_str(&retry).expect("json reply");
+    assert_eq!(retry["new_decision_id"], reply["new_decision_id"]);
+    assert_eq!(ledger_event_count(&hivemind_dir), events_after_first);
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
 }
