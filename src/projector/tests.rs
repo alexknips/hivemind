@@ -2811,3 +2811,849 @@ fn delegated_acceptance_merges_the_marker_onto_the_decision_node() -> Result<()>
     assert_eq!(accepted_edges.len(), 2);
     Ok(())
 }
+
+/// A ledger that writes at least one edge of every `RelationKind` through the projector's
+/// real event paths, in the natural order (evidence and hypotheses recorded before the
+/// decision that names them, actors first appearing when they act).
+fn natural_order_scenario() -> Result<InMemoryEventLedger> {
+    let ledger = InMemoryEventLedger::new();
+    for event in [
+        event(
+            EventType::EvidenceRecorded,
+            "actor:alice",
+            json!({"evidence_id": "evidence:1", "content": "Benchmarks favour Kuzu"}),
+        ),
+        event(
+            EventType::HypothesisRecorded,
+            "actor:alice",
+            json!({"hypothesis_id": "hypothesis:1", "statement": "Graph projection is viable"}),
+        ),
+        event(
+            EventType::DecisionProposed,
+            "actor:alice",
+            json!({
+                "decision_id": "decision:1",
+                "title": "Use Kuzu for slice 1",
+                "rationale": "Graph queries without extra services",
+                "topic_keys": ["architecture"],
+                "option_ids": ["option:1", "option:2"],
+                "chosen_option_id": "option:2",
+                "hypothesis_ids": ["hypothesis:1"],
+                "evidence_ids": ["evidence:1"]
+            }),
+        ),
+        event(
+            EventType::DecisionAccepted,
+            "actor:bob",
+            json!({"decision_id": "decision:1"}),
+        ),
+        event(
+            EventType::DecisionRejected,
+            "actor:carol",
+            json!({"decision_id": "decision:1"}),
+        ),
+        event(
+            EventType::DecisionProposed,
+            "actor:alice",
+            json!({
+                "decision_id": "decision:2",
+                "title": "Use Kuzu with conservative Cypher",
+                "rationale": "Keep a backend swap cheap",
+                "topic_keys": ["architecture"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": ["hypothesis:1"],
+                "evidence_ids": []
+            }),
+        ),
+        event(
+            EventType::DecisionSuperseded,
+            "actor:alice",
+            json!({"old_decision_id": "decision:1", "new_decision_id": "decision:2"}),
+        ),
+        event(
+            EventType::EvidenceRecorded,
+            "actor:alice",
+            json!({"evidence_id": "evidence:2", "content": "Prototype projected cleanly"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "SUPPORTS", "from_id": "evidence:2", "to_id": "hypothesis:1"}),
+        ),
+        event(
+            EventType::EvidenceRecorded,
+            "actor:alice",
+            json!({"evidence_id": "evidence:3", "content": "Rebuild took an hour"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "REFUTES", "from_id": "evidence:3", "to_id": "hypothesis:1"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "SAME_AS", "from_id": "decision:2", "to_id": "decision:1"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "FOLLOWS_FROM", "from_id": "decision:2", "to_id": "decision:1"}),
+        ),
+        event(
+            EventType::DecisionRequested,
+            "agent:release-bot",
+            json!({
+                "topic_keys": ["release"],
+                "decision_id": "decision:1",
+                "reason": "Release migration needs an owner decision",
+                "priority": "P1",
+                "required_owner_id": "human:release-owner",
+                "authority_class": "human_required",
+                "requested_by": "agent:release-bot",
+                "client_request_id": "client-request:release-1"
+            }),
+        ),
+        event(
+            EventType::BlockerReported,
+            "agent:release-bot",
+            json!({
+                "blocker_id": "blocker:release-owner",
+                "blocked_actor_id": "agent:release-bot",
+                "decision_id": "decision:1",
+                "topic_keys": ["release"],
+                "blocked_ref": "run:release-migration",
+                "blocked_ref_type": "agent_run",
+                "reason": "Release migration cannot continue without owner approval",
+                "priority": "P1",
+                "last_progress_at": "2026-05-19T10:30:00Z",
+                "required_owner_id": "human:release-owner"
+            }),
+        ),
+        event(
+            EventType::NotificationSent,
+            "agent:notifier",
+            json!({
+                "blocker_id": "blocker:release-owner",
+                "recipient_actor_id": "human:release-owner",
+                "channel": "slack",
+                "threshold_rule": "p1_human_required_direct_15m",
+                "source_event_ids": [14],
+                "dedupe_key": "tenant:release:blocker:release-owner:P1",
+                "sent_at": "2026-05-19T10:45:00Z"
+            }),
+        ),
+        event(
+            EventType::ProjectRegistered,
+            "actor:alice",
+            json!({"handle": "platform", "display_name": "Platform"}),
+        ),
+        event(
+            EventType::ProjectRegistered,
+            "actor:alice",
+            json!({"handle": "billing", "display_name": "Billing"}),
+        ),
+        event(
+            EventType::ProjectLinked,
+            "actor:alice",
+            json!({"from": "billing", "to": "platform", "kind": "part_of"}),
+        ),
+        event(
+            EventType::ProjectLinked,
+            "actor:alice",
+            json!({"from": "billing", "to": "platform", "kind": "depends_on"}),
+        ),
+        event(
+            EventType::IngestBatchClassified,
+            "agent:hivemind:classifier",
+            json!({
+                "batch_id": "batch:direction-contract",
+                "classifier_model": "claude-haiku-4-5-20251001",
+                "schema_version": "2",
+                "captures": [
+                    {
+                        "kind": "decision",
+                        "title": "Adopt trunk-based development",
+                        "rationale": "Short-lived branches merge faster",
+                        "topic_keys": ["workflow"],
+                        "evidence_ids": [],
+                        "options": null,
+                        "chosen_option": null,
+                        "extraction_confidence": 0.9,
+                        "expressed_confidence": null,
+                        "supersedes_id": null,
+                        "premised_on_ids": [],
+                        "supports_ids": [],
+                        "refutes_ids": [],
+                        "actor_id": "human:dana",
+                        "accepted_by": [],
+                        "rejected_by": [],
+                        "blocked_actor_id": null,
+                        "decision_id": null,
+                        "participants": ["human:dana", "human:erin"],
+                        "session_initiator": "human:dana"
+                    },
+                    {
+                        "kind": "decision-request",
+                        "title": "separate data tier for analytics",
+                        "rationale": "",
+                        "topic_keys": [],
+                        "evidence_ids": [],
+                        "options": null,
+                        "chosen_option": null,
+                        "extraction_confidence": 0.9,
+                        "expressed_confidence": null,
+                        "supersedes_id": null,
+                        "premised_on_ids": [],
+                        "supports_ids": [],
+                        "refutes_ids": [],
+                        "actor_id": "human:elena",
+                        "accepted_by": ["human:dana"],
+                        "rejected_by": ["human:marco"],
+                        "blocked_actor_id": null,
+                        "decision_id": null
+                    }
+                ]
+            }),
+        ),
+    ] {
+        ledger.append(event)?;
+    }
+    Ok(ledger)
+}
+
+// ── Arrow orientation (hivemind-ku1x): every arrow runs newer -> older ──
+
+use super::arrow::{orient, Arrow};
+use super::memory::MemoryGraph;
+use crate::queries::oriented_edges;
+
+#[test]
+fn arrow_labels_exist_for_every_kind_and_only_actor_targets_never_reverse() {
+    for kind in RelationKind::ALL {
+        let labels = kind.arrow_labels();
+        assert!(
+            !labels.forward.is_empty(),
+            "{kind:?} needs a label for the arrow as stored"
+        );
+        let (_, target) = kind.endpoints();
+        assert_eq!(
+            labels.reversed.is_none(),
+            target == NodeKind::Actor,
+            "{kind:?} reverses exactly when its target is not an actor"
+        );
+        if let Some(reversed) = labels.reversed {
+            assert!(!reversed.is_empty(), "{kind:?} needs a reversed label");
+            if kind != RelationKind::SameAs {
+                assert_ne!(
+                    reversed, labels.forward,
+                    "{kind:?} reads the same both ways, so the label would not say which way it runs"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn arrow_orient_reverses_only_when_the_stored_target_is_strictly_newer() {
+    // BASED_ON is stored decision -> evidence.
+    let based_on = |decision_time, evidence_time| {
+        orient(
+            RelationKind::BasedOn,
+            "decision:1",
+            decision_time,
+            "evidence:1",
+            evidence_time,
+        )
+    };
+
+    let as_stored = based_on(Some(10), Some(4));
+    assert!(!as_stored.reversed);
+    assert_eq!(
+        (as_stored.from_id.as_str(), as_stored.to_id.as_str()),
+        ("decision:1", "evidence:1")
+    );
+    assert_eq!(as_stored.label, "based on");
+
+    for (decision_time, evidence_time) in [(Some(7), Some(7)), (None, Some(7)), (Some(7), None)] {
+        let arrow = based_on(decision_time, evidence_time);
+        assert!(
+            !arrow.reversed,
+            "same-age and unknown times keep the stored direction: {decision_time:?} {evidence_time:?}"
+        );
+    }
+
+    let late = based_on(Some(4), Some(10));
+    assert!(late.reversed);
+    assert_eq!(
+        (late.from_id.as_str(), late.to_id.as_str()),
+        ("evidence:1", "decision:1")
+    );
+    assert_eq!(
+        (late.from_kind, late.to_kind),
+        (NodeKind::Evidence, NodeKind::Decision)
+    );
+    assert_eq!(late.label, "informs");
+    assert_eq!(late.relation, RelationKind::BasedOn);
+    assert_eq!(late.stored_source(), "decision:1");
+    assert_eq!(late.stored_target(), "evidence:1");
+
+    // An actor is older than every record, whatever times the caller passes.
+    let accepted = orient(
+        RelationKind::AcceptedBy,
+        "decision:1",
+        Some(4),
+        "human:ana",
+        Some(10),
+    );
+    assert!(!accepted.reversed);
+    assert_eq!(accepted.label, "accepted by");
+}
+
+#[test]
+fn arrow_table_in_the_graph_contract_doc_matches_the_code() {
+    let doc = include_str!("../../docs/GRAPH_CONTRACT.md");
+    // The kinds table is the rows whose first cell is a SCREAMING_SNAKE relation name; the
+    // field table above it starts with lower-case field names.
+    let table_rows: Vec<&str> = doc
+        .lines()
+        .filter(|line| {
+            line.strip_prefix("| `")
+                .and_then(|rest| rest.split('`').next())
+                .is_some_and(|name| {
+                    !name.is_empty() && name.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+                })
+        })
+        .collect();
+    assert_eq!(
+        table_rows.len(),
+        RelationKind::ALL.len(),
+        "docs/GRAPH_CONTRACT.md must list exactly one row per RelationKind"
+    );
+    for kind in RelationKind::ALL {
+        let (source, target) = kind.endpoints();
+        let labels = kind.arrow_labels();
+        let expected = format!(
+            "| `{}` | {} → {} | {} | {} |",
+            kind.table_name(),
+            source.table_name(),
+            target.table_name(),
+            labels.forward,
+            labels.reversed.unwrap_or("never"),
+        );
+        assert!(
+            table_rows.iter().any(|row| row.trim_end() == expected),
+            "docs/GRAPH_CONTRACT.md must have the row: {expected}"
+        );
+    }
+}
+
+/// Every non-actor node's `event_origin`, read back from the projected graph.
+fn recorded_at(graph: &MemoryGraph) -> Result<BTreeMap<NodeKey, i64>> {
+    let mut recorded = BTreeMap::new();
+    for kind in NodeKind::ALL {
+        if kind == NodeKind::Actor {
+            continue;
+        }
+        let rows = graph.query(
+            &format!(
+                "MATCH (node:`{}`) RETURN node.id AS id, node.event_origin AS event_origin ORDER BY node.id;",
+                kind.table_name()
+            ),
+            &GraphParams::new(),
+        )?;
+        for row in rows {
+            if let (Some(GraphValue::String(id)), Some(GraphValue::Int(origin))) =
+                (row.get("id"), row.get("event_origin"))
+            {
+                recorded.insert((kind, id.clone()), *origin);
+            }
+        }
+    }
+    Ok(recorded)
+}
+
+/// The rule itself: for every arrow into a record, the arrow starts at a node recorded at or
+/// after the one it ends at.
+fn assert_arrows_run_newer_to_older(graph: &MemoryGraph, arrows: &[Arrow]) -> Result<()> {
+    let recorded = recorded_at(graph)?;
+    for arrow in arrows {
+        if arrow.to_kind == NodeKind::Actor {
+            continue;
+        }
+        let from = recorded.get(&(arrow.from_kind, arrow.from_id.clone()));
+        let to = recorded.get(&(arrow.to_kind, arrow.to_id.clone()));
+        let (Some(from), Some(to)) = (from, to) else {
+            panic!("no recorded time for the ends of {arrow:?}");
+        };
+        assert!(
+            from >= to,
+            "{:?} arrow {} -> {} runs from a node recorded at {from} to one recorded at {to}",
+            arrow.relation,
+            arrow.from_id,
+            arrow.to_id
+        );
+    }
+    Ok(())
+}
+
+fn project_ledger(ledger: &InMemoryEventLedger) -> Result<MemoryGraph> {
+    let graph = MemoryGraph::default();
+    project_from_ledger(ledger, &graph, 0)?;
+    Ok(graph)
+}
+
+#[test]
+fn arrow_keeps_the_stored_direction_when_every_target_was_recorded_first() -> Result<()> {
+    let graph = project_ledger(&natural_order_scenario()?)?;
+    let arrows = oriented_edges(&graph)?;
+
+    for kind in RelationKind::ALL {
+        assert!(
+            arrows.iter().any(|arrow| arrow.relation == kind),
+            "the natural-order scenario writes no {kind:?} edge"
+        );
+    }
+    let reversed: Vec<&Arrow> = arrows.iter().filter(|arrow| arrow.reversed).collect();
+    assert!(
+        reversed.is_empty(),
+        "no target was recorded after its source, so nothing reverses: {reversed:?}"
+    );
+    assert_arrows_run_newer_to_older(&graph, &arrows)
+}
+
+/// A ledger in which, for every kind that can reverse, the stored target is recorded after the
+/// stored source: an edge attached later to something newer, or a forward reference that a
+/// later event fills in.
+fn late_attachment_scenario() -> Result<InMemoryEventLedger> {
+    let proposal = |decision_id: &str, option_ids: &[&str]| {
+        event(
+            EventType::DecisionProposed,
+            "actor:alice",
+            json!({
+                "decision_id": decision_id,
+                "title": format!("Decision {decision_id}"),
+                "rationale": "Recorded for the arrow-direction scenario",
+                "topic_keys": ["arrows"],
+                "option_ids": option_ids,
+                "chosen_option_id": option_ids.first(),
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        )
+    };
+    let ledger = InMemoryEventLedger::new();
+    for event in [
+        // SUPPORTS / REFUTES: the evidence is recorded first, the hypothesis it bears on later.
+        event(
+            EventType::EvidenceRecorded,
+            "actor:alice",
+            json!({"evidence_id": "evidence:early", "content": "Recorded before the hypothesis"}),
+        ),
+        // DECISION_REQUEST_FOR_DECISION: a request names a decision nobody has proposed yet.
+        event(
+            EventType::DecisionRequested,
+            "agent:release-bot",
+            json!({
+                "topic_keys": ["arrows"],
+                "decision_id": "decision:answer",
+                "reason": "Needs an owner decision",
+                "priority": "P1",
+                "required_owner_id": "human:release-owner",
+                "authority_class": "human_required",
+                "requested_by": "agent:release-bot",
+                "client_request_id": "client-request:arrows-1"
+            }),
+        ),
+        // BLOCKER_FOR_DECISION: a blocker waits on a decision nobody has proposed yet.
+        event(
+            EventType::BlockerReported,
+            "agent:release-bot",
+            json!({
+                "blocker_id": "blocker:early",
+                "blocked_actor_id": "agent:release-bot",
+                "decision_id": "decision:unblock",
+                "topic_keys": ["arrows"],
+                "blocked_ref": "run:arrows",
+                "blocked_ref_type": "agent_run",
+                "reason": "Waiting on a decision that does not exist yet",
+                "priority": "P1",
+                "last_progress_at": "2026-05-19T10:30:00Z",
+                "required_owner_id": "human:release-owner"
+            }),
+        ),
+        // NOTIFICATION_FOR_BLOCKER: a notification names a blocker that is reported later.
+        event(
+            EventType::NotificationSent,
+            "agent:notifier",
+            json!({
+                "blocker_id": "blocker:late",
+                "recipient_actor_id": "human:release-owner",
+                "channel": "slack",
+                "threshold_rule": "p1_human_required_direct_15m",
+                "source_event_ids": [1],
+                "dedupe_key": "tenant:arrows:blocker:late:P1",
+                "sent_at": "2026-05-19T10:45:00Z"
+            }),
+        ),
+        // The decision every attachment below hangs off, recorded before its targets.
+        proposal("decision:old", &["option:old-a"]),
+        // Fill in the placeholders above.
+        proposal("decision:answer", &[]),
+        proposal("decision:unblock", &[]),
+        event(
+            EventType::BlockerReported,
+            "agent:release-bot",
+            json!({
+                "blocker_id": "blocker:late",
+                "blocked_actor_id": "agent:release-bot",
+                "decision_id": null,
+                "topic_keys": ["arrows"],
+                "blocked_ref": "run:arrows-late",
+                "blocked_ref_type": "agent_run",
+                "reason": "Reported after the notification about it",
+                "priority": "P1",
+                "last_progress_at": "2026-05-19T10:30:00Z",
+                "required_owner_id": null
+            }),
+        ),
+        // Everything below is recorded after `decision:old` and its option.
+        proposal("decision:new", &["option:new-a"]),
+        event(
+            EventType::EvidenceRecorded,
+            "actor:alice",
+            json!({"evidence_id": "evidence:late", "content": "Found after the decision"}),
+        ),
+        event(
+            EventType::HypothesisRecorded,
+            "actor:alice",
+            json!({"hypothesis_id": "hypothesis:late", "statement": "Registered after the evidence"}),
+        ),
+        event(
+            EventType::ProjectRegistered,
+            "actor:alice",
+            json!({"handle": "child", "display_name": "Child"}),
+        ),
+        event(
+            EventType::ProjectRegistered,
+            "actor:alice",
+            json!({"handle": "parent", "display_name": "Parent"}),
+        ),
+        // The attachments: each edge is stored from the older node to the newer one.
+        event(
+            EventType::DecisionSuperseded,
+            "actor:alice",
+            json!({"old_decision_id": "decision:new", "new_decision_id": "decision:old"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "SAME_AS", "from_id": "decision:old", "to_id": "decision:new"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "HAS_OPTION", "from_id": "decision:old", "to_id": "option:new-a"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "CHOSE", "from_id": "decision:old", "to_id": "option:new-a"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "BASED_ON", "from_id": "decision:old", "to_id": "evidence:late"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "ASSUMES", "from_id": "option:old-a", "to_id": "hypothesis:late"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "ASSUMES", "from_id": "decision:old", "to_id": "hypothesis:late"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "SUPPORTS", "from_id": "evidence:early", "to_id": "hypothesis:late"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "REFUTES", "from_id": "evidence:early", "to_id": "hypothesis:late"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "FOLLOWS_FROM", "from_id": "decision:old", "to_id": "decision:new"}),
+        ),
+        event(
+            EventType::ProjectLinked,
+            "actor:alice",
+            json!({"from": "child", "to": "parent", "kind": "part_of"}),
+        ),
+        event(
+            EventType::ProjectLinked,
+            "actor:alice",
+            json!({"from": "child", "to": "parent", "kind": "depends_on"}),
+        ),
+    ] {
+        ledger.append(event)?;
+    }
+    Ok(ledger)
+}
+
+#[test]
+fn arrow_reverses_for_every_kind_that_can_when_its_target_is_recorded_later() -> Result<()> {
+    let graph = project_ledger(&late_attachment_scenario()?)?;
+    let arrows = oriented_edges(&graph)?;
+
+    for kind in RelationKind::ALL {
+        let (stored_source, stored_target) = kind.endpoints();
+        let of_kind: Vec<&Arrow> = arrows
+            .iter()
+            .filter(|arrow| arrow.relation == kind)
+            .collect();
+        let Some(reversed_label) = kind.arrow_labels().reversed else {
+            assert!(
+                of_kind.iter().all(|arrow| !arrow.reversed),
+                "{kind:?} points at an actor, which is older than any record"
+            );
+            continue;
+        };
+
+        let reversed: Vec<&&Arrow> = of_kind.iter().filter(|arrow| arrow.reversed).collect();
+        assert!(
+            !reversed.is_empty(),
+            "the scenario reverses no {kind:?} arrow"
+        );
+        for arrow in reversed {
+            assert_eq!(arrow.label, reversed_label, "{kind:?} reversed label");
+            assert_eq!(
+                (arrow.from_kind, arrow.to_kind),
+                (stored_target, stored_source),
+                "a reversed {kind:?} arrow runs from the stored target's kind to the stored source's"
+            );
+        }
+    }
+
+    // Spot-check the direction and label on the ones a reader would ask about first.
+    let has = |relation, from: &str, to: &str, label: &str| {
+        arrows.iter().any(|arrow| {
+            arrow.relation == relation
+                && arrow.from_id == from
+                && arrow.to_id == to
+                && arrow.label == label
+                && arrow.reversed
+        })
+    };
+    assert!(has(
+        RelationKind::BasedOn,
+        "evidence:late",
+        "decision:old",
+        "informs"
+    ));
+    assert!(has(
+        RelationKind::DecisionRequestForDecision,
+        "decision:answer",
+        &request_id(&graph)?,
+        "answers"
+    ));
+    assert!(has(
+        RelationKind::Supersedes,
+        "decision:new",
+        "decision:old",
+        "is superseded by"
+    ));
+
+    assert_arrows_run_newer_to_older(&graph, &arrows)
+}
+
+/// The id of the one `DecisionRequest` node in the graph.
+fn request_id(graph: &MemoryGraph) -> Result<String> {
+    let rows = graph.query(
+        "MATCH (node:`DecisionRequest`) RETURN node.id AS id ORDER BY node.id;",
+        &GraphParams::new(),
+    )?;
+    match rows.first().and_then(|row| row.get("id")) {
+        Some(GraphValue::String(id)) => Ok(id.clone()),
+        _ => Err(ProjectorError::Projection("scenario has no decision request".to_owned()).into()),
+    }
+}
+
+#[test]
+fn arrow_orientation_does_not_change_when_a_node_is_annotated_later() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let decision = ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:annotated",
+            "title": "Annotated later",
+            "rationale": "Nothing that happens to it afterwards may move its event_origin",
+            "topic_keys": ["arrows"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+    let blocker = ledger.append(event(
+        EventType::BlockerReported,
+        "agent:release-bot",
+        json!({
+            "blocker_id": "blocker:annotated",
+            "blocked_actor_id": "agent:release-bot",
+            "decision_id": "decision:annotated",
+            "topic_keys": ["arrows"],
+            "blocked_ref": "run:annotated",
+            "blocked_ref_type": "agent_run",
+            "reason": "Waiting",
+            "priority": "P1",
+            "last_progress_at": "2026-05-19T10:30:00Z",
+            "required_owner_id": null
+        }),
+    ))?;
+    let notification_event = event(
+        EventType::NotificationSent,
+        "agent:notifier",
+        json!({
+            "blocker_id": "blocker:annotated",
+            "recipient_actor_id": "human:release-owner",
+            "channel": "slack",
+            "threshold_rule": "p1_human_required_direct_15m",
+            "source_event_ids": [2],
+            "dedupe_key": "tenant:arrows:blocker:annotated:P1",
+            "sent_at": "2026-05-19T10:45:00Z"
+        }),
+    );
+    let notification_id = notification_event.event_uuid.to_string();
+    let notification = ledger.append(notification_event)?;
+    let classified = ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:annotated",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [{
+                "kind": "decision",
+                "title": "Captured then scored",
+                "rationale": "The score must not move the capture's event_origin",
+                "topic_keys": ["arrows"],
+                "evidence_ids": [],
+                "options": null,
+                "chosen_option": null,
+                "extraction_confidence": 0.9,
+                "expressed_confidence": null,
+                "supersedes_id": null,
+                "premised_on_ids": [],
+                "supports_ids": [],
+                "refutes_ids": [],
+                "actor_id": "human:dana",
+                "accepted_by": [],
+                "rejected_by": [],
+                "blocked_actor_id": null,
+                "decision_id": null
+            }]
+        }),
+    ))?;
+    let project = ledger.append(event(
+        EventType::ProjectRegistered,
+        "actor:alice",
+        json!({"handle": "annotated", "display_name": "Annotated"}),
+    ))?;
+
+    // Everything below only annotates a node an earlier event created.
+    ledger.append(event(
+        EventType::BlockerResolved,
+        "agent:release-bot",
+        json!({"blocker_id": "blocker:annotated", "resolution_event_id": null, "resolution_reason": "done"}),
+    ))?;
+    ledger.append(event(
+        EventType::NotificationAcknowledged,
+        "human:release-owner",
+        json!({"notification_id": notification_id, "ack_at": "2026-05-19T11:00:00Z", "snooze_until": null}),
+    ))?;
+    ledger.append(event(
+        EventType::ProjectAnchored,
+        "actor:alice",
+        json!({"handle": "annotated", "anchor_kind": "folder", "value": "services/annotated"}),
+    ))?;
+    ledger.append(event(
+        EventType::DecisionScored,
+        "agent:hivemind:scorer",
+        json!({
+            "capture_node_id": format!("capture:{classified}:0"),
+            "scorer_model": "claude-haiku-4-5-20251001",
+            "weight_version": "v1",
+            "supersedes_score_id": null,
+            "quality_dims": {
+                "framing": {"score": 0.8, "explanation": "clear"},
+                "alternatives": {"score": 0.7, "explanation": "two options"},
+                "information": {"score": 0.6, "explanation": "some data"},
+                "reasoning": {"score": 0.9, "explanation": "sound"},
+                "values_tradeoffs": {"score": 0.5, "explanation": "implicit"},
+                "bias_exposure": {"score": 0.8, "explanation": "none seen"},
+                "calibration": {"score": 0.7, "explanation": "reasonable"}
+            },
+            "importance": {
+                "stakes": 10.0,
+                "stakes_explanation": "wide",
+                "irreversibility": 0.6,
+                "irreversibility_explanation": "some cost",
+                "actionability": 1.0,
+                "actionability_explanation": "clear owner"
+            }
+        }),
+    ))?;
+
+    let graph = project_ledger(&ledger)?;
+    let recorded = recorded_at(&graph)?;
+    let origin = |kind, id: &str| recorded.get(&(kind, id.to_owned())).copied();
+    assert_eq!(
+        origin(NodeKind::Decision, "decision:annotated"),
+        i64::try_from(decision).ok()
+    );
+    assert_eq!(
+        origin(NodeKind::Blocker, "blocker:annotated"),
+        i64::try_from(blocker).ok()
+    );
+    assert_eq!(
+        origin(NodeKind::Notification, &notification_id),
+        i64::try_from(notification).ok()
+    );
+    assert_eq!(
+        origin(NodeKind::Decision, &format!("capture:{classified}:0")),
+        i64::try_from(classified).ok()
+    );
+    assert_eq!(
+        origin(NodeKind::Project, "annotated"),
+        i64::try_from(project).ok()
+    );
+    Ok(())
+}
+
+#[test]
+fn arrow_annotating_a_node_no_event_created_gives_it_a_placeholder_origin() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let resolved = ledger.append(event(
+        EventType::BlockerResolved,
+        "agent:release-bot",
+        json!({"blocker_id": "blocker:unseen", "resolution_event_id": null, "resolution_reason": "done"}),
+    ))?;
+    let graph = project_ledger(&ledger)?;
+    let recorded = recorded_at(&graph)?;
+    assert_eq!(
+        recorded
+            .get(&(NodeKind::Blocker, "blocker:unseen".to_owned()))
+            .copied(),
+        i64::try_from(resolved).ok(),
+        "a node named before any event created it is placed at the naming event, like any other placeholder"
+    );
+    Ok(())
+}

@@ -3,32 +3,44 @@
     "edges": [
       {
         "from": "decision-016",
+        "label": "proposed by",
         "relation": "proposed_by",
+        "reversed": false,
         "to": "actor:planner"
       },
       {
         "from": "decision-018",
+        "label": "supersedes",
         "relation": "supersedes",
+        "reversed": false,
         "to": "decision-016"
       },
       {
         "from": "decision-019",
+        "label": "supersedes",
         "relation": "supersedes",
+        "reversed": false,
         "to": "decision-016"
       },
       {
         "from": "decision-016",
+        "label": "weighs",
         "relation": "has_option",
+        "reversed": false,
         "to": "option-016-a"
       },
       {
         "from": "decision-016",
+        "label": "weighs",
         "relation": "has_option",
+        "reversed": false,
         "to": "option-016-b"
       },
       {
         "from": "decision-016",
+        "label": "chose",
         "relation": "chose",
+        "reversed": false,
         "to": "option-016-b"
       }
     ],

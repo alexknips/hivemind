@@ -12,8 +12,9 @@ use crate::events::TenantId;
 use crate::ledger::EventLedger;
 use crate::projector::{
     memory::MemoryGraph, project_from_ledger_for_tenant, GraphParams, GraphRow, GraphValue,
-    GraphView, NodeKind, RelationKind,
+    GraphView, NodeKind,
 };
+use crate::queries::oriented_edges;
 
 use super::auth::extract_ctx;
 use super::{
@@ -29,12 +30,19 @@ struct GraphNode {
     label: Option<String>,
 }
 
-/// A directed edge in the decision graph.
+/// A directed edge in the decision graph: an arrow from the newer node to the older node.
 #[derive(Clone, Debug, serde::Serialize)]
 struct GraphEdge {
+    /// The newer node (or, for equal ages, the stored source).
     from: String,
+    /// The older node.
     to: String,
+    /// What the edge means, unchanged whichever way the arrow runs.
     relation: String,
+    /// The relation read along the arrow, an active phrase: `based on`, `informs`.
+    label: &'static str,
+    /// True when the arrow runs against the relation's stored direction.
+    reversed: bool,
 }
 
 /// Full decision graph for a tenant, in the shape expected by the SPA.
@@ -110,37 +118,19 @@ fn graph_blocking(
         }
     }
 
-    let mut edges: Vec<GraphEdge> = Vec::new();
-
-    for relation in RelationKind::ALL {
-        let (from_kind, to_kind) = relation.endpoints();
-        let from_name = from_kind.table_name();
-        let to_name = to_kind.table_name();
-        let rel_name = relation.table_name();
-        let q = [
-            "MATCH (from:`",
-            from_name,
-            "`)-[rel:`",
-            rel_name,
-            "`]->(to:`",
-            to_name,
-            "`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;",
-        ]
-        .concat();
-        let rows = graph.query(&q, &GraphParams::new()).map_err(graph_err)?;
-        for row in rows {
-            edges.push(GraphEdge {
-                from: [
-                    from_name,
-                    ":",
-                    &row_string(&row, "from_id").unwrap_or_default(),
-                ]
-                .concat(),
-                to: [to_name, ":", &row_string(&row, "to_id").unwrap_or_default()].concat(),
-                relation: rel_name.into(),
-            });
-        }
-    }
+    // Every arrow runs from the newer node to the older node (docs/GRAPH_CONTRACT.md); the
+    // label reads along that direction, so the SPA draws `from -> to` as given.
+    let edges: Vec<GraphEdge> = oriented_edges(graph.as_ref())
+        .map_err(graph_err)?
+        .into_iter()
+        .map(|arrow| GraphEdge {
+            from: [arrow.from_kind.table_name(), ":", &arrow.from_id].concat(),
+            to: [arrow.to_kind.table_name(), ":", &arrow.to_id].concat(),
+            relation: arrow.relation.table_name().into(),
+            label: arrow.label,
+            reversed: arrow.reversed,
+        })
+        .collect();
 
     let data = GraphData {
         decisions,

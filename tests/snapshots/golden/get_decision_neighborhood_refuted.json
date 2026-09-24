@@ -3,43 +3,59 @@
     "edges": [
       {
         "from": "decision-005",
+        "label": "proposed by",
         "relation": "proposed_by",
+        "reversed": false,
         "to": "actor:planner"
       },
       {
         "from": "decision-005",
+        "label": "based on",
         "relation": "based_on",
+        "reversed": false,
         "to": "evidence-001"
       },
       {
         "from": "decision-005",
+        "label": "weighs",
         "relation": "has_option",
+        "reversed": false,
         "to": "option-005-a"
       },
       {
         "from": "decision-005",
+        "label": "weighs",
         "relation": "has_option",
+        "reversed": false,
         "to": "option-005-b"
       },
       {
         "from": "decision-005",
+        "label": "chose",
         "relation": "chose",
+        "reversed": false,
         "to": "option-005-b"
       },
       {
         "from": "decision-005",
+        "label": "rests on",
         "relation": "premised_on",
+        "reversed": false,
         "to": "hypothesis-001"
       },
       {
-        "from": "evidence-001",
+        "from": "hypothesis-001",
+        "label": "draws on",
         "relation": "supports",
-        "to": "hypothesis-001"
+        "reversed": true,
+        "to": "evidence-001"
       },
       {
-        "from": "evidence-004",
+        "from": "hypothesis-001",
+        "label": "is refuted by",
         "relation": "refutes",
-        "to": "hypothesis-001"
+        "reversed": true,
+        "to": "evidence-004"
       }
     ],
     "nodes": [

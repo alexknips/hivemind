@@ -18,6 +18,7 @@ use crate::events::{
 use crate::ledger::EventLedger;
 use crate::Result;
 
+pub mod arrow;
 #[cfg(feature = "graph-kuzu")]
 pub mod kuzu;
 pub mod memory;
@@ -692,6 +693,24 @@ fn ensure_node_reference(
     Ok(())
 }
 
+/// Writes properties onto a node that an earlier event created, without moving the node's
+/// `event_origin`. An event that only annotates a node (a score, a blocker resolution, a
+/// notification acknowledgement, a project anchor) is not the event that created it, and
+/// `event_origin` is the ledger offset that did (AGENTS.md section 4). Arrows are oriented by
+/// that offset (see `arrow`), so letting a later annotation move it would flip arrows after
+/// unrelated events. A node the annotation names before any event created it gets a
+/// placeholder carrying this event's origin, exactly as `ensure_node_reference` does.
+fn annotate_node(
+    graph: &impl GraphView,
+    kind: NodeKind,
+    id: &str,
+    origin_properties: &GraphProperties,
+    properties: &GraphProperties,
+) -> Result<()> {
+    ensure_node_reference(graph, kind, id, origin_properties)?;
+    graph.upsert_node(kind, id, properties)
+}
+
 fn optional_string_value(value: Option<&str>) -> GraphValue {
     value.map_or(GraphValue::Null, |value| {
         GraphValue::String(value.to_owned())
@@ -1177,11 +1196,14 @@ fn project_project_anchored(
     if !anchors.contains(&entry) {
         anchors.push(entry);
     }
-    let props = props_extend(
+    let props = GraphProperties::from([("anchors".to_owned(), GraphValue::StringList(anchors))]);
+    annotate_node(
+        graph,
+        NodeKind::Project,
+        &payload.handle,
         origin_properties,
-        [("anchors", GraphValue::StringList(anchors))],
-    );
-    graph.upsert_node(NodeKind::Project, &payload.handle, &props)
+        &props,
+    )
 }
 
 fn project_project_unanchored(
@@ -1192,11 +1214,14 @@ fn project_project_unanchored(
     let entry = encode_project_anchor(payload.anchor_kind, &payload.value);
     let mut anchors = current_project_anchors(graph, &payload.handle)?;
     anchors.retain(|existing| existing != &entry);
-    let props = props_extend(
+    let props = GraphProperties::from([("anchors".to_owned(), GraphValue::StringList(anchors))]);
+    annotate_node(
+        graph,
+        NodeKind::Project,
+        &payload.handle,
         origin_properties,
-        [("anchors", GraphValue::StringList(anchors))],
-    );
-    graph.upsert_node(NodeKind::Project, &payload.handle, &props)
+        &props,
+    )
 }
 
 fn project_blocker_reported(
@@ -1290,27 +1315,34 @@ fn project_blocker_resolved(
     payload: &BlockerResolvedPayload,
     origin_properties: &GraphProperties,
 ) -> Result<()> {
-    let mut blocker_properties = origin_properties.clone();
-    blocker_properties.insert("resolved_at".to_owned(), event_timestamp(event));
-    blocker_properties.insert(
-        "resolution_event_id".to_owned(),
-        payload
-            .resolution_event_id
-            .and_then(|id| i64::try_from(id).ok())
-            .map_or(GraphValue::Null, GraphValue::Int),
-    );
-    blocker_properties.insert(
-        "resolution_reason".to_owned(),
-        payload
-            .resolution_reason
-            .clone()
-            .map_or(GraphValue::Null, GraphValue::String),
-    );
-    blocker_properties.insert(
-        "resolved_event_origin".to_owned(),
-        GraphValue::Int(event_origin),
-    );
-    graph.upsert_node(NodeKind::Blocker, &payload.blocker_id, &blocker_properties)
+    let blocker_properties = GraphProperties::from([
+        ("resolved_at".to_owned(), event_timestamp(event)),
+        (
+            "resolution_event_id".to_owned(),
+            payload
+                .resolution_event_id
+                .and_then(|id| i64::try_from(id).ok())
+                .map_or(GraphValue::Null, GraphValue::Int),
+        ),
+        (
+            "resolution_reason".to_owned(),
+            payload
+                .resolution_reason
+                .clone()
+                .map_or(GraphValue::Null, GraphValue::String),
+        ),
+        (
+            "resolved_event_origin".to_owned(),
+            GraphValue::Int(event_origin),
+        ),
+    ]);
+    annotate_node(
+        graph,
+        NodeKind::Blocker,
+        &payload.blocker_id,
+        origin_properties,
+        &blocker_properties,
+    )
 }
 
 fn project_notification_sent(
@@ -1389,20 +1421,26 @@ fn project_notification_acknowledged(
     payload: &NotificationAcknowledgedPayload,
     origin_properties: &GraphProperties,
 ) -> Result<()> {
-    let props = props_extend(
+    let props = GraphProperties::from([
+        (
+            "ack_at".to_owned(),
+            GraphValue::String(payload.ack_at.to_rfc3339()),
+        ),
+        (
+            "snooze_until".to_owned(),
+            payload
+                .snooze_until
+                .map(|value| GraphValue::String(value.to_rfc3339()))
+                .unwrap_or(GraphValue::Null),
+        ),
+    ]);
+    annotate_node(
+        graph,
+        NodeKind::Notification,
+        &payload.notification_id,
         origin_properties,
-        [
-            ("ack_at", GraphValue::String(payload.ack_at.to_rfc3339())),
-            (
-                "snooze_until",
-                payload
-                    .snooze_until
-                    .map(|value| GraphValue::String(value.to_rfc3339()))
-                    .unwrap_or(GraphValue::Null),
-            ),
-        ],
-    );
-    graph.upsert_node(NodeKind::Notification, &payload.notification_id, &props)
+        &props,
+    )
 }
 
 fn project_ingest_batch_classified(
@@ -1433,11 +1471,11 @@ fn project_decision_scored(
 ) -> Result<()> {
     // Annotate the capture node with per-dimension Quality scores and
     // Importance factors. Upsert merges onto the existing node without
-    // overwriting any decision fields.
+    // overwriting any decision fields, including the offset that created it.
     let dims = &payload.quality_dims;
     let imp = &payload.importance;
     let props = props_extend(
-        origin_properties,
+        &GraphProperties::new(),
         [
             ("score_framing", GraphValue::Float(dims.framing.score)),
             (
@@ -1476,7 +1514,13 @@ fn project_decision_scored(
             ),
         ],
     );
-    graph.upsert_node(NodeKind::Decision, &payload.capture_node_id, &props)
+    annotate_node(
+        graph,
+        NodeKind::Decision,
+        &payload.capture_node_id,
+        origin_properties,
+        &props,
+    )
 }
 
 /// `decision.moved` upserts ONLY `project` and `project_source = moved` on the existing Decision

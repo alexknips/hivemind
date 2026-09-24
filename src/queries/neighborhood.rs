@@ -5,9 +5,11 @@ use std::time::Instant;
 
 use serde::Serialize;
 
+use crate::projector::arrow::Arrow;
 use crate::projector::{GraphView, NodeKind, RelationKind};
 use crate::Result;
 
+use super::arrows::NodeTimes;
 use super::brief::{get_decision_brief, resolve_option_label, DecisionBrief};
 use super::decision::{get_decision_title, get_evidence_content, get_hypothesis_statement};
 use super::shared::{
@@ -48,13 +50,66 @@ pub struct NeighborNode {
     pub label: Option<String>,
 }
 
+/// One edge of the neighborhood, drawn as an arrow from the newer node to the older node
+/// (docs/GRAPH_CONTRACT.md). `from`/`to` are the arrow's ends, not the stored direction: use
+/// [`NeighborEdge::stored_source`] / [`NeighborEdge::stored_target`] to ask which side makes
+/// the claim.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct NeighborEdge {
+    /// The newer node (or, for equal ages, the stored source).
     pub from: String,
+    /// The older node.
     pub to: String,
+    /// What the edge means. Unchanged whichever way the arrow runs.
     pub relation: RelationKind,
+    /// The relation read along the arrow: an active phrase such as `based on` or `informs`.
+    pub label: &'static str,
+    /// True when the arrow runs against the relation's stored direction because the stored
+    /// target was recorded after the stored source.
+    pub reversed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_origin: Option<i64>,
+}
+
+impl NeighborEdge {
+    fn from_arrow(arrow: Arrow, event_origin: Option<i64>) -> Self {
+        Self {
+            from: arrow.from_id,
+            to: arrow.to_id,
+            relation: arrow.relation,
+            label: arrow.label,
+            reversed: arrow.reversed,
+            event_origin,
+        }
+    }
+
+    /// The side making the claim (the decision that is `BASED_ON` the evidence), whichever way
+    /// the arrow runs.
+    pub fn stored_source(&self) -> &str {
+        if self.reversed {
+            &self.to
+        } else {
+            &self.from
+        }
+    }
+
+    /// The side the claim is about.
+    pub fn stored_target(&self) -> &str {
+        if self.reversed {
+            &self.from
+        } else {
+            &self.to
+        }
+    }
+}
+
+/// An edge as the graph stores it, before it is oriented for display.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct StoredEdge {
+    relation: RelationKind,
+    from: String,
+    to: String,
+    event_origin: Option<i64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -239,7 +294,7 @@ pub(super) fn neighborhood_structure(
         });
     }
 
-    let mut edges: Vec<NeighborEdge> = Vec::new();
+    let mut edges: Vec<StoredEdge> = Vec::new();
     let mut hypothesis_ids: BTreeSet<String> = BTreeSet::new();
 
     for (relation, other_kind, direction) in DECISION_HOP1_RELATIONS {
@@ -257,7 +312,7 @@ pub(super) fn neighborhood_structure(
                 Direction::Outgoing,
             )?;
             for (hypothesis_id, event_origin) in direct {
-                edges.push(NeighborEdge {
+                edges.push(StoredEdge {
                     from: decision_id.to_owned(), // ubs:ignore:
                     to: hypothesis_id.clone(),    // ubs:ignore:
                     relation: RelationKind::PremisedOn,
@@ -281,7 +336,7 @@ pub(super) fn neighborhood_structure(
                     Direction::Outgoing,
                 )?;
                 for (hypothesis_id, event_origin) in opt_pairs {
-                    edges.push(NeighborEdge {
+                    edges.push(StoredEdge {
                         from: decision_id.to_owned(), // ubs:ignore:
                         to: hypothesis_id.clone(),    // ubs:ignore:
                         relation: RelationKind::PremisedOn,
@@ -304,7 +359,7 @@ pub(super) fn neighborhood_structure(
                     Direction::Outgoing => (decision_id.to_owned(), other_id.clone()),
                     Direction::Incoming => (other_id.clone(), decision_id.to_owned()),
                 };
-                edges.push(NeighborEdge {
+                edges.push(StoredEdge {
                     from,
                     to,
                     relation,
@@ -335,7 +390,7 @@ pub(super) fn neighborhood_structure(
                     Direction::Outgoing => (hypothesis_id.clone(), other_id),
                     Direction::Incoming => (other_id, hypothesis_id.clone()),
                 };
-                edges.push(NeighborEdge {
+                edges.push(StoredEdge {
                     from,
                     to,
                     relation,
@@ -345,14 +400,7 @@ pub(super) fn neighborhood_structure(
         }
     }
 
-    edges.sort_by(|a, b| {
-        (a.relation, &a.from, &a.to, a.event_origin).cmp(&(
-            b.relation,
-            &b.from,
-            &b.to,
-            b.event_origin,
-        ))
-    });
+    edges.sort();
     edges.dedup();
 
     let total_edges = edges.len();
@@ -426,6 +474,22 @@ pub(super) fn neighborhood_structure(
         });
     }
     nodes.sort_by(|a, b| (a.kind, &a.id).cmp(&(b.kind, &b.id)));
+
+    let mut times = NodeTimes::default();
+    let edges = edges
+        .into_iter()
+        .map(|edge| {
+            // The view shows every premise, direct or through the chosen option, as a
+            // decision -> hypothesis `PremisedOn` edge, so that is the pair to orient.
+            let orient_as = match edge.relation {
+                RelationKind::PremisedOn => RelationKind::PremisedOnDirect,
+                relation => relation,
+            };
+            let mut arrow = times.arrow(graph, orient_as, &edge.from, &edge.to)?;
+            arrow.relation = edge.relation;
+            Ok(NeighborEdge::from_arrow(arrow, edge.event_origin))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     let result_count = nodes.len() + edges.len();
 

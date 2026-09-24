@@ -1,6 +1,7 @@
 //! Query layer entry point: pure deterministic reads over the projected graph; no LLMs, no writes.
 
 mod active_blockers;
+mod arrows;
 mod attribution;
 mod brief;
 mod compact_view;
@@ -37,6 +38,7 @@ pub use active_blockers::{
     BlockerNotificationCandidatesRequest, BlockerNotificationState, BlockerNotificationStateKind,
     DecisionBlockerFilters, DecisionBlockerResults, DecisionBlockerView,
 };
+pub use arrows::oriented_edges;
 pub use attribution::{
     get_failure_attribution, AttributionFinding, AttributionGroup, ConfidenceLevel, CorpusStats,
     FailureAttributionRequest, FailureModeReport, SignalBreakdown,

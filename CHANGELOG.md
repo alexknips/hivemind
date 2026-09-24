@@ -3,6 +3,24 @@
 All notable changes to HiveMind are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed (breaking)
+
+- **Every arrow the server shows points newer → older.** `GET /v1/graph` edges, the
+  neighborhood edges (`hivemind query why`, MCP `get_decision_neighborhood`, HTTP
+  `/v1/decisions/why`), the CLI text summary and the DOT exports now draw each edge from the
+  node recorded later to the node recorded earlier, for all 28 relation kinds. `from`/`to`
+  are the arrow's ends, `relation` still names the meaning, `label` reads the relation along
+  the arrow (`based on`, `informs`, `answers`) and `reversed` marks an arrow that runs against
+  the relation's stored direction. Storage and queries are unchanged, so nothing needs
+  migrating: graphs rebuild from the ledger. The rule and the per-kind table are in
+  `docs/GRAPH_CONTRACT.md`. (hivemind-ku1x)
+- Follow-up events (`decision.scored`, `blocker.resolved`, `notification.acknowledged`,
+  `project.anchored`) no longer overwrite the `event_origin` of the node they annotate; it stays
+  the offset of the event that created the node. A persistent Postgres projection needs the
+  usual rebuild to pick that up. (hivemind-ku1x)
+
 ## v0.6.0 — 2026-09-07 — M7: Decision-quality layer
 
 HiveMind now derives whether decisions held up and scores them explainably — entirely

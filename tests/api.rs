@@ -1877,6 +1877,16 @@ async fn graph_returns_shape_after_decision() {
     let d = &decisions[0];
     assert!(d.get("id").is_some(), "decision missing id"); // ubs:ignore
     assert!(d.get("title").is_some(), "decision missing title"); // ubs:ignore
+
+    // Every edge is an arrow from the newer node to the older one, with the relation read
+    // along it (docs/GRAPH_CONTRACT.md).
+    let edges = gb["edges"].as_array().unwrap();
+    assert!(!edges.is_empty(), "expected edges"); // ubs:ignore
+    for edge in edges {
+        for field in ["from", "to", "relation", "label", "reversed"] {
+            assert!(edge.get(field).is_some(), "edge missing {field}: {edge}"); // ubs:ignore
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

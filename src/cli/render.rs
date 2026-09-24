@@ -13,15 +13,16 @@ use crate::projector::{
     RelationKind as GraphRelationKind,
 };
 use crate::queries::{
-    derive_decision_status, derive_hypothesis_status, BlockerNotificationCandidates, CompactView,
-    DecidedBy, DecisionBlockerResults, DecisionBrief, DecisionSearchResults, DecisionStatus,
-    DecisionView, DecisionsAddedSinceResults, DecisionsChangedSinceResults, GroundingAdded,
-    GroundingItem, GroundingItemState, GroundingKind, GroundingState, HistoryChangeKind,
-    HypothesisStatus, MatchReason, MisfiledDecisionCandidate, NeighborhoodView, OutcomeReason,
-    ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectListResults, ProjectMove, ProjectOutcome,
-    QualityTier, QueryResponse, ReadOnlyExport, ReadOnlyExportFormat as QueryReadOnlyExportFormat,
-    ReadOnlyExportQueryKind, RecentActivityResults, RecentDecisionsResults, ResolveOutcome,
-    ScoredDecision, SituationalResults, SupersessionChain,
+    derive_decision_status, derive_hypothesis_status, oriented_edges,
+    BlockerNotificationCandidates, CompactView, DecidedBy, DecisionBlockerResults, DecisionBrief,
+    DecisionSearchResults, DecisionStatus, DecisionView, DecisionsAddedSinceResults,
+    DecisionsChangedSinceResults, GroundingAdded, GroundingItem, GroundingItemState, GroundingKind,
+    GroundingState, HistoryChangeKind, HypothesisStatus, MatchReason, MisfiledDecisionCandidate,
+    NeighborhoodView, OutcomeReason, ProjectDecisionsOutcome, ProjectDecisionsPage,
+    ProjectListResults, ProjectMove, ProjectOutcome, QualityTier, QueryResponse, ReadOnlyExport,
+    ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
+    RecentActivityResults, RecentDecisionsResults, ResolveOutcome, ScoredDecision,
+    SituationalResults, SupersessionChain,
 };
 use crate::{HivemindError, Result};
 
@@ -856,28 +857,22 @@ pub(crate) fn render_neighborhood_summary(neighborhood: &NeighborhoodView) -> St
         }
         output.push('\n');
     }
+    // `from`/`to` are the arrow, newer -> older; `label` reads the relation along it and
+    // `reversed` says the arrow runs against the stored direction (docs/GRAPH_CONTRACT.md).
     for edge in &neighborhood.edges {
-        match edge.event_origin {
-            Some(event_origin) => {
-                let _ = writeln!(
-                    output,
-                    "edge\t{}\t{}\t{}\tevent_origin={}",
-                    edge.relation.table_name(),
-                    edge.from,
-                    edge.to,
-                    event_origin
-                );
-            }
-            None => {
-                let _ = writeln!(
-                    output,
-                    "edge\t{}\t{}\t{}\tevent_origin=unknown",
-                    edge.relation.table_name(),
-                    edge.from,
-                    edge.to
-                );
-            }
-        }
+        let event_origin = edge
+            .event_origin
+            .map_or_else(|| "unknown".to_owned(), |origin| origin.to_string());
+        let _ = writeln!(
+            output,
+            "edge\t{}\t{}\t{}\tevent_origin={}\tlabel={}\treversed={}",
+            edge.relation.table_name(),
+            edge.from,
+            edge.to,
+            event_origin,
+            edge.label,
+            edge.reversed
+        );
     }
     output.trim_end().to_owned()
 }
@@ -1336,7 +1331,7 @@ pub(crate) fn render_dot(graph: &impl GraphView) -> Result<String> {
             "  \"{}\" -> \"{}\" [label=\"{}\"];",
             node_key(edge.from_kind, &edge.from_id),
             node_key(edge.to_kind, &edge.to_id),
-            edge.relation.table_name()
+            edge.label
         );
     }
 
@@ -1372,30 +1367,20 @@ fn graph_nodes(graph: &impl GraphView) -> Result<BTreeMap<(NodeKind, String), Gr
     Ok(nodes)
 }
 
+/// Every edge as an arrow, newer -> older (docs/GRAPH_CONTRACT.md), so the DOT export draws the
+/// same direction and label as `GET /v1/graph`.
 fn graph_edges(graph: &impl GraphView) -> Result<BTreeSet<DotEdge>> {
-    let mut edges = BTreeSet::new();
-    for relation in GraphRelationKind::ALL {
-        let (from_kind, to_kind) = relation.endpoints();
-        let mut query = String::new();
-        let _ = write!(
-            query,
-            "MATCH (from:`{}`)-[rel:`{}`]->(to:`{}`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;",
-            from_kind.table_name(),
-            relation.table_name(),
-            to_kind.table_name()
-        );
-        let rows = graph.query(&query, &GraphParams::new())?;
-        for row in rows {
-            edges.insert(DotEdge {
-                relation,
-                from_kind,
-                from_id: required_row_string(&row, "from_id")?,
-                to_kind,
-                to_id: required_row_string(&row, "to_id")?,
-            });
-        }
-    }
-    Ok(edges)
+    Ok(oriented_edges(graph)?
+        .into_iter()
+        .map(|arrow| DotEdge {
+            relation: arrow.relation,
+            from_kind: arrow.from_kind,
+            from_id: arrow.from_id,
+            to_kind: arrow.to_kind,
+            to_id: arrow.to_id,
+            label: arrow.label,
+        })
+        .collect())
 }
 
 fn node_dump_query(kind: NodeKind) -> String {
@@ -1552,6 +1537,8 @@ struct DotEdge {
     from_id: String,
     to_kind: NodeKind,
     to_id: String,
+    /// The relation read along the arrow, an active phrase.
+    label: &'static str,
 }
 
 #[derive(Debug, Serialize)]

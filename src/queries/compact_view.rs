@@ -160,14 +160,14 @@ pub fn get_compact_view(
         let accepted_by: Vec<String> = neighborhood
             .edges
             .iter()
-            .filter(|e| e.relation == RelationKind::AcceptedBy && e.from == terminal_id)
-            .map(|e| e.to.to_owned())
+            .filter(|e| e.relation == RelationKind::AcceptedBy && e.stored_source() == terminal_id)
+            .map(|e| e.stored_target().to_owned())
             .collect();
         let rejected_by: Vec<String> = neighborhood
             .edges
             .iter()
-            .filter(|e| e.relation == RelationKind::RejectedBy && e.from == terminal_id)
-            .map(|e| e.to.to_owned())
+            .filter(|e| e.relation == RelationKind::RejectedBy && e.stored_source() == terminal_id)
+            .map(|e| e.stored_target().to_owned())
             .collect();
         Some(ContestView {
             accepted_by,
@@ -196,16 +196,16 @@ pub fn get_compact_view(
     let chose_set: BTreeSet<String> = neighborhood
         .edges
         .iter()
-        .filter(|e| e.relation == RelationKind::Chose && e.from == terminal_id)
-        .map(|e| e.to.to_owned())
+        .filter(|e| e.relation == RelationKind::Chose && e.stored_source() == terminal_id)
+        .map(|e| e.stored_target().to_owned())
         .collect();
     let unchosen_option_count = neighborhood
         .edges
         .iter()
         .filter(|e| {
             e.relation == RelationKind::HasOption
-                && e.from == terminal_id
-                && !chose_set.contains(&e.to)
+                && e.stored_source() == terminal_id
+                && !chose_set.contains(e.stored_target())
         })
         .count();
 
@@ -217,14 +217,14 @@ pub fn get_compact_view(
         let refuting_ids: Vec<String> = neighborhood
             .edges
             .iter()
-            .filter(|e| e.relation == RelationKind::Refutes && e.to == hyp.id)
-            .map(|e| e.from.to_owned())
+            .filter(|e| e.relation == RelationKind::Refutes && e.stored_target() == hyp.id)
+            .map(|e| e.stored_source().to_owned())
             .collect();
         let supporting_ids: Vec<String> = neighborhood
             .edges
             .iter()
-            .filter(|e| e.relation == RelationKind::Supports && e.to == hyp.id)
-            .map(|e| e.from.to_owned())
+            .filter(|e| e.relation == RelationKind::Supports && e.stored_target() == hyp.id)
+            .map(|e| e.stored_source().to_owned())
             .collect();
 
         let statement = get_hypothesis_statement(graph, &hyp.id)?.unwrap_or_default();
@@ -260,15 +260,15 @@ pub fn get_compact_view(
     let premises: Vec<PremiseSummaryView> = neighborhood
         .edges
         .iter()
-        .filter(|e| e.relation == RelationKind::FollowsFrom && e.from == terminal_id)
+        .filter(|e| e.relation == RelationKind::FollowsFrom && e.stored_source() == terminal_id)
         .filter_map(|e| {
             neighborhood
                 .nodes
                 .iter()
-                .find(|node| node.id == e.to)
+                .find(|node| node.id == e.stored_target())
                 .and_then(|node| node.decision_status)
                 .map(|status| PremiseSummaryView {
-                    decision_id: e.to.clone(), // ubs:ignore: owned id for the view; the neighborhood is only borrowed
+                    decision_id: e.stored_target().to_owned(), // ubs:ignore: owned id for the view; the neighborhood is only borrowed
                     status,
                 })
         })
@@ -276,8 +276,8 @@ pub fn get_compact_view(
     let dependents_count = neighborhood
         .edges
         .iter()
-        .filter(|e| e.relation == RelationKind::FollowsFrom && e.to == terminal_id)
-        .map(|e| e.from.as_str())
+        .filter(|e| e.relation == RelationKind::FollowsFrom && e.stored_target() == terminal_id)
+        .map(|e| e.stored_source())
         .collect::<BTreeSet<_>>()
         .len();
     let grounding_state = terminal_decision.grounding_state();
@@ -303,7 +303,7 @@ pub fn get_compact_view(
 
     // Superseded decision edges (terminal -[SUPERSEDES]-> older)
     for edge in &neighborhood.edges {
-        if edge.relation == RelationKind::Supersedes && edge.from == terminal_id {
+        if edge.relation == RelationKind::Supersedes && edge.stored_source() == terminal_id {
             if let Some(origin) = edge.event_origin {
                 if let Ok(u) = u64::try_from(origin) {
                     event_origins.push(u);
@@ -315,8 +315,8 @@ pub fn get_compact_view(
     // Unchosen option edges
     for edge in &neighborhood.edges {
         if edge.relation == RelationKind::HasOption
-            && edge.from == terminal_id
-            && !chose_set.contains(&edge.to)
+            && edge.stored_source() == terminal_id
+            && !chose_set.contains(edge.stored_target())
         {
             if let Some(origin) = edge.event_origin {
                 if let Ok(u) = u64::try_from(origin) {

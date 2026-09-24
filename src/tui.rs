@@ -1408,8 +1408,9 @@ fn graph_entries(neighborhood: &NeighborhoodView) -> Vec<GraphEntry> {
                 edge.from.as_str(),
                 edge.to.as_str(),
             );
-            let mut label = String::with_capacity(edge.from.len() + edge.to.len() + 6);
-            let _ = write!(label, "  {} -> {}", edge.from, edge.to);
+            let mut label =
+                String::with_capacity(edge.from.len() + edge.to.len() + edge.label.len() + 10);
+            let _ = write!(label, "  {} -> {}  ({})", edge.from, edge.to, edge.label);
             entries.push(GraphEntry {
                 label,
                 relation: Some(relation),
@@ -1481,7 +1482,7 @@ pub fn render_neighborhood_dot(neighborhood: &NeighborhoodView) -> String {
             "  \"{}\" -> \"{}\" [label=\"{}\"];",
             dot_node_key(from_kind, &edge.from),
             dot_node_key(to_kind, &edge.to),
-            edge.relation.table_name()
+            edge.label
         );
     }
     dot.push_str("}\n");
@@ -1501,7 +1502,7 @@ fn actor_edges(neighborhood: Option<&NeighborhoodView>) -> Vec<String> {
                 RelationKind::ProposedBy | RelationKind::AcceptedBy | RelationKind::RejectedBy
             )
         })
-        .map(|edge| format!("{}:{}", edge.relation.table_name(), edge.to))
+        .map(|edge| format!("{}:{}", edge.relation.table_name(), edge.stored_target()))
         .collect()
 }
 
@@ -1554,14 +1555,16 @@ fn premise_statuses(
     neighborhood
         .edges
         .iter()
-        .filter(|edge| edge.relation == RelationKind::FollowsFrom && edge.from == current_id)
+        .filter(|edge| {
+            edge.relation == RelationKind::FollowsFrom && edge.stored_source() == current_id
+        })
         .filter_map(|edge| {
             neighborhood
                 .nodes
                 .iter()
-                .find(|node| node.id == edge.to)
+                .find(|node| node.id == edge.stored_target())
                 .and_then(|node| node.decision_status)
-                .map(|status| (edge.to.clone(), status)) // ubs:ignore: owned id for display; the neighborhood is only borrowed
+                .map(|status| (edge.stored_target().to_owned(), status)) // ubs:ignore: owned id for display; the neighborhood is only borrowed
         })
         .collect()
 }
@@ -1574,8 +1577,10 @@ fn dependent_ids(neighborhood: Option<&NeighborhoodView>, current_id: &str) -> V
     neighborhood
         .edges
         .iter()
-        .filter(|edge| edge.relation == RelationKind::FollowsFrom && edge.to == current_id)
-        .map(|edge| edge.from.clone()) // ubs:ignore: owned id for display; the neighborhood is only borrowed
+        .filter(|edge| {
+            edge.relation == RelationKind::FollowsFrom && edge.stored_target() == current_id
+        })
+        .map(|edge| edge.stored_source().to_owned()) // ubs:ignore: owned id for display; the neighborhood is only borrowed
         .collect()
 }
 
@@ -1586,14 +1591,18 @@ fn supersession_summary(neighborhood: Option<&NeighborhoodView>, current_id: &st
     let older = neighborhood
         .edges
         .iter()
-        .filter(|edge| edge.relation == RelationKind::Supersedes && edge.from == current_id)
-        .map(|edge| edge.to.clone())
+        .filter(|edge| {
+            edge.relation == RelationKind::Supersedes && edge.stored_source() == current_id
+        })
+        .map(|edge| edge.stored_target().to_owned())
         .collect::<Vec<_>>();
     let newer = neighborhood
         .edges
         .iter()
-        .filter(|edge| edge.relation == RelationKind::Supersedes && edge.to == current_id)
-        .map(|edge| edge.from.clone())
+        .filter(|edge| {
+            edge.relation == RelationKind::Supersedes && edge.stored_target() == current_id
+        })
+        .map(|edge| edge.stored_source().to_owned())
         .collect::<Vec<_>>();
     match (older.is_empty(), newer.is_empty()) {
         (true, true) => "none".to_owned(),

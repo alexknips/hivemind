@@ -89,14 +89,17 @@ Minimum result row:
 Terminal graph UI should be ego-centric, not canvas-style:
 
 - Center node: selected decision.
-- Incoming: newer decisions that `SUPERSEDES` this decision.
-- Outgoing: superseded decisions, options, chosen option, evidence, hypotheses,
-  and actor edges.
+- Every edge is an arrow from the newer node to the older node
+  ([`GRAPH_CONTRACT.md`](GRAPH_CONTRACT.md)). Incoming arrows come from newer nodes: the
+  decision that supersedes this one, evidence recorded after it. Outgoing arrows point at
+  older nodes: superseded decisions, options, chosen option, evidence and hypotheses
+  recorded before it, and actors.
 - Related evidence-to-hypothesis edges should appear when a displayed hypothesis
   is supported or refuted by visible evidence.
-- Edge labels must be short and explicit: `PROPOSED_BY`, `ACCEPTED_BY`,
-  `REJECTED_BY`, `SUPERSEDES`, `BASED_ON`, `HAS_OPTION`, `CHOSE`, `PREMISED_ON`,
-  `SUPPORTS`, `REFUTES`.
+- Edge labels must be short and explicit, read along the arrow: `proposed by`,
+  `accepted by`, `rejected by`, `supersedes`, `based on` (or `informs` when the evidence is
+  newer), `weighs`, `chose`, `rests on` (or `underpins`), `supports`, `refutes`. Group
+  headers keep the relation name (`BASED_ON`, `SUPERSEDES`, ...).
 - Dense graphs collapse by relation group with counts and an expand action.
 - Cycles, branched supersession chains, and missing nodes are visible error
   states, not hidden.

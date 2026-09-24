@@ -79,6 +79,8 @@ fn dot_export_renders_node_statuses_and_relation_labels() {
             from: "d1".to_owned(),
             to: "h1".to_owned(),
             relation: RelationKind::PremisedOn,
+            label: "rests on",
+            reversed: false,
             event_origin: Some(7),
         }],
     };
@@ -88,5 +90,5 @@ fn dot_export_renders_node_statuses_and_relation_labels() {
     assert!(dot.contains("Decision:d1"));
     assert!(dot.contains("status: accepted"));
     assert!(dot.contains("status: refuted"));
-    assert!(dot.contains("PREMISED_ON"));
+    assert!(dot.contains("[label=\"rests on\"]"));
 }
