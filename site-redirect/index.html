@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HiveMind has moved</title>
+<meta name="robots" content="noindex">
+<link rel="canonical" href="https://alexknips.github.io/hivemind-site/">
+<!-- Without JavaScript there is no path to map: send everyone to the new home. -->
+<noscript><meta http-equiv="refresh" content="0; url=https://alexknips.github.io/hivemind-site/"></noscript>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 1rem/1.5 system-ui, sans-serif; max-width: 32rem; margin: 20vh auto 0; padding: 0 1rem; }
+</style>
+</head>
+<body>
+<h1>HiveMind has moved</h1>
+<p>The HiveMind site and docs now live at
+<a href="https://alexknips.github.io/hivemind-site/">alexknips.github.io/hivemind-site</a>.
+Taking you there now.</p>
+<script>
+  // This one file is deployed as both index.html and the 404 catch-all of
+  // alexknips.github.io/hivemind/, so every old URL lands here. Page paths are
+  // identical under the new base, so map each one across; a path the new site
+  // does not have falls back to its home page. Both sites share an origin, so
+  // the existence check is a same-origin request.
+  (function () {
+    var OLD = '/hivemind/';
+    var NEW = '/hivemind-site/';
+    var rest = location.pathname.indexOf(OLD) === 0 ? location.pathname.slice(OLD.length) : '';
+    var tail = location.search + location.hash;
+
+    function go(path) { location.replace(path + tail); }
+
+    if (rest === '') { go(NEW); return; }
+    fetch(NEW + rest, { method: 'HEAD' }).then(
+      function (res) { go(res.ok ? NEW + rest : NEW); },
+      function () { go(NEW); }
+    );
+  })();
+</script>
+</body>
+</html>

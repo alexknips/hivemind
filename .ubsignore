@@ -1,13 +1,5 @@
 worktrees/
 target/
-# Astro framework build cache (generated at project root when astro dev/build
-# runs from root; not source code).
-.astro/
-# Committed build artifacts (minified demo bundles), not source: they carry
-# thousands of phantom ast-grep criticals (loose-equality, "secret comparison"
-# hits on THREE.js shader code) and stall single-language ubs scans.
-website/public/demo/assets/
-website/public/demo-preview/assets/
 # All integration-test files are assertion-heavy by design; test-assert noise
 # belongs in --exclude-tests (critical gate), not the warning-count baseline
 # which tracks production-code quality. Blanket tests/ exemption for

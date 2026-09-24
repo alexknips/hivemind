@@ -2,8 +2,6 @@ target/
 .git/
 .github/
 .beads/
-website/node_modules/
-website/dist/
 docs/
 .claude/
 .agents/

@@ -12,8 +12,8 @@ Classify the diff before running anything:
 - **Docs-only diff**: no changed file is a `.rs` file, `Cargo.toml`,
   `Cargo.lock`, or a build/CI file (`.github/workflows/**`, `Dockerfile*`,
   `docker-compose*.yml`, `build.rs`, `rust-toolchain*`, `.cargo/**`, or a gate
-  script under `scripts/**`). Markdown, `website/**`, and other prose/config
-  changes are docs-only.
+  script under `scripts/**`). Markdown and other prose/config changes are
+  docs-only.
 - **Code diff**: everything else. A diff that touches even one `.rs` or build
   file is a code diff in full, even when it also touches docs.
 
@@ -23,39 +23,42 @@ shared-backend-postgres) that most local dev flows never otherwise build —
 cold, that can take hours. A 2-line docs fix (hivemind-7fe7) spent 3h10m
 stuck in that build for a change that could not possibly touch Rust code.
 This changes WHERE gates run for a docs-only diff, not WHAT passes: CI still
-runs the full gate set (the `rust`, `reference-docs`, and `ubs` jobs in
+runs the full gate set (the `rust` and `ubs` jobs in
 `.github/workflows/ci.yml`) on every push and PR regardless of diff scope, so
 a code change smuggled into a diff mis-classified as docs-only is still
 caught server-side. (hivemind-0ls8, Alex-approved 2026-09-19)
 
 ## Docs-Only Gate Set
 
-Run these locally instead of the code gate set below. Skip `cargo fmt`,
-`cargo clippy`, `cargo test`, and the UBS wrapper entirely — none of them can
-be broken by a diff that touches no Rust or build file.
+There is no local gate for a docs-only diff. Skip `cargo fmt`, `cargo clippy`,
+`cargo test`, and the UBS wrapper entirely — none of them can be broken by a
+diff that touches no Rust or build file. The site and its docs no longer live
+in this repo, so there is no site build or link check here either; see
+[Reference Docs](#reference-docs-live-in-the-site-repo) for where the doc-code
+sync check runs now.
+
+## Reference Docs (Live in the Site Repo)
+
+The site, the CLI and MCP reference pages, the MCP setup guide and the
+homepage's tool count live in `alexknips/hivemind-site` (under its
+`website/`), not in this repo. The generator stays here because it reads this
+repo's clap definitions and `tool_definitions()`. It reads and writes
+`website/...` relative to the directory it runs from, so run it from the root
+of a site checkout, pointing cargo at this repo:
 
 ```bash
-# When the diff touches website/**, build the site.
-cd website && npm ci && npm run build
-
-# Link check (website/** only): root-relative content links (`](/x/)`) build
-# fine but 404 on the live /hivemind/ base path (hivemind-pls9). Grep the
-# built output for hrefs missing that prefix. PASS = no output.
-grep -rhEo 'href="/[^"]*"' website/dist | grep -v '^href="/hivemind/'
-
-# Flag check: when the diff touches docs/cli.md, docs/mcp-tools.md, or any
-# other doc describing CLI/MCP flags, verify the doc still matches source.
-# A docs-only diff changes no .rs file, so on a warm target/ this uses
-# whatever binary is already built and does not trigger a recompile; on a
-# fresh or cold worktree it triggers at most a default-feature build
-# (minutes), never the all-features kuzu build the UBS job runs. It is
-# checking doc-code sync, not code quality, so it is not one of the cargo
-# gates this exception skips.
-cargo run --locked --bin generate-reference -- --check
+# cwd = root of alexknips/hivemind-site; this repo checked out at ../hivemind
+cargo run --locked --manifest-path ../hivemind/Cargo.toml --bin generate-reference            # rewrite
+cargo run --locked --manifest-path ../hivemind/Cargo.toml --bin generate-reference -- --check # verify
 ```
 
-Omit a check above when it doesn't apply to the diff (e.g. no website build
-or link check for a change to `AGENTS.md`).
+The site repo's `Reference docs in sync` workflow runs that check against
+hivemind `master` on every push, pull request, and daily. It is not a merge
+gate of this repo: a change here that leaves the reference stale turns the
+site's workflow red, not this repo's CI. A bead that adds or changes a CLI
+subcommand, a flag, or an MCP tool therefore also opens a matching pull
+request on the site repo that regenerates the reference — merge the
+hivemind change first, because the site's check reads hivemind `master`.
 
 ## Code Gate Set (Mandatory)
 
@@ -65,7 +68,6 @@ Run this full gate set before submitting a polecat branch with any code diff:
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-cargo run --locked --bin generate-reference -- --check
 ```
 
 `cargo clippy` here is default-features only. It does not exercise the
@@ -195,17 +197,10 @@ For a code diff:
 fmt: PASS (cargo fmt --check)
 clippy: PASS (cargo clippy --locked --all-targets -- -D warnings)
 test: PASS (cargo test --locked)
-reference-docs: PASS (cargo run --locked --bin generate-reference -- --check)
 ubs: CI (draft validation PR <url>, `ubs` job green @ <commit sha>)
 ```
 
-For a docs-only diff, report only the checks that applied:
-
-```text
-docs-build: PASS (cd website && npm run build)
-link-check: PASS (no unprefixed hrefs in website/dist)
-reference-docs: PASS (cargo run --locked --bin generate-reference -- --check)
-```
+For a docs-only diff there is no gate to report; say `docs-only: no local gate`.
 
 Add `workflow-lint: PASS (./scripts/lint-workflows.sh)` to the code-diff list
 whenever the diff touches `.github/workflows/**`; omit the line otherwise.
@@ -232,7 +227,7 @@ Refinery classifies the rebased diff the same way (docs-only vs code) and
 applies the matching gate set above to the rebased state, not just the
 branch-local result — the rebased state is what actually lands on `master`.
 
-- Code Gate Set (fmt, clippy, test, reference-docs): refinery re-runs these
+- Code Gate Set (fmt, clippy, test): refinery re-runs these
   locally on the rebased state. They are fast enough to re-run directly.
 - ubs-critical / ubs-warnings: refinery pushes the rebased branch and opens
   (or reuses) a draft validation PR, waits for the `ubs` job — along with the
@@ -241,8 +236,7 @@ branch-local result — the rebased state is what actually lands on `master`.
   mirrors the existing pattern for other CI-only gates (`e2e-compose`,
   `e2e-compose-postgres`) that already cannot run locally.
 - Docs-only rebased diffs skip the Code Gate Set the same way polecats do;
-  refinery's local proof is the Docs-Only Gate Set re-run on the rebased
-  state.
+  there is no local gate to re-run for them.
 
 If any gate fails, refinery must not push. It rejects the BR issue back to the
 polecat pool with the failing gate named in both the notes and `MERGE_FAILED`

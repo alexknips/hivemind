@@ -8,15 +8,7 @@ same queue using your agent's subscription seat.
 
 ## Step 1 — Start a HiveMind cell
 
-**Hosted (no install):** Connect the managed cell via MCP:
-
-```bash
-claude mcp add --transport http hivemind https://hivemind-tti3sa.fly.dev/mcp
-```
-
-Sign in with GitHub or Google. Skip to Step 2.
-
-**Self-hosted:** Clone and start the cell in three commands:
+Clone and start the cell in three commands:
 
 ```bash
 git clone https://github.com/alexknips/hivemind && cd hivemind

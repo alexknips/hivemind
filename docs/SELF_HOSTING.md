@@ -1,8 +1,8 @@
 # HiveMind Self-Hosting Guide
 
-This guide covers deploying a self-hosted HiveMind cell — the same server
-binary and Postgres backend used by the hosted service — on infrastructure
-you control. One `docker compose up` command brings up the full stack.
+This guide covers deploying a self-hosted HiveMind cell — the server binary
+plus its Postgres backend — on infrastructure you control. One
+`docker compose up` command brings up the full stack.
 
 ---
 
@@ -13,8 +13,7 @@ you control. One `docker compose up` command brings up the full stack.
   on `127.0.0.1` only — see [Exposing the cell deliberately](#exposing-the-cell-deliberately)
   to let other machines reach it
 
-No other dependencies: Postgres runs as a companion container; the HiveMind
-image bundles the SPA.
+No other dependencies: Postgres runs as a companion container.
 
 ---
 
@@ -328,11 +327,7 @@ curl -s "$HM_URL/v1/decisions/relevant?topic=infrastructure" \
 curl -s "$HM_URL/v1/decisions/why?description=Postgres%20for%20shared-backend" \
   -H "Authorization: Bearer $HM_TOKEN" | python3 -m json.tool | head -20
 
-# 4. SPA reachable
-curl -s -o /dev/null -w "%{http_code}" $HM_URL/
-# → 200
-
-# 5. MCP-over-HTTP endpoint reachable
+# 4. MCP-over-HTTP endpoint reachable
 curl -s -o /dev/null -w "%{http_code}" -X POST $HM_URL/mcp \
   -H "Authorization: Bearer $HM_TOKEN" \
   -H "Content-Type: application/json" \

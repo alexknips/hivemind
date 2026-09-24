@@ -64,19 +64,19 @@ per [`ARCHITECTURE.md`](ARCHITECTURE.md)'s Surface Uniformity commitment.
   clients at the OAuth protected-resource metadata endpoint.
 - Tool count: 21 (5 write, 16 read, per the generated reference's own split)
   as of this revision — verify against `tool_definitions()` rather than
-  trusting this number as it drifts. The generated reference is kept honest by
-  `cargo run --bin generate-reference -- --check` (mandatory quality gate; see
-  [`QUALITY_GATES.md`](QUALITY_GATES.md)), which fails the build if
-  `website/src/content/docs/reference/mcp-tools.md` stops matching
+  trusting this number as it drifts. The generated reference lives in the
+  site repo and is kept honest by `generate-reference --check`, which that
+  repo's CI runs against hivemind `master` (see
+  [`QUALITY_GATES.md`](QUALITY_GATES.md#reference-docs-live-in-the-site-repo));
+  it fails when `reference/mcp-tools.md` there stops matching
   `tool_definitions()`.
 - Capture-path framing: [`AGENT_DECISION_CAPTURE.md`](AGENT_DECISION_CAPTURE.md)
   covers where MCP sits among the capture paths (CLI, hooks, sidecar, MCP).
-- User-facing setup: [MCP Setup](../website/src/content/docs/guides/mcp-setup.md)
-  documents both the managed remote endpoint (browser OAuth, no local
-  install) and the local stdio server for self-host; the tool table there is
-  hand-maintained prose, not generated, so treat
-  [MCP Tools reference](../website/src/content/docs/reference/mcp-tools.md)
-  (generated, gated) as canonical for the exact tool list.
+- User-facing setup: [MCP Setup](https://alexknips.github.io/hivemind-site/guides/mcp-setup/)
+  documents connecting to a self-hosted cell over HTTP and the local stdio
+  server; the tool table there is hand-maintained prose, not generated, so
+  treat the [MCP Tools reference](https://alexknips.github.io/hivemind-site/reference/mcp-tools/)
+  (generated, checked) as canonical for the exact tool list.
 - Multi-tenant RLS — Postgres Row-Level Security keyed on `tenant_id`,
   enforced at the database layer, applies identically regardless of which
   transport a request arrived on. See [`MULTI_TENANCY.md`](MULTI_TENANCY.md).

@@ -468,6 +468,13 @@ Level-1 guidance (read these first):
 - [`STRATEGY.md`](STRATEGY.md) — active investment fronts; the filter a bead
   is judged against.
 
+Site and reference docs:
+
+- [alexknips.github.io/hivemind-site](https://alexknips.github.io/hivemind-site/)
+  — guides, concepts, the CLI and MCP reference, and the live demo. The site
+  lives in its own repo,
+  [`alexknips/hivemind-site`](https://github.com/alexknips/hivemind-site).
+
 Architecture and surfaces:
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — three-layer architecture,

@@ -507,9 +507,9 @@ coverage; no new test harness is needed.
 
 ### 6.3 Reference docs
 
-`cargo run --bin generate-reference -- --check` must pass — every new/changed
-CLI subcommand and flag needs its `--help` text updated so the generated
-`cli.md` reference stays accurate (per AGENTS.md §7 mandatory gate).
+Every new/changed CLI subcommand and flag needs its `--help` text updated and
+the reference regenerated in the site repo so `cli.md` stays accurate — see
+[QUALITY_GATES.md → Reference Docs](QUALITY_GATES.md#reference-docs-live-in-the-site-repo).
 
 ---
 
@@ -608,6 +608,6 @@ implementation, not after.
 3. Implement `get_decision_brief` and the `--summary` renderers.
 4. Wire the six CLI verbs + `get_decision_outcome`'s new CLI subcommand +
    MCP tool parity (§3.4).
-5. `generate-reference --check`, full gate set, draft PR for CI validation.
+5. Reference regenerated in the site repo, full gate set, draft PR for CI validation.
 
 Nothing in steps 2-5 begins before alex reviews §7.

@@ -116,7 +116,7 @@ Note: `--supersedes-decision-id` here is a planned *search filter* (find
 decisions that supersede a given decision id) — not implemented yet, and
 unrelated to the create-time reversal flow. To capture a decision that
 reverses a prior one today, use `hivemind supersede`
-(see [CLI reference](../website/src/content/docs/reference/cli.md#supersede)).
+(see [CLI reference](https://alexknips.github.io/hivemind-site/reference/cli/#supersede)).
 
 CLI examples:
 

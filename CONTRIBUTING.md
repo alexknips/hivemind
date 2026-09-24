@@ -42,18 +42,20 @@ Which gates you run locally depends on your diff. See
 set, proof-line format, and the docs-only exception's rationale — summary:
 
 - **Docs-only diff** (no `.rs`, `Cargo.*`, or build/CI file changed): skip
-  the cargo-based gates locally. Build the docs instead (e.g. `cd website &&
-  npm ci && npm run build` for `website/**` changes) and, if you touched
-  CLI/MCP flag docs, run `cargo run --locked --bin generate-reference --
-  --check`.
+  the cargo-based gates locally; there is no local gate.
 - **Code diff**: run these locally before submitting:
 
   ```bash
   cargo fmt --check
   cargo clippy --locked --all-targets -- -D warnings
   cargo test --locked
-  cargo run --locked --bin generate-reference -- --check
   ```
+
+The site and its docs live in
+[`alexknips/hivemind-site`](https://github.com/alexknips/hivemind-site), not
+here. If you add or change a CLI subcommand, flag, or MCP tool, regenerate the
+reference there and open a matching pull request; see
+[docs/QUALITY_GATES.md → Reference Docs](docs/QUALITY_GATES.md#reference-docs-live-in-the-site-repo).
 
 UBS's critical-finding and warning-baseline gates run in CI only, regardless
 of diff scope — do not run the local UBS wrapper as part of your submission
