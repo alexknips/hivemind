@@ -169,9 +169,16 @@ hivemind emit decision.proposed
   [--still-proposed]
   [--quote <text>]
   [--question <text>]
+  [--project <handle>]
+  [--project-source <stated|folder_marker|rig|current_project|job>]
 ```
 
-Prints the new decision ID on success. Add `--json` for a structured envelope.
+Prints the new decision ID on success, and only the ID on stdout, so
+`id=$(hivemind emit ...)` keeps working. In text mode a second line on stderr
+names the project the decision landed in: `project: <address> (<source>)`, plus
+"saved to your personal project" when no `--project` was given. Add `--json`
+for a structured envelope; it carries `project` and `project_source` (and
+`project_notice` on the personal fallback) next to the ID.
 
 There is no `--supersedes` flag on this command. To capture a decision that
 reverses a prior one, use [`supersede`](#supersede) instead — it captures the
@@ -196,6 +203,16 @@ question those words answer, spelled out in the capturer's own words. Neither
 flag works without the other — a quote with no stated question is unreadable
 once the source conversation is gone.
 
+`--project <handle>` files the decision under a registered project. An unknown
+handle is refused with the [`project register`](#project-register) command to
+run, and nothing is written. HiveMind checks the handle; it never works out
+the project for you, so pass the one you know. Without `--project` the decision
+is saved to the recorder's personal project (`personal:<actor>`, derived from
+the actor, never registered) and the reply says so. `--project-source` records
+how the handle was determined (default `stated`) and requires `--project`;
+`personal_fallback` and `moved` are recorded by HiveMind itself and cannot be
+claimed.
+
 ### `emit decision.capture`
 
 Noninteractive shorthand for agent use. Defaults actor to a stable
@@ -212,7 +229,12 @@ hivemind emit decision.capture
   [--still-proposed]
   [--quote <text>]
   [--question <text>]
+  [--project <handle>]
+  [--project-source <stated|folder_marker|rig|current_project|job>]
 ```
+
+Takes the same `--project` / `--project-source` flags and replies the same way
+as [`emit decision.proposed`](#emit-decisionproposed).
 
 ### `emit decision.accepted`
 
@@ -665,6 +687,8 @@ hivemind --actor <id> supersede [<description>]
   [--chose <option>]
   [--hypotheses <id,id,...>]
   [--evidence <id,id,...>]
+  [--project <handle>]
+  [--project-source <stated|folder_marker|rig|current_project|job>]
 ```
 
 Captures a new decision and marks it as superseding an existing one in a
@@ -677,8 +701,15 @@ old decision and the same new-decision fields is idempotent — it returns the
 same `new_decision_id` and appends no new ledger events.
 
 Prints `old_decision_id`, `new_decision_id`, `old_decision_status` (now
-`superseded`), and `new_decision_status`. Add `--json` for the structured
-form.
+`superseded`), `new_decision_status`, and the `project` and `project_source`
+the new decision was filed under. Add `--json` for the structured form, which
+also carries `project_notice` on the personal fallback.
+
+Without `--project` the new decision inherits the old decision's project and how
+it was determined; `--project <handle>` (a registered project, with an optional
+`--project-source`) files it elsewhere, exactly as on
+[`emit decision.proposed`](#emit-decisionproposed). In text mode the same
+`project: ...` line goes to stderr.
 
 ## Environment variables
 

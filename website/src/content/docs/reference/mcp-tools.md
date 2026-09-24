@@ -34,6 +34,8 @@ Record a decision with rationale, topic keys, and at least one option. Defaults 
 | `decided_by` | string | — | Actor who actually made the decision, when it differs from `actor_id` (the recording actor/scribe) — e.g. `human:alex@example.com` when an agent is writing down a decision a human made. Requires `chosen_option_label`. Mutually exclusive with `still_proposed`. |
 | `evidence_ids` | string[] | — |  |
 | `hypothesis_ids` | string[] | — |  |
+| `project` | string | — | Registered project handle to file the decision under. An unknown handle is refused with the register command. Omit it and the decision is saved to the actor's personal project — the reply says so (`project_notice`). HiveMind checks the handle and never works out the project itself, so pass it whenever you know it; an HTTP-served MCP cannot see the caller's working directory. |
+| `project_source` | string | — | How `project` was determined. Defaults to `stated`. Requires `project`. |
 | `question` | string | — | The question `quote` answers, spelled out in the capturer's own words. Requires `quote`. |
 | `quote` | string | — | Verbatim words of the decider, self-contained — not a bare reference like "1a" into an external numbered list. Requires `question`. A quote with no stated question is unreadable once the source conversation is gone. |
 | `still_proposed` | boolean | — | Keep the decision at `proposed` even though `chosen_option_label` is set, for a genuine open recommendation awaiting someone else's decision. Defaults to false, which self-accepts (or accepts from `decided_by`) immediately after proposing. |
@@ -99,6 +101,8 @@ Propose a replacement decision and mark it as superseding an old decision. Wraps
 | `hypothesis_ids` | string[] | — |  |
 | `old_decision_id` | string | — |  |
 | `options` | any[] | — |  |
+| `project` | string | — | Registered project handle to file the superseding decision under. An unknown handle is refused with the register command. Omit it and the new decision inherits the old decision's project. HiveMind never works out the project itself; an HTTP-served MCP cannot see the caller's working directory. |
+| `project_source` | string | — | How `project` was determined. Defaults to `stated`. Requires `project`. |
 | `topic` | string | — | Optional topic_key filter narrowing the `description` match. |
 | `topic_keys` | string[] | — |  |
 
