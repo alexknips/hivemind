@@ -2157,4 +2157,373 @@ mod transport_parity {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Projects on captures (hivemind-s15q.4): the project arrives as an argument on
+    // both transports; neither infers it.
+    // -----------------------------------------------------------------------
+
+    /// A fresh ledger dir per transport with `projects` already registered. There is no MCP
+    /// tool for registering a project; the CLI writes the same sqlite file both transports
+    /// read, so seeding through `Commands` is the same starting state.
+    fn project_dirs(label: &str, projects: &[&str]) -> (std::path::PathBuf, std::path::PathBuf) {
+        let stdio_dir = unique_dir(&format!("parity-stdio-{label}"));
+        let http_dir = unique_dir(&format!("parity-http-{label}"));
+        for dir in [&stdio_dir, &http_dir] {
+            std::fs::create_dir_all(dir).expect("create ledger dir"); // ubs:ignore: test-only; panicking is correct in tests
+            let ledger = SqliteEventLedger::open(dir).expect("ledger opens"); // ubs:ignore: test-only; panicking is correct in tests
+            let commands = Commands::new(&ledger);
+            for handle in projects {
+                commands
+                    .register_project("human:parity", handle, None, None)
+                    .expect("register project"); // ubs:ignore: test-only; panicking is correct in tests
+            }
+        }
+        (stdio_dir, http_dir)
+    }
+
+    /// `decision.proposed` payloads under `dir`, oldest first.
+    fn proposed_payloads(dir: &std::path::Path) -> Vec<Value> {
+        let ledger = SqliteEventLedger::open(dir).expect("ledger opens"); // ubs:ignore: test-only; panicking is correct in tests
+        ledger
+            .read(0, 1000)
+            .expect("read ledger") // ubs:ignore: test-only; panicking is correct in tests
+            .into_iter()
+            .filter(|event| event.event_type == crate::events::EventType::DecisionProposed)
+            .map(|event| event.payload)
+            .collect()
+    }
+
+    fn capture_args(title: &str) -> Value {
+        json!({
+            "title": title,
+            "rationale": "Bounded retries avoid unbounded backlog growth under load",
+            "topic_keys": ["billing"],
+            "options": [{"label": "queue"}],
+        })
+    }
+
+    fn with_args(mut base: Value, extra: Value) -> Value {
+        if let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) {
+            for (key, value) in extra {
+                base.insert(key.clone(), value.clone());
+            }
+        }
+        base
+    }
+
+    fn error_text(result: &Value) -> &str {
+        result["content"][0]["text"].as_str().unwrap_or_default() // ubs:ignore: test-only; a missing text fails the assertions below
+    }
+
+    #[tokio::test]
+    async fn capture_decision_records_the_stated_project_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs("capture-project-stated", &["billing"]);
+
+        for (name, dir, http) in [("stdio", &stdio_dir, false), ("http", &http_dir, true)] {
+            for (title, extra, source) in [
+                (
+                    "Adopt async billing queue",
+                    json!({ "project": "billing" }),
+                    "stated",
+                ),
+                (
+                    "Adopt weekly billing exports",
+                    json!({ "project": "billing", "project_source": "folder_marker" }),
+                    "folder_marker",
+                ),
+            ] {
+                let args = with_args(capture_args(title), extra);
+                let response = if http {
+                    http_call(dir, "capture_decision", args).await
+                } else {
+                    stdio_call(dir, "capture_decision", args)
+                };
+                let result = &response["result"];
+                assert_eq!(
+                    result["isError"], false,
+                    "{name}: expected success: {result:?}"
+                ); // ubs:ignore: test-only assertion
+                let reply = &result["structuredContent"];
+                assert_eq!(reply["project"], "billing", "{name}: project"); // ubs:ignore: test-only assertion
+                assert_eq!(reply["project_source"], source, "{name}: project_source"); // ubs:ignore: test-only assertion
+                assert!(
+                    reply.get("project_notice").is_none(),
+                    "{name}: a determined project has no fallback notice: {reply:?}"
+                ); // ubs:ignore: test-only assertion
+            }
+
+            let recorded: Vec<(Value, Value)> = proposed_payloads(dir)
+                .into_iter()
+                .map(|payload| {
+                    (
+                        payload["project"].clone(),
+                        payload["project_source"].clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                recorded,
+                vec![
+                    (json!("billing"), json!("stated")),
+                    (json!("billing"), json!("folder_marker")),
+                ],
+                "{name}: the ledger records the stated project and how it was determined"
+            ); // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn capture_decision_refuses_an_unknown_project_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs("capture-project-unknown", &["billing"]);
+        let args = with_args(
+            capture_args("Adopt async billing queue"),
+            json!({ "project": "not-registered" }),
+        );
+
+        let stdio = stdio_call(&stdio_dir, "capture_decision", args.clone());
+        let http = http_call(&http_dir, "capture_decision", args).await;
+
+        for (name, response, dir) in [("stdio", &stdio, &stdio_dir), ("http", &http, &http_dir)] {
+            let result = &response["result"];
+            assert_eq!(
+                result["isError"], true,
+                "{name}: an unknown handle is refused"
+            ); // ubs:ignore: test-only assertion
+            let text = error_text(result);
+            assert!(
+                text.contains("project not registered: not-registered")
+                    && text.contains("hivemind project register not-registered"),
+                "{name}: refusal names the handle and the register command: {text}"
+            ); // ubs:ignore: test-only assertion
+            assert!(
+                proposed_payloads(dir).is_empty(),
+                "{name}: a refused capture writes nothing"
+            ); // ubs:ignore: test-only assertion
+        }
+        assert_eq!(
+            error_text(&stdio["result"]),
+            error_text(&http["result"]),
+            "both transports refuse with the same words"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn capture_decision_without_project_announces_the_personal_fallback_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs("capture-project-fallback", &["billing"]);
+        let args = capture_args("Adopt async billing queue");
+
+        let stdio = stdio_call(&stdio_dir, "capture_decision", args.clone());
+        let http = http_call(&http_dir, "capture_decision", args).await;
+
+        for (name, response, dir) in [("stdio", &stdio, &stdio_dir), ("http", &http, &http_dir)] {
+            let result = &response["result"];
+            assert_eq!(
+                result["isError"], false,
+                "{name}: expected success: {result:?}"
+            ); // ubs:ignore: test-only assertion
+            let reply = &result["structuredContent"];
+            assert_eq!(
+                reply["project_source"], "personal_fallback",
+                "{name}: project_source"
+            ); // ubs:ignore: test-only assertion
+            assert!(
+                reply["project"]
+                    .as_str()
+                    .is_some_and(|project| project.starts_with("personal:")),
+                "{name}: the reply names the derived personal address: {reply:?}"
+            ); // ubs:ignore: test-only assertion
+            assert!(
+                reply["project_notice"]
+                    .as_str()
+                    .is_some_and(|notice| notice.contains("saved to your personal project")),
+                "{name}: the fallback is announced, never silent: {reply:?}"
+            ); // ubs:ignore: test-only assertion
+
+            let payloads = proposed_payloads(dir);
+            assert_eq!(payloads.len(), 1, "{name}: one proposal"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                payloads[0]["project_source"], "personal_fallback",
+                "{name}: recorded as a fallback"
+            ); // ubs:ignore: test-only assertion
+            assert!(
+                payloads[0].get("project").is_none(),
+                "{name}: no handle is recorded for a fallback"
+            ); // ubs:ignore: test-only assertion
+        }
+        assert_eq!(
+            stdio["result"]["structuredContent"]["project_notice"],
+            http["result"]["structuredContent"]["project_notice"],
+            "both transports announce the fallback in the same words"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn capture_decision_rejects_inconsistent_project_arguments_across_transports() {
+        let cases = [
+            (
+                "source-without-project",
+                json!({ "project_source": "rig" }),
+                "`project_source` requires `project`",
+            ),
+            (
+                "unknown-source",
+                json!({ "project": "billing", "project_source": "guessed" }),
+                "`project_source` must be one of stated, folder_marker, rig, current_project, job: guessed",
+            ),
+            (
+                "fallback-source-with-a-handle",
+                json!({ "project": "billing", "project_source": "personal_fallback" }),
+                "cannot accompany a project handle",
+            ),
+            (
+                "moved-source-with-a-handle",
+                json!({ "project": "billing", "project_source": "moved" }),
+                "cannot accompany a project handle",
+            ),
+            (
+                "stated-personal-address",
+                json!({ "project": "personal:agent:claude" }),
+                "reserved \"personal:\" prefix",
+            ),
+        ];
+
+        for (label, extra, expected) in cases {
+            let (stdio_dir, http_dir) =
+                project_dirs(&format!("capture-project-{label}"), &["billing"]);
+            let args = with_args(capture_args("Adopt async billing queue"), extra);
+            let stdio = stdio_call(&stdio_dir, "capture_decision", args.clone());
+            let http = http_call(&http_dir, "capture_decision", args).await;
+            for (name, response, dir) in [("stdio", &stdio, &stdio_dir), ("http", &http, &http_dir)]
+            {
+                let result = &response["result"];
+                assert_eq!(result["isError"], true, "{label}/{name}: refused"); // ubs:ignore: test-only assertion
+                assert!(
+                    error_text(result).contains(expected),
+                    "{label}/{name}: expected {expected:?} in {:?}",
+                    error_text(result)
+                ); // ubs:ignore: test-only assertion
+                assert!(
+                    proposed_payloads(dir).is_empty(),
+                    "{label}/{name}: a refused capture writes nothing"
+                ); // ubs:ignore: test-only assertion
+            }
+            assert_eq!(
+                error_text(&stdio["result"]),
+                error_text(&http["result"]),
+                "{label}: both transports refuse with the same words"
+            ); // ubs:ignore: test-only assertion
+            let _ = std::fs::remove_dir_all(&stdio_dir);
+            let _ = std::fs::remove_dir_all(&http_dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn supersede_decision_files_under_a_stated_project_or_inherits_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs("supersede-project", &["billing", "payments"]);
+
+        for (name, dir, http) in [("stdio", &stdio_dir, false), ("http", &http_dir, true)] {
+            let call = |tool: &'static str, args: Value| async move {
+                if http {
+                    http_call(dir, tool, args).await
+                } else {
+                    stdio_call(dir, tool, args)
+                }
+            };
+            let old = call(
+                "capture_decision",
+                with_args(
+                    capture_args("Use shared admin token"),
+                    json!({ "project": "billing", "project_source": "rig" }),
+                ),
+            )
+            .await;
+            let old_id = old["result"]["structuredContent"]["decision_id"]
+                .as_str()
+                .expect("decision id") // ubs:ignore: test-only; panicking is correct in tests
+                .to_owned();
+
+            // Not stated: inherits the old decision's project and how it was determined.
+            let inherited = call(
+                "supersede_decision",
+                json!({
+                    "old_decision_id": old_id,
+                    "title": "Use scoped service tokens",
+                    "rationale": "Scoped tokens preserve audit boundaries",
+                    "options": [{"label": "scoped-service-tokens"}],
+                    "chosen_option_label": "scoped-service-tokens",
+                }),
+            )
+            .await;
+            let reply = &inherited["result"]["structuredContent"];
+            assert_eq!(reply["project"], "billing", "{name}: inherited project"); // ubs:ignore: test-only assertion
+            assert_eq!(reply["project_source"], "rig", "{name}: inherited source"); // ubs:ignore: test-only assertion
+            assert!(
+                reply.get("project_notice").is_none(),
+                "{name}: an inherited project is not a fallback: {reply:?}"
+            ); // ubs:ignore: test-only assertion
+            let new_id = reply["new_decision_id"]
+                .as_str()
+                .expect("new decision id") // ubs:ignore: test-only; panicking is correct in tests
+                .to_owned();
+
+            // Stated: overrides the inherited project.
+            let stated = call(
+                "supersede_decision",
+                json!({
+                    "old_decision_id": new_id,
+                    "title": "Move token handling to payments",
+                    "rationale": "Payments owns credential rotation for both products",
+                    "options": [{"label": "payments-owned"}],
+                    "chosen_option_label": "payments-owned",
+                    "project": "payments",
+                }),
+            )
+            .await;
+            let reply = &stated["result"]["structuredContent"];
+            assert_eq!(reply["project"], "payments", "{name}: stated project"); // ubs:ignore: test-only assertion
+            assert_eq!(reply["project_source"], "stated", "{name}: stated source"); // ubs:ignore: test-only assertion
+
+            // Unknown: refused, nothing written.
+            let before = proposed_payloads(dir).len();
+            let unknown = call(
+                "supersede_decision",
+                json!({
+                    "old_decision_id": old_id,
+                    "title": "Use hardware tokens instead",
+                    "rationale": "Hardware tokens remove the shared secret entirely",
+                    "options": [{"label": "hardware-tokens"}],
+                    "chosen_option_label": "hardware-tokens",
+                    "project": "not-registered",
+                }),
+            )
+            .await;
+            assert_eq!(
+                unknown["result"]["isError"], true,
+                "{name}: unknown handle refused"
+            ); // ubs:ignore: test-only assertion
+            assert!(
+                error_text(&unknown["result"]).contains("project not registered: not-registered"),
+                "{name}: {:?}",
+                error_text(&unknown["result"])
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                proposed_payloads(dir).len(),
+                before,
+                "{name}: a refused supersede writes nothing"
+            ); // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
 }

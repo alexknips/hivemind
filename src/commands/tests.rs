@@ -8,13 +8,14 @@ use uuid::Uuid;
 
 use crate::events::{
     EventProvenance, EventSource, EventType, HypothesisKind, ProjectAnchorKind, ProjectLinkKind,
-    RelationKind,
+    ProjectSource, RelationKind,
 };
 use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
 use super::{
-    normalize_topic_key, personal_project_handle, Commands, DecisionProposalInput, GroundInput,
-    Grounding, SupersedeInput, MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN,
+    normalize_topic_key, personal_project_handle, Commands, DecisionProposalInput,
+    DeterminedProject, GroundInput, Grounding, SupersedeInput, MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN,
+    PERSONAL_FALLBACK_NOTICE,
 };
 
 #[test]
@@ -551,7 +552,7 @@ fn propose_decision_refuses_unregistered_project_handle() {
             evidence_ids: &[],
             quote: None,
             question: None,
-            project: Some("billing"),
+            project: Some(DeterminedProject::stated("billing")),
         })
         .expect_err("unregistered project handle must be refused");
     let message = error.to_string();
@@ -591,7 +592,7 @@ fn propose_decision_accepts_registered_project_handle_and_records_stated_source(
             evidence_ids: &[],
             quote: None,
             question: None,
-            project: Some("billing"),
+            project: Some(DeterminedProject::stated("billing")),
         })
         .expect("propose decision with a registered project succeeds");
 
@@ -688,7 +689,7 @@ fn propose_decision_rejects_reserved_personal_prefix_as_stated_project() {
             evidence_ids: &[],
             quote: None,
             question: None,
-            project: Some("personal:alice"),
+            project: Some(DeterminedProject::stated("personal:alice")),
         })
         .expect_err("a stated personal: handle must be refused");
     assert!(
@@ -725,7 +726,7 @@ fn supersede_inherits_old_decision_project_when_not_restated() {
             evidence_ids: &[],
             quote: None,
             question: None,
-            project: Some("billing"),
+            project: Some(DeterminedProject::stated("billing")),
         })
         .expect("propose decision A");
 
@@ -798,7 +799,7 @@ fn supersede_overrides_project_when_explicitly_stated() {
             evidence_ids: &[],
             quote: None,
             question: None,
-            project: Some("billing"),
+            project: Some(DeterminedProject::stated("billing")),
         })
         .expect("propose decision A");
 
@@ -813,7 +814,7 @@ fn supersede_overrides_project_when_explicitly_stated() {
             chosen_option_label: Some("Option A"),
             hypothesis_ids: &[],
             evidence_ids: &[],
-            project: Some("payments"),
+            project: Some(DeterminedProject::stated("payments")),
         })
         .expect("supersede succeeds");
 
@@ -831,6 +832,264 @@ fn supersede_overrides_project_when_explicitly_stated() {
         Some("payments"),
         "an explicit project on supersede must override the inherited one"
     );
+}
+
+/// One registered-handles ledger fixture for the placement tests below: owns the option and
+/// topic data a `DecisionProposalInput` borrows, so a proposal can be built in one call.
+struct PlacementFixture {
+    option_id: String,
+    option_labels: [String; 1],
+    topic_keys: [String; 1],
+}
+
+impl PlacementFixture {
+    /// Registers `handles` and records one option.
+    fn new(commands: &Commands<'_, InMemoryEventLedger>, handles: &[&str]) -> Self {
+        for handle in handles {
+            commands
+                .register_project("actor:alice", handle, None, None)
+                .expect("register succeeds");
+        }
+        let option_id = commands
+            .record_option("actor:alice", "A", "Option A")
+            .expect("option a");
+        Self {
+            option_id,
+            option_labels: ["Option A".to_owned()],
+            topic_keys: ["topic".to_owned()],
+        }
+    }
+
+    fn proposal<'a>(
+        &'a self,
+        actor_id: &'a str,
+        title: &'a str,
+        project: Option<DeterminedProject<'a>>,
+    ) -> DecisionProposalInput<'a> {
+        DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id,
+            title,
+            rationale: "Billing owns this call so the record belongs under its project",
+            topic_keys: &self.topic_keys,
+            option_ids: std::slice::from_ref(&self.option_id),
+            option_labels: &self.option_labels,
+            chosen_option_id: Some(self.option_id.as_str()),
+            decided_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+            project,
+        }
+    }
+}
+
+#[test]
+fn propose_decision_placed_reports_where_the_decision_landed() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing"]);
+
+    let (_, stated) = commands
+        .propose_decision_placed(fixture.proposal(
+            "agent:claude:session-1",
+            "Stated project",
+            Some(DeterminedProject::stated("billing")),
+        ))
+        .expect("stated project succeeds");
+    assert_eq!(stated.project, "billing");
+    assert_eq!(stated.project_source, ProjectSource::Stated);
+    assert_eq!(
+        stated.notice(),
+        None,
+        "a determined project is not a fallback"
+    );
+
+    // The caller's account of how it got the handle is recorded as told.
+    let (_, from_marker) = commands
+        .propose_decision_placed(fixture.proposal(
+            "agent:claude:session-1",
+            "Project from a folder marker",
+            Some(DeterminedProject {
+                handle: "billing",
+                source: ProjectSource::FolderMarker,
+            }),
+        ))
+        .expect("folder marker project succeeds");
+    assert_eq!(from_marker.project_source, ProjectSource::FolderMarker);
+
+    // No handle: the derived personal address, announced.
+    let (_, fallback) = commands
+        .propose_decision_placed(fixture.proposal(
+            "agent:claude:session-1",
+            "No project stated",
+            None,
+        ))
+        .expect("fallback succeeds");
+    assert_eq!(fallback.project, "personal:agent:claude");
+    assert_eq!(fallback.project_source, ProjectSource::PersonalFallback);
+    assert_eq!(fallback.notice(), Some(PERSONAL_FALLBACK_NOTICE));
+    assert!(PERSONAL_FALLBACK_NOTICE.contains("saved to your personal project"));
+
+    let recorded: Vec<(Option<String>, Option<String>)> = ledger
+        .read(0, 100)
+        .expect("read succeeds")
+        .iter()
+        .filter(|event| event.event_type == EventType::DecisionProposed)
+        .map(|event| {
+            (
+                event
+                    .payload
+                    .get("project")
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned),
+                event
+                    .payload
+                    .get("project_source")
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned),
+            )
+        })
+        .collect();
+    assert_eq!(
+        recorded,
+        vec![
+            (Some("billing".to_owned()), Some("stated".to_owned())),
+            (Some("billing".to_owned()), Some("folder_marker".to_owned())),
+            (None, Some("personal_fallback".to_owned())),
+        ],
+        "the reply and the ledger say the same thing"
+    );
+}
+
+#[test]
+fn a_project_source_only_the_write_layer_may_record_is_refused_with_a_handle() {
+    // `personal_fallback` is what this layer records when no handle is given, and `moved` is
+    // what a move records; a caller stating a handle may claim neither.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing"]);
+    let events_before = ledger.read(0, 100).expect("read succeeds").len();
+
+    for source in [ProjectSource::PersonalFallback, ProjectSource::Moved] {
+        let error = commands
+            .propose_decision_placed(fixture.proposal(
+                "actor:alice",
+                "Claims a source only HiveMind records",
+                Some(DeterminedProject {
+                    handle: "billing",
+                    source,
+                }),
+            ))
+            .expect_err("a source only the write layer records must be refused");
+        let message = error.to_string();
+        assert!(
+            message.contains(source.as_str())
+                && message.contains("cannot accompany a project handle"),
+            "unexpected error: {message}"
+        );
+    }
+    assert_eq!(
+        ledger.read(0, 100).expect("read succeeds").len(),
+        events_before,
+        "a refused capture writes nothing"
+    );
+}
+
+#[test]
+fn supersede_reports_the_inherited_or_stated_placement() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing", "payments"]);
+    let (old_id, _) = commands
+        .propose_decision_placed(fixture.proposal(
+            "actor:alice",
+            "Decision A",
+            Some(DeterminedProject {
+                handle: "billing",
+                source: ProjectSource::Rig,
+            }),
+        ))
+        .expect("propose decision A");
+
+    let supersede = |old: &str, project: Option<DeterminedProject<'_>>| {
+        commands.supersede(SupersedeInput {
+            actor_id: "actor:alice",
+            old_decision_id: old,
+            new_title: "Decision B",
+            new_rationale: "Decision B replaces decision A because the billing plan changed",
+            topic_keys: &["topic".to_owned()],
+            option_labels: &["Option A".to_owned()],
+            chosen_option_label: Some("Option A"),
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            project,
+        })
+    };
+
+    // Not stated: inherits the old decision's project and how it was determined.
+    let inherited = supersede(&old_id, None).expect("supersede inherits");
+    assert_eq!(inherited.placement.project, "billing");
+    assert_eq!(inherited.placement.project_source, ProjectSource::Rig);
+    assert_eq!(inherited.placement.notice(), None);
+
+    // Stated: overrides it.
+    let stated = supersede(
+        &inherited.new_decision_id,
+        Some(DeterminedProject::stated("payments")),
+    )
+    .expect("supersede states a project");
+    assert_eq!(stated.placement.project, "payments");
+    assert_eq!(stated.placement.project_source, ProjectSource::Stated);
+
+    // A refused override supersedes nothing.
+    let events_before = ledger.read(0, 100).expect("read succeeds").len();
+    supersede(
+        &stated.new_decision_id,
+        Some(DeterminedProject {
+            handle: "payments",
+            source: ProjectSource::Moved,
+        }),
+    )
+    .expect_err("moved cannot accompany a handle");
+    assert_eq!(
+        ledger.read(0, 100).expect("read succeeds").len(),
+        events_before
+    );
+}
+
+#[test]
+fn supersede_of_a_personal_fallback_decision_stays_announced() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &[]);
+    let (old_id, _) = commands
+        .propose_decision_placed(fixture.proposal("agent:claude:session-1", "Decision A", None))
+        .expect("propose decision A");
+
+    let outcome = commands
+        .supersede(SupersedeInput {
+            actor_id: "agent:claude:session-1",
+            old_decision_id: &old_id,
+            new_title: "Decision B",
+            new_rationale: "Decision B replaces decision A because the plan changed",
+            topic_keys: &["topic".to_owned()],
+            option_labels: &["Option A".to_owned()],
+            chosen_option_label: Some("Option A"),
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            project: None,
+        })
+        .expect("supersede succeeds");
+    assert_eq!(outcome.placement.project, "personal:agent:claude");
+    assert_eq!(
+        outcome.placement.project_source,
+        ProjectSource::PersonalFallback
+    );
+    assert_eq!(outcome.placement.notice(), Some(PERSONAL_FALLBACK_NOTICE));
 }
 
 #[test]

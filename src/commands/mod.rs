@@ -26,6 +26,7 @@ use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::error::CommandError;
@@ -50,6 +51,11 @@ pub const MAX_TOPIC_KEY_LEN: usize = 64;
 pub const MIN_PROJECT_HANDLE_LEN: usize = 2;
 pub const MAX_PROJECT_HANDLE_LEN: usize = 40;
 pub const PERSONAL_PROJECT_HANDLE_PREFIX: &str = "personal:";
+/// Appended to every capture reply whose project was `personal_fallback`, so a decision that
+/// landed in the recorder's own project is never silent (Alex's choice 3a). One sentence,
+/// shared by every surface (CLI text, CLI JSON, MCP) so they can't drift.
+pub const PERSONAL_FALLBACK_NOTICE: &str =
+    "saved to your personal project; pass a registered project handle to file it under a shared one";
 /// A title is a name, not a summary: one short sentence a reader can scan in a list.
 /// Longer reasoning belongs in `rationale`, which has no such cap.
 pub const MAX_TITLE_LEN: usize = 120;
@@ -126,12 +132,63 @@ impl<'a> Grounding<'a> {
     }
 }
 
+/// A project the caller determined for a capture, plus how it got there. The write layer
+/// validates the address (registered, not a reserved `personal:` handle) and the source
+/// (see `Commands::resolve_stated_project`); it never infers a project itself -- working
+/// out "which project" is agent-side (three-layer rule).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeterminedProject<'a> {
+    pub handle: &'a str,
+    pub source: ProjectSource,
+}
+
+impl<'a> DeterminedProject<'a> {
+    /// The caller named the handle outright (`--project`, or the MCP `project` argument).
+    pub const fn stated(handle: &'a str) -> Self {
+        Self {
+            handle,
+            source: ProjectSource::Stated,
+        }
+    }
+}
+
+/// Where a decision was filed and how that was determined, as the write layer recorded it.
+/// Returned to the caller so every capture reply can name its project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DecisionPlacement {
+    /// The shared handle, or on personal fallback the derived `personal:<actor>` address.
+    pub project: String,
+    pub project_source: ProjectSource,
+}
+
+impl DecisionPlacement {
+    /// The placement the projector derives from a recorded `project`/`project_source` pair
+    /// (`None`/`None` is an event predating both fields: personal fallback).
+    fn from_recorded(
+        actor_id: &str,
+        project: Option<&str>,
+        project_source: Option<ProjectSource>,
+    ) -> Self {
+        Self {
+            project: project.map_or_else(|| personal_project_handle(actor_id), ToOwned::to_owned),
+            project_source: project_source.unwrap_or(ProjectSource::PersonalFallback),
+        }
+    }
+
+    /// The "saved to your personal project" sentence when the write layer fell back to the
+    /// recorder's personal project, `None` when a project was determined.
+    pub fn notice(&self) -> Option<&'static str> {
+        (self.project_source == ProjectSource::PersonalFallback).then_some(PERSONAL_FALLBACK_NOTICE)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupersedeOutcome {
     pub new_decision_id: DecisionId,
     pub proposal_event_id: EventId,
     pub relation_event_ids: Vec<EventId>,
     pub superseded_event_id: EventId,
+    pub placement: DecisionPlacement,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -168,11 +225,12 @@ pub struct DecisionProposalInput<'a> {
     /// Expressed confidence from the decider's own words: low | medium | high. Never
     /// system-computed. Validated against that fixed vocabulary when present.
     pub expressed_confidence: Option<&'a str>,
-    /// Registered project handle to file this decision under. `None` means no handle was
-    /// given: the write layer records `project_source = personal_fallback` and the
-    /// projector derives the recorder's personal project from `actor_id`. A handle that
-    /// isn't registered is refused (see `Commands::resolve_stated_project`).
-    pub project: Option<&'a str>,
+    /// Registered project to file this decision under, with how the caller determined it.
+    /// `None` means no handle was given: the write layer records
+    /// `project_source = personal_fallback` and the projector derives the recorder's
+    /// personal project from `actor_id`. A handle that isn't registered is refused (see
+    /// `Commands::resolve_stated_project`).
+    pub project: Option<DeterminedProject<'a>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -189,7 +247,7 @@ pub struct SupersedeInput<'a> {
     /// Explicit project override for the superseding decision. `None` means "not
     /// stated": the new decision inherits the old decision's `project` and
     /// `project_source` verbatim rather than defaulting to personal fallback.
-    pub project: Option<&'a str>,
+    pub project: Option<DeterminedProject<'a>>,
 }
 
 /// Input to `Commands::ground_decision`: give an already-proposed decision its grounding
@@ -743,6 +801,16 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     }
 
     pub fn propose_decision(&self, input: DecisionProposalInput<'_>) -> Result<DecisionId> {
+        self.propose_decision_placed(input)
+            .map(|(decision_id, _placement)| decision_id)
+    }
+
+    /// `propose_decision`, also returning where the decision was filed and how that was
+    /// determined, so a capture reply can name its project without re-reading the ledger.
+    pub fn propose_decision_placed(
+        &self,
+        input: DecisionProposalInput<'_>,
+    ) -> Result<(DecisionId, DecisionPlacement)> {
         require_valid_actor_id(input.actor_id)?;
         validate_title("title", input.title)?;
         require_non_empty("rationale", input.rationale)?;
@@ -839,14 +907,26 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         };
         let decision_id = generate_entity_id("decision");
 
-        self.propose_decision_with_id(input, &decision_id, event_uuids)?;
+        let (project, project_source) = self.resolve_stated_project(input.project)?;
+        let placement = DecisionPlacement::from_recorded(
+            input.actor_id,
+            project.as_deref(),
+            Some(project_source),
+        );
+        self.propose_decision_with_id_and_project(
+            input,
+            &decision_id,
+            event_uuids,
+            project,
+            project_source,
+        )?;
 
         if !input.still_proposed && input.chosen_option_id.is_some() {
             let decider = input.decided_by.unwrap_or(input.actor_id);
             self.accept_decision(&decision_id, decider)?;
         }
 
-        Ok(decision_id)
+        Ok((decision_id, placement))
     }
 
     pub fn propose_decision_with_id(
@@ -1353,7 +1433,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         // chain rather than being overwritten with `stated` just because a handle is
         // present.
         let (project, project_source) = match input.project {
-            Some(handle) => self.resolve_stated_project(Some(handle))?,
+            Some(determined) => self.resolve_stated_project(Some(determined))?,
             None => (
                 old_decision.project.clone(),
                 old_decision
@@ -1361,6 +1441,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                     .unwrap_or(ProjectSource::PersonalFallback),
             ),
         };
+        let placement = DecisionPlacement::from_recorded(
+            input.actor_id,
+            project.as_deref(),
+            Some(project_source),
+        );
 
         let proposal_props = DecisionProposalInput {
             grounding: Grounding::NotAsked,
@@ -1383,7 +1468,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             // (hivemind-zdsh.13 scoped this to decision.capture/decision.proposed).
             quote: None,
             question: None,
-            project: project.as_deref(),
+            project: project.as_deref().map(|handle| DeterminedProject {
+                handle,
+                source: project_source,
+            }),
         };
         if let Some(existing) =
             self.find_matching_supersede(input.old_decision_id, &proposal_props)?
@@ -1436,6 +1524,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             proposal_event_id: proposal_event_ids.proposal_event_id,
             relation_event_ids: proposal_event_ids.relation_event_ids,
             superseded_event_id,
+            placement,
         })
     }
 
@@ -1762,18 +1851,32 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         })
     }
 
-    /// Resolve a decision's `project`/`project_source` pair from a caller-stated handle
-    /// (the write rule: a stated handle must be registered, else a refusal naming the
-    /// handle and the register command; no handle means personal fallback). Callers that
-    /// need to inherit an existing decision's project instead of restating one (see
-    /// `supersede`) bypass this and carry the inherited pair through directly.
+    /// Resolve a decision's `project`/`project_source` pair from a caller-determined
+    /// project (the write rule: a given handle must be registered, else a refusal naming
+    /// the handle and the register command; no handle means personal fallback). The caller
+    /// says how it got the handle, but only for the ways a caller can: `personal_fallback`
+    /// is recorded by this layer when no handle is given, and `moved` only by a move, so
+    /// neither may accompany a handle. Callers that need to inherit an existing decision's
+    /// project instead of restating one (see `supersede`) bypass this and carry the
+    /// inherited pair through directly.
     fn resolve_stated_project(
         &self,
-        project: Option<&str>,
+        project: Option<DeterminedProject<'_>>,
     ) -> Result<(Option<String>, ProjectSource)> {
-        let Some(handle) = project else {
+        let Some(DeterminedProject { handle, source }) = project else {
             return Ok((None, ProjectSource::PersonalFallback));
         };
+
+        if matches!(
+            source,
+            ProjectSource::PersonalFallback | ProjectSource::Moved
+        ) {
+            return Err(CommandError::Validation(format!(
+                "project_source \"{}\" cannot accompany a project handle: personal_fallback is recorded when no project is given, and moved only by moving a decision",
+                source.as_str()
+            ))
+            .into());
+        }
 
         if handle.starts_with(PERSONAL_PROJECT_HANDLE_PREFIX) {
             return Err(CommandError::Validation(format!(
@@ -1789,7 +1892,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
-        Ok((Some(handle.to_owned()), ProjectSource::Stated))
+        Ok((Some(handle.to_owned()), source))
     }
 
     fn project_exists(&self, handle: &str) -> Result<bool> {
@@ -2178,17 +2281,23 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 && proposal.chosen_option_id.as_deref() == props.chosen_option_id
                 && proposal.hypothesis_ids == props.hypothesis_ids
                 && proposal.evidence_ids == props.evidence_ids
-                && proposal.project.as_deref() == props.project
+                && proposal.project.as_deref() == props.project.map(|project| project.handle)
             {
                 let relation_event_ids = relation_event_ids_by_causation
                     .get(&proposal.event_id)
                     .cloned()
                     .unwrap_or_default();
+                let placement = DecisionPlacement::from_recorded(
+                    &proposal.actor_id,
+                    proposal.project.as_deref(),
+                    proposal.project_source,
+                );
                 return Ok(Some(SupersedeOutcome {
                     new_decision_id,
                     proposal_event_id: proposal.event_id,
                     relation_event_ids,
                     superseded_event_id,
+                    placement,
                 }));
             }
         }

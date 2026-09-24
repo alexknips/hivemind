@@ -394,7 +394,9 @@ pub fn tool_definitions() -> Vec<Value> {
                     "hypothesis_ids": { "type": "array", "items": { "type": "string" } },
                     "evidence_ids": { "type": "array", "items": { "type": "string" } },
                     "quote": { "type": "string", "description": "Verbatim words of the decider, self-contained — not a bare reference like \"1a\" into an external numbered list. Requires `question`. A quote with no stated question is unreadable once the source conversation is gone." },
-                    "question": { "type": "string", "description": "The question `quote` answers, spelled out in the capturer's own words. Requires `quote`." }
+                    "question": { "type": "string", "description": "The question `quote` answers, spelled out in the capturer's own words. Requires `quote`." },
+                    "project": { "type": "string", "description": "Registered project handle to file the decision under. An unknown handle is refused with the register command. Omit it and the decision is saved to the actor's personal project — the reply says so (`project_notice`). HiveMind checks the handle and never works out the project itself, so pass it whenever you know it; an HTTP-served MCP cannot see the caller's working directory." },
+                    "project_source": { "type": "string", "enum": ["stated", "folder_marker", "rig", "current_project", "job"], "description": "How `project` was determined. Defaults to `stated`. Requires `project`." }
                 }
             }
         }),
@@ -468,7 +470,9 @@ pub fn tool_definitions() -> Vec<Value> {
                     },
                     "chosen_option_label": { "type": "string" },
                     "hypothesis_ids": { "type": "array", "items": { "type": "string" } },
-                    "evidence_ids": { "type": "array", "items": { "type": "string" } }
+                    "evidence_ids": { "type": "array", "items": { "type": "string" } },
+                    "project": { "type": "string", "description": "Registered project handle to file the superseding decision under. An unknown handle is refused with the register command. Omit it and the new decision inherits the old decision's project. HiveMind never works out the project itself; an HTTP-served MCP cannot see the caller's working directory." },
+                    "project_source": { "type": "string", "enum": ["stated", "folder_marker", "rig", "current_project", "job"], "description": "How `project` was determined. Defaults to `stated`. Requires `project`." }
                 }
             }
         }),

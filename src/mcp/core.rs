@@ -28,9 +28,12 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::commands::{CommandContext, Commands, DecisionProposalInput, Grounding, SupersedeInput};
+use crate::commands::{
+    CommandContext, Commands, DecisionPlacement, DecisionProposalInput, DeterminedProject,
+    Grounding, SupersedeInput,
+};
 use crate::error::{CliError, CommandError, HivemindError};
-use crate::events::{EventProvenance, TenantId};
+use crate::events::{EventProvenance, ProjectSource, TenantId};
 use crate::ledger::{AnyLedger, EventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::queries::{
@@ -152,6 +155,56 @@ impl ToolOutput {
 }
 
 // ---------------------------------------------------------------------------
+// project / project_source (capture_decision, supersede_decision)
+// ---------------------------------------------------------------------------
+
+/// Parse the `project` / `project_source` pair the two write tools share. The handle is
+/// whatever the caller determined; HiveMind only validates it (registered, not a reserved
+/// personal address), never infers one. `project_source` needs a `project` to describe.
+fn project_args(
+    args: &Map<String, Value>,
+) -> Result<(Option<String>, Option<ProjectSource>), CoreError> {
+    let project = optional_string(args, "project")?.map(|handle| handle.trim().to_owned());
+    let project_source = optional_string(args, "project_source")?
+        .map(|value| {
+            ProjectSource::parse(&value).ok_or_else(|| {
+                CoreError::InvalidArgument(format!(
+                    "`project_source` must be one of stated, folder_marker, rig, current_project, job: {value}"
+                ))
+            })
+        })
+        .transpose()?;
+    if project_source.is_some() && project.is_none() {
+        return Err(CoreError::InvalidArgument(
+            "`project_source` requires `project`".to_owned(),
+        ));
+    }
+    Ok((project, project_source))
+}
+
+fn determined_project<'a>(
+    project: Option<&'a str>,
+    project_source: Option<ProjectSource>,
+) -> Option<DeterminedProject<'a>> {
+    project.map(|handle| DeterminedProject {
+        handle,
+        source: project_source.unwrap_or(ProjectSource::Stated),
+    })
+}
+
+/// Name the project a write landed in: `project` and `project_source` always, and on
+/// personal fallback the "saved to your personal project" sentence, so it is never silent.
+fn insert_placement(reply: &mut Value, placement: &DecisionPlacement) {
+    if let Some(reply) = reply.as_object_mut() {
+        reply.insert("project".to_owned(), json!(placement.project));
+        reply.insert("project_source".to_owned(), json!(placement.project_source));
+        if let Some(notice) = placement.notice() {
+            reply.insert("project_notice".to_owned(), json!(notice));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // capture_decision
 // ---------------------------------------------------------------------------
 
@@ -187,6 +240,10 @@ pub(crate) struct CaptureDecisionArgs {
     pub(crate) quote: Option<String>,
     /// The question `quote` answers, spelled out. Requires `quote`.
     pub(crate) question: Option<String>,
+    /// Registered project handle to file the decision under. See [`project_args`].
+    pub(crate) project: Option<String>,
+    /// How `project` was determined; `stated` when omitted. Requires `project`.
+    pub(crate) project_source: Option<ProjectSource>,
 }
 
 impl CaptureDecisionArgs {
@@ -265,6 +322,7 @@ impl CaptureDecisionArgs {
 
         let quote = optional_string(args, "quote")?;
         let question = optional_string(args, "question")?;
+        let (project, project_source) = project_args(args)?;
 
         if quote.is_some() != question.is_some() {
             return Err(CoreError::InvalidArgument(
@@ -285,6 +343,8 @@ impl CaptureDecisionArgs {
             evidence_ids,
             quote,
             question,
+            project,
+            project_source,
         })
     }
 }
@@ -327,11 +387,11 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
         ));
     }
 
-    let decision_id = commands
-        .propose_decision(DecisionProposalInput {
+    let (decision_id, placement) = commands
+        .propose_decision_placed(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
-            project: None,
+            project: determined_project(args.project.as_deref(), args.project_source),
             actor_id: &args.actor_id,
             title: &args.title,
             rationale: &args.rationale,
@@ -348,13 +408,15 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
         })
         .map_err(CoreError::from)?;
 
-    Ok(ToolOutput(json!({
+    let mut reply = json!({
         "decision_id": decision_id,
         "option_ids": option_ids,
         "chosen_option_id": chosen_option_id,
         "decided_by": args.decided_by,
         "still_proposed": args.still_proposed,
-    })))
+    });
+    insert_placement(&mut reply, &placement);
+    Ok(ToolOutput(reply))
 }
 
 // ---------------------------------------------------------------------------
@@ -848,6 +910,11 @@ pub(crate) struct SupersedeDecisionArgs {
     pub(crate) chosen_option_label: Option<String>,
     pub(crate) hypothesis_ids: Vec<String>,
     pub(crate) evidence_ids: Vec<String>,
+    /// Registered project handle to file the superseding decision under; omitted means it
+    /// inherits the old decision's project. See [`project_args`].
+    pub(crate) project: Option<String>,
+    /// How `project` was determined; `stated` when omitted. Requires `project`.
+    pub(crate) project_source: Option<ProjectSource>,
 }
 
 impl SupersedeDecisionArgs {
@@ -855,8 +922,11 @@ impl SupersedeDecisionArgs {
         args: &Map<String, Value>,
         actor_id: String,
     ) -> Result<Self, CoreError> {
+        let (project, project_source) = project_args(args)?;
         Ok(Self {
             actor_id,
+            project,
+            project_source,
             old_decision_id: optional_string(args, "old_decision_id")?,
             description: optional_string(args, "description")?,
             topic: optional_string(args, "topic")?,
@@ -905,7 +975,7 @@ pub(crate) fn supersede_decision<P: LedgerProvider>(
     );
     let outcome = commands
         .supersede(SupersedeInput {
-            project: None,
+            project: determined_project(args.project.as_deref(), args.project_source),
             actor_id: &args.actor_id,
             old_decision_id: &old_decision_id,
             new_title: &args.title,
@@ -925,7 +995,7 @@ pub(crate) fn supersede_decision<P: LedgerProvider>(
     let new_decision_status =
         derive_decision_status(&graph, &outcome.new_decision_id).map_err(CoreError::from)?;
 
-    Ok(ToolOutput(json!({
+    let mut reply = json!({
         "old_decision_id": old_decision_id,
         "new_decision_id": outcome.new_decision_id,
         "proposal_event_id": outcome.proposal_event_id,
@@ -933,7 +1003,9 @@ pub(crate) fn supersede_decision<P: LedgerProvider>(
         "superseded_event_id": outcome.superseded_event_id,
         "old_decision_status": old_decision_status,
         "new_decision_status": new_decision_status,
-    })))
+    });
+    insert_placement(&mut reply, &outcome.placement);
+    Ok(ToolOutput(reply))
 }
 
 /// The migrated core for the `disagree_decision` MCP tool: one implementation

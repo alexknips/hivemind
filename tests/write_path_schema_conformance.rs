@@ -23,7 +23,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use hivemind::commands::{Commands, DecisionProposalInput, GroundInput, Grounding, SupersedeInput};
+use hivemind::commands::{
+    Commands, DecisionProposalInput, DeterminedProject, GroundInput, Grounding, SupersedeInput,
+};
 use hivemind::connector;
 use hivemind::events::{
     CaptureItem, DecisionScoredPayload, EventType, ImportanceFactors, IngestTurn,
@@ -320,7 +322,7 @@ fn every_write_path_event_validates_against_its_schema() {
             // A stated, registered project (hivemind-s15q.3): writes project + project_source =
             // stated, so the conformance check covers both fields; every other decision above
             // states none and writes project_source = personal_fallback.
-            project: Some("contract-a"),
+            project: Some(DeterminedProject::stated("contract-a")),
             grounding: Grounding::Declared {
                 premise_decision_ids: &premise_ids,
                 evidence_ids: &[],

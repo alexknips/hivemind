@@ -5842,3 +5842,440 @@ fn export_out_pointing_at_file_fails_before_any_write() -> CliTestResult {
     let _ = std::fs::remove_file(&out_path);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Projects on captures (hivemind-s15q.4): `--project` / `--project-source` on the capture
+// verbs, and every reply naming the project it landed in.
+// ---------------------------------------------------------------------------
+
+const PROJECT_TEST_RATIONALE: &str = "Bounded retries avoid unbounded backlog growth under load";
+
+fn register_test_project(backend: &TestBackend, handle: &str) -> CliTestResult {
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &["--actor", "human:alice", "project", "register", handle],
+    )))?;
+    Ok(())
+}
+
+/// Runs an `emit` command in text mode, returning stdout and what was written to the notices
+/// stream (stderr in the real CLI).
+fn run_emit_text(
+    backend: &TestBackend,
+    rest: &[&str],
+) -> std::result::Result<(String, String), Box<dyn std::error::Error>> {
+    let cli = Cli::parse_from(cli_args(backend, rest));
+    let Command::Emit(emit) = &cli.command else {
+        return Err("expected an emit command".into());
+    };
+    let mut notices = Vec::new();
+    let stdout = run_emit_with_notices(&cli, emit, &mut notices)?;
+    Ok((stdout, String::from_utf8(notices)?))
+}
+
+fn run_supersede_text(
+    backend: &TestBackend,
+    rest: &[&str],
+) -> std::result::Result<(String, String), Box<dyn std::error::Error>> {
+    let cli = Cli::parse_from(cli_args(backend, rest));
+    let Command::Supersede(args) = &cli.command else {
+        return Err("expected a supersede command".into());
+    };
+    let mut notices = Vec::new();
+    let stdout = run_supersede_with_notices(&cli, args, &mut notices)?;
+    Ok((stdout, String::from_utf8(notices)?))
+}
+
+fn capture_args_for<'a>(title: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "emit",
+        "decision.capture",
+        "--actor-id",
+        "agent:claude:session-1",
+        "--title",
+        title,
+        "--rationale",
+        PROJECT_TEST_RATIONALE,
+        "--topic-keys",
+        "billing",
+        "--options",
+        "queue,sync",
+        "--chose",
+        "queue",
+    ];
+    args.extend_from_slice(extra);
+    args
+}
+
+fn emit_capture_names_its_project_in_json_body(backend: &TestBackend) -> CliTestResult {
+    register_test_project(backend, "billing")?;
+
+    // Stated: `--project` alone records `stated`.
+    let mut rest = vec!["--json"];
+    rest.extend(capture_args_for(
+        "Adopt async billing queue",
+        &["--project", "billing"],
+    ));
+    let mut reply: serde_json::Value =
+        serde_json::from_str(&run(&Cli::parse_from(cli_args(backend, &rest)))?)?;
+    ensure(
+        reply["value"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("decision-")),
+        "the envelope keeps the decision id in `value`",
+    )?;
+    reply["value"] = serde_json::json!("<decision-id>");
+    ensure_json_eq(
+        &reply,
+        serde_json::json!({
+            "subcommand": "emit",
+            "kind": "decision_id",
+            "value": "<decision-id>",
+            "project": "billing",
+            "project_source": "stated",
+        }),
+        "stated project reply",
+    )?;
+
+    // The caller says how it determined the project; it is recorded as told. `emit
+    // decision.proposed` takes the same arguments.
+    let mut reply: serde_json::Value = serde_json::from_str(&run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--json",
+            "--actor",
+            "agent:claude:session-1",
+            "emit",
+            "decision.proposed",
+            "--title",
+            "Adopt weekly billing exports",
+            "--rationale",
+            PROJECT_TEST_RATIONALE,
+            "--topic-keys",
+            "billing",
+            "--options",
+            "weekly,daily",
+            "--project",
+            "billing",
+            "--project-source",
+            "folder_marker",
+        ],
+    )))?)?;
+    reply["value"] = serde_json::json!("<decision-id>");
+    ensure_json_eq(
+        &reply,
+        serde_json::json!({
+            "subcommand": "emit",
+            "kind": "decision_id",
+            "value": "<decision-id>",
+            "project": "billing",
+            "project_source": "folder_marker",
+        }),
+        "folder_marker project reply",
+    )?;
+
+    // No project: the personal fallback, named and announced.
+    let mut rest = vec!["--json"];
+    rest.extend(capture_args_for("Adopt nightly billing reports", &[]));
+    let mut reply: serde_json::Value =
+        serde_json::from_str(&run(&Cli::parse_from(cli_args(backend, &rest)))?)?;
+    reply["value"] = serde_json::json!("<decision-id>");
+    ensure_json_eq(
+        &reply,
+        serde_json::json!({
+            "subcommand": "emit",
+            "kind": "decision_id",
+            "value": "<decision-id>",
+            "project": "personal:agent:claude",
+            "project_source": "personal_fallback",
+            "project_notice": crate::commands::PERSONAL_FALLBACK_NOTICE,
+        }),
+        "personal fallback reply",
+    )?;
+    ensure(
+        reply["project_notice"]
+            .as_str()
+            .is_some_and(|notice| notice.contains("saved to your personal project")),
+        "the fallback reply says it was saved to the personal project",
+    )
+}
+
+#[test]
+fn emit_capture_names_its_project_in_json() -> CliTestResult {
+    emit_capture_names_its_project_in_json_body(&TestBackend::sqlite("emit-project-json"))
+}
+
+#[test]
+fn emit_capture_names_its_project_in_json_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("emit-project-json-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    emit_capture_names_its_project_in_json_body(&backend)
+}
+
+fn emit_capture_text_keeps_stdout_bare_and_announces_the_project_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    register_test_project(backend, "billing")?;
+
+    let (stdout, notices) = run_emit_text(
+        backend,
+        &capture_args_for("Adopt async billing queue", &["--project", "billing"]),
+    )?;
+    ensure(
+        stdout.starts_with("decision-") && !stdout.contains(char::is_whitespace),
+        "text stdout stays the bare decision id, so `$(hivemind emit ...)` still works",
+    )?;
+    ensure_eq(
+        notices.as_str(),
+        "project: billing (stated)\n",
+        "a determined project is named, with no fallback sentence",
+    )?;
+
+    let (stdout, notices) = run_emit_text(
+        backend,
+        &capture_args_for("Adopt nightly billing reports", &[]),
+    )?;
+    ensure(
+        stdout.starts_with("decision-") && !stdout.contains(char::is_whitespace),
+        "text stdout is still the bare decision id on fallback",
+    )?;
+    ensure(
+        notices.starts_with("project: personal:agent:claude (personal_fallback) — ")
+            && notices.contains("saved to your personal project"),
+        "the fallback is announced with the personal address and the sentence",
+    )?;
+    ensure(
+        notices.ends_with('\n') && notices.lines().count() == 1,
+        "one announcement line",
+    )
+}
+
+#[test]
+fn emit_capture_text_keeps_stdout_bare_and_announces_the_project() -> CliTestResult {
+    emit_capture_text_keeps_stdout_bare_and_announces_the_project_body(&TestBackend::sqlite(
+        "emit-project-text",
+    ))
+}
+
+#[test]
+fn emit_capture_text_keeps_stdout_bare_and_announces_the_project_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("emit-project-text-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    emit_capture_text_keeps_stdout_bare_and_announces_the_project_body(&backend)
+}
+
+#[test]
+fn emit_capture_refuses_an_unknown_project_with_the_register_hint() -> CliTestResult {
+    let backend = TestBackend::sqlite("emit-project-unknown");
+    let error = run_emit_text(
+        &backend,
+        &capture_args_for(
+            "Adopt async billing queue",
+            &["--project", "not-registered"],
+        ),
+    )
+    .expect_err("an unregistered handle is refused");
+    ensure(
+        error
+            .to_string()
+            .contains("project not registered: not-registered")
+            && error
+                .to_string()
+                .contains("hivemind project register not-registered"),
+        "the refusal names the handle and the register command",
+    )
+}
+
+#[test]
+fn emit_capture_project_source_needs_a_project_and_a_caller_claimable_value() -> CliTestResult {
+    let dir = unique_test_dir("emit-project-source-args");
+    let dir = dir.to_str().expect("utf-8 temp path");
+    let parse = |extra: &[&str]| {
+        let mut argv = vec!["hivemind", "--hivemind-dir", dir];
+        argv.extend(capture_args_for("Adopt async billing queue", extra));
+        Cli::try_parse_from(argv)
+    };
+
+    ensure(
+        parse(&["--project", "billing", "--project-source", "rig"]).is_ok(),
+        "a project with its source parses",
+    )?;
+    ensure(
+        parse(&["--project-source", "rig"]).is_err(),
+        "--project-source without --project is refused at parse time",
+    )?;
+    for reserved in ["personal_fallback", "moved"] {
+        ensure(
+            parse(&["--project", "billing", "--project-source", reserved]).is_err(),
+            "HiveMind records personal_fallback and moved itself; a caller cannot claim them",
+        )?;
+    }
+    Ok(())
+}
+
+fn supersede_names_its_project_body(backend: &TestBackend) -> CliTestResult {
+    register_test_project(backend, "billing")?;
+    register_test_project(backend, "payments")?;
+
+    let capture_id =
+        |extra: &[&str], title: &str| -> std::result::Result<String, Box<dyn std::error::Error>> {
+            let (stdout, _notices) = run_emit_text(backend, &capture_args_for(title, extra))?;
+            Ok(stdout)
+        };
+    let supersede =
+        |old: &str,
+         title: &str,
+         extra: &[&str]|
+         -> std::result::Result<(serde_json::Value, String), Box<dyn std::error::Error>> {
+            let mut rest = vec![
+                "--json",
+                "--actor",
+                "agent:claude:session-1",
+                "supersede",
+                "--old",
+                old,
+                "--title",
+                title,
+                "--rationale",
+                PROJECT_TEST_RATIONALE,
+            ];
+            rest.extend_from_slice(extra);
+            let reply: serde_json::Value =
+                serde_json::from_str(&run(&Cli::parse_from(cli_args(backend, &rest)))?)?;
+            let new_id = reply["new_decision_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            Ok((reply, new_id))
+        };
+
+    // Not stated: the superseding decision inherits the old project and how it was
+    // determined.
+    let old = capture_id(
+        &["--project", "billing", "--project-source", "rig"],
+        "Use shared admin token",
+    )?;
+    let (reply, new_id) = supersede(&old, "Use scoped service tokens", &[])?;
+    ensure_eq(
+        reply["project"].as_str(),
+        Some("billing"),
+        "inherited project",
+    )?;
+    ensure_eq(
+        reply["project_source"].as_str(),
+        Some("rig"),
+        "inherited project_source",
+    )?;
+    ensure(
+        reply.get("project_notice").is_none(),
+        "an inherited project is not a fallback",
+    )?;
+
+    // Stated: overrides the inherited project.
+    let (reply, _) = supersede(
+        &new_id,
+        "Move token handling to payments",
+        &["--project", "payments"],
+    )?;
+    ensure_eq(
+        reply["project"].as_str(),
+        Some("payments"),
+        "stated project",
+    )?;
+    ensure_eq(
+        reply["project_source"].as_str(),
+        Some("stated"),
+        "stated project_source",
+    )?;
+
+    // A decision that itself fell back to a personal project stays there, announced.
+    let old = capture_id(&[], "Use shared deploy key")?;
+    let (reply, new_id) = supersede(&old, "Use per-host deploy keys", &[])?;
+    ensure_eq(
+        reply["project"].as_str(),
+        Some("personal:agent:claude"),
+        "personal address",
+    )?;
+    ensure_eq(
+        reply["project_source"].as_str(),
+        Some("personal_fallback"),
+        "fallback source",
+    )?;
+    ensure_eq(
+        reply["project_notice"].as_str(),
+        Some(crate::commands::PERSONAL_FALLBACK_NOTICE),
+        "fallback notice",
+    )?;
+
+    // Text mode: the key=value stdout line gains the project, the announcement goes to notices.
+    let (stdout, notices) = run_supersede_text(
+        backend,
+        &[
+            "--actor",
+            "agent:claude:session-1",
+            "supersede",
+            "--old",
+            &new_id,
+            "--title",
+            "Rotate per-host deploy keys monthly",
+            "--rationale",
+            PROJECT_TEST_RATIONALE,
+            "--project",
+            "billing",
+            "--project-source",
+            "current_project",
+        ],
+    )?;
+    ensure(
+        stdout.contains(" project=billing project_source=current_project")
+            && !stdout.contains('\n'),
+        "supersede stdout stays one key=value line and carries the project",
+    )?;
+    ensure_eq(
+        notices.as_str(),
+        "project: billing (current_project)\n",
+        "supersede announcement",
+    )?;
+
+    let error = run_supersede_text(
+        backend,
+        &[
+            "--actor",
+            "agent:claude:session-1",
+            "supersede",
+            "--old",
+            &old,
+            "--title",
+            "Use hardware tokens instead",
+            "--rationale",
+            PROJECT_TEST_RATIONALE,
+            "--project",
+            "not-registered",
+        ],
+    )
+    .expect_err("an unregistered handle is refused");
+    ensure(
+        error
+            .to_string()
+            .contains("project not registered: not-registered"),
+        "supersede refuses an unknown handle with the register hint",
+    )
+}
+
+#[test]
+fn supersede_names_its_project() -> CliTestResult {
+    supersede_names_its_project_body(&TestBackend::sqlite("supersede-project"))
+}
+
+#[test]
+fn supersede_names_its_project_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("supersede-project-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    supersede_names_its_project_body(&backend)
+}

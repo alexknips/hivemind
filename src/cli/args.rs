@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::events::{
     BlockerPriority, ProjectAnchorKind as EventProjectAnchorKind,
-    ProjectLinkKind as EventProjectLinkKind,
+    ProjectLinkKind as EventProjectLinkKind, ProjectSource as EventProjectSource,
 };
 use crate::identity::default_actor;
 use crate::ingest::{
@@ -243,6 +243,31 @@ impl ProjectLinkKindArg {
         match self {
             Self::PartOf => EventProjectLinkKind::PartOf,
             Self::DependsOn => EventProjectLinkKind::DependsOn,
+        }
+    }
+}
+
+/// How a capture's `--project` was determined, as a caller may claim it. `personal_fallback`
+/// (recorded by HiveMind when no project is given) and `moved` (recorded by a move) are not
+/// choices here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+pub enum ProjectSourceArg {
+    Stated,
+    FolderMarker,
+    Rig,
+    CurrentProject,
+    Job,
+}
+
+impl ProjectSourceArg {
+    pub(crate) const fn as_project_source(self) -> EventProjectSource {
+        match self {
+            Self::Stated => EventProjectSource::Stated,
+            Self::FolderMarker => EventProjectSource::FolderMarker,
+            Self::Rig => EventProjectSource::Rig,
+            Self::CurrentProject => EventProjectSource::CurrentProject,
+            Self::Job => EventProjectSource::Job,
         }
     }
 }
@@ -594,6 +619,15 @@ pub struct SupersedeArgs {
 
     #[arg(long = "evidence", value_delimiter = ',')]
     pub evidence_ids: Vec<String>,
+
+    /// Registered project handle to file the superseding decision under. Without it the new
+    /// decision inherits the old decision's project.
+    #[arg(long = "project")]
+    pub project: Option<String>,
+
+    /// How `--project` was determined (default: stated). Requires `--project`.
+    #[arg(long = "project-source", value_enum, requires = "project")]
+    pub project_source: Option<ProjectSourceArg>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -924,6 +958,17 @@ pub struct EmitDecisionProposedArgs {
     /// `--quote`.
     #[arg(long = "question", requires = "quote")]
     pub question: Option<String>,
+
+    /// Registered project handle to file this decision under. An unknown handle is refused
+    /// with the register command. Without it the decision is saved to the recorder's
+    /// personal project and the reply says so. HiveMind checks the handle; it never works
+    /// out the project for you.
+    #[arg(long = "project")]
+    pub project: Option<String>,
+
+    /// How `--project` was determined (default: stated). Requires `--project`.
+    #[arg(long = "project-source", value_enum, requires = "project")]
+    pub project_source: Option<ProjectSourceArg>,
 }
 
 #[derive(Debug, Clone, Args)]

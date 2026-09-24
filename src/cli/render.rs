@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
+use crate::commands::DecisionPlacement;
 use crate::error::{CliError, CommandError};
 use crate::events::{EventId, EventType};
 use crate::ingest::{DocumentImportReport, DocumentPreparationReport};
@@ -968,8 +969,25 @@ pub(crate) fn format_output(as_json: bool, envelope: &OutputEnvelope) -> Result<
             CliError::InvalidInput(format!("json serialization failed: {error}")).into()
         })
     } else {
+        // Text stays the bare value: scripts take `$(hivemind emit ...)` as the id. A capture's
+        // project is announced on stderr instead (`render_placement_line`).
         Ok(envelope.value.clone())
     }
+}
+
+/// The text-mode announcement of where a capture landed: the address and how it was
+/// determined, and on personal fallback the "saved to your personal project" sentence.
+/// Written to stderr so stdout keeps its machine-readable shape.
+pub(crate) fn render_placement_line(placement: &DecisionPlacement) -> String {
+    let mut line = format!(
+        "project: {} ({})",
+        placement.project,
+        placement.project_source.as_str()
+    );
+    if let Some(notice) = placement.notice() {
+        let _ = write!(line, " — {notice}");
+    }
+    line
 }
 
 pub(crate) fn format_disagree_output(
@@ -997,13 +1015,15 @@ pub(crate) fn format_supersede_output(
     }
 
     Ok(format!(
-        "proposal_event_id={} superseded_event_id={} old_decision_id={} new_decision_id={} old_status={} new_status={}",
+        "proposal_event_id={} superseded_event_id={} old_decision_id={} new_decision_id={} old_status={} new_status={} project={} project_source={}",
         output.proposal_event_id,
         output.superseded_event_id,
         output.old_decision_id,
         output.new_decision_id,
         decision_status_label(output.old_decision_status),
-        decision_status_label(output.new_decision_status)
+        decision_status_label(output.new_decision_status),
+        output.placement.project,
+        output.placement.project_source.as_str()
     ))
 }
 
@@ -1440,6 +1460,12 @@ pub(crate) struct OutputEnvelope {
     pub(crate) subcommand: &'static str,
     pub(crate) kind: &'static str,
     pub(crate) value: String,
+    /// Where a captured decision was filed (`project`, `project_source`), for the emit
+    /// verbs that record one; absent on every other envelope.
+    #[serde(flatten)]
+    pub(crate) placement: Option<DecisionPlacement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_notice: Option<&'static str>,
 }
 
 impl OutputEnvelope {
@@ -1448,7 +1474,15 @@ impl OutputEnvelope {
             subcommand,
             kind,
             value,
+            placement: None,
+            project_notice: None,
         }
+    }
+
+    pub(crate) fn with_placement(mut self, placement: DecisionPlacement) -> Self {
+        self.project_notice = placement.notice();
+        self.placement = Some(placement);
+        self
     }
 }
 
@@ -1468,6 +1502,11 @@ pub(crate) struct SupersedeCommandOutput {
     pub(crate) superseded_event_id: EventId,
     pub(crate) old_decision_status: DecisionStatus,
     pub(crate) new_decision_status: DecisionStatus,
+    /// Where the superseding decision was filed (`project`, `project_source`).
+    #[serde(flatten)]
+    pub(crate) placement: DecisionPlacement,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_notice: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]

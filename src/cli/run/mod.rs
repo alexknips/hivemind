@@ -7,10 +7,13 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::commands::{CommandContext, Commands, DecisionProposalInput, Grounding, SupersedeInput};
+use crate::commands::{
+    CommandContext, Commands, DecisionPlacement, DecisionProposalInput, DeterminedProject,
+    Grounding, SupersedeInput,
+};
 use crate::error::CliError;
 use crate::events::{
-    CaptureItem, Event, EventPayload, EventProvenance, HypothesisKind,
+    CaptureItem, Event, EventPayload, EventProvenance, HypothesisKind, ProjectSource,
     RelationKind as EventRelationKind, TenantId,
 };
 use crate::identity::{
@@ -68,9 +71,9 @@ use super::args::{
     ImportArgs, ImportCommand, ImportConnectorCommand, ImportDocumentsArgs, IngestArgs,
     IngestCommand, IngestSlackThreadArgs, MapArgs, McpArgs, ProjectAnchorArgs, ProjectArgs,
     ProjectCommand, ProjectLinkArgs, ProjectListArgs, ProjectRegisterArgs, ProjectShowArgs,
-    ProjectUseArgs, QualityScanArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority,
-    QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus, QueryExportKind,
-    QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs, QueryQualityTier,
+    ProjectSourceArg, ProjectUseArgs, QualityScanArgs, QueryAddedSinceArgs, QueryArgs,
+    QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus,
+    QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs, QueryQualityTier,
     QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
     QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
     SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs, TuiArgs,
@@ -86,12 +89,13 @@ use super::render::{
     render_blocker_notifications_summary, render_changed_since_summary,
     render_compact_view_summary, render_decision_brief_summary, render_decision_list_summary,
     render_decision_summary, render_dot, render_misfiled_scan_summary, render_neighborhood_summary,
-    render_read_only_export_summary, render_recall_summary, render_recent_activity_summary,
-    render_recent_decisions_summary, render_resolve_outcome_summary, render_scan_quality_summary,
-    render_scored_decision_summary, render_search_summary, render_situational_summary,
-    render_supersession_summary, CurrentProjectOutput, DisagreeCommandOutput, ExportReport,
-    OutputEnvelope, ProjectAnchorOutput, ProjectLinkOutput, ProjectRegisterOutput,
-    ReviewActionOutput, ReviewCommandOutput, SupersedeCommandOutput,
+    render_placement_line, render_read_only_export_summary, render_recall_summary,
+    render_recent_activity_summary, render_recent_decisions_summary,
+    render_resolve_outcome_summary, render_scan_quality_summary, render_scored_decision_summary,
+    render_search_summary, render_situational_summary, render_supersession_summary,
+    CurrentProjectOutput, DisagreeCommandOutput, ExportReport, OutputEnvelope, ProjectAnchorOutput,
+    ProjectLinkOutput, ProjectRegisterOutput, ReviewActionOutput, ReviewCommandOutput,
+    SupersedeCommandOutput,
 };
 #[cfg(feature = "shared-backend-postgres")]
 use super::render::{MigrateReport, ParityCheckResult};
@@ -154,8 +158,11 @@ fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
         evidence_ids: Vec::new(),
         quote: None,
         question: None,
+        project: None,
+        project_source: None,
     };
-    let decision_id = propose_decision_from_option_labels(&commands, &cli.actor, &decision_args)?;
+    let (decision_id, _placement) =
+        propose_decision_from_option_labels(&commands, &cli.actor, &decision_args)?;
 
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
@@ -708,6 +715,16 @@ fn run_slack_app(cli: &Cli, args: &SlackAppArgs) -> Result<String> {
 }
 
 fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
+    run_emit_with_notices(cli, emit, &mut io::stderr())
+}
+
+/// `run_emit`, with the text-mode project announcement (see `announce_placement`) written to
+/// `notices` rather than straight to stderr, so a test can read it.
+pub(crate) fn run_emit_with_notices<W: IoWrite>(
+    cli: &Cli,
+    emit: &EmitArgs,
+    notices: &mut W,
+) -> Result<String> {
     let ledger = open_ledger(cli)?;
     let commands = Commands::new_with_context(
         &ledger,
@@ -719,13 +736,14 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
             let (actor_id, provenance) = capture_actor_and_provenance(&args.provenance)?;
             let commands =
                 Commands::new_with_context(&ledger, cli_command_context(cli, provenance)?);
-            let decision_id =
+            let (decision_id, placement) =
                 propose_decision_from_option_labels(&commands, &actor_id, &args.decision)?;
-            OutputEnvelope::new("emit", "decision_id", decision_id)
+            OutputEnvelope::new("emit", "decision_id", decision_id).with_placement(placement)
         }
         EmitCommand::DecisionProposed(args) => {
-            let decision_id = propose_decision_from_option_labels(&commands, &cli.actor, args)?;
-            OutputEnvelope::new("emit", "decision_id", decision_id)
+            let (decision_id, placement) =
+                propose_decision_from_option_labels(&commands, &cli.actor, args)?;
+            OutputEnvelope::new("emit", "decision_id", decision_id).with_placement(placement)
         }
         EmitCommand::DecisionAccepted(args) => {
             let event_id = commands.accept_decision(&args.decision_id, &cli.actor)?;
@@ -855,7 +873,21 @@ fn run_emit(cli: &Cli, emit: &EmitArgs) -> Result<String> {
         }
     };
 
+    if let Some(placement) = &output.placement {
+        announce_placement(cli, placement, notices);
+    }
     format_output(cli.json, &output)
+}
+
+/// Text mode only: say where a capture landed on `notices` (stderr in the CLI). JSON replies
+/// carry `project`/`project_source` in-band, and text stdout stays machine-readable (the bare
+/// id), so this is the one place a human or agent reading the terminal sees the project --
+/// and the "saved to your personal project" sentence on fallback. Best-effort: the event is
+/// already appended, so an unwritable stderr must not turn a recorded capture into an error.
+fn announce_placement<W: IoWrite>(cli: &Cli, placement: &DecisionPlacement, notices: &mut W) {
+    if !cli.json {
+        let _ = writeln!(notices, "{}", render_placement_line(placement));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,6 +1083,16 @@ fn run_disagree(cli: &Cli, args: &DisagreeArgs) -> Result<String> {
 }
 
 fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
+    run_supersede_with_notices(cli, args, &mut io::stderr())
+}
+
+/// `run_supersede`, with the text-mode project announcement written to `notices`; see
+/// `announce_placement`.
+pub(crate) fn run_supersede_with_notices<W: IoWrite>(
+    cli: &Cli,
+    args: &SupersedeArgs,
+    notices: &mut W,
+) -> Result<String> {
     let tenant_id = cli_tenant(cli)?;
     let ledger = open_ledger(cli)?;
 
@@ -1075,7 +1117,7 @@ fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
         CommandContext::new(tenant_id.clone(), fluent_write_provenance(&cli.actor)),
     );
     let outcome = commands.supersede(SupersedeInput {
-        project: None,
+        project: cli_determined_project(&args.project, args.project_source)?,
         actor_id: &cli.actor,
         old_decision_id: &old_decision_id,
         new_title: &args.title,
@@ -1090,6 +1132,7 @@ fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
     let new_decision_status =
         decision_status_after_write(&ledger, &tenant_id, &outcome.new_decision_id)?;
 
+    announce_placement(cli, &outcome.placement, notices);
     format_supersede_output(
         cli.json,
         &SupersedeCommandOutput {
@@ -1100,6 +1143,8 @@ fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {
             superseded_event_id: outcome.superseded_event_id,
             old_decision_status,
             new_decision_status,
+            project_notice: outcome.placement.notice(),
+            placement: outcome.placement,
         },
     )
 }
@@ -1580,7 +1625,7 @@ fn propose_decision_from_option_labels<L: EventLedger>(
     commands: &Commands<'_, L>,
     actor_id: &str,
     args: &EmitDecisionProposedArgs,
-) -> Result<String> {
+) -> Result<(String, DecisionPlacement)> {
     let mut option_ids = Vec::with_capacity(args.option_ids.len());
     let mut chosen_option_id = None;
     for option_label in &args.option_ids {
@@ -1604,8 +1649,8 @@ fn propose_decision_from_option_labels<L: EventLedger>(
         .into());
     }
 
-    commands.propose_decision(DecisionProposalInput {
-        project: None,
+    commands.propose_decision_placed(DecisionProposalInput {
+        project: cli_determined_project(&args.project, args.project_source)?,
         actor_id,
         title: &args.title,
         rationale: &args.rationale,
@@ -1756,6 +1801,21 @@ fn trimmed_optional<'a>(field: &'static str, value: &'a Option<String>) -> Resul
         Some(raw) => Ok(Some(trimmed_required(field, raw)?)),
         None => Ok(None),
     }
+}
+
+/// `--project`/`--project-source` as the write layer's `DeterminedProject`. The handle is
+/// whatever the caller determined; HiveMind only validates it, never infers one.
+fn cli_determined_project<'a>(
+    project: &'a Option<String>,
+    project_source: Option<ProjectSourceArg>,
+) -> Result<Option<DeterminedProject<'a>>> {
+    Ok(
+        trimmed_optional("--project", project)?.map(|handle| DeterminedProject {
+            handle,
+            source: project_source
+                .map_or(ProjectSource::Stated, ProjectSourceArg::as_project_source),
+        }),
+    )
 }
 
 fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {
