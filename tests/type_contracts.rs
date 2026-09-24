@@ -3,8 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use hivemind::events::{
-    self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionBlockerPriority,
-    DecisionIdPayload, DecisionMetadataDerivedPayload, DecisionProposedPayload,
+    self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionAcceptedPayload,
+    DecisionBlockerPriority, DecisionMetadataDerivedPayload, DecisionProposedPayload,
     DecisionRejectedPayload, DecisionRequestedPayload, DecisionScoredPayload,
     DecisionSupersededPayload, Event, EventBuilder, EventEnvelope, EventPayload, EventSource,
     EventType, EventValidationError, EvidenceRecordedPayload, HypothesisKind,
@@ -139,8 +139,9 @@ fn event_builder_derives_event_type_from_payload_variant() {
     let cases = [
         (
             EventType::DecisionAccepted,
-            EventPayload::DecisionAccepted(DecisionIdPayload {
+            EventPayload::DecisionAccepted(DecisionAcceptedPayload {
                 decision_id: "decision-accepted".to_owned(),
+                delegated_by: None,
             }),
         ),
         (
@@ -507,8 +508,9 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
         ),
         (
             EventType::DecisionAccepted,
-            EventPayload::DecisionAccepted(DecisionIdPayload {
+            EventPayload::DecisionAccepted(DecisionAcceptedPayload {
                 decision_id: "decision:minimal".to_owned(),
+                delegated_by: None,
             }),
         ),
         (

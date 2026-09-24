@@ -50,6 +50,11 @@ pub(super) struct CaptureDecisionRequest {
     /// `DecisionProposalInput`. Mutually exclusive with `still_proposed`.
     #[serde(default)]
     decided_by: Option<String>,
+    /// The human whose delegated scope this decision falls within, when the authenticated
+    /// caller (an agent) decided it for itself. Requires `chosen_option_label`. See
+    /// `delegated_by` on `DecisionProposalInput`.
+    #[serde(default)]
+    delegated_by: Option<String>,
     /// Keep the decision at `proposed` even though `chosen_option_label` is set. See
     /// `still_proposed` on `DecisionProposalInput`.
     #[serde(default)]
@@ -345,6 +350,12 @@ fn capture_decision_blocking(
         ));
     }
 
+    if req.delegated_by.is_some() && chosen_option_id.is_none() {
+        return Err(ApiError::validation(
+            "delegated_by requires chosen_option_label",
+        ));
+    }
+
     if req.quote.is_some() != req.question.is_some() {
         return Err(ApiError::validation(
             "quote and question must be given together — a verbatim answer needs the question it answers spelled out, not a bare reference like '1a' into an external list",
@@ -364,6 +375,7 @@ fn capture_decision_blocking(
             option_labels: &option_labels,
             chosen_option_id: chosen_option_id.as_deref(),
             decided_by: req.decided_by.as_deref(),
+            delegated_by: req.delegated_by.as_deref(),
             still_proposed: req.still_proposed,
             hypothesis_ids: &req.hypothesis_ids,
             evidence_ids: &req.evidence_ids,

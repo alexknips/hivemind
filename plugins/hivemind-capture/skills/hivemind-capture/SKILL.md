@@ -506,6 +506,13 @@ the keyless plugin path and its own Haiku call. Do not invent a
   self-accepts immediately (or accepts from `--decided-by` when someone else
   decided). Pass `--still-proposed` instead when floating a leaning that still
   awaits someone else's decision.
+- When a human explicitly delegated a class of decision to you and you decided
+  within that scope, add `--delegated-by human:<name>` to the capture. It marks
+  "decided by the agent, within a scope the human delegated" so it reads
+  differently from "the agent decided alone" (no flag). Do not use it when a
+  human chose (that is `--decided-by`), and never claim a delegation you were
+  not given — capture without the flag instead. The same value on every capture
+  in that scope is how a standing delegation is expressed.
 - Do not invent evidence, hypothesis, or decision ids. Query first if unsure.
 - Prefer `decision.capture` for new bundled proposals. Use direct event verbs
   only for status transitions or graph relations that already have ids.

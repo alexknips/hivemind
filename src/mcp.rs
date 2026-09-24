@@ -367,7 +367,7 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "capture_decision",
-            "description": "Record a decision with rationale, topic keys, and at least one option. Defaults actor_id to agent:<tool>:<name> and writes source=agent. A `chosen_option_label` means the decision was already made: it self-accepts from `actor_id` by default, or from `decided_by` when the decider differs (e.g. a human decided, an agent is scribing it). Pass `still_proposed` to keep a genuine open recommendation at `proposed` instead.",
+            "description": "Record a decision with rationale, topic keys, and at least one option. Defaults actor_id to agent:<tool>:<name> and writes source=agent. A `chosen_option_label` means the decision was already made: it self-accepts from `actor_id` by default, or from `decided_by` when the decider differs (e.g. a human decided, an agent is scribing it); pass `delegated_by` when an agent decided for itself within a scope a human delegated. Pass `still_proposed` to keep a genuine open recommendation at `proposed` instead.",
             "inputSchema": {
                 "type": "object",
                 "required": ["title", "rationale", "topic_keys", "options"],
@@ -390,6 +390,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     },
                     "chosen_option_label": { "type": "string", "description": "Label of the option that was accepted; must match one of `options[].label`. Setting this means the decision was already made — see `still_proposed` to keep it open instead." },
                     "decided_by": { "type": "string", "description": "Actor who actually made the decision, when it differs from `actor_id` (the recording actor/scribe) — e.g. `human:alex@example.com` when an agent is writing down a decision a human made. Requires `chosen_option_label`. Mutually exclusive with `still_proposed`." },
+                    "delegated_by": { "type": "string", "description": "The human (`human:<name>`) whose delegated scope this decision falls within, when `actor_id` (an agent) decided it for itself — the self-acceptance carries the marker, so an agent deciding under a delegation is distinguishable from one deciding alone (no marker). Requires `chosen_option_label`. Mutually exclusive with `still_proposed`; conflicts with a `decided_by` other than `actor_id`. A standing delegation is the same value repeated on each capture in that scope." },
                     "still_proposed": { "type": "boolean", "description": "Keep the decision at `proposed` even though `chosen_option_label` is set, for a genuine open recommendation awaiting someone else's decision. Defaults to false, which self-accepts (or accepts from `decided_by`) immediately after proposing." },
                     "hypothesis_ids": { "type": "array", "items": { "type": "string" } },
                     "evidence_ids": { "type": "array", "items": { "type": "string" } },
@@ -693,7 +694,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "decision_context_candidates",
-            "description": "Bulk context-feature pull: returns context records for all decisions (or a filtered subset), each with authorship shape, source, review depth, evidence/hypothesis counts, and rationale richness proxies. Designed to complement decision_quality_candidates — context is the independent variable side of the causal pair. No LLM involved.",
+            "description": "Bulk context-feature pull: returns context records for all decisions (or a filtered subset), each with authorship shape, source, review depth, `delegated_by` (the human whose delegation an agent's self-acceptance fell within; absent when the agent decided alone), evidence/hypothesis counts, and rationale richness proxies. Designed to complement decision_quality_candidates — context is the independent variable side of the causal pair. No LLM involved.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -778,7 +779,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "analyze_failure_modes",
-            "description": "Failure-mode attribution: which conditions predict decisions that do not hold up? Joins outcome signals (superseded / stale-premises / contested) with context features (authorship shape, review depth, source, evidence/options richness) and computes AGGREGATE failure-rate patterns across each dimension. Reports effect sizes (failure-rate delta vs corpus baseline) and honest confidence flags based on sample size. Never returns per-person rankings — all findings are aggregate patterns. Use to answer: does agent-only authorship predict failure? Does peer review improve outcomes? Does thin context predict failure? Works on any deployment, no LLM.",
+            "description": "Failure-mode attribution: which conditions predict decisions that do not hold up? Joins outcome signals (superseded / stale-premises / contested) with context features (authorship shape, review depth, source, evidence/options richness, and — for decisions an agent made for itself — whether a human had delegated the scope) and computes AGGREGATE failure-rate patterns across each dimension. Reports effect sizes (failure-rate delta vs corpus baseline) and honest confidence flags based on sample size. Never returns per-person rankings — all findings are aggregate patterns. Use to answer: does agent-only authorship predict failure? Does peer review improve outcomes? Do agent decisions within a human's delegation hold up differently from ones an agent made alone? Does thin context predict failure? Works on any deployment, no LLM.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

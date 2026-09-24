@@ -943,6 +943,16 @@ pub struct EmitDecisionProposedArgs {
     #[arg(long = "decided-by")]
     pub decided_by: Option<String>,
 
+    /// The human whose delegated scope this decision falls within, when the recording agent
+    /// decided it for itself (`--actor-id agent:...`): the self-acceptance carries this
+    /// marker, so "an agent decided within a human's delegation" reads differently from "an
+    /// agent decided alone" (no marker). Must be `human:<name>`. Requires `--chose`;
+    /// conflicts with `--still-proposed` and with a `--decided-by` naming anyone but the
+    /// recording actor. A standing delegation is the same value repeated on each capture in
+    /// scope — there is no grant object.
+    #[arg(long = "delegated-by")]
+    pub delegated_by: Option<String>,
+
     /// Keep the decision at `proposed` even though `--chose` is set, for a genuine open
     /// recommendation awaiting someone else's decision. By default (this flag absent), a
     /// chosen option means the decision was already made: it auto-accepts immediately after

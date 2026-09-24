@@ -159,6 +159,7 @@ fn local_tenant_is_isolated_from_named_tenants() -> TestResult<()> {
         option_labels: &["Local option A".to_owned(), "Local option B".to_owned()],
         chosen_option_id: Some(&local_opt_b),
         decided_by: None,
+        delegated_by: None,
         still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],

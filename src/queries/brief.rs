@@ -44,6 +44,12 @@ pub struct DecidedBy {
     pub decider_ids: Vec<String>,
     pub source: String,
     pub source_ref: Option<String>,
+    /// The human whose delegated scope an agent's self-acceptance fell within
+    /// (hivemind-zdsh.6). Present, an agent decided within that delegation; absent on an
+    /// agent's self-accepted decision, the agent decided alone — the two cases that share
+    /// `review == SelfAccepted` and a `decider_ids` equal to `proposer_id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegated_by: Option<String>,
     pub review: ReviewShape,
 }
 
@@ -156,6 +162,7 @@ pub fn get_decision_brief_at(
             decider_ids: context.accepted_by,
             source: context.source,
             source_ref: context.source_ref,
+            delegated_by: context.delegated_by,
             review: context.review,
         },
         rests_on: grounding.items,

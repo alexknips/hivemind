@@ -31,7 +31,7 @@ use uuid::Uuid;
 
 use crate::error::CommandError;
 use crate::events::{
-    CaptureItem, DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload,
+    CaptureItem, DecisionAcceptedPayload, DecisionProposedPayload, DecisionRejectedPayload,
     DecisionScoredPayload, DecisionSupersededPayload, Event, EventBuilder, EventId, EventPayload,
     EventProvenance, EventType, EvidenceRecordedPayload, HypothesisKind, HypothesisRecordedPayload,
     IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn, ProjectAnchorKind,
@@ -207,6 +207,15 @@ pub struct DecisionProposalInput<'a> {
     /// actor/scribe) — e.g. an agent scribing a decision a specific human made. Requires
     /// `chosen_option_id` to be `Some`. Mutually exclusive with `still_proposed`.
     pub decided_by: Option<&'a str>,
+    /// The human whose delegated scope this decision falls within, when an agent decides for
+    /// itself under a delegation (hivemind-zdsh.6): the auto-accept below is recorded as
+    /// `decision.accepted` carrying this marker, so "agent decided within a human's delegated
+    /// scope" is distinguishable from "agent decided alone". Requires `chosen_option_id`;
+    /// mutually exclusive with `still_proposed`; conflicts with a `decided_by` naming anyone
+    /// but `actor_id` (a human who decided is already recorded via `decided_by`). Must name a
+    /// `human:` actor, and `actor_id` must be an `agent:` actor. A standing delegation is the
+    /// caller repeating the same value on each capture in scope — there is no grant object.
+    pub delegated_by: Option<&'a str>,
     /// Keep the decision at `proposed` even though `chosen_option_id` is set, for a genuine
     /// open recommendation awaiting someone else's decision. Defaults to `false`: per
     /// hivemind-zdsh.8, a `chosen_option_id` means the decision was already made, so
@@ -834,6 +843,34 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
+        if let Some(delegated_by) = input.delegated_by {
+            if input.chosen_option_id.is_none() {
+                return Err(CommandError::Validation(
+                    "delegated_by requires a chosen_option_id — a delegation qualifies a decision the agent already made"
+                        .to_owned(),
+                )
+                .into());
+            }
+            if input.still_proposed {
+                return Err(CommandError::Validation(
+                    "still_proposed conflicts with delegated_by — an open recommendation has not been decided under any delegation"
+                        .to_owned(),
+                )
+                .into());
+            }
+            if input
+                .decided_by
+                .is_some_and(|decider| decider != input.actor_id)
+            {
+                return Err(CommandError::Validation(
+                    "delegated_by conflicts with decided_by — delegation qualifies an agent deciding for itself; when someone else decided, decided_by already names them"
+                        .to_owned(),
+                )
+                .into());
+            }
+            require_delegation_shape(input.actor_id, delegated_by)?;
+        }
+
         require_quote_pairing(input.quote, input.question)?;
         require_readable_rationale(input.rationale, input.quote.is_some())?;
         require_valid_expressed_confidence(input.expressed_confidence)?;
@@ -923,7 +960,12 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
         if !input.still_proposed && input.chosen_option_id.is_some() {
             let decider = input.decided_by.unwrap_or(input.actor_id);
-            self.accept_decision(&decision_id, decider)?;
+            match input.delegated_by {
+                Some(delegated_by) => {
+                    self.accept_decision_delegated(&decision_id, decider, delegated_by)?
+                }
+                None => self.accept_decision(&decision_id, decider)?,
+            };
         }
 
         Ok((decision_id, placement))
@@ -1210,13 +1252,51 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         actor_id: &str,
         event_uuid: Uuid,
     ) -> Result<EventId> {
+        self.accept_decision_recording(decision_id, actor_id, None, event_uuid)
+    }
+
+    /// An agent accepts a decision it proposed itself, under a delegation from `delegated_by`
+    /// (hivemind-zdsh.6): the `decision.accepted` event carries the marker, so this
+    /// self-acceptance reads as "decided within a human's delegated scope" rather than
+    /// "decided alone". Enforced here: `delegated_by` names a `human:` actor, `actor_id` is an
+    /// `agent:` actor, and `actor_id` is the proposer of `decision_id` — a delegation
+    /// qualifies an agent's own decision, never someone else's (a human who decides an
+    /// agent's proposal is recorded plainly by `accept_decision`).
+    pub fn accept_decision_delegated(
+        &self,
+        decision_id: &str,
+        actor_id: &str,
+        delegated_by: &str,
+    ) -> Result<EventId> {
+        self.accept_decision_recording(decision_id, actor_id, Some(delegated_by), Uuid::new_v4())
+    }
+
+    fn accept_decision_recording(
+        &self,
+        decision_id: &str,
+        actor_id: &str,
+        delegated_by: Option<&str>,
+        event_uuid: Uuid,
+    ) -> Result<EventId> {
         require_valid_actor_id(actor_id)?;
         require_non_empty("decision_id", decision_id)?;
+        if let Some(delegated_by) = delegated_by {
+            require_delegation_shape(actor_id, delegated_by)?;
+        }
 
         if !self.decision_exists(decision_id)? {
             return Err(
                 CommandError::Invariant(format!("decision does not exist: {decision_id}")).into(),
             );
+        }
+
+        if delegated_by.is_some()
+            && !self.actor_has_decision_event(decision_id, actor_id, EventType::DecisionProposed)?
+        {
+            return Err(CommandError::Invariant(format!(
+                "delegated_by is only valid when {actor_id} accepts a decision it proposed itself; {decision_id} was proposed by someone else"
+            ))
+            .into());
         }
 
         if self.actor_has_decision_event(decision_id, actor_id, EventType::DecisionRejected)? {
@@ -1228,8 +1308,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
         let event = self.event_with_uuid(
             actor_id,
-            EventPayload::DecisionAccepted(DecisionIdPayload {
+            EventPayload::DecisionAccepted(DecisionAcceptedPayload {
                 decision_id: decision_id.to_owned(),
+                delegated_by: delegated_by.map(str::to_owned),
             }),
             None,
             event_uuid,
@@ -1458,6 +1539,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             option_labels: &option_labels,
             chosen_option_id: chosen_option_id.as_deref(),
             decided_by: None,
+            delegated_by: None,
             // Unread here: this goes through `propose_decision_with_id`, which never
             // auto-accepts (only `propose_decision` does). Superseding decisions stay
             // `proposed` until separately accepted — out of scope for hivemind-zdsh.8.
@@ -2520,6 +2602,14 @@ fn payload_value_matches(event: &Event, key: &str, expected: &str) -> bool {
 
 fn same_identifier(left: &str, right: &str) -> bool {
     left.eq(right)
+}
+
+/// The event-shape rules for a delegation marker (`delegated_by` names a human, the accepter
+/// is an agent) as a write-layer validation error, so a refused capture fails before any
+/// event is appended rather than leaving a proposed-but-never-accepted decision behind.
+fn require_delegation_shape(accepter_id: &str, delegated_by: &str) -> Result<()> {
+    crate::events::require_delegation_shape(accepter_id, delegated_by)
+        .map_err(|error| CommandError::Validation(error.to_string()).into())
 }
 
 /// `quote` and `question` must be given together: a verbatim quote answering no stated

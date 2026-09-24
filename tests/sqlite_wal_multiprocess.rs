@@ -197,6 +197,7 @@ fn run_worker() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             option_labels: std::slice::from_ref(&option_label),
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],

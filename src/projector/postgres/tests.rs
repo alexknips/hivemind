@@ -22,7 +22,7 @@ use crate::queries::{
     get_supersession_chain, grounding_of_at, resolve_decision_by_description,
     scan_decision_quality, search_decisions, DecisionContextRequest,
     DecisionQualityCandidatesRequest, FailureAttributionRequest, GroundingAdded, GroundingKind,
-    QueryContext, ScanQualityRequest, ScorerConfig,
+    QueryContext, ScanQualityRequest, ScorerConfig, SearchDecisionRequest,
 };
 use crate::summarize::{recall_decisions, RecallRequest, RECALL_MAX_LIMIT};
 use crate::Result;
@@ -813,6 +813,172 @@ fn get_decision_brief_matches_memory() -> Result<()> {
         }
         Ok(())
     })
+}
+
+// ── Delegation marker parity (hivemind-zdsh.6) ──────────────────────────────────
+//
+// `delegated_by` rides on the Decision node as a plain property (Alex's option 1), so it
+// must land and read back through the Postgres JSONB merge exactly as it does in memory —
+// across context, the brief behind `verify`, the search context behind the digest, and the
+// attribution report — and the merge must not disturb the proposal's own properties.
+
+#[test]
+fn delegation_marker_reads_match_memory() -> Result<()> {
+    with_postgres_graph("delegation-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = delegation_fixture_ledger()?;
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        let decision_ids = ["decision:human", "decision:delegated", "decision:alone"];
+        for decision_id in decision_ids {
+            let memory_context = get_decision_context(&memory, decision_id)?.data;
+            let pg_context = get_decision_context(pg, decision_id)?.data;
+            if memory_context != pg_context {
+                return Err(test_error(format!(
+                    "delegation context mismatch for {decision_id}: memory={memory_context:?} pg={pg_context:?}"
+                )));
+            }
+            let memory_brief = get_decision_brief(&memory, decision_id)?.data;
+            let pg_brief = get_decision_brief(pg, decision_id)?.data;
+            if memory_brief != pg_brief {
+                return Err(test_error(format!(
+                    "delegation brief mismatch for {decision_id}: memory={memory_brief:?} pg={pg_brief:?}"
+                )));
+            }
+        }
+
+        // The marker itself, not just agreement: present on the delegated decision, absent
+        // (not null) on the other two.
+        let delegated = get_decision_context(pg, "decision:delegated")?
+            .data
+            .ok_or_else(|| test_error("delegated decision context missing"))?;
+        if delegated.delegated_by.as_deref() != Some("human:alex") {
+            return Err(test_error(format!(
+                "Postgres lost the delegation marker: {delegated:?}"
+            )));
+        }
+        for decision_id in ["decision:human", "decision:alone"] {
+            let context = get_decision_context(pg, decision_id)?
+                .data
+                .ok_or_else(|| test_error(format!("{decision_id} context missing")))?;
+            if context.delegated_by.is_some() {
+                return Err(test_error(format!(
+                    "{decision_id} must carry no delegation marker: {context:?}"
+                )));
+            }
+        }
+
+        // The merge must not disturb what the proposal projected onto the same node.
+        let memory_decision = get_decision(&memory, "decision:delegated")?.data;
+        let pg_decision = get_decision(pg, "decision:delegated")?.data;
+        if memory_decision != pg_decision || pg_decision.is_none() {
+            return Err(test_error(format!(
+                "delegation marker disturbed the decision node: memory={memory_decision:?} pg={pg_decision:?}"
+            )));
+        }
+
+        let memory_candidates = get_decision_context_candidates(
+            &memory,
+            &DecisionContextRequest {
+                limit: 10,
+                ..Default::default()
+            },
+        )?
+        .data;
+        let pg_candidates = get_decision_context_candidates(
+            pg,
+            &DecisionContextRequest {
+                limit: 10,
+                ..Default::default()
+            },
+        )?
+        .data;
+        if memory_candidates != pg_candidates {
+            return Err(test_error(format!(
+                "delegation context candidates mismatch: memory={memory_candidates:?} pg={pg_candidates:?}"
+            )));
+        }
+
+        let memory_markers = search_markers(&memory)?;
+        let pg_markers = search_markers(pg)?;
+        if memory_markers != pg_markers
+            || !pg_markers.contains(&(
+                "decision:delegated".to_owned(),
+                Some("human:alex".to_owned()),
+            ))
+        {
+            return Err(test_error(format!(
+                "search graph_context delegated_by mismatch: memory={memory_markers:?} pg={pg_markers:?}"
+            )));
+        }
+
+        let memory_report =
+            get_failure_attribution(&memory, &FailureAttributionRequest::default())?.data;
+        let pg_report = get_failure_attribution(pg, &FailureAttributionRequest::default())?.data;
+        if memory_report.by_delegation != pg_report.by_delegation
+            || pg_report.by_delegation.len() != 2
+        {
+            return Err(test_error(format!(
+                "by_delegation mismatch: memory={:?} pg={:?}",
+                memory_report.by_delegation, pg_report.by_delegation
+            )));
+        }
+        Ok(())
+    })
+}
+
+fn search_markers(graph: &impl GraphView) -> Result<Vec<(String, Option<String>)>> {
+    let results = search_decisions(graph, &SearchDecisionRequest::default())?.data;
+    let mut markers: Vec<_> = results
+        .items
+        .into_iter()
+        .map(|item| (item.decision.id, item.graph_context.delegated_by))
+        .collect();
+    markers.sort();
+    Ok(markers)
+}
+
+/// Case 1 (a human accepts an agent's proposal), case 2 (the agent self-accepts under
+/// `human:alex`'s delegation) and case 3 (the agent self-accepts alone), as raw events.
+fn delegation_fixture_ledger() -> Result<InMemoryEventLedger> {
+    let ledger = InMemoryEventLedger::new();
+    for (decision_id, title, accepter, delegated_by) in [
+        ("decision:human", "Human decided", "human:alex", None),
+        (
+            "decision:delegated",
+            "Agent decided under delegation",
+            "agent:claude:builder",
+            Some("human:alex"),
+        ),
+        (
+            "decision:alone",
+            "Agent decided alone",
+            "agent:claude:builder",
+            None,
+        ),
+    ] {
+        ledger.append(make_event(
+            EventType::DecisionProposed,
+            "agent:claude:builder",
+            json!({
+                "decision_id": decision_id,
+                "title": title,
+                "rationale": "A stated reason the projection tests do not read",
+                "topic_keys": ["governance"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        ))?;
+        let mut accepted = json!({ "decision_id": decision_id });
+        if let Some(delegated_by) = delegated_by {
+            accepted["delegated_by"] = json!(delegated_by);
+        }
+        ledger.append(make_event(EventType::DecisionAccepted, accepter, accepted))?;
+    }
+    Ok(ledger)
 }
 
 // ── recall_decisions parity (hivemind-ot72.3) ───────────────────────────────────

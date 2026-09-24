@@ -270,6 +270,7 @@ fn write_shared_decision(
             option_labels: &["Shared".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],

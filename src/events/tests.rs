@@ -20,6 +20,11 @@ const FIXTURES: &[(&str, &str, EventType)] = &[
         EventType::DecisionAccepted,
     ),
     (
+        include_str!("../../schemas/v0/decision.accepted.json"),
+        include_str!("../../tests/fixtures/v0/delegation/decision.accepted.delegated.json"),
+        EventType::DecisionAccepted,
+    ),
+    (
         include_str!("../../schemas/v0/decision.rejected.json"),
         include_str!("../../tests/fixtures/v0/decision.rejected.json"),
         EventType::DecisionRejected,
@@ -139,6 +144,106 @@ fn schema_rejects_missing_required_payload_field() {
 
     let validator = jsonschema::validator_for(&schema).expect("schema compiles");
     assert!(!validator.is_valid(&fixture));
+}
+
+fn delegated_acceptance_event() -> Event {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/delegation/decision.accepted.delegated.json"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn decision_accepted_carries_delegated_by_through_validation() {
+    let payload = validate(&delegated_acceptance_event()).expect("delegated acceptance validates");
+    assert_eq!(
+        payload,
+        EventPayload::DecisionAccepted(DecisionAcceptedPayload {
+            decision_id: "dec-1".to_owned(),
+            delegated_by: Some("human:alex".to_owned()),
+        })
+    );
+}
+
+#[test]
+fn decision_accepted_without_delegated_by_still_parses_and_omits_it_on_write() {
+    // Every event written before hivemind-zdsh.6 has no `delegated_by`; it must replay
+    // unchanged, and re-serializing it must not invent the field.
+    let event: Event = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/decision.accepted.json"
+    ))
+    .unwrap();
+    let expected = DecisionAcceptedPayload {
+        decision_id: "dec-1".to_owned(),
+        delegated_by: None,
+    };
+    assert_eq!(
+        validate(&event).unwrap(),
+        EventPayload::DecisionAccepted(expected.clone())
+    );
+    assert_eq!(
+        serde_json::to_value(&expected).unwrap(),
+        json!({ "decision_id": "dec-1" })
+    );
+}
+
+#[test]
+fn decision_accepted_rejects_delegated_by_that_is_not_a_human() {
+    for not_human in ["agent:claude:other", "alex", "human:", "human:  "] {
+        let mut event = delegated_acceptance_event();
+        event.payload["delegated_by"] = json!(not_human);
+        assert!(
+            matches!(
+                validate(&event),
+                Err(EventValidationError::DelegatedByNotHuman(_))
+            ),
+            "{not_human:?} must not be accepted as a delegator"
+        );
+    }
+}
+
+#[test]
+fn decision_accepted_rejects_empty_delegated_by() {
+    let mut event = delegated_acceptance_event();
+    event.payload["delegated_by"] = json!(" ");
+    assert!(matches!(
+        validate(&event),
+        Err(EventValidationError::EmptyField("payload.delegated_by"))
+    ));
+}
+
+#[test]
+fn decision_accepted_rejects_delegated_by_from_a_non_agent_accepter() {
+    // A delegation qualifies an agent deciding for itself. A human (or an untyped actor)
+    // accepting carries no delegation: a human who decides is recorded plainly.
+    for accepter in ["human:alex", "human-a", "service:api"] {
+        let mut event = delegated_acceptance_event();
+        event.actor_id = accepter.to_owned();
+        assert!(
+            matches!(
+                validate(&event),
+                Err(EventValidationError::DelegationRequiresAgentAccepter(_))
+            ),
+            "{accepter:?} must not be able to carry a delegation"
+        );
+    }
+}
+
+#[test]
+fn schema_rejects_delegated_by_that_is_not_a_human_actor() {
+    let schema: Value =
+        serde_json::from_str(include_str!("../../schemas/v0/decision.accepted.json")).unwrap();
+    let validator = jsonschema::validator_for(&schema).expect("schema compiles");
+    let mut event: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/delegation/decision.accepted.delegated.json"
+    ))
+    .unwrap();
+    assert!(validator.is_valid(&event));
+
+    event["payload"]["delegated_by"] = json!("agent:claude:other");
+    assert!(!validator.is_valid(&event));
+    event["payload"]["delegated_by"] = json!("human: ");
+    assert!(!validator.is_valid(&event));
 }
 
 #[test]

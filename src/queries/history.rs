@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use crate::error::QueryError;
 use crate::events::{
-    self, DecisionIdPayload, DecisionProposedPayload, DecisionRejectedPayload,
+    self, DecisionAcceptedPayload, DecisionProposedPayload, DecisionRejectedPayload,
     DecisionSupersededPayload, Event, EventId, EventPayload, EventSource, EventType,
     RelationAddedPayload, RelationKind as EventRelationKind,
 };
@@ -1647,7 +1647,7 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
     let mut ids = BTreeSet::new();
     match payload {
         EventPayload::DecisionProposed(DecisionProposedPayload { decision_id, .. })
-        | EventPayload::DecisionAccepted(DecisionIdPayload { decision_id }) => {
+        | EventPayload::DecisionAccepted(DecisionAcceptedPayload { decision_id, .. }) => {
             ids.insert(decision_id.clone());
         }
         EventPayload::DecisionRejected(DecisionRejectedPayload { decision_id, .. }) => {

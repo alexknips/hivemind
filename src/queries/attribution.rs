@@ -8,6 +8,8 @@
 //! - Does missing/thin CONTEXT predict failure?
 //! - Does human review improve outcomes?
 //! - Do joint human+AI decisions hold up better than either alone?
+//! - Do agent decisions made within a human's delegation hold up differently from ones an
+//!   agent made alone? (`by_delegation`, hivemind-zdsh.6)
 //!
 //! # Design constraints
 //! - Pure layer-2 read: no writes, no LLMs, no external APIs.
@@ -134,6 +136,11 @@ pub struct FailureModeReport {
     pub by_authorship: Vec<AttributionGroup>,
     /// Failure rates broken down by how substantively the decision was reviewed.
     pub by_review: Vec<AttributionGroup>,
+    /// Failure rates for decisions an agent made for itself, split by whether a human had
+    /// delegated the scope (`delegated`) or not (`agent_alone`) — the two cases that
+    /// `by_authorship` and `by_review` cannot tell apart (hivemind-zdsh.6). Decisions an
+    /// agent did not decide for itself belong to neither group and do not appear here.
+    pub by_delegation: Vec<AttributionGroup>,
     /// Failure rates broken down by which source system captured the decision.
     pub by_source: Vec<AttributionGroup>,
     /// Failure rates broken down by context richness (evidence/options/rationale buckets).
@@ -233,16 +240,20 @@ pub fn get_failure_attribution(
 
     // 5. Dimensional breakdowns.
     let by_authorship = breakdown_by(&pairs, baseline, "authorship", |_, c| {
-        authorship_label(c.authorship)
+        Some(authorship_label(c.authorship))
     });
-    let by_review = breakdown_by(&pairs, baseline, "review", |_, c| review_label(c.review));
-    let by_source = breakdown_by(&pairs, baseline, "source", |_, c| c.source.clone()); // ubs:ignore: owned String required by F: Fn(…) -> String
+    let by_review = breakdown_by(&pairs, baseline, "review", |_, c| {
+        Some(review_label(c.review))
+    });
+    let by_delegation = breakdown_by(&pairs, baseline, "delegation", |_, c| delegation_label(c));
+    let by_source = breakdown_by(&pairs, baseline, "source", |_, c| Some(c.source.clone())); // ubs:ignore: owned String required by F: Fn(…) -> Option<String>
     let by_context_richness = context_richness_breakdown(&pairs, baseline);
 
     // 6. Findings: top patterns by |effect_size|, filtered by min_sample_size.
     let all_groups: Vec<&AttributionGroup> = by_authorship
         .iter()
         .chain(by_review.iter())
+        .chain(by_delegation.iter())
         .chain(by_source.iter())
         .chain(by_context_richness.iter())
         .collect();
@@ -273,6 +284,7 @@ pub fn get_failure_attribution(
         corpus_stats,
         by_authorship,
         by_review,
+        by_delegation,
         by_source,
         by_context_richness,
         findings,
@@ -300,12 +312,15 @@ fn breakdown_by<F>(
     label_fn: F,
 ) -> Vec<AttributionGroup>
 where
-    F: Fn(&super::outcome::DecisionOutcome, &super::context::DecisionContext) -> String,
+    F: Fn(&super::outcome::DecisionOutcome, &super::context::DecisionContext) -> Option<String>,
 {
-    // Accumulate (total, failed) per label.
+    // Accumulate (total, failed) per label. A `None` label leaves the decision out of this
+    // dimension (it doesn't belong to any of its groups).
     let mut buckets: HashMap<String, (usize, usize)> = HashMap::new();
     for (outcome, context) in pairs {
-        let label = label_fn(outcome, context);
+        let Some(label) = label_fn(outcome, context) else {
+            continue;
+        };
         let entry = buckets.entry(label).or_insert((0, 0));
         entry.0 += 1;
         if !outcome.held_up {
@@ -427,6 +442,23 @@ fn authorship_label(shape: AuthorshipShape) -> String {
         AuthorshipShape::AgentProposedHumanAccepted => "agent_proposed_human_accepted".to_owned(),
         AuthorshipShape::AgentOnly => "agent_only".to_owned(),
         AuthorshipShape::Unknown => "unknown".to_owned(),
+    }
+}
+
+/// Which side of the delegation line an agent's decision falls on, or `None` when the
+/// decision is not an agent deciding for itself (hivemind-zdsh.6). The marker alone puts a
+/// decision in `delegated` (it can only be recorded on an agent's self-acceptance, and stays
+/// after a human later reviews it); an agent-authored, self-accepted decision without one is
+/// `agent_alone`. An unreviewed agent proposal is neither: nobody has decided it yet.
+fn delegation_label(context: &DecisionContext) -> Option<String> {
+    if context.delegated_by.is_some() {
+        Some("delegated".to_owned())
+    } else if context.authorship == AuthorshipShape::AgentOnly
+        && context.review == ReviewShape::SelfAccepted
+    {
+        Some("agent_alone".to_owned())
+    } else {
+        None
     }
 }
 

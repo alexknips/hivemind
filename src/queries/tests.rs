@@ -3331,6 +3331,7 @@ fn peer_reviewed_context(id: &str) -> DecisionContext {
         accepted_by: vec!["human:alice".to_owned(), "human:bob".to_owned()],
         source: "human".to_owned(),
         source_ref: None,
+        delegated_by: None,
         review: ReviewShape::PeerReviewed,
         accepted_count: 2,
         rejected_count: 0,

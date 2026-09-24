@@ -1,0 +1,15 @@
+{
+  "event_id": 2,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe30",
+  "correlation_id": "session-1",
+  "causation_event_id": 1,
+  "type": "decision.accepted",
+  "actor_id": "agent:claude:analyst",
+  "source": "agent",
+  "source_ref": "agent:claude:session-1",
+  "payload": {
+    "decision_id": "dec-1",
+    "delegated_by": "human:alex"
+  },
+  "ts": "2026-05-17T20:41:43Z"
+}

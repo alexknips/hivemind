@@ -74,6 +74,54 @@ fn upserts_decision_with_topic_keys() -> Result<()> {
 }
 
 #[test]
+fn upserts_delegated_by_onto_an_existing_decision_without_disturbing_it() -> Result<()> {
+    // hivemind-zdsh.6: the delegation marker is a Decision column, set by a second upsert
+    // (the acceptance) after the proposal's own.
+    let temp_dir = test_graph_dir("delegated-by");
+    let graph = KuzuGraph::open(&temp_dir)?;
+    graph.upsert_node(
+        NodeKind::Decision,
+        "decision-1",
+        &GraphProperties::from([
+            (
+                "title".to_string(),
+                GraphValue::String("Agent decides".to_string()),
+            ),
+            ("event_origin".to_string(), GraphValue::Int(1)),
+        ]),
+    )?;
+    graph.upsert_node(
+        NodeKind::Decision,
+        "decision-1",
+        &GraphProperties::from([(
+            "delegated_by".to_string(),
+            GraphValue::String("human:alex".to_string()),
+        )]),
+    )?;
+
+    let rows = graph.query(
+        "MATCH (decision:`Decision` {id: $id}) RETURN decision.title AS title, decision.delegated_by AS delegated_by, decision.event_origin AS event_origin;",
+        &GraphParams::from([(
+            "id".to_string(),
+            GraphValue::String("decision-1".to_string()),
+        )]),
+    )?;
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("delegated_by"),
+        Some(&GraphValue::String("human:alex".to_string()))
+    );
+    assert_eq!(
+        rows[0].get("title"),
+        Some(&GraphValue::String("Agent decides".to_string()))
+    );
+    assert_eq!(rows[0].get("event_origin"), Some(&GraphValue::Int(1)));
+    let _ = fs::remove_dir_all(temp_dir);
+    Ok(())
+}
+
+#[test]
 fn upserts_hypothesis_with_kind_check_by_and_would_change_if() -> Result<()> {
     let temp_dir = test_graph_dir("hypothesis-kind");
     let graph = KuzuGraph::open(&temp_dir)?;

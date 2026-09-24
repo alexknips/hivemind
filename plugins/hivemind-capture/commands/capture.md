@@ -23,13 +23,17 @@ assumptions that may later be supported or refuted.
 For decisions, keep using structured decision fields:
 
 ```text
-/hivemind-capture:capture "selected direction" --kind decision --title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option]
+/hivemind-capture:capture "selected direction" --kind decision --title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option] [--decided-by actor-id] [--delegated-by human:name]
 ```
 
 `--chose option` means the decision was already made: it self-accepts
 immediately (or accepts from `--decided-by <actor-id>` when someone else
 decided). Pass `--still-proposed` instead to float a leaning that still
 awaits someone else's decision.
+
+When you decided within a scope a human explicitly delegated to you, add
+`--delegated-by <human:name>` so the record shows the delegation rather than an
+agent deciding alone. It requires `--chose` and an agent actor.
 
 When `--kind` is omitted, the helper delegates classification to the configured
 `hivemind-classifier` subagent if it is installed; otherwise it emits nothing.

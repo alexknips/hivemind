@@ -70,6 +70,7 @@ fn every_write_path_event_validates_against_its_schema() {
             option_labels: &["Option A".to_owned(), "Option B".to_owned()],
             chosen_option_id: Some(&option_a),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: std::slice::from_ref(&hypothesis_id),
             evidence_ids: std::slice::from_ref(&evidence_id),
@@ -77,6 +78,34 @@ fn every_write_path_event_validates_against_its_schema() {
             question: Some("Which option should we use?"),
         })
         .expect("propose decision");
+
+    // -- decision.accepted carrying a delegation marker (hivemind-zdsh.6): an agent deciding
+    // within a scope a human delegated, so the optional `delegated_by` field is validated
+    // against the schema's `additionalProperties: false` rather than a hand-authored fixture --
+    let delegated_option = commands
+        .record_option(actor, "Delegated option", "n/a")
+        .expect("record delegated option");
+    commands
+        .propose_decision(DecisionProposalInput {
+            project: None,
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id: actor,
+            title: "A decision made within a delegated scope",
+            rationale: "This decision exists so the test can exercise the delegation marker.",
+            topic_keys: &["conformance".to_owned()],
+            option_ids: std::slice::from_ref(&delegated_option),
+            option_labels: &["Delegated option".to_owned()],
+            chosen_option_id: Some(&delegated_option),
+            decided_by: None,
+            delegated_by: Some("human:contract-owner"),
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect("propose delegated decision");
 
     // -- decision.rejected (with reason) via disagree --
     let rejected_option = commands
@@ -95,6 +124,7 @@ fn every_write_path_event_validates_against_its_schema() {
             option_labels: &["Rejected option".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: true,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -124,6 +154,7 @@ fn every_write_path_event_validates_against_its_schema() {
             option_labels: &["Old option".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: true,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -337,6 +368,7 @@ fn every_write_path_event_validates_against_its_schema() {
             option_labels: &["Grounded option".to_owned()],
             chosen_option_id: Some(&grounded_option),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: std::slice::from_ref(&bet_id),
             evidence_ids: &[],
@@ -404,6 +436,13 @@ fn every_write_path_event_validates_against_its_schema() {
                 && event.payload["relation"] == "FOLLOWS_FROM"
         }),
         "expected a FOLLOWS_FROM relation.added event"
+    );
+    assert!(
+        events.iter().any(|event| {
+            event.event_type == EventType::DecisionAccepted
+                && event.payload["delegated_by"] == "human:contract-owner"
+        }),
+        "expected a decision.accepted event carrying delegated_by"
     );
 
     for event in &events {

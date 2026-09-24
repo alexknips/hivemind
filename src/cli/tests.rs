@@ -2633,6 +2633,222 @@ fn decision_capture_with_decided_by_is_the_acceptance_test_for_ledger_fidelity()
     let _ = std::fs::remove_dir_all(&hivemind_dir);
 }
 
+/// The lines of one decision's bullet in a `digest --summary` rendering: from its
+/// `• [<id>]` line up to the next bullet or blank line.
+fn digest_block<'a>(summary: &'a str, decision_id: &str) -> Vec<&'a str> {
+    let marker = format!("• [{decision_id}]");
+    let mut block = Vec::new();
+    let mut inside = false;
+    for line in summary.lines() {
+        if line.starts_with("• [") {
+            inside = line.starts_with(&marker);
+        } else if line.is_empty() {
+            inside = false;
+        }
+        if inside {
+            block.push(line);
+        }
+    }
+    block
+}
+
+#[test]
+fn digest_shows_the_three_attribution_cases_side_by_side() {
+    // hivemind-zdsh.6, Alex's attribution ruling: (1) an agent asks and the human chooses ->
+    // the human decided; (2) a human delegated a scope and the agent decides within it -> the
+    // agent decided, the delegation visible on the record; (3) an agent decides alone -> the
+    // agent decided, nothing on the record says a human sanctioned it. All three land as
+    // accepted, and the digest has to let a reader tell them apart at a glance.
+    let hivemind_dir = unique_test_dir("delegation-three-cases");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let capture = |title: &str, session: &str, extra: &[&str]| -> String {
+        let mut args = vec![
+            "hivemind",
+            "--hivemind-dir",
+            dir,
+            "emit",
+            "decision.capture",
+            "--agent-tool",
+            "claude",
+            "--agent-session",
+            session,
+            "--title",
+            title,
+            "--rationale",
+            "A stated, self-contained reason that reads without the source conversation",
+            "--topic-keys",
+            "governance",
+            "--options",
+            "Ship it,Hold it",
+            "--chose",
+            "Ship it",
+        ];
+        args.extend_from_slice(extra);
+        run(&Cli::parse_from(args)).expect("capture succeeds")
+    };
+
+    let human_decided = capture(
+        "Case 1: agent asked, the human chose",
+        "scribe",
+        &["--decided-by", "human:alex"],
+    );
+    let delegated = capture(
+        "Case 2: agent decided within a delegated scope",
+        "builder",
+        &["--delegated-by", "human:alex"],
+    );
+    let decided_alone = capture("Case 3: agent decided alone", "builder", &[]);
+
+    let summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "digest",
+        "--window",
+        "7d",
+        "--summary",
+    ]))
+    .expect("digest summary succeeds");
+
+    let case1 = digest_block(&summary, &human_decided);
+    let case2 = digest_block(&summary, &delegated);
+    let case3 = digest_block(&summary, &decided_alone);
+    for (name, block) in [("1", &case1), ("2", &case2), ("3", &case3)] {
+        assert!(
+            block
+                .first()
+                .is_some_and(|line| line.ends_with("(accepted)")),
+            "case {name} must land as accepted: {summary}"
+        ); // ubs:ignore: test-only assertion
+    }
+    // Case 1: the human is one of the deciders, named on the `By:` line; no delegation.
+    assert!(
+        case1.contains(&"  By: agent:claude:scribe, human:alex"),
+        "case 1 names the human who decided: {summary}"
+    ); // ubs:ignore: test-only assertion
+    assert!(
+        !case1.iter().any(|line| line.contains("Delegated by")),
+        "case 1 carries no delegation: {summary}"
+    ); // ubs:ignore: test-only assertion
+       // Case 2: only the agent decided (no human on `By:`), and the delegating human is
+       // stated on its own line.
+    assert!(
+        case2.contains(&"  By: agent:claude:builder"),
+        "case 2 is the agent's own decision: {summary}"
+    ); // ubs:ignore: test-only assertion
+    assert!(
+        case2.contains(&"  Delegated by: human:alex"),
+        "case 2 shows the delegation: {summary}"
+    ); // ubs:ignore: test-only assertion
+       // Case 3: the same agent decided the same way, with nothing on the record saying a
+       // human sanctioned it.
+    assert!(
+        case3.contains(&"  By: agent:claude:builder"),
+        "case 3 is the agent's own decision: {summary}"
+    ); // ubs:ignore: test-only assertion
+    assert!(
+        !case3.iter().any(|line| line.contains("Delegated by")),
+        "case 3 carries no delegation: {summary}"
+    ); // ubs:ignore: test-only assertion
+
+    // `verify` (the decision brief) shows the same fact, as text and as JSON.
+    let verify_text = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "--summary",
+        "verify",
+        "--id",
+        &delegated,
+    ]))
+    .expect("verify summary succeeds");
+    assert!(
+        verify_text.contains("decided by: agent:claude:builder")
+            && verify_text.contains("delegated by: human:alex"),
+        "verify text shows who decided and who delegated: {verify_text}"
+    ); // ubs:ignore: test-only assertion
+    let verify_json = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "verify",
+        "--id",
+        &delegated,
+    ]))
+    .expect("verify json succeeds");
+    let verify_json: serde_json::Value = serde_json::from_str(&verify_json).expect("valid json");
+    assert_eq!(
+        verify_json["data"]["decided_by"]["delegated_by"],
+        serde_json::json!("human:alex")
+    );
+    let alone_text = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "--summary",
+        "verify",
+        "--id",
+        &decided_alone,
+    ]))
+    .expect("verify summary succeeds");
+    assert!(
+        !alone_text.contains("delegated by"),
+        "an agent that decided alone has no delegation line: {alone_text}"
+    ); // ubs:ignore: test-only assertion
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn decision_capture_refuses_a_delegation_that_is_not_an_agent_deciding_for_itself() {
+    // A human recording under their own name is not "an agent deciding within a delegation",
+    // and nothing may be written for a refused capture.
+    let hivemind_dir = unique_test_dir("delegation-refused");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let refused = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:sam",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "A human cannot borrow a delegation",
+        "--rationale",
+        "Delegation only qualifies an agent deciding for itself",
+        "--topic-keys",
+        "governance",
+        "--options",
+        "yes,no",
+        "--chose",
+        "yes",
+        "--delegated-by",
+        "human:alex",
+    ]));
+    assert!(refused.is_err(), "a human recorder must be refused");
+
+    let digest = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "digest",
+        "--window",
+        "7d",
+        "--summary",
+    ]))
+    .expect("digest summary succeeds");
+    assert!(
+        digest.contains("No decisions found"),
+        "the refused capture must leave nothing behind: {digest}"
+    ); // ubs:ignore: test-only assertion
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
 #[test]
 fn ledger_history_cli_queries_and_exports_read_only_summary() {
     let hivemind_dir = unique_test_dir("query-ledger-history");

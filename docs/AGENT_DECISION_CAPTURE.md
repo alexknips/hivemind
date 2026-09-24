@@ -44,6 +44,47 @@ self-accepts it immediately after proposing, from `--actor` (or from
 actor). Pass `--still-proposed` to keep a genuine open recommendation at
 `proposed` instead of self-accepting it.
 
+### Who decided: three cases
+
+`--decided-by` and `--delegated-by` are how the ledger tells three different
+situations apart (Alex's attribution ruling, hivemind-zdsh.3 / zdsh.6):
+
+| Situation | Capture | What the record shows |
+|---|---|---|
+| The agent asked and a human chose | `--decided-by human:<name>` | the human decided; the agent is the recorder |
+| A human delegated a scope and the agent decided within it | `--delegated-by human:<name>` | the agent decided, with the delegating human on the record |
+| The agent decided alone | neither flag | the agent decided; nothing says a human sanctioned it |
+
+`--delegated-by` is recorded on the agent's own `decision.accepted` event and
+projected as a `delegated_by` property on the Decision node. It is not a new
+node or edge kind, and it does not change the authorship or review shapes: an
+agent deciding under a delegation still derives `agent_only` +
+`self_accepted`, and `delegated_by` is the extra fact that separates it from an
+agent deciding alone. `hivemind digest` prints it as a `Delegated by:` line
+under `By:`; `query verify` prints `delegated by:` and returns
+`decided_by.delegated_by`; `get_decision_context` returns `delegated_by`; and
+the failure-attribution report splits agent self-accepted decisions into a
+`delegation` dimension (`delegated` vs `agent_alone`). A decision with no
+marker has no `delegated_by` key at all, never a null.
+
+Rules enforced at write time (CLI, MCP `capture_decision`, REST), each refused
+before anything is appended:
+
+- `--delegated-by` must name a `human:<name>` actor.
+- The recording actor must be an `agent:<tool>:<name>` actor deciding for
+  itself: a human recorder, or a `--decided-by` naming anyone but the recording
+  agent, is refused (a human who decided is recorded with `--decided-by`).
+- It requires `--chose` and conflicts with `--still-proposed`: a delegation
+  qualifies a decision the agent already made, not an open recommendation.
+- On the command layer, `Commands::accept_decision_delegated` additionally
+  requires that the accepting agent is the decision's own proposer. A delegation
+  never attaches to someone else's proposal; a human or peer accepting an
+  agent's proposal is recorded plainly.
+
+A standing delegation ("Alex delegated small dependency bumps to me") is not
+a record of its own: the agent repeats the same `--delegated-by` value on every
+capture within that scope. Old events without the field replay unchanged.
+
 When the decision comes from a human's verbatim answer to a question you
 asked, use `--quote` and `--question` together instead of folding the quote
 into `--rationale`: `--quote "1a" --question "Should a personal project be

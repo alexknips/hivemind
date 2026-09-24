@@ -218,6 +218,7 @@ fn propose_decision_fans_out_relation_events_with_causation_linkage() {
             option_labels: &["A".to_owned(), "B".to_owned()],
             chosen_option_id: Some(option_b.as_str()),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: std::slice::from_ref(&hypothesis_id),
             evidence_ids: std::slice::from_ref(&evidence_id),
@@ -291,6 +292,7 @@ fn propose_decision_stores_paired_quote_and_question() {
             option_labels: &["A".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -335,6 +337,7 @@ fn propose_decision_rejects_quote_without_question() {
             option_labels: &[],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -371,6 +374,7 @@ fn propose_decision_rejects_question_without_quote() {
             option_labels: &[],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -408,6 +412,7 @@ fn propose_decision_rejects_rationale_shorter_than_the_minimum_length() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -442,6 +447,7 @@ fn propose_decision_rejects_rationale_with_too_few_words() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -476,6 +482,7 @@ fn propose_decision_rejects_rationale_with_a_bare_list_reference() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -516,6 +523,7 @@ fn propose_decision_allows_a_list_shaped_rationale_when_quote_and_question_are_g
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -547,6 +555,7 @@ fn propose_decision_refuses_unregistered_project_handle() {
             option_labels: &["Option A".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -587,6 +596,7 @@ fn propose_decision_accepts_registered_project_handle_and_records_stated_source(
             option_labels: &["Option A".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -637,6 +647,7 @@ fn propose_decision_without_project_records_personal_fallback_and_no_handle() {
             option_labels: &["Option A".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -684,6 +695,7 @@ fn propose_decision_rejects_reserved_personal_prefix_as_stated_project() {
             option_labels: &["Option A".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -721,6 +733,7 @@ fn supersede_inherits_old_decision_project_when_not_restated() {
             option_labels: &["Option A".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -794,6 +807,7 @@ fn supersede_overrides_project_when_explicitly_stated() {
             option_labels: &["Option A".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -877,6 +891,7 @@ impl PlacementFixture {
             option_labels: &self.option_labels,
             chosen_option_id: Some(self.option_id.as_str()),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1141,6 +1156,7 @@ fn direct_agent_decision_persists_agent_provenance() {
                 option_labels: &["Keep substrate small".to_owned()],
                 chosen_option_id: None,
                 decided_by: None,
+                delegated_by: None,
                 still_proposed: false,
                 hypothesis_ids: &[],
                 evidence_ids: &[],
@@ -1195,6 +1211,7 @@ fn accept_and_reject_invariant_for_same_actor_is_enforced() {
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1235,6 +1252,7 @@ fn propose_decision_with_decided_by_emits_accepted_event_from_that_actor() {
             option_labels: &["Ship it".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: Some("human:alex"),
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1281,6 +1299,7 @@ fn propose_decision_decided_by_requires_chosen_option_id() {
         option_labels: &["A".to_owned()],
         chosen_option_id: None,
         decided_by: Some("human:alex"),
+        delegated_by: None,
         still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],
@@ -1317,6 +1336,7 @@ fn propose_decision_chosen_option_defaults_to_self_accepted() {
             option_labels: &["A".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1360,6 +1380,7 @@ fn propose_decision_still_proposed_keeps_chosen_option_open() {
             option_labels: &["A".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
+            delegated_by: None,
             still_proposed: true,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1397,6 +1418,7 @@ fn propose_decision_still_proposed_conflicts_with_decided_by() {
         option_labels: &[],
         chosen_option_id: Some(option_id.as_str()),
         decided_by: Some("human:alex"),
+        delegated_by: None,
         still_proposed: true,
         hypothesis_ids: &[],
         evidence_ids: &[],
@@ -1407,6 +1429,308 @@ fn propose_decision_still_proposed_conflicts_with_decided_by() {
         result.is_err(),
         "still_proposed together with decided_by must be rejected"
     );
+}
+
+/// An agent capture with a chosen option, ready for the delegation tests to vary
+/// (`DecisionProposalInput` is `Copy`, so tests use struct-update syntax on this base).
+fn agent_capture_input<'a>(
+    actor_id: &'a str,
+    option_ids: &'a [String],
+    labels: &'a [String],
+    topic_keys: &'a [String],
+) -> DecisionProposalInput<'a> {
+    DecisionProposalInput {
+        grounding: Grounding::NotAsked,
+        expressed_confidence: None,
+        project: None,
+        actor_id,
+        title: "Agent decides within a delegated scope",
+        rationale: "The owner delegated this class of small choice to the agent up front",
+        topic_keys,
+        option_ids,
+        option_labels: labels,
+        chosen_option_id: option_ids.first().map(String::as_str),
+        decided_by: None,
+        delegated_by: None,
+        still_proposed: false,
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+        quote: None,
+        question: None,
+    }
+}
+
+fn accepted_events(ledger: &InMemoryEventLedger) -> Vec<crate::events::Event> {
+    ledger
+        .read(0, 50)
+        .expect("read events")
+        .into_iter()
+        .filter(|event| event.event_type == EventType::DecisionAccepted)
+        .collect()
+}
+
+#[test]
+fn propose_decision_with_delegated_by_records_the_marker_on_the_agents_self_acceptance() {
+    // hivemind-zdsh.6, case 2 of Alex's attribution ruling: an agent decides for itself
+    // within a scope a human delegated. The agent is still the decider (self-accept), and
+    // the delegation rides on that acceptance rather than on a new node or edge kind.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let agent = "agent:claude:builder";
+    let option_id = commands
+        .record_option(agent, "Ship it", "Option A")
+        .expect("option");
+    let option_ids = [option_id];
+    let labels = ["Ship it".to_owned()];
+    let topics = ["governance".to_owned()];
+
+    let decision_id = commands
+        .propose_decision(DecisionProposalInput {
+            delegated_by: Some("human:alex"),
+            ..agent_capture_input(agent, &option_ids, &labels, &topics)
+        })
+        .expect("delegated capture succeeds");
+
+    let accepted = accepted_events(&ledger);
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(accepted[0].actor_id, agent);
+    assert_eq!(
+        accepted[0].payload,
+        json!({ "decision_id": decision_id, "delegated_by": "human:alex" })
+    );
+    let proposal = ledger
+        .read(0, 50)
+        .expect("read events")
+        .into_iter()
+        .find(|event| event.event_type == EventType::DecisionProposed)
+        .expect("proposal event present");
+    assert!(
+        proposal.payload.get("delegated_by").is_none(),
+        "the marker belongs on the acceptance, not the proposal"
+    );
+}
+
+#[test]
+fn propose_decision_without_delegated_by_leaves_the_agents_self_acceptance_unmarked() {
+    // Case 3 (agent decides alone) must stay distinguishable from case 2: no marker.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let agent = "agent:claude:builder";
+    let option_id = commands
+        .record_option(agent, "Ship it", "Option A")
+        .expect("option");
+    let option_ids = [option_id];
+    let labels = ["Ship it".to_owned()];
+    let topics = ["governance".to_owned()];
+
+    let decision_id = commands
+        .propose_decision(agent_capture_input(agent, &option_ids, &labels, &topics))
+        .expect("capture succeeds");
+
+    let accepted = accepted_events(&ledger);
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(accepted[0].actor_id, agent);
+    assert_eq!(accepted[0].payload, json!({ "decision_id": decision_id }));
+}
+
+#[test]
+fn propose_decision_delegated_by_accepts_a_decided_by_naming_the_recording_agent() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let agent = "agent:claude:builder";
+    let option_id = commands
+        .record_option(agent, "Ship it", "Option A")
+        .expect("option");
+    let option_ids = [option_id];
+    let labels = ["Ship it".to_owned()];
+    let topics = ["governance".to_owned()];
+
+    commands
+        .propose_decision(DecisionProposalInput {
+            decided_by: Some(agent),
+            delegated_by: Some("human:alex"),
+            ..agent_capture_input(agent, &option_ids, &labels, &topics)
+        })
+        .expect("decided_by naming the recorder is the same self-accept");
+
+    let accepted = accepted_events(&ledger);
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(accepted[0].actor_id, agent);
+    assert_eq!(
+        accepted[0].payload.get("delegated_by"),
+        Some(&json!("human:alex"))
+    );
+}
+
+#[test]
+fn propose_decision_refuses_invalid_delegation_before_writing_anything() {
+    let agent = "agent:claude:builder";
+    let topics = ["governance".to_owned()];
+    let labels = ["Ship it".to_owned()];
+
+    struct Refused<'a> {
+        actor: &'a str,
+        chosen: bool,
+        still_proposed: bool,
+        decided_by: Option<&'a str>,
+        delegated_by: &'a str,
+        why: &'a str,
+    }
+    let cases = [
+        Refused {
+            actor: agent,
+            chosen: false,
+            still_proposed: false,
+            decided_by: None,
+            delegated_by: "human:alex",
+            why: "no chosen option to qualify",
+        },
+        Refused {
+            actor: agent,
+            chosen: true,
+            still_proposed: true,
+            decided_by: None,
+            delegated_by: "human:alex",
+            why: "open recommendation is not decided",
+        },
+        Refused {
+            actor: agent,
+            chosen: true,
+            still_proposed: false,
+            decided_by: Some("human:sam"),
+            delegated_by: "human:alex",
+            why: "someone else decided; decided_by already names them",
+        },
+        Refused {
+            actor: agent,
+            chosen: true,
+            still_proposed: false,
+            decided_by: None,
+            delegated_by: "agent:claude:other",
+            why: "delegator is not a human",
+        },
+        Refused {
+            actor: agent,
+            chosen: true,
+            still_proposed: false,
+            decided_by: None,
+            delegated_by: "alex",
+            why: "delegator is not a typed human id",
+        },
+        Refused {
+            actor: "human:sam",
+            chosen: true,
+            still_proposed: false,
+            decided_by: None,
+            delegated_by: "human:alex",
+            why: "a human recorder is not an agent deciding under a delegation",
+        },
+    ];
+
+    for Refused {
+        actor,
+        chosen,
+        still_proposed,
+        decided_by,
+        delegated_by,
+        why,
+    } in cases
+    {
+        let ledger = InMemoryEventLedger::new();
+        let commands = Commands::new(&ledger);
+        let option_id = commands
+            .record_option(actor, "Ship it", "Option A")
+            .expect("option");
+        let option_ids = [option_id];
+        let base = agent_capture_input(actor, &option_ids, &labels, &topics);
+
+        let result = commands.propose_decision(DecisionProposalInput {
+            chosen_option_id: if chosen { base.chosen_option_id } else { None },
+            still_proposed,
+            decided_by,
+            delegated_by: Some(delegated_by),
+            ..base
+        });
+
+        assert!(result.is_err(), "must be refused: {why}");
+        assert!(
+            ledger.read(0, 50).expect("read events").is_empty(),
+            "a refused delegated capture must not leave a half-written proposal behind ({why})"
+        );
+    }
+}
+
+#[test]
+fn accept_decision_delegated_marks_an_agents_acceptance_of_its_own_proposal() {
+    // The still-proposed-then-accepted route: the agent first recorded an open
+    // recommendation, then decides it under a delegation.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let agent = "agent:claude:builder";
+    let option_id = commands
+        .record_option(agent, "Ship it", "Option A")
+        .expect("option");
+    let option_ids = [option_id];
+    let labels = ["Ship it".to_owned()];
+    let topics = ["governance".to_owned()];
+    let decision_id = commands
+        .propose_decision(DecisionProposalInput {
+            still_proposed: true,
+            ..agent_capture_input(agent, &option_ids, &labels, &topics)
+        })
+        .expect("open recommendation");
+    assert!(accepted_events(&ledger).is_empty());
+
+    commands
+        .accept_decision_delegated(&decision_id, agent, "human:alex")
+        .expect("agent accepts its own proposal under a delegation");
+
+    let accepted = accepted_events(&ledger);
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(
+        accepted[0].payload,
+        json!({ "decision_id": decision_id, "delegated_by": "human:alex" })
+    );
+}
+
+#[test]
+fn accept_decision_delegated_refuses_a_decision_someone_else_proposed() {
+    // A delegation qualifies an agent's OWN decision. Accepting another actor's proposal is
+    // peer review, recorded plainly by `accept_decision`; it cannot borrow a delegation.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let proposer = "agent:claude:builder";
+    let option_id = commands
+        .record_option(proposer, "Ship it", "Option A")
+        .expect("option");
+    let option_ids = [option_id];
+    let labels = ["Ship it".to_owned()];
+    let topics = ["governance".to_owned()];
+    let decision_id = commands
+        .propose_decision(DecisionProposalInput {
+            still_proposed: true,
+            ..agent_capture_input(proposer, &option_ids, &labels, &topics)
+        })
+        .expect("open recommendation");
+
+    let other_agent =
+        commands.accept_decision_delegated(&decision_id, "agent:claude:other", "human:alex");
+    assert!(
+        other_agent.is_err(),
+        "another agent must not accept under a delegation"
+    );
+    let human = commands.accept_decision_delegated(&decision_id, "human:sam", "human:alex");
+    assert!(human.is_err(), "a human accepter carries no delegation");
+    let missing = commands.accept_decision_delegated("decision-missing", proposer, "human:alex");
+    assert!(missing.is_err(), "an unknown decision cannot be accepted");
+    assert!(
+        accepted_events(&ledger).is_empty(),
+        "no refused delegated accept may reach the ledger"
+    );
+
+    commands
+        .accept_decision(&decision_id, "agent:claude:other")
+        .expect("plain peer acceptance stays available");
 }
 
 #[test]
@@ -1433,6 +1757,7 @@ fn propose_decision_rejects_mismatched_option_labels_length() {
         option_labels: &["Only one label".to_owned()],
         chosen_option_id: None,
         decided_by: None,
+        delegated_by: None,
         still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],
@@ -1475,6 +1800,7 @@ project for non-coders, anyone registers, parent const";
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1511,6 +1837,7 @@ fn propose_decision_rejects_title_at_max_len_plus_one() {
         option_labels: &[],
         chosen_option_id: None,
         decided_by: None,
+        delegated_by: None,
         still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],
@@ -1546,6 +1873,7 @@ fn propose_decision_accepts_title_at_exactly_max_len() {
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1577,6 +1905,7 @@ fn propose_decision_rejects_multi_sentence_title() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1614,6 +1943,7 @@ fn propose_decision_rejects_numbered_list_title() {
             option_labels: &[],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1651,6 +1981,7 @@ fn propose_decision_accepts_title_with_single_trailing_period_and_version_dots()
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1681,6 +2012,7 @@ fn supersede_rejects_new_title_over_max_length() {
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1740,6 +2072,7 @@ fn propose_decision_persists_option_descriptions_on_the_event() {
             option_labels: &["Amazon SQS".to_owned(), "Kafka".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1796,6 +2129,7 @@ fn supersede_requires_both_decisions_to_exist() {
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1817,6 +2151,7 @@ fn supersede_requires_both_decisions_to_exist() {
             option_labels: &["B".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1855,6 +2190,7 @@ fn disagree_records_reason_and_is_idempotent_for_same_actor() {
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -1917,6 +2253,7 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -2029,6 +2366,7 @@ fn attach_evidence_requires_existing_endpoints() {
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -2429,6 +2767,7 @@ fn propose_decision_normalizes_topic_keys() {
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -2495,6 +2834,7 @@ fn propose_minimal_decision(commands: &Commands<'_, InMemoryEventLedger>, title:
             option_labels: &["Only option".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: true,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -2531,6 +2871,7 @@ fn propose_decision_with_declared_grounding_creates_follows_from_edge_with_causa
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: true,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -2593,6 +2934,7 @@ fn propose_decision_rejects_declared_grounding_with_nothing_named() {
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: true,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -2643,6 +2985,7 @@ fn propose_decision_rejects_self_premise() {
                 option_labels: &["A".to_owned()],
                 chosen_option_id: None,
                 decided_by: None,
+                delegated_by: None,
                 still_proposed: true,
                 hypothesis_ids: &[],
                 evidence_ids: &[],
@@ -2694,6 +3037,7 @@ fn propose_decision_rejects_nonexistent_premise() {
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: true,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -2740,6 +3084,7 @@ fn propose_decision_reports_stale_premise_when_superseded() {
                 option_labels: &["A".to_owned()],
                 chosen_option_id: None,
                 decided_by: None,
+                delegated_by: None,
                 still_proposed: true,
                 hypothesis_ids: &[],
                 evidence_ids: &[],
@@ -2797,6 +3142,7 @@ fn propose_decision_reports_only_rejected_or_superseded_premises_as_stale() {
                 option_labels: &["A".to_owned()],
                 chosen_option_id: None,
                 decided_by: None,
+                delegated_by: None,
                 still_proposed: true,
                 hypothesis_ids: &[],
                 evidence_ids: &[],
@@ -2839,6 +3185,7 @@ fn propose_decision_validates_expressed_confidence_vocabulary() {
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: true,
             hypothesis_ids: &[],
             evidence_ids: &[],
@@ -2875,6 +3222,7 @@ fn propose_decision_stores_expressed_confidence_from_input() {
             option_labels: &["A".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: true,
             hypothesis_ids: &[],
             evidence_ids: &[],

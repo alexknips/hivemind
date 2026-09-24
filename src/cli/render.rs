@@ -560,6 +560,12 @@ fn write_decided_by(output: &mut String, decided_by: &DecidedBy) {
             );
         }
     }
+    // Case 2 of the attribution ruling (hivemind-zdsh.6): the agent decided, but within a
+    // scope a human delegated — stated on its own line so it can't be missed or confused
+    // with an agent that decided alone (which has no such line).
+    if let Some(delegated_by) = decided_by.delegated_by.as_deref() {
+        let _ = writeln!(output, "  delegated by: {delegated_by}");
+    }
 }
 
 /// The short reasons a decision no longer holds, in the order they were derived and without

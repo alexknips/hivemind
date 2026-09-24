@@ -230,6 +230,10 @@ pub(crate) struct CaptureDecisionArgs {
     /// `chosen_option_label`. See `decided_by` on `DecisionProposalInput`. Mutually exclusive
     /// with `still_proposed`.
     pub(crate) decided_by: Option<String>,
+    /// The human whose delegated scope this decision falls within, when `actor_id` (an
+    /// agent) decided it for itself. Requires `chosen_option_label`. See `delegated_by` on
+    /// `DecisionProposalInput`.
+    pub(crate) delegated_by: Option<String>,
     /// Keep the decision at `proposed` even though `chosen_option_label` is set. See
     /// `still_proposed` on `DecisionProposalInput`.
     pub(crate) still_proposed: bool,
@@ -310,6 +314,7 @@ impl CaptureDecisionArgs {
 
         let chosen_option_label = optional_string(args, "chosen_option_label")?;
         let decided_by = optional_string(args, "decided_by")?;
+        let delegated_by = optional_string(args, "delegated_by")?;
         let still_proposed = optional_bool(args, "still_proposed")?;
         let hypothesis_ids = optional_string_array(args, "hypothesis_ids")?;
         let evidence_ids = optional_string_array(args, "evidence_ids")?;
@@ -317,6 +322,11 @@ impl CaptureDecisionArgs {
         if decided_by.is_some() && chosen_option_label.is_none() {
             return Err(CoreError::InvalidArgument(
                 "decided_by requires chosen_option_label".to_owned(),
+            ));
+        }
+        if delegated_by.is_some() && chosen_option_label.is_none() {
+            return Err(CoreError::InvalidArgument(
+                "delegated_by requires chosen_option_label".to_owned(),
             ));
         }
 
@@ -338,6 +348,7 @@ impl CaptureDecisionArgs {
             options,
             chosen_option_label,
             decided_by,
+            delegated_by,
             still_proposed,
             hypothesis_ids,
             evidence_ids,
@@ -400,6 +411,7 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
             option_labels: &option_labels,
             chosen_option_id: chosen_option_id.as_deref(),
             decided_by: args.decided_by.as_deref(),
+            delegated_by: args.delegated_by.as_deref(),
             still_proposed: args.still_proposed,
             hypothesis_ids: &args.hypothesis_ids,
             evidence_ids: &args.evidence_ids,
@@ -413,6 +425,7 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
         "option_ids": option_ids,
         "chosen_option_id": chosen_option_id,
         "decided_by": args.decided_by,
+        "delegated_by": args.delegated_by,
         "still_proposed": args.still_proposed,
     });
     insert_placement(&mut reply, &placement);

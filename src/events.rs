@@ -231,8 +231,15 @@ pub struct DecisionProposedPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DecisionIdPayload {
+pub struct DecisionAcceptedPayload {
     pub decision_id: String,
+    /// The human whose delegated scope an agent's self-acceptance falls within
+    /// (hivemind-zdsh.6). Present only when the accepting actor is an agent accepting a
+    /// decision it proposed itself; absent means "not decided under a stated delegation",
+    /// which for an agent self-accept is the agent-decided-alone case. `#[serde(default)]`
+    /// so every event predating this field still parses and replays unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_by: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -868,7 +875,7 @@ pub struct ProjectAnchorPayload {
 pub enum EventPayload {
     DecisionProposed(DecisionProposedPayload),
     DecisionRequested(DecisionRequestedPayload),
-    DecisionAccepted(DecisionIdPayload),
+    DecisionAccepted(DecisionAcceptedPayload),
     DecisionRejected(DecisionRejectedPayload),
     DecisionSuperseded(DecisionSupersededPayload),
     EvidenceRecorded(EvidenceRecordedPayload),
@@ -1102,6 +1109,12 @@ pub enum EventValidationError {
     #[error("{0} requires {1} — a verbatim quote with no stated question, or a question with no quote, is unreadable once the source conversation is gone")]
     RequiresPairedField(&'static str, &'static str),
 
+    #[error("payload.delegated_by must name a human actor (human:<name>), got {0:?}")]
+    DelegatedByNotHuman(String),
+
+    #[error("payload.delegated_by is only valid on an agent's own acceptance: accepting actor {0:?} is not an agent (agent:<tool>:<name>)")]
+    DelegationRequiresAgentAccepter(String),
+
     #[error("payload does not match event type {event_type:?}: {source}")]
     Payload {
         event_type: EventType,
@@ -1159,8 +1172,12 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             Ok(EventPayload::DecisionRequested(payload))
         }
         EventType::DecisionAccepted => {
-            let payload: DecisionIdPayload = parse_payload(event)?;
+            let payload: DecisionAcceptedPayload = parse_payload(event)?;
             require_non_empty("payload.decision_id", &payload.decision_id)?;
+            require_optional_non_empty("payload.delegated_by", payload.delegated_by.as_deref())?;
+            if let Some(delegated_by) = payload.delegated_by.as_deref() {
+                require_delegation_shape(&event.actor_id, delegated_by)?;
+            }
             Ok(EventPayload::DecisionAccepted(payload))
         }
         EventType::DecisionRejected => {
@@ -1358,6 +1375,30 @@ fn require_non_empty(
     } else {
         Ok(())
     }
+}
+
+/// Shape half of the delegation-marker rules (hivemind-zdsh.6), the part decidable from the
+/// event alone: the delegator is a human actor and the accepter is an agent. That the
+/// accepter is also the decision's proposer needs ledger state and is enforced by
+/// `Commands::accept_decision_delegated`.
+pub(crate) fn require_delegation_shape(
+    accepter_id: &str,
+    delegated_by: &str,
+) -> std::result::Result<(), EventValidationError> {
+    let names_human = delegated_by
+        .strip_prefix("human:")
+        .is_some_and(|name| !name.trim().is_empty());
+    if !names_human {
+        return Err(EventValidationError::DelegatedByNotHuman(
+            delegated_by.to_owned(),
+        ));
+    }
+    if !accepter_id.starts_with("agent:") {
+        return Err(EventValidationError::DelegationRequiresAgentAccepter(
+            accepter_id.to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn require_optional_non_empty(

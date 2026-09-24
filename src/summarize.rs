@@ -461,6 +461,10 @@ pub struct DigestEntry {
     pub topic_keys: Vec<String>,
     pub status: DecisionStatus,
     pub actor_ids: Vec<String>,
+    /// The human whose delegated scope an agent's self-acceptance fell within
+    /// (hivemind-zdsh.6). `None` for every decision not decided under a delegation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegated_by: Option<String>,
     pub option_labels: Vec<String>,
     pub chosen_option_label: Option<String>,
     pub supersedes_ids: Vec<String>,
@@ -608,6 +612,7 @@ fn build_digest_entry(
         topic_keys: d.topic_keys.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
         status: d.status,
         actor_ids: ctx.actor_ids.clone(), // ubs:ignore: clone necessary — building owned DigestEntry from borrowed SearchGraphContext
+        delegated_by: ctx.delegated_by.clone(), // ubs:ignore: clone necessary — building owned DigestEntry from borrowed SearchGraphContext
         option_labels,
         chosen_option_label,
         supersedes_ids: ctx.supersedes_decision_ids.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
@@ -697,6 +702,13 @@ fn render_digest_text(
 
             if !entry.actor_ids.is_empty() {
                 let _ = writeln!(out, "  By: {}", entry.actor_ids.join(", "));
+            }
+            // Case 2 of the attribution ruling (hivemind-zdsh.6): an agent decided within a
+            // scope a human delegated. Next to `By:` so it reads against the three cases —
+            // human decided (a human in `By:`), agent decided under delegation (this line),
+            // agent decided alone (neither).
+            if let Some(delegated_by) = &entry.delegated_by {
+                let _ = writeln!(out, "  Delegated by: {delegated_by}");
             }
 
             if !entry.supersedes_ids.is_empty() {
@@ -791,6 +803,7 @@ mod tests {
             option_labels: &owned_option_labels,
             chosen_option_id: chosen_id.as_deref(),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],

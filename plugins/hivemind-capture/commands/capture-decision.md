@@ -1,7 +1,7 @@
 ---
 name: capture-decision
 description: Capture one HiveMind decision in the configured ledger using the legacy kind-locked path
-argument-hint: '--title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option] [--decided-by actor-id] [--still-proposed] [--source agent|human]'
+argument-hint: '--title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option] [--decided-by actor-id] [--delegated-by human:name] [--still-proposed] [--source agent|human]'
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/capture-decision.sh:*)
 disable-model-invocation: true
 ---
@@ -32,6 +32,10 @@ explicitly asks you to record their decision as a human write.
 immediately (or accepts from `--decided-by <actor-id>` when someone else
 decided). Pass `--still-proposed` instead to float a leaning that still
 awaits someone else's decision.
+
+When you decided within a scope a human explicitly delegated to you, add
+`--delegated-by <human:name>` so the record shows the delegation rather than an
+agent deciding alone. It requires `--chose` and an agent actor.
 
 Do not query, rank, summarize, or infer related decisions before capturing.
 This command is a write-layer path only.

@@ -261,12 +261,28 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
         EventPayload::DecisionRequested(payload) => {
             project_decision_requested(graph, event, &payload, &origin_properties)?
         }
-        EventPayload::DecisionAccepted(payload) => graph.upsert_edge(
-            RelationKind::AcceptedBy,
-            &payload.decision_id,
-            &event.actor_id,
-            &origin_properties,
-        )?,
+        EventPayload::DecisionAccepted(payload) => {
+            graph.upsert_edge(
+                RelationKind::AcceptedBy,
+                &payload.decision_id,
+                &event.actor_id,
+                &origin_properties,
+            )?;
+            // Delegation marker (hivemind-zdsh.6): a property on the Decision node, not on
+            // the ACCEPTED_BY edge and not a new node/edge kind — orthogonal to the
+            // authorship/review shapes derived from those edges. Only the marker is
+            // upserted, so the node keeps the proposal's own event_origin/source/tenant.
+            if let Some(delegated_by) = payload.delegated_by {
+                graph.upsert_node(
+                    NodeKind::Decision,
+                    &payload.decision_id,
+                    &GraphProperties::from([(
+                        "delegated_by".to_owned(),
+                        GraphValue::String(delegated_by),
+                    )]),
+                )?;
+            }
+        }
         EventPayload::DecisionRejected(payload) => graph.upsert_edge(
             RelationKind::RejectedBy,
             &payload.decision_id,

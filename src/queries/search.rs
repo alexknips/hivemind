@@ -95,6 +95,10 @@ pub struct SearchSnippet {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SearchGraphContext {
     pub actor_ids: Vec<String>,
+    /// The human whose delegated scope an agent's self-acceptance fell within
+    /// (hivemind-zdsh.6), read off the Decision node's `delegated_by` property.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegated_by: Option<String>,
     pub supersedes_decision_ids: Vec<String>,
     pub superseded_by_decision_ids: Vec<String>,
     pub option_ids: Vec<String>,
@@ -675,6 +679,7 @@ fn collect_graph_search_results(
         let rationale = optional_string(&row, "rationale").unwrap_or_default();
         let quote = optional_string(&row, "quote");
         let question = optional_string(&row, "question");
+        let delegated_by = optional_string(&row, "delegated_by");
         let event_origin = optional_int(&row, "event_origin").unwrap_or(0);
         let decision_topic_keys = optional_string_list(&row, "topic_keys");
         if !topic_keys.is_empty()
@@ -872,6 +877,7 @@ fn collect_graph_search_results(
                 snippets: match_info.snippets,
                 graph_context: SearchGraphContext {
                     actor_ids: actor_ids_for_decision,
+                    delegated_by,
                     supersedes_decision_ids,
                     superseded_by_decision_ids,
                     option_ids,

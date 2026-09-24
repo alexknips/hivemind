@@ -358,7 +358,9 @@ separate query functions:
   (who *recorded* it), `accepted_by` (who actually *decided* — may differ
   from `proposer_id`, or be empty when unreviewed; hivemind-zdsh.9),
   `source`, `source_ref`, `review: ReviewShape` (unreviewed / self_accepted /
-  peer_reviewed / disputed) — this is "who decided."
+  peer_reviewed / disputed), and `delegated_by` (the human whose delegated
+  scope an agent's self-acceptance fell within; absent when the agent decided
+  alone — hivemind-zdsh.6) — this is "who decided."
 - `get_decision_outcome` (`outcome.rs:94`) → `DecisionOutcome`: `held_up`
   plus structured `reasons` (superseded / stale premises / contested / thin
   structure) — this is "STILL-HOLDS."
@@ -389,7 +391,7 @@ pub struct DecisionBrief {
     pub rationale: String,
     pub chosen_option: Option<OptionLabel>,
     pub rejected_options: Vec<OptionLabel>,   // label-resolved, rationale shared not per-option
-    pub decided_by: DecidedBy,                // proposer_id, decider_ids, source, source_ref, review shape
+    pub decided_by: DecidedBy,                // proposer_id, decider_ids, source, source_ref, delegated_by, review shape
     pub rests_on: Vec<GroundingItem>,         // what it rests on: prior decision / evidence / assumption / bet, each with state + provenance
     pub grounding_state: GroundingState,      // grounded | bet | nothing_declared ("never asked")
     pub expressed_confidence: Option<String>, // low | medium | high, the decider's words at capture
@@ -400,7 +402,7 @@ pub struct DecisionBrief {
 }
 
 pub struct OptionLabel { pub option_id: String, pub label: String }
-pub struct DecidedBy { pub proposer_id: Option<String>, pub decider_ids: Vec<String>, pub source: String, pub source_ref: Option<String>, pub review: ReviewShape }
+pub struct DecidedBy { pub proposer_id: Option<String>, pub decider_ids: Vec<String>, pub source: String, pub source_ref: Option<String>, pub delegated_by: Option<String>, pub review: ReviewShape }
 pub struct StillHolds { pub held_up: bool, pub reasons: Vec<OutcomeReason>, pub unchecked: Vec<UncheckedBet> }
 ```
 

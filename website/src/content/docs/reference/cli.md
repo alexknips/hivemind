@@ -166,6 +166,7 @@ hivemind emit decision.proposed
   [--options <opt,opt,...>]
   [--chose <option>]
   [--decided-by <actor-id>]
+  [--delegated-by <human:name>]
   [--still-proposed]
   [--quote <text>]
   [--question <text>]
@@ -192,9 +193,17 @@ example an agent writing down a decision a human made: `--actor
 agent:claude:session --decided-by human:alex`; the accept event comes from
 `--decided-by` instead. Requires `--chose`.
 
+`--delegated-by <human:name>` marks an agent that decided for itself within a
+scope a human delegated to it: the self-acceptance carries the delegating human,
+so the record tells "the agent decided under a human's delegation" apart from
+"the agent decided alone" (no flag). `--actor` must be an `agent:` actor, and a
+`--decided-by` naming anyone else is refused — a human who decided is recorded
+with `--decided-by`. Requires `--chose`. A standing delegation is the same value
+repeated on each capture in that scope.
+
 `--still-proposed` keeps the decision at `proposed` even though `--chose` is
 set, for a genuine open recommendation awaiting someone else's decision.
-Mutually exclusive with `--decided-by`.
+Mutually exclusive with `--decided-by` and `--delegated-by`.
 
 `--quote <text>` captures the verbatim words of the decider, self-contained —
 not a bare reference like `"1a"` into a numbered list that only makes sense
@@ -226,6 +235,7 @@ hivemind emit decision.capture
   [--options <opt,...>]
   [--chose <option>]
   [--decided-by <actor-id>]
+  [--delegated-by <human:name>]
   [--still-proposed]
   [--quote <text>]
   [--question <text>]

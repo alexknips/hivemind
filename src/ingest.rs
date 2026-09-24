@@ -297,6 +297,7 @@ pub fn import_slack_thread<L: EventLedger>(
         option_labels: &draft.option_labels,
         chosen_option_id: chosen_option_id.as_deref(),
         decided_by: None,
+        delegated_by: None,
         // A Slack decision with a chosen option is already decided (the modal choice IS the
         // decision) — self-accept from draft.actor_id, per hivemind-zdsh.8's default.
         still_proposed: false,
@@ -1737,6 +1738,7 @@ fn write_document_decision_events<L: EventLedger>(
             option_labels: &draft.option_labels,
             chosen_option_id: identities.chosen_option_id.as_deref(),
             decided_by: None,
+            delegated_by: None,
             // Unread here: this goes through `propose_decision_with_id`, which never
             // auto-accepts. Document imports stay `proposed` pending review, unchanged by
             // hivemind-zdsh.8.

@@ -2551,3 +2551,87 @@ fn memory_graph_single_node_lookup_honours_the_id_anchor() -> Result<()> {
     assert_eq!(scan.len(), 2);
     Ok(())
 }
+
+// hivemind-zdsh.6: the delegation marker is a Decision-node property upserted by
+// `decision.accepted`. `RecordingGraph` replaces a node's whole property map on upsert, so
+// these tests use `MemoryGraph` (and, in `postgres/tests.rs`, the JSONB merge), which merge
+// the way every real backend does.
+#[test]
+fn delegated_acceptance_merges_the_marker_onto_the_decision_node() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    for (decision_id, delegated_by) in [
+        ("decision:delegated", Some("human:alex")),
+        ("decision:alone", None),
+    ] {
+        ledger.append(event(
+            EventType::DecisionProposed,
+            "agent:claude:builder",
+            json!({
+                "decision_id": decision_id,
+                "title": "Agent decides for itself",
+                "rationale": "A stated reason the projection does not read",
+                "topic_keys": ["governance"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        ))?;
+        let mut accepted = json!({ "decision_id": decision_id });
+        if let Some(delegated_by) = delegated_by {
+            accepted["delegated_by"] = json!(delegated_by);
+        }
+        ledger.append(event(
+            EventType::DecisionAccepted,
+            "agent:claude:builder",
+            accepted,
+        ))?;
+    }
+
+    let graph = memory::MemoryGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let rows = graph.query(
+        "MATCH (node:`Decision`) RETURN node.id AS id ORDER BY node.id;",
+        &GraphParams::new(),
+    )?;
+    let row_for = |decision_id: &str| {
+        rows.iter()
+            .find(|row| row.get("id") == Some(&GraphValue::String(decision_id.to_owned())))
+            .cloned()
+    };
+
+    let delegated = row_for("decision:delegated").expect("delegated decision projected");
+    assert_eq!(
+        delegated.get("delegated_by"),
+        Some(&GraphValue::String("human:alex".to_owned()))
+    );
+    // The marker is merged, not substituted: the proposal's own properties survive, and
+    // `event_origin` still points at the proposal, not at the accepting event.
+    assert_eq!(
+        delegated.get("title"),
+        Some(&GraphValue::String("Agent decides for itself".to_owned()))
+    );
+    let proposal_origin = ledger.read(0, 10)?[0].event_id.expect("ledger assigns ids");
+    assert_eq!(
+        delegated.get("event_origin"),
+        Some(&GraphValue::Int(
+            i64::try_from(proposal_origin).expect("fits i64")
+        ))
+    );
+
+    let alone = row_for("decision:alone").expect("undelegated decision projected");
+    assert_eq!(
+        alone.get("delegated_by"),
+        None,
+        "an acceptance without the marker must not create the property, not even as null"
+    );
+
+    // The acceptance itself is projected the same way with or without the marker.
+    let accepted_edges = graph.query(
+        "MATCH (from:`Decision`)-[:`ACCEPTED_BY`]->(to:`Actor`) RETURN from.id AS from_id, to.id AS to_id ORDER BY from.id, to.id;",
+        &GraphParams::new(),
+    )?;
+    assert_eq!(accepted_edges.len(), 2);
+    Ok(())
+}

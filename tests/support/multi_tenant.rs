@@ -73,6 +73,7 @@ pub fn seed_tenant<L: EventLedger>(ledger: &L, name: &'static str) -> TestResult
             ],
             chosen_option_id: Some(&opt_b),
             decided_by: None,
+            delegated_by: None,
             still_proposed: false,
             hypothesis_ids: &hyp_refs,
             evidence_ids: &ev_refs,

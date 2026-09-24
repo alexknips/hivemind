@@ -3,13 +3,15 @@
 //! Derives INDEPENDENT VARIABLES for failure-mode attribution — the circumstances under
 //! which a decision was captured — purely from the graph. No LLMs. Works on any deployment.
 //!
-//! Five feature groups:
+//! Six feature groups:
 //!
 //! - `authorship`: who produced the decision (human-authored / agent-proposed+human-accepted /
 //!   agent-only / unknown) via `PROPOSED_BY` and `ACCEPTED_BY` edges.
 //! - `source` / `source_ref`: which system or model captured it (cli/agent/human/slack/…).
 //! - `review`: how substantively the decision was reviewed (unreviewed / self_accepted /
 //!   peer_reviewed / disputed).
+//! - `delegated_by`: the human whose delegation an agent's self-acceptance fell within
+//!   (absent for an agent deciding alone).
 //! - `evidence_count` / `hypothesis_count`: sufficiency of supporting substrate.
 //! - `options_count` / `rationale_chars`: context richness proxies.
 //!
@@ -81,6 +83,13 @@ pub struct DecisionContext {
     /// Free-text model/session reference from the capturing event (e.g. `claude:opus:session-xyz`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,
+    /// The human whose delegated scope an agent's self-acceptance fell within
+    /// (hivemind-zdsh.6), read off the Decision node's `delegated_by` property. Orthogonal to
+    /// `authorship`/`review`: those enums are unchanged, so an agent deciding under a
+    /// delegation still derives `AgentOnly` + `SelfAccepted` — this field is the extra fact
+    /// that separates it from an agent deciding alone (same shapes, `None` here).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegated_by: Option<String>,
     /// Review depth: was the decision examined by a peer?
     pub review: ReviewShape,
     /// Number of actors who accepted the decision.
@@ -121,7 +130,7 @@ pub fn get_decision_context(
 
     let decision_rows = graph.query(
         "MATCH (d:`Decision` {id: $id}) \
-         RETURN d.id AS id, d.source AS source, d.source_ref AS source_ref, d.rationale AS rationale \
+         RETURN d.id AS id, d.source AS source, d.source_ref AS source_ref, d.rationale AS rationale, d.delegated_by AS delegated_by \
          LIMIT 1;",
         &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
     )?;
@@ -138,6 +147,7 @@ pub fn get_decision_context(
             &id,
             source,
             source_ref,
+            optional_string(row, "delegated_by"),
             rationale_chars,
         )?)
     } else {
@@ -179,14 +189,14 @@ pub fn get_decision_context_candidates(
     let decision_rows = if let Some(since) = request.since_event_origin {
         graph.query(
             "MATCH (d:`Decision`) WHERE d.event_origin >= $since \
-             RETURN d.id AS id, d.source AS source, d.source_ref AS source_ref, d.rationale AS rationale \
+             RETURN d.id AS id, d.source AS source, d.source_ref AS source_ref, d.rationale AS rationale, d.delegated_by AS delegated_by \
              ORDER BY d.event_origin, d.id;",
             &GraphParams::from([("since".to_owned(), GraphValue::Int(since))]),
         )?
     } else {
         graph.query(
             "MATCH (d:`Decision`) \
-             RETURN d.id AS id, d.source AS source, d.source_ref AS source_ref, d.rationale AS rationale \
+             RETURN d.id AS id, d.source AS source, d.source_ref AS source_ref, d.rationale AS rationale, d.delegated_by AS delegated_by \
              ORDER BY d.event_origin, d.id;",
             &GraphParams::new(),
         )?
@@ -213,6 +223,7 @@ pub fn get_decision_context_candidates(
             &id,
             source,
             source_ref,
+            optional_string(row, "delegated_by"),
             rationale_chars,
         )?);
     }
@@ -234,6 +245,7 @@ fn derive_context(
     decision_id: &str,
     source: String,
     source_ref: Option<String>,
+    delegated_by: Option<String>,
     rationale_chars: i64,
 ) -> Result<DecisionContext> {
     let proposer = query_proposer(graph, decision_id)?;
@@ -266,6 +278,7 @@ fn derive_context(
         accepted_by,
         source,
         source_ref,
+        delegated_by,
         review,
         accepted_count,
         rejected_count,
