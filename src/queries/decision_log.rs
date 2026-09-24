@@ -41,10 +41,11 @@ use super::active_blockers::{
     get_active_decision_blockers, ActiveDecisionBlockersRequest, DecisionBlockerFilters,
     DecisionBlockerView,
 };
-use super::brief::{get_decision_brief, OptionLabel};
-use super::decision::{get_decision, get_hypothesis_statement};
+use super::brief::{get_decision_brief_with_labels, OptionLabel};
+use super::decision::{get_decision_with_labels, get_hypothesis_statement};
 use super::grounding::{GroundingItem, GroundingKind, GroundingState};
 use super::outcome::OutcomeReason;
+use super::project_label::ProjectLabels;
 use super::projects::{is_known_project, registered_project_names};
 use super::shared::{
     neighbor_pairs, node_rows, optional_int, optional_string, query_error, Direction,
@@ -125,6 +126,7 @@ pub fn export_decision_log(
 
     let decision_rows = node_rows(graph, NodeKind::Decision)?;
     let evidence_rows = node_rows(graph, NodeKind::Evidence)?;
+    let labels = ProjectLabels::from_graph(graph)?;
     let titles: BTreeMap<String, String> = decision_rows
         .iter()
         .map(|(id, row)| {
@@ -137,7 +139,7 @@ pub fn export_decision_log(
 
     let mut entries = Vec::new();
     for id in decision_rows.keys() {
-        let entry = build_entry(graph, id, &decision_rows, &evidence_rows)?;
+        let entry = build_entry(graph, id, &decision_rows, &evidence_rows, &labels)?;
         if matches_filters(&entry, req, requested) {
             entries.push(entry);
         }
@@ -224,6 +226,9 @@ struct DecisionEntry {
     id: String,
     /// The project this decision belongs to: a registered handle or a `personal:` address.
     project: String,
+    /// What a person calls that project: its display name, or the person or agent tool for a
+    /// personal address.
+    project_label: String,
     title: String,
     rationale: String,
     quote: Option<String>,
@@ -274,11 +279,12 @@ fn build_entry(
     id: &str,
     decision_rows: &BTreeMap<String, GraphRow>,
     evidence_rows: &BTreeMap<String, GraphRow>,
+    labels: &ProjectLabels,
 ) -> Result<DecisionEntry> {
-    let brief = get_decision_brief(graph, id)?
+    let brief = get_decision_brief_with_labels(graph, id, Utc::now(), labels)?
         .data
         .ok_or_else(|| query_error(format!("decision {id} disappeared mid-export")))?;
-    let decision = get_decision(graph, id)?
+    let decision = get_decision_with_labels(graph, id, labels)?
         .data
         .ok_or_else(|| query_error(format!("decision {id} disappeared mid-export")))?;
     let row = decision_rows.get(id);
@@ -366,9 +372,12 @@ fn build_entry(
         }
     };
 
+    let project_label = labels.label(&project);
+
     Ok(DecisionEntry {
         id: decision.id,
         project,
+        project_label,
         title: decision.title,
         rationale: decision.rationale,
         quote: decision.quote,
@@ -707,6 +716,11 @@ fn render_decision_file(
     let mut body = String::new();
     let _ = write!(body, "# {}\n\n", entry.title);
     body.push_str(&render_status_line(entry, paths, titles, from_dir));
+    let _ = write!(
+        body,
+        "\nProject: {}",
+        entry.project_label.replace(['\r', '\n'], " ")
+    );
     body.push_str("\n\n## Context\n\n");
     body.push_str(&render_context_section(entry));
     body.push_str("\n\n## Options considered\n\n");
@@ -760,6 +774,8 @@ fn render_front_matter(entry: &DecisionEntry) -> String {
         format!("id: {}", yaml_scalar(&entry.id)),
         format!("title: {}", yaml_scalar(&entry.title)),
         format!("status: {}", yaml_scalar(status_word(entry.status))),
+        format!("project: {}", yaml_scalar(&entry.project)),
+        format!("project_label: {}", yaml_scalar(&entry.project_label)),
         format!("occurred_at: {occurred_at}"),
         format!("topic_keys: {}", yaml_list(&entry.topic_keys)),
         format!(

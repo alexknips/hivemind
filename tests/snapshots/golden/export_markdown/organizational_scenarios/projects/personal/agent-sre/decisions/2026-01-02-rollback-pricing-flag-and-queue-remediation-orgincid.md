@@ -2,6 +2,8 @@
 id: "org:incident:decision:rollback"
 title: "Rollback pricing flag and queue remediation"
 status: "accepted"
+project: "personal:agent:sre"
+project_label: "sre agents' personal project"
 occurred_at: "2026-01-02T00:10:13+00:00"
 topic_keys: ["org.incident", "operations", "customer-comms"]
 proposer: "agent:sre"
@@ -15,6 +17,7 @@ superseded_by: null
 # Rollback pricing flag and queue remediation
 
 Status: accepted
+Project: sre agents' personal project
 
 ## Context
 

@@ -6,6 +6,7 @@ use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::Result;
 
 use super::decision::DecisionView;
+use super::project_label::ProjectLabels;
 use super::shared::{
     optional_string, optional_string_list, query_error, read_count, required_string,
     MAX_QUERY_RESULTS,
@@ -36,10 +37,11 @@ pub fn get_relevant_decisions(
     let truncated = total_count > MAX_QUERY_RESULTS;
 
     let decision_rows = graph.query(
-        "MATCH (d:`Decision`) WHERE $topic IN d.topic_keys RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys ORDER BY d.id LIMIT 1000;",
+        "MATCH (d:`Decision`) WHERE $topic IN d.topic_keys RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys, d.project AS project ORDER BY d.id LIMIT 1000;",
         &GraphParams::from([("topic".to_owned(), GraphValue::String(normalized_topic))]),
     )?;
 
+    let labels = ProjectLabels::from_graph(graph)?;
     let mut decisions = Vec::new();
     for row in decision_rows {
         let id = required_string(&row, "id")?;
@@ -48,12 +50,15 @@ pub fn get_relevant_decisions(
             continue;
         }
 
+        let project = optional_string(&row, "project");
         decisions.push(DecisionView {
             id,
             title: optional_string(&row, "title").unwrap_or_default(),
             rationale: optional_string(&row, "rationale").unwrap_or_default(),
             topic_keys: optional_string_list(&row, "topic_keys"),
             status,
+            project_label: labels.label_of(project.as_deref()),
+            project,
             chosen_option_id: None,
             option_ids: Vec::new(),
             evidence_ids: Vec::new(),

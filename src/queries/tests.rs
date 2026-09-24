@@ -426,11 +426,31 @@ struct FixtureGraph {
     options: BTreeMap<String, (String, String)>,
     hypotheses: BTreeMap<String, String>,
     edges: BTreeSet<(RelationKind, String, String)>,
+    /// Decision id -> project address; a decision not listed here is filed under a fixture
+    /// person's personal project.
+    decision_projects: BTreeMap<String, String>,
+    /// Registered project handle -> display name.
+    project_names: BTreeMap<String, String>,
 }
 
 impl FixtureGraph {
+    fn project_of(&self, decision_id: &str) -> GraphValue {
+        GraphValue::String(
+            self.decision_projects
+                .get(decision_id)
+                .cloned()
+                .unwrap_or_else(|| "personal:human:fixture".to_owned()),
+        )
+    }
+
     fn sample() -> Self {
         let mut graph = Self::default();
+        graph
+            .decision_projects
+            .insert("d1".to_owned(), "billing".to_owned());
+        graph
+            .project_names
+            .insert("billing".to_owned(), "Billing".to_owned());
         graph.decisions.insert(
             "d1".to_owned(),
             (
@@ -549,7 +569,23 @@ impl GraphView for FixtureGraph {
                                 "topic_keys".to_owned(),
                                 GraphValue::StringList(topics.clone()),
                             ),
+                            ("project".to_owned(), self.project_of(id)),
                             ("source".to_owned(), GraphValue::String("agent".to_owned())),
+                        ])
+                    })
+                    .collect());
+            }
+            if cypher.contains("`Project`") {
+                return Ok(self
+                    .project_names
+                    .iter()
+                    .map(|(handle, display_name)| {
+                        GraphRow::from([
+                            ("id".to_owned(), GraphValue::String(handle.clone())),
+                            (
+                                "display_name".to_owned(),
+                                GraphValue::String(display_name.clone()),
+                            ),
                         ])
                     })
                     .collect());
@@ -680,6 +716,7 @@ impl GraphView for FixtureGraph {
                         "topic_keys".to_owned(),
                         GraphValue::StringList(topics.clone()),
                     ),
+                    ("project".to_owned(), self.project_of(id)),
                 ])]);
             }
             return Ok(Vec::new());
@@ -706,6 +743,7 @@ impl GraphView for FixtureGraph {
                             "topic_keys".to_owned(),
                             GraphValue::StringList(topics.clone()),
                         ),
+                        ("project".to_owned(), self.project_of(id)),
                     ])
                 })
                 .collect::<Vec<_>>();
@@ -1951,12 +1989,18 @@ impl GraphView for OutcomeGraph {
             })
             .unwrap_or("");
 
-        if cypher.contains("RETURN d.id AS id, d.event_origin AS event_origin LIMIT 1") {
+        if cypher.contains(
+            "RETURN d.id AS id, d.event_origin AS event_origin, d.project AS project LIMIT 1",
+        ) {
             if self.nodes.contains(&(NodeKind::Decision, id.to_owned())) {
                 let origin = self.node_origins.get(id).copied().unwrap_or(0);
                 return Ok(vec![GraphRow::from([
                     ("id".to_owned(), GraphValue::String(id.to_owned())),
                     ("event_origin".to_owned(), GraphValue::Int(origin)),
+                    (
+                        "project".to_owned(),
+                        GraphValue::String("personal:human:fixture".to_owned()),
+                    ),
                 ])]);
             }
             return Ok(vec![]);
@@ -2061,6 +2105,10 @@ impl GraphView for OutcomeGraph {
                     GraphRow::from([
                         ("id".to_owned(), GraphValue::String(nid.clone())),
                         ("event_origin".to_owned(), GraphValue::Int(origin)),
+                        (
+                            "project".to_owned(),
+                            GraphValue::String("personal:human:fixture".to_owned()),
+                        ),
                     ])
                 })
                 .collect();
@@ -3362,6 +3410,8 @@ use super::outcome::{DecisionOutcome, OutcomeReason};
 fn clean_outcome(id: &str) -> DecisionOutcome {
     DecisionOutcome {
         decision_id: id.to_owned(),
+        project: Some("personal:human:fixture".to_owned()),
+        project_label: "fixture's personal project".to_owned(),
         held_up: true,
         superseded: false,
         superseded_by: None,
@@ -3813,3 +3863,5 @@ fn attribution_effect_sign_negative_means_better_than_baseline() {
         "better than baseline → negative effect"
     );
 }
+
+mod project_naming;

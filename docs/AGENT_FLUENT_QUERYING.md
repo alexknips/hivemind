@@ -418,6 +418,8 @@ confidence).
 pub struct DecisionBrief {
     pub decision_id: String,
     pub title: String,
+    pub project: String,                      // address: a registered handle or the recorder's derived personal address
+    pub project_label: String,                // what a person calls it: display name, handle, or "alex's personal project"
     pub rationale: String,
     pub chosen_option: Option<OptionLabel>,
     pub rejected_options: Vec<OptionLabel>,   // label-resolved, rationale shared not per-option
@@ -484,6 +486,24 @@ evidence item's content (clipped to 200 characters with a trailing `…`).
 `why --summary` prints the brief block first, then the graph as
 `root`/`node`/`edge` lines. `compact-view` reads the bare structure without
 the brief or labels.
+
+**Every answer names its project.** Every decision an answer returns carries
+`project` (the address: a registered handle such as `billing`, or the
+recorder's derived personal address such as `personal:human:alex`) and
+`project_label` (what a person calls it: the display name the project was
+registered with, else its handle; for a personal address the person or agent
+tool it belongs to — "alex's personal project", "claude agents' personal
+project"); a decision that was moved names the project it moved to. This holds
+for `get_decision`, the brief (`verify`), the outcome, the neighborhood (`why`,
+on the root and on each decision node), the compact view, `search`, `recall`,
+`situational`, `recent` and the decision log. The summary renderers show the
+label: a trailing `project=<label>` field on the tab-separated rows, a
+`project: <label>` line on the paragraph-shaped ones (brief, compact view,
+digest, decision log). A decision that was only named
+by a decision request or a blocker before any proposal recorded it has no
+project: `project` is `null` and the label says "no project recorded", so an
+unassigned decision is visible rather than blank or guessed. Labels are read
+from the registered projects, never inferred (Layer 2 only).
 
 ---
 

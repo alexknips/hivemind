@@ -14,6 +14,7 @@ use crate::Result;
 
 use super::decision::{DecisionView, HypothesisContext};
 use super::grounding::{hypothesis_facts_from_row, GroundingState};
+use super::project_label::ProjectLabels;
 use super::shared::{
     node_rows, normalized_filter_values, normalized_limit, normalized_query, normalized_statuses,
     optional_int, optional_string, optional_string_list, parse_cursor, query_error, query_terms,
@@ -681,9 +682,12 @@ fn collect_graph_search_results(
     let option_rows = node_rows(graph, NodeKind::Option)?;
     let hypothesis_rows = node_rows(graph, NodeKind::Hypothesis)?;
     let edges = relation_edges_by_kind(graph)?;
+    let labels = ProjectLabels::from_graph(graph)?;
 
     let mut scored = Vec::new();
     for (id, row) in decision_rows {
+        let project = optional_string(&row, "project");
+        let project_label = labels.label_of(project.as_deref());
         let title = optional_string(&row, "title").unwrap_or_default();
         let rationale = optional_string(&row, "rationale").unwrap_or_default();
         let quote = optional_string(&row, "quote");
@@ -864,6 +868,8 @@ fn collect_graph_search_results(
             rationale,
             topic_keys: decision_topic_keys,
             status,
+            project,
+            project_label,
             chosen_option_id,
             option_ids: option_ids.clone(),
             evidence_ids: evidence_ids.clone(),

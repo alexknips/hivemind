@@ -18,11 +18,12 @@ use crate::ledger::{EventLedger, TenantScopedLedger};
 use crate::projector::{GraphView, NodeKind, RelationKind};
 use crate::Result;
 
-use super::decision::{get_decision, DecisionView};
+use super::decision::{get_decision_with_labels, DecisionView};
 use super::history::{
     get_decisions_changed_since, ChangeBoundary, ChangedSinceRequest, HistoryFilterRequest,
 };
-use super::outcome::{get_decision_outcome, DecisionOutcome};
+use super::outcome::{get_decision_outcome_with_labels, DecisionOutcome};
+use super::project_label::ProjectLabels;
 use super::shared::{
     node_rows, normalized_limit, optional_int, optional_string, optional_string_list, parse_cursor,
     query_error, relation_edges, MAX_QUERY_RESULTS,
@@ -138,12 +139,17 @@ pub fn get_situational_decisions(
     let changed_decision_ids = changed_ids.map(|(_, ids)| ids);
 
     let total_matches = scored.len();
+    let labels = ProjectLabels::from_graph(graph)?;
+    let now = Utc::now();
     let mut matches = Vec::new();
     for candidate in scored.into_iter().skip(offset).take(limit) {
-        let Some(decision) = get_decision(graph, &candidate.decision_id)?.data else {
+        let Some(decision) = get_decision_with_labels(graph, &candidate.decision_id, &labels)?.data
+        else {
             continue;
         };
-        let Some(outcome) = get_decision_outcome(graph, &candidate.decision_id)?.data else {
+        let Some(outcome) =
+            get_decision_outcome_with_labels(graph, &candidate.decision_id, now, &labels)?.data
+        else {
             continue;
         };
         let changed_since = changed_decision_ids

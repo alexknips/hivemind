@@ -1423,6 +1423,54 @@ fn classified_batch_decision_projects_node_and_actor_edges() -> Result<()> {
 }
 
 #[test]
+fn classified_batch_decision_projects_to_the_recorders_personal_project() -> Result<()> {
+    // A captured decision names no project either: like a proposal that names none, it belongs
+    // to the personal project of whoever recorded it (the batch's actor), never to the decider
+    // the classifier read out of the text.
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:project",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [{
+                "kind": "decision",
+                "title": "Use Postgres for storage",
+                "rationale": "Scales well and team knows it",
+                "topic_keys": ["storage"],
+                "evidence_ids": [],
+                "options": ["postgres", "mysql"],
+                "chosen_option": "postgres",
+                "extraction_confidence": 0.92,
+                "actor_id": "human:alice"
+            }]
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    let properties = nodes
+        .iter()
+        .find(|((kind, _), _)| *kind == NodeKind::Decision)
+        .map(|(_, props)| props.clone())
+        .expect("decision node from capture"); // ubs:ignore
+    assert_eq!(
+        properties.get("project"),
+        Some(&GraphValue::String("personal:agent:hivemind".to_owned())),
+        "a captured decision projects to the recording actor's personal project"
+    );
+    assert_eq!(
+        properties.get("project_source"),
+        Some(&GraphValue::String("personal_fallback".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
 fn classified_batch_under_agent_token_credits_named_human_not_the_token() -> Result<()> {
     // hivemind-zdsh.19, acceptance clause 2: a batch submitted under an agent token
     // (`agent:<tool>:<name>`) in which a human answers must yield a decision credited

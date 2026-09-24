@@ -2,6 +2,8 @@
 id: "org:security:decision:severity-low"
 title: "Classify export issue as low severity"
 status: "superseded"
+project: "personal:agent:maintainer"
+project_label: "maintainer agents' personal project"
 occurred_at: "2026-01-02T00:40:09+00:00"
 topic_keys: ["org.security", "security"]
 proposer: "agent:maintainer"
@@ -15,6 +17,7 @@ superseded_by: "org:security:decision:severity-critical"
 # Classify export issue as low severity
 
 Status: superseded → [Escalate export issue to critical severity](../../human-security/decisions/2026-01-02-escalate-export-issue-to-critical-severity-orgsecur.md)
+Project: maintainer agents' personal project
 
 ## Context
 

@@ -978,6 +978,7 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
             "topics: {}",
             list_or_none(&detail.topic_keys)
         )));
+        lines.push(Line::from(format!("project: {}", detail.project_label)));
         lines.push(Line::from(""));
         lines.push(Line::from("rationale:"));
         lines.extend(wrapped_lines(&detail.rationale));

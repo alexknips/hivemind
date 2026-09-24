@@ -2,6 +2,8 @@
 id: "org:remote-db:decision:embedded-prototype"
 title: "Keep prototype storage embedded"
 status: "superseded"
+project: "personal:agent:coding"
+project_label: "coding agents' personal project"
 occurred_at: "2026-01-02T00:20:08+00:00"
 topic_keys: ["org.remote-db", "architecture"]
 proposer: "agent:coding"
@@ -15,6 +17,7 @@ superseded_by: "org:remote-db:decision:service-owned-writes"
 # Keep prototype storage embedded
 
 Status: superseded → [Move writes behind a shared remote service](../../human-architect/decisions/2026-01-02-move-writes-behind-a-shared-remote-service-orgremot.md)
+Project: coding agents' personal project
 
 ## Context
 

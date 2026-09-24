@@ -565,10 +565,11 @@ fn render_query_response<L: EventLedger, G: GraphView>(
             "text": {
                 "type": "mrkdwn",
                 "text": format!(
-                    "*{}* `{}`\nstatus={} citation={}",
+                    "*{}* `{}`\nstatus={} project={} citation={}",
                     decision.title,
                     decision.id,
                     status_name(decision.status),
+                    decision.project_label,
                     citation_label(citation)
                 )
             }
@@ -635,10 +636,11 @@ fn render_show_response<L: EventLedger, G: GraphView>(
             "text": {
                 "type": "mrkdwn",
                 "text": format!(
-                    "*{}* `{}`\nstatus={}\nrationale={}\noptions={}\nevidence={}\nrelated={}\ncitation={}",
+                    "*{}* `{}`\nstatus={}\nproject={}\nrationale={}\noptions={}\nevidence={}\nrelated={}\ncitation={}",
                     decision.title,
                     decision.id,
                     status_name(decision.status),
+                    decision.project_label,
                     decision.rationale,
                     display_list(&decision.option_ids),
                     display_list(&decision.evidence_ids),

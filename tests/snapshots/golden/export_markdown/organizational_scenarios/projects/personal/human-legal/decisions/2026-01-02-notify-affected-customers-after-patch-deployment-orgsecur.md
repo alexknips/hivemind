@@ -2,6 +2,8 @@
 id: "org:security:decision:coordinated-notice"
 title: "Notify affected customers after patch deployment"
 status: "contested"
+project: "personal:human:legal"
+project_label: "legal's personal project"
 occurred_at: "2026-01-02T00:40:14+00:00"
 topic_keys: ["org.security", "legal", "customer-comms"]
 proposer: "human:legal"
@@ -15,6 +17,7 @@ superseded_by: null
 # Notify affected customers after patch deployment
 
 Status: contested — accepted by: human:legal; rejected by: human:customer-success
+Project: legal's personal project
 
 ## Context
 

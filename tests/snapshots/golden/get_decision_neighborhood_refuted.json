@@ -63,7 +63,9 @@
         "decision_status": "proposed",
         "id": "decision-005",
         "kind": "decision",
-        "label": "Seed decision 005"
+        "label": "Seed decision 005",
+        "project": "personal:actor:planner",
+        "project_label": "actor:planner's personal project"
       },
       {
         "id": "actor:planner",
@@ -114,6 +116,8 @@
       "kind": "decision",
       "occurred_at": "2026-01-01T00:00:15Z",
       "present": true,
+      "project": "personal:actor:planner",
+      "project_label": "actor:planner's personal project",
       "rationale": "Deterministic rationale for seed decision 005",
       "rejected_options": [
         {

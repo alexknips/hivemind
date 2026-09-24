@@ -33,8 +33,11 @@ pub(crate) fn render_compact_view_summary(view: &Option<CompactView>) -> String 
         return "decision not found".to_owned();
     };
     let mut out = format!(
-        "CompactView: {} [{:?}]\n  rationale: {}\n",
-        v.decision.id, v.decision.status, v.decision.rationale,
+        "CompactView: {} [{:?}]\n  project: {}\n  rationale: {}\n",
+        v.decision.id,
+        v.decision.status,
+        summary_cell(&v.decision.project_label),
+        v.decision.rationale,
     );
     if let (Some(question), Some(quote)) = (&v.decision.question, &v.decision.quote) {
         out.push_str(&format!("  answers: {question}\n  quote: \"{quote}\"\n"));
@@ -92,13 +95,14 @@ pub(crate) fn render_recent_decisions_summary(results: &RecentDecisionsResults) 
             .unwrap_or_else(|| "unknown-ts".to_owned());
         let _ = writeln!(
             output,
-            "{}\t{}\t{}\t{}\tactor={}\tsource={}\tcitation={}",
+            "{}\t{}\t{}\t{}\tactor={}\tsource={}\tproject={}\tcitation={}",
             timestamp,
             decision_status_label(item.status),
             item.decision_id,
             summary_cell(&item.title),
             item.actor_ids.join(","),
             item.creation.source.as_str(),
+            summary_cell(&item.project_label),
             item.creation.citation_id
         );
     }
@@ -278,12 +282,13 @@ pub(crate) fn render_search_summary(results: &DecisionSearchResults) -> String {
     for item in &results.items {
         let _ = writeln!(
             output,
-            "match\trank={}\t{}\t{}\t{}\ttopics={}\tmatched={}",
+            "match\trank={}\t{}\t{}\t{}\ttopics={}\tproject={}\tmatched={}",
             item.rank,
             decision_status_label(item.decision.status),
             item.decision.id,
             summary_cell(&item.decision.title),
             item.decision.topic_keys.join(","),
+            summary_cell(&item.decision.project_label),
             item.matched_fields.join(",")
         );
     }
@@ -320,13 +325,14 @@ pub(crate) fn render_situational_summary(results: &SituationalResults) -> String
         };
         let _ = write!(
             output,
-            "match\tscore={:.2}\t{}\t{}\t{}\t{}\tsince={}\t",
+            "match\tscore={:.2}\t{}\t{}\t{}\t{}\tsince={}\tproject={}\t",
             item.score,
             decision_status_label(item.decision.status),
             item.decision.id,
             summary_cell(&item.decision.title),
             held_up,
             changed,
+            summary_cell(&item.decision.project_label),
         );
         // Exact topic_keys membership and fuzzy evidence-content overlap are visually
         // distinguished so an agent doesn't over-trust the fuzzy half (AGENTS.md §6).
@@ -373,12 +379,13 @@ pub(crate) fn render_recall_summary(response: &crate::summarize::RecallResponse)
     for item in &response.ranked.items {
         let _ = writeln!(
             output,
-            "match\trank={}\t{}\t{}\t{}\ttopics={}",
+            "match\trank={}\t{}\t{}\t{}\ttopics={}\tproject={}",
             item.rank,
             decision_status_label(item.decision.status),
             item.decision.id,
             summary_cell(&item.decision.title),
             item.decision.topic_keys.join(","),
+            summary_cell(&item.decision.project_label),
         );
     }
     output.trim_end().to_owned()
@@ -486,6 +493,7 @@ fn write_decision_brief(output: &mut String, brief: &DecisionBrief) {
         summary_cell(&brief.title),
         decision_status_label(brief.status)
     );
+    let _ = writeln!(output, "  project: {}", summary_cell(&brief.project_label));
     let _ = writeln!(output, "  rationale: {}", summary_cell(&brief.rationale));
     if let (Some(question), Some(quote)) = (&brief.question, &brief.quote) {
         let _ = writeln!(output, "  answers: {}", summary_cell(question));
@@ -824,7 +832,8 @@ pub(crate) fn render_resolve_outcome_summary(outcome: &ResolveOutcome) -> String
 
 /// Leads with the root decision's answer (the same block `verify` prints: title, rationale,
 /// chosen and rejected options, who decided, whether it still holds), then the graph as
-/// tab-separated `root`/`node`/`edge` lines. Nodes carry a trailing `label=` when they have one.
+/// tab-separated `root`/`node`/`edge` lines. Nodes carry a trailing `label=` when they have one,
+/// and decision nodes a trailing `project=`; the root's project is the brief's `project:` line.
 pub(crate) fn render_neighborhood_summary(neighborhood: &NeighborhoodView) -> String {
     let mut output = String::new();
     if let Some(brief) = &neighborhood.root.brief {
@@ -855,6 +864,7 @@ pub(crate) fn render_neighborhood_summary(neighborhood: &NeighborhoodView) -> St
         if let Some(label) = &node.label {
             let _ = write!(output, "\tlabel={}", summary_cell(label));
         }
+        write_project_field(&mut output, node.project_label.as_deref());
         output.push('\n');
     }
     // `from`/`to` are the arrow, newer -> older; `label` reads the relation along it and
@@ -931,13 +941,22 @@ pub(crate) fn render_blocker_notifications_summary(
 fn write_decision_summary_row(output: &mut String, prefix: &str, decision: &DecisionView) {
     let _ = writeln!(
         output,
-        "{}\t{}\t{}\t{}\ttopics={}",
+        "{}\t{}\t{}\t{}\ttopics={}\tproject={}",
         prefix,
         decision_status_label(decision.status),
         decision.id,
         summary_cell(&decision.title),
-        decision.topic_keys.join(",")
+        decision.topic_keys.join(","),
+        summary_cell(&decision.project_label)
     );
+}
+
+/// A trailing `project=<label>` field on a tab-separated row; nothing when the row's node has no
+/// project (a neighborhood node that is not a decision).
+fn write_project_field(output: &mut String, project_label: Option<&str>) {
+    if let Some(label) = project_label {
+        let _ = write!(output, "\tproject={}", summary_cell(label));
+    }
 }
 
 fn summary_cell(value: &str) -> String {

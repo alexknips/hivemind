@@ -199,6 +199,7 @@ fn render_single(view: &DecisionView, option_labels: &[(String, String)]) -> Str
         "Decision {} ({:?}): {}",
         view.id, view.status, view.title
     ));
+    parts.push(format!("Project: {}", view.project_label));
     if !view.topic_keys.is_empty() {
         parts.push(format!("Topics: {}", view.topic_keys.join(", ")));
     }
@@ -232,12 +233,13 @@ fn render_digest(view: &DecisionView, option_labels: &[(String, String)]) -> Str
         .unwrap_or_default();
     let rationale_short = trim_rationale(&view.rationale, RATIONALE_TRIM_CHARS);
     format!(
-        "- {} ({:?}): {} — {}{}\n  {}",
+        "- {} ({:?}): {} — {}{}\n  Project: {}\n  {}",
         view.id,
         view.status,
         view.title,
         rationale_short,
         chosen,
+        view.project_label,
         view.rests_on_clause()
     )
 }
@@ -309,13 +311,14 @@ fn chain_step_line(i: usize, view: &DecisionView, option_labels: &[(String, Stri
     let rationale_short = trim_rationale(&view.rationale, RATIONALE_TRIM_CHARS);
     let chosen_part = chosen.map(|c| format!("; chose: {c}")).unwrap_or_default(); // ubs:ignore: unwrap_or_default — returns empty string
     format!(
-        "{}. {} ({:?}): {} — {}{}",
+        "{}. {} ({:?}): {} — {}{}\n   Project: {}",
         i + 1,
         view.id,
         view.status,
         view.title,
         rationale_short,
         chosen_part,
+        view.project_label,
     )
 }
 
@@ -474,6 +477,10 @@ pub struct DigestEntry {
     pub question: Option<String>,
     pub topic_keys: Vec<String>,
     pub status: DecisionStatus,
+    /// Address of the project the decision is filed under, and what a person calls it (see
+    /// `DecisionView::project` / `project_label`).
+    pub project: Option<String>,
+    pub project_label: String,
     pub actor_ids: Vec<String>,
     /// The human whose delegated scope an agent's self-acceptance fell within
     /// (hivemind-zdsh.6). `None` for every decision not decided under a delegation.
@@ -625,6 +632,8 @@ fn build_digest_entry(
         question: d.question.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
         topic_keys: d.topic_keys.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
         status: d.status,
+        project: d.project.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
+        project_label: d.project_label.clone(), // ubs:ignore: clone necessary — building owned DigestEntry
         actor_ids: ctx.actor_ids.clone(), // ubs:ignore: clone necessary — building owned DigestEntry from borrowed SearchGraphContext
         delegated_by: ctx.delegated_by.clone(), // ubs:ignore: clone necessary — building owned DigestEntry from borrowed SearchGraphContext
         option_labels,
@@ -695,6 +704,7 @@ fn render_digest_text(
                 "• [{}] {} ({})",
                 entry.decision_id, entry.title, status_label
             );
+            let _ = writeln!(out, "  Project: {}", entry.project_label);
 
             let rationale = trim_rationale(&entry.rationale, RATIONALE_TRIM_CHARS);
             let _ = writeln!(out, "  Why: {rationale}");

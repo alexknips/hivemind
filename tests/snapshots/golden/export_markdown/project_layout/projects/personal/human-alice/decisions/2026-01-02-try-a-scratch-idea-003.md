@@ -2,6 +2,8 @@
 id: "decision-003"
 title: "Try a scratch idea"
 status: "proposed"
+project: "personal:human:alice"
+project_label: "alice's personal project"
 occurred_at: "2026-01-02T00:00:07+00:00"
 topic_keys: ["billing"]
 proposer: "human:alice"
@@ -15,6 +17,7 @@ superseded_by: null
 # Try a scratch idea
 
 Status: proposed
+Project: alice's personal project
 
 ## Context
 

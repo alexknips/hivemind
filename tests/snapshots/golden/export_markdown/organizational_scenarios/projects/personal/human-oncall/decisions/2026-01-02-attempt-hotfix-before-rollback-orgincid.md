@@ -2,6 +2,8 @@
 id: "org:incident:decision:hotfix"
 title: "Attempt hotfix before rollback"
 status: "superseded"
+project: "personal:human:oncall"
+project_label: "oncall's personal project"
 occurred_at: "2026-01-02T00:10:10+00:00"
 topic_keys: ["org.incident", "operations"]
 proposer: "human:oncall"
@@ -15,6 +17,7 @@ superseded_by: "org:incident:decision:rollback"
 # Attempt hotfix before rollback
 
 Status: superseded → [Rollback pricing flag and queue remediation](../../agent-sre/decisions/2026-01-02-rollback-pricing-flag-and-queue-remediation-orgincid.md)
+Project: oncall's personal project
 
 ## Context
 

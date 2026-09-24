@@ -7771,3 +7771,149 @@ fn supersede_without_grounding_is_refused_and_with_grounding_records_it() {
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);
 }
+
+/// Every answer names its project (hivemind-s15q.5): the JSON carries `project` and
+/// `project_label` on each decision object, and every text rendering shows the label.
+#[test]
+fn every_query_answer_names_its_project() -> CliTestResult {
+    use crate::commands::{CommandContext, Commands, DecisionProposalInput, Grounding};
+    use crate::events::{EventProvenance, TenantId};
+    use crate::ledger::SqliteEventLedger;
+
+    let backend = TestBackend::sqlite("project-naming");
+    run(&Cli::parse_from(cli_args(
+        &backend,
+        &[
+            "--actor",
+            "human:alice",
+            "project",
+            "register",
+            "billing",
+            "--display-name",
+            "Billing",
+        ],
+    )))?;
+
+    let (billing_id, personal_id) = {
+        let ledger = SqliteEventLedger::open(&backend.hivemind_dir)?;
+        let commands = Commands::new_with_context(
+            &ledger,
+            CommandContext::new(TenantId::local(), EventProvenance::cli()),
+        );
+        let mut ids = Vec::new();
+        for (title, project) in [
+            ("Price per seat", Some("billing")),
+            ("Keep a personal scratch decision", None),
+        ] {
+            let option_id =
+                commands.record_option("human:alice", "Per seat", "Charge each seat")?;
+            ids.push(commands.propose_decision(DecisionProposalInput {
+                grounding: Grounding::NotAsked,
+                expressed_confidence: None,
+                actor_id: "human:alice",
+                title,
+                rationale:
+                    "Naming the project keeps every answer honest about where it was decided",
+                topic_keys: &["pricing".to_owned()],
+                option_ids: std::slice::from_ref(&option_id),
+                option_labels: &["Per seat".to_owned()],
+                chosen_option_id: Some(option_id.as_str()),
+                decided_by: None,
+                still_proposed: false,
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+                quote: None,
+                question: None,
+                delegated_by: None,
+                project: project.map(crate::commands::DeterminedProject::stated),
+            })?);
+        }
+        (ids[0].clone(), ids[1].clone())
+    };
+
+    let query = |rest: &[&str]| -> std::result::Result<String, Box<dyn std::error::Error>> {
+        let mut args = vec!["query"];
+        args.extend_from_slice(rest);
+        Ok(run(&Cli::parse_from(cli_args(&backend, &args)))?)
+    };
+
+    // JSON: the address and the label on the decision object.
+    let decision: serde_json::Value =
+        serde_json::from_str(&query(&["get_decision", "--id", billing_id.as_str()])?)?;
+    ensure_eq(
+        json_at(&decision, "/data/project")?.as_str(),
+        Some("billing"),
+        "get_decision project",
+    )?;
+    ensure_eq(
+        json_at(&decision, "/data/project_label")?.as_str(),
+        Some("Billing"),
+        "get_decision project_label",
+    )?;
+    let verify: serde_json::Value =
+        serde_json::from_str(&query(&["verify", "--id", personal_id.as_str()])?)?;
+    ensure_eq(
+        json_at(&verify, "/data/project")?.as_str(),
+        Some("personal:human:alice"),
+        "verify project",
+    )?;
+    ensure_eq(
+        json_at(&verify, "/data/project_label")?.as_str(),
+        Some("alice's personal project"),
+        "verify project_label",
+    )?;
+
+    // Text: one project mention per decision on every summary renderer.
+    let expectations: [(&[&str], &str); 8] = [
+        (
+            &["--summary", "get_decision", "--id", billing_id.as_str()],
+            "project=Billing",
+        ),
+        (
+            &["--summary", "search_decisions", "--q", "seat"],
+            "project=Billing",
+        ),
+        (
+            &["--summary", "recall", "seat"],
+            "project=alice's personal project",
+        ),
+        (
+            &["--summary", "situational", "--paths", "pricing"],
+            "project=Billing",
+        ),
+        (
+            &["--summary", "verify", "--id", billing_id.as_str()],
+            "  project: Billing",
+        ),
+        (
+            &["--summary", "why", "--id", billing_id.as_str()],
+            "project=Billing",
+        ),
+        (
+            &["--summary", "compact-view", "--id", billing_id.as_str()],
+            "  project: Billing",
+        ),
+        (
+            &["--summary", "recent_decisions", "--since", "7d"],
+            "project=Billing",
+        ),
+    ];
+    for (args, expected) in expectations {
+        let output = query(args)?;
+        ensure(
+            output.contains(expected),
+            &format!(
+                "`query {}` must show `{expected}`: {output}",
+                args.join(" ")
+            ),
+        )?;
+    }
+    let personal = query(&["--summary", "get_decision", "--id", personal_id.as_str()])?;
+    ensure(
+        personal.contains("project=alice's personal project"),
+        &format!("a personal-project decision is labelled with the person: {personal}"),
+    )?;
+
+    let _ = std::fs::remove_dir_all(&backend.hivemind_dir);
+    Ok(())
+}

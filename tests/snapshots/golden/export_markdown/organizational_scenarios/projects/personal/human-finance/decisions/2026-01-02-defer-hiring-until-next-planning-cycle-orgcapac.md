@@ -2,6 +2,8 @@
 id: "org:capacity:decision:defer-hire"
 title: "Defer hiring until next planning cycle"
 status: "rejected"
+project: "personal:human:finance"
+project_label: "finance's personal project"
 occurred_at: "2026-01-02T00:50:08+00:00"
 topic_keys: ["org.capacity", "planning"]
 proposer: "human:finance"
@@ -15,6 +17,7 @@ superseded_by: null
 # Defer hiring until next planning cycle
 
 Status: rejected
+Project: finance's personal project
 
 ## Context
 

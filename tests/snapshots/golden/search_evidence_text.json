@@ -21,6 +21,8 @@
             "option-020-manual-reconciliation"
           ],
           "premise_decision_ids": [],
+          "project": "personal:actor:planner",
+          "project_label": "actor:planner's personal project",
           "rationale": "Deterministic rationale for seed decision 020",
           "status": "proposed",
           "title": "Seed decision 020",

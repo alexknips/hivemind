@@ -27,6 +27,8 @@
             "option-021-b"
           ],
           "premise_decision_ids": [],
+          "project": "personal:actor:planner",
+          "project_label": "actor:planner's personal project",
           "rationale": "Deterministic rationale for seed decision 021",
           "status": "proposed",
           "title": "Seed decision 021",

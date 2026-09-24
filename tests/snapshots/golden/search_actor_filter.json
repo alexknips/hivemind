@@ -23,6 +23,8 @@
             "option-004-b"
           ],
           "premise_decision_ids": [],
+          "project": "personal:actor:planner",
+          "project_label": "actor:planner's personal project",
           "rationale": "Deterministic rationale for seed decision 004",
           "status": "contested",
           "title": "Seed decision 004",

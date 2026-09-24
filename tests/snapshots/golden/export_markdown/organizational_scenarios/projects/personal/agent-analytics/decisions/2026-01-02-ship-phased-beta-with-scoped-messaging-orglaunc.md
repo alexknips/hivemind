@@ -2,6 +2,8 @@
 id: "org:launch:decision:phased-rollout"
 title: "Ship phased beta with scoped messaging"
 status: "accepted"
+project: "personal:agent:analytics"
+project_label: "analytics agents' personal project"
 occurred_at: "2026-01-02T00:30:13+00:00"
 topic_keys: ["org.launch", "product", "support"]
 proposer: "agent:analytics"
@@ -15,6 +17,7 @@ superseded_by: null
 # Ship phased beta with scoped messaging
 
 Status: accepted
+Project: analytics agents' personal project
 
 ## Context
 

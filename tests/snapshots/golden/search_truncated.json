@@ -21,6 +21,8 @@
             "option-001-b"
           ],
           "premise_decision_ids": [],
+          "project": "personal:actor:planner",
+          "project_label": "actor:planner's personal project",
           "rationale": "Deterministic rationale for seed decision 001",
           "status": "superseded",
           "title": "Seed decision 001",
@@ -61,6 +63,8 @@
             "option-002-b"
           ],
           "premise_decision_ids": [],
+          "project": "personal:actor:planner",
+          "project_label": "actor:planner's personal project",
           "rationale": "Deterministic rationale for seed decision 002",
           "status": "superseded",
           "title": "Seed decision 002",

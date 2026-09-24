@@ -2,6 +2,8 @@
 id: "org:incident:decision:declare"
 title: "Declare pricing-flag incident"
 status: "accepted"
+project: "personal:agent:monitoring"
+project_label: "monitoring agents' personal project"
 occurred_at: "2026-01-02T00:10:08+00:00"
 topic_keys: ["org.incident", "operations"]
 proposer: "agent:monitoring"
@@ -15,6 +17,7 @@ superseded_by: null
 # Declare pricing-flag incident
 
 Status: accepted
+Project: monitoring agents' personal project
 
 ## Context
 

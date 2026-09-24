@@ -344,9 +344,13 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
         EventPayload::IngestBatchReceived(_) => {
             // Raw transcript batches are ledger-only; they do not project to the graph.
         }
-        EventPayload::IngestBatchClassified(payload) => {
-            project_ingest_batch_classified(graph, event_origin, &payload, &origin_properties)?
-        }
+        EventPayload::IngestBatchClassified(payload) => project_ingest_batch_classified(
+            graph,
+            event_origin,
+            &event.actor_id,
+            &payload,
+            &origin_properties,
+        )?,
         EventPayload::DecisionScored(payload) => {
             project_decision_scored(graph, &payload, &origin_properties)?
         }
@@ -420,7 +424,7 @@ pub fn project_captures_in_memory(id_captures: &[(&str, &CaptureItem)]) -> Resul
     let graph = memory::MemoryGraph::default();
     let (resolved, _stats) = resolve_batch_local_references(id_captures);
     for (node_id, capture) in &resolved {
-        project_capture(&graph, capture, node_id, &GraphProperties::default())?;
+        project_capture(&graph, capture, node_id, None, &GraphProperties::default())?;
     }
     let (nodes_map, edges) = graph.nodes_and_edges()?;
     let nodes = nodes_map
@@ -1446,6 +1450,7 @@ fn project_notification_acknowledged(
 fn project_ingest_batch_classified(
     graph: &impl GraphView,
     event_origin: i64,
+    recorder: &str,
     payload: &IngestBatchClassifiedPayload,
     origin_properties: &GraphProperties,
 ) -> Result<()> {
@@ -1459,7 +1464,7 @@ fn project_ingest_batch_classified(
         .collect();
     let (resolved, _stats) = resolve_batch_local_references(&id_captures);
     for (node_id, capture) in &resolved {
-        project_capture(graph, capture, node_id, origin_properties)?;
+        project_capture(graph, capture, node_id, Some(recorder), origin_properties)?;
     }
     Ok(())
 }
@@ -1546,14 +1551,20 @@ fn project_decision_moved(graph: &impl GraphView, payload: &DecisionMovedPayload
     )
 }
 
+/// `recorder` is the actor that recorded the batch, when there is one (the in-memory evaluation
+/// projection has none): a captured decision belongs to their personal project, the same rule
+/// `project_decision_proposed` applies to a proposal that names no project.
 fn project_capture(
     graph: &impl GraphView,
     capture: &CaptureItem,
     node_id: &str,
+    recorder: Option<&str>,
     origin_properties: &GraphProperties,
 ) -> Result<()> {
     match capture.kind.as_str() {
-        "decision" => project_capture_decision(graph, capture, node_id, origin_properties),
+        "decision" => {
+            project_capture_decision(graph, capture, node_id, recorder, origin_properties)
+        }
         "evidence" => project_capture_evidence(graph, capture, node_id, origin_properties),
         "hypothesis" => project_capture_hypothesis(graph, capture, node_id, origin_properties),
         "blocker" => project_capture_blocker(graph, capture, node_id, origin_properties),
@@ -1575,9 +1586,20 @@ fn project_capture_decision(
     graph: &impl GraphView,
     capture: &CaptureItem,
     node_id: &str,
+    recorder: Option<&str>,
     origin_properties: &GraphProperties,
 ) -> Result<()> {
     let mut props = origin_properties.clone();
+    if let Some(recorder) = recorder {
+        props.insert(
+            "project".to_owned(),
+            GraphValue::String(personal_project_handle(recorder)),
+        );
+        props.insert(
+            "project_source".to_owned(),
+            GraphValue::String(ProjectSource::PersonalFallback.as_str().to_owned()),
+        );
+    }
     props.insert(
         "title".to_owned(),
         GraphValue::String(capture.title.clone()),

@@ -12,6 +12,7 @@ use crate::Result;
 use super::grounding::{
     grounding_state_of, hypothesis_facts, premise_decision_ids, rests_on_clause, GroundingState,
 };
+use super::project_label::ProjectLabels;
 use super::shared::{
     neighbor_ids, optional_string, optional_string_list, premised_on_hypothesis_ids,
     required_string,
@@ -43,6 +44,14 @@ pub struct DecisionView {
     pub rationale: String,
     pub topic_keys: Vec<String>,
     pub status: DecisionStatus,
+    /// Address of the project this decision is filed under: a registered handle, or the
+    /// recorder's derived personal address (`personal:human:alex`). `null` only for a decision
+    /// that was referenced (by a decision request or a blocker) before any proposal recorded it.
+    pub project: Option<String>,
+    /// What a person calls that project: its display name, else its handle, or for a personal
+    /// address the person or agent tool it belongs to ("alex's personal project"); "no project
+    /// recorded" when `project` is `null`.
+    pub project_label: String,
     pub chosen_option_id: Option<String>,
     pub option_ids: Vec<String>,
     pub evidence_ids: Vec<String>,
@@ -61,7 +70,7 @@ pub struct DecisionView {
 
 /// The single-decision row shape every backend's `query` recognizes (memory.rs matches this
 /// text verbatim), shared so `get_decision_title` rides the same supported shape.
-const DECISION_ROW_QUERY: &str = "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys, d.quote AS quote, d.question AS question LIMIT 1;";
+const DECISION_ROW_QUERY: &str = "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys, d.project AS project, d.quote AS quote, d.question AS question LIMIT 1;";
 
 impl DecisionView {
     /// Grounded, a declared bet, or nothing declared, from the premise, evidence and hypothesis
@@ -101,6 +110,17 @@ pub fn get_decision(
     graph: &impl GraphView,
     decision_id: &str,
 ) -> Result<QueryResponse<Option<DecisionView>>> {
+    let labels = ProjectLabels::from_graph(graph)?;
+    get_decision_with_labels(graph, decision_id, &labels)
+}
+
+/// `get_decision` for callers that read many decisions in one query: they load the project
+/// labels once and share them rather than paying one project read per decision.
+pub(crate) fn get_decision_with_labels(
+    graph: &impl GraphView,
+    decision_id: &str,
+    labels: &ProjectLabels,
+) -> Result<QueryResponse<Option<DecisionView>>> {
     let started = Instant::now();
     let rows = graph.query(
         DECISION_ROW_QUERY,
@@ -112,6 +132,8 @@ pub fn get_decision(
         let title = optional_string(row, "title").unwrap_or_default();
         let rationale = optional_string(row, "rationale").unwrap_or_default();
         let topic_keys = optional_string_list(row, "topic_keys");
+        let project = optional_string(row, "project");
+        let project_label = labels.label_of(project.as_deref());
         let quote = optional_string(row, "quote");
         let question = optional_string(row, "question");
         let status = derive_decision_status(graph, &id)?;
@@ -158,6 +180,8 @@ pub fn get_decision(
             rationale,
             topic_keys,
             status,
+            project,
+            project_label,
             chosen_option_id,
             option_ids,
             evidence_ids,

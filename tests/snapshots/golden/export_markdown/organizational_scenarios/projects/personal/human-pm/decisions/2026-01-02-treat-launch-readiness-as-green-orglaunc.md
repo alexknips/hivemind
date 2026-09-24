@@ -2,6 +2,8 @@
 id: "org:launch:decision:readiness"
 title: "Treat launch readiness as green"
 status: "contested"
+project: "personal:human:pm"
+project_label: "pm's personal project"
 occurred_at: "2026-01-02T00:30:08+00:00"
 topic_keys: ["org.launch", "product"]
 proposer: "human:pm"
@@ -15,6 +17,7 @@ superseded_by: null
 # Treat launch readiness as green
 
 Status: contested — accepted by: human:pm; rejected by: agent:qa
+Project: pm's personal project
 
 ## Context
 

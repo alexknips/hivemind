@@ -2,6 +2,8 @@
 id: "org:launch:decision:launch-now"
 title: "Launch publicly now"
 status: "rejected"
+project: "personal:human:pm"
+project_label: "pm's personal project"
 occurred_at: "2026-01-02T00:30:11+00:00"
 topic_keys: ["org.launch", "product"]
 proposer: "human:pm"
@@ -15,6 +17,7 @@ superseded_by: null
 # Launch publicly now
 
 Status: rejected
+Project: pm's personal project
 
 ## Context
 

@@ -2,6 +2,8 @@
 id: "decision-001"
 title: "Charge per seat"
 status: "superseded"
+project: "billing"
+project_label: "billing"
 occurred_at: "2026-01-02T00:00:04+00:00"
 topic_keys: ["billing"]
 proposer: "human:bob"
@@ -15,6 +17,7 @@ superseded_by: "decision-002"
 # Charge per seat
 
 Status: superseded → [Bill per organization instead](../../platform/decisions/2026-01-02-bill-per-organization-instead-002.md)
+Project: billing
 
 ## Context
 

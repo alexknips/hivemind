@@ -2,6 +2,8 @@
 id: "org:capacity:decision:contractor"
 title: "Use a contractor for backend capacity"
 status: "contested"
+project: "personal:human:manager"
+project_label: "manager's personal project"
 occurred_at: "2026-01-02T00:50:10+00:00"
 topic_keys: ["org.capacity", "planning"]
 proposer: "human:manager"
@@ -15,6 +17,7 @@ superseded_by: null
 # Use a contractor for backend capacity
 
 Status: contested — accepted by: human:manager; rejected by: agent:team-lead
+Project: manager's personal project
 
 ## Context
 

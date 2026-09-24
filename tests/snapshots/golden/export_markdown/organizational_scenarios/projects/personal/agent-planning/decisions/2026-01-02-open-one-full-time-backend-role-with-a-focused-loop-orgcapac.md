@@ -2,6 +2,8 @@
 id: "org:capacity:decision:fulltime-hire"
 title: "Open one full-time backend role with a focused loop"
 status: "accepted"
+project: "personal:agent:planning"
+project_label: "planning agents' personal project"
 occurred_at: "2026-01-02T00:50:13+00:00"
 topic_keys: ["org.capacity", "planning", "hiring"]
 proposer: "agent:planning"
@@ -15,6 +17,7 @@ superseded_by: null
 # Open one full-time backend role with a focused loop
 
 Status: accepted
+Project: planning agents' personal project
 
 ## Context
 

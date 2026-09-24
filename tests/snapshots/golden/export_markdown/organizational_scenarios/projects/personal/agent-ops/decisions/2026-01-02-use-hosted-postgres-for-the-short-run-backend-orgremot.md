@@ -2,6 +2,8 @@
 id: "org:remote-db:decision:postgres-pilot"
 title: "Use hosted Postgres for the short-run backend"
 status: "accepted"
+project: "personal:agent:ops"
+project_label: "ops agents' personal project"
 occurred_at: "2026-01-02T00:20:13+00:00"
 topic_keys: ["org.remote-db", "architecture", "migration"]
 proposer: "agent:ops"
@@ -15,6 +17,7 @@ superseded_by: null
 # Use hosted Postgres for the short-run backend
 
 Status: accepted
+Project: ops agents' personal project
 
 ## Context
 

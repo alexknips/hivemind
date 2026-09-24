@@ -28,9 +28,10 @@ use crate::Result;
 use super::grounding::{
     grounding_state_of, premise_signals, GroundingState, StalePremise, UncheckedBet,
 };
+use super::project_label::ProjectLabels;
 use super::shared::{
-    optional_int, query_error, query_superseder, query_timer_start, required_string,
-    MAX_QUERY_RESULTS,
+    optional_int, optional_string, query_error, query_superseder, query_timer_start,
+    required_string, MAX_QUERY_RESULTS,
 };
 use super::QueryResponse;
 
@@ -74,6 +75,10 @@ pub enum OutcomeReason {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct DecisionOutcome {
     pub decision_id: String,
+    /// Address of the project the decision is filed under (see `DecisionView::project`).
+    pub project: Option<String>,
+    /// What a person calls that project (see `DecisionView::project_label`).
+    pub project_label: String,
     /// False when superseded, stale (a premise no longer stands), or contested.
     pub held_up: bool,
     pub superseded: bool,
@@ -129,18 +134,38 @@ pub fn get_decision_outcome_at(
     decision_id: &str,
     now: DateTime<Utc>,
 ) -> Result<QueryResponse<Option<DecisionOutcome>>> {
+    let labels = ProjectLabels::from_graph(graph)?;
+    get_decision_outcome_with_labels(graph, decision_id, now, &labels)
+}
+
+/// `get_decision_outcome_at` for callers that derive many outcomes in one query: they load the
+/// project labels once and share them.
+pub(crate) fn get_decision_outcome_with_labels(
+    graph: &impl GraphView,
+    decision_id: &str,
+    now: DateTime<Utc>,
+    labels: &ProjectLabels,
+) -> Result<QueryResponse<Option<DecisionOutcome>>> {
     let started = query_timer_start();
 
-    // Existence check + own event_origin in one query.
+    // Existence check + own event_origin and project in one query.
     let decision_rows = graph.query(
-        "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id, d.event_origin AS event_origin LIMIT 1;",
+        "MATCH (d:`Decision` {id: $id}) RETURN d.id AS id, d.event_origin AS event_origin, d.project AS project LIMIT 1;",
         &GraphParams::from([("id".to_owned(), GraphValue::String(decision_id.to_owned()))]),
     )?;
 
     let data = if let Some(row) = decision_rows.first() {
         let id = required_string(row, "id")?;
         let decision_event_origin = optional_int(row, "event_origin");
-        Some(derive_outcome(graph, &id, decision_event_origin, now)?)
+        let project = optional_string(row, "project");
+        Some(derive_outcome(
+            graph,
+            &id,
+            decision_event_origin,
+            project,
+            labels,
+            now,
+        )?)
     } else {
         None
     };
@@ -181,12 +206,12 @@ pub fn get_decision_quality_candidates(
     // ORDER BY event_origin ensures a stable ordering for pagination.
     let decision_rows = if let Some(since) = request.since_event_origin {
         graph.query(
-            "MATCH (d:`Decision`) WHERE d.event_origin >= $since RETURN d.id AS id, d.event_origin AS event_origin ORDER BY d.event_origin, d.id;",
+            "MATCH (d:`Decision`) WHERE d.event_origin >= $since RETURN d.id AS id, d.event_origin AS event_origin, d.project AS project ORDER BY d.event_origin, d.id;",
             &GraphParams::from([("since".to_owned(), GraphValue::Int(since))]),
         )?
     } else {
         graph.query(
-            "MATCH (d:`Decision`) RETURN d.id AS id, d.event_origin AS event_origin ORDER BY d.event_origin, d.id;",
+            "MATCH (d:`Decision`) RETURN d.id AS id, d.event_origin AS event_origin, d.project AS project ORDER BY d.event_origin, d.id;",
             &GraphParams::new(),
         )?
     };
@@ -200,11 +225,13 @@ pub fn get_decision_quality_candidates(
     let truncated = paged.len() > limit;
     let window = paged.get(..paged.len().min(limit)).unwrap_or(&[]);
 
+    let labels = ProjectLabels::from_graph(graph)?;
     let mut outcomes = Vec::with_capacity(window.len());
     for row in window {
         let id = required_string(row, "id")?;
         let event_origin = optional_int(row, "event_origin");
-        let outcome = derive_outcome(graph, &id, event_origin, now)?;
+        let project = optional_string(row, "project");
+        let outcome = derive_outcome(graph, &id, event_origin, project, &labels, now)?;
         if !request.only_with_signals || !outcome.reasons.is_empty() {
             outcomes.push(outcome);
         }
@@ -227,6 +254,8 @@ fn derive_outcome(
     graph: &impl GraphView,
     decision_id: &str,
     decision_event_origin: Option<i64>,
+    project: Option<String>,
+    labels: &ProjectLabels,
     now: DateTime<Utc>,
 ) -> Result<DecisionOutcome> {
     let mut reasons = Vec::new();
@@ -308,6 +337,8 @@ fn derive_outcome(
 
     Ok(DecisionOutcome {
         decision_id: decision_id.to_owned(),
+        project_label: labels.label_of(project.as_deref()),
+        project,
         held_up,
         superseded,
         superseded_by,

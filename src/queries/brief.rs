@@ -18,9 +18,10 @@ use crate::projector::{GraphParams, GraphValue, GraphView, NodeKind};
 use crate::Result;
 
 use super::context::{get_decision_context, ReviewShape};
-use super::decision::get_decision;
+use super::decision::get_decision_with_labels;
 use super::grounding::{grounding_of_at, GroundingItem, GroundingState, UncheckedBet};
-use super::outcome::{get_decision_outcome_at, OutcomeReason};
+use super::outcome::{get_decision_outcome_with_labels, OutcomeReason};
+use super::project_label::ProjectLabels;
 use super::shared::{node_row, optional_datetime, optional_string, query_error, query_timer_start};
 use super::status::DecisionStatus;
 use super::QueryResponse;
@@ -69,6 +70,10 @@ pub struct StillHolds {
 pub struct DecisionBrief {
     pub decision_id: String,
     pub title: String,
+    /// Address of the project the decision is filed under (see `DecisionView::project`).
+    pub project: Option<String>,
+    /// What a person calls that project (see `DecisionView::project_label`).
+    pub project_label: String,
     pub rationale: String,
     /// Verbatim words of the decider, self-contained. Always present together with
     /// `question` (hivemind-zdsh.13).
@@ -116,9 +121,21 @@ pub fn get_decision_brief_at(
     decision_id: &str,
     now: DateTime<Utc>,
 ) -> Result<QueryResponse<Option<DecisionBrief>>> {
+    let labels = ProjectLabels::from_graph(graph)?;
+    get_decision_brief_with_labels(graph, decision_id, now, &labels)
+}
+
+/// `get_decision_brief_at` for callers that compose many briefs in one query (the decision
+/// log): they load the project labels once and share them.
+pub(crate) fn get_decision_brief_with_labels(
+    graph: &impl GraphView,
+    decision_id: &str,
+    now: DateTime<Utc>,
+    labels: &ProjectLabels,
+) -> Result<QueryResponse<Option<DecisionBrief>>> {
     let started = query_timer_start();
 
-    let Some(decision) = get_decision(graph, decision_id)?.data else {
+    let Some(decision) = get_decision_with_labels(graph, decision_id, labels)?.data else {
         return Ok(QueryResponse {
             result_count: 0,
             truncated: false,
@@ -130,7 +147,7 @@ pub fn get_decision_brief_at(
     let context = get_decision_context(graph, decision_id)?
         .data
         .ok_or_else(|| query_error("decision exists but has no context"))?;
-    let outcome = get_decision_outcome_at(graph, decision_id, now)?
+    let outcome = get_decision_outcome_with_labels(graph, decision_id, now, labels)?
         .data
         .ok_or_else(|| query_error("decision exists but has no outcome"))?;
     let (occurred_at, expressed_confidence) = decision_capture_facts(graph, decision_id)?;
@@ -151,6 +168,8 @@ pub fn get_decision_brief_at(
     let brief = DecisionBrief {
         decision_id: decision.id,
         title: decision.title,
+        project: decision.project,
+        project_label: decision.project_label,
         rationale: decision.rationale,
         quote: decision.quote,
         question: decision.question,

@@ -9,6 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::commands::personal_project_handle;
 use crate::error::QueryError;
 use crate::events::{
     self, DecisionAcceptedPayload, DecisionMovedPayload, DecisionProposedPayload,
@@ -19,6 +20,7 @@ use crate::ledger::EventLedger;
 use crate::projector::NodeKind;
 use crate::Result;
 
+use super::project_label::ProjectLabels;
 use super::shared::normalized_query;
 use super::{DecisionStatus, QueryResponse, MAX_QUERY_RESULTS};
 
@@ -216,6 +218,12 @@ pub struct RecentDecisionEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
     pub status: DecisionStatus,
+    /// Address of the project the decision is filed under: where its latest move took it, else
+    /// the handle stated on the proposal, else the recorder's derived personal address (see
+    /// `DecisionView::project`).
+    pub project: String,
+    /// What a person calls that project (see `DecisionView::project_label`).
+    pub project_label: String,
     pub topic_keys: Vec<String>,
     pub actor_ids: Vec<String>,
     pub creation: DecisionEventProvenance,
@@ -457,6 +465,7 @@ pub fn get_recent_decisions(
     let latest_offset = ledger.latest_offset()?;
     let window = resolve_recent_decisions_window(&events, latest_offset, request);
     let index = DecisionIndex::from_events(&events)?;
+    let labels = ProjectLabels::from_events(&events);
     let filters = normalized_recent_decision_filters(&request.filters);
     let limit = normalized_history_limit(request.limit);
     let cursor = normalized_query(request.cursor.as_deref());
@@ -507,6 +516,15 @@ pub fn get_recent_decisions(
                 .map(|entry| entry.hypothesis_ids.iter().cloned().collect::<Vec<_>>())
                 .unwrap_or(payload.hypothesis_ids.clone());
 
+            // The same rule the projector applies: where the latest `decision.moved` took the
+            // decision, else the handle on the proposal, else (no handle, or an event that
+            // predates the field) the recorder's personal project.
+            let moved_to = entry.and_then(|entry| entry.moved_to.as_deref());
+            let project = match (moved_to, payload.project) {
+                (Some(moved_to), _) => moved_to.to_owned(),
+                (None, Some(handle)) => handle,
+                (None, None) => personal_project_handle(&event.actor_id),
+            };
             items.push(RecentDecisionEntry {
                 decision_id,
                 title: payload.title,
@@ -514,6 +532,8 @@ pub fn get_recent_decisions(
                 quote: payload.quote,
                 question: payload.question,
                 status,
+                project_label: labels.label(&project),
+                project,
                 topic_keys,
                 actor_ids,
                 creation: decision_event_provenance(event)?,
@@ -1338,6 +1358,8 @@ struct DecisionIndexEntry {
     option_ids: BTreeSet<String>,
     evidence_ids: BTreeSet<String>,
     hypothesis_ids: BTreeSet<String>,
+    /// Where the latest `decision.moved` took the decision; absent when it never moved.
+    moved_to: Option<String>,
 }
 
 impl DecisionIndex {
@@ -1465,12 +1487,18 @@ impl DecisionIndex {
                 | EventPayload::IngestBatchClassified(_)
                 | EventPayload::DecisionScored(_)
                 | EventPayload::DecisionMetadataDerived(_)
-                | EventPayload::DecisionMoved(_)
                 | EventPayload::ProjectRegistered(_)
                 | EventPayload::ProjectLinked(_)
                 | EventPayload::ProjectUnlinked(_)
                 | EventPayload::ProjectAnchored(_)
                 | EventPayload::ProjectUnanchored(_) => {}
+                EventPayload::DecisionMoved(payload) => {
+                    index
+                        .decisions
+                        .entry(payload.decision_id)
+                        .or_default()
+                        .moved_to = Some(payload.to);
+                }
             }
         }
         Ok(index)

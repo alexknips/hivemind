@@ -2,6 +2,8 @@
 id: "decision-005"
 title: "Second agent note"
 status: "proposed"
+project: "personal:agent:claude"
+project_label: "claude agents' personal project"
 occurred_at: "2026-01-02T00:00:09+00:00"
 topic_keys: ["billing"]
 proposer: "agent:claude:session-2"
@@ -15,6 +17,7 @@ superseded_by: null
 # Second agent note
 
 Status: proposed
+Project: claude agents' personal project
 
 ## Context
 

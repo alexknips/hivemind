@@ -12,8 +12,10 @@ use crate::Result;
 use super::arrows::NodeTimes;
 use super::brief::{get_decision_brief, resolve_option_label, DecisionBrief};
 use super::decision::{get_decision_title, get_evidence_content, get_hypothesis_statement};
+use super::project_label::ProjectLabels;
 use super::shared::{
-    decision_node_exists, neighbor_pairs, query_error, Direction, MAX_QUERY_RESULTS,
+    decision_node_exists, decision_project, neighbor_pairs, query_error, Direction,
+    MAX_QUERY_RESULTS,
 };
 use super::status::{
     derive_decision_status, derive_hypothesis_status, DecisionStatus, HypothesisStatus,
@@ -32,6 +34,9 @@ pub struct NeighborhoodRoot {
     /// The root decision's answer to "why": title, rationale, chosen and rejected option
     /// labels, status, who decided, and whether it still holds -- the same `DecisionBrief`
     /// `verify` returns, flattened in beside the id. Absent when the decision is not present.
+    /// This is also where the root names its project: the brief's `project` and `project_label`
+    /// (see `DecisionView::project`) land on the root beside the id, so the root carries no
+    /// project fields of its own to collide with them.
     #[serde(flatten)]
     pub brief: Option<DecisionBrief>,
 }
@@ -40,6 +45,13 @@ pub struct NeighborhoodRoot {
 pub struct NeighborNode {
     pub id: String,
     pub kind: NodeKind,
+    /// Address of the project a decision node is filed under; absent on every other kind and on
+    /// a decision that has none (see `DecisionView::project`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// What a person calls that project (see `DecisionView::project_label`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decision_status: Option<DecisionStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -274,6 +286,7 @@ pub(super) fn neighborhood_structure(
     }
 
     let root_present = decision_node_exists(graph, decision_id)?;
+    let labels = ProjectLabels::from_graph(graph)?;
     let root = NeighborhoodRoot {
         id: decision_id.to_owned(),
         kind: NodeKind::Decision,
@@ -455,6 +468,11 @@ pub(super) fn neighborhood_structure(
 
     let mut nodes: Vec<NeighborNode> = Vec::with_capacity(node_kinds.len());
     for (id, kind) in node_kinds {
+        let (project, project_label) = if matches!(kind, NodeKind::Decision) {
+            named_decision_project(graph, &labels, &id)?
+        } else {
+            (None, None)
+        };
         let decision_status = if matches!(kind, NodeKind::Decision) {
             Some(derive_decision_status(graph, &id)?)
         } else {
@@ -468,6 +486,8 @@ pub(super) fn neighborhood_structure(
         nodes.push(NeighborNode {
             id,
             kind,
+            project,
+            project_label,
             decision_status,
             hypothesis_status,
             label: None,
@@ -499,6 +519,18 @@ pub(super) fn neighborhood_structure(
         latency_ms: started.elapsed().as_millis(),
         data: NeighborhoodView { root, nodes, edges },
     })
+}
+
+/// The project address and label of a decision node that is present. A decision that was only
+/// referenced, never proposed, has no address; its label says so rather than staying blank.
+fn named_decision_project(
+    graph: &impl GraphView,
+    labels: &ProjectLabels,
+    decision_id: &str,
+) -> Result<(Option<String>, Option<String>)> {
+    let project = decision_project(graph, decision_id)?;
+    let label = labels.label_of(project.as_deref());
+    Ok((project, Some(label)))
 }
 
 #[cfg(test)]

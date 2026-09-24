@@ -63,6 +63,8 @@ fn dot_export_renders_node_statuses_and_relation_labels() {
             NeighborNode {
                 id: "d1".to_owned(),
                 kind: NodeKind::Decision,
+                project: Some("billing".to_owned()),
+                project_label: Some("Billing".to_owned()),
                 decision_status: Some(DecisionStatus::Accepted),
                 hypothesis_status: None,
                 label: None,
@@ -70,6 +72,8 @@ fn dot_export_renders_node_statuses_and_relation_labels() {
             NeighborNode {
                 id: "h1".to_owned(),
                 kind: NodeKind::Hypothesis,
+                project: None,
+                project_label: None,
                 decision_status: None,
                 hypothesis_status: Some(HypothesisStatus::Refuted),
                 label: None,

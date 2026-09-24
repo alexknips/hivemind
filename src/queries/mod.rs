@@ -14,6 +14,7 @@ mod inhouse_scorer;
 mod misfiled;
 mod neighborhood;
 mod outcome;
+mod project_label;
 mod projects;
 mod relevant;
 mod resolve;

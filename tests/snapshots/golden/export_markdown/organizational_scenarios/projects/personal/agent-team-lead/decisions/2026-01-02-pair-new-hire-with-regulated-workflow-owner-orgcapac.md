@@ -2,6 +2,8 @@
 id: "org:capacity:decision:onboarding-plan"
 title: "Pair new hire with regulated workflow owner"
 status: "accepted"
+project: "personal:agent:team-lead"
+project_label: "team-lead agents' personal project"
 occurred_at: "2026-01-02T00:50:15+00:00"
 topic_keys: ["org.capacity", "hiring"]
 proposer: "agent:team-lead"
@@ -15,6 +17,7 @@ superseded_by: null
 # Pair new hire with regulated workflow owner
 
 Status: accepted
+Project: team-lead agents' personal project
 
 ## Context
 

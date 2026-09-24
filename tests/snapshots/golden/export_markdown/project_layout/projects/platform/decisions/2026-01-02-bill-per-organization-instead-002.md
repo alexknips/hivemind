@@ -2,6 +2,8 @@
 id: "decision-002"
 title: "Bill per organization instead"
 status: "proposed"
+project: "platform"
+project_label: "Platform"
 occurred_at: "2026-01-02T00:00:05+00:00"
 topic_keys: ["billing"]
 proposer: "human:alice"
@@ -15,6 +17,7 @@ superseded_by: null
 # Bill per organization instead
 
 Status: proposed
+Project: Platform
 
 ## Context
 

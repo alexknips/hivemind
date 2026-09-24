@@ -240,7 +240,7 @@ impl GraphView for MemoryGraph {
             return Ok(rows);
         }
 
-        if cypher.contains("RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys, d.quote AS quote, d.question AS question LIMIT 1;") {
+        if cypher.contains("RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys, d.project AS project, d.quote AS quote, d.question AS question LIMIT 1;") {
             let decision_id = required_param_string(params, "id")?;
             let nodes = self.nodes_snapshot()?;
             if let Some(properties) = nodes.get(&(NodeKind::Decision, decision_id.to_owned())) {
@@ -257,6 +257,10 @@ impl GraphView for MemoryGraph {
                     (
                         "topic_keys".to_owned(),
                         graph_property_or_default(properties, "topic_keys"),
+                    ),
+                    (
+                        "project".to_owned(),
+                        graph_property_or_default(properties, "project"),
                     ),
                     (
                         "quote".to_owned(),
@@ -365,7 +369,7 @@ impl GraphView for MemoryGraph {
             )])]);
         }
 
-        if cypher.contains("WHERE $topic IN d.topic_keys RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys ORDER BY d.id LIMIT 1000;") {
+        if cypher.contains("WHERE $topic IN d.topic_keys RETURN d.id AS id, d.title AS title, d.rationale AS rationale, d.topic_keys AS topic_keys, d.project AS project ORDER BY d.id LIMIT 1000;") {
             let topic = required_param_string(params, "topic")?;
             let nodes = self.nodes_snapshot()?;
             let mut decisions = nodes
@@ -389,6 +393,10 @@ impl GraphView for MemoryGraph {
                         (
                             "topic_keys".to_owned(),
                             graph_property_or_default(properties, "topic_keys"),
+                        ),
+                        (
+                            "project".to_owned(),
+                            graph_property_or_default(properties, "project"),
                         ),
                     ]))
                 })

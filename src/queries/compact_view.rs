@@ -11,13 +11,14 @@ use crate::projector::{GraphView, RelationKind};
 use crate::Result;
 
 use super::active_blockers::{ActiveDecisionBlockersRequest, DecisionBlockerFilters};
-use super::decision::{get_hypothesis_statement, DecisionView};
+use super::decision::{get_decision_with_labels, get_hypothesis_statement, DecisionView};
 use super::grounding::GroundingState;
 use super::neighborhood::{neighborhood_structure, NeighborhoodRequest};
+use super::project_label::ProjectLabels;
 use super::shared::{query_error, MAX_QUERY_RESULTS};
 use super::status::{DecisionStatus, HypothesisStatus};
 use super::supersession::get_supersession_chain;
-use super::{get_active_decision_blockers, get_decision, QueryResponse};
+use super::{get_active_decision_blockers, QueryResponse};
 
 // ---------------------------------------------------------------------------
 // Output types
@@ -108,7 +109,8 @@ pub fn get_compact_view(
     }
 
     // 1. Resolve focal decision
-    let focal = get_decision(graph, decision_id)?;
+    let labels = ProjectLabels::from_graph(graph)?;
+    let focal = get_decision_with_labels(graph, decision_id, &labels)?;
     let Some(focal_decision) = focal.data else {
         return Ok(QueryResponse {
             result_count: 0,
@@ -130,7 +132,7 @@ pub fn get_compact_view(
     let terminal_decision = if terminal_id == decision_id {
         focal_decision
     } else {
-        get_decision(graph, &terminal_id)?
+        get_decision_with_labels(graph, &terminal_id, &labels)?
             .data
             .unwrap_or(focal_decision)
     };
