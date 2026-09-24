@@ -175,7 +175,7 @@ pub fn get_decision_neighborhood(
     for node in &mut response.data.nodes {
         node.label = match &brief {
             Some(brief) if node.kind == NodeKind::Decision && node.id == brief.decision_id => {
-                Some(brief.title.clone())
+                Some(brief.title.clone()) // ubs:ignore: one clone per neighbourhood, only for the root decision
             }
             _ => node_label(graph, node.kind, &node.id)?,
         };

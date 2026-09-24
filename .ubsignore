@@ -21,6 +21,7 @@ src/connector/tests.rs
 src/queries/tests.rs
 src/queries/history/tests.rs
 src/queries/resolve/tests.rs
+src/queries/neighborhood/tests.rs
 src/queries/brief/tests.rs
 src/queries/decision_log/tests.rs
 src/queries/grounding/tests.rs
