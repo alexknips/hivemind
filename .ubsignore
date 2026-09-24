@@ -29,6 +29,7 @@ src/queries/arrows/tests.rs
 src/queries/test_fixtures.rs
 src/cli/render/tests.rs
 src/queries/projects/tests.rs
+src/queries/project_label/tests.rs
 src/cli/current_project/tests.rs
 src/commands/tests.rs
 src/grounding/tests.rs
