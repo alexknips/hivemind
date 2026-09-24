@@ -764,75 +764,179 @@ fn decision_proposed_with_stated_project_stores_handle_and_source() -> Result<()
     Ok(())
 }
 
-#[test]
-fn decision_moved_updates_project_without_clobbering_other_properties() -> Result<()> {
-    // Approved record shape, item 3: `decision.moved` updates the decision's project (and
-    // project_source = moved) and keeps every move readable in history. `upsert_node`
-    // merges by key (see `GraphView::upsert_node`), so title/rationale must survive a move
-    // that only names project/project_source -- verified here against the real merging
-    // `MemoryGraph`, not `RecordingGraph` (which just replaces on every call).
-    use super::memory::MemoryGraph;
+/// Two decisions proposed by an agent, then the first moved billing -> pricing by a *different*
+/// actor over a *different* source, then moved back. The mover's source/source_ref differ from
+/// the proposal's on purpose: a projector that spread the move event's origin properties onto
+/// the node would visibly rewrite the capture origin. Shared with `projector/postgres/tests.rs`.
+fn decision_moved_fixture_events() -> Vec<Event> {
+    let proposal = |decision_id: &str| {
+        event(
+            EventType::DecisionProposed,
+            "agent:claude:builder",
+            json!({
+                "decision_id": decision_id,
+                "title": "Use per-seat pricing",
+                "rationale": "Simpler to reason about at our scale",
+                "topic_keys": ["pricing"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": [],
+                "project": "billing",
+                "project_source": "stated"
+            }),
+        )
+    };
+    let mover_move = |from: &str, to: &str| {
+        let mut moved = event(
+            EventType::DecisionMoved,
+            "human:bob",
+            json!({ "decision_id": "decision:first", "from": from, "to": to }),
+        );
+        moved.source = EventSource::Human;
+        moved.source_ref = Some("mover-session".to_owned());
+        moved
+    };
+    vec![
+        proposal("decision:first"),
+        proposal("decision:second"),
+        mover_move("billing", "pricing"),
+        mover_move("pricing", "billing"),
+    ]
+}
 
+/// The first `len` events of [`decision_moved_fixture_events`]: 2 = both proposals, 3 = plus the
+/// move, 4 = plus the move back.
+pub(super) fn decision_moved_fixture_ledger(len: usize) -> Result<InMemoryEventLedger> {
     let ledger = InMemoryEventLedger::new();
-    ledger.append(event(
-        EventType::DecisionProposed,
-        "actor:alice",
-        json!({
-            "decision_id": "decision:billing-1",
-            "title": "Use per-seat pricing",
-            "rationale": "Simpler to reason about at our scale",
-            "topic_keys": ["pricing"],
-            "option_ids": [],
-            "chosen_option_id": null,
-            "hypothesis_ids": [],
-            "evidence_ids": [],
-            "project": "billing",
-            "project_source": "stated"
-        }),
-    ))?;
-    ledger.append(event(
-        EventType::DecisionMoved,
-        "actor:alice",
-        json!({
-            "decision_id": "decision:billing-1",
-            "from": "billing",
-            "to": "pricing",
-            "reason": "per-seat pricing decisions live under Pricing"
-        }),
-    ))?;
+    for event in decision_moved_fixture_events().into_iter().take(len) {
+        ledger.append(event)?;
+    }
+    Ok(ledger)
+}
 
-    let graph = MemoryGraph::default();
-    project_from_ledger(&ledger, &graph, 0)?;
-
+/// One Decision node as the backend stores it (`MemoryGraph` and Postgres both answer a
+/// `node.id AS id` lookup with every stored property).
+fn decision_row(graph: &impl GraphView, decision_id: &str) -> Result<GraphRow> {
     let rows = graph.query(
-        "MATCH (node:`Decision` {id: $id}) RETURN node.id AS id, node.project AS project, node.project_source AS project_source, node.title AS title, node.rationale AS rationale ORDER BY node.id;",
+        "MATCH (node:`Decision` {id: $id}) RETURN node.id AS id, node.project AS project, node.project_source AS project_source, node.event_origin AS event_origin, node.tenant_id AS tenant_id, node.title AS title, node.rationale AS rationale ORDER BY node.id;",
         &GraphParams::from([(
             "id".to_owned(),
-            GraphValue::String("decision:billing-1".to_owned()),
+            GraphValue::String(decision_id.to_owned()),
         )]),
     )?;
-    assert_eq!(rows.len(), 1);
-    let row = &rows[0];
+    assert_eq!(rows.len(), 1, "{decision_id} projected exactly once");
+    Ok(rows.into_iter().next().expect("one row"))
+}
+
+/// Mayor's conformance ruling on hivemind-s15q.10: "nothing is deleted or rewritten". A move
+/// changes where a decision is found, not who captured it, so once `decision:first` has been
+/// moved (and moved back) its `project`/`project_source` are the move's while its title,
+/// rationale, source, source_ref, event_origin and tenant are still the proposal's, and it keeps
+/// its place in an event_origin-ordered listing. `graph` holds [`decision_moved_fixture_ledger`]
+/// with 3 or 4 events; runs on any backend (`MemoryGraph` here, Postgres in its own tests).
+pub(super) fn assert_move_keeps_capture_origin(
+    graph: &impl GraphView,
+    expected_project: &str,
+) -> Result<()> {
+    use crate::queries::{
+        get_decision_context, get_decision_context_candidates, DecisionContextRequest,
+    };
+
+    let proposals = decision_moved_fixture_ledger(2)?.read(0, 10)?;
+    let offset_of = |index: usize| {
+        i64::try_from(proposals[index].event_id.expect("ledger assigns ids")).expect("fits i64")
+    };
+    let (first_offset, second_offset) = (offset_of(0), offset_of(1));
+    let string = |value: &str| Some(GraphValue::String(value.to_owned()));
+
+    let row = decision_row(graph, "decision:first")?;
+    assert_eq!(row.get("project").cloned(), string(expected_project));
     assert_eq!(
-        row.get("project"),
-        Some(&GraphValue::String("pricing".to_owned())),
-        "the move must update the current project"
+        row.get("project_source").cloned(),
+        string("moved"),
+        "a move stamps project_source = moved, even a move back"
     );
+    assert_eq!(row.get("title").cloned(), string("Use per-seat pricing"));
     assert_eq!(
-        row.get("project_source"),
-        Some(&GraphValue::String("moved".to_owned()))
-    );
-    assert_eq!(
-        row.get("title"),
-        Some(&GraphValue::String("Use per-seat pricing".to_owned())),
+        row.get("rationale").cloned(),
+        string("Simpler to reason about at our scale"),
         "a move must not clobber properties it doesn't name"
     );
     assert_eq!(
-        row.get("rationale"),
-        Some(&GraphValue::String(
-            "Simpler to reason about at our scale".to_owned()
-        ))
+        row.get("event_origin").cloned(),
+        Some(GraphValue::Int(first_offset)),
+        "event_origin stays the proposal's ledger offset, not the move's"
     );
+    assert_eq!(
+        row.get("tenant_id").cloned(),
+        string(decision_moved_fixture_events()[0].tenant_id.as_str()),
+        "a move must not re-stamp the capture's tenant"
+    );
+
+    let context = get_decision_context(graph, "decision:first")?
+        .data
+        .expect("decision context");
+    assert_eq!(
+        context.source, "agent",
+        "a move must not credit the capture to the mover's source"
+    );
+    assert_eq!(
+        context.source_ref.as_deref(),
+        Some("projection-test"),
+        "a move must not replace the proposal's source_ref with the mover's"
+    );
+
+    // The moved decision keeps its place in an event_origin-ordered listing, and an old moved
+    // decision is not "new" to a since-filter that starts at the second proposal.
+    let listed = |since_event_origin| -> Result<Vec<String>> {
+        Ok(get_decision_context_candidates(
+            graph,
+            &DecisionContextRequest {
+                since_event_origin,
+                limit: 10,
+                ..Default::default()
+            },
+        )?
+        .data
+        .into_iter()
+        .map(|context| context.decision_id)
+        .collect())
+    };
+    assert_eq!(listed(None)?, ["decision:first", "decision:second"]);
+    assert_eq!(listed(Some(second_offset))?, ["decision:second"]);
+    Ok(())
+}
+
+#[test]
+fn decision_moved_and_back_restores_project_and_keeps_its_capture_origin() -> Result<()> {
+    // Acceptance 2 of hivemind-s15q.10 (the history half is in queries/history/tests.rs): move,
+    // then move back, on the real merging `MemoryGraph`. The Postgres twin lives in
+    // `projector/postgres/tests.rs`.
+    use super::memory::MemoryGraph;
+
+    let project_prefix = |len: usize| -> Result<MemoryGraph> {
+        let graph = MemoryGraph::default();
+        project_from_ledger(&decision_moved_fixture_ledger(len)?, &graph, 0)?;
+        Ok(graph)
+    };
+    let string = |value: &str| Some(GraphValue::String(value.to_owned()));
+
+    // Before any move: the stated project.
+    let before_move = decision_row(&project_prefix(2)?, "decision:first")?;
+    assert_eq!(before_move.get("project").cloned(), string("billing"));
+    assert_eq!(before_move.get("project_source").cloned(), string("stated"));
+
+    // After the move: the new project.
+    assert_move_keeps_capture_origin(&project_prefix(3)?, "pricing")?;
+
+    // After the move back: the project is restored (the second move is a fact, not an undo).
+    assert_move_keeps_capture_origin(&project_prefix(4)?, "billing")?;
+
+    // Moving one decision leaves the other alone.
+    let second = decision_row(&project_prefix(4)?, "decision:second")?;
+    assert_eq!(second.get("project").cloned(), string("billing"));
+    assert_eq!(second.get("project_source").cloned(), string("stated"));
     Ok(())
 }
 

@@ -677,15 +677,14 @@ fn added_since_filters_by_import_run_id_extracted_from_source_ref() -> Result<()
     Ok(())
 }
 
-#[test]
-fn changed_since_reports_a_moved_decision_as_project_moved() -> Result<()> {
-    // Approved record shape, item 3: `decision.moved` keeps every move readable in
-    // history -- its own kind, not folded into `ContextChange`, and never dropped.
+/// A decision proposed in `billing`, moved to `pricing` by Alex (with a reason) and moved back
+/// by Bea (without one): the two moves are separate facts by separate actors at separate times.
+fn moved_and_moved_back_ledger() -> Result<InMemoryEventLedger> {
     let ledger = InMemoryEventLedger::new();
     ledger.append(event(
         1,
         EventType::DecisionProposed,
-        "actor:alice",
+        "human:alice",
         json!({
             "decision_id": "decision-a",
             "title": "Use per-seat pricing",
@@ -702,7 +701,7 @@ fn changed_since_reports_a_moved_decision_as_project_moved() -> Result<()> {
     ledger.append(event(
         2,
         EventType::DecisionMoved,
-        "actor:alice",
+        "human:alex",
         json!({
             "decision_id": "decision-a",
             "from": "billing",
@@ -710,19 +709,172 @@ fn changed_since_reports_a_moved_decision_as_project_moved() -> Result<()> {
             "reason": "per-seat pricing decisions live under Pricing"
         }),
     ))?;
+    ledger.append(event(
+        3,
+        EventType::DecisionMoved,
+        "human:bea",
+        json!({ "decision_id": "decision-a", "from": "pricing", "to": "billing" }),
+    ))?;
+    Ok(ledger)
+}
+
+fn expected_project_moves() -> [(EventId, &'static str, DateTime<Utc>, ProjectMove); 2] {
+    [
+        (
+            2,
+            "human:alex",
+            ts(2),
+            ProjectMove {
+                from: "billing".to_owned(),
+                to: "pricing".to_owned(),
+                reason: Some("per-seat pricing decisions live under Pricing".to_owned()),
+            },
+        ),
+        (
+            3,
+            "human:bea",
+            ts(3),
+            ProjectMove {
+                from: "pricing".to_owned(),
+                to: "billing".to_owned(),
+                reason: None,
+            },
+        ),
+    ]
+}
+
+#[test]
+fn changed_since_reports_a_move_and_its_reversal_with_from_to_actor_and_time() -> Result<()> {
+    // Approved record shape, item 3: `decision.moved` keeps every move readable in history --
+    // its own kind, not folded into `ContextChange`, never dropped -- and (mayor's ruling on
+    // hivemind-s15q.10) the row itself says from, to, who and when. A move back is another row.
+    let ledger = moved_and_moved_back_ledger()?;
 
     let rows = changed_since_start(&ledger)?;
-    let moved = rows
+    let moves: Vec<_> = rows
         .iter()
-        .find(|row| row.change_kind == HistoryChangeKind::ProjectMoved)
-        .expect("the move is reported");
-    assert_eq!(moved.decision_ids, vec!["decision-a".to_owned()]);
-    assert_eq!(moved.event_origin, 2);
-    assert!(moved
-        .affected_nodes
-        .iter()
-        .any(|node| node.id == "decision-a" && node.kind == NodeKind::Decision));
+        .filter(|row| row.change_kind == HistoryChangeKind::ProjectMoved)
+        .collect();
+    assert_eq!(moves.len(), 2, "both moves are reported: {rows:?}");
+    for (row, (origin, actor, at, expected)) in moves.iter().zip(expected_project_moves()) {
+        assert_eq!(row.event_origin, origin);
+        assert_eq!(row.event_type, EventType::DecisionMoved);
+        assert_eq!(row.actor_id, actor);
+        assert_eq!(row.ts, Some(at));
+        assert_eq!(row.project_move.as_ref(), Some(&expected));
+        assert_eq!(row.decision_ids, vec!["decision-a".to_owned()]);
+        assert!(row
+            .affected_nodes
+            .iter()
+            .any(|node| node.id == "decision-a" && node.kind == NodeKind::Decision));
+    }
+    assert_eq!(
+        rows.iter().filter(|row| row.project_move.is_some()).count(),
+        2,
+        "only a move carries project_move"
+    );
+    Ok(())
+}
 
+#[test]
+fn recent_activity_reports_a_move_and_its_reversal_with_from_to_actor_and_time() -> Result<()> {
+    let ledger = moved_and_moved_back_ledger()?;
+
+    let activity = get_recent_activity(&ledger, &RecentActivityRequest::default())?.data;
+    // Newest first: the move back, then the move, then the proposal (no project_move).
+    let moves: Vec<_> = activity
+        .items
+        .iter()
+        .filter(|row| row.change_kind == HistoryChangeKind::ProjectMoved)
+        .collect();
+    assert_eq!(moves.len(), 2, "both moves are reported: {activity:?}");
+    for (row, (origin, actor, at, expected)) in moves.iter().rev().zip(expected_project_moves()) {
+        assert_eq!(row.event_origin, origin);
+        assert_eq!(row.actor_id, actor);
+        assert_eq!(row.ts, Some(at));
+        assert_eq!(row.project_move.as_ref(), Some(&expected));
+    }
+    assert_eq!(
+        activity
+            .items
+            .last()
+            .and_then(|row| row.project_move.as_ref()),
+        None,
+        "the proposal row is not a move"
+    );
+    Ok(())
+}
+
+#[test]
+fn added_since_lists_each_move_in_the_decisions_changes_with_from_and_to() -> Result<()> {
+    let ledger = moved_and_moved_back_ledger()?;
+
+    let response = get_decisions_added_since(
+        &ledger,
+        &DecisionsAddedSinceRequest {
+            since_offset: Some(0),
+            limit: 50,
+            ..DecisionsAddedSinceRequest::default()
+        },
+    )?;
+
+    let added = &response.data.added_decisions;
+    assert_eq!(added.len(), 1);
+    let moves: Vec<_> = added[0]
+        .changes_in_window
+        .iter()
+        .filter(|change| change.change_kind == HistoryChangeKind::ProjectMoved)
+        .collect();
+    assert_eq!(moves.len(), 2);
+    for (change, (origin, actor, at, expected)) in moves.iter().zip(expected_project_moves()) {
+        assert_eq!(change.provenance.event_origin, origin);
+        assert_eq!(change.provenance.actor_id, actor);
+        assert_eq!(change.provenance.ts, Some(at));
+        assert_eq!(change.project_move.as_ref(), Some(&expected));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_move_serializes_from_and_to_on_the_row_and_other_rows_omit_the_field() -> Result<()> {
+    // The CLI, MCP and HTTP surfaces all emit these row structs as JSON.
+    let ledger = moved_and_moved_back_ledger()?;
+
+    let rows = changed_since_start(&ledger)?;
+    let json_rows: Vec<Value> = rows
+        .iter()
+        .map(|row| serde_json::to_value(row).expect("row serializes"))
+        .collect();
+    let moved: Vec<_> = json_rows
+        .iter()
+        .filter(|row| row["change_kind"] == "project_moved")
+        .collect();
+    assert_eq!(moved.len(), 2);
+    assert_eq!(
+        moved[0]["project_move"],
+        json!({
+            "from": "billing",
+            "to": "pricing",
+            "reason": "per-seat pricing decisions live under Pricing"
+        })
+    );
+    assert_eq!(
+        moved[1]["project_move"],
+        json!({ "from": "pricing", "to": "billing" }),
+        "a move without a reason omits the key"
+    );
+    assert_eq!(moved[0]["actor_id"], "human:alex");
+    assert_eq!(moved[1]["actor_id"], "human:bea");
+    assert!(moved[0]["ts"].is_string(), "the row carries the time");
+    for row in json_rows
+        .iter()
+        .filter(|row| row["change_kind"] != "project_moved")
+    {
+        assert!(
+            row.get("project_move").is_none(),
+            "only a move carries project_move: {row}"
+        );
+    }
     Ok(())
 }
 

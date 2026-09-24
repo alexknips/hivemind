@@ -346,6 +346,7 @@ fn every_write_path_event_validates_against_its_schema() {
             option_labels: &["Moved option".to_owned()],
             chosen_option_id: None,
             decided_by: None,
+            delegated_by: None,
             still_proposed: true,
             hypothesis_ids: &[],
             evidence_ids: &[],

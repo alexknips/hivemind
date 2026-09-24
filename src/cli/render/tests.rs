@@ -3,7 +3,8 @@
 use crate::projector::memory::MemoryGraph;
 use crate::queries::test_fixtures::{ts, Scenario};
 use crate::queries::{
-    get_compact_view, get_decision_brief_at, get_situational_decisions, QueryContext,
+    get_compact_view, get_decision_brief_at, get_decisions_changed_since, get_recent_activity,
+    get_situational_decisions, ChangedSinceRequest, QueryContext, RecentActivityRequest,
     SituationalRequest,
 };
 use crate::Result;
@@ -365,4 +366,70 @@ fn history_change_kind_label_covers_both_kinds_of_stale_premise() {
         change_kind_label(HistoryChangeKind::StalePremise),
         "stale_premise"
     );
+}
+
+#[test]
+fn history_change_kind_label_names_a_project_move() {
+    assert_eq!(
+        change_kind_label(HistoryChangeKind::ProjectMoved),
+        "project_moved"
+    );
+}
+
+#[test]
+fn history_lines_say_where_a_moved_decision_went_and_when_and_leave_other_lines_alone() -> Result<()>
+{
+    // Mayor's ruling on hivemind-s15q.10: the history entry for a move carries from, to, actor
+    // and time; the finished "moved from A to B by X on <date>" sentence ships with the verb.
+    let scenario = Scenario::new();
+    scenario.decision(
+        "d:pricing",
+        "Per-seat pricing",
+        "human:alice",
+        "2026-01-01T00:00:00Z",
+    )?;
+    scenario.moved(
+        "d:pricing",
+        "billing",
+        "pricing",
+        "human:alex",
+        "2026-01-02T03:04:05Z",
+    )?;
+
+    let activity = get_recent_activity(scenario.ledger(), &RecentActivityRequest::default())?.data;
+    let activity_text = render_recent_activity_summary(&activity);
+    let mut activity_lines = activity_text.lines();
+    let moved_line = activity_lines.next().expect("the move is the newest row");
+    assert!(
+        moved_line.contains("\tproject_moved\tdecision.moved\tactor=human:alex\t"),
+        "{moved_line}"
+    );
+    assert!(
+        moved_line.ends_with("\tmoved=billing->pricing\tat=2026-01-02T03:04:05+00:00"),
+        "{moved_line}"
+    );
+    let proposal_line = activity_lines.next().expect("the proposal row");
+    assert!(
+        !proposal_line.contains("moved="),
+        "only a move line carries the move: {proposal_line}"
+    );
+
+    let changed = get_decisions_changed_since(
+        scenario.ledger(),
+        &ChangedSinceRequest {
+            since_offset: Some(0),
+            limit: 10,
+            ..ChangedSinceRequest::default()
+        },
+    )?
+    .data;
+    let changed_text = render_changed_since_summary(&changed);
+    assert!(
+        changed_text
+            .lines()
+            .any(|line| line.contains("\tproject_moved\t")
+                && line.ends_with("\tmoved=billing->pricing\tat=2026-01-02T03:04:05+00:00")),
+        "{changed_text}"
+    );
+    Ok(())
 }

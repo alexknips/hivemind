@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::commands::DecisionPlacement;
@@ -17,8 +18,8 @@ use crate::queries::{
     DecisionView, DecisionsAddedSinceResults, DecisionsChangedSinceResults, GroundingAdded,
     GroundingItem, GroundingItemState, GroundingKind, GroundingState, HistoryChangeKind,
     HypothesisStatus, MatchReason, MisfiledDecisionCandidate, NeighborhoodView, OutcomeReason,
-    ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectListResults, ProjectOutcome, QualityTier,
-    QueryResponse, ReadOnlyExport, ReadOnlyExportFormat as QueryReadOnlyExportFormat,
+    ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectListResults, ProjectMove, ProjectOutcome,
+    QualityTier, QueryResponse, ReadOnlyExport, ReadOnlyExportFormat as QueryReadOnlyExportFormat,
     ReadOnlyExportQueryKind, RecentActivityResults, RecentDecisionsResults, ResolveOutcome,
     ScoredDecision, SituationalResults, SupersessionChain,
 };
@@ -112,14 +113,15 @@ pub(crate) fn render_recent_activity_summary(results: &RecentActivityResults) ->
     for item in &results.items {
         let _ = writeln!(
             output,
-            "{}\t{}\t{}\tactor={}\tsource={}\tdecisions={}\tcitation={}",
+            "{}\t{}\t{}\tactor={}\tsource={}\tdecisions={}\tcitation={}{}",
             item.event_origin,
             change_kind_label(item.change_kind),
             event_type_label(item.event_type),
             item.actor_id,
             item.source.as_str(),
             item.decision_ids.join(","),
-            item.citation_id
+            item.citation_id,
+            project_move_suffix(item.project_move.as_ref(), item.ts)
         );
     }
     output.trim_end().to_owned()
@@ -134,17 +136,31 @@ pub(crate) fn render_changed_since_summary(results: &DecisionsChangedSinceResult
     for item in &results.items {
         let _ = writeln!(
             output,
-            "{}\t{}\t{}\tactor={}\tsource={}\tdecisions={}\tcitation={}",
+            "{}\t{}\t{}\tactor={}\tsource={}\tdecisions={}\tcitation={}{}",
             item.event_origin,
             change_kind_label(item.change_kind),
             event_type_label(item.event_type),
             item.actor_id,
             item.source.as_str(),
             item.decision_ids.join(","),
-            item.citation_id
+            item.citation_id,
+            project_move_suffix(item.project_move.as_ref(), item.ts)
         );
     }
     output.trim_end().to_owned()
+}
+
+/// The tail of a `project_moved` history line: where the decision went and when. Empty for every
+/// other kind of change, so the line for those is unchanged. The actor is already in the line.
+fn project_move_suffix(project_move: Option<&ProjectMove>, ts: Option<DateTime<Utc>>) -> String {
+    let Some(project_move) = project_move else {
+        return String::new();
+    };
+    let moved_at = ts.map_or_else(|| "unknown".to_owned(), |ts| ts.to_rfc3339());
+    format!(
+        "\tmoved={}->{}\tat={moved_at}",
+        project_move.from, project_move.to
+    )
 }
 
 pub(crate) fn render_added_since_summary(results: &DecisionsAddedSinceResults) -> String {

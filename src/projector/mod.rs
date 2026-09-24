@@ -356,7 +356,7 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
             // Derived metadata is stored in the ledger only; graph projection deferred to layer 3
         }
         EventPayload::DecisionMoved(payload) => {
-            project_decision_moved(graph, &payload, &origin_properties)?;
+            project_decision_moved(graph, &payload)?;
         }
         EventPayload::ProjectRegistered(payload) => {
             project_project_registered(graph, &payload, &origin_properties)?
@@ -1479,29 +1479,27 @@ fn project_decision_scored(
     graph.upsert_node(NodeKind::Decision, &payload.capture_node_id, &props)
 }
 
-/// `decision.moved` updates only `project`/`project_source` (plus the shared origin
-/// properties every mutation carries — see `project_decision_scored` above) on the existing
-/// Decision node (approved record shape, item 3). `upsert_node` merges by key (see
-/// `GraphView::upsert_node`), so every other property the decision already carries — title,
-/// rationale, options, and so on — is untouched. The move fact itself lives in the ledger
-/// and is surfaced in history (`queries::history`); this only keeps the node's current
-/// project in sync with it.
-fn project_decision_moved(
-    graph: &impl GraphView,
-    payload: &DecisionMovedPayload,
-    origin_properties: &GraphProperties,
-) -> Result<()> {
-    let props = props_extend(
-        origin_properties,
-        [
-            ("project", GraphValue::String(payload.to.clone())),
+/// `decision.moved` upserts ONLY `project` and `project_source = moved` on the existing Decision
+/// node (approved record shape, item 3) — never the event's origin properties, the way the
+/// delegation marker above upserts only its marker. A move changes where a decision is found,
+/// not who captured it, so the node keeps the proposal's own `event_origin` / `source` /
+/// `source_ref` / `tenant_id`: attribution stays with the capture, and anything ordering or
+/// filtering by `event_origin` does not see an old moved decision as new. `upsert_node` merges
+/// by key, so title, rationale, options and the rest are untouched too. The move fact itself
+/// lives in the ledger and is surfaced in history (`queries::history`); this only keeps the
+/// node's current project in sync with it.
+fn project_decision_moved(graph: &impl GraphView, payload: &DecisionMovedPayload) -> Result<()> {
+    graph.upsert_node(
+        NodeKind::Decision,
+        &payload.decision_id,
+        &GraphProperties::from([
+            ("project".to_owned(), GraphValue::String(payload.to.clone())),
             (
-                "project_source",
+                "project_source".to_owned(),
                 GraphValue::String(ProjectSource::Moved.as_str().to_owned()),
             ),
-        ],
-    );
-    graph.upsert_node(NodeKind::Decision, &payload.decision_id, &props)
+        ]),
+    )
 }
 
 fn project_capture(

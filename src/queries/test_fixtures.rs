@@ -185,6 +185,25 @@ impl Scenario {
         .map(|_| ())
     }
 
+    /// `decision.moved`: the decision leaves project `from` for project `to`.
+    pub(crate) fn moved(
+        &self,
+        decision_id: &str,
+        from: &str,
+        to: &str,
+        actor_id: &str,
+        timestamp: &str,
+    ) -> Result<()> {
+        self.push(
+            actor_id,
+            EventType::DecisionMoved,
+            json!({"decision_id": decision_id, "from": from, "to": to}),
+            None,
+            timestamp,
+        )
+        .map(|_| ())
+    }
+
     pub(crate) fn reject(&self, decision_id: &str, actor_id: &str, timestamp: &str) -> Result<()> {
         self.push(
             actor_id,

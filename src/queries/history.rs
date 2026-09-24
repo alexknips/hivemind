@@ -140,6 +140,18 @@ pub struct AffectedNode {
     pub kind: NodeKind,
 }
 
+/// Where a `decision.moved` took a decision. Carried on the history row of a
+/// [`HistoryChangeKind::ProjectMoved`] change next to the row's own `actor_id` and `ts`, so
+/// "moved from Billing to Pricing by Alex on <date>" is answerable from the row alone
+/// (approved record shape, item 3; hivemind-s15q.10). `None` on every other kind of change.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProjectMove {
+    pub from: String,
+    pub to: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct LedgerRange {
     pub from_offset_exclusive: EventId,
@@ -170,6 +182,8 @@ pub struct ActivityRow {
     pub ts: Option<DateTime<Utc>>,
     pub decision_ids: Vec<String>,
     pub affected_nodes: Vec<AffectedNode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_move: Option<ProjectMove>,
     pub citation_id: String,
 }
 
@@ -249,6 +263,8 @@ pub struct DecisionChangeRow {
     pub ts: Option<DateTime<Utc>>,
     pub decision_ids: Vec<String>,
     pub affected_nodes: Vec<AffectedNode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_move: Option<ProjectMove>,
     pub citation_id: String,
 }
 
@@ -315,6 +331,8 @@ pub struct DecisionChange {
     pub change_kind: HistoryChangeKind,
     pub provenance: DecisionEventProvenance,
     pub affected_nodes: Vec<AffectedNode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_move: Option<ProjectMove>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -704,6 +722,7 @@ pub fn get_decisions_added_since(
                 change_kind: *change_kind,
                 provenance,
                 affected_nodes,
+                project_move: project_move_for_payload(&payload),
             });
         }
 
@@ -1550,6 +1569,7 @@ fn activity_row(event: &Event, index: &DecisionIndex) -> Result<ActivityRow> {
         ts: event.ts,
         decision_ids,
         affected_nodes,
+        project_move: project_move_for_payload(&payload),
         citation_id: citation.citation_id,
     })
 }
@@ -1573,6 +1593,7 @@ fn decision_change_row(event: &Event, index: &DecisionIndex) -> Result<DecisionC
         ts: event.ts,
         decision_ids,
         affected_nodes,
+        project_move: project_move_for_payload(&payload),
         citation_id: citation.citation_id,
     })
 }
@@ -1605,6 +1626,19 @@ fn stale_premise_change_row(
     row.change_kind = HistoryChangeKind::StalePremise;
     row.decision_ids = dependents;
     Ok(Some(row))
+}
+
+fn project_move_for_payload(payload: &EventPayload) -> Option<ProjectMove> {
+    match payload {
+        EventPayload::DecisionMoved(DecisionMovedPayload {
+            from, to, reason, ..
+        }) => Some(ProjectMove {
+            from: from.clone(),
+            to: to.clone(),
+            reason: reason.clone(),
+        }),
+        _ => None,
+    }
 }
 
 fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {

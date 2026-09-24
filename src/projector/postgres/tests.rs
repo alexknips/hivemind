@@ -959,6 +959,23 @@ fn delegation_marker_reads_match_memory() -> Result<()> {
     })
 }
 
+// hivemind-s15q.10: `decision.moved` upserts only `project` / `project_source` through the JSONB
+// merge, so a move (and a move back) leaves the proposal's own source, source_ref, tenant and
+// event_origin in place and the decision keeps its place in an event_origin-ordered listing —
+// the same checks `projector/tests.rs` runs on `MemoryGraph`.
+#[test]
+fn decision_moved_and_back_keeps_capture_origin_on_postgres() -> Result<()> {
+    with_postgres_graph("decision-moved", |pg| {
+        for (events, expected_project) in [(3, "pricing"), (4, "billing")] {
+            pg.wipe()?;
+            let ledger = crate::projector::tests::decision_moved_fixture_ledger(events)?;
+            project_from_ledger(&ledger, pg, 0)?;
+            crate::projector::tests::assert_move_keeps_capture_origin(pg, expected_project)?;
+        }
+        Ok(())
+    })
+}
+
 fn search_markers(graph: &impl GraphView) -> Result<Vec<(String, Option<String>)>> {
     let results = search_decisions(graph, &SearchDecisionRequest::default())?.data;
     let mut markers: Vec<_> = results
