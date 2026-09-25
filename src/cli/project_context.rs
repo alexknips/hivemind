@@ -149,7 +149,7 @@ pub(crate) fn resolve_project_from_context(
 /// project than the folder says.
 fn nearest_marker_handle(start: &Path) -> Result<Option<String>> {
     for dir in start.ancestors() {
-        let marker = dir.join(PROJECT_MARKER_FILE_NAME);
+        let marker = dir.join(PROJECT_MARKER_FILE_NAME); // ubs:ignore: constant file name, no untrusted segment
         if !marker.is_file() {
             continue;
         }
