@@ -3,10 +3,95 @@
 All notable changes to HiveMind are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## v0.7.0 — 2026-09-25 — M6: Fluent verbs and grounded capture
 
-### Changed (breaking)
+You can now consult HiveMind without holding a decision id. Describe a decision — or just
+ask "why did we…?" or "did that hold up?" — and `why`, `verify`, `disagree` and `supersede`
+find it, refusing to guess when the description is ambiguous; `recall` and `situational`
+answer from a question or from the files you are touching. `why` now answers *why*: rationale,
+the options chosen and rejected, who decided and whether it still holds, not a bare list of
+ids. And every captured decision must now say what it rests on; when a premise is later
+superseded, the decisions that followed from it say so.
 
+This release has breaking changes, several of which reject input v0.6.0 accepted. Read
+**Breaking changes** before upgrading, and upgrade every reader of a shared ledger before any
+v0.7.0 client writes to it.
+
+### Breaking changes
+
+- **Capture and supersede require grounding.** Every capture answers "what does this decision
+  rest on?" and is refused — nothing written — when the answer is empty. There are four ways to
+  answer: a decision already made, something observed (and where), something assumed, or, when
+  there is nothing yet, a declared **bet** ("nothing yet" is a bet, optionally with what would
+  change your mind and a check-by date). An existing evidence or hypothesis id also counts. The
+  decider's own words are not a grounding; they go in `--quote` / `--question`.
+  (hivemind-gwhr.1, hivemind-gwhr.2)
+  - CLI: `emit decision.capture` and `supersede` take `--rests-on-decision
+    <description|#N|decision-id>`, `--rests-on-evidence <observation>` with `--evidence-source`,
+    `--rests-on-assumption`, `--bet [statement]` with `--would-change-if` / `--check-by`, and
+    `--confidence low|medium|high`. A capture that names none exits **2** with the four ways to
+    answer. A premise description that is ambiguous or matches nothing also exits 2 and writes
+    nothing; ambiguous ones list numbered candidates to re-run with `--rests-on-decision '#N'`.
+  - MCP (stdio and HTTP): `capture_decision` and `supersede_decision` require a `grounding`
+    array of typed items (`decision`, `evidence`, `assumption`, `bet`). An empty one returns a
+    tool result with `isError: true` and the four ways to answer. `hypothesis_ids` /
+    `evidence_ids` remain as deprecated aliases and count as grounding. An ambiguous or unmatched
+    premise is a *successful* `{outcome: "ambiguous" | "not_found", field: "grounding[i]"}`
+    result with no event appended.
+  - HTTP: `POST /v1/decisions` and `POST /v1/decisions/{id}/supersessions` take the same
+    `grounding` array; an empty one is **HTTP 400** (`validation_error`) with the four ways to
+    answer.
+  - Not asked: raw `emit decision.proposed`, classifier ingest, document import, Slack import and
+    the interactive `review` supersede.
+  - **The capture plugins do not ask the question yet.** The hivemind-capture skill, its
+    commands and the Codex bundle were not updated in this release (hivemind-gwhr.5): until that
+    plugin update ships, an agent capturing through them meets the refusal text — which does
+    name the four ways to answer — instead of being prompted for grounding up front.
+- **Capture rejects input v0.6.0 accepted.** Rejected outright, never truncated or repaired:
+  - a rationale under 20 characters or 4 words, or one that leans on a bare reference into a
+    list that isn't in it (`1a`, `2. a`) — pair `--quote` with `--question` instead
+    (hivemind-763i). `--quote` and `--question` must be given together (hivemind-zdsh.13);
+  - a title over 120 characters, of more than one sentence, or that is a numbered list
+    (hivemind-zdsh.12);
+  - an option label over 80 characters, containing "chosen", reading as a "rejected options"
+    bucket, or bundling several numbered answers. Option ids are now opaque
+    (`option-<uuid>`) rather than a slug of the label; existing slug ids display a readable
+    label (hivemind-zdsh.10);
+  - a bare UUID as an actor id — use `human:<name>` or `agent:<tool>:<name>`. Agent ids are now
+    derived from a durable identity (`GC_AGENT` / `GC_ALIAS`) before falling back to session
+    environment variables, so one agent keeps one actor id across restarts; the raw session id
+    moves to `source_ref` (hivemind-zdsh.9).
+
+  Ledger replay of events captured earlier is unaffected.
+- **A chosen option now self-accepts.** A capture that names a chosen option is `accepted`
+  immediately — by `--decided-by` when given, otherwise by the recording actor — instead of
+  staying `proposed` forever. Pass `--still-proposed` (`still_proposed` over MCP and HTTP) to keep
+  a genuine open recommendation at `proposed`. `supersede` and document import are unaffected.
+  (hivemind-zdsh.8)
+- **A ledger holding v0.7.0 writes cannot be read by v0.6.0.** v0.6.0 refuses the new fields —
+  `unknown field 'option_descriptions'` on `decision.proposed`, `unknown field 'kind'` on
+  `hypothesis.recorded` — so a single v0.7.0 capture is enough. Upgrade every server, CLI and
+  plugin that reads a ledger *before* any v0.7.0 client writes to it. Ledgers written by v0.6.0
+  replay unchanged. New event
+  types: `project.registered`, `project.linked`, `project.unlinked`, `project.anchored`,
+  `project.unanchored` and `decision.moved`; new optional fields on `decision.proposed`,
+  `decision.accepted`, `hypothesis.recorded` and `ingest.batch_classified`; a new relation kind,
+  `FOLLOWS_FROM`. Postgres projections add the new columns automatically.
+- **`hivemind serve` binds loopback by default.** v0.6.0 bound `0.0.0.0` and, with no
+  `HIVEMIND_API_KEY`, started with no authentication — an open server on every interface. It now
+  binds `127.0.0.1` (`--bind` / `HIVEMIND_BIND`), and in that development mode (no
+  `HIVEMIND_API_KEY`, no `HIVEMIND_DATABASE_URL`) it refuses to start on a non-loopback bind
+  unless `--allow-unauthenticated-remote` is passed. An empty `HIVEMIND_API_KEY` or
+  `HIVEMIND_ADMIN_KEY` now counts as unset (see Security under Fixed). In Docker the image binds
+  `0.0.0.0` inside the container and `docker-compose.yml` publishes on `127.0.0.1`
+  (`HIVEMIND_PUBLISH_ADDR` to expose it deliberately); SQLite mode in compose refuses to start
+  without `HIVEMIND_API_KEY`. The image no longer bundles the website. (hivemind-4dur)
+- **An unregistered tenant is an error.** An unknown `--tenant` / `X-HiveMind-Tenant` now fails
+  reads and writes on both backends (`unknown tenant 'acme': run hivemind tenant create acme`)
+  instead of silently opening an empty scope. `local` is always registered. On SQLite,
+  `hivemind tenant create <id>` registers one — a v0.6.0 ledger that used a non-default tenant
+  needs that once before use. On Postgres, tenants are provisioned by the server's provisioning
+  route. (hivemind-rkbf.1)
 - **Every arrow the server shows points newer → older.** `GET /v1/graph` edges, the
   neighborhood edges (`hivemind query why`, MCP `get_decision_neighborhood`, HTTP
   `/v1/decisions/why`), the CLI text summary and the DOT exports now draw each edge from the
@@ -16,10 +101,207 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   the relation's stored direction. Storage and queries are unchanged, so nothing needs
   migrating: graphs rebuild from the ledger. The rule and the per-kind table are in
   `docs/GRAPH_CONTRACT.md`. (hivemind-ku1x)
-- Follow-up events (`decision.scored`, `blocker.resolved`, `notification.acknowledged`,
-  `project.anchored`) no longer overwrite the `event_origin` of the node they annotate; it stays
-  the offset of the event that created the node. A persistent Postgres projection needs the
-  usual rebuild to pick that up. (hivemind-ku1x)
+- **Follow-up events no longer overwrite `event_origin`.** `decision.scored`,
+  `blocker.resolved`, `notification.acknowledged` and `project.anchored` leave the
+  `event_origin` of the node they annotate at the offset of the event that created it. A
+  persistent Postgres projection needs the usual rebuild to pick that up. (hivemind-ku1x)
+- **Other wire changes.**
+  - `GET /v1/decisions/{id}` returns 404 `not_found` for a missing decision (or another
+    tenant's) instead of 200 with `data: null`.
+  - `hivemind --version` and the MCP `serverInfo.version` read `<semver>+<commit>` (the
+    commit's first 12 characters), not bare semver; `GET /v1/version` returns the same.
+  - Capture and supersede replies gain `rests_on` and `premise_stale`, and on the CLI's JSON
+    output and MCP `project` and `project_source`. Text mode still prints the bare decision id on
+    stdout; the project line goes to stderr and each stale premise adds a `premise_stale` line.
+  - `hivemind digest` text shows option titles rather than option ids, gains a `rests on:` line
+    per decision and no longer ends with a `Cited:` line (the JSON keeps `cited_decision_ids`).
+- **The website and docs moved; the hosted open beta is gone.** They now live in
+  `alexknips/hivemind-site`; `website/` left this repo and the old GitHub Pages URL only
+  redirects. The managed MCP server is down and nothing points at it: self-hosting — the release
+  tarball or the ghcr image — is the only install path. (hivemind-se2a, hivemind-v5lv)
+
+### Added
+
+#### Fluent verbs: describe a decision, don't quote its id
+- **`disagree`, `supersede`, `query chain`, `query why`, `query verify` and `query compact-view`
+  take a description.** A positional description resolves to one decision; `--pick N`, `--topic`
+  and a bare `#N` (from the previous ambiguous result) narrow it. A description that does not
+  resolve to exactly one decision writes nothing and lists numbered candidates; `--id` /
+  `--decision` / `--old` remain. The `#N` state is a local file scoped by `$HIVEMIND_SESSION`,
+  never part of the ledger. (hivemind-tenv.1)
+- **`why` answers why.** The neighborhood root carries the decision's brief — title, rationale,
+  chosen and rejected options, who decided, whether it still holds — and every non-actor node
+  carries a label. `verify` ("did it hold up?", `query get_decision_outcome`) leads with the same
+  brief and shows the recorder and the decider as separate lines, saying "not yet decided" when
+  nobody accepted. Natural questions resolve: question words are dropped, negations are kept so
+  "do not adopt X" never resolves to the decision that adopted X, and when nothing matches every
+  word, close candidates are listed with their `missing_terms` instead of `not_found`.
+  (hivemind-5gwg)
+- **`recall` takes its documented question form.** `recall "what did we decide about projects"
+  --topic projects` drops the question words, reports them as `ignored_words`, and lets `--topic`
+  decide when nothing else is left. (hivemind-5gwg)
+- **`query situational` — "what should I know before I touch this?"** Decisions bearing on the
+  working situation (touched paths, a diff, the current branch, the cwd) with no question needed;
+  it defaults to the current git diff, and can be asked from one project (see Projects).
+  (hivemind-tenv.2)
+- **Over MCP and HTTP too.** The same verbs are HTTP routes (`GET /v1/decisions/recall`,
+  `/why`, `/verify`, `/situational`) and MCP tools. New MCP tools on both transports:
+  `get_decision_neighborhood`, `get_situational_decisions`, `scan_misfiled_decisions`,
+  `classify_queue_list` and `classify_queue_submit`. `disagree_decision`,
+  `get_decision_outcome`, `get_supersession_chain` and `hivemind_compact_view` accept
+  `description` (+ `topic`) in place of `decision_id`, and `supersede_decision` in place of
+  `old_decision_id`. (hivemind-ot72)
+- **`hivemind-context` plugin.** A CLI-only Claude Code and Codex plugin — `situational`,
+  `recall`, `why`, `verify`, `disagree`, `supersede` — that never asks the agent for a decision
+  id. (hivemind-tenv.3)
+
+#### What a decision rests on
+- **Answers show what a decision rests on.** Every decision view gives each premise with its
+  state — a decision that holds, was superseded, rejected or is contested; evidence with where it
+  was seen; an assumption that is open, supported or refuted; a bet that is open, held or failed
+  — and whether it was named at capture or attributed later, plus the expressed confidence and
+  how many decisions rest on it. A superseded or rejected premise makes the decision **stale**
+  in `verify`, `compact-view`, `situational`, `digest`, recent-activity history and the scorer;
+  a contested premise is shown, not stale; an overdue bet is reported `unchecked` and does not
+  flip "still holds". A decision captured before this release reads "nothing declared (never
+  asked)". (hivemind-gwhr.3)
+- **`hypothesis.recorded` gains `kind` (`assumption` | `bet`), `check_by` and `would_change_if`;
+  a decision can `FOLLOWS_FROM` another decision** (`emit relation.added --kind follows-from`).
+  (hivemind-gwhr.1)
+
+#### Projects
+- **Every decision carries its project and how that was determined.** `--project` /
+  `--project-source` on `emit decision.capture`, `emit decision.proposed` and `supersede` (MCP:
+  `project`, `project_source`). HiveMind checks the handle and never infers it: an unregistered
+  handle is refused, and with none the decision is saved to the recorder's personal project and
+  the reply says so (`personal_fallback`). `supersede` inherits the old decision's project.
+  (hivemind-s15q.1–.4)
+- **Every answer names its project.** Each decision that `get_decision`, `search`, `recall`,
+  `situational`, `why`, `verify`, `compact-view`, `recent` and `digest` return, and the
+  decision log (`hivemind export`), carries `project` (the address) and `project_label` (what a
+  person calls it): the display name it was registered with, else the handle; for a personal
+  project, "alex's personal project" or "claude agents' personal project". A moved decision
+  names the project it moved to. A decision that a request or blocker named before any proposal recorded
+  it has no project: `project` is `null` and the label reads "no project recorded", so it is
+  visible rather than blank or guessed. The text output gains a trailing `project=<label>` field
+  on tab-separated rows and a `project: <label>` line on paragraph-shaped ones (`verify`,
+  `compact-view`, `digest`, the decision log, the TUI and Slack answers). A decision captured
+  from a classified batch is filed under the recording actor's personal project.
+  (hivemind-s15q.5)
+- **`hivemind move` — move a decision to another project by describing it.** `hivemind move
+  "<description>" --to <handle> [--pick N] [--topic T] [--reason R]`, or `--decision <id>`,
+  resolves the decision the way `disagree` and `supersede` do: a description that matches more
+  than one decision lists numbered candidates and writes nothing, and one that matches nothing
+  is a successful `not_found` answer. Where the decision is now is read from the ledger, never
+  typed; `--to` must be a registered project or your own personal project, and a decision
+  already there is refused. Each move is recorded (who, when, from, to, why), keeps the
+  decision's original capture provenance, and shows in `get_recent_activity` and
+  `get_decisions_changed_since` as a `project_moved` change carrying `project_move`
+  (`from`, `to`, `reason`); it is reversed by moving the decision back. Over MCP it is
+  `move_decision` on both transports, taking `decision_id` or `description` (+ `topic`), `to` and
+  `reason`, and replying `{decision_id, event_id, from, to, reason?}` like `move --json`.
+  (hivemind-s15q.11)
+- **"What should I know" asks from one project.** `hivemind query situational --project <handle>`
+  (MCP `get_situational_decisions`, argument `project`) takes a registered handle or a personal
+  address such as `personal:human:alex`. Matches come from that project first, then from the
+  project it is `part_of` (an inherited constraint, labelled "from Platform; Billing is part of
+  it"), then from the projects it `depends_on` (one hop, "from Auth; Billing depends on it");
+  each group keeps the usual score order and paging. Every match carries a `scope` (`relation`,
+  `label`), and the answer carries a `scope` note — on an empty answer too — naming the projects
+  it looked in and how many more levels up the `part_of` chain and how many more linked projects
+  were not followed, so a short answer never reads as a complete one. Decisions filed under any
+  other project, and decisions with no project recorded, are not in a scoped answer. Superseded
+  and refuted labels apply across the hop unchanged. An unregistered handle is refused with the
+  `hivemind project register` hint, never answered as an empty result. `--summary` adds a `scope`
+  line and a `scope=<label>` cell on each row. Links are read from the ledger, so a retracted
+  link is not followed. Without `--project` the answer is unchanged, and `GET
+  /v1/decisions/situational` does not take `project`. (hivemind-s15q.6)
+- **`hivemind project`** — `register`, `link` / `unlink` (`part_of`, `depends_on`), `anchor`
+  (folder, rig, Jira, Linear, GitHub, channel), `list`, `show`, `use` (a per-machine current
+  project) and `decisions <handle>` (paged, with `truncated` and a cursor). (hivemind-s15q.2,
+  .9, .13)
+- **`hivemind export --format markdown --out <dir>`** writes the decision log as Markdown
+  grouped per project — an `INDEX.md`, then one directory per project; `--project`, `--since`
+  and `--topic` filter. The export owns its tree and prunes stale files. (hivemind-xw61)
+- **`scan_misfiled_decisions`** (`query scan_misfiled_decisions`, MCP) reports decisions carrying
+  a topic key you name as foreign. It only reports; to relocate one, use `hivemind move`.
+  (hivemind-zdsh.14)
+
+#### Attribution
+- **`--decided-by`** records the human who decided when an agent captures: the decision is
+  accepted by them and `verify` shows both. **`--delegated-by human:<name>`** marks an agent
+  deciding within a human's delegation, so it reads differently from an agent deciding alone;
+  `digest` and `verify` show it and failure-mode attribution gains a `delegation` dimension.
+  (hivemind-zdsh.3, hivemind-zdsh.6)
+- **`POST /v1/agent-tokens`** (admin) mints a token bound to `agent:<tool>:<name>`, so a shared
+  per-role token attributes its writes to an agent rather than a human. (hivemind-zdsh.19)
+
+#### Backends and operation
+- **Backend selection for the CLI and stdio MCP:** `--database-url` / `HIVEMIND_DATABASE_URL`
+  points them at the shared Postgres backend, as `hivemind serve` already could. It needs a build
+  with the `shared-backend-postgres` feature — the ghcr image has it, the release tarballs do
+  not (they refuse with a clear error). `docker-compose.local-agents.yml` publishes Postgres on
+  `127.0.0.1` for agents outside the compose network. (hivemind-ot72.2, hivemind-ot72.15)
+- **Slack front door.** `POST /v1/slack/events`, `POST /v1/slack/commands` and
+  `GET /v1/slack/oauth/callback`, with request-signature verification; a workspace maps to one
+  tenant. Limits: SQLite backend only, `reaction_added` is verified and acknowledged but does not
+  capture, and there is no modal. (hivemind-s5rs)
+- **Classification over HTTP and MCP.** `classify-queue list` / `submit` use `GET /v1/classify-queue`
+  and `POST /v1/classify-queue/submit` when `HIVEMIND_API_URL` is set. One submission can cover
+  several batches of a session (`--batch-id a,b`, `--session-id`), and a shared daily cap
+  (`HIVEMIND_CLASSIFY_DAILY_CAP`, default 150) leaves the rest pending for the next UTC day.
+  (hivemind-zdsh.18)
+- **`emit decision.scored`** submits a quality score computed at the edge, so a plugin can score
+  without `ANTHROPIC_API_KEY` on the server. (hivemind-wi3u)
+- **A build stamp.** `hivemind --version`, `GET /v1/version` and the MCP handshake report the
+  commit. `make install` now installs to `~/.local/bin`, where `scripts/install.sh` puts
+  releases; `scripts/install-local.sh`, `scripts/cell-update.sh` and `scripts/check-freshness.sh`
+  build, roll and check a self-hosted cell. (hivemind-zdsh.7)
+
+### Fixed
+
+- **Security: an empty admin key no longer opens the admin routes.** A v0.6.0 server started
+  with `HIVEMIND_ADMIN_KEY=""` — which the shipped `docker-compose.yml` passes when the variable
+  is unset — let a request with no token, or an empty bearer, create users and mint tokens
+  through `POST /v1/users`. An empty key now counts as unset and those routes refuse. If such a
+  server was reachable by anyone you do not trust, review the users and tokens it holds.
+  (hivemind-4dur)
+- **"Did it hold up?" works.** `get_decision_outcome` and `get_decision_context` failed with
+  `graph projection error: unsupported query` on the default in-memory graph — the backend the
+  MCP server always uses — and on Postgres. Both are fixed. (hivemind-tenv.1, hivemind-kj0i,
+  hivemind-ookw)
+- **Attribution is honest.** `supersede_decision` and `disagree_decision` over MCP no longer
+  label an agent `agent:codex:…` whatever its tool; the CLI's `disagree` and `supersede` record
+  `source=agent` for an agent actor instead of `human`; `verify` no longer prints the recorder as
+  the decider; the classifier no longer folds a per-run session id into an actor id.
+  (hivemind-zdsh.9, hivemind-xm93, hivemind-zdsh.19)
+- **Passive capture no longer drops the session.** The capture hook reads `session_id` and
+  `transcript_path` from the hook's stdin, where Claude Code provides them, instead of returning
+  silently when `CLAUDE_SESSION_ID` is empty, and resolves transcript paths containing dots and
+  underscores. It advances its cursor only after a successful POST, ships every turn of a span
+  oldest-first, and ships a typed prompt verbatim rather than character by character.
+  (hivemind-zdsh.17, hivemind-8h7m)
+- **Plugin scripts.** `capture.sh` no longer drops `--decided-by`'s value; the
+  `hivemind-context` verbs join unquoted multi-word text; `query-decisions.sh` has honest
+  defaults and quotes its arguments; the capture skills say to `recall` before capturing so a
+  restarted session does not record a decision twice. (hivemind-zdsh.3, hivemind-tenv.3,
+  hivemind-tenv.4, hivemind-zdsh.11)
+- **Postgres.** Concurrent first starts against a fresh database no longer race on schema
+  creation (advisory lock); `HIVEMIND_POSTGRES_POOL_SIZE` overrides the connection pool size.
+  (hivemind-g9kv, hivemind-ot72.3)
+- **Classifier.** A capture that names a sibling capture in the same batch by title now resolves
+  to that node's real id; duplicate-title resolution warns and is counted.
+  (hivemind-o4l6, hivemind-11nl)
+- **Situational.** A decision with two `BASED_ON` edges to the same evidence no longer lists the
+  match twice. (hivemind-nw9v)
+
+### Known issues
+
+- `verify` on a decision captured without grounding suggests `hivemind ground …`. That verb is
+  not in this release; to attach a premise after the fact use
+  `emit relation.added --kind follows-from --from <decision-id> --to <premise-decision-id>`.
+
+---
 
 ## v0.6.0 — 2026-09-07 — M7: Decision-quality layer
 
