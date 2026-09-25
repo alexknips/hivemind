@@ -280,10 +280,12 @@ using your agent's subscription seat. No key, no extra configuration.
    ```text
    /hivemind-capture:capture "Use Postgres for the shared backend" \
      --kind decision \
+     --title "Use Postgres for the shared backend" \
      --rationale "SQLite WAL mode does not scale across concurrent writers" \
      --topic-keys infrastructure,storage \
      --options sqlite,postgres \
-     --chose postgres
+     --chose postgres \
+     --rests-on-assumption "More than one agent writes to the shared ledger at once"
    ```
 
 4. **Drain the classification queue** after your session:

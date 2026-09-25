@@ -69,7 +69,8 @@ From Claude Code, call the `/capture` command during a live session:
   --rationale "SQLite WAL mode does not scale across concurrent writers" \
   --topic-keys infrastructure,storage \
   --options sqlite,postgres \
-  --chose postgres
+  --chose postgres \
+  --rests-on-assumption "More than one agent writes to the shared ledger at once"
 ```
 
 The command writes immediately to the local ledger (or the remote server if

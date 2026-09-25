@@ -127,8 +127,14 @@ along with the plugin.
 Capture one decision:
 
 ```text
-/hivemind-capture:capture "Use the Claude plugin for local capture" --kind decision --title "Use the Claude plugin for local capture" --rationale "The plugin installs commands, skill guidance, and MCP without project-local setup" --topic-keys agents,claude,distribution --options plugin,manual-mcp --chose plugin
+/hivemind-capture:capture "Use the Claude plugin for local capture" --kind decision --title "Use the Claude plugin for local capture" --rationale "The plugin installs commands, skill guidance, and MCP without project-local setup" --topic-keys agents,claude,distribution --options plugin,manual-mcp --chose plugin --rests-on-assumption "Contributors install Claude Code plugins from the repository marketplace"
 ```
+
+Every decision capture says what it rests on: `--rests-on-decision` (a decision we
+already made), `--rests-on-evidence` with `--evidence-source` (something observed),
+`--rests-on-assumption`, or `--bet` (nothing yet). A capture that names none is
+refused and writes nothing. The decider's own words are not a grounding; they go
+in `--quote` with `--question`. See the `hivemind-capture` skill.
 
 Capture one evidence item:
 

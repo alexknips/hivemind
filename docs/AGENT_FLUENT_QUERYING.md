@@ -285,10 +285,25 @@ unaffected (the field is optional) and `--id` continues to work unchanged.
 | `disagree` | `--decision <id> --reason <r>` (`args.rs:281`) | add positional `Option<String>` description; `--decision`/`--id` stays the escape hatch |
 | `supersede` | `--old <id> --title ... --rationale ...` (`args.rs:290`) | add positional description resolving `--old`; rest unchanged |
 | `move` (**new**, hivemind-s15q.11) | does not exist | positional description or `--decision <id>`, plus `--to <project>` `[--pick N] [--topic T] [--reason R]`; the same write gate as `disagree`/`supersede`; where the decision is now is read from the ledger, never typed |
+| `ground` (**new**, hivemind-gwhr.4) | does not exist | positional description or `--id <id>`, plus `[--pick N] [--topic T]` and the capture grounding flags (`--rests-on-decision`, `--rests-on-evidence` with `--evidence-source`, `--rests-on-assumption`, `--bet`); the same write gate as `disagree`/`supersede`; says what an existing decision rests on after the fact |
 | `get_supersession_chain` | `--id <id>` (`QueryDecisionArgs`, `args.rs:940`) | add positional description; **new alias** `chain` (friendlier name per bead item b) |
 | `get_decision_neighborhood` | `--id <id> --depth --relations --compact` (`args.rs:959`) | add positional description; **new alias** `why` |
 | `compact-view` | `--id <id>` (`QueryDecisionArgs`) | add positional description |
 | `review` (**new**) | does not exist as a single-decision verb today | see §3.1 |
+
+**`ground` and the capture verbs share one grounding vocabulary.** A decision
+captured without saying what it rests on reads `rests on: nothing declared` in the
+brief (§4). `hivemind ground "<description>"` adds the answer later: the target is
+resolved with the strict write-verb ambiguity gate, and every premise named by
+`--rests-on-decision` is resolved by the same resolver before the first write, so
+an ambiguous or unmatched premise refuses the whole call with numbered candidates
+and writes nothing. The capture verbs (`emit decision.capture`, `supersede`) take
+the same premise flags, and there the requirement applies: a capture that names
+nothing is refused. The grounding `ground` writes is append-only, attributed to
+whoever ran it, and carries no link to the decision's proposal, so the brief shows
+it as attributed **later** rather than **at capture**. `--confidence` is refused
+by `ground`: it is the decider's own words at capture. A premise that already rests
+on the target is refused, since it would close a loop.
 
 ### 3.1 The `review` naming collision
 
@@ -345,6 +360,12 @@ of `decision_id`/`description`") is enforced at runtime, not in the schema,
 and a call supplying neither returns a real MCP tool error (`one of
 "decision_id" or "description" is required`) since a malformed call is the
 one case that *is* exceptional here.
+
+`ground_decision` (`hivemind-gwhr.4`) is registered on both transports and takes
+the same `decision_id`/`description`/`topic` selectors plus a `grounding` array;
+`capture_decision` and `supersede_decision` take the same `grounding` array, and a
+`description` inside it (a premise decision) returns the same
+`{outcome, field: "grounding[i]"}` shapes below.
 
 **Still id-only over MCP** (no fluent parity yet): `get_supersession_chain`
 (`hivemind-ot72.9`, open) and `hivemind_compact_view`
@@ -564,7 +585,10 @@ call. A subsequent invocation's `#N` positional argument (recognized by a
 `#` prefix, distinct from a free-text description) reads that file, picks
 entry `N`, and resolves directly — equivalent to `--pick N` but addressable
 across separate CLI invocations within a session, which `--pick N` alone
-(single-invocation only, per §1.4) cannot do.
+(single-invocation only, per §1.4) cannot do. The same `#N` names a premise:
+`--rests-on-decision '#N'` on `decision.capture`, `supersede` and `ground` picks
+candidate N of the previous ambiguous list, which is how a refused capture is
+re-run.
 
 This keeps the mechanism simple: no server-side session state, no new
 ledger writes (continuation state is not decision memory — it's UI

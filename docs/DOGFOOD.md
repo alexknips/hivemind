@@ -162,7 +162,7 @@ If Claude Code prompts for the plugin, install it and reload plugins:
 Capture a smoke decision:
 
 ```text
-/hivemind-capture:capture-decision --title "Verify Claude dogfood capture" --rationale "The repo plugin should write to ./hivemind/ with Claude actor provenance" --topic-keys dogfood,claude --options plugin,manual-cli --chose plugin
+/hivemind-capture:capture-decision --title "Verify Claude dogfood capture" --rationale "The repo plugin should write to ./hivemind/ with Claude actor provenance" --topic-keys dogfood,claude --options plugin,manual-cli --chose plugin --bet
 ```
 
 Query it back:

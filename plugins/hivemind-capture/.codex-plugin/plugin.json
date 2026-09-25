@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "HiveMind Capture",
     "shortDescription": "Record Codex decisions with actor provenance.",
-    "longDescription": "Installs the hivemind-capture skill and MCP server. The skill teaches Codex when to preserve a durable organizational decision and how to call the HiveMind decision.capture CLI against either a local or shared ledger.",
+    "longDescription": "Installs the hivemind-capture skill and MCP server. The skill teaches Codex when to preserve a durable organizational decision, how to say what it rests on, and how to call the HiveMind decision.capture CLI against either a local or shared ledger.",
     "developerName": "HiveMind contributors",
     "category": "Productivity",
     "capabilities": [
@@ -31,7 +31,7 @@
     ],
     "websiteURL": "https://github.com/alexknips/hivemind",
     "defaultPrompt": [
-      "Use $hivemind-capture to record this decision.",
+      "Use $hivemind-capture to record this decision and what it rests on.",
       "Capture the selected option in HiveMind.",
       "Query HiveMind for recent agent captures."
     ],

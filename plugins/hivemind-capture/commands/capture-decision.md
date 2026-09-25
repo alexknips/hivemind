@@ -1,7 +1,7 @@
 ---
 name: capture-decision
 description: Capture one HiveMind decision in the configured ledger using the legacy kind-locked path
-argument-hint: '--title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option] [--decided-by actor-id] [--delegated-by human:name] [--still-proposed] [--project handle] [--source agent|human]'
+argument-hint: '--title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option] [--decided-by actor-id] [--delegated-by human:name] [--still-proposed] (--rests-on-decision "..." | --rests-on-evidence "..." --evidence-source "..." | --rests-on-assumption "..." | --bet ["..."]) [--project handle] [--source agent|human]'
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/capture-decision.sh:*)
 disable-model-invocation: true
 ---
@@ -43,5 +43,14 @@ only when you were told which project. When it says the decision was saved to
 the personal project and the folder is not attached to a project yet, tell the
 user, with the attach hint it prints.
 
-Do not query, rank, summarize, or infer related decisions before capturing.
-This command is a write-layer path only.
+Every decision must say what it rests on: `--rests-on-decision "<description>"`
+(a decision we already made, or `'#N'` / the id from a consult), `--rests-on-evidence
+"<what>" --evidence-source "<where>"` (something observed), `--rests-on-assumption
+"<statement>"` (something we assume), or `--bet ["<statement>"]` (nothing yet).
+A capture that names none exits 2 and writes nothing; add the grounding and
+re-run, never drop the capture. The decider's own words are not a grounding:
+they go in `--quote` with `--question`, and `--confidence` only when those words
+state it. `/hivemind-capture:capture` documents the four answers in full.
+
+This command is a write-layer path only: it does not query, rank, summarize, or
+infer related decisions itself.

@@ -50,6 +50,52 @@ staleness is visible). MCP `capture_decision` / `supersede_decision` and REST
 `emit decision.proposed`, classifier ingest, document import and Slack capture do
 not ask the question.
 
+### How the capture plugins ask it
+
+The `hivemind-capture` skill, `/hivemind-capture:capture` and
+`/hivemind-capture:capture-decision`, the Claude `active-capture` skill, the
+repo-local `/capture-decision`, and the Codex bundle all teach the same thing:
+answer "what does this rest on?" before writing, and pass the answer as a flag.
+
+| It rests on | Flag (MCP `grounding` kind) |
+|---|---|
+| a decision we already made, named as you would describe it, or by the `#N` / `decision-...` handle of the decision you consulted before acting | `--rests-on-decision` (`decision`) |
+| something observed, with where it was seen: a URL, `file@commit`, a test run, a measurement | `--rests-on-evidence` with `--evidence-source` (`evidence`) |
+| something we assume: the statement | `--rests-on-assumption` (`assumption`) |
+| nothing yet: a declared bet, optionally what would change our mind and when to check | `--bet`, `--would-change-if`, `--check-by` (`bet`) |
+
+The primary loop is **consult, decide, capture**: ask what is already decided
+about the ground you are about to change (the `hivemind-context` plugin's
+`situational`, or `recall`), decide, then capture with the consulted decision as
+the premise. Consulting only finds what a decision rests on; it never decides
+whether to capture. The answer is one open question, and the four kinds are the
+common premises rather than a closed list: an answer that fits none of them is
+recorded as an assumption with the text as given, never dropped and never forced
+into evidence.
+
+**The decider's own words are not a grounding.** A Slack message or chat reply
+that drove the decision says who decided and what they said, not what the
+decision rests on. Recording it as evidence (`--rests-on-evidence "Alex in Slack:
+keep it at 3"`) files the decider as the decision's own evidence: the record then
+says the decision holds because someone said so. The words go in `--quote`
+(verbatim), paired with `--question` and `--decided-by`; then ask what those words
+rest on (the observation behind them, a decision they follow from, an
+assumption), and declare a `--bet` when nothing is known.
+
+`--confidence` comes only from the decider's own words ("pretty sure", "just a
+guess"); an agent's own certainty is never recorded, and the flag is omitted
+otherwise. Saying which question the decision answers is suggested, never
+required: one line at the start of `--rationale`, or `--question` with `--quote`
+when a person's words answered it.
+
+After a refusal (nothing named, an ambiguous premise, no match) the agent adds the
+grounding and re-runs; it never drops the capture. An ambiguous premise is
+re-run with `--rests-on-decision '#N'`; a miss means the decision is not
+recorded, so the agent answers with what it does have. A named premise that has
+since been superseded or rejected is recorded and reported as `premise_stale`, so
+a replacement decision names what overturned the old one, not the decision it
+replaces.
+
 ### Grounding a decision after the fact
 
 A decision captured without saying what it rests on reads `nothing declared`.
@@ -208,8 +254,8 @@ install it. The plugin includes:
   decision id. For single-decision follow-up (rationale, still-holds check,
   contest, supersede) see the `hivemind-context` plugin above.
 - `.mcp.json`, which wires the `hivemind` MCP server to `hivemind mcp`.
-- The `hivemind-capture` skill for durable decision boundaries and provenance
-  rules.
+- The `hivemind-capture` skill for durable decision boundaries, provenance
+  rules, and the question every decision capture answers: what does it rest on.
 
 The default backend is the project-local `./hivemind/` directory. The bundled
 MCP descriptor pins that location for agents launched from this checkout. For
@@ -255,9 +301,10 @@ Codex exposes several extension surfaces relevant to HiveMind capture:
 
 This repository ships `plugins/hivemind-capture`, exposed through
 `.agents/plugins/marketplace.json`. The plugin bundles the
-`$hivemind-capture` skill, which keeps the direct CLI as the write path and uses
-the same actor-id convention as Claude: `agent:codex:<name>` and
-`agent:claude:<name>` (a stable identity, not a raw session id).
+`$hivemind-capture` skill, which keeps the direct CLI as the write path, asks the
+same "what does this rest on?" question as the Claude skill, and uses the same
+actor-id convention as Claude: `agent:codex:<name>` and `agent:claude:<name>` (a
+stable identity, not a raw session id).
 
 Install from a HiveMind checkout by starting Codex in the repository, opening
 `/plugins`, choosing `HiveMind Plugins`, and installing `HiveMind Capture`.

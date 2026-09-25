@@ -1,6 +1,6 @@
 ---
 name: hivemind-capture
-description: Capture durable organizational decisions from Claude Code or Codex into HiveMind with full provenance. Use when an agent session chooses between options, records architecture/integration/policy rationale, accepts or rejects a decision, supersedes prior direction, or needs to verify agent-captured decisions. Do not use for chat logs, task tracking, private scratch memory, or speculative notes.
+description: Capture durable organizational decisions from Claude Code or Codex into HiveMind with full provenance. Use when an agent session chooses between options, records architecture/integration/policy rationale, accepts or rejects a decision, supersedes prior direction, or needs to verify agent-captured decisions. Every decision capture must say what the decision rests on. Do not use for chat logs, task tracking, private scratch memory, or speculative notes.
 ---
 
 # HiveMind Capture
@@ -16,7 +16,8 @@ Capture these:
 - A selected architecture, integration, storage, security, or process direction.
 - A rejected option when the rejection matters later.
 - A supersession or acceptance of an existing decision.
-- Rationale that depends on durable evidence or hypotheses already in HiveMind.
+- What the decision rests on: a decision already made, something observed, an
+  assumption, or a declared bet (see "What Does This Rest On?" below).
 
 Do not capture these:
 
@@ -43,7 +44,9 @@ to decide whether the decision is important.
 For supersession, first capture the replacement decision. If the previous
 decision id is known, emit `decision.superseded` with the same actor identity.
 If it is not known, do not invent an id; make the supersession relationship clear
-in the new decision rationale.
+in the new decision rationale. The replacement does not rest on the decision it
+replaces: name what overturned the old one instead (see "What Does This Rest
+On?" below).
 
 ## Capture Once, At One Granularity
 
@@ -80,6 +83,118 @@ or, if the `hivemind-context` plugin is installed, its fluent
 ground means: don't capture it again — extend it with new evidence, accept or
 reject it, or supersede it, using the existing decision id.
 
+## What Does This Rest On?
+
+Before you write a decision, answer one question: **what does this decision rest
+on?** Every decision capture must answer it. A capture that names nothing is
+refused (exit 2) and nothing is written, so answer up front rather than after
+the refusal.
+
+### The loop: consult, decide, capture
+
+1. **Consult before you act.** Ask what is already decided about the ground you
+   are about to change: the `hivemind-context` plugin's `situational` (it reads
+   your working diff) or `recall "<free text>"`.
+2. **Decide.**
+3. **Capture with what you consulted as the premise.** A standing decision that
+   shaped your choice is what the new one rests on. Name it the way you would
+   describe it (`--rests-on-decision "bearer auth on postgres"`), or pass the
+   `#N` handle or `decision-...` id the consult printed.
+
+Consulting first is what makes the answer cheap: the premise is already in front
+of you. Consulting only finds what the decision rests on; it never decides
+whether to capture (that stays the deterministic trigger above).
+
+### The four answers
+
+Give one or more; each flag can repeat.
+
+| It rests on | Flag | What to say |
+|---|---|---|
+| A decision we already made | `--rests-on-decision "<description>"` | The decision as you would describe it, or `'#N'` / the `decision-...` id from the consult. |
+| Something observed | `--rests-on-evidence "<what was observed>"` with `--evidence-source "<where>"` | The observation, and where it was seen: a URL, `file@commit`, a test run, a measurement. Pin the version (commit, revision, or access date). |
+| Something we assume | `--rests-on-assumption "<statement>"` | The assumption, as a statement that can later turn out false. |
+| Nothing yet | `--bet ["<statement>"]`, optionally `--would-change-if "<what would change our mind>"` and `--check-by YYYY-MM-DD` | A declared judgement call with no grounding yet. It reads as a bet, which is honest; an invented grounding is not. |
+
+`--evidence-source` lines up with `--rests-on-evidence` by position: one source
+per item, or none. An answer that fits none of the four is still an answer:
+record it as `--rests-on-assumption` with the text as you have it. Never drop it
+and never force it into evidence.
+
+```bash
+plugins/hivemind-capture/scripts/capture.sh "Cap retry delay at 30 seconds" \
+  --kind decision \
+  --title "Cap retry delay at 30 seconds" \
+  --rationale "An uncapped exponential delay stalled clients for minutes after a short outage" \
+  --topic-keys retries \
+  --options cap30,uncapped \
+  --chose cap30 \
+  --rests-on-decision "exponential backoff for retries" \
+  --rests-on-evidence "Uncapped backoff reached 8 minutes in the June incident" \
+  --evidence-source "https://example.test/incidents/june"
+```
+
+### The decider's words are not a grounding
+
+When a person's words drove the decision (a Slack message, a chat reply, "go
+with B"), those words say *who decided and what they said*. They do not say
+*what the decision rests on*. Never record them as evidence.
+
+- **Wrong:** `--rests-on-evidence "Alex in Slack: keep it at 3, more just hides
+  outages" --evidence-source "Slack #eng"`. That files the decider as the
+  decision's own evidence, so the record says it is true because someone said so.
+- **Right:** the words go in `--quote` (verbatim and self-contained), paired with
+  `--question` (the question they answered, in your own words), with
+  `--decided-by human:<name>`. Then ask what *those words* rest on: the
+  observation behind them, a decision they follow from, or an assumption. If you
+  do not know and the decider gave no reason, say so with `--bet`.
+
+```bash
+plugins/hivemind-capture/scripts/capture.sh "Keep the retry budget at 3" \
+  --kind decision \
+  --title "Keep the retry budget at 3 attempts" \
+  --rationale "More retries hide an outage from the operator instead of surfacing it" \
+  --topic-keys retries \
+  --options three,five \
+  --chose three \
+  --decided-by human:alex \
+  --quote "keep it at 3, more just hides outages" \
+  --question "Should the worker retry budget go from 3 to 5 attempts?" \
+  --rests-on-evidence "The 5-retry config stretched the June outage to 40 minutes" \
+  --evidence-source "https://example.test/incidents/june"
+```
+
+### Confidence, and the question it answers
+
+- Pass `--confidence low|medium|high` only when the decider's own words say how
+  sure they are ("pretty sure", "just a guess"). Never your own certainty, never
+  inferred from tone. Otherwise omit it.
+- Suggested, never required: open `--rationale` with one line naming the question
+  the decision answers ("Which retry policy for the worker pool?"). When a
+  person's words answer a question you asked, `--question` with `--quote`
+  already carries it.
+
+### When the capture is refused
+
+Add the grounding and re-run the same command. Never drop the capture.
+
+- **Nothing named.** The error lists the four ways to answer. Pick one.
+- **Ambiguous premise.** `'<text>' matches 2 decisions...` with numbered
+  candidates and nothing written. Re-run right away with `--rests-on-decision
+  '#N'` (or the `decision-...` id) in place of the description; `#N` refers to
+  that last candidate list.
+- **No match.** `no decision matches '<text>'`. The decision you meant is not
+  recorded, or you worded it differently: try other words from `recall`. If the
+  ground truly is not recorded, answer with what you do have (something
+  observed, an assumption, or a bet). Never invent an id.
+- **Quote without question, or the reverse.** The two only work as a pair.
+
+If the reply reports `premise_stale`, a decision you named has since been
+superseded or rejected. The capture is recorded and reads as stale; check it
+with `verify` and consider whether you meant the decision that replaced it. For
+the same reason, do not name the decision you are superseding as the premise of
+its replacement.
+
 ## Capture Workflow
 
 Use the HiveMind CLI as the write transport. Skills improve recall, but the
@@ -104,7 +219,8 @@ ledger write must stay explicit and deterministic.
      --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" \
      --topic-keys agents,capture \
      --options direct-cli,mcp,hook \
-     --chose direct-cli
+     --chose direct-cli \
+     --rests-on-assumption "Agents already have shell access to the ledger"
    ```
 
    The helper records `source=agent` and derives `actor_id=agent:<tool>:<name>`.
@@ -138,7 +254,8 @@ ledger write must stay explicit and deterministic.
      --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" \
      --topic-keys agents,capture \
      --options direct-cli,mcp,hook \
-     --chose direct-cli
+     --chose direct-cli \
+     --rests-on-assumption "Agents already have shell access to the ledger"
    ```
 
    If the `hivemind` binary is not on `PATH`, run the same command from a
@@ -147,10 +264,12 @@ ledger write must stay explicit and deterministic.
    From the Claude Code plugin, prefer the installed slash command:
 
    ```text
-   /hivemind-capture:capture "Prefer direct CLI capture before MCP" --kind decision --title "Prefer direct CLI capture before MCP" --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" --topic-keys agents,capture --options direct-cli,mcp,hook --chose direct-cli
+   /hivemind-capture:capture "Prefer direct CLI capture before MCP" --kind decision --title "Prefer direct CLI capture before MCP" --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" --topic-keys agents,capture --options direct-cli,mcp,hook --chose direct-cli --rests-on-assumption "Agents already have shell access to the ledger"
    ```
 
-4. Attach existing evidence or hypotheses only when their ids are already known:
+4. Attach existing evidence or hypotheses only when their ids are already known.
+   Ids that already exist count as what the decision rests on; prefer the
+   by-description flags above whenever you do not hold the id:
 
    ```bash
    HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
@@ -168,7 +287,8 @@ ledger write must stay explicit and deterministic.
    ```
 
 5. For acceptance, rejection, or supersession, use the lower-level event verbs
-   with the same actor id:
+   with the same actor id (the replacement decision itself is a capture, so it
+   answers "what does this rest on?" like any other):
 
    ```bash
    HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
@@ -244,7 +364,9 @@ Use this path when:
 
 Explicit `emit decision.capture` remains the preferred path for single,
 deterministic decisions you make in the moment. Use the batch path for
-retrospective extraction over accumulated context.
+retrospective extraction over accumulated context. The batch path does not ask
+what a decision rests on: extracted decisions read `nothing declared` until
+someone grounds them (the `hivemind-context` plugin's `ground` verb).
 
 ### Batch Capture Workflow
 
@@ -544,6 +666,9 @@ the keyless plugin path and its own Haiku call. Do not invent a
   not given — capture without the flag instead. The same value on every capture
   in that scope is how a standing delegation is expressed.
 - Do not invent evidence, hypothesis, or decision ids. Query first if unsure.
+- Say what every decision rests on, and never file the decider's own words as
+  evidence: they go in `--quote` with `--question`. Do not invent a grounding to
+  get past the refusal; a bet is the honest answer when there is nothing yet.
 - Prefer `decision.capture` for new bundled proposals. Use direct event verbs
   only for status transitions or graph relations that already have ids.
 
@@ -589,6 +714,31 @@ When this is how `hivemind` is registered, call the `mcp__hivemind__*` tools
 `disagree_decision`, `supersede_decision`, and the read tools) directly
 instead of shelling out to `capture.sh` — the CLI transport above cannot
 reach this backend at all.
+
+`capture_decision` and `supersede_decision` ask the same question through a
+required `grounding` array (at least one item), one item per answer:
+
+```json
+{
+  "title": "Cap retry delay at 30 seconds",
+  "rationale": "An uncapped exponential delay stalled clients for minutes after a short outage",
+  "topic_keys": ["retries"],
+  "options": [{ "label": "cap30" }, { "label": "uncapped" }],
+  "chosen_option_label": "cap30",
+  "grounding": [
+    { "kind": "decision", "description": "exponential backoff for retries" },
+    { "kind": "evidence", "content": "Uncapped backoff reached 8 minutes in the June incident", "source": "https://example.test/incidents/june" },
+    { "kind": "assumption", "statement": "Clients retry from a single region" },
+    { "kind": "bet", "statement": "30 seconds is long enough", "would_change_if": "retries still storm", "check_by": "2026-12-01" }
+  ]
+}
+```
+
+The four kinds are the same four answers. An ambiguous or unmatched
+`description` comes back as a successful `{outcome: "ambiguous" | "not_found",
+field: "grounding[i]"}` result with nothing written (there is no `#N` over MCP):
+re-call with that item's `decision_id`. The decider's words go in `quote` with
+`question`, and `expressed_confidence` follows the same rule as `--confidence`.
 
 **Always pass `actor_id` explicitly on every write call** when the token is
 shared across more than one session (e.g. one per-role token for a pool of

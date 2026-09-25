@@ -43,14 +43,35 @@ dependency context. Prefer `--kind decision` for selected or rejected options,
 may later be refuted, and `--kind blocker` for unresolved decision
 dependencies.
 
+A `decision` call carries its structured fields and the answer to "what does
+this rest on?" (next section). The other kinds take the statement alone.
+
 Examples:
 
 ```text
-/capture Use SQLite WAL for local concurrent writes because it preserves single-process setup while allowing read concurrency. --kind decision
+/capture "Use SQLite WAL for local concurrent writes" --kind decision --title "Use SQLite WAL for local concurrent writes" --rationale "It preserves single-process setup while allowing read concurrency" --topic-keys storage --options sqlite-wal,rollback-journal --chose sqlite-wal --rests-on-evidence "The WAL multiprocess test passed with two concurrent readers and one writer" --evidence-source "cargo test wal_multiprocess"
 /capture The WAL multiprocess test passed against two concurrent readers and one writer. --kind evidence
 /capture Shared backend adoption assumes teams will accept service-managed identity instead of per-repo local actors. --kind hypothesis
 /capture Release packaging is blocked on choosing GitHub Actions retries versus local DSR fallback. --kind blocker
 ```
+
+## What a Decision Capture Must Carry
+
+A decision capture must say what it rests on; one that names nothing is refused
+and writes nothing. Know the answer before you nudge. It is one or more of:
+
+- a decision we already made: `--rests-on-decision "<description>"`, ideally
+  one consulted before acting (`hivemind-context` `situational` or `recall`);
+- something observed and where: `--rests-on-evidence "<what>"
+  --evidence-source "<URL, file@commit, test run, measurement>"`;
+- something we assume: `--rests-on-assumption "<statement>"`;
+- nothing yet, a declared bet: `--bet ["<statement>"]`.
+
+The decider's own words are not a grounding. A Slack message or chat reply goes
+in `--quote` with `--question`, never in `--rests-on-evidence`. Pass
+`--confidence` only when the decider's own words state it. After a refusal, add
+the grounding and re-run; never drop the capture. The `hivemind-capture` skill
+has the full text.
 
 ## Guardrails
 
