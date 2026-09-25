@@ -495,6 +495,7 @@ pub(crate) struct GetSituationalDecisionsArgs {
     pub(crate) since_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     pub(crate) limit: usize,
     pub(crate) cursor: Option<String>,
+    pub(crate) project: Option<String>,
 }
 
 impl GetSituationalDecisionsArgs {
@@ -504,12 +505,14 @@ impl GetSituationalDecisionsArgs {
         let since_timestamp = optional_datetime(args, "since_timestamp")?;
         let limit = optional_usize(args, "limit")?.unwrap_or(0);
         let cursor = optional_string(args, "cursor")?;
+        let project = optional_string(args, "project")?;
         Ok(Self {
             paths,
             since_offset,
             since_timestamp,
             limit,
             cursor,
+            project,
         })
     }
 }
@@ -651,6 +654,7 @@ pub(crate) fn get_situational_decisions<P: LedgerProvider>(
         since_timestamp: args.since_timestamp,
         limit: args.limit,
         cursor: args.cursor,
+        project: args.project,
     };
     let response =
         crate::queries::get_situational_decisions(&context, graph, &handle.ledger, &request)

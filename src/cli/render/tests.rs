@@ -1,7 +1,7 @@
 // Parent module gates this file with #[cfg(test)]; repeat the marker so UBS can filter test-only assertions.
 #[cfg(test)]
 use crate::projector::memory::MemoryGraph;
-use crate::queries::test_fixtures::{ts, Scenario};
+use crate::queries::test_fixtures::{project_first_fixture, ts, Scenario};
 use crate::queries::{
     get_compact_view, get_decision_brief_at, get_decisions_changed_since, get_recent_activity,
     get_situational_decisions, ChangedSinceRequest, QueryContext, RecentActivityRequest,
@@ -310,6 +310,72 @@ fn situational_summary_names_why_a_decision_is_stale() -> Result<()> {
         .find(|line| line.contains("d:goal-2"))
         .expect("superseding decision listed");
     assert!(holding_row.contains("\tholds\t"), "{holding_row}");
+    Ok(())
+}
+
+#[test]
+fn situational_summary_of_a_project_scoped_answer_says_where_each_decision_came_from() -> Result<()>
+{
+    let fixture = project_first_fixture()?;
+    let graph = MemoryGraph::default();
+    crate::projector::rebuild_graph(&fixture.ledger, &graph)?;
+    let ask = |project: Option<&str>, paths: &str| {
+        get_situational_decisions(
+            &QueryContext::local(),
+            &graph,
+            &fixture.ledger,
+            &SituationalRequest {
+                paths: vec![paths.to_owned()],
+                limit: 50,
+                project: project.map(str::to_owned),
+                ..SituationalRequest::default()
+            },
+        )
+    };
+
+    let text = render_situational_summary(&ask(Some("billing"), "pricing")?.data);
+    let mut lines = text.lines();
+    assert_eq!(lines.next(), Some("terms\tpricing"));
+    assert_eq!(
+        lines.next(),
+        Some("scope\tLooked in Billing (own project), Platform (Billing is part of it), Auth (Billing depends on it); not followed: 1 more level up the part_of chain, 2 more linked projects.")
+    );
+    let rows: Vec<&str> = lines.collect();
+    assert_eq!(rows.len(), 4, "{text}");
+    assert!(
+        rows[0].contains("\tproject=Billing\tscope=own project\t"),
+        "{}",
+        rows[0]
+    );
+    assert!(
+        rows[1].contains("\tproject=Platform\tscope=from Platform; Billing is part of it\t"),
+        "{}",
+        rows[1]
+    );
+    for row in &rows[2..] {
+        assert!(
+            row.contains("\tproject=Auth\tscope=from Auth; Billing depends on it\t"),
+            "{row}"
+        );
+    }
+    // The superseded Auth decision keeps its staleness label across the hop.
+    assert!(
+        rows.iter().any(|row| row.contains("STALE(superseded)")),
+        "{text}"
+    );
+
+    // An empty scoped answer still says which projects it looked in.
+    let empty = render_situational_summary(&ask(Some("billing"), "nothingmatches")?.data);
+    assert!(
+        empty.starts_with(
+            "No decisions bear on this situation (terms: nothingmatches)\nscope\tLooked in Billing"
+        ),
+        "{empty}"
+    );
+
+    // Without a project the rows and header are exactly what they were.
+    let unscoped = render_situational_summary(&ask(None, "pricing")?.data);
+    assert!(!unscoped.contains("scope"), "{unscoped}");
     Ok(())
 }
 

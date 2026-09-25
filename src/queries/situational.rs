@@ -24,6 +24,7 @@ use super::history::{
 };
 use super::outcome::{get_decision_outcome_with_labels, DecisionOutcome};
 use super::project_label::ProjectLabels;
+use super::project_scope::{project_scope, MatchScope, ProjectScope, ScopeNote, ScopeRelation};
 use super::shared::{
     node_rows, normalized_limit, optional_int, optional_string, optional_string_list, parse_cursor,
     query_error, relation_edges, MAX_QUERY_RESULTS,
@@ -59,6 +60,10 @@ pub struct SituationalMatch {
     /// this decision changed within that window. `None` when no boundary was requested
     /// — absence of the field is never used to imply "unchanged".
     pub changed_since: Option<bool>,
+    /// How this decision reached a project-scoped answer (own project, inherited from the
+    /// parent, or from a dependency). Absent when the request named no project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<MatchScope>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -72,6 +77,11 @@ pub struct SituationalRequest {
     pub since_timestamp: Option<DateTime<Utc>>,
     pub limit: usize,
     pub cursor: Option<String>,
+    /// Ask from this project: a registered handle or a personal address. Matches are limited to
+    /// the project, the project it is part of, and the projects it depends on, in that order
+    /// (own first, then the parent's, then a dependency's; see `project_scope`). `None` searches
+    /// the whole tenant, as before. An unregistered handle is refused, never an empty answer.
+    pub project: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -86,6 +96,10 @@ pub struct SituationalResults {
     pub next_cursor: Option<String>,
     pub total_matches: usize,
     pub matches: Vec<SituationalMatch>,
+    /// Where a project-scoped answer looked and where it stopped. Absent when the request named
+    /// no project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ScopeNote>,
 }
 
 pub fn get_situational_decisions(
@@ -120,12 +134,26 @@ pub fn get_situational_decisions(
     let limit = normalized_limit(request.limit);
     let offset = parse_cursor(request.cursor.as_deref())?;
 
-    let mut scored = score_candidates(graph, &query_terms)?;
+    let scope = match request.project.as_deref() {
+        Some(project) => {
+            let scoped_ledger = TenantScopedLedger::new(ledger, context.tenant_id.clone());
+            Some(project_scope(&scoped_ledger, project)?)
+        }
+        None => None,
+    };
+
+    let mut scored = score_candidates(graph, &query_terms, scope.as_ref())?;
+    // Own project, then the parent's, then a dependency's; every candidate of an unscoped
+    // request has no relation, so this is a no-op there and the score order is unchanged.
     scored.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        left.relation
+            .cmp(&right.relation)
+            .then_with(|| {
+                right
+                    .score
+                    .partial_cmp(&left.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then(right.event_origin.cmp(&left.event_origin))
             .then(left.decision_id.cmp(&right.decision_id))
     });
@@ -155,17 +183,23 @@ pub fn get_situational_decisions(
         let changed_since = changed_decision_ids
             .as_ref()
             .map(|ids| ids.contains(&candidate.decision_id));
+        let match_scope = scope
+            .as_ref()
+            .zip(candidate.relation)
+            .map(|(scope, relation)| scope.match_scope(relation, &decision.project_label, &labels));
         matches.push(SituationalMatch {
             decision,
             outcome,
             matched_via: candidate.reasons,
             score: candidate.score,
             changed_since,
+            scope: match_scope,
         });
     }
 
     let next_offset = offset.saturating_add(matches.len());
     let next_cursor = (next_offset < total_matches).then(|| next_offset.to_string());
+    let scope_note = scope.as_ref().map(|scope| scope.note(&labels));
 
     Ok(QueryResponse {
         result_count: matches.len(),
@@ -179,6 +213,7 @@ pub fn get_situational_decisions(
             next_cursor,
             total_matches,
             matches,
+            scope: scope_note,
         },
     })
 }
@@ -188,6 +223,8 @@ struct ScoredCandidate {
     event_origin: i64,
     score: f64,
     reasons: Vec<MatchReason>,
+    /// How the decision's project relates to the asked project; `None` for an unscoped request.
+    relation: Option<ScopeRelation>,
 }
 
 /// Reasons and matched terms accumulated for one decision, kept together so each
@@ -199,11 +236,16 @@ struct Accumulated {
     event_origin: i64,
     reasons: Vec<MatchReason>,
     matched_terms: BTreeSet<String>,
+    relation: Option<ScopeRelation>,
 }
 
+/// With a `scope`, only decisions filed under a project in it are candidates; a decision with no
+/// project, or in a project the scope did not follow, is left out here (and the scope note says
+/// what was not followed).
 fn score_candidates(
     graph: &impl GraphView,
     query_terms: &[String],
+    scope: Option<&ProjectScope>,
 ) -> Result<Vec<ScoredCandidate>> {
     let evidence_rows = node_rows(graph, NodeKind::Evidence)?;
 
@@ -223,10 +265,18 @@ fn score_candidates(
     // look candidates up by reference (`get_mut`) rather than by owned key (`entry`).
     let mut accumulated: BTreeMap<String, Accumulated> = BTreeMap::new();
     for (decision_id, row) in node_rows(graph, NodeKind::Decision)? {
+        let relation = match scope {
+            Some(scope) => match scope.relation_of(optional_string(&row, "project").as_deref()) {
+                Some(relation) => Some(relation),
+                None => continue,
+            },
+            None => None,
+        };
         let topic_keys = optional_string_list(&row, "topic_keys");
         let topic_terms: Vec<String> = topic_keys.iter().map(|t| t.to_ascii_lowercase()).collect();
         let mut entry = Accumulated {
             event_origin: optional_int(&row, "event_origin").unwrap_or(0),
+            relation,
             ..Accumulated::default()
         };
         for hit in overlapping_terms(query_terms, &topic_terms) {
@@ -275,6 +325,7 @@ fn score_candidates(
             event_origin: entry.event_origin,
             score,
             reasons: entry.reasons,
+            relation: entry.relation,
         });
     }
 

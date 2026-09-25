@@ -592,7 +592,8 @@ pub fn tool_definitions() -> Vec<Value> {
                     "since_offset": { "type": "integer", "description": "Annotate results with whether they changed since this ledger offset (exclusive)." },
                     "since_timestamp": { "type": "string", "description": "Annotate results with whether they changed since this RFC3339 timestamp." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
-                    "cursor": { "type": "string" }
+                    "cursor": { "type": "string" },
+                    "project": { "type": "string", "description": "Ask from this project (a registered handle, or a personal address such as personal:human:alex). Matches come from that project first, then the project it is part of (inherited constraints, labelled `from Platform; Billing is part of it`), then one hop over the projects it depends on (`from Auth; Billing depends on it`); each match carries `scope`, and `data.scope` lists the projects looked in and how many linked projects and part_of levels were not followed. Staleness (superseded, refuted) shows across the hop unchanged. An unregistered handle is refused with a hint. Omit to search the whole tenant." }
                 }
             }
         }),

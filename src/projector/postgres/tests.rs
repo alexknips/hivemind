@@ -1329,6 +1329,72 @@ fn fixture_events() -> Vec<Event> {
     ]
 }
 
+/// A project-scoped situational answer (hivemind-s15q.6): the same decisions in the same order,
+/// with the same relations and scope note, on the Postgres graph as on the in-memory one.
+#[test]
+fn project_first_situational_matches_memory() -> Result<()> {
+    with_postgres_graph("situational-project-first-parity", |pg| {
+        let fixture = crate::queries::test_fixtures::project_first_fixture()?;
+        let memory = MemoryGraph::default();
+        project_from_ledger(&fixture.ledger, &memory, 0)?;
+        project_from_ledger(&fixture.ledger, pg, 0)?;
+
+        let context = crate::queries::QueryContext::local();
+        let request = crate::queries::SituationalRequest {
+            paths: vec!["pricing".to_owned()],
+            limit: 50,
+            project: Some("billing".to_owned()),
+            ..Default::default()
+        };
+        let memory_answer = crate::queries::get_situational_decisions(
+            &context,
+            &memory,
+            &fixture.ledger,
+            &request,
+        )?
+        .data;
+        let pg_answer =
+            crate::queries::get_situational_decisions(&context, pg, &fixture.ledger, &request)?
+                .data;
+
+        let shape = |answer: &crate::queries::SituationalResults| -> Vec<(String, String)> {
+            answer
+                .matches
+                .iter()
+                .map(|m| {
+                    (
+                        m.decision.id.clone(),
+                        m.scope
+                            .as_ref()
+                            .map(|scope| scope.label.clone())
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect()
+        };
+        if shape(&memory_answer) != shape(&pg_answer) {
+            return Err(test_error(format!(
+                "project-first situational mismatch: memory={:?} pg={:?}",
+                shape(&memory_answer),
+                shape(&pg_answer)
+            )));
+        }
+        if memory_answer.scope != pg_answer.scope {
+            return Err(test_error(format!(
+                "scope note mismatch: memory={:?} pg={:?}",
+                memory_answer.scope, pg_answer.scope
+            )));
+        }
+        if memory_answer.matches.len() != 4 {
+            return Err(test_error(format!(
+                "billing's answer should hold its own, its parent's and auth's two decisions, got {}",
+                memory_answer.matches.len()
+            )));
+        }
+        Ok(())
+    })
+}
+
 fn situational_fixture_ledger() -> Result<InMemoryEventLedger> {
     let ledger = InMemoryEventLedger::new();
     for event in [

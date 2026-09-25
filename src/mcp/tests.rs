@@ -2453,6 +2453,127 @@ mod transport_parity {
         let _ = std::fs::remove_dir_all(&http_dir);
     }
 
+    /// The parts of a project-scoped `get_situational_decisions` answer that must not differ by
+    /// transport. Decision ids are generated per ledger, so decisions are compared by title.
+    fn scoped_answer_shape(result: &Value) -> Value {
+        let data = &result["structuredContent"]["data"];
+        let matches: Vec<Value> = data["matches"]
+            .as_array()
+            .map(|matches| {
+                matches
+                    .iter()
+                    .map(|matched| {
+                        json!({
+                            "title": matched["decision"]["title"],
+                            "project": matched["decision"]["project"],
+                            "relation": matched["scope"]["relation"],
+                            "label": matched["scope"]["label"],
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        json!({
+            "matches": matches,
+            "total_matches": data["total_matches"],
+            "scope": data["scope"],
+        })
+    }
+
+    #[tokio::test]
+    async fn get_situational_decisions_is_project_first_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs(
+            "situational-project-first",
+            &["platform", "billing", "auth", "marketing"],
+        );
+        for dir in [&stdio_dir, &http_dir] {
+            let ledger = SqliteEventLedger::open(dir).expect("ledger opens"); // ubs:ignore: test-only; panicking is correct in tests
+            let commands = Commands::new(&ledger);
+            for (from, to, kind) in [
+                (
+                    "billing",
+                    "platform",
+                    crate::events::ProjectLinkKind::PartOf,
+                ),
+                ("billing", "auth", crate::events::ProjectLinkKind::DependsOn),
+            ] {
+                commands
+                    .link_project("human:parity", from, to, kind)
+                    .expect("link projects"); // ubs:ignore: test-only; panicking is correct in tests
+            }
+        }
+        for (title, project) in [
+            ("Price per seat", "billing"),
+            ("Quote every price in euros", "platform"),
+            ("Bill token issuance per call", "auth"),
+            ("Launch with a promo price", "marketing"),
+        ] {
+            let args = with_args(capture_args(title), json!({ "project": project }));
+            stdio_call(&stdio_dir, "capture_decision", args.clone());
+            http_call(&http_dir, "capture_decision", args).await;
+        }
+
+        let arguments = json!({ "paths": ["billing"], "project": "billing" });
+        let stdio = stdio_call(&stdio_dir, "get_situational_decisions", arguments.clone());
+        let http = http_call(&http_dir, "get_situational_decisions", arguments).await;
+
+        for (name, response) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                response["result"]["isError"], false,
+                "{name}: expected success: {response:?}"
+            ); // ubs:ignore: test-only assertion
+        }
+        let expected = json!({
+            "matches": [
+                { "title": "Price per seat", "project": "billing", "relation": "own", "label": "own project" },
+                { "title": "Quote every price in euros", "project": "platform", "relation": "parent", "label": "from platform; billing is part of it" },
+                { "title": "Bill token issuance per call", "project": "auth", "relation": "dependency", "label": "from auth; billing depends on it" },
+            ],
+            "total_matches": 3,
+            "scope": {
+                "project": "billing",
+                "project_label": "billing",
+                "followed": [
+                    { "project": "billing", "project_label": "billing", "relation": "own" },
+                    { "project": "platform", "project_label": "platform", "relation": "parent" },
+                    { "project": "auth", "project_label": "auth", "relation": "dependency" },
+                ],
+                "part_of_levels_not_followed": 0,
+                "linked_projects_not_followed": 0,
+                "note": "Looked in billing (own project), platform (billing is part of it), auth (billing depends on it); nothing further is linked.",
+            },
+        });
+        for (name, response) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                scoped_answer_shape(&response["result"]),
+                expected,
+                "{name}: project-first answer"
+            ); // ubs:ignore: test-only assertion
+        }
+
+        // A wrong project address is refused on both transports, in the same words.
+        let unknown = json!({ "paths": ["billing"], "project": "billng" });
+        let stdio = stdio_call(&stdio_dir, "get_situational_decisions", unknown.clone());
+        let http = http_call(&http_dir, "get_situational_decisions", unknown).await;
+        for (name, response) in [("stdio", &stdio), ("http", &http)] {
+            let result = &response["result"];
+            assert_eq!(result["isError"], true, "{name}: unknown project refused"); // ubs:ignore: test-only assertion
+            assert!(
+                error_text(result).contains("project not registered: billng"),
+                "{name}: refusal names the handle: {}",
+                error_text(result)
+            ); // ubs:ignore: test-only assertion
+        }
+        assert_eq!(
+            error_text(&stdio["result"]),
+            error_text(&http["result"]),
+            "both transports refuse with the same words"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
     fn rests_on_kinds_and_labels(result: &Value) -> Vec<(String, String)> {
         result["structuredContent"]["rests_on"]
             .as_array()

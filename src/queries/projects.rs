@@ -166,17 +166,37 @@ struct ProjectRecord {
 }
 
 #[derive(Clone, Debug, Default)]
-struct ProjectRegistry {
+pub(super) struct ProjectRegistry {
     projects: BTreeMap<String, ProjectRecord>,
     part_of: BTreeMap<String, ProjectLinkFact>,
     depends_on: BTreeMap<String, Vec<ProjectLinkFact>>,
+}
+
+impl ProjectRegistry {
+    pub(super) fn is_registered(&self, handle: &str) -> bool {
+        self.projects.contains_key(handle)
+    }
+
+    /// The one project `handle` is currently part of, if any.
+    pub(super) fn part_of_parent(&self, handle: &str) -> Option<&str> {
+        self.part_of.get(handle).map(|fact| fact.to.as_str())
+    }
+
+    /// The projects `handle` currently depends on, sorted by handle.
+    pub(super) fn depends_on(&self, handle: &str) -> impl Iterator<Item = &str> {
+        self.depends_on
+            .get(handle)
+            .into_iter()
+            .flatten()
+            .map(|fact| fact.to.as_str())
+    }
 }
 
 /// Replays every `project.*` fact for the current tenant and nets adds against
 /// removes, exactly like `commands::HiveMindCommands::active_project_links` does
 /// for the write layer's own existence checks -- see the module doc comment for why
 /// this can't be a graph read.
-fn collect_project_registry(ledger: &impl EventLedger) -> Result<ProjectRegistry> {
+pub(super) fn collect_project_registry(ledger: &impl EventLedger) -> Result<ProjectRegistry> {
     let mut registry = ProjectRegistry::default();
 
     ledger.replay_from(0, &mut |event| {

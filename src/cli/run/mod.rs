@@ -2916,6 +2916,7 @@ fn situational_request(args: &QuerySituationalArgs) -> Result<SituationalRequest
         since_timestamp,
         limit: args.limit,
         cursor: args.cursor.clone(),
+        project: args.project.clone(),
     })
 }
 

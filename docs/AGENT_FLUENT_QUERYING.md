@@ -508,6 +508,26 @@ project: `project` is `null` and the label says "no project recorded", so an
 unassigned decision is visible rather than blank or guessed. Labels are read
 from the registered projects, never inferred (Layer 2 only).
 
+**`situational` is project-first.** `query situational --project <handle>` (MCP
+`get_situational_decisions` argument `project`) asks from one project: a
+registered handle or a personal address. An unregistered handle is refused with
+the `hivemind project register` hint, never answered as an empty result. The
+answer holds only decisions filed under that project, then the project it is
+`part_of` (inherited constraints), then the projects it `depends_on`, in that
+order (each group keeps the usual score order). Each match carries a `scope`
+label: `own project`, `from Platform; Billing is part of it`, or `from Auth;
+Billing depends on it`; `--summary` prints it as a trailing `scope=<label>`
+cell. Staleness is unchanged and applies across the hop: a superseded Auth
+decision is labelled superseded in Billing's answer. The answer also carries a
+`scope` note (a `scope` line under `--summary`, also on an empty answer) that
+names every project looked in and states where the walk stopped: how many more
+levels up the `part_of` chain, and how many more linked projects, were not
+followed. Each link is followed one hop; the counts are what a later "go
+deeper" step would reach, and a project's children and dependents are never
+visited. Links are read from the ledger, so a retracted link is not followed.
+Without `--project` the whole tenant is searched and the answer is unchanged.
+The REST `GET /v1/decisions/situational` route does not take `project`.
+
 ---
 
 ## 5. Short-Handle Continuation

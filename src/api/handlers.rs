@@ -974,6 +974,7 @@ pub(super) async fn situational_handler(
             since_timestamp,
             limit: params.limit.unwrap_or(25),
             cursor: params.cursor,
+            project: None,
         };
 
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;

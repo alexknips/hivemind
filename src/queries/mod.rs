@@ -15,6 +15,7 @@ mod misfiled;
 mod neighborhood;
 mod outcome;
 mod project_label;
+mod project_scope;
 mod projects;
 mod relevant;
 mod resolve;
@@ -80,6 +81,7 @@ pub use outcome::{
     get_decision_outcome, get_decision_outcome_at, get_decision_quality_candidates,
     outcome_next_cursor, DecisionOutcome, DecisionQualityCandidatesRequest, OutcomeReason,
 };
+pub use project_scope::{MatchScope, ScopeNote, ScopeRelation, ScopedProject};
 pub use projects::{
     decisions_in_project, get_project, list_projects, ProjectAnchorView, ProjectDecisionItem,
     ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectDecisionsRequest, ProjectLinkFact,

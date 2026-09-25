@@ -297,14 +297,22 @@ pub(crate) fn render_search_summary(results: &DecisionSearchResults) -> String {
 
 pub(crate) fn render_situational_summary(results: &SituationalResults) -> String {
     if results.matches.is_empty() {
-        return format!(
+        let mut output = format!(
             "No decisions bear on this situation (terms: {})",
             results.query_terms.join(",")
         );
+        // An empty scoped answer still says which projects it looked in.
+        if let Some(scope) = &results.scope {
+            let _ = write!(output, "\nscope\t{}", summary_cell(&scope.note));
+        }
+        return output;
     }
 
     let mut output = String::new();
     let _ = writeln!(output, "terms\t{}", results.query_terms.join(","));
+    if let Some(scope) = &results.scope {
+        let _ = writeln!(output, "scope\t{}", summary_cell(&scope.note));
+    }
     for item in &results.matches {
         let held_up = if item.outcome.held_up {
             "holds".to_owned()
@@ -334,6 +342,10 @@ pub(crate) fn render_situational_summary(results: &SituationalResults) -> String
             changed,
             summary_cell(&item.decision.project_label),
         );
+        // Only a project-scoped answer says how each decision reached it.
+        if let Some(scope) = &item.scope {
+            let _ = write!(output, "scope={}\t", summary_cell(&scope.label));
+        }
         // Exact topic_keys membership and fuzzy evidence-content overlap are visually
         // distinguished so an agent doesn't over-trust the fuzzy half (AGENTS.md §6).
         for (index, reason) in item.matched_via.iter().enumerate() {

@@ -1846,6 +1846,13 @@ pub struct QuerySituationalArgs {
 
     #[arg(long = "cursor")]
     pub cursor: Option<String>,
+
+    /// Ask from this project (a registered handle or a personal address): matches come from
+    /// the project first, then the project it is part of (inherited constraints), then the
+    /// projects it depends on, each labelled, and the answer says where it stopped. An unknown
+    /// handle is refused. Without it the whole tenant is searched.
+    #[arg(long = "project")]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]

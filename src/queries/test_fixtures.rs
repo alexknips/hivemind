@@ -6,7 +6,10 @@ use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::events::{Event, EventId, EventSource, EventType};
+use crate::commands::{
+    Commands, DecisionProposalInput, DeterminedProject, Grounding, SupersedeInput,
+};
+use crate::events::{Event, EventId, EventSource, EventType, ProjectLinkKind};
 use crate::ledger::{EventLedger, InMemoryEventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph};
 use crate::Result;
@@ -252,4 +255,118 @@ impl Scenario {
         )
         .map(|_| ())
     }
+}
+
+/// The projects and decisions behind the project-first "what should I know" answer
+/// (hivemind-s15q.6). Links, `part_of` up and `depends_on` across:
+///
+/// ```text
+/// Billing --part_of--> Platform --part_of--> City
+///    |                    `--depends_on--> Infra
+///    `--depends_on--> Auth --depends_on--> Crypto        Marketing (linked to nothing)
+/// ```
+///
+/// One decision on the topic `pricing` sits in each project, `auth_old` is superseded by
+/// `auth_new` (which inherits Auth), and `personal` was recorded with no project at all. Asked
+/// from Billing, the answer is Billing, Platform, then Auth's two; it leaves out City (one level
+/// too high), Crypto and Infra (one link too far), Marketing and the personal decision.
+pub(crate) struct ProjectFirstFixture {
+    pub(crate) ledger: InMemoryEventLedger,
+    pub(crate) billing: String,
+    pub(crate) platform: String,
+    pub(crate) city: String,
+    pub(crate) auth_old: String,
+    pub(crate) auth_new: String,
+    pub(crate) crypto: String,
+    pub(crate) infra: String,
+    pub(crate) marketing: String,
+    pub(crate) personal: String,
+}
+
+fn propose_pricing(
+    commands: &Commands<'_, InMemoryEventLedger>,
+    title: &str,
+    project: Option<&str>,
+) -> Result<String> {
+    let actor = "human:alex";
+    let option_id = commands.record_option(actor, "Per seat", "Charge each seat")?;
+    commands.propose_decision(DecisionProposalInput {
+        grounding: Grounding::NotAsked,
+        expressed_confidence: None,
+        actor_id: actor,
+        title,
+        rationale: "Scoping a question by project keeps the answer to what applies here",
+        topic_keys: &["pricing".to_owned()],
+        option_ids: std::slice::from_ref(&option_id),
+        option_labels: &["Per seat".to_owned()],
+        chosen_option_id: Some(option_id.as_str()),
+        decided_by: None,
+        still_proposed: false,
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+        quote: None,
+        question: None,
+        delegated_by: None,
+        project: project.map(DeterminedProject::stated),
+    })
+}
+
+pub(crate) fn project_first_fixture() -> Result<ProjectFirstFixture> {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let alex = "human:alex";
+    for (handle, display_name) in [
+        ("city", Some("City")),
+        ("platform", Some("Platform")),
+        ("billing", Some("Billing")),
+        ("auth", Some("Auth")),
+        ("crypto", None),
+        ("infra", None),
+        ("marketing", Some("Marketing")),
+    ] {
+        commands.register_project(alex, handle, display_name, None)?;
+    }
+    commands.link_project(alex, "platform", "city", ProjectLinkKind::PartOf)?;
+    commands.link_project(alex, "billing", "platform", ProjectLinkKind::PartOf)?;
+    commands.link_project(alex, "billing", "auth", ProjectLinkKind::DependsOn)?;
+    commands.link_project(alex, "auth", "crypto", ProjectLinkKind::DependsOn)?;
+    commands.link_project(alex, "platform", "infra", ProjectLinkKind::DependsOn)?;
+
+    let billing = propose_pricing(&commands, "Price per seat", Some("billing"))?;
+    let platform = propose_pricing(&commands, "Quote every price in euros", Some("platform"))?;
+    let city = propose_pricing(&commands, "No free tiers anywhere", Some("city"))?;
+    let auth_old = propose_pricing(&commands, "Bill token issuance per call", Some("auth"))?;
+    let crypto = propose_pricing(&commands, "Rotate signing keys monthly", Some("crypto"))?;
+    let infra = propose_pricing(&commands, "Run on shared hosts", Some("infra"))?;
+    let marketing = propose_pricing(&commands, "Launch with a promo price", Some("marketing"))?;
+    let personal = propose_pricing(&commands, "Keep a personal scratch price", None)?;
+    let auth_new = commands
+        .supersede(SupersedeInput {
+            actor_id: alex,
+            old_decision_id: &auth_old,
+            new_title: "Bill token issuance per seat",
+            new_rationale: "Per-call billing surprised customers; seats are predictable",
+            topic_keys: &["pricing".to_owned()],
+            option_labels: &["Per seat".to_owned()],
+            chosen_option_label: Some("Per seat"),
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            project: None,
+            grounding: None,
+            expressed_confidence: None,
+        })?
+        .new_decision_id;
+
+    Ok(ProjectFirstFixture {
+        ledger,
+        billing,
+        platform,
+        city,
+        auth_old,
+        auth_new,
+        crypto,
+        infra,
+        marketing,
+        personal,
+    })
 }
