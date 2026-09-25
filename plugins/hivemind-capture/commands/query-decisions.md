@@ -12,12 +12,15 @@ first, never a decision id:
 
 `$ARGUMENTS`
 
-Run the plugin helper. Quote `$ARGUMENTS` — free text is normally several
-words and an unquoted expansion splits it into separate shell arguments,
-which the CLI's positional query field rejects:
+Run the plugin helper with the arguments exactly as typed. The helper joins
+the leading free-text words into one query, so the quoted form
+(`"current-project setting" --limit 5`) and the unquoted form
+(`current-project setting --limit 5`) both work. Do not add another pair of
+quotes around `$ARGUMENTS`: it doubles the caller's own quotes and splits the
+query into two words.
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/query-decisions.sh "$ARGUMENTS"
+${CLAUDE_PLUGIN_ROOT}/scripts/query-decisions.sh $ARGUMENTS
 ```
 
 No actor or source filter is applied unless the caller passes --actor-id

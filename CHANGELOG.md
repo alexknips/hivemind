@@ -13,6 +13,18 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   someone accepts), and every Option node carries a `title` (its label, else its id).
   Additive: no existing key changes. Documented in `docs/GRAPH_CONTRACT.md`. (hivemind-pkw0)
 
+### Fixed
+
+- **`/hivemind-capture:query-decisions "some words"` no longer fails on the quoted form its own
+  argument-hint documents.** The command wrapped what you typed in a second pair of quotes, so
+  `"current-project setting"` reached the CLI as two words (`error: unexpected argument
+  'setting' found`) and any flag typed after the query was swallowed into it. It now passes
+  your arguments through as typed and joins the leading free-text words into one query, so
+  the quoted and unquoted forms both work. (hivemind-f4ng)
+- **`recall`, `why`, `verify`, `disagree` and `supersede` in the hivemind-context plugin print
+  their usage when called with no arguments**, instead of dying on macOS's bash 3.2 with an
+  unbound-variable error. (hivemind-f4ng)
+
 ## v0.7.0 — 2026-09-25 — M6: Fluent verbs and grounded capture
 
 You can now consult HiveMind without holding a decision id. Describe a decision — or just

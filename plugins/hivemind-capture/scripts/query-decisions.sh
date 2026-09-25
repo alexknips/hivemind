@@ -68,15 +68,21 @@ HAS_LIMIT=0
 QUERY=""
 FORWARDED=()
 
-# The positional free-text query, if present, must be the first argument
-# (mirrors QueryRecallArgs' positional `query` field). Every later bare
-# token is a flag's value and must stay in place in FORWARDED, not be
-# captured here — otherwise `--topic smoke` would lose its value to this
-# check on the next loop iteration.
-if [[ $# -gt 0 && "$1" != -* ]]; then
-  QUERY="$1"
+# The free-text query, if present, is the leading run of words that don't
+# start with `-` (mirrors QueryRecallArgs' single positional `query` field,
+# which takes exactly one shell token). The command markdown passes the typed
+# arguments through bare, so a quoted `"current-project setting"` reaches us as
+# one word and an unquoted `current-project setting` as two; joining the
+# leading run with single spaces makes both one query. Wrapping the
+# substituted arguments in one more pair of quotes instead doubles a caller's
+# own quotes (`""a b""` splits into two words) and swallows any flags typed
+# after the query. Every later bare token is a flag's value and must stay in
+# place in FORWARDED, not be captured here — otherwise `--topic smoke` would
+# lose its value to this check on the next loop iteration.
+while [[ $# -gt 0 && "$1" != -* ]]; do
+  QUERY="${QUERY:+$QUERY }$1"
   shift
-fi
+done
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -145,5 +151,7 @@ if [[ -n "$QUERY" ]]; then
   QUERY_ARGS=("$QUERY")
 fi
 
+# ${arr[@]+...}: macOS ships bash 3.2, where expanding an empty array under
+# `set -u` is an "unbound variable" error (no query leaves QUERY_ARGS empty).
 exec "${BASE_CMD[@]}" --hivemind-dir "$HIVEMIND_DIR" query recall \
-  "${QUERY_ARGS[@]}" "${FORWARDED[@]}"
+  ${QUERY_ARGS[@]+"${QUERY_ARGS[@]}"} "${FORWARDED[@]}"

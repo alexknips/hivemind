@@ -34,9 +34,18 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   exit 0
 fi
 
+# These verbs are resolved by a description, so no argument at all is a usage
+# error. Say so here rather than reaching the CLI with an empty argument list.
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$SCRIPT_DIR/lib.sh"
 
 hivemind_context_join_description "$@"
-hivemind_context_exec --write supersede "${HC_ARGS[@]}"
+# ${arr[@]+...}: macOS bash 3.2 treats expanding an empty array under `set -u`
+# as an unbound variable, and HC_ARGS is empty for an empty description.
+hivemind_context_exec --write supersede ${HC_ARGS[@]+"${HC_ARGS[@]}"}

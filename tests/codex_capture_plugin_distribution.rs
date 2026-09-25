@@ -469,6 +469,158 @@ fn query_decisions_script_finds_decisions_captured_by_a_different_session() -> T
     Ok(())
 }
 
+/// Captures one decision through the plugin's own capture script so the
+/// free-text query tests below have exactly one thing to find.
+fn capture_joined_query_fixture(root: &Path, hivemind_dir: &Path) -> TestResult<()> {
+    let output = Command::new(root.join("plugins/hivemind-capture/scripts/capture-decision.sh"))
+        .current_dir(root)
+        .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+        .env("HIVEMIND_DIR", hivemind_dir)
+        .env("CLAUDE_PROJECT_DIR", root)
+        .env("CLAUDE_SESSION_ID", "join-fixture-session")
+        .env_remove("GC_AGENT")
+        .env_remove("GC_ALIAS")
+        .args([
+            "--title",
+            "Recall smoke test fixture for joined free text",
+            "--rationale",
+            "A free-text query typed with or without quotes must reach recall as one description",
+            "--topic-keys",
+            "plugin,recall",
+            "--options",
+            "join-words,require-quotes",
+            "--chose",
+            "join-words",
+            "--bet",
+        ])
+        .output()?;
+    require(
+        output.status.success(),
+        format!(
+            "plugin capture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )
+}
+
+fn require_one_recall_hit(output: &std::process::Output, what: &str) -> TestResult<()> {
+    require(
+        output.status.success(),
+        format!(
+            "{what}: query failed ({:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )?;
+    let result: Value = serde_json::from_slice(&output.stdout)?;
+    require_eq(&result["result_count"], &Value::from(1), what)
+}
+
+#[test]
+fn query_decisions_script_joins_unquoted_free_text_into_one_query() -> TestResult<()> {
+    // hivemind-f4ng: the CLI's positional query is ONE shell token, so an unquoted
+    // `recall smoke test fixture` used to reach it as four and fail with
+    // "unexpected argument 'smoke' found". The script now joins the leading
+    // non-flag words itself; a query already quoted into one word is unchanged.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let hivemind_dir = unique_temp_dir("hivemind-query-join")?;
+    capture_joined_query_fixture(root, &hivemind_dir)?;
+
+    let query_script = root.join("plugins/hivemind-capture/scripts/query-decisions.sh");
+    let typed_forms: [&[&str]; 4] = [
+        &["recall smoke test fixture", "--limit", "5"],
+        &["recall", "smoke", "test", "fixture", "--limit", "5"],
+        &["recall", "smoke", "test", "fixture"],
+        &["--q", "recall smoke test fixture", "--limit", "5"],
+    ];
+    for args in typed_forms {
+        let output = Command::new(&query_script)
+            .current_dir(root)
+            .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+            .env("HIVEMIND_DIR", &hivemind_dir)
+            .env("CLAUDE_PROJECT_DIR", root)
+            .args(args)
+            .output()?;
+        require_one_recall_hit(&output, &format!("query-decisions.sh {args:?}"))?;
+    }
+
+    let _ = fs::remove_dir_all(hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn query_decisions_command_runs_both_typed_forms_of_its_own_argument_hint() -> TestResult<()> {
+    // hivemind-f4ng: the command markdown wrapped `$ARGUMENTS` in one more pair of
+    // quotes, so the quoted form its argument-hint documents expanded to `""a b""`
+    // and split into two words. Run the very line the markdown hands the model,
+    // with the typed arguments substituted the way Claude Code does.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let plugin_root = root.join("plugins/hivemind-capture");
+    let command_md = fs::read_to_string(plugin_root.join("commands/query-decisions.md"))?;
+    let invocation = command_md
+        .lines()
+        .find(|line| line.starts_with("${CLAUDE_PLUGIN_ROOT}/scripts/query-decisions.sh"))
+        .ok_or("query-decisions.md should show the helper invocation")?;
+    require_eq(
+        invocation,
+        "${CLAUDE_PLUGIN_ROOT}/scripts/query-decisions.sh $ARGUMENTS",
+        "the helper takes the typed arguments bare, never wrapped in more quotes",
+    )?;
+
+    let hivemind_dir = unique_temp_dir("hivemind-query-command")?;
+    capture_joined_query_fixture(root, &hivemind_dir)?;
+
+    for typed in [
+        r#""recall smoke test fixture" --limit 5"#,
+        "recall smoke test fixture --limit 5",
+        r#"--q "recall smoke test fixture" --limit 5"#,
+    ] {
+        let line = invocation
+            .replace("${CLAUDE_PLUGIN_ROOT}", &plugin_root.to_string_lossy())
+            .replace("$ARGUMENTS", typed);
+        let output = Command::new("bash")
+            .args(["-c", &line])
+            .current_dir(root)
+            .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+            .env("HIVEMIND_DIR", &hivemind_dir)
+            .env("CLAUDE_PROJECT_DIR", root)
+            .output()?;
+        require_one_recall_hit(
+            &output,
+            &format!("/hivemind-capture:query-decisions {typed}"),
+        )?;
+    }
+
+    let _ = fs::remove_dir_all(hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn context_verbs_print_usage_when_called_with_no_arguments() -> TestResult<()> {
+    // macOS bash 3.2 died on the empty-array expansion under `set -u` when these
+    // scripts got no arguments at all. No argument is a usage error, answered
+    // before the CLI is even resolved: point the binary override at a path that
+    // cannot run, so reaching the CLI would show up as exit 127, not usage.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for verb in ["recall", "why", "verify", "disagree", "supersede"] {
+        let output = Command::new(root.join(format!("plugins/hivemind-context/scripts/{verb}.sh")))
+            .current_dir(root)
+            .env("HIVEMIND_CAPTURE_BIN", "/nonexistent/hivemind")
+            .output()?;
+        require_eq(
+            output.status.code(),
+            Some(2),
+            &format!("{verb}.sh exit code"),
+        )?;
+        require_contains(
+            &String::from_utf8_lossy(&output.stderr),
+            "Usage:",
+            &format!("{verb}.sh stderr"),
+        )?;
+    }
+    Ok(())
+}
+
 #[test]
 fn codex_capture_defaults_actor_from_session_environment() -> TestResult<()> {
     let hivemind_dir = unique_temp_dir("hivemind-codex-default-capture")?;
