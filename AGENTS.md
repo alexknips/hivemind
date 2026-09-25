@@ -6,6 +6,16 @@ HiveMind is a system for **corporate, multi-human, multi-agent decision-making m
 
 ---
 
+## MVP phase: break things freely, migrate the data (for now)
+
+HiveMind is in MVP and not deployed to users. **For now, prefer the correct design over compatibility.** Breaking changes to APIs, wire formats, schemas, and storage are fine. Do not add compatibility shims, dual-read paths, or deprecation periods to soften them.
+
+The one hard rule: **existing ledger data is migrated, never lost.** A breaking change to the event or storage shape ships with the migration that carries existing data across, either a ledger replay or an explicit migration step. The ledger is the record of what was decided (§1, §4), so a change that strands or drops it is a defect, not a trade-off.
+
+This holds for now, until the first real users.
+
+---
+
 ## 1. What HiveMind must do (the bar, not the feature list)
 
 1. **Capture organizational decision memory** — not personal notes, not chat history, not task tracking. The unit of value is a recoverable, defensible decision with full provenance.
