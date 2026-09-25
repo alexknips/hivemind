@@ -521,7 +521,7 @@ pub fn get_recent_decisions(
             // predates the field) the recorder's personal project.
             let moved_to = entry.and_then(|entry| entry.moved_to.as_deref());
             let project = match (moved_to, payload.project) {
-                (Some(moved_to), _) => moved_to.to_owned(),
+                (Some(moved_to), _) => moved_to.to_owned(), // ubs:ignore: entry owns its handle
                 (None, Some(handle)) => handle,
                 (None, None) => personal_project_handle(&event.actor_id),
             };
