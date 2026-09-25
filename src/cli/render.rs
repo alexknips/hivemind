@@ -377,10 +377,17 @@ pub(crate) fn render_recall_summary(response: &crate::summarize::RecallResponse)
                 response.ignored_words.join(" ")
             );
         }
+        // An empty scoped answer still says which projects it looked in.
+        if let Some(scope) = &response.scope {
+            let _ = write!(empty, "\nscope\t{}", summary_cell(&scope.note));
+        }
         return empty;
     }
     if !response.ignored_words.is_empty() {
         let _ = writeln!(output, "ignored\t{}", response.ignored_words.join(" "));
+    }
+    if let Some(scope) = &response.scope {
+        let _ = writeln!(output, "scope\t{}", summary_cell(&scope.note));
     }
     let _ = writeln!(output, "digest\t{}", summary_cell(&response.digest.summary));
     let _ = writeln!(
@@ -389,7 +396,7 @@ pub(crate) fn render_recall_summary(response: &crate::summarize::RecallResponse)
         response.digest.cited_decision_ids.join(",")
     );
     for item in &response.ranked.items {
-        let _ = writeln!(
+        let _ = write!(
             output,
             "match\trank={}\t{}\t{}\t{}\ttopics={}\tproject={}",
             item.rank,
@@ -399,6 +406,11 @@ pub(crate) fn render_recall_summary(response: &crate::summarize::RecallResponse)
             item.decision.topic_keys.join(","),
             summary_cell(&item.decision.project_label),
         );
+        // Only a project-scoped answer says how each decision reached it.
+        if let Some(scope) = &item.scope {
+            let _ = write!(output, "\tscope={}", summary_cell(&scope.label));
+        }
+        output.push('\n');
     }
     output.trim_end().to_owned()
 }

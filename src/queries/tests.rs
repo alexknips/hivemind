@@ -1070,6 +1070,7 @@ fn search_decisions_matches_title_rationale_topic_status_and_actor() -> Result<(
             until: None,
             limit: 10,
             cursor: None,
+            project: None,
         },
     )?;
 

@@ -315,6 +315,7 @@ impl DecisionSearchApp {
             until: None,
             limit: self.limit,
             cursor: self.cursor.clone(),
+            project: None,
         }
     }
 

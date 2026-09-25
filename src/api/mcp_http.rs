@@ -577,6 +577,7 @@ fn mcp_search_decisions(
         until,
         limit,
         cursor: mcp_opt_str(&args, "cursor")?,
+        project: None,
     };
     let query_ctx = QueryContext::new(ctx.tenant_id.clone());
     let response = search_decisions_any(&query_ctx, &ledger, &*graph, &request)

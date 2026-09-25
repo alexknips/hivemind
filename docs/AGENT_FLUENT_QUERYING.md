@@ -528,6 +528,23 @@ visited. Links are read from the ledger, so a retracted link is not followed.
 Without `--project` the whole tenant is searched and the answer is unchanged.
 The REST `GET /v1/decisions/situational` route does not take `project`.
 
+**`recall` is project-first too.** `query recall <question> --project <handle>`
+(MCP `recall_decisions` argument `project`) asks the same way and reuses the
+same project structure, so the answer holds only the project's own decisions,
+then the parent's (inherited constraints), then one hop over `depends_on`, in
+that order; within a group the usual ordinal rank order applies, on SQLite's FTS
+and on Postgres's portable matcher alike (the project is a filter on the
+decision, applied after the text match, not a walk per result). Each ranked item
+carries the same `scope` label (`own project`, `from Platform; Billing is part
+of it`, `from Auth; Billing depends on it`), and the response carries the same
+`scope` note naming the projects looked in and how far the walk stopped, also on
+an empty answer; `--summary` prints a `scope` line and a trailing `scope=<label>`
+cell on each scoped row. Staleness is unchanged across the hop, an unregistered
+handle is refused with the register hint, and without `--project` the answer is
+exactly what it was. The digest is built from the same decisions in the same
+order; it does not repeat the labels. The REST `GET /v1/decisions/recall` route
+does not take `project`.
+
 ---
 
 ## 5. Short-Handle Continuation

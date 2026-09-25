@@ -4,9 +4,10 @@ use crate::projector::memory::MemoryGraph;
 use crate::queries::test_fixtures::{project_first_fixture, ts, Scenario};
 use crate::queries::{
     get_compact_view, get_decision_brief_at, get_decisions_changed_since, get_recent_activity,
-    get_situational_decisions, ChangedSinceRequest, QueryContext, RecentActivityRequest,
-    SituationalRequest,
+    get_situational_decisions, search_decisions_with_ledger, ChangedSinceRequest, QueryContext,
+    RecentActivityRequest, SearchDecisionRequest, SituationalRequest,
 };
+use crate::summarize::{DecisionSummary, RecallRanked, RecallResponse, SummarizeMode};
 use crate::Result;
 
 use super::*;
@@ -375,6 +376,82 @@ fn situational_summary_of_a_project_scoped_answer_says_where_each_decision_came_
 
     // Without a project the rows and header are exactly what they were.
     let unscoped = render_situational_summary(&ask(None, "pricing")?.data);
+    assert!(!unscoped.contains("scope"), "{unscoped}");
+    Ok(())
+}
+
+#[test]
+fn recall_summary_of_a_project_scoped_answer_says_where_each_decision_came_from() -> Result<()> {
+    let fixture = project_first_fixture()?;
+    let graph = MemoryGraph::default();
+    crate::projector::rebuild_graph(&fixture.ledger, &graph)?;
+    // The recall response around the search it is built on; the digest is not what is tested.
+    let ask = |project: Option<&str>, question: &str| -> Result<RecallResponse> {
+        let search = search_decisions_with_ledger(
+            &QueryContext::local(),
+            &fixture.ledger,
+            &graph,
+            &SearchDecisionRequest {
+                query: Some(question.to_owned()),
+                limit: 10,
+                project: project.map(str::to_owned),
+                ..SearchDecisionRequest::default()
+            },
+        )?
+        .data;
+        Ok(RecallResponse {
+            query: Some(question.to_owned()),
+            ignored_words: Vec::new(),
+            ranked: RecallRanked {
+                total_matches: search.total_matches,
+                truncated: false,
+                items: search.items,
+            },
+            digest: DecisionSummary {
+                summary: "digest".to_owned(),
+                cited_decision_ids: Vec::new(),
+                unit: SummarizeMode::Cluster,
+            },
+            scope: search.scope,
+        })
+    };
+
+    let text = render_recall_summary(&ask(Some("billing"), "pricing")?);
+    let mut lines = text.lines();
+    assert_eq!(
+        lines.next(),
+        Some("scope\tLooked in Billing (own project), Platform (Billing is part of it), Auth (Billing depends on it); not followed: 1 more level up the part_of chain, 2 more linked projects.")
+    );
+    assert_eq!(lines.next(), Some("digest\tdigest"));
+    assert_eq!(lines.next(), Some("cited\t"));
+    let rows: Vec<&str> = lines.collect();
+    assert_eq!(rows.len(), 4, "{text}");
+    assert!(
+        rows[0].ends_with("\tproject=Billing\tscope=own project"),
+        "{}",
+        rows[0]
+    );
+    assert!(
+        rows[1].ends_with("\tproject=Platform\tscope=from Platform; Billing is part of it"),
+        "{}",
+        rows[1]
+    );
+    for row in &rows[2..] {
+        assert!(
+            row.ends_with("\tproject=Auth\tscope=from Auth; Billing depends on it"),
+            "{row}"
+        );
+    }
+
+    // An empty scoped answer still says which projects it looked in.
+    let empty = render_recall_summary(&ask(Some("billing"), "nothingmatches")?);
+    assert!(
+        empty.starts_with("No decisions found matching the query.\nscope\tLooked in Billing"),
+        "{empty}"
+    );
+
+    // Without a project the rows and header are exactly what they were.
+    let unscoped = render_recall_summary(&ask(None, "pricing")?);
     assert!(!unscoped.contains("scope"), "{unscoped}");
     Ok(())
 }

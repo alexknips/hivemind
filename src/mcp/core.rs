@@ -798,6 +798,7 @@ pub(crate) struct RecallDecisionsArgs {
     pub(crate) until: Option<chrono::DateTime<chrono::Utc>>,
     pub(crate) limit: usize,
     pub(crate) cursor: Option<String>,
+    pub(crate) project: Option<String>,
 }
 
 impl RecallDecisionsArgs {
@@ -822,6 +823,7 @@ impl RecallDecisionsArgs {
             until: optional_datetime(args, "until")?,
             limit,
             cursor: optional_string(args, "cursor")?,
+            project: optional_string(args, "project")?,
         })
     }
 }
@@ -890,6 +892,7 @@ where
         until: args.until,
         limit: args.limit,
         cursor: args.cursor,
+        project: args.project,
     };
     let response = crate::summarize::recall_decisions(&context, &handle.ledger, graph, &request)
         .map_err(CoreError::from)?;

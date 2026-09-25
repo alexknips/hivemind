@@ -893,6 +893,7 @@ pub(super) async fn search_handler(
             until,
             limit: params.limit.unwrap_or(25).min(1000),
             cursor: params.cursor,
+            project: None,
         };
 
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
@@ -1064,6 +1065,7 @@ pub(super) async fn recall_handler(
             until,
             limit: params.limit.unwrap_or(RECALL_DEFAULT_LIMIT),
             cursor: params.cursor,
+            project: None,
         };
 
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;

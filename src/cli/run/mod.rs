@@ -191,6 +191,7 @@ fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
             until: None,
             limit: 5,
             cursor: None,
+            project: None,
         },
     )?;
     let first_result_id = query
@@ -2874,6 +2875,7 @@ fn run_query_with_graph(
                 until: parse_query_datetime(args.until.as_deref(), "--until")?,
                 limit,
                 cursor: args.cursor.clone(),
+                project: args.project.clone(),
             };
             let response = recall_decisions(context, ledger, graph, &request)?;
             format_query_response(query.summary, &response, render_recall_summary, None)?
@@ -3034,6 +3036,7 @@ fn search_decision_request(args: &QuerySearchDecisionsArgs) -> Result<SearchDeci
         until: parse_query_datetime(args.until.as_deref(), "--until")?,
         limit: args.limit,
         cursor: args.cursor.clone(),
+        project: None,
     })
 }
 

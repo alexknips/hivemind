@@ -8,13 +8,14 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 
 use crate::events::{self, EventPayload};
-use crate::ledger::{AnyLedger, EventLedger, SqliteEventLedger};
+use crate::ledger::{AnyLedger, EventLedger, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::{GraphRow, GraphView, NodeKind, RelationKind};
 use crate::Result;
 
 use super::decision::{DecisionView, HypothesisContext};
 use super::grounding::{hypothesis_facts_from_row, GroundingState};
 use super::project_label::ProjectLabels;
+use super::project_scope::{project_scope, MatchScope, ProjectScope, ScopeNote, ScopeRelation};
 use super::shared::{
     node_rows, normalized_filter_values, normalized_limit, normalized_query, normalized_statuses,
     optional_int, optional_string, optional_string_list, parse_cursor, query_error, query_terms,
@@ -38,6 +39,13 @@ pub struct SearchDecisionRequest {
     pub until: Option<DateTime<Utc>>,
     pub limit: usize,
     pub cursor: Option<String>,
+    /// Ask from this project: a registered handle or a personal address. Results are limited to
+    /// decisions filed under the project, the project it is part of, and the projects it depends
+    /// on, in that order (own first, then the parent's, then a dependency's; see
+    /// `project_scope`), each in the usual rank order. `None` searches the whole tenant, as
+    /// before. An unregistered handle is refused, never an empty answer. Only the ledger-backed
+    /// searches resolve a project; the graph-only `search_decisions` refuses one.
+    pub project: Option<String>,
 }
 
 impl Default for SearchDecisionRequest {
@@ -52,6 +60,7 @@ impl Default for SearchDecisionRequest {
             until: None,
             limit: super::shared::DEFAULT_SEARCH_LIMIT,
             cursor: None,
+            project: None,
         }
     }
 }
@@ -65,6 +74,10 @@ pub struct DecisionSearchResults {
     pub next_cursor: Option<String>,
     pub total_matches: usize,
     pub items: Vec<DecisionSearchResult>,
+    /// Where a project-scoped answer looked and where it stopped. Absent when the request named
+    /// no project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ScopeNote>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -86,6 +99,10 @@ pub struct DecisionSearchResult {
     pub matched_fields: Vec<String>,
     pub snippets: Vec<SearchSnippet>,
     pub graph_context: SearchGraphContext,
+    /// How this decision reached a project-scoped answer (own project, inherited from the
+    /// parent, or from a dependency). Absent when the request named no project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<MatchScope>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -135,6 +152,11 @@ pub fn search_decisions(
     if request.since.is_some() || request.until.is_some() {
         return Err(query_error("timestamp filters require FTS-backed decision search").into());
     }
+    // The project structure lives in the ledger, which this graph-only search never sees;
+    // refuse rather than answer as though the whole tenant were the project.
+    if request.project.is_some() {
+        return Err(query_error("project scoping requires ledger-backed decision search").into());
+    }
 
     let mut scored = collect_graph_search_results(
         graph,
@@ -177,6 +199,7 @@ pub fn search_decisions(
             next_cursor,
             total_matches,
             items,
+            scope: None,
         },
     })
 }
@@ -218,6 +241,7 @@ pub fn search_decisions_with_ledger(
     let limit = normalized_limit(request.limit);
     let cursor = normalized_query(request.cursor.as_deref());
     let offset = parse_cursor(cursor.as_deref())?;
+    let scope = resolve_scope(context, ledger, request.project.as_deref())?;
 
     let proposed_at = if since.is_some() || until.is_some() {
         Some(decision_proposed_at_by_id(context, ledger)?)
@@ -239,7 +263,11 @@ pub fn search_decisions_with_ledger(
         scored.retain(|doc| date_in_range(proposed_at_map.get(&doc.id).copied(), since, until));
     }
 
-    scored.sort_by(|left, right| (left.rank, &left.id).cmp(&(right.rank, &right.id)));
+    let scope_note = match &scope {
+        Some(scope) => Some(narrow_to_scope(&mut scored, scope, graph)?),
+        None => None,
+    };
+    sort_scored(&mut scored);
 
     let total_matches = scored.len();
     let items: Vec<DecisionSearchResult> = scored
@@ -270,6 +298,7 @@ pub fn search_decisions_with_ledger(
             next_cursor,
             total_matches,
             items,
+            scope: scope_note,
         },
     })
 }
@@ -319,6 +348,7 @@ pub fn search_decisions_fts_with_context(
     let limit = normalized_limit(request.limit);
     let cursor = normalized_query(request.cursor.as_deref());
     let offset = parse_cursor(cursor.as_deref())?;
+    let scope = resolve_scope(context, ledger, request.project.as_deref())?;
 
     let documents =
         collect_graph_search_results(graph, None, &SearchTerms::literal(&[]), &[], &[], &[], &[])?;
@@ -375,8 +405,13 @@ pub fn search_decisions_fts_with_context(
     // graph path): FTS5's MATCH clause above only selects the candidate set, never the order.
     // BM25 values are a SQLite-internal retrieval detail (docs/SEARCH_DESIGN.md's
     // Storage-Bound Behaviors) — keeping them out of the sort key is what gives both backends
-    // identical order for identical fixtures.
-    scored.sort_by(|left, right| (left.rank, &left.id).cmp(&(right.rank, &right.id)));
+    // identical order for identical fixtures. A project scope is the same filter on the
+    // decision's project after FTS, so both backends narrow and group identically.
+    let scope_note = match &scope {
+        Some(scope) => Some(narrow_to_scope(&mut scored, scope, graph)?),
+        None => None,
+    };
+    sort_scored(&mut scored);
 
     let total_matches = scored.len();
     let items: Vec<DecisionSearchResult> = scored
@@ -407,8 +442,55 @@ pub fn search_decisions_fts_with_context(
             next_cursor,
             total_matches,
             items,
+            scope: scope_note,
         },
     })
+}
+
+/// The project structure a scoped request is answered from, read once from the ledger; `None`
+/// for an unscoped request. An unregistered handle is refused here, before any search work.
+fn resolve_scope(
+    context: &QueryContext,
+    ledger: &impl EventLedger,
+    project: Option<&str>,
+) -> Result<Option<ProjectScope>> {
+    let Some(project) = project else {
+        return Ok(None);
+    };
+    let scoped_ledger = TenantScopedLedger::new(ledger, context.tenant_id.clone());
+    project_scope(&scoped_ledger, project).map(Some)
+}
+
+/// Keep the documents filed under a project in `scope` and record how each one got there. A
+/// decision with no project, or in a project the scope did not follow, is left out; the returned
+/// note says which projects were looked in and where the walk stopped, so a short answer never
+/// reads as a complete one. This is a filter on the decision's own `project`: one lookup per
+/// document, no walk.
+fn narrow_to_scope(
+    scored: &mut Vec<ScoredDecisionSearchResult>,
+    scope: &ProjectScope,
+    graph: &impl GraphView,
+) -> Result<ScopeNote> {
+    let labels = ProjectLabels::from_graph(graph)?;
+    scored.retain_mut(|document| {
+        let decision = &document.result.decision;
+        let Some(relation) = scope.relation_of(decision.project.as_deref()) else {
+            return false;
+        };
+        let match_scope = scope.match_scope(relation, &decision.project_label, &labels);
+        document.relation = Some(relation);
+        document.result.scope = Some(match_scope);
+        true
+    });
+    Ok(scope.note(&labels))
+}
+
+/// Own project first, then the parent's, then a dependency's, each in (rank, id) order. An
+/// unscoped document has no relation, so an unscoped request keeps the plain (rank, id) order.
+fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
+    scored.sort_by(|left, right| {
+        (left.relation, left.rank, &left.id).cmp(&(right.relation, right.rank, &right.id))
+    });
 }
 
 // ubs:ignore: This helper only executes static FTS SQL and uses rusqlite params! for document values.
@@ -659,6 +741,8 @@ fn fts5_query(query: &str) -> Option<String> {
 }
 
 struct ScoredDecisionSearchResult {
+    /// How the decision's project relates to the asked project; `None` for an unscoped request.
+    relation: Option<ScopeRelation>,
     rank: u8,
     missing_terms: Vec<String>,
     id: String,
@@ -881,6 +965,7 @@ fn collect_graph_search_results(
         let grounding_state = decision.grounding_state();
 
         scored.push(ScoredDecisionSearchResult {
+            relation: None,
             rank: match_info.rank,
             missing_terms: match_info.missing_terms,
             id,
@@ -902,6 +987,7 @@ fn collect_graph_search_results(
                     grounding_state,
                     matched_nodes: match_info.matched_nodes,
                 },
+                scope: None,
             },
         });
     }

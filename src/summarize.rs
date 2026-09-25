@@ -20,7 +20,7 @@ use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::queries::{
     content_query, get_decision, get_supersession_chain, search_decisions_any,
     DecisionSearchResult, DecisionStatus, DecisionView, GroundingState, QueryContext,
-    QueryResponse, SearchDecisionRequest,
+    QueryResponse, ScopeNote, SearchDecisionRequest,
 };
 use crate::Result;
 
@@ -351,6 +351,10 @@ pub struct RecallRequest {
     /// How many top search results to return and summarize (1–RECALL_MAX_LIMIT).
     pub limit: usize,
     pub cursor: Option<String>,
+    /// Ask from this project (a registered handle or a personal address): decisions come from
+    /// the project first, then the project it is part of (inherited constraints), then the
+    /// projects it depends on, each labelled. `None` searches the whole tenant, as before.
+    pub project: Option<String>,
 }
 
 /// The ranked search portion of a recall response (Layer-2 provenance).
@@ -372,6 +376,10 @@ pub struct RecallResponse {
     pub ignored_words: Vec<String>,
     pub ranked: RecallRanked,
     pub digest: DecisionSummary,
+    /// Where a project-scoped answer looked and where it stopped, so a short answer never reads
+    /// as a complete one. Absent when the request named no project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ScopeNote>,
 }
 
 /// Search for relevant decisions and return them ranked alongside a concise text
@@ -407,6 +415,7 @@ pub fn recall_decisions(
         until: request.until,
         limit,
         cursor: request.cursor.clone(),
+        project: request.project.clone(),
     };
     let search_response = search_decisions_any(context, ledger, graph, &search_req)?;
     let truncated = search_response.truncated;
@@ -447,6 +456,7 @@ pub fn recall_decisions(
                 items: search_data.items,
             },
             digest,
+            scope: search_data.scope,
         },
     })
 }
@@ -534,6 +544,7 @@ pub fn weekly_digest(
         until: Some(request.until),
         limit,
         cursor: None,
+        project: None,
     };
     let search_response = search_decisions_any(context, ledger, graph, &search_req)?;
     let truncated = search_response.truncated;

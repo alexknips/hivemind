@@ -2481,12 +2481,11 @@ mod transport_parity {
         })
     }
 
-    #[tokio::test]
-    async fn get_situational_decisions_is_project_first_across_transports() {
-        let (stdio_dir, http_dir) = project_dirs(
-            "situational-project-first",
-            &["platform", "billing", "auth", "marketing"],
-        );
+    /// Billing is part of Platform and depends on Auth; Marketing is linked to nothing. One
+    /// decision is captured in each project, over both transports (hivemind-s15q.6, .7).
+    async fn project_first_transport_dirs(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let (stdio_dir, http_dir) =
+            project_dirs(label, &["platform", "billing", "auth", "marketing"]);
         for dir in [&stdio_dir, &http_dir] {
             let ledger = SqliteEventLedger::open(dir).expect("ledger opens"); // ubs:ignore: test-only; panicking is correct in tests
             let commands = Commands::new(&ledger);
@@ -2513,6 +2512,12 @@ mod transport_parity {
             stdio_call(&stdio_dir, "capture_decision", args.clone());
             http_call(&http_dir, "capture_decision", args).await;
         }
+        (stdio_dir, http_dir)
+    }
+
+    #[tokio::test]
+    async fn get_situational_decisions_is_project_first_across_transports() {
+        let (stdio_dir, http_dir) = project_first_transport_dirs("situational-project-first").await;
 
         let arguments = json!({ "paths": ["billing"], "project": "billing" });
         let stdio = stdio_call(&stdio_dir, "get_situational_decisions", arguments.clone());
@@ -2556,6 +2561,109 @@ mod transport_parity {
         let unknown = json!({ "paths": ["billing"], "project": "billng" });
         let stdio = stdio_call(&stdio_dir, "get_situational_decisions", unknown.clone());
         let http = http_call(&http_dir, "get_situational_decisions", unknown).await;
+        for (name, response) in [("stdio", &stdio), ("http", &http)] {
+            let result = &response["result"];
+            assert_eq!(result["isError"], true, "{name}: unknown project refused"); // ubs:ignore: test-only assertion
+            assert!(
+                error_text(result).contains("project not registered: billng"),
+                "{name}: refusal names the handle: {}",
+                error_text(result)
+            ); // ubs:ignore: test-only assertion
+        }
+        assert_eq!(
+            error_text(&stdio["result"]),
+            error_text(&http["result"]),
+            "both transports refuse with the same words"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    /// The parts of a project-scoped `recall_decisions` answer that must not differ by
+    /// transport. Decision ids are generated per ledger, so decisions are compared by title.
+    fn scoped_recall_shape(result: &Value) -> Value {
+        let data = &result["structuredContent"]["data"];
+        let items: Vec<Value> = data["ranked"]["items"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| {
+                        json!({
+                            "title": item["decision"]["title"],
+                            "project": item["decision"]["project"],
+                            "relation": item["scope"]["relation"],
+                            "label": item["scope"]["label"],
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        json!({
+            "items": items,
+            "total_matches": data["ranked"]["total_matches"],
+            "scope": data["scope"],
+        })
+    }
+
+    #[tokio::test]
+    async fn recall_decisions_is_project_first_across_transports() {
+        let (stdio_dir, http_dir) = project_first_transport_dirs("recall-project-first").await;
+
+        let arguments = json!({ "q": "billing", "project": "billing" });
+        let stdio = stdio_call(&stdio_dir, "recall_decisions", arguments.clone());
+        let http = http_call(&http_dir, "recall_decisions", arguments).await;
+
+        for (name, response) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                response["result"]["isError"], false,
+                "{name}: expected success: {response:?}"
+            ); // ubs:ignore: test-only assertion
+        }
+        let expected = json!({
+            "items": [
+                { "title": "Price per seat", "project": "billing", "relation": "own", "label": "own project" },
+                { "title": "Quote every price in euros", "project": "platform", "relation": "parent", "label": "from platform; billing is part of it" },
+                { "title": "Bill token issuance per call", "project": "auth", "relation": "dependency", "label": "from auth; billing depends on it" },
+            ],
+            "total_matches": 3,
+            "scope": {
+                "project": "billing",
+                "project_label": "billing",
+                "followed": [
+                    { "project": "billing", "project_label": "billing", "relation": "own" },
+                    { "project": "platform", "project_label": "platform", "relation": "parent" },
+                    { "project": "auth", "project_label": "auth", "relation": "dependency" },
+                ],
+                "part_of_levels_not_followed": 0,
+                "linked_projects_not_followed": 0,
+                "note": "Looked in billing (own project), platform (billing is part of it), auth (billing depends on it); nothing further is linked.",
+            },
+        });
+        for (name, response) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                scoped_recall_shape(&response["result"]),
+                expected,
+                "{name}: project-first recall"
+            ); // ubs:ignore: test-only assertion
+        }
+
+        // Without a project the whole tenant is searched and nothing about scope appears.
+        let unscoped = json!({ "q": "billing" });
+        let stdio = stdio_call(&stdio_dir, "recall_decisions", unscoped.clone());
+        let http = http_call(&http_dir, "recall_decisions", unscoped).await;
+        for (name, response) in [("stdio", &stdio), ("http", &http)] {
+            let data = &response["result"]["structuredContent"]["data"];
+            assert_eq!(data["ranked"]["total_matches"], 4, "{name}: whole tenant"); // ubs:ignore: test-only assertion
+            assert!(data.get("scope").is_none(), "{name}: no scope note: {data}");
+            // ubs:ignore: test-only assertion
+        }
+
+        // A wrong project address is refused on both transports, in the same words.
+        let unknown = json!({ "q": "billing", "project": "billng" });
+        let stdio = stdio_call(&stdio_dir, "recall_decisions", unknown.clone());
+        let http = http_call(&http_dir, "recall_decisions", unknown).await;
         for (name, response) in [("stdio", &stdio), ("http", &http)] {
             let result = &response["result"];
             assert_eq!(result["isError"], true, "{name}: unknown project refused"); // ubs:ignore: test-only assertion

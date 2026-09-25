@@ -708,6 +708,7 @@ fn search_and_compact_view_carry_premise_ids_and_grounding_state() -> Result<()>
             until: None,
             limit: 10,
             cursor: None,
+            project: None,
         },
     )?
     .data;

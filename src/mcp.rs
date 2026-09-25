@@ -687,7 +687,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "recall_decisions",
-            "description": "Layer-3: search for decisions matching a query and return them ranked alongside a concise text digest — one call answers 'what was decided about X?'. The rank comes from FTS scoring (ordinal, not a confidence score). The digest is deterministic template rendering sourced from decision fields only; every contributing decision ID is listed in digest.cited_decision_ids. Ask it as a question if you like (\"what did we decide about projects\"): question words are ignored and listed in `ignored_words`, and a question made only of question words adds no text filter. Returns: { query, ignored_words?, ranked: { items, total_matches, truncated }, digest: { summary, cited_decision_ids } }.",
+            "description": "Layer-3: search for decisions matching a query and return them ranked alongside a concise text digest — one call answers 'what was decided about X?'. The rank comes from FTS scoring (ordinal, not a confidence score). The digest is deterministic template rendering sourced from decision fields only; every contributing decision ID is listed in digest.cited_decision_ids. Ask it as a question if you like (\"what did we decide about projects\"): question words are ignored and listed in `ignored_words`, and a question made only of question words adds no text filter. Pass `project` to ask from one project: decisions come from that project first, then the project it is part of, then one hop over the projects it depends on, and `scope` says where the answer looked and where it stopped. Returns: { query, ignored_words?, ranked: { items, total_matches, truncated }, digest: { summary, cited_decision_ids }, scope? }.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -702,7 +702,8 @@ pub fn tool_definitions() -> Vec<Value> {
                     "since": { "type": "string", "description": "RFC3339 lower bound for decision proposal time." },
                     "until": { "type": "string", "description": "RFC3339 upper bound for decision proposal time." },
                     "limit": { "type": "integer", "minimum": 1, "maximum": 10, "description": "Max results to return and summarize (default 5, max 10)." },
-                    "cursor": { "type": "string" }
+                    "cursor": { "type": "string" },
+                    "project": { "type": "string", "description": "Ask from this project (a registered handle, or a personal address such as personal:human:alex). Decisions come from that project first, then the project it is part of (inherited constraints, labelled `from Platform; Billing is part of it`), then one hop over the projects it depends on (`from Auth; Billing depends on it`); each item in `ranked.items` carries `scope`, and `data.scope` lists the projects looked in and how many linked projects and part_of levels were not followed. Staleness (superseded, refuted) shows across the hop unchanged. An unregistered handle is refused with a hint. Omit to search the whole tenant." }
                 }
             }
         }),
@@ -1193,6 +1194,7 @@ fn tool_search_decisions(args: Value, config: &McpConfig) -> std::result::Result
         until: optional_datetime(&args, "until")?,
         limit,
         cursor: optional_string(&args, "cursor")?,
+        project: None,
     };
     let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
     let graph = MemoryGraph::default();

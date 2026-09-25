@@ -4,13 +4,15 @@ use serde_json::Value;
 
 use crate::commands::Commands;
 use crate::events::ProjectLinkKind;
-use crate::ledger::InMemoryEventLedger;
+use crate::ledger::{AnyLedger, InMemoryEventLedger, SqliteEventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph};
 use crate::queries::test_fixtures::{project_first_fixture, ProjectFirstFixture};
 use crate::queries::{
-    get_situational_decisions, DecisionStatus, DecisionView, QueryContext, QueryResponse,
-    SituationalRequest, SituationalResults,
+    get_situational_decisions, search_decisions, search_decisions_with_ledger,
+    DecisionSearchResults, DecisionStatus, DecisionView, QueryContext, QueryResponse,
+    SearchDecisionRequest, SituationalRequest, SituationalResults,
 };
+use crate::summarize::{recall_decisions, RecallRequest, RecallResponse, RECALL_MAX_LIMIT};
 use crate::Result;
 
 use super::*;
@@ -489,5 +491,383 @@ fn a_decision_moved_into_the_project_is_answered_from_its_new_project() -> Resul
         .expect("the moved decision is now Billing's own")
         .decision;
     assert_eq!(moved.project.as_deref(), Some("billing"));
+    Ok(())
+}
+
+// ---- the recall answer built on it (hivemind-s15q.7) ----
+//
+// Recall runs on two matchers: SQLite's FTS and the portable in-memory one Postgres uses. Both
+// filter on the decision's project after matching, so every case below runs on each.
+
+/// A question every fixture decision matches (each is on the topic `pricing`), so what the
+/// answer leaves out is the scope's doing and not the text's.
+const RECALL_QUESTION: &str = "pricing";
+
+/// The fixture copied into a SQLite ledger, so recall takes the FTS path a real install takes.
+struct SqliteRecall {
+    _dir: tempfile::TempDir,
+    ledger: AnyLedger,
+    graph: MemoryGraph,
+}
+
+fn sqlite_recall(f: &ProjectFirstFixture) -> Result<SqliteRecall> {
+    let dir = tempfile::tempdir().map_err(query_error)?;
+    let sqlite = SqliteEventLedger::open(dir.path())?;
+    f.ledger.replay_from(0, &mut |event| {
+        sqlite.append(event.clone())?;
+        Ok(())
+    })?;
+    let graph = MemoryGraph::default();
+    rebuild_graph(&sqlite, &graph)?;
+    Ok(SqliteRecall {
+        _dir: dir,
+        ledger: AnyLedger::Sqlite(sqlite),
+        graph,
+    })
+}
+
+fn recall_request(project: Option<&str>) -> RecallRequest {
+    RecallRequest {
+        q: Some(RECALL_QUESTION.to_owned()),
+        topic_keys: Vec::new(),
+        statuses: Vec::new(),
+        actor_ids: Vec::new(),
+        sources: Vec::new(),
+        since: None,
+        until: None,
+        limit: RECALL_MAX_LIMIT,
+        cursor: None,
+        project: project.map(str::to_owned),
+    }
+}
+
+fn search_request(
+    project: Option<&str>,
+    limit: usize,
+    cursor: Option<&str>,
+) -> SearchDecisionRequest {
+    SearchDecisionRequest {
+        query: Some(RECALL_QUESTION.to_owned()),
+        limit,
+        cursor: cursor.map(str::to_owned),
+        project: project.map(str::to_owned),
+        ..SearchDecisionRequest::default()
+    }
+}
+
+/// Recall on the FTS path (SQLite).
+fn recall_fts(f: &ProjectFirstFixture, request: &RecallRequest) -> Result<RecallResponse> {
+    let sqlite = sqlite_recall(f)?;
+    Ok(recall_decisions(
+        &QueryContext::local(),
+        &sqlite.ledger,
+        &sqlite.graph,
+        request,
+    )?
+    .data)
+}
+
+/// The same question on the portable matcher (what Postgres runs), through the search recall is
+/// built on.
+fn search_portable(
+    f: &ProjectFirstFixture,
+    request: &SearchDecisionRequest,
+) -> Result<QueryResponse<DecisionSearchResults>> {
+    let graph = MemoryGraph::default();
+    rebuild_graph(&f.ledger, &graph)?;
+    search_decisions_with_ledger(&QueryContext::local(), &f.ledger, &graph, request)
+}
+
+/// (decision id, relation, label) per result, in answer order.
+fn arrived(items: &[crate::queries::DecisionSearchResult]) -> Vec<(String, ScopeRelation, String)> {
+    items
+        .iter()
+        .map(|item| {
+            let scope = item
+                .scope
+                .as_ref()
+                .expect("a scoped result says how it arrived"); // ubs:ignore: test-only; panicking is correct in tests
+            (
+                item.decision.id.clone(),
+                scope.relation,
+                scope.label.clone(),
+            )
+        })
+        .collect()
+}
+
+/// Own, then the parent's, then the dependency's two. Within the dependency group the order is
+/// the plain rank-then-id one, and ids are generated per ledger, so the group is compared sorted.
+fn assert_billing_recall(f: &ProjectFirstFixture, items: &[crate::queries::DecisionSearchResult]) {
+    let arrived = arrived(items);
+    assert_eq!(arrived.len(), 4, "{arrived:?}");
+    assert_eq!(
+        arrived[0],
+        (
+            f.billing.clone(),
+            ScopeRelation::Own,
+            "own project".to_owned()
+        )
+    );
+    assert_eq!(
+        arrived[1],
+        (
+            f.platform.clone(),
+            ScopeRelation::Parent,
+            "from Platform; Billing is part of it".to_owned()
+        )
+    );
+    let mut auth: Vec<(String, ScopeRelation, String)> = arrived[2..].to_vec();
+    auth.sort();
+    let mut expected: Vec<(String, ScopeRelation, String)> = [&f.auth_old, &f.auth_new]
+        .into_iter()
+        .map(|id| {
+            (
+                id.clone(),
+                ScopeRelation::Dependency,
+                "from Auth; Billing depends on it".to_owned(),
+            )
+        })
+        .collect();
+    expected.sort();
+    assert_eq!(auth, expected);
+
+    // Left out, and not silently: City is a level too high, Crypto and Infra a link too far,
+    // Marketing is unrelated, and the personal decision has no project in this scope.
+    for outside in [&f.city, &f.crypto, &f.infra, &f.marketing, &f.personal] {
+        assert!(
+            !arrived.iter().any(|(id, _, _)| id == outside),
+            "{outside} is outside billing's scope"
+        );
+    }
+}
+
+const BILLING_NOTE: &str = "Looked in Billing (own project), Platform (Billing is part of it), Auth (Billing depends on it); not followed: 1 more level up the part_of chain, 2 more linked projects.";
+
+#[test]
+fn a_recall_from_billing_lists_billing_then_its_parent_then_its_dependency_on_the_portable_matcher(
+) -> Result<()> {
+    let f = project_first_fixture()?;
+    let answer = search_portable(&f, &search_request(Some("billing"), 50, None))?.data;
+
+    assert_billing_recall(&f, &answer.items);
+    assert_eq!(answer.total_matches, 4);
+    assert_eq!(
+        answer.scope.as_ref().map(|s| s.note.as_str()),
+        Some(BILLING_NOTE)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_recall_from_billing_lists_billing_then_its_parent_then_its_dependency_on_fts() -> Result<()> {
+    let f = project_first_fixture()?;
+    let answer = recall_fts(&f, &recall_request(Some("billing")))?;
+
+    assert_billing_recall(&f, &answer.ranked.items);
+    assert_eq!(answer.ranked.total_matches, 4);
+    assert!(!answer.ranked.truncated);
+    assert_eq!(
+        answer.scope.as_ref().map(|s| s.note.as_str()),
+        Some(BILLING_NOTE)
+    );
+    // The digest cites exactly what the answer holds, in the same order.
+    let cited: Vec<&str> = answer
+        .digest
+        .cited_decision_ids
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let ranked: Vec<&str> = answer
+        .ranked
+        .items
+        .iter()
+        .map(|i| i.decision.id.as_str())
+        .collect();
+    assert_eq!(cited, ranked);
+    Ok(())
+}
+
+#[test]
+fn the_two_matchers_answer_a_scoped_recall_with_the_same_decisions_in_the_same_order() -> Result<()>
+{
+    let f = project_first_fixture()?;
+    let fts = recall_fts(&f, &recall_request(Some("billing")))?;
+    let portable = search_portable(&f, &search_request(Some("billing"), 10, None))?.data;
+
+    assert_eq!(arrived(&fts.ranked.items), arrived(&portable.items));
+    assert_eq!(fts.scope, portable.scope);
+    Ok(())
+}
+
+#[test]
+fn the_recall_scope_note_names_where_it_looked_and_stopped_like_the_situational_one() -> Result<()>
+{
+    let f = project_first_fixture()?;
+    let recall = recall_fts(&f, &recall_request(Some("billing")))?;
+    let situational = scoped(&f, "billing", 50)?;
+
+    assert_eq!(recall.scope, situational.scope);
+    let scope = recall
+        .scope
+        .expect("a scoped recall carries the scope note");
+    assert_eq!(scope.followed.len(), 3);
+    assert_eq!(scope.part_of_levels_not_followed, 1);
+    assert_eq!(scope.linked_projects_not_followed, 2);
+    Ok(())
+}
+
+#[test]
+fn staleness_shows_across_the_hop_in_a_recall_with_the_same_labels() -> Result<()> {
+    let f = project_first_fixture()?;
+    let answer = recall_fts(&f, &recall_request(Some("billing")))?;
+
+    let status_of = |id: &str| {
+        answer
+            .ranked
+            .items
+            .iter()
+            .find(|item| item.decision.id == id)
+            .map(|item| item.decision.status)
+    };
+    assert_eq!(status_of(&f.auth_old), Some(DecisionStatus::Superseded));
+    // The decision that replaces it is in the answer too, and is not stale.
+    assert!(
+        matches!(status_of(&f.auth_new), Some(status) if status != DecisionStatus::Superseded),
+        "{:?}",
+        status_of(&f.auth_new)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_scoped_recall_still_honours_the_other_filters() -> Result<()> {
+    let f = project_first_fixture()?;
+    let mut request = recall_request(Some("billing"));
+    request.statuses = vec![DecisionStatus::Superseded];
+    let answer = recall_fts(&f, &request)?;
+
+    // Only the superseded Auth decision, still labelled as Billing's dependency.
+    assert_eq!(
+        arrived(&answer.ranked.items),
+        vec![(
+            f.auth_old.clone(),
+            ScopeRelation::Dependency,
+            "from Auth; Billing depends on it".to_owned()
+        )]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_scoped_recall_pages_in_the_same_order_and_says_it_is_truncated() -> Result<()> {
+    let f = project_first_fixture()?;
+    let first = search_portable(&f, &search_request(Some("billing"), 3, None))?;
+    assert!(first.truncated);
+    assert_eq!(first.data.total_matches, 4);
+    assert_eq!(first.data.items.len(), 3);
+    let cursor = first.data.next_cursor.clone().expect("a next cursor");
+    let second = search_portable(&f, &search_request(Some("billing"), 3, Some(&cursor)))?;
+    assert!(!second.truncated);
+
+    let mut paged = arrived(&first.data.items);
+    paged.extend(arrived(&second.data.items));
+    let whole = search_portable(&f, &search_request(Some("billing"), 50, None))?;
+    assert_eq!(paged, arrived(&whole.data.items));
+    // Every page carries the note, so a page never reads as the whole answer.
+    assert_eq!(second.data.scope, whole.data.scope);
+    Ok(())
+}
+
+#[test]
+fn an_unscoped_recall_is_unchanged_and_carries_no_scope() -> Result<()> {
+    let f = project_first_fixture()?;
+    let answer = recall_fts(&f, &recall_request(None))?;
+
+    assert_eq!(
+        answer.ranked.total_matches, 9,
+        "the whole tenant is searched"
+    );
+    assert!(answer.scope.is_none());
+    assert!(answer.ranked.items.iter().all(|item| item.scope.is_none()));
+    // Nothing about scope appears in the JSON either.
+    let json = json_of(&answer)?;
+    assert!(json.get("scope").is_none(), "{json}");
+    assert!(
+        json["ranked"]["items"][0].get("scope").is_none(),
+        "{}",
+        json["ranked"]["items"][0]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_recall_from_a_project_with_no_matching_decision_is_empty_and_still_names_its_scope(
+) -> Result<()> {
+    let f = project_first_fixture()?;
+    let mut request = recall_request(Some("billing"));
+    request.q = Some("nothingmatchesthis".to_owned());
+    let answer = recall_fts(&f, &request)?;
+
+    assert!(answer.ranked.items.is_empty());
+    assert_eq!(
+        answer.digest.summary,
+        "No decisions found matching the query."
+    );
+    assert_eq!(
+        answer.scope.map(|scope| scope.followed.len()),
+        Some(3),
+        "an empty answer says which projects it looked in"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_recall_from_a_personal_address_sees_only_that_persons_decisions() -> Result<()> {
+    let f = project_first_fixture()?;
+    let answer = recall_fts(&f, &recall_request(Some("personal:human:alex")))?;
+
+    assert_eq!(
+        arrived(&answer.ranked.items),
+        vec![(
+            f.personal.clone(),
+            ScopeRelation::Own,
+            "own project".to_owned()
+        )]
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unknown_project_is_refused_by_recall_on_both_matchers() -> Result<()> {
+    let f = project_first_fixture()?;
+
+    let fts = recall_fts(&f, &recall_request(Some("billng")))
+        .expect_err("an unregistered project is refused");
+    let portable = search_portable(&f, &search_request(Some("billng"), 10, None))
+        .expect_err("an unregistered project is refused");
+    for error in [fts, portable] {
+        assert!(
+            error.to_string().contains("project not registered: billng"),
+            "{error}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_graph_only_search_refuses_a_project_rather_than_searching_the_whole_tenant() -> Result<()> {
+    let f = project_first_fixture()?;
+    let graph = MemoryGraph::default();
+    rebuild_graph(&f.ledger, &graph)?;
+
+    let error = search_decisions(&graph, &search_request(Some("billing"), 10, None))
+        .expect_err("the graph alone cannot resolve a project");
+    assert!(
+        error
+            .to_string()
+            .contains("project scoping requires ledger-backed"),
+        "{error}"
+    );
     Ok(())
 }

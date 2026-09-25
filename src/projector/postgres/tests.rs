@@ -1119,32 +1119,6 @@ fn recall_question_form_returns_same_decision_set() -> Result<()> {
 }
 
 fn assert_recall_parity(prefix: &str, question: Option<&str>) -> Result<()> {
-    let Some(database_url) = std::env::var(TEST_DATABASE_URL_ENV)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    else {
-        eprintln!("skipping Postgres graph test; set {TEST_DATABASE_URL_ENV}");
-        return Ok(());
-    };
-
-    let memory_graph = MemoryGraph::default();
-    let sqlite_dir = temp_hivemind_dir(prefix);
-    let sqlite_ledger = SqliteEventLedger::open(&sqlite_dir)?;
-    for event in fixture_events() {
-        sqlite_ledger.append(event)?;
-    }
-    project_from_ledger(&sqlite_ledger, &memory_graph, 0)?;
-
-    let tenant_id = unique_tenant(prefix);
-    let pg_graph = PostgresGraphView::connect_with_pool_size(&database_url, tenant_id.clone(), 2)?;
-    pg_graph.wipe()?;
-    let postgres_ledger = PostgresEventLedger::connect_with_pool_size(&database_url, tenant_id, 2)?;
-    for event in fixture_events() {
-        postgres_ledger.append(event)?;
-    }
-    project_from_ledger(&postgres_ledger, &pg_graph, 0)?;
-
-    let context = QueryContext::local();
     let request = RecallRequest {
         q: question.map(str::to_owned),
         topic_keys: Vec::new(),
@@ -1155,19 +1129,13 @@ fn assert_recall_parity(prefix: &str, question: Option<&str>) -> Result<()> {
         until: None,
         limit: RECALL_MAX_LIMIT,
         cursor: None,
+        project: None,
     };
-
-    let sqlite_any = AnyLedger::Sqlite(sqlite_ledger);
-    let postgres_any = AnyLedger::Postgres(postgres_ledger);
-
-    let sqlite_response = recall_decisions(&context, &sqlite_any, &memory_graph, &request);
-    let postgres_response = recall_decisions(&context, &postgres_any, &pg_graph, &request);
-
-    let _ = fs::remove_dir_all(&sqlite_dir);
-    pg_graph.wipe()?;
-
-    let sqlite_response = sqlite_response?;
-    let postgres_response = postgres_response?;
+    let Some((sqlite_response, postgres_response)) =
+        recall_on_both_backends(prefix, fixture_events(), &request)?
+    else {
+        return Ok(());
+    };
 
     let mut sqlite_ids: Vec<_> = sqlite_response
         .data
@@ -1197,6 +1165,130 @@ fn assert_recall_parity(prefix: &str, question: Option<&str>) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+// Recall asked from a project (hivemind-s15q.7): the SQLite FTS path and the Postgres portable
+// matcher both filter on the decision's project and group own, then the parent's, then a
+// dependency's -- the same decisions in the same order, with the same labels and scope note.
+#[test]
+fn project_first_recall_matches_between_backends() -> Result<()> {
+    let fixture = crate::queries::test_fixtures::project_first_fixture()?;
+    let mut events = Vec::new();
+    fixture.ledger.replay_from(0, &mut |event| {
+        events.push(event.clone());
+        Ok(())
+    })?;
+
+    let request = RecallRequest {
+        q: Some("pricing".to_owned()),
+        topic_keys: Vec::new(),
+        statuses: Vec::new(),
+        actor_ids: Vec::new(),
+        sources: Vec::new(),
+        since: None,
+        until: None,
+        limit: RECALL_MAX_LIMIT,
+        cursor: None,
+        project: Some("billing".to_owned()),
+    };
+    let Some((sqlite_response, postgres_response)) =
+        recall_on_both_backends("recall-project-first-parity", events, &request)?
+    else {
+        return Ok(());
+    };
+
+    let shape = |response: &crate::queries::QueryResponse<crate::summarize::RecallResponse>| {
+        response
+            .data
+            .ranked
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    item.decision.id.clone(),
+                    item.scope.as_ref().map(|scope| scope.label.clone()),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    if shape(&sqlite_response) != shape(&postgres_response) {
+        return Err(test_error(format!(
+            "project-first recall mismatch: sqlite(FTS)={:?} postgres(portable)={:?}",
+            shape(&sqlite_response),
+            shape(&postgres_response)
+        )));
+    }
+    if sqlite_response.data.scope != postgres_response.data.scope {
+        return Err(test_error(format!(
+            "scope note mismatch: sqlite(FTS)={:?} postgres(portable)={:?}",
+            sqlite_response.data.scope, postgres_response.data.scope
+        )));
+    }
+    // Billing's own, its parent's and Auth's two decisions, and nothing else.
+    if sqlite_response.data.ranked.items.len() != 4 {
+        return Err(test_error(format!(
+            "billing's recall should hold its own, its parent's and auth's two decisions, got {:?}",
+            shape(&sqlite_response)
+        )));
+    }
+    Ok(())
+}
+
+/// Runs one recall request on a SQLite ledger (FTS) and on a Postgres ledger (the portable
+/// matcher), both seeded with the same events. `None` when no Postgres database is configured.
+fn recall_on_both_backends(
+    prefix: &str,
+    events: Vec<Event>,
+    request: &RecallRequest,
+) -> Result<
+    Option<(
+        crate::queries::QueryResponse<crate::summarize::RecallResponse>,
+        crate::queries::QueryResponse<crate::summarize::RecallResponse>,
+    )>,
+> {
+    let Some(database_url) = std::env::var(TEST_DATABASE_URL_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        eprintln!("skipping Postgres graph test; set {TEST_DATABASE_URL_ENV}");
+        return Ok(None);
+    };
+
+    let memory_graph = MemoryGraph::default();
+    let sqlite_dir = temp_hivemind_dir(prefix);
+    let sqlite_ledger = SqliteEventLedger::open(&sqlite_dir)?;
+    for event in events.iter().cloned() {
+        sqlite_ledger.append(event)?;
+    }
+    project_from_ledger(&sqlite_ledger, &memory_graph, 0)?;
+
+    let tenant_id = unique_tenant(prefix);
+    let pg_graph = PostgresGraphView::connect_with_pool_size(&database_url, tenant_id.clone(), 2)?;
+    pg_graph.wipe()?;
+    let postgres_ledger =
+        PostgresEventLedger::connect_with_pool_size(&database_url, tenant_id.clone(), 2)?;
+    for event in events {
+        postgres_ledger.append(event)?;
+    }
+    project_from_ledger(&postgres_ledger, &pg_graph, 0)?;
+
+    let sqlite_context = QueryContext::local();
+    // A project's links are read from the ledger of the context's tenant, so the Postgres side
+    // asks as the tenant its ledger was seeded under.
+    let postgres_context = QueryContext::new(
+        crate::events::TenantId::new(tenant_id).map_err(|error| test_error(error.to_string()))?,
+    );
+
+    let sqlite_any = AnyLedger::Sqlite(sqlite_ledger);
+    let postgres_any = AnyLedger::Postgres(postgres_ledger);
+
+    let sqlite_response = recall_decisions(&sqlite_context, &sqlite_any, &memory_graph, request);
+    let postgres_response = recall_decisions(&postgres_context, &postgres_any, &pg_graph, request);
+
+    let _ = fs::remove_dir_all(&sqlite_dir);
+    pg_graph.wipe()?;
+
+    Ok(Some((sqlite_response?, postgres_response?)))
 }
 
 // ── Test helpers ──────────────────────────────────────────────────────────────

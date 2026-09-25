@@ -7941,7 +7941,19 @@ fn link_test_projects(backend: &TestBackend, from: &str, to: &str, kind: &str) -
     Ok(())
 }
 
-fn situational_project_first_body(backend: &TestBackend) -> CliTestResult {
+/// The decisions behind the project-first CLI answers (hivemind-s15q.6, .7).
+struct ProjectFirstCliDecisions {
+    billing: String,
+    platform: String,
+    auth: String,
+    personal: String,
+}
+
+/// Billing is part of Platform and depends on Auth; Marketing is linked to nothing. One decision
+/// is filed in each project, and one is personal (filed under no project).
+fn seed_project_first_cli(
+    backend: &TestBackend,
+) -> std::result::Result<ProjectFirstCliDecisions, Box<dyn std::error::Error>> {
     for handle in ["platform", "billing", "auth", "marketing"] {
         run(&Cli::parse_from(cli_args(
             backend,
@@ -7985,6 +7997,21 @@ fn situational_project_first_body(backend: &TestBackend) -> CliTestResult {
         "Keep a personal scratch price",
         None,
     )?;
+    Ok(ProjectFirstCliDecisions {
+        billing,
+        platform,
+        auth,
+        personal,
+    })
+}
+
+fn situational_project_first_body(backend: &TestBackend) -> CliTestResult {
+    let ProjectFirstCliDecisions {
+        billing,
+        platform,
+        auth,
+        personal,
+    } = seed_project_first_cli(backend)?;
 
     let query = |rest: &[&str]| -> std::result::Result<String, Box<dyn std::error::Error>> {
         let mut args = vec!["query"];
@@ -8130,6 +8157,157 @@ fn situational_is_project_first_postgres() -> CliTestResult {
         return Ok(());
     };
     situational_project_first_body(&backend)
+}
+
+// ---------------------------------------------------------------------------
+// `query recall --project` (hivemind-s15q.7): recall is project-first.
+// ---------------------------------------------------------------------------
+
+fn recall_project_first_body(backend: &TestBackend) -> CliTestResult {
+    let ProjectFirstCliDecisions {
+        billing,
+        platform,
+        auth,
+        personal,
+    } = seed_project_first_cli(backend)?;
+
+    let query = |rest: &[&str]| -> std::result::Result<String, Box<dyn std::error::Error>> {
+        let mut args = vec!["query"];
+        args.extend_from_slice(rest);
+        Ok(run(&Cli::parse_from(cli_args(backend, &args)))?)
+    };
+
+    // JSON: own project, then the parent's, then the dependency's; each says how it arrived.
+    let scoped: serde_json::Value =
+        serde_json::from_str(&query(&["recall", "billing", "--project", "billing"])?)?;
+    let items = json_at(&scoped, "/data/ranked/items")?
+        .as_array()
+        .ok_or("ranked items is a list")?;
+    let ids: Vec<&str> = items
+        .iter()
+        .map(|item| item["decision"]["id"].as_str().unwrap_or_default())
+        .collect();
+    ensure_eq(
+        ids,
+        vec![billing.as_str(), platform.as_str(), auth.as_str()],
+        "scoped order: own, parent, dependency (marketing and personal left out)",
+    )?;
+    let relations: Vec<&str> = items
+        .iter()
+        .map(|item| item["scope"]["relation"].as_str().unwrap_or_default())
+        .collect();
+    ensure_eq(relations, vec!["own", "parent", "dependency"], "relations")?;
+    let labels: Vec<&str> = items
+        .iter()
+        .map(|item| item["scope"]["label"].as_str().unwrap_or_default())
+        .collect();
+    ensure_eq(
+        labels,
+        vec![
+            "own project",
+            "from Platform; Billing is part of it",
+            "from Auth; Billing depends on it",
+        ],
+        "labels",
+    )?;
+    ensure_eq(
+        json_at(&scoped, "/data/scope/note")?.as_str(),
+        Some("Looked in Billing (own project), Platform (Billing is part of it), Auth (Billing depends on it); nothing further is linked."),
+        "scope note",
+    )?;
+    ensure_eq(
+        json_at(&scoped, "/data/ranked/total_matches")?.as_u64(),
+        Some(3),
+        "scoped total",
+    )?;
+
+    // Text: a `scope` line under the header, and the label on each row.
+    let text = query(&["--summary", "recall", "billing", "--project", "billing"])?;
+    ensure(
+        text.lines().any(|line| {
+            line.starts_with(
+                "scope\tLooked in Billing (own project), Platform (Billing is part of it)",
+            )
+        }),
+        &format!("the text answer says where it looked: {text}"),
+    )?;
+    ensure(
+        text.lines().any(|line| {
+            line.starts_with("match\t")
+                && line.ends_with("\tproject=Platform\tscope=from Platform; Billing is part of it")
+        }),
+        &format!("the parent's decision is labelled inherited: {text}"),
+    )?;
+
+    // A personal address is a project too: only that person's own decisions.
+    let personal_answer: serde_json::Value = serde_json::from_str(&query(&[
+        "recall",
+        "billing",
+        "--project",
+        "personal:human:alice",
+    ])?)?;
+    let personal_ids: Vec<&str> = json_at(&personal_answer, "/data/ranked/items")?
+        .as_array()
+        .ok_or("ranked items is a list")?
+        .iter()
+        .map(|item| item["decision"]["id"].as_str().unwrap_or_default())
+        .collect();
+    ensure_eq(
+        personal_ids,
+        vec![personal.as_str()],
+        "personal project answer",
+    )?;
+
+    // Without `--project` nothing changes: the whole tenant, no scope, no labels.
+    let unscoped: serde_json::Value = serde_json::from_str(&query(&["recall", "billing"])?)?;
+    ensure_eq(
+        json_at(&unscoped, "/data/ranked/total_matches")?.as_u64(),
+        Some(5),
+        "unscoped total",
+    )?;
+    ensure(
+        unscoped["data"].get("scope").is_none(),
+        "an unscoped answer carries no scope",
+    )?;
+    ensure(
+        json_at(&unscoped, "/data/ranked/items/0")?
+            .get("scope")
+            .is_none(),
+        "an unscoped result carries no label",
+    )?;
+    let unscoped_text = query(&["--summary", "recall", "billing"])?;
+    ensure(
+        !unscoped_text.contains("scope"),
+        &format!("the unscoped text is unchanged: {unscoped_text}"),
+    )?;
+
+    // A wrong project address is refused, never answered as an empty scope.
+    let refusal = run(&Cli::parse_from(cli_args(
+        backend,
+        &["query", "recall", "billing", "--project", "billng"],
+    )))
+    .err()
+    .ok_or("an unregistered project must be refused")?
+    .to_string();
+    ensure(
+        refusal.contains("project not registered: billng"),
+        &format!("refusal names the handle: {refusal}"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn recall_is_project_first() -> CliTestResult {
+    recall_project_first_body(&TestBackend::sqlite("recall-project-first"))
+}
+
+#[test]
+fn recall_is_project_first_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("recall-project-first-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    recall_project_first_body(&backend)
 }
 
 // ---------------------------------------------------------------------------
