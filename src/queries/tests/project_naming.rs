@@ -109,6 +109,8 @@ fn scenario() -> Result<Scenario> {
             hypothesis_ids: &[],
             evidence_ids: &[],
             project: Some(DeterminedProject::stated("auth")),
+            grounding: None,
+            expressed_confidence: None,
         })?
         .new_decision_id;
 
