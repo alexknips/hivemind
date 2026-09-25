@@ -8,7 +8,7 @@
   },
   "homepage": "https://github.com/alexknips/hivemind/blob/master/docs/AGENT_DECISION_CAPTURE.md",
   "repository": "https://github.com/alexknips/hivemind",
-  "license": "UNLICENSED",
+  "license": "AGPL-3.0-only",
   "keywords": [
     "hivemind",
     "decision-memory",
