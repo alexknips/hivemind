@@ -633,8 +633,16 @@ fn ground_script_wraps_the_verb_and_joins_an_unquoted_description() -> TestResul
     // An ambiguity or a refusal is not a success: nothing more is written.
     let before = events(dir)?.len();
     let refused = run_script(&["shared", "admin", "token"])?;
-    assert!(!refused.status.success());
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("nothing to ground"));
+    let refused_stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        !refused.status.success(),
+        "a description with nothing to add must not succeed: {refused_stderr}"
+    );
+    assert!(
+        refused_stderr.contains("nothing to ground"),
+        "the script must surface the CLI's own refusal (a bare description with no flags \
+         must survive macOS bash 3.2 under `set -u`): {refused_stderr}"
+    );
     assert_eq!(events(dir)?.len(), before);
     Ok(())
 }

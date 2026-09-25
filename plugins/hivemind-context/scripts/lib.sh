@@ -136,7 +136,10 @@ hivemind_context_join_description() {
     fi
   done
   if [[ -n "$description" ]]; then
-    HC_ARGS=("$description" "${HC_ARGS[@]}")
+    # ${arr[@]+...}: macOS ships bash 3.2, where expanding an empty array under
+    # `set -u` is an "unbound variable" error (a description with no flags
+    # leaves HC_ARGS empty here).
+    HC_ARGS=("$description" ${HC_ARGS[@]+"${HC_ARGS[@]}"})
   fi
 }
 

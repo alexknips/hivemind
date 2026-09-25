@@ -39,4 +39,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
 hivemind_context_join_description "$@"
-hivemind_context_exec --write ground "${HC_ARGS[@]}"
+# ${arr[@]+...}: no arguments at all leaves HC_ARGS empty, and macOS bash 3.2
+# treats expanding an empty array under `set -u` as an unbound variable, which
+# would hide the CLI's own "nothing to ground" refusal.
+hivemind_context_exec --write ground ${HC_ARGS[@]+"${HC_ARGS[@]}"}
