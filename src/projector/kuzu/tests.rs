@@ -310,6 +310,21 @@ fn grounding_edges_store_who_added_them_and_the_causing_proposal() -> Result<()>
     Ok(())
 }
 
+#[test]
+fn quality_profile_reads_the_same_rungs_as_the_other_backends() -> Result<()> {
+    use crate::queries::test_fixtures::floor_scenario;
+
+    let temp_dir = test_graph_dir("quality-profile");
+    let graph = KuzuGraph::open(&temp_dir)?;
+    let scenario = floor_scenario()?;
+    crate::projector::project_from_ledger(scenario.ledger(), &graph, 0)?;
+
+    crate::quality_profile::tests::assert_scenario_profiles(&graph)?;
+
+    let _ = fs::remove_dir_all(temp_dir);
+    Ok(())
+}
+
 fn test_graph_dir(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -552,6 +552,26 @@ pub fn grounding_of_at(
     })
 }
 
+/// The evidence a decision cites (`BASED_ON`) and how each item was attached: named at capture
+/// or attributed afterwards. Distinct ids, sorted. `proposal_event` is the decision's own
+/// `event_origin`, which the caller has already read.
+pub(super) fn evidence_attachments(
+    graph: &impl GraphView,
+    decision_id: &str,
+    proposal_event: Option<i64>,
+) -> Result<Vec<(String, GroundingAdded)>> {
+    Ok(grounding_edges(
+        graph,
+        NodeKind::Decision,
+        decision_id,
+        RelationKind::BasedOn,
+        NodeKind::Evidence,
+    )?
+    .into_iter()
+    .map(|(evidence_id, edge)| (evidence_id, edge.added(proposal_event)))
+    .collect())
+}
+
 fn decision_item(
     graph: &impl GraphView,
     premise_id: String,

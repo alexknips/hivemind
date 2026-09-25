@@ -79,6 +79,68 @@ composite (and any reweighting) recomputes for free.
   them into one dimension.
 - The **Quality composite drives Confidence.**
 
+### Floors: what each dimension can say without a model
+
+> **Status.** The floors below are implemented in `src/quality_profile.rs` as a
+> library type that returns a *profile* for any decision, however it was captured.
+> No tool, verb or export shows the profile yet; the composite scorer above is
+> still what `score_decision` returns.
+
+A **floor** is the part of a dimension that can be computed from facts the record
+already states, deterministically, self-hosted, with no model and no network. A
+floor says what is written down, never that it is sound. The profile lists all
+seven dimensions for a decision. Each one is either
+
+- **assessed**: an ordinal `level` (`none`, `partial`, `solid`), the `reasons`
+  behind it and the `node_ids` they rest on; or
+- **not assessed**: a `why`, and no level. A dimension with no basis says so
+  rather than guessing.
+
+There is no composite number, no tier and no grade in the profile: each
+dimension stands alone. `none` means the record states nothing toward the
+dimension, not that the decision was bad. Every profile records the
+`floor_version` of the rules that produced it; the version moves whenever a rule
+changes the level a record gets.
+
+| Dimension | Floor from | Levels | Judged part (needs a model) |
+| --- | --- | --- | --- |
+| **Framing** | the question the decision answers was recorded | `none` no question recorded · `partial` a question is recorded. Never `solid` without a model. | whether it is the right question |
+| **Alternatives** | options recorded, and whether each rejected option carries a description of its own | `none` fewer than two options recorded · `partial` some alternative has no description of its own · `solid` every alternative has one | whether the alternatives are genuine |
+| **Information** | evidence linked to the decision, and whether it says where it was observed | `none` no evidence counts · `partial` evidence counts, none says where it was observed · `solid` at least one counted item says where it was observed | whether it is the relevant information |
+| **Reasoning** | a rationale is recorded (stated, not judged sound) | `none` no rationale · `partial` a rationale is recorded. Never `solid` without a model. | whether the inference is sound |
+| **Values / Tradeoffs** | none: judged only | not assessed | whether the values and tradeoffs were made explicit and weighed |
+| **Bias exposure** | none in this version: it would need whether a counter-option or counter-evidence was recorded and how old the premises were | not assessed | whether a distortion shaped the choice |
+| **Calibration** | none in this version: it would need the confidence the decider declared at capture and what the decision rests on | not assessed | whether confidence matches the evidence |
+
+**Alternatives.** The alternatives are the options other than the chosen one (all
+of them while none is chosen). A description counts only if it is the author's
+own. Text a capture surface fills in when none was given does not, and neither
+does a description that only repeats the option's label:
+
+| Written by | Text (`<label>` is the option's label) |
+| --- | --- |
+| MCP `capture_decision` | `Option generated from MCP value '<label>'` |
+| CLI `emit decision.proposed` | `Option generated from CLI value '<label>'` |
+| `supersede` | `Option generated from supersede value '<label>'` |
+| HTTP capture | `Option '<label>'` |
+| Slack ingest | `Slack option '<label>' captured from <source>` |
+| Document import | `Option imported from document block <block>` |
+
+A description that merely begins with one of these but goes on (an author who
+kept the generated text and added their reason) is the author's own.
+
+**Information (ex ante).** Something counts toward a floor only if it was
+recorded before the decision or attached at capture. Evidence recorded after the
+decision, then linked to it, is reported as `later` and never raises the level.
+Evidence that was recorded before the decision counts even when it was linked to
+the decision afterwards. "Before" is the ledger offset of the recording event, so
+it does not depend on a clock.
+
+**Read-only and bounded.** A profile reads one decision and its direct options
+and evidence with anchored lookups, never a scan of the graph. The same graph
+gives the same profile, with reasons and ids in a fixed order, on the in-memory,
+Postgres and Kuzu projections.
+
 ### Axis 2 — Importance (unbounded magnitude)
 
 Importance is a **magnitude, not a probability or percentage.** It is explicitly

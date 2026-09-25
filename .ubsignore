@@ -53,4 +53,5 @@ src/error/tests.rs
 src/map/tests.rs
 src/classifier/tests.rs
 src/scorer/tests.rs
+src/quality_profile/tests.rs
 work-orf0.5/

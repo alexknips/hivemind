@@ -56,6 +56,26 @@ impl Scenario {
         causation_event_id: Option<EventId>,
         timestamp: &str,
     ) -> Result<EventId> {
+        self.push_with_source_ref(
+            actor_id,
+            event_type,
+            payload,
+            causation_event_id,
+            timestamp,
+            None,
+        )
+    }
+
+    /// `push` for the event types that require a `source_ref`.
+    fn push_with_source_ref(
+        &self,
+        actor_id: &str,
+        event_type: EventType,
+        payload: Value,
+        causation_event_id: Option<EventId>,
+        timestamp: &str,
+        source_ref: Option<&str>,
+    ) -> Result<EventId> {
         let sequence = self.sequence.get() + 1;
         self.sequence.set(sequence);
         self.ledger.append(Event {
@@ -67,7 +87,7 @@ impl Scenario {
             event_type,
             actor_id: actor_id.to_owned(),
             source: EventSource::Cli,
-            source_ref: None,
+            source_ref: source_ref.map(str::to_owned),
             payload,
             ts: Some(ts(timestamp)),
         })
@@ -128,6 +148,44 @@ impl Scenario {
             payload,
             None,
             timestamp,
+        )
+    }
+
+    /// `decision.proposed` from a hand-built payload, for tests that control exactly which
+    /// options, question and evidence a record carries (see `record_payload`).
+    pub(crate) fn proposal(
+        &self,
+        actor_id: &str,
+        timestamp: &str,
+        payload: Value,
+    ) -> Result<EventId> {
+        self.push(
+            actor_id,
+            EventType::DecisionProposed,
+            payload,
+            None,
+            timestamp,
+        )
+    }
+
+    /// `decision.requested` naming `decision_id`, which nobody has proposed: the graph gets a
+    /// bare stub node for it, with none of a proposal's properties.
+    pub(crate) fn request_naming(&self, decision_id: &str, timestamp: &str) -> Result<EventId> {
+        self.push_with_source_ref(
+            "agent:tester",
+            EventType::DecisionRequested,
+            json!({
+                "topic_keys": ["quality"],
+                "decision_id": decision_id,
+                "reason": "Somebody has to decide this",
+                "priority": "P2",
+                "authority_class": "team",
+                "requested_by": "agent:tester",
+                "client_request_id": format!("request-{decision_id}"),
+            }),
+            None,
+            timestamp,
+            Some("test:scenario"),
         )
     }
 
@@ -255,6 +313,211 @@ impl Scenario {
         )
         .map(|_| ())
     }
+}
+
+/// A `decision.proposed` payload the way a capture writes one. `options` are `(id, label,
+/// description)` and `chosen` names one of them; a `question` comes with the `quote` it answers.
+pub(crate) fn record_payload(
+    decision_id: &str,
+    question: Option<&str>,
+    options: &[(&str, &str, &str)],
+    chosen: Option<&str>,
+    evidence_ids: &[&str],
+) -> Value {
+    let mut payload = json!({
+        "decision_id": decision_id,
+        "title": format!("Decision {decision_id}"),
+        "rationale": format!("Why {decision_id} was taken, in the decider's words"),
+        "topic_keys": ["quality"],
+        "option_ids": options.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(),
+        "option_labels": options.iter().map(|(_, label, _)| *label).collect::<Vec<_>>(),
+        "option_descriptions": options.iter().map(|(_, _, description)| *description).collect::<Vec<_>>(),
+        "chosen_option_id": chosen,
+        "evidence_ids": evidence_ids,
+    });
+    if let Some(question) = question {
+        payload["question"] = json!(question);
+        payload["quote"] = json!("Agreed in the review");
+    }
+    payload
+}
+
+/// Every decision `floor_scenario` records, plus one id that is not in the graph.
+pub(crate) const FLOOR_SCENARIO_DECISIONS: [&str; 10] = [
+    "d:solid",
+    "d:placeholders",
+    "d:bare",
+    "d:later-evidence",
+    "d:backfilled",
+    "d:mixed",
+    "d:single",
+    "d:undecided",
+    "d:stub",
+    "d:missing",
+];
+
+/// Records that land on every rung of every floor, so a backend that agrees on all of them is not
+/// agreeing on emptiness. `e:sourced` and `e:unsourced` pre-date every decision; `e:after` and
+/// `e:after-too` are recorded after the decisions they are linked to.
+///
+/// - `d:solid`: a question, three described options, sourced evidence at capture.
+/// - `d:placeholders`: no question; rejected options carrying only text a capture surface
+///   generated; unsourced evidence at capture.
+/// - `d:bare`: nothing but a title and a rationale.
+/// - `d:later-evidence`: no evidence at capture; `e:after` linked afterwards.
+/// - `d:backfilled`: no evidence at capture; `e:sourced`, recorded before it, linked afterwards.
+/// - `d:mixed`: unsourced evidence at capture; sourced `e:after-too` linked afterwards.
+/// - `d:single`: one option, the chosen one. `d:undecided`: two described options, none chosen.
+/// - `d:stub`: named by a decision request and never proposed, so its node has no rationale.
+pub(crate) fn floor_scenario() -> Result<Scenario> {
+    let s = Scenario::new();
+    let crew = "agent:claude:crew";
+    s.evidence(
+        "e:sourced",
+        "27 of 27 captures carry no premise",
+        Some("mayor audit 2026-09-22"),
+        "2026-01-01T00:00:01Z",
+    )?;
+    s.evidence(
+        "e:unsourced",
+        "Two users asked for it",
+        None,
+        "2026-01-01T00:00:02Z",
+    )?;
+
+    s.proposal(
+        crew,
+        "2026-01-02T00:00:00Z",
+        record_payload(
+            "d:solid",
+            Some("Which store should hold the ledger?"),
+            &[
+                ("d:solid:pg", "Postgres", "One server for every tenant"),
+                (
+                    "d:solid:sqlite",
+                    "SQLite",
+                    "A file per tenant; rejected, no cross-tenant queries",
+                ),
+                (
+                    "d:solid:kuzu",
+                    "Kuzu",
+                    "Embedded graph; rejected, its C++ build is too slow",
+                ),
+            ],
+            Some("d:solid:pg"),
+            &["e:sourced"],
+        ),
+    )?;
+    s.proposal(
+        crew,
+        "2026-01-02T00:00:01Z",
+        record_payload(
+            "d:placeholders",
+            None,
+            &[
+                (
+                    "d:placeholders:a",
+                    "Gateway",
+                    "Route every call through one gateway",
+                ),
+                (
+                    "d:placeholders:b",
+                    "Direct",
+                    "Option generated from MCP value 'Direct'",
+                ),
+                (
+                    "d:placeholders:c",
+                    "Queue",
+                    "Option generated from CLI value 'Queue'",
+                ),
+            ],
+            Some("d:placeholders:a"),
+            &["e:unsourced"],
+        ),
+    )?;
+    s.decision("d:bare", "Keep the default", crew, "2026-01-02T00:00:02Z")?;
+
+    s.proposal(
+        crew,
+        "2026-01-02T00:00:03Z",
+        record_payload("d:later-evidence", None, &[], None, &[]),
+    )?;
+    s.evidence(
+        "e:after",
+        "A benchmark run after the call was made",
+        Some("bench run 2026-02-01"),
+        "2026-02-01T00:00:00Z",
+    )?;
+    s.relation(
+        "BASED_ON",
+        "d:later-evidence",
+        "e:after",
+        "human:alex",
+        None,
+        "2026-02-01T00:00:01Z",
+    )?;
+
+    s.proposal(
+        crew,
+        "2026-01-02T00:00:04Z",
+        record_payload("d:backfilled", None, &[], None, &[]),
+    )?;
+    s.relation(
+        "BASED_ON",
+        "d:backfilled",
+        "e:sourced",
+        "human:alex",
+        None,
+        "2026-02-01T00:00:02Z",
+    )?;
+
+    s.proposal(
+        crew,
+        "2026-01-02T00:00:05Z",
+        record_payload("d:mixed", None, &[], None, &["e:unsourced"]),
+    )?;
+    s.evidence(
+        "e:after-too",
+        "A second benchmark run",
+        Some("bench run 2026-02-02"),
+        "2026-02-02T00:00:00Z",
+    )?;
+    s.relation(
+        "BASED_ON",
+        "d:mixed",
+        "e:after-too",
+        "human:alex",
+        None,
+        "2026-02-02T00:00:01Z",
+    )?;
+
+    s.proposal(
+        crew,
+        "2026-01-02T00:00:06Z",
+        record_payload(
+            "d:single",
+            None,
+            &[("d:single:a", "Only way", "The one option on the table")],
+            Some("d:single:a"),
+            &[],
+        ),
+    )?;
+    s.proposal(
+        crew,
+        "2026-01-02T00:00:07Z",
+        record_payload(
+            "d:undecided",
+            None,
+            &[
+                ("d:undecided:a", "Shard by tenant", "One shard per tenant"),
+                ("d:undecided:b", "Shard by hash", "Hash the decision id"),
+            ],
+            None,
+            &[],
+        ),
+    )?;
+    s.request_naming("d:stub", "2026-01-02T00:00:08Z")?;
+    Ok(s)
 }
 
 /// The projects and decisions behind the project-first "what should I know" answer

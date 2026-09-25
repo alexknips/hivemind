@@ -2135,3 +2135,32 @@ fn grounding_states_and_stale_premises_read_right_on_postgres() -> Result<()> {
         Ok(())
     })
 }
+
+// ── quality profile parity (hivemind-qo11.2) ────────────────────────────────────
+//
+// The profile reads one decision's options (label, description), its evidence (source, the
+// event that recorded it) and how each evidence link was attached, all through single-node and
+// edge-provenance lookups. The scenario puts every floor on every rung, so agreeing with the
+// in-memory graph is not agreeing on emptiness, and the same rung assertions run on Postgres.
+
+#[test]
+fn quality_profile_matches_memory() -> Result<()> {
+    use crate::queries::test_fixtures::{floor_scenario, FLOOR_SCENARIO_DECISIONS};
+
+    with_postgres_graph("quality-profile-parity", |pg| {
+        let scenario = floor_scenario()?;
+        let memory = scenario.graph()?;
+        project_from_ledger(scenario.ledger(), pg, 0)?;
+
+        for decision_id in FLOOR_SCENARIO_DECISIONS {
+            let memory_profile = crate::quality_profile::quality_profile_of(&memory, decision_id)?;
+            let pg_profile = crate::quality_profile::quality_profile_of(pg, decision_id)?;
+            if memory_profile != pg_profile {
+                return Err(test_error(format!(
+                    "quality_profile_of mismatch for {decision_id}: memory={memory_profile:?} pg={pg_profile:?}"
+                )));
+            }
+        }
+        crate::quality_profile::tests::assert_scenario_profiles(pg)
+    })
+}

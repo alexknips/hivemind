@@ -18,6 +18,7 @@ mod outcome;
 mod project_label;
 mod project_scope;
 mod projects;
+mod record_facts;
 mod relevant;
 mod resolve;
 mod search;
@@ -90,6 +91,7 @@ pub use projects::{
     ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectDecisionsRequest, ProjectLinkFact,
     ProjectListRequest, ProjectListResults, ProjectOutcome, ProjectView,
 };
+pub use record_facts::{get_record_facts, EvidenceFact, OptionFact, RecordFacts};
 pub use relevant::get_relevant_decisions;
 pub use resolve::{
     resolve_decision_by_description, resolve_decision_by_id, ResolveOutcome, ResolvedCandidate,
