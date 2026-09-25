@@ -82,9 +82,13 @@ nalgebra = "0.33"
 fastembed = { version = "5.17.2", default-features = false, features = ["ort-download-binaries-rustls-tls", "hf-hub-rustls-tls"], optional = true }
 
 [dev-dependencies]
+# ring + base64 only mint the ES256 test key and JWKS for tests/api.rs's WorkOS stand-in;
+# both are already in the tree through jsonwebtoken.
+base64 = "0.22"
 http-body-util = "0.1"
 jsonschema = { version = "0.46.5", default-features = false }
 proptest = { version = "1.9.0", default-features = false, features = ["std"] }
+ring = "0.17"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 

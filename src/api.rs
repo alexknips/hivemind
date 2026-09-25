@@ -44,6 +44,9 @@
 //! - `GET  /v1/graph`                              — full decision graph (JSON)
 //! - `GET  /v1/health`                             — liveness probe
 //! - `GET  /v1/version`                            — build version + commit sha
+//! - `GET  /v1/whoami`                             — the bearer credential's `actor_id` and
+//!   `tenant_id` (401 like every authenticated route); a shared `HIVEMIND_API_KEY` is
+//!   `service:api`
 //!
 //! ## SPA serving
 //!
@@ -563,6 +566,8 @@ fn build_router(state: AppState) -> Router {
     let router = Router::new()
         .route("/v1/health", get(handlers::health_handler))
         .route("/v1/version", get(handlers::version_handler))
+        // Caller identity for the UI's token sign-in — the normal auth check, nothing written
+        .route("/v1/whoami", get(auth::whoami_handler))
         // Static routes before dynamic /:id to avoid ambiguity
         .route("/v1/decisions/search", get(handlers::search_handler))
         .route("/v1/decisions/relevant", get(handlers::relevant_handler))

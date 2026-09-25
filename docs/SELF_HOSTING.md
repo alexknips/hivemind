@@ -163,6 +163,22 @@ curl -s -X DELETE "http://localhost:8080/v1/users/<USER_ID>/tokens/<TOKEN_ID>" \
   -H "Authorization: Bearer <ADMIN_KEY>"
 ```
 
+**Checking who a token is:** `GET /v1/whoami` takes the same bearer token as every
+other route and answers with the identity it carries — the UI's token sign-in uses
+it to show "Signed in as …". It opens no ledger and writes no event.
+
+```bash
+curl -s http://localhost:8080/v1/whoami \
+  -H "Authorization: Bearer hm_tk_<Alice's token>"
+# → {"actor_id":"human:alice@example.com","tenant_id":"myorg"}
+```
+
+A missing, unknown or revoked token gets `401` with the usual error body. An agent
+token answers `agent:<tool>:<name>`. The SQLite-mode shared `HIVEMIND_API_KEY` and a
+tenant's provisioning token from `POST /v1/tenants` are not people, so they answer
+`service:api`: writes made with them carry no person's name. (The shared key takes the
+actor from an `X-HiveMind-Actor` header when the caller sends one.)
+
 ### SQLite mode (no Postgres)
 
 If you remove the `HIVEMIND_DATABASE_URL` line from `docker-compose.yml` the

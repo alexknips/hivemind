@@ -12,6 +12,13 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   and `deciders` (the actors who accepted it, each with `kind` `human` or `agent`; empty until
   someone accepts), and every Option node carries a `title` (its label, else its id).
   Additive: no existing key changes. Documented in `docs/GRAPH_CONTRACT.md`. (hivemind-pkw0)
+- **`GET /v1/whoami` says who a token is.** It takes the same bearer credential as every other
+  `/v1` route (user token, agent token, WorkOS sign-in, the shared `HIVEMIND_API_KEY`, a
+  Postgres tenant token) and answers `{"actor_id", "tenant_id"}` for it, or `401` with the usual
+  error body for a missing, empty, unknown or revoked token. The shared key and a tenant token
+  answer `service:api`, so a client can warn that writes made with them carry no person's name.
+  Opens no ledger and writes no event; there is no MCP tool for it. Documented in
+  `docs/SELF_HOSTING.md`. (hivemind-jro0)
 
 ### Fixed
 

@@ -1296,6 +1296,7 @@ name = "hivemind"
 version = "0.7.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "crossterm",
@@ -1316,6 +1317,7 @@ dependencies = [
  "r2d2_postgres",
  "ratatui",
  "reqwest",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",

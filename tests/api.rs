@@ -1490,15 +1490,15 @@ async fn classify_queue_submit_enforces_daily_cap() {
 mod classify_queue_postgres {
     use super::*;
 
-    const TEST_DATABASE_URL_ENV: &str = "HIVEMIND_TEST_POSTGRES_URL";
+    pub(super) const TEST_DATABASE_URL_ENV: &str = "HIVEMIND_TEST_POSTGRES_URL";
 
-    fn skip_if_no_postgres() -> Option<String> {
+    pub(super) fn skip_if_no_postgres() -> Option<String> {
         std::env::var(TEST_DATABASE_URL_ENV)
             .ok()
             .filter(|v| !v.trim().is_empty())
     }
 
-    fn unique_tenant(prefix: &str) -> String {
+    pub(super) fn unique_tenant(prefix: &str) -> String {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
@@ -2940,4 +2940,470 @@ async fn supersession_requires_and_records_grounding() {
         body["rests_on"][0]["label"],
         "the shared token leaked twice"
     ); // ubs:ignore
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/whoami (hivemind-jro0): the identity a bearer credential carries — what
+// the UI's token sign-in shows as "Signed in as ...".
+// ---------------------------------------------------------------------------
+
+/// `GET /v1/whoami`, with `Authorization: Bearer <token>` when a token is given (`Some("")` is
+/// the empty token). It sends no `X-HiveMind-Actor` header: the shared-key path honours one.
+fn whoami_req(token: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder().method("GET").uri("/v1/whoami");
+    if let Some(token) = token {
+        builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
+async fn whoami(app: &axum::Router, token: Option<&str>) -> (StatusCode, Value) {
+    call(app.clone(), whoami_req(token)).await
+}
+
+/// SQLite server with a shared key AND an admin key: the shared key, per-user tokens and agent
+/// tokens are all live, and a request with no token is refused (a server with per-user tokens
+/// alone stays open to token-less requests).
+fn app_with_shared_and_admin_keys(
+    hivemind_dir: PathBuf,
+    shared_key: &str,
+    admin_key: &str,
+) -> axum::Router {
+    let config = hivemind::api::ApiConfig {
+        hivemind_dir,
+        bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        port: 0,
+        allow_unauthenticated_remote: false,
+        api_key: Some(shared_key.to_owned()),
+        database_url: None,
+        admin_key: Some(admin_key.to_owned()),
+        workos_domain: None,
+        workos_issuer: None,
+        workos_jwks_url: None,
+        workos_audience: None,
+        spa_dir: None,
+        cors_origins: vec![],
+        slack_client_id: None,
+        slack_client_secret: None,
+        slack_signing_secret: None,
+    };
+    hivemind::api::create_router(&config)
+}
+
+/// A server that trusts the WorkOS stand-in at `workos_jwks_url` (when given), on Postgres when
+/// `database_url` is given. `create_router` fetches the JWKS with a blocking client, so call it
+/// outside any Tokio runtime or from `spawn_blocking`.
+fn app_with_auth(
+    hivemind_dir: PathBuf,
+    database_url: Option<&str>,
+    admin_key: Option<&str>,
+    workos_jwks_url: Option<&str>,
+) -> axum::Router {
+    let workos_domain = workos_jwks_url.map(|_| workos_double::DOMAIN.to_owned());
+    let config = hivemind::api::ApiConfig {
+        hivemind_dir,
+        bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        port: 0,
+        allow_unauthenticated_remote: false,
+        api_key: None,
+        database_url: database_url.map(str::to_owned),
+        admin_key: admin_key.map(str::to_owned),
+        workos_domain: workos_domain.clone(),
+        workos_issuer: workos_domain,
+        workos_jwks_url: workos_jwks_url.map(str::to_owned),
+        workos_audience: None,
+        spa_dir: None,
+        cors_origins: vec![],
+        slack_client_id: None,
+        slack_client_secret: None,
+        slack_signing_secret: None,
+    };
+    hivemind::api::create_router(&config)
+}
+
+/// Stands in for WorkOS: a JWKS endpoint on a local port publishing one ES256 key, and JWTs
+/// signed by it (plus JWTs signed by a key it does not publish).
+mod workos_double {
+    use std::io::{Read as _, Write as _};
+
+    use base64::Engine as _;
+    use ring::rand::SystemRandom;
+    use ring::signature::{EcdsaKeyPair, KeyPair as _, ECDSA_P256_SHA256_FIXED_SIGNING};
+    use serde_json::{json, Value};
+
+    /// The issuer the API is configured to trust (`WORKOS_DOMAIN`).
+    pub const DOMAIN: &str = "https://whoami-test.authkit.app";
+    const KID: &str = "whoami-test-key";
+
+    pub struct Double {
+        pub jwks_url: String,
+        signing_key: Vec<u8>,
+    }
+
+    /// A fresh P-256 key: its PKCS#8 signing form and its uncompressed public point.
+    fn new_key() -> (Vec<u8>, Vec<u8>) {
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
+            .expect("generate P-256 key");
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .expect("load P-256 key");
+        (pkcs8.as_ref().to_vec(), pair.public_key().as_ref().to_vec())
+    }
+
+    /// Starts the JWKS endpoint. Its thread serves until the test process exits.
+    pub fn start() -> Double {
+        let (signing_key, public_point) = new_key();
+        let b64 = |bytes: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+        // Uncompressed point: 0x04, then x (32 bytes), then y (32 bytes).
+        let jwks = json!({ "keys": [{
+            "kty": "EC", "crv": "P-256", "alg": "ES256", "use": "sig", "kid": KID,
+            "x": b64(&public_point[1..33]),
+            "y": b64(&public_point[33..65]),
+        }] })
+        .to_string();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind JWKS stand-in");
+        let jwks_url = format!(
+            "http://{}/jwks",
+            listener.local_addr().expect("JWKS stand-in address")
+        );
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                // Read the request head so closing the socket cannot reset the client mid-read.
+                let _ = stream.read(&mut [0u8; 4096]);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{jwks}",
+                    jwks.len()
+                );
+            }
+        });
+        Double {
+            jwks_url,
+            signing_key,
+        }
+    }
+
+    impl Double {
+        /// The access token WorkOS would issue for `claims` (`sub`, `email`, `org_id`).
+        pub fn token(&self, claims: Value) -> String {
+            sign(&self.signing_key, claims)
+        }
+    }
+
+    /// A token with the trusted `kid` and issuer, signed by a key the JWKS does not publish.
+    pub fn forged_token(claims: Value) -> String {
+        sign(&new_key().0, claims)
+    }
+
+    fn sign(pkcs8: &[u8], mut claims: Value) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is after the epoch")
+            .as_secs();
+        claims["iss"] = json!(DOMAIN);
+        claims["exp"] = json!(now + 3600);
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::ES256);
+        header.kid = Some(KID.to_owned());
+        jsonwebtoken::encode(
+            &header,
+            &claims,
+            &jsonwebtoken::EncodingKey::from_ec_der(pkcs8),
+        )
+        .expect("sign test JWT")
+    }
+}
+
+#[tokio::test]
+async fn whoami_names_the_identity_each_credential_carries() {
+    let dir = test_ledger_dir();
+    let app = app_with_shared_and_admin_keys(dir.clone(), "shared-key", "admin-key");
+    let offset_before = ledger_offset_of(&dir).await;
+
+    // The shared key is no person: writes made with it are `service:api`.
+    let (status, body) = whoami(&app, Some("shared-key")).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(
+        body,
+        serde_json::json!({ "actor_id": "service:api", "tenant_id": "local" })
+    ); // ubs:ignore
+
+    // A user token names its person, whatever the caller claims in X-HiveMind-Actor.
+    let (status, user) = call(
+        app.clone(),
+        admin_post(
+            "/v1/users",
+            serde_json::json!({ "email": "alice@example.com", "display_name": "Alice", "role": "member" }),
+            "admin-key",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{user}"); // ubs:ignore
+    let mut request = whoami_req(user["token_secret"].as_str());
+    request
+        .headers_mut()
+        .insert("x-hivemind-actor", "agent:evil:spoofer".parse().unwrap());
+    let (status, body) = call(app.clone(), request).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(
+        body,
+        serde_json::json!({ "actor_id": "human:alice@example.com", "tenant_id": "local" })
+    ); // ubs:ignore
+
+    // An agent token names its agent.
+    let (status, agent) = call(
+        app.clone(),
+        admin_post(
+            "/v1/agent-tokens",
+            serde_json::json!({ "agent_tool": "claude", "agent_name": "whoami-test" }),
+            "admin-key",
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{agent}"); // ubs:ignore
+    let (status, body) = whoami(&app, agent["token_secret"].as_str()).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(
+        body,
+        serde_json::json!({ "actor_id": "agent:claude:whoami-test", "tenant_id": "local" })
+    ); // ubs:ignore
+
+    // Asking who you are writes nothing.
+    assert_eq!(ledger_offset_of(&dir).await, offset_before); // ubs:ignore
+}
+
+#[tokio::test]
+async fn whoami_refuses_missing_empty_unknown_and_revoked_tokens() {
+    let app = app_with_shared_and_admin_keys(test_ledger_dir(), "shared-key", "admin-key");
+    let (_, user) = call(
+        app.clone(),
+        admin_post(
+            "/v1/users",
+            serde_json::json!({ "email": "bob@example.com", "display_name": "Bob", "role": "member" }),
+            "admin-key",
+        ),
+    )
+    .await;
+    let token = user["token_secret"].as_str().unwrap().to_owned();
+
+    // Control: the token works until it is revoked.
+    let (status, body) = whoami(&app, Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+
+    let revoke = Request::builder()
+        .method("DELETE")
+        .uri(format!(
+            "/v1/users/{}/tokens/{}",
+            user["user_id"].as_str().unwrap(),
+            user["token_id"].as_str().unwrap()
+        ))
+        .header("authorization", "Bearer admin-key")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(revoke).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT); // ubs:ignore
+
+    let unknown_user_token = format!("hm_tk_{}", "0".repeat(64));
+    for (what, credential) in [
+        ("no token", None),
+        ("empty token", Some("")),
+        ("wrong shared key", Some("not-the-shared-key")),
+        ("unknown user token", Some(unknown_user_token.as_str())),
+        ("revoked user token", Some(token.as_str())),
+    ] {
+        let (status, body) = whoami(&app, credential).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{what}: {body}"); // ubs:ignore
+        assert_eq!(body["error"]["code"], "unauthorized", "{what}: {body}"); // ubs:ignore
+    }
+}
+
+// The SQLite WorkOS path only exists in builds without shared-backend-postgres; the Postgres
+// build's WorkOS path is covered by whoami_postgres below.
+#[cfg(not(feature = "shared-backend-postgres"))]
+#[test]
+fn whoami_names_a_workos_signed_in_person() {
+    let double = workos_double::start();
+    // create_router fetches the JWKS with a blocking client, which cannot start inside a runtime.
+    let app = app_with_auth(test_ledger_dir(), None, None, Some(&double.jwks_url));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime");
+    runtime.block_on(async {
+        let claims =
+            || serde_json::json!({ "sub": "user_01H8", "email": "sam@example.com", "org_id": "org_acme" });
+
+        let (status, body) = whoami(&app, Some(&double.token(claims()))).await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+        assert_eq!(
+            body,
+            serde_json::json!({ "actor_id": "human:sam@example.com", "tenant_id": "org_acme" })
+        ); // ubs:ignore
+
+        let (status, body) = whoami(&app, Some(&workos_double::forged_token(claims()))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "forged token: {body}"); // ubs:ignore
+    });
+}
+
+#[cfg(feature = "shared-backend-postgres")]
+mod whoami_postgres {
+    use super::classify_queue_postgres::{
+        skip_if_no_postgres, unique_tenant, TEST_DATABASE_URL_ENV,
+    };
+    use super::*;
+
+    const ADMIN_KEY: &str = "whoami-test-admin-key";
+
+    /// `create_router` opens the r2d2/postgres pool (and fetches the JWKS with a blocking
+    /// client), so it runs off the Tokio worker — see classify_queue_postgres.
+    async fn app_postgres(pg_url: &str, workos_jwks_url: Option<&str>) -> axum::Router {
+        let pg_url = pg_url.to_owned();
+        let workos_jwks_url = workos_jwks_url.map(str::to_owned);
+        tokio::task::spawn_blocking(move || {
+            app_with_auth(
+                test_ledger_dir(),
+                Some(&pg_url),
+                Some(ADMIN_KEY),
+                workos_jwks_url.as_deref(),
+            )
+        })
+        .await
+        .expect("spawn_blocking join must not panic")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn whoami_over_postgres_names_each_credential_and_refuses_the_rest() {
+        let Some(pg_url) = skip_if_no_postgres() else {
+            eprintln!("skipping whoami Postgres test; set {TEST_DATABASE_URL_ENV}");
+            return;
+        };
+        let app = app_postgres(&pg_url, None).await;
+        let tenant_id = unique_tenant("whoami-test");
+
+        // A tenant's provisioning token is the Postgres analogue of the shared key.
+        let (status, tenant) = call(
+            app.clone(),
+            admin_post(
+                "/v1/tenants",
+                serde_json::json!({ "tenant_id": tenant_id, "display_name": "whoami test" }),
+                ADMIN_KEY,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{tenant}"); // ubs:ignore
+        let (status, body) = whoami(&app, tenant["token_secret"].as_str()).await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+        assert_eq!(
+            body,
+            serde_json::json!({ "actor_id": "service:api", "tenant_id": tenant_id })
+        ); // ubs:ignore
+
+        let email = format!("{tenant_id}@example.com");
+        let (status, user) = call(
+            app.clone(),
+            admin_post(
+                "/v1/users",
+                serde_json::json!({
+                    "email": email, "display_name": "Whoami", "role": "member", "tenant_id": tenant_id
+                }),
+                ADMIN_KEY,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{user}"); // ubs:ignore
+        let user_token = user["token_secret"].as_str().unwrap().to_owned();
+        let (status, body) = whoami(&app, Some(&user_token)).await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+        assert_eq!(
+            body,
+            serde_json::json!({ "actor_id": format!("human:{email}"), "tenant_id": tenant_id })
+        ); // ubs:ignore
+
+        let (status, agent) = call(
+            app.clone(),
+            admin_post(
+                "/v1/agent-tokens",
+                serde_json::json!({
+                    "agent_tool": "claude", "agent_name": "whoami-test", "tenant_id": tenant_id
+                }),
+                ADMIN_KEY,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{agent}"); // ubs:ignore
+        let (status, body) = whoami(&app, agent["token_secret"].as_str()).await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+        assert_eq!(
+            body,
+            serde_json::json!({ "actor_id": "agent:claude:whoami-test", "tenant_id": tenant_id })
+        ); // ubs:ignore
+
+        let revoke = Request::builder()
+            .method("DELETE")
+            .uri(format!(
+                "/v1/users/{}/tokens/{}?tenant_id={tenant_id}",
+                user["user_id"].as_str().unwrap(),
+                user["token_id"].as_str().unwrap()
+            ))
+            .header("authorization", format!("Bearer {ADMIN_KEY}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(revoke).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT); // ubs:ignore
+
+        let unknown_user_token = format!("hm_tk_{}", "0".repeat(64));
+        for (what, credential) in [
+            ("no token", None),
+            ("empty token", Some("")),
+            ("unknown token", Some(unknown_user_token.as_str())),
+            ("revoked user token", Some(user_token.as_str())),
+        ] {
+            let (status, body) = whoami(&app, credential).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{what}: {body}"); // ubs:ignore
+            assert_eq!(body["error"]["code"], "unauthorized", "{what}: {body}");
+            // ubs:ignore
+        }
+
+        // Dropping the last Router clone tears the pool down synchronously — see
+        // classify_queue_postgres.
+        tokio::task::spawn_blocking(move || drop(app))
+            .await
+            .expect("dropping app must not panic");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn whoami_over_postgres_names_a_workos_signed_in_person() {
+        let Some(pg_url) = skip_if_no_postgres() else {
+            eprintln!("skipping whoami Postgres test; set {TEST_DATABASE_URL_ENV}");
+            return;
+        };
+        let double = workos_double::start();
+        let app = app_postgres(&pg_url, Some(&double.jwks_url)).await;
+        // The person's tenant is `oidc:<sub>`, created on first sight.
+        let sub = unique_tenant("user");
+        let claims = || serde_json::json!({ "sub": sub, "email": "sam@example.com" });
+
+        let (status, body) = whoami(&app, Some(&double.token(claims()))).await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+        assert_eq!(
+            body,
+            serde_json::json!({ "actor_id": "human:sam@example.com", "tenant_id": format!("oidc:{sub}") })
+        ); // ubs:ignore
+
+        // With WorkOS configured a WorkOS JWT is the only credential.
+        let opaque_token = format!("hm_tk_{}", "0".repeat(64));
+        let forged = workos_double::forged_token(claims());
+        for (what, credential) in [
+            ("no token", None),
+            ("opaque token", Some(opaque_token.as_str())),
+            ("forged JWT", Some(forged.as_str())),
+        ] {
+            let (status, body) = whoami(&app, credential).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{what}: {body}"); // ubs:ignore
+        }
+
+        tokio::task::spawn_blocking(move || drop(app))
+            .await
+            .expect("dropping app must not panic");
+    }
 }

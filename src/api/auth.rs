@@ -369,6 +369,33 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Caller identity (`GET /v1/whoami`)
+// ---------------------------------------------------------------------------
+
+/// `GET /v1/whoami`: who the bearer credential is. Answers with the `actor_id` and
+/// `tenant_id` that [`extract_ctx`] hands every other `/v1` route, so a client (the UI's token
+/// sign-in) sees exactly the identity its writes would carry. Accepts the same credentials as
+/// those routes and refuses the same way (401 with the usual error body).
+///
+/// A read: no ledger event and no ledger open. The only write anywhere near it is what
+/// authenticating already does — a first WorkOS login on the Postgres backend provisions the
+/// user's tenant mapping.
+///
+/// The shared `HIVEMIND_API_KEY` is not a person, so it answers `service:api` (or the
+/// caller-asserted `X-HiveMind-Actor` header that path already honours); a client can tell it
+/// apart from a personal token and warn that writes will carry no person's name.
+pub(super) async fn whoami_handler(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    match extract_ctx(&state, &headers).await {
+        Ok(ctx) => Json(serde_json::json!({
+            "actor_id": ctx.actor_id,
+            "tenant_id": ctx.tenant_id.as_str(),
+        }))
+        .into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tenant provisioning (Postgres, admin-gated)
 // ---------------------------------------------------------------------------
 
