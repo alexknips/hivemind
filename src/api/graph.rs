@@ -14,7 +14,7 @@ use crate::projector::{
     memory::MemoryGraph, project_from_ledger_for_tenant, GraphParams, GraphRow, GraphValue,
     GraphView, NodeKind,
 };
-use crate::queries::oriented_edges;
+use crate::queries::{oriented_edges, DecisionStandings};
 
 use super::auth::extract_ctx;
 use super::{
@@ -28,6 +28,9 @@ struct GraphNode {
     kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     label: Option<String>,
+    /// On an Option: its own label, else its id, so an option always has something to show.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
 }
 
 /// A directed edge in the decision graph: an arrow from the newer node to the older node.
@@ -45,7 +48,10 @@ struct GraphEdge {
     reversed: bool,
 }
 
-/// Full decision graph for a tenant, in the shape expected by the SPA.
+/// Full decision graph for a tenant, in the shape expected by the SPA. Each entry of
+/// `decisions` is the decision's stored row plus its derived `status` (`proposed`, `accepted`,
+/// `rejected`, `contested` or `superseded`) and `deciders` (the `ACCEPTED_BY` actors, each with
+/// a `kind` of `human`, `agent` or `unknown`; empty until someone accepts).
 #[derive(Debug, serde::Serialize)]
 struct GraphData {
     decisions: Vec<serde_json::Value>,
@@ -82,6 +88,7 @@ fn graph_blocking(
 
     let mut nodes: Vec<GraphNode> = Vec::new();
     let mut decisions: Vec<serde_json::Value> = Vec::new();
+    let standings = DecisionStandings::load(graph.as_ref()).map_err(graph_err)?;
 
     for kind in NodeKind::ALL {
         let kind_name = kind.table_name();
@@ -104,16 +111,28 @@ fn graph_blocking(
                 .or_else(|| string_field("display_name"))
                 .or_else(|| string_field("handle"));
             if matches!(kind, NodeKind::Decision) {
-                let obj: serde_json::Map<String, serde_json::Value> = row
+                let mut obj: serde_json::Map<String, serde_json::Value> = row
                     .iter()
                     .map(|(k, v)| (k.into(), graph_value_to_json(v)))
                     .collect();
+                obj.insert(
+                    "status".into(),
+                    serde_json::to_value(standings.status_of(&id)).map_err(graph_err)?,
+                );
+                obj.insert(
+                    "deciders".into(),
+                    serde_json::to_value(standings.deciders_of(&id)).map_err(graph_err)?,
+                );
                 decisions.push(serde_json::Value::Object(obj));
             }
+            // Same fallback every other reader of an option uses (`resolve_option_label`).
+            let title = matches!(kind, NodeKind::Option)
+                .then(|| label.clone().unwrap_or_else(|| id.clone())); // ubs:ignore: one owned title per option node
             nodes.push(GraphNode {
                 id: [kind_name, ":", &id].concat(),
                 kind: kind_name.into(),
                 label,
+                title,
             });
         }
     }

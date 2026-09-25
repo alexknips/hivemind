@@ -56,6 +56,30 @@ A consumer that needs the side making the claim reads `from`/`to` when `reversed
 `NeighborEdge::stored_source` / `stored_target`. A UI draws `from → to` with `label` and needs no
 time logic of its own.
 
+## What `GET /v1/graph` says about its nodes
+
+The response is `{decisions, nodes, edges}`; the edges are the arrows above. Two more things
+a reader needs without reconstructing them from edges:
+
+- **`decisions[]`**: one entry per Decision node, its stored row (`id`, `title`, `rationale`,
+  `topic_keys`) plus two derived fields.
+  - `status`: `proposed`, `accepted`, `rejected`, `contested` or `superseded`, the word every
+    other reader of a decision uses. Any incoming `SUPERSEDES` makes it `superseded`; else
+    `ACCEPTED_BY` and `REJECTED_BY` together make it `contested`; else accepted only is
+    `accepted`, rejected only is `rejected`, neither is `proposed`. A UI's "active" is
+    `proposed` or `accepted`.
+  - `deciders`: the `ACCEPTED_BY` actors as `{id, kind}` (`kind` is `human`, `agent` or
+    `unknown`, from the `human:` / `agent:` id prefix), sorted by id, `[]` until someone
+    accepts. Distinct from the proposer (`PROPOSED_BY`, whoever recorded it) and the
+    participants (`PARTICIPATED_BY`). On a contested decision these are the acceptors; the
+    rejecters are the `REJECTED_BY` edges.
+- **`nodes[]` with `kind: "Option"`** carry `title`: the option's own label, else its id, so an
+  option always has something to show. `label` stays as it was (absent when no label was ever
+  recorded).
+
+Both are pure reads: three bulk edge scans (`SUPERSEDES`, `ACCEPTED_BY`, `REJECTED_BY`), no
+per-decision queries and no inference.
+
 ## Kinds
 
 Source → Target is the stored direction. The arrow label is used when the arrow runs as

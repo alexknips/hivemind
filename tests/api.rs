@@ -1889,6 +1889,225 @@ async fn graph_returns_shape_after_decision() {
     }
 }
 
+/// The `decisions` entry of a `GET /v1/graph` body for this decision id.
+fn graph_decision<'a>(graph: &'a Value, decision_id: &str) -> &'a Value {
+    graph["decisions"]
+        .as_array()
+        .expect("decisions array")
+        .iter()
+        .find(|d| d["id"] == decision_id)
+        .unwrap_or_else(|| panic!("decision {decision_id} missing from /v1/graph: {graph}"))
+}
+
+/// Captures a decision and returns its id. `chosen` accepts it (by `decided_by`, else the
+/// recording actor); without one the decision stays proposed.
+async fn capture_for_graph(
+    dir: &std::path::Path,
+    title: &str,
+    chosen: Option<&str>,
+    decided_by: Option<&str>,
+) -> String {
+    let mut body = serde_json::json!({
+        "grounding": [{"kind": "bet"}],
+        "title": title,
+        "rationale": "Graph standing fixture: enough words to pass validation",
+        "topic_keys": ["graph-standing"],
+        "options": [{ "label": "Option one" }, { "label": "Option two" }],
+    });
+    if let Some(chosen) = chosen {
+        body["chosen_option_label"] = chosen.into();
+    }
+    if let Some(decided_by) = decided_by {
+        body["decided_by"] = decided_by.into();
+    }
+    let (status, response) = call(app(dir.to_path_buf()), post_json("/v1/decisions", body)).await;
+    assert_eq!(status, StatusCode::OK, "capture {title}: {response}");
+    response["decision_id"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn graph_decisions_carry_their_status_and_who_decided() {
+    let dir = test_ledger_dir();
+
+    // Accepted, decided by a human while an agent recorded it.
+    let accepted = capture_for_graph(
+        &dir,
+        "Accepted by a human",
+        Some("Option one"),
+        Some("human:alex.knips@gmail.com"),
+    )
+    .await;
+    // Nobody has decided yet.
+    let proposed = capture_for_graph(&dir, "Still only proposed", None, None).await;
+    // Accepted by the recording agent, then disagreed with by a human.
+    let contested =
+        capture_for_graph(&dir, "Accepted then disputed", Some("Option one"), None).await;
+    let (status, body) = call(
+        app(dir.clone()),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/decisions/{contested}/disagreements"))
+            .header("content-type", "application/json")
+            .header("x-hivemind-actor", "human:dana")
+            .body(Body::from(
+                serde_json::json!({ "reason": "This does not survive the load numbers" })
+                    .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "disagree: {body}");
+    // Accepted, then replaced.
+    let superseded = capture_for_graph(&dir, "Replaced later", Some("Option two"), None).await;
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            &format!("/v1/decisions/{superseded}/supersessions"),
+            serde_json::json!({
+                "grounding": [{"kind": "bet"}],
+                "title": "The replacement",
+                "rationale": "Learned something that changes the call",
+                "topic_keys": ["graph-standing"],
+                "options": ["Option three"],
+                "chosen_option_label": "Option three"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "supersede: {body}");
+    let successor = body["new_decision_id"].as_str().unwrap().to_owned();
+    let supersession = body;
+
+    let (status, graph) = call(app(dir), get_req("/v1/graph")).await;
+    assert_eq!(status, StatusCode::OK, "GET /v1/graph: {graph}");
+
+    let human = serde_json::json!({"id": "human:alex.knips@gmail.com", "kind": "human"});
+    let agent = serde_json::json!({"id": "agent:test:session-1", "kind": "agent"});
+    let expected = [
+        (&accepted, "accepted", serde_json::json!([human])),
+        (&proposed, "proposed", serde_json::json!([])),
+        (&contested, "contested", serde_json::json!([agent])),
+        // Superseded wins over the acceptance, which stays on record.
+        (&superseded, "superseded", serde_json::json!([agent])),
+        // A superseding decision starts proposed: supersede records the call, it does not accept it.
+        (&successor, "proposed", serde_json::json!([])),
+    ];
+    for (decision_id, status, deciders) in expected {
+        let decision = graph_decision(&graph, decision_id);
+        assert_eq!(decision["status"], status, "{decision_id}: {decision}");
+        assert_eq!(decision["deciders"], deciders, "{decision_id}: {decision}");
+    }
+    // The graph says what the supersede response itself said about both ends.
+    assert_eq!(
+        graph_decision(&graph, &superseded)["status"],
+        supersession["old_decision_status"]
+    );
+    assert_eq!(
+        graph_decision(&graph, &successor)["status"],
+        supersession["new_decision_status"]
+    );
+    // Every decision has both fields, whatever its state.
+    for decision in graph["decisions"].as_array().unwrap() {
+        assert!(decision["status"].is_string(), "no status: {decision}");
+        assert!(decision["deciders"].is_array(), "no deciders: {decision}");
+    }
+}
+
+#[tokio::test]
+async fn graph_option_nodes_carry_a_title() {
+    let dir = test_ledger_dir();
+    let (status, captured) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            serde_json::json!({
+                "grounding": [{"kind": "bet"}],
+                "title": "Pick the store",
+                "rationale": "Graph option title fixture: enough words to pass validation",
+                "topic_keys": ["graph-standing"],
+                "options": [{ "label": "SQLite" }, { "label": "Postgres" }],
+                "chosen_option_label": "SQLite"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "capture: {captured}");
+    let chosen_id = captured["chosen_option_id"].as_str().unwrap();
+
+    let (status, graph) = call(app(dir), get_req("/v1/graph")).await;
+    assert_eq!(status, StatusCode::OK, "GET /v1/graph: {graph}");
+
+    let nodes = graph["nodes"].as_array().unwrap();
+    let chosen = nodes
+        .iter()
+        .find(|n| n["id"] == format!("Option:{chosen_id}"))
+        .expect("chosen option node");
+    assert_eq!(chosen["title"], "SQLite", "{chosen}");
+    let mut titles: Vec<&str> = nodes
+        .iter()
+        .filter(|n| n["kind"] == "Option")
+        .map(|n| n["title"].as_str().expect("every Option has a title"))
+        .collect();
+    titles.sort_unstable();
+    assert_eq!(titles, ["Postgres", "SQLite"]);
+    // Only options carry one; every other node keeps just its `label`.
+    assert!(
+        nodes
+            .iter()
+            .filter(|n| n["kind"] != "Option")
+            .all(|n| n.get("title").is_none()),
+        "title leaked onto a non-option node: {graph}"
+    );
+}
+
+#[tokio::test]
+async fn graph_option_recorded_without_a_label_is_titled_by_its_id() {
+    use hivemind::events::{Event, EventSource, EventType, TenantId};
+    use hivemind::ledger::{EventLedger, SqliteEventLedger};
+
+    let dir = test_ledger_dir();
+    // A decision recorded before options carried labels, with an id that names nothing.
+    SqliteEventLedger::open(&dir)
+        .unwrap()
+        .append(Event {
+            tenant_id: TenantId::local(),
+            event_id: None,
+            event_uuid: uuid::Uuid::new_v4(),
+            correlation_id: None,
+            causation_event_id: None,
+            event_type: EventType::DecisionProposed,
+            actor_id: "human:alex.knips@gmail.com".to_owned(),
+            source: EventSource::Cli,
+            source_ref: None,
+            payload: serde_json::json!({
+                "decision_id": "decision:before-labels",
+                "title": "Recorded before options had labels",
+                "rationale": "Historical event without option_labels",
+                "topic_keys": ["legacy"],
+                "option_ids": ["opt-7f3a"],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            ts: Some(chrono::Utc::now()),
+        })
+        .unwrap();
+
+    let (status, graph) = call(app(dir), get_req("/v1/graph")).await;
+    assert_eq!(status, StatusCode::OK, "GET /v1/graph: {graph}");
+    let option = graph["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == "Option:opt-7f3a")
+        .expect("option node");
+    assert_eq!(option["title"], "opt-7f3a", "{option}");
+    assert!(
+        option.get("label").is_none(),
+        "no label was recorded: {option}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // CORS tests
 // ---------------------------------------------------------------------------

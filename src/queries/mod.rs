@@ -102,7 +102,8 @@ pub use situational::{
     SituationalResults,
 };
 pub use status::{
-    derive_decision_status, derive_hypothesis_status, DecisionStatus, HypothesisStatus,
+    derive_decision_status, derive_hypothesis_status, Decider, DecisionStandings, DecisionStatus,
+    HypothesisStatus,
 };
 pub use supersession::{get_supersession_chain, SupersessionChain};
 pub use terms::{

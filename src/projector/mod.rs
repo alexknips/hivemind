@@ -670,7 +670,9 @@ fn upsert_actor(
     graph.upsert_node(NodeKind::Actor, actor_id, &props)
 }
 
-fn actor_kind(actor_id: &str) -> &'static str {
+/// `human`, `agent` or `unknown`, from the actor-id prefix. The kind stored on every Actor node,
+/// and what readers that only have an id (no Actor row) show.
+pub(crate) fn actor_kind(actor_id: &str) -> &'static str {
     if actor_id.starts_with("human:") {
         "human"
     } else if actor_id.starts_with("agent:") {

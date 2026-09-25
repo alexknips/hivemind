@@ -133,6 +133,140 @@ fn derives_all_decision_status_cases() -> Result<()> {
     Ok(())
 }
 
+/// A decision proposed by `proposer` with nothing else on it.
+fn proposed_event(sequence: u128, decision_id: &str, proposer: &str) -> Event {
+    test_event(
+        sequence,
+        EventType::DecisionProposed,
+        proposer,
+        json!({
+            "decision_id": decision_id,
+            "title": decision_id,
+            "rationale": "Standings fixture",
+            "topic_keys": ["standings"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+        "2026-01-01T00:00:00Z",
+    )
+}
+
+#[test]
+fn decision_standings_give_every_decision_the_status_and_deciders_derive_status_gives() -> Result<()>
+{
+    let graph = graph_from_events([
+        proposed_event(1, "d:proposed", "agent:scribe"),
+        proposed_event(2, "d:accepted", "agent:scribe"),
+        proposed_event(3, "d:rejected", "agent:scribe"),
+        proposed_event(4, "d:contested", "agent:scribe"),
+        proposed_event(5, "d:superseded", "agent:scribe"),
+        proposed_event(6, "d:successor", "agent:scribe"),
+        // Two deciders on one decision, inserted out of id order.
+        test_event(
+            7,
+            EventType::DecisionAccepted,
+            "human:alex",
+            json!({ "decision_id": "d:accepted" }),
+            "2026-01-01T01:00:00Z",
+        ),
+        test_event(
+            8,
+            EventType::DecisionAccepted,
+            "agent:bot",
+            json!({ "decision_id": "d:accepted" }),
+            "2026-01-01T01:01:00Z",
+        ),
+        test_event(
+            9,
+            EventType::DecisionRejected,
+            "human:dana",
+            json!({ "decision_id": "d:rejected" }),
+            "2026-01-01T01:02:00Z",
+        ),
+        test_event(
+            10,
+            EventType::DecisionAccepted,
+            "human:alex",
+            json!({ "decision_id": "d:contested" }),
+            "2026-01-01T01:03:00Z",
+        ),
+        test_event(
+            11,
+            EventType::DecisionRejected,
+            "human:dana",
+            json!({ "decision_id": "d:contested" }),
+            "2026-01-01T01:04:00Z",
+        ),
+        // Accepted and then superseded: superseded wins, but the acceptance stays on record.
+        test_event(
+            12,
+            EventType::DecisionAccepted,
+            "human:alex",
+            json!({ "decision_id": "d:superseded" }),
+            "2026-01-01T01:05:00Z",
+        ),
+        test_event(
+            13,
+            EventType::DecisionSuperseded,
+            "agent:scribe",
+            json!({ "old_decision_id": "d:superseded", "new_decision_id": "d:successor" }),
+            "2026-01-01T01:06:00Z",
+        ),
+    ])?;
+
+    let standings = DecisionStandings::load(&graph)?;
+    let decider = |id: &str, kind: &'static str| Decider {
+        id: id.to_owned(),
+        kind,
+    };
+    let expected = [
+        ("d:proposed", DecisionStatus::Proposed, vec![]),
+        (
+            "d:accepted",
+            DecisionStatus::Accepted,
+            vec![
+                decider("agent:bot", "agent"),
+                decider("human:alex", "human"),
+            ],
+        ),
+        ("d:rejected", DecisionStatus::Rejected, vec![]),
+        (
+            "d:contested",
+            DecisionStatus::Contested,
+            vec![decider("human:alex", "human")],
+        ),
+        (
+            "d:superseded",
+            DecisionStatus::Superseded,
+            vec![decider("human:alex", "human")],
+        ),
+        ("d:successor", DecisionStatus::Proposed, vec![]),
+    ];
+    for (decision_id, status, deciders) in expected {
+        assert_eq!(standings.status_of(decision_id), status, "{decision_id}");
+        assert_eq!(
+            standings.deciders_of(decision_id),
+            deciders,
+            "{decision_id}"
+        );
+        // The bulk read and the per-decision derivation are one rule.
+        assert_eq!(
+            standings.status_of(decision_id),
+            derive_decision_status(&graph, decision_id)?,
+            "{decision_id}"
+        );
+    }
+    // A decision no edge names is proposed with no decider, not an error.
+    assert_eq!(
+        standings.status_of("d:unheard-of"),
+        DecisionStatus::Proposed
+    );
+    assert!(standings.deciders_of("d:unheard-of").is_empty());
+    Ok(())
+}
+
 #[test]
 fn derives_all_hypothesis_status_cases() -> Result<()> {
     let cases = [

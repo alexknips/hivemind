@@ -3,6 +3,16 @@
 All notable changes to HiveMind are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **`GET /v1/graph` says who decided what and whether it held up.** Every `decisions[]` entry
+  carries its derived `status` (`proposed`, `accepted`, `rejected`, `contested`, `superseded`)
+  and `deciders` (the actors who accepted it, each with `kind` `human` or `agent`; empty until
+  someone accepts), and every Option node carries a `title` (its label, else its id).
+  Additive: no existing key changes. Documented in `docs/GRAPH_CONTRACT.md`. (hivemind-pkw0)
+
 ## v0.7.0 — 2026-09-25 — M6: Fluent verbs and grounded capture
 
 You can now consult HiveMind without holding a decision id. Describe a decision — or just
