@@ -99,11 +99,23 @@ is running. First match wins:
 
 1. `--project HANDLE`, when the caller names one. An unregistered handle is
    refused with the register command, never guessed.
-2. The nearest `.hivemind-project` file walking up from the working
-   directory. It holds one project handle; a marker nested inside an attached
-   folder is a sub-project and, being nearer, wins.
+2. The `.hivemind-project` files of the folders the uncommitted change touches
+   (working-tree diff plus the staged set); when none of those files sits under
+   one, the nearest `.hivemind-project` walking up from the working directory.
+   The file holds one project handle; a marker nested inside an attached folder
+   is a sub-project and, being nearer, wins.
 3. The project anchored to the Gas City rig (`GC_RIG`).
-4. The current project set with `hivemind project use`.
+4. The current project set with `hivemind project use`. It is a per-machine
+   setting kept for the CLI's `--actor` (by default the person at the terminal),
+   not a ledger fact.
+
+A change that touches folders of several projects is one decision, recorded for
+the nearest project they are all part of, and the CLI says so on its stderr
+(`recorded for platform: this change spans auth and billing`; the helper passes
+that line through rather than folding it into the one-line confirmation). With no
+project in common it is saved to the actor's personal project and the CLI names
+the projects it spans and how to move it. A spanning change is never refused and
+never dropped.
 
 When none applies, the decision is saved to the actor's personal project. The
 confirmation line says so and how to attach the folder:
@@ -114,13 +126,25 @@ project: personal:agent:claude (personal_fallback) — saved to your personal pr
 this folder is not attached to a project yet; run hivemind project anchor ... to attach it
 ```
 
+To attach a folder, register the project (`hivemind project register billing`)
+and commit a `.hivemind-project` file containing `billing` in the folder.
+`hivemind project anchor --kind folder` only records a fact about the project;
+the marker file is what a capture reads, and `--kind rig` with the rig's name is
+what binds a Gas City rig.
+
 A capture from an attached folder confirms with the project and how it was
 found instead, for example `project: billing (folder_marker)`. Evidence and
 hypothesis captures carry no project. `/hivemind-context:supersede` works the
 same way for the replacement decision; with none found it stays in the project
-of the decision it replaces. The `--project-from-context` flag needs a
+of the decision it replaces. A wrong project is fixed with `hivemind move
+"<description>" --to <handle>`. The `--project-from-context` flag needs a
 `hivemind` CLI that has it; an older CLI refuses the flag, so update the CLI
-along with the plugin.
+along with the plugin. Nothing here applies over HTTP: MCP-over-HTTP takes the
+project as an argument and REST takes none (its decisions land in the personal
+project), and only the CLI and the stdio MCP server this plugin ships fill it in
+from context. See
+[`docs/AGENT_DECISION_CAPTURE.md`](../../docs/AGENT_DECISION_CAPTURE.md#which-project-a-capture-lands-in)
+and [`docs/MULTI_TENANCY.md`](../../docs/MULTI_TENANCY.md#projects-inside-a-tenant).
 
 ## Verify
 

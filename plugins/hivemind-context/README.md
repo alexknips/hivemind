@@ -88,14 +88,26 @@ emitted event's `source` field always matches its `actor_id`'s kind.
 ## Projects
 
 `supersede` records a new decision, so it passes `--project-from-context` and
-the replacement lands in the project the working folder names: the nearest
-`.hivemind-project` file walking up from the working directory, then the
-project anchored to the Gas City rig (`GC_RIG`), then the current project set
-with `hivemind project use`. `--project HANDLE` names one outright and wins.
-When none applies, the replacement stays in the project of the decision it
-replaces. Its confirmation line shows `project=<handle>` and how it was
-determined (`project_source=`). The other verbs record no decision and take no
+the replacement lands in the project the working folder names: the
+`.hivemind-project` files of the folders the uncommitted change touches (else the
+nearest one walking up from the working directory), then the project anchored to
+the Gas City rig (`GC_RIG`), then the current project set with `hivemind project
+use`. `--project HANDLE` names one outright and wins. A change that spans
+projects is recorded for the nearest project they are all part of. When none
+applies, or the spanned projects share no parent, the replacement stays in the
+project of the decision it replaces. `supersede` runs as the agent (`--actor`),
+so the current-project rung reads the agent's own setting, not the person's. Its
+confirmation line shows `project=<handle>` and how it was determined
+(`project_source=`). The other write verbs record no decision and take no
 project. See the `hivemind-capture` README for the full order.
+
+The read verbs never work a project out from the folder. Pass `--project
+HANDLE` to `situational` or `recall` (`/hivemind-context:situational --project
+billing`) to ask project-first: that project's decisions, then its parent's
+(labelled as inherited), then one hop over `depends_on`, with a scope note that
+says where the answer stopped. Without it the whole tenant is searched.
+The plugin has no command for moving a decision to another project; run
+`hivemind move "<description>" --to <handle>` (or MCP `move_decision`).
 
 ## Verify
 

@@ -566,6 +566,63 @@ exactly what it was. The digest is built from the same decisions in the same
 order; it does not repeat the labels. The REST `GET /v1/decisions/recall` route
 does not take `project`.
 
+**The project is always explicit on a read.** Neither `situational` nor `recall`
+(nor any other query verb) works out a project from the working directory or the
+rig: only the capture verbs have `--project-from-context`. Ask project-first by
+passing `--project <handle>` (for a personal project, its address, for example
+`personal:human:alex`, which has no links, so the scope note names only itself).
+A decision with no recorded project, or one filed in a project outside the scope,
+is left out of a scoped answer; the scope note lists what was looked in. The
+`hivemind-context` plugin's read commands forward their arguments, so
+`/hivemind-context:situational --project billing` works, and without the flag
+the whole tenant is searched as before. Over HTTP the argument is the same: MCP
+`get_situational_decisions` and `recall_decisions` take `project`; the REST
+routes do not.
+
+**`move` puts a decision in the right project.** `hivemind move "<description>"
+--to <handle>` (or `--decision <id>`, `[--pick N] [--topic T] [--reason R]`) and
+MCP `move_decision` (stdio and HTTP, one core function) resolve the decision the
+way `disagree` and `supersede` do, with the strict write gate: a description that
+matches several decisions returns the numbered candidates and writes nothing
+(`--pick N` or `#N` settles it), and one that matches none is a successful reply,
+`{"outcome": "not_found"}`, never an error. A move names only the target. Where
+the decision is now is read from the ledger, so a caller never types it. A
+registered handle or the actor's own personal address is accepted; an
+unregistered handle is refused with the register command, another actor's personal
+address is refused, and a decision already in the target is refused plainly. The
+reply is the recorded fact:
+
+```text
+$ hivemind move "quarterly release trains" --to platform --reason "release cadence is a platform-wide rule"
+event_id=37 decision_id=decision-1a81... from=personal:agent:claude to=platform
+```
+
+`--json` and MCP return `{decision_id, event_id, from, to, reason?}`. Afterwards
+every answer shows the new project and `project_source` reads `moved`. The
+history keeps every move: `query get_recent_activity` and
+`get_decisions_changed_since` return a `project_moved` row per move with the two
+ends (`project_move {from, to, reason?}` in JSON, `moved=<from>-><to>` under
+`--summary`), the actor, and the time. Reversal is another move with the
+ends swapped, and nothing is edited or deleted. `verify` and `why` show the
+decision's current project, not its moves.
+
+**A project's own list.** `hivemind project decisions <handle-or-personal-address>`
+lists the decisions filed under one project, oldest first, paged, with `truncated`
+and a cursor (`--limit`, `--cursor`); an unregistered handle is a successful reply,
+never an empty list: `outcome: not_found` in JSON, and in text a line naming the
+`hivemind project register` command. On a personal address it is the
+review list, headed `in human:alex's personal project, not yet shared: N`: every
+session of one agent tool lists together (`personal:agent:claude`), and each row
+shows its `session` and how its project was determined. Nothing moves on being
+listed; picking a decision from it and moving it is the review.
+
+**The decision log is grouped per project.** `hivemind export --format markdown
+--out <dir>` writes `INDEX.md` with one section per project, and per project a
+`projects/<handle>/INDEX.md` plus one file per decision; personal projects go
+under `projects/personal/<actor>/`. `--project <handle-or-personal-address>`
+exports one project, and an unknown handle writes nothing and reports
+`outcome=not_found`.
+
 ---
 
 ## 5. Short-Handle Continuation

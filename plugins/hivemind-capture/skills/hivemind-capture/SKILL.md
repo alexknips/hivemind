@@ -327,9 +327,13 @@ was determined. You do not work it out: the helper (and the direct
 
 1. The project you named with `--project <handle>` (only when you were told
    which project — never guess a handle; an unregistered one is refused).
-2. The nearest `.hivemind-project` file walking up from the working
-   directory. It holds one project handle; a nested one is a sub-project and,
-   being nearer, wins.
+2. The `.hivemind-project` files of the folders the uncommitted change touches
+   or, when none of those files sits under one, the nearest `.hivemind-project`
+   walking up from the working directory. A file holds one project handle; a
+   nested one is a sub-project and, being nearer, wins. A change that touches
+   several projects is recorded for the nearest project they are all part of; with
+   none in common it is saved to your personal project and the CLI names the
+   projects it spans.
 3. The project anchored to the Gas City rig (`GC_RIG`).
 4. The current project set with `hivemind project use`.
 5. None of these: the decision is saved to your personal project.
@@ -337,10 +341,13 @@ was determined. You do not work it out: the helper (and the direct
 The confirmation shows the outcome as a `project: <handle> (<how>)` line
 (`folder_marker`, `rig`, `current_project`, `stated`, or `personal_fallback`).
 On the personal fallback it also says the decision was saved to your personal
-project and that the folder is not attached to a project yet, with the
-`hivemind project anchor ...` command that attaches it. Relay that reminder to
-the user rather than dropping it: a decision left in a personal project is
-easy to lose track of, and it can be moved to the right project later.
+project and that the folder is not attached to a project yet, with a hint that
+names `hivemind project anchor`. A folder is really attached by registering the
+project (`hivemind project register <handle>`) and committing a
+`.hivemind-project` file holding the handle; a folder anchor is only recorded and
+never read back. Relay that reminder to the user rather than dropping it: a
+decision left in a personal project is easy to lose track of, and it can be moved
+to the right project later.
 
 `supersede` (from the `hivemind-context` plugin) works the same way, except
 that a replacement with no project found stays in the project of the decision

@@ -463,6 +463,34 @@ container.
 
 ---
 
+## Projects for a city of agents
+
+A cell that serves a Gas City, or any fleet of agents working in several repos,
+groups its decisions by project inside one tenant (see
+[MULTI_TENANCY.md](MULTI_TENANCY.md#projects-inside-a-tenant)). The registry
+lives in that tenant's ledger, so register it against the cell's ledger — with
+`--database-url`/`--tenant` (Option A) or from inside the container (Option B):
+one project per rig (`hivemind project register <rig>`), a `city` project every
+rig is `part_of` (`hivemind project link --from <rig> --to city --kind
+part_of`), `depends_on` links for the real dependencies between rigs, and a rig
+anchor so a session's `GC_RIG` names its project (`hivemind project anchor
+--handle <rig> --kind rig --value <rig>`). Commit a one-line `.hivemind-project`
+file naming the handle at a repo's root (or in a subfolder for a sub-project) to
+attach the folder as well; the CLI does not write it. Agents whose CLI or stdio
+MCP server runs with `--project-from-context` (the capture plugin does) then file
+each capture under its rig's or folder's project and say how, and a capture that
+names or finds no project falls into the actor's personal project with a notice.
+Those agents read the registry, their working directory, `GC_RIG`, and their git
+diff from the machine the CLI runs on, so they need Option A (the CLI on the
+agent's own machine, pointed at the cell's Postgres); Option B runs the CLI
+inside the container, where none of those belong to the agent, so pass
+`--project` there. Over HTTP the server has no view of the caller's working
+directory: `/mcp` takes the project as an argument, and the REST
+`POST /v1/decisions` route takes none, so it files into the actor's personal
+project.
+
+---
+
 ## Exposing the cell deliberately
 
 Out of the box the cell is reachable only from the machine it runs on:

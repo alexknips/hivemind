@@ -18,7 +18,10 @@ agent session, team, or deployment process.
 Repos, teams, Slack workspaces, source documents, and agent sessions are
 context within a tenant. They can appear as topic keys, source refs, external
 installation mappings, or later narrower access policy, but they do not replace
-the tenant boundary.
+the tenant boundary. The one grouping HiveMind records for them is the
+decision's project ([Projects Inside A Tenant](#projects-inside-a-tenant)): a
+named home for decisions inside one tenant. A project organizes decisions; it
+does not isolate them or gate who may read them.
 
 Every remote write and query is scoped by tenant:
 
@@ -357,6 +360,223 @@ HTTP should expose tenant in a conventional authenticated shape, such as a token
 claim plus optional `X-HiveMind-Tenant` header when a principal has multiple
 memberships. The service validates the selected tenant before calling commands
 or queries.
+
+## Projects Inside A Tenant
+
+A tenant isolates; a project organizes. Inside one tenant, every decision belongs
+to exactly one **project**: a named home for decisions, such as `billing` or
+`platform`. A decision is never filed under two projects. The rules below are
+the ones the write and query layers enforce today; the last subsection lists
+what is not built.
+
+- A project is not an access boundary. There is no membership and no permission
+  on a project. Everyone who can read the tenant can read every project, and
+  "who works on Billing" is answered from whose decisions are in it.
+- A project is not a topic. A topic says what a decision is about (`pricing`), a
+  project says where it belongs (`billing`). A topic cuts across projects and
+  both remain filters.
+- Nothing crosses a tenant. Projects, links, and moves live in one tenant's
+  ledger, and a link cannot point at another tenant's project.
+- HiveMind never infers a project. The write layer checks that a stated handle
+  is registered and records it with how the caller determined it; working it out
+  is the client's job (see [Where the project comes from](#where-the-project-comes-from)).
+
+### Three kinds of address
+
+| Address | Made | A wrong one |
+| --- | --- | --- |
+| Tenant (`acme`) | On purpose: `hivemind tenant create <id>` on SQLite; `POST /v1/tenants` with the admin key on Postgres. | Refused. Every ledger open (CLI, stdio MCP, HTTP server) checks the tenant on both backends and errors on an unknown one instead of opening an empty scope. |
+| Shared project (`billing`) | On purpose, by anyone: `hivemind project register billing`. | Refused: ``project not registered: nosuch -- register it first with `hivemind project register nosuch` ``. No decision is recorded. |
+| Personal project (`personal:human:alex`, `personal:agent:claude`) | Comes with the identity. There is nothing to register. | Cannot be a typo: it is derived from the actor, and a capture may not state one (`project must not use the reserved "personal:" prefix -- personal projects are derived from the actor, never stated: <handle>`). |
+
+A tenant is chosen by where you connect (`--tenant`, `HIVEMIND_TENANT`, or the
+token). A project is part of the decision itself, so it travels with every
+capture and comes back with every answer.
+
+**Personal projects.** The address is the actor id with any session removed:
+`human:alex` becomes `personal:human:alex`, and `agent:claude:crew-1` becomes
+`personal:agent:claude`, one per agent tool and never one per session. The
+session stays on each decision as provenance, and `hivemind project decisions
+personal:agent:claude` prints it on every row. An actor id of any other shape is
+prefixed as it is. Personal projects are visible to the whole tenant and
+labelled with their owner ("alex's personal project", "claude agents' personal
+project"); privacy for them is not built. A capture that names no project lands
+in its recorder's personal project and says so every time:
+
+```text
+saved to your personal project; pass a registered project handle to file it under a shared one
+```
+
+A decision recorded before projects existed has no project field and reads as
+its recorder's personal project (`project_source` `personal_fallback`). That is
+derived when the ledger is projected, so no event was rewritten and no migration
+ran; such a decision moves like any other.
+
+### The registry
+
+Registering, linking, and anchoring are ledger events like any other, each with
+its actor and time: `project.registered`, `project.linked`, `project.unlinked`,
+`project.anchored`, and `project.unanchored`. The registry is what replaying
+them yields, so "who registered Billing, who linked it under Platform, and when"
+is answered from the ledger the way a decision's provenance is. The commands
+layer refuses, before anything is appended:
+
+- a handle that is not lowercase letters, digits, and dashes, 2 to 40
+  characters, or that starts with `personal:`;
+- a handle that is already registered (the refusal names the existing project).
+  Registration is permanent: there is no unregister event;
+- a link with an unregistered end, a link from a project to itself, a second
+  active `part_of` parent for one project, and an unlink of a link that is not
+  active;
+- an anchor on an unregistered project, a `rig` anchor whose value another
+  project already holds, and removing an anchor that is not active.
+
+The write layer does not prevent a `part_of` cycle; every read walks a chain
+once and stops at the first project it would revisit. Removing an anchor exists
+as an event (`project.unanchored`) but has no CLI verb yet.
+
+The registry is read and written from the command line. Anyone can register a
+project; there is no admin step.
+
+| Verb | What it does |
+| --- | --- |
+| `hivemind project register <handle> [--display-name N] [--purpose P]` | Register a shared project. |
+| `hivemind project link --from A --to B --kind part_of\|depends_on` and `project unlink` (same flags) | Record or retract a link. |
+| `hivemind project anchor --handle H --kind folder\|rig\|jira\|linear\|github\|channel --value V` | Record an anchor. |
+| `hivemind project list` / `project show <handle>` | Read the registry (paged). An unknown handle is a successful reply with `outcome=not_found`; a `personal:` address always resolves. |
+| `hivemind project decisions <handle-or-personal-address>` | The decisions in one project, oldest first, paged. On a personal address it is the review list: what is still in a personal project and not yet shared. |
+| `hivemind project use <handle>` / `--clear` | Set the current project (see below). |
+
+The registry verbs are not on MCP or REST. Only the move verb and the project
+arguments described below are.
+
+### Links
+
+Two kinds, no more:
+
+- **`part_of`.** Billing is part of Platform. A project has at most one parent,
+  and chains may be any depth. Platform's decisions reach Billing as inherited
+  constraints, labelled `from Platform; Billing is part of it`.
+- **`depends_on`.** Billing depends on Auth. A project may depend on any number
+  of others. Auth's decisions reach Billing labelled `from Auth; Billing depends
+  on it`.
+
+Visibility flows one way and one hop. A lookup asked from Billing looks in
+Billing, then its parent, then its dependencies, and nowhere else; the answer
+carries a scope note that names every project looked in and counts what was not
+followed (more levels up the `part_of` chain, more linked projects), so a short
+answer never reads as a complete one. A parent does not see its children's
+decisions by default. When a parent-level decision rests on a child's, it says
+so explicitly, with `--rests-on-decision`, like any other premise. Links are
+read from the ledger, so a link that was unlinked is not followed. See
+[`AGENT_FLUENT_QUERYING.md`](AGENT_FLUENT_QUERYING.md) for the query side.
+
+### Anchors
+
+An anchor is a place in the world that says "decisions recorded from here belong
+to this project". Six kinds can be recorded (`folder`, `rig`, `jira`, `linear`,
+`github`, `channel`). Two ways of attaching a place to a project work today:
+
+- **Folder marker.** A one-line file named `.hivemind-project` holding one
+  handle, checked in with the code. It covers its folder and everything below
+  it until a nearer marker; the nearest one wins. It is a file, not a registry
+  entry: `hivemind project anchor --kind folder` records a fact about the
+  project and does not create the file, and nothing reads a folder anchor back
+  when resolving a capture. Overlap is not checked centrally: a folder has one
+  marker file, and no shared table has to be edited to attach it.
+- **Rig.** In a Gas City every session carries its rig in `GC_RIG`. A `rig`
+  anchor whose value is that name binds the rig to a project. The value is
+  unique per tenant.
+
+`jira`, `linear`, `github`, and `channel` anchors can be recorded, but nothing
+resolves a project from them yet. An agent that already knows the project from a
+PM tool passes it with `--project`, and `--project-source job` says the handle
+came from the job it was running.
+
+### Where the project comes from
+
+The client works out the project, in this order, first match wins, and records
+how (`project_source`):
+
+1. the project the caller stated (`stated`);
+2. the `.hivemind-project` markers of the files the uncommitted change touches,
+   else the nearest marker above the working directory (`folder_marker`);
+3. the project anchored to the rig in `GC_RIG` (`rig`);
+4. the current project, set once with `hivemind project use`
+   (`current_project`), a per-machine setting kept in the CLI's `--hivemind-dir`,
+   keyed by tenant and by the CLI's `--actor`, and never a ledger fact;
+5. none of these: the recorder's personal project (`personal_fallback`).
+
+A change that touches folders of several projects is one decision for the
+nearest project they are all `part_of`, never one for each. With no project in
+common it is saved to the recorder's personal project and the reply names the
+projects it spans, because losing a decision is worse than misfiling one and a
+move puts it right. A spanning change is never refused and never dropped.
+[`AGENT_DECISION_CAPTURE.md`](AGENT_DECISION_CAPTURE.md) has the flags and the
+exact replies.
+
+This ladder lives once, in the client, and only runs when the caller asks for it
+(`--project-from-context` on the CLI capture verbs and on the stdio
+`hivemind mcp`). It is not set in stone: it is one small module behind one
+function, so it can move into a plugin or server-side without touching the
+write or query layers.
+
+**Over HTTP the project is an argument, or absent.** A server has no view of the
+caller's working directory, so the HTTP server never infers a project.
+MCP-over-HTTP `capture_decision` and `supersede_decision` take `project` (and
+`project_source`); only the CLI and the stdio MCP server fill it in from where
+they run. The REST `POST /v1/decisions` route and the classifier's ingest take no
+project yet: what REST records lands in the actor's personal project, and its
+reply does not carry the fallback notice.
+
+### What answers and exports show
+
+Every decision an answer returns names its project (`get_decision`, `verify`,
+`why`, `search`, `recall`, `situational`, `recent`, the compact view, and the
+decision log): `project` (the address) and `project_label` (what a person calls
+it). A decision that no proposal ever
+recorded, only named by a request or a blocker, has `project: null` and the
+label "no project recorded", so an unassigned decision is visible and never
+guessed. `hivemind export --format markdown` writes the decision record grouped
+per project: an `INDEX.md` with one section per project, and for each project a
+`projects/<handle>/INDEX.md` plus one file per decision under
+`projects/<handle>/decisions/`, personal projects under
+`projects/personal/<actor>/`; `--project` limits it to one project.
+
+### Moving a decision
+
+A move is a `decision.moved` event: decision, from, to, an optional reason, the
+actor, the time. The write layer requires that the decision exists, that `to` is
+a registered project or the acting actor's own personal address (never someone
+else's), and that `from` is where the decision is now. `hivemind move
+"<description>" --to <handle>` and MCP `move_decision` (both transports) name
+only the target; where the decision is now is read from the ledger, never typed.
+The description goes through the same ambiguity gate as `supersede` and
+`disagree`: several matches return numbered candidates and write nothing, and no
+match is a successful reply with `outcome: not_found`.
+
+A move reads as "moved from Billing to Pricing by Alex on ..." in the decision
+history (`query get_recent_activity` and `get_decisions_changed_since` return a
+`project_moved` row with the two ends, the actor, and the time). The decision's
+own project changes and its `project_source` becomes `moved`. Reversal is
+another move with the ends swapped; nothing is edited or deleted.
+
+### Sub-projects stay possible
+
+Alex's standing constraint on the first slice: nothing may foreclose
+sub-projects. What keeps them open today is that `part_of` is a tree of any
+depth, that a marker nested inside an attached folder names a sub-project and
+wins by being nearer, and that a scoped answer says how many `part_of` levels it
+did not follow. What is not built is a first-class experience: inheritance across
+several levels, nested markers registered as children, and a determination rule
+that has been revisited for them.
+
+### Not built
+
+Waiting, on purpose: Jira, Linear, GitHub, and channel anchors that resolve a
+project; bulk moves by anchor; splitting and merging projects with retired
+aliases; suggestions for where a decision belongs; privacy for personal
+projects; lookups deeper than one hop; and the registry verbs over MCP and REST.
 
 ## Migration From Local Single-Tenant
 

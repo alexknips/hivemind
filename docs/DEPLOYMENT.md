@@ -65,14 +65,13 @@ backend directly instead of the local SQLite file.
 
 - The CLI and `hivemind mcp` never provision tenants in the `hm_tenants`
   table that `POST /v1/tenants` manages (see
-  [SELF_HOSTING.md](SELF_HOSTING.md)) — but they also don't check against
-  it: tenant-id validation only rejects an empty string, so an
-  unrecognized or typo'd `--tenant` on a Postgres-backed CLI/mcp invocation
-  is not rejected. It silently opens, and on first write silently
-  populates, a brand-new empty tenant scope in the `events` table (there is
-  no foreign key from `events.tenant_id` to `hm_tenants`). Whether this
-  path should instead hard-error on an unknown tenant is an open design
-  question, not yet decided.
+  [SELF_HOSTING.md](SELF_HOSTING.md)), but they do check against it: an
+  unrecognized or typo'd `--tenant` on a Postgres-backed CLI/mcp invocation is
+  refused with `unknown tenant '<id>'` on read and write alike, never opened
+  as a fresh empty scope. The HTTP server applies the same check to every
+  request. (On SQLite the tenants come from `hivemind tenant create <id>`, and
+  `local` is always registered.) Create the tenant through the provisioning
+  route first, then point `--tenant` at it.
 - A binary built without the `shared-backend-postgres` Cargo feature fails
   with an explicit error if a database URL is configured — it never falls
   back to SQLite silently. The Docker image is built with this feature;

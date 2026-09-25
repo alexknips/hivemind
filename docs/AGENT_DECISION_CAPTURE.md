@@ -199,6 +199,147 @@ same "1a"/"2. a" shape `--quote`/`--question` exist to carry instead
 needs one of those tokens (e.g. quoting someone else's outline), pair
 `--quote`/`--question` rather than folding it into `--rationale`.
 
+## Which project a capture lands in
+
+Every decision belongs to exactly one project inside its tenant (the model is in
+[`MULTI_TENANCY.md`](MULTI_TENANCY.md#projects-inside-a-tenant)). A capture
+says which project and how that was determined; HiveMind checks the handle and
+records both, and never works the project out itself. Evidence and hypothesis
+captures carry no project.
+
+**Naming it.** `--project <handle>` on `emit decision.capture`,
+`emit decision.proposed`, and `supersede`, and `project` on MCP
+`capture_decision` and `supersede_decision`, name a registered project outright.
+`--project-source` (MCP `project_source`) says how the caller got the handle:
+`stated` (the default), `folder_marker`, `rig`, `current_project`, or `job`, and
+it needs a `--project` to describe. A handle that is not registered is refused,
+no decision is recorded, and the refusal carries the command that fixes it
+(options and grounding nodes named on the same call may already be in the ledger
+as unattached nodes):
+
+```text
+error: invariant violated: project not registered: nosuch -- register it first with `hivemind project register nosuch`
+```
+
+A caller may not state a `personal:` address, nor claim `personal_fallback` or
+`moved` next to a handle: HiveMind records those two itself.
+
+**Not naming it.** With no project, a capture never fails. It is saved to the
+recorder's personal project (`personal:human:alex`, or `personal:agent:claude`
+for an agent, one per tool and never per session), and every CLI and MCP reply
+says so:
+
+```text
+saved to your personal project; pass a registered project handle to file it under a shared one
+```
+
+That sentence is the fallback notice: the CLI and MCP never file into a personal
+project silently, and the decision can be moved later (see below). REST replies
+do not carry it (see the HTTP paragraph).
+
+**Working it out from where the agent is.** `--project-from-context` on the same
+CLI verbs, and on the stdio server (`hivemind mcp --project-from-context`, which
+the capture plugin's `.mcp.json` sets), makes the client work the project out
+from its surroundings when none was named. First match wins, and each rung
+records how:
+
+| # | Source | `project_source` |
+|---|---|---|
+| 1 | `--project` (a named project always wins) | `stated` |
+| 2 | the `.hivemind-project` markers of the files the uncommitted change touches (working-tree diff plus the staged set); when none of them sits under a marker, the nearest marker walking up from the working directory | `folder_marker` |
+| 3 | the project anchored to the rig in `GC_RIG` (`hivemind project anchor --kind rig`) | `rig` |
+| 4 | the actor's current project (`hivemind project use <handle>`) | `current_project` |
+| 5 | none of these: the personal project, with a reminder | `personal_fallback` |
+
+A marker is a one-line file holding one handle. A nested marker names a
+sub-project and, being nearer, wins over the outer one. A marker that cannot be
+read, is empty, or holds more than one word is refused, never skipped, so a
+capture is not filed under some other project than the folder says. A marker
+naming an unregistered handle is refused like any unregistered handle when it is
+the one project the capture resolves to; inside a change that spans several
+markers it shares a parent with nothing, so the decision lands in the personal
+project and the reply names it. The flag is opt-in
+and off by default, so a bare `hivemind emit` stays deterministic. It needs a
+CLI that has it; an older one refuses the flag. The stdio server resolves from its
+own working directory, the folder it was started in: an agent's later `cd` in its
+shell does not change it.
+
+The current project is a per-machine setting kept in `--hivemind-dir`
+(`current-project.json`), keyed by tenant and by the CLI's `--actor`; it is not a
+ledger fact.
+
+**A change that spans projects.** When the files a change touches sit under
+markers of several projects, the decision is made once, for the nearest project
+they are all `part_of` (a project counts as part of itself, so a change across a
+project and one of its sub-projects belongs to the outer one), recorded as
+`folder_marker`, and the reply says so. It names handles, sorted:
+
+```text
+recorded for platform: this change spans auth and billing
+```
+
+With no project in common, the decision is saved to the recorder's personal
+project (`personal_fallback`) and the reply names what it spans and how to fix
+it. It is never refused and never dropped, because losing a decision is worse
+than misfiling it and a move puts it right:
+
+```text
+this change spans auth and billing, which share no parent. Move it with hivemind move ..., or register a parent.
+```
+
+**When no folder is attached.** With `--project-from-context` and nothing found,
+the personal fallback comes with one more line, so the way out is next to the
+problem:
+
+```text
+this folder is not attached to a project yet; run hivemind project anchor ... to attach it
+```
+
+The line names `project anchor`, but a folder is attached by a marker file, and
+`hivemind project anchor --kind folder` only records a fact about the project:
+nothing reads a folder anchor back and no command writes the marker. Attaching a
+folder is two steps: register the project (`hivemind project register billing`),
+then commit a `.hivemind-project` file containing `billing` at the folder root.
+`--kind rig` is the one anchor a capture does read, for a Gas City rig.
+
+**What the reply says.** Every capture reply names the project and how it was
+determined. In text mode stdout stays the decision id (followed, as before, by a
+`premise_stale:` line for each named premise that has since been superseded or
+rejected) and the announcement goes to stderr, so `id=$(hivemind emit ...)` is
+unchanged by projects:
+
+```text
+project: billing (stated)
+decision-56e41007-81bd-4589-894e-f609b2a34f0b
+```
+
+`--json` and MCP replies carry it in-band: `project`, `project_source`, on
+fallback `project_notice` (the sentence above), and, when the project was worked
+out from context, `project_reminder` (the unattached-folder line or the
+spanning sentence). `supersede` prints ` project=<handle> project_source=<how>`
+on its existing key=value line. A superseding decision inherits the project of
+the decision it replaces unless a project is named or worked out from context; when context finds nothing,
+or the change spans projects with no parent in common, a supersede stays in the
+project it replaces instead of falling back to the personal project.
+
+**Over HTTP the project is an argument, or absent.** MCP-over-HTTP
+`capture_decision` and `supersede_decision` take `project` and
+`project_source`. The HTTP server never infers one, because it has no view of the
+caller's working directory; only the CLI and the stdio server fill it in from
+context. REST takes none: `POST /v1/decisions` records the decision in the
+actor's personal project, and its reply carries no `project` or fallback notice.
+REST supersede takes none either and inherits the replaced decision's project.
+Name the project over MCP instead. A decision recorded through REST can be moved
+afterwards. Decisions the classifier extracts from ingested transcripts are not
+`decision.proposed` events, so `hivemind move` cannot move them yet.
+
+**Fixing a wrong project.** `hivemind move "<description>" --to <handle>`, or
+MCP `move_decision`, moves a decision by describing it, with the same ambiguity
+gate as `supersede`. The move is recorded and reversible; see
+[`AGENT_FLUENT_QUERYING.md`](AGENT_FLUENT_QUERYING.md). The decisions that
+landed in a personal project and were never shared are listed by
+`hivemind project decisions personal:<actor>`.
+
 ## Claude
 
 ```bash
