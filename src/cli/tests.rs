@@ -1771,6 +1771,39 @@ fn query_why_answers_a_natural_question_with_the_why() -> CliTestResult {
         )?;
     }
 
+    // "Why did we pick / choose / go with X" is the canonical why question: it answers in one
+    // step, with the rationale, instead of listing the decision as a close candidate that lacks
+    // the verb (hivemind-36vt).
+    for question in [
+        "why did we pick shared Postgres for the demo cell",
+        "why did we choose shared Postgres for the demo cell",
+        "why did we go with shared Postgres for the demo cell",
+        "why is the demo cell still on shared Postgres",
+    ] {
+        let asked = run(&Cli::parse_from([
+            "hivemind",
+            "--json",
+            "--hivemind-dir",
+            dir,
+            "query",
+            "why",
+            question,
+        ]))?;
+        let asked: serde_json::Value = serde_json::from_str(&asked)?;
+        ensure_json_eq(
+            &asked["data"]["root"]["id"],
+            serde_json::json!(decision_id),
+            &format!("{question:?} resolves to the captured decision in one step"),
+        )?;
+        ensure_json_eq(
+            &asked["data"]["root"]["rationale"],
+            serde_json::json!(
+                "One shared ledger keeps every reader consistent without per-host sync"
+            ),
+            &format!("{question:?} answers with the rationale"),
+        )?;
+    }
+
     let json = run(&Cli::parse_from([
         "hivemind",
         "--json",

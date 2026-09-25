@@ -104,11 +104,19 @@ its keywords: "why did we move the demo cell to shared Postgres" finds
 `resolver_terms` (`src/queries/terms.rs`) trims punctuation and drops question
 and function words (why, did, we, the, to, …) but keeps negations (not, no,
 never, without), so "do not adopt Kafka" cannot resolve to the decision that
-adopted it. Each remaining term still has to match somewhere (AND), either
-as a substring, as before, or as a field word with the same stem
-(`move`/`moves`/`moved`/`moving`; compared by whole-word equality, never by
-prefix, so `string` does not match `strategy`), and a repeated word counts
-once. A description made only of stop words falls back to its literal words.
+adopted it. The verbs people ask about a decision with (pick, choose, decide,
+and "go with", "settle on", "opt for", each with its past and `-s` forms) and
+the adverbs they put in a why-question (still, again, ever, even, really,
+actually, now, anymore, currently) are question words too, so "why did we pick
+shadcn for the design system" resolves in one step instead of listing the
+decision as a close candidate missing "pick". The list is fixed and literal —
+no stemming, no synonyms — and applies to the question only: a decision titled
+"Pick the cheapest vendor" still matches on "pick". A two-word verb is dropped
+only as a pair ("go" alone stays a term: it is a language). Each remaining term
+still has to match somewhere (AND), either as a substring, as before, or as a
+field word with the same stem (`move`/`moves`/`moved`/`moving`; compared by
+whole-word equality, never by prefix, so `string` does not match `strategy`),
+and a repeated word counts once. A description made only of stop words falls back to its literal words.
 The ambiguity gate (§1.4) is unchanged, and `search` keeps literal substring
 matching.
 
@@ -124,9 +132,10 @@ description is still `NotFound`.
 
 **`recall` asks the same way.** `recall_decisions` (Layer 3) drops the question
 words ("what did we decide about projects" searches for `projects`) before it
-searches, reports them as `ignored_words`, and treats a question made only of
-question words as no text filter, so `--topic` alone decides. It does not
-stem: FTS matches whole tokens.
+searches (the same list, decision verbs and framing adverbs included), reports
+them as `ignored_words`, and treats a question made only of question words as no
+text filter, so `--topic` alone decides. It does not stem: FTS matches whole
+tokens.
 
 ### 1.2 Recency, for free
 

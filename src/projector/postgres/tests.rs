@@ -538,6 +538,24 @@ fn resolve_decision_by_description_matches_memory() -> Result<()> {
             )));
         }
 
+        // The verbs people ask about a decision with, and the adverbs they put in a why-question,
+        // are question words on both backends: each resolves to decision:1 in one step.
+        for question in [
+            "why did we pick Kuzu for slice 1",
+            "why did we go with Kuzu for slice 1",
+            "why do we still use Kuzu for slice 1",
+        ] {
+            let memory_verb = resolve_decision_by_description(&memory, question, None)?.data;
+            let pg_verb = resolve_decision_by_description(pg, question, None)?.data;
+            if memory_verb != pg_verb
+                || !matches!(&memory_verb, ResolveOutcome::Resolved { candidate } if candidate.decision_id == "decision:1")
+            {
+                return Err(test_error(format!(
+                    "{question:?} resolution mismatch: memory={memory_verb:?} pg={pg_verb:?}"
+                )));
+            }
+        }
+
         // A word no decision contains ("finally") leaves only close candidates, best first,
         // each listing what it lacks -- the same on both backends, never Resolved. decision:2
         // trails decision:1: it lacks "slice" too and matches "1" only via its supersedes id.
@@ -1147,6 +1165,15 @@ fn recall_question_form_returns_same_decision_set() -> Result<()> {
     assert_recall_parity(
         "recall-question-parity",
         Some("what did we decide about Kuzu"),
+    )
+}
+
+// Decision verbs are question words for recall too: "what did we pick about X" searches for X.
+#[test]
+fn recall_decision_verb_question_returns_same_decision_set() -> Result<()> {
+    assert_recall_parity(
+        "recall-verb-question-parity",
+        Some("what did we pick about Kuzu"),
     )
 }
 

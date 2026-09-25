@@ -17,7 +17,7 @@ use crate::projector::{
 use crate::Result;
 
 use super::neighborhood::neighborhood_structure;
-use super::terms::{resolver_terms, stem};
+use super::terms::{content_query, resolver_terms, stem};
 use super::*;
 
 #[derive(Debug, Default)]
@@ -1254,6 +1254,112 @@ fn resolver_terms_dedupe_and_fall_back_when_only_stopwords() {
         resolver_terms("per-host sqlite,"),
         vec!["per-host", "sqlite"]
     );
+}
+
+#[test]
+fn resolver_terms_drop_the_verbs_people_ask_about_a_decision_with() {
+    for question in [
+        "why did we pick shadcn for the design system",
+        "why was shadcn picked for the design system",
+        "why did we choose shadcn for the design system",
+        "why we chose shadcn for the design system",
+        "why was shadcn chosen for the design system",
+        "why did we go with shadcn for the design system",
+        "why we went with shadcn for the design system",
+        "why did we decide on shadcn for the design system",
+        "why we decided on shadcn for the design system",
+        "why did we settle on shadcn for the design system",
+        "why we settled on shadcn for the design system",
+        "why did we opt for shadcn for the design system",
+        "why we opted for shadcn for the design system",
+        "who picks shadcn for the design system",
+        "who chooses shadcn for the design system",
+        "who decides on shadcn for the design system",
+        "who goes with shadcn for the design system",
+        "who settles on shadcn for the design system",
+        "who opts for shadcn for the design system",
+    ] {
+        assert_eq!(
+            resolver_terms(question),
+            vec!["shadcn", "design", "system"],
+            "{question:?}"
+        );
+    }
+}
+
+#[test]
+fn resolver_terms_drop_framing_adverbs() {
+    assert_eq!(
+        resolver_terms("why is the courtroom demo still on the site"),
+        vec!["courtroom", "demo", "site"]
+    );
+    for adverb in [
+        "still",
+        "again",
+        "ever",
+        "even",
+        "really",
+        "actually",
+        "now",
+        "anymore",
+        "currently",
+    ] {
+        assert_eq!(
+            resolver_terms(&format!("why do we {adverb} keep the ledger")),
+            vec!["keep", "ledger"],
+            "{adverb}"
+        );
+    }
+}
+
+#[test]
+fn a_verb_partner_is_a_term_outside_its_phrase() {
+    // "go" is a language: it is framing only right in front of "with".
+    assert_eq!(
+        resolver_terms("why did we pick go for the cli"),
+        vec!["go", "cli"]
+    );
+    assert_eq!(resolver_terms("why did we go with go"), vec!["go"]);
+    assert_eq!(
+        resolver_terms("why did we go with go for the cli"),
+        vec!["go", "cli"]
+    );
+    assert_eq!(
+        resolver_terms("why is opt on the path"),
+        vec!["opt", "path"]
+    );
+    assert_eq!(
+        resolver_terms("why did we settle the queue question"),
+        vec!["settle", "queue", "question"]
+    );
+    // Only the fixed partners count: "go to" is not "go with".
+    assert_eq!(resolver_terms("why go to postgres"), vec!["go", "postgres"]);
+}
+
+#[test]
+fn a_question_of_only_decision_verbs_falls_back_to_its_words() {
+    assert_eq!(resolver_terms("pick"), vec!["pick"]);
+    assert_eq!(
+        resolver_terms("why did we pick"),
+        vec!["why", "did", "we", "pick"]
+    );
+    assert_eq!(resolver_terms("go with"), vec!["go", "with"]);
+}
+
+#[test]
+fn content_query_drops_decision_verbs_and_reports_them() {
+    let asked = content_query("what did we pick about projects");
+    assert_eq!(asked.query.as_deref(), Some("projects"));
+    assert_eq!(asked.ignored, vec!["what", "did", "we", "pick", "about"]);
+
+    let bare = content_query("why did we go with");
+    assert_eq!(bare.query, None);
+    assert_eq!(bare.ignored, vec!["why", "did", "we", "go", "with"]);
+
+    // "go" frames the question once and is asked about once: it is searched for, not dropped.
+    let language = content_query("why did we go with go");
+    assert_eq!(language.query.as_deref(), Some("go"));
+    assert_eq!(language.ignored, vec!["why", "did", "we", "with"]);
 }
 
 #[test]

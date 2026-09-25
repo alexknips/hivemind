@@ -22,6 +22,15 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **"Why did we pick / choose / go with X?" answers in one step.** The verbs people ask about a
+  decision with (pick, choose, decide, "go with", "settle on", "opt for", with their past and
+  `-s` forms) and the adverbs they put in a why-question (still, again, ever, even, really,
+  actually, now, anymore, currently) are now question words. Asking `why did we pick shadcn for
+  the design system` or `why is the courtroom demo still on the site` resolves to the decision
+  and its rationale instead of listing it as a close candidate that lacks "pick" or "still".
+  The list is fixed and applies to the question only, so a decision titled "Pick the cheapest
+  vendor" still matches on "pick", and "go" alone stays a search term. `recall` drops the same
+  words. (hivemind-36vt)
 - **`/hivemind-capture:query-decisions "some words"` no longer fails on the quoted form its own
   argument-hint documents.** The command wrapped what you typed in a second pair of quotes, so
   `"current-project setting"` reached the CLI as two words (`error: unexpected argument

@@ -70,14 +70,22 @@ pub fn overlap_score(query_terms: &[String], candidate_terms: &[String]) -> f64 
 }
 
 /// Question, function and decision-frame words that carry no identifying signal in a natural
-/// question ("why did we decide to move the demo cell to shared Postgres", "what did we decide
-/// about projects"). Deliberately omits negations (`not`, `no`, `never`, `without`): dropping
-/// them would let "do not adopt Kafka" resolve to the decision that adopted it.
+/// question ("why did we decide to move the demo cell to shared Postgres", "why did we pick
+/// shadcn", "why is the demo still on the site"): the verbs people use to ask about a decision
+/// (pick, choose, decide) and the adverbs they put in a why-question (still, again, ever, ...).
+/// Fixed and literal: `-s` and past forms are listed, nothing is stemmed, no synonyms. They are
+/// dropped from the question only, never from a decision's text, so a decision titled "Pick the
+/// cheapest vendor" still matches on "pick". Deliberately omits negations (`not`, `no`, `never`,
+/// `without`): dropping them would let "do not adopt Kafka" resolve to the decision that adopted
+/// it.
 const QUESTION_STOPWORDS: &[&str] = &[
     "a",
     "about",
+    "actually",
+    "again",
     "an",
     "and",
+    "anymore",
     "are",
     "as",
     "at",
@@ -88,15 +96,20 @@ const QUESTION_STOPWORDS: &[&str] = &[
     "can",
     "chose",
     "choose",
+    "chooses",
     "chosen",
     "could",
+    "currently",
     "decide",
     "decided",
+    "decides",
     "decision",
     "decisions",
     "did",
     "do",
     "does",
+    "even",
+    "ever",
     "for",
     "from",
     "had",
@@ -112,12 +125,18 @@ const QUESTION_STOPWORDS: &[&str] = &[
     "its",
     "me",
     "my",
+    "now",
     "of",
     "on",
     "or",
     "our",
+    "pick",
+    "picked",
+    "picks",
+    "really",
     "should",
     "so",
+    "still",
     "than",
     "that",
     "the",
@@ -147,43 +166,88 @@ const QUESTION_STOPWORDS: &[&str] = &[
     "your",
 ];
 
-/// Lowercased whitespace tokens with surrounding punctuation trimmed, duplicates removed. Inner
+/// Two-word decision verbs ("go with", "settle on", "opt for"). The first word is question framing
+/// only in front of its partner: alone it is a real term ("go" is a language, "opt" a directory),
+/// so "why did we go with Go" still searches for `go`. The partners (`with`, `on`, `for`) are
+/// question words already.
+const FRAMING_PHRASES: &[(&str, &str)] = &[
+    ("go", "with"),
+    ("goes", "with"),
+    ("went", "with"),
+    ("opt", "for"),
+    ("opted", "for"),
+    ("opts", "for"),
+    ("settle", "on"),
+    ("settled", "on"),
+    ("settles", "on"),
+];
+
+/// Lowercased whitespace tokens in the order asked, with surrounding punctuation trimmed. Inner
 /// punctuation is kept (`per-host`, `gc-ox429`); a token that is all punctuation keeps its raw
 /// form so it still matches literally.
 fn description_tokens(description: &str) -> Vec<String> {
-    let mut tokens: Vec<String> = Vec::new();
-    for raw in description.split_whitespace() {
-        let token = raw
-            .trim_matches(|c: char| !c.is_alphanumeric())
-            .to_ascii_lowercase();
-        let token = if token.is_empty() {
-            raw.to_ascii_lowercase()
-        } else {
-            token
-        };
-        if !tokens.contains(&token) {
-            tokens.push(token);
-        }
-    }
-    tokens
-}
-
-fn without_stopwords(tokens: &[String]) -> Vec<String> {
-    tokens
-        .iter()
-        .filter(|token| !QUESTION_STOPWORDS.contains(&token.as_str()))
-        .cloned()
+    description
+        .split_whitespace()
+        .map(|raw| {
+            let token = raw
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_ascii_lowercase();
+            if token.is_empty() {
+                raw.to_ascii_lowercase()
+            } else {
+                token
+            }
+        })
         .collect()
 }
 
+/// Whether `token`, followed by `next`, frames the question rather than naming what it asks about.
+fn is_question_word(token: &str, next: Option<&str>) -> bool {
+    QUESTION_STOPWORDS.contains(&token)
+        || FRAMING_PHRASES
+            .iter()
+            .any(|(lead, partner)| *lead == token && next == Some(*partner))
+}
+
+/// A description split into what to search for and the question framing around it. Each word
+/// appears once, in the order asked.
+struct QuestionTokens {
+    content: Vec<String>,
+    framing: Vec<String>,
+}
+
+fn question_tokens(description: &str) -> QuestionTokens {
+    let tokens = description_tokens(description);
+    let framing_at: Vec<bool> = tokens
+        .iter()
+        .enumerate()
+        .map(|(at, token)| is_question_word(token, tokens.get(at + 1).map(String::as_str)))
+        .collect();
+    let mut split = QuestionTokens {
+        content: Vec::new(),
+        framing: Vec::new(),
+    };
+    for (token, framing) in tokens.into_iter().zip(framing_at) {
+        let bucket = if framing {
+            &mut split.framing
+        } else {
+            &mut split.content
+        };
+        if !bucket.contains(&token) {
+            bucket.push(token);
+        }
+    }
+    split
+}
+
 /// Terms for resolving a free-text description to a decision: the description's tokens minus
-/// question words. Falls back to the unfiltered tokens when every token is a stopword, so
+/// question words. Falls back to the unfiltered tokens when every token is a question word, so
 /// "why did we" never matches every decision.
 pub(crate) fn resolver_terms(description: &str) -> Vec<String> {
-    let tokens = description_tokens(description);
-    let content = without_stopwords(&tokens);
+    let QuestionTokens { content, framing } = question_tokens(description);
+    // No content means every token is framing, so `framing` holds them all.
     if content.is_empty() {
-        tokens
+        framing
     } else {
         content
     }
@@ -201,9 +265,10 @@ pub struct ContentQuery {
 }
 
 pub fn content_query(text: &str) -> ContentQuery {
-    let tokens = description_tokens(text);
-    let content = without_stopwords(&tokens);
-    let ignored = tokens
+    let QuestionTokens { content, framing } = question_tokens(text);
+    // A word that frames the question in one place and is asked about in another ("go with Go")
+    // is searched for, so it is not reported as dropped.
+    let ignored = framing
         .into_iter()
         .filter(|token| !content.contains(token))
         .collect();

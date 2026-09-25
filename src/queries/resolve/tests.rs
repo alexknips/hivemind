@@ -204,6 +204,131 @@ fn natural_questions_resolve_to_the_decision() -> Result<()> {
     Ok(())
 }
 
+const DESIGN_SYSTEM_TITLE: &str = "Design system library is shadcn/ui on Tailwind";
+const COURTROOM_TITLE: &str =
+    "Keep the 12 Angry Men courtroom demo on the website, positioned lower on the page";
+
+#[test]
+fn why_did_we_pick_choose_or_go_with_resolves_in_one_step() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:design", DESIGN_SYSTEM_TITLE, &["design"]),
+        decision_proposed(2, "d:partners", "Design partners get early access", &[]),
+        decision_proposed(3, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])?;
+
+    for description in [
+        "why did we pick shadcn for the design system",
+        "why did we choose shadcn for the design system",
+        "why did we go with shadcn for the design system",
+        "why did we decide on shadcn for the design system",
+        "why did we settle on shadcn for the design system",
+        "why did we opt for shadcn for the design system",
+        "why we went with shadcn for the design system?",
+    ] {
+        let response = resolve_decision_by_description(&graph, description, None)?;
+        match response.data {
+            ResolveOutcome::Resolved { candidate } => {
+                assert_eq!(candidate.decision_id, "d:design", "{description:?}");
+                assert!(candidate.missing_terms.is_empty(), "{description:?}");
+            }
+            other => panic!("{description:?} should resolve, got {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_framing_adverb_is_not_a_missing_term() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:courtroom", COURTROOM_TITLE, &["website"]),
+        decision_proposed(2, "d:site", "Publish the changelog on the docs site", &[]),
+    ])?;
+
+    for description in [
+        "why is the courtroom demo still on the site",
+        "why is the courtroom demo on the site again",
+        "why do we even keep the courtroom demo on the site",
+        "why is the courtroom demo currently on the site",
+    ] {
+        assert_eq!(
+            resolved_id(&graph, description)?.as_deref(),
+            Some("d:courtroom"),
+            "{description:?} should resolve to the courtroom decision"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_decision_that_uses_a_framing_verb_is_still_found_by_it() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:vendor", "Pick the cheapest vendor", &["vendors"]),
+        decision_proposed(2, "d:postgres", "Go with Postgres for the ledger", &[]),
+        decision_proposed(3, "d:queue", "Adopt async queue for billing", &[]),
+    ])?;
+
+    // The verb is dropped from the question, not from the decision's text.
+    assert_eq!(
+        resolved_id(&graph, "pick vendor")?.as_deref(),
+        Some("d:vendor")
+    );
+    assert_eq!(
+        resolved_id(&graph, "why did we pick the cheapest vendor")?.as_deref(),
+        Some("d:vendor")
+    );
+    assert_eq!(
+        resolved_id(&graph, "go with postgres")?.as_deref(),
+        Some("d:postgres")
+    );
+    // A question that is only the verb still searches for it.
+    assert_eq!(resolved_id(&graph, "pick")?.as_deref(), Some("d:vendor"));
+    Ok(())
+}
+
+#[test]
+fn go_the_language_is_not_dropped_as_a_verb() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:go", "Write the CLI in Go", &[]),
+        decision_proposed(2, "d:rust", "Write the server in Rust", &[]),
+    ])?;
+
+    assert_eq!(
+        resolved_id(&graph, "why did we pick go for the cli")?.as_deref(),
+        Some("d:go")
+    );
+    assert_eq!(
+        resolved_id(&graph, "why did we go with go for the cli")?.as_deref(),
+        Some("d:go")
+    );
+    Ok(())
+}
+
+#[test]
+fn a_word_the_record_lacks_is_still_missing_after_the_verb_is_dropped() -> Result<()> {
+    let graph = graph_from_events([decision_proposed(
+        1,
+        "d:design",
+        DESIGN_SYSTEM_TITLE,
+        &["design"],
+    )])?;
+
+    // "pick" no longer counts against the decision, but "finally" still does: dropping verbs
+    // must not make close candidates look like full matches.
+    let response = resolve_decision_by_description(
+        &graph,
+        "why did we finally pick shadcn for the design system",
+        None,
+    )?;
+    match response.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].missing_terms, vec!["finally".to_owned()]);
+        }
+        other => panic!("expected a close candidate, got {other:?}"),
+    }
+    Ok(())
+}
+
 #[test]
 fn inflected_words_match_their_stem() -> Result<()> {
     let graph = graph_from_events([decision_proposed(
