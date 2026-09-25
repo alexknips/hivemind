@@ -21,6 +21,10 @@ mod organizational_scenarios;
 #[path = "support/project_layout.rs"]
 mod project_layout;
 
+#[allow(dead_code)]
+#[path = "support/delegation_cases.rs"]
+mod delegation_cases;
+
 use seed_data::{seed_to_dir, unique_temp_dir, TestResult};
 
 const SNAPSHOT_DIR: &str = "tests/snapshots/golden";
@@ -493,6 +497,10 @@ fn capture_export_outputs() -> TestResult<Vec<ExportOutput>> {
             organizational_scenarios::scenario_events(),
         ),
         ("project_layout", project_layout::project_layout_events()),
+        (
+            "delegation_cases",
+            delegation_cases::delegation_cases_events(),
+        ),
     ] {
         let ledger = InMemoryEventLedger::new();
         for event in events {

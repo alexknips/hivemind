@@ -238,6 +238,11 @@ struct DecisionEntry {
     event_origin: Option<i64>,
     topic_keys: Vec<String>,
     proposer_id: Option<String>,
+    /// The human whose delegated scope an agent's self-acceptance fell within
+    /// (hivemind-zdsh.6), read the way `DecisionContext` reads it. `None` for a human's
+    /// decision and for an agent that decided alone; the log states it only when present,
+    /// the same way `hivemind digest` does.
+    delegated_by: Option<String>,
     source: String,
     source_ref: Option<String>,
     chosen_option: Option<OptionLabel>,
@@ -387,6 +392,7 @@ fn build_entry(
         event_origin,
         topic_keys: decision.topic_keys,
         proposer_id: brief.decided_by.proposer_id,
+        delegated_by: brief.decided_by.delegated_by,
         source: brief.decided_by.source,
         source_ref: brief.decided_by.source_ref,
         chosen_option: brief.chosen_option,
@@ -1069,7 +1075,7 @@ fn render_outcome_section(
 }
 
 fn render_provenance_section(entry: &DecisionEntry) -> String {
-    let lines = [
+    let mut lines = vec![
         format!(
             "- Event origin: {}",
             entry
@@ -1090,18 +1096,24 @@ fn render_provenance_section(entry: &DecisionEntry) -> String {
             "- Accepted by: {}",
             render_actor_list_or_none(&entry.accepted_by)
         ),
-        format!(
-            "- Rejected by: {}",
-            render_actor_list_or_none(&entry.rejected_by)
-        ),
-        format!(
-            "- Ledger timestamp: {}",
-            entry
-                .occurred_at
-                .map(|ts| ts.to_rfc3339())
-                .unwrap_or_else(|| "None recorded.".to_owned())
-        ),
     ];
+    // Case 2 of the attribution ruling (hivemind-zdsh.6): an agent decided within a scope a
+    // human delegated. Stated right after who accepted, and only when present — absent means
+    // a human decided or the agent decided alone, never "None recorded".
+    if let Some(delegated_by) = &entry.delegated_by {
+        lines.push(format!("- Delegated by: {delegated_by}"));
+    }
+    lines.push(format!(
+        "- Rejected by: {}",
+        render_actor_list_or_none(&entry.rejected_by)
+    ));
+    lines.push(format!(
+        "- Ledger timestamp: {}",
+        entry
+            .occurred_at
+            .map(|ts| ts.to_rfc3339())
+            .unwrap_or_else(|| "None recorded.".to_owned())
+    ));
     lines.join("\n")
 }
 
@@ -1286,6 +1298,11 @@ fn render_index_table(
             out.push_str(entry.proposer_id.as_deref().unwrap_or_default());
         } else {
             write_joined(out, entry.accepted_by.iter(), ", ");
+        }
+        // An agent deciding within a human's delegation must not read like one deciding alone
+        // (hivemind-zdsh.6, case 2): the wording is the one `hivemind digest` prints.
+        if let Some(delegated_by) = &entry.delegated_by {
+            let _ = write!(out, " (Delegated by: {delegated_by})");
         }
         out.push_str(" |\n");
     }

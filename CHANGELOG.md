@@ -260,8 +260,8 @@ v0.7.0 client writes to it.
 - **`--decided-by`** records the human who decided when an agent captures: the decision is
   accepted by them and `verify` shows both. **`--delegated-by human:<name>`** marks an agent
   deciding within a human's delegation, so it reads differently from an agent deciding alone;
-  `digest` and `verify` show it and failure-mode attribution gains a `delegation` dimension.
-  (hivemind-zdsh.3, hivemind-zdsh.6)
+  `digest`, `verify` and the Markdown decision-log export show it and failure-mode attribution
+  gains a `delegation` dimension. (hivemind-zdsh.3, hivemind-zdsh.6, hivemind-o7p2)
 - **`POST /v1/agent-tokens`** (admin) mints a token bound to `agent:<tool>:<name>`, so a shared
   per-role token attributes its writes to an agent rather than a human. (hivemind-zdsh.19)
 

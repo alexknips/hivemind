@@ -421,6 +421,147 @@ fn export_decision_log_survives_a_branched_supersession() -> Result<()> {
     Ok(())
 }
 
+/// Alex's attribution ruling, three cases in one project (hivemind-zdsh.6, hivemind-o7p2):
+/// a human decided, an agent decided within a human's delegation, an agent decided alone.
+/// `delegated_by` rides on the accepting agent's own `decision.accepted`.
+fn attribution_case_events() -> Vec<Event> {
+    let proposed = |sequence: u128, decision_id: &str, title: &str, proposer: &str| {
+        event(
+            sequence,
+            EventType::DecisionProposed,
+            proposer,
+            json!({
+                "decision_id": decision_id,
+                "title": title,
+                "rationale": format!("Rationale for {title}"),
+                "topic_keys": ["governance"],
+                "option_ids": [format!("{decision_id}-a")],
+                "chosen_option_id": format!("{decision_id}-a"),
+                "project": "governance",
+                "project_source": "stated",
+            }),
+            "2026-01-02T00:00:00Z",
+        )
+    };
+    let accepted =
+        |sequence: u128, decision_id: &str, accepter: &str, delegated_by: Option<&str>| {
+            let mut payload = json!({ "decision_id": decision_id });
+            if let Some(delegated_by) = delegated_by {
+                payload["delegated_by"] = json!(delegated_by);
+            }
+            event(
+                sequence,
+                EventType::DecisionAccepted,
+                accepter,
+                payload,
+                "2026-01-02T00:00:01Z",
+            )
+        };
+    vec![
+        event(
+            1,
+            EventType::ProjectRegistered,
+            "human:alex",
+            json!({"handle": "governance"}),
+            "2026-01-01T00:00:00Z",
+        ),
+        proposed(
+            2,
+            "decision-human",
+            "Human chose the license",
+            "agent:claude:scribe",
+        ),
+        accepted(3, "decision-human", "human:alex", None),
+        proposed(
+            4,
+            "decision-delegated",
+            "Agent bumped the dependency",
+            "agent:claude:builder",
+        ),
+        accepted(
+            5,
+            "decision-delegated",
+            "agent:claude:builder",
+            Some("human:alex"),
+        ),
+        proposed(
+            6,
+            "decision-alone",
+            "Agent picked the log format",
+            "agent:claude:builder",
+        ),
+        accepted(7, "decision-alone", "agent:claude:builder", None),
+    ]
+}
+
+fn decision_file<'a>(export: &'a DecisionLogExport, title: &str) -> &'a str {
+    export
+        .files
+        .iter()
+        .find(|(path, content)| {
+            path.contains("/decisions/") && content.contains(&format!("\n# {title}\n"))
+        })
+        .map(|(_, content)| content.as_str())
+        .unwrap_or_else(|| panic!("no decision file titled {title:?}"))
+}
+
+fn index_row<'a>(index: &'a str, title: &str) -> &'a str {
+    index
+        .lines()
+        .find(|line| line.starts_with('|') && line.contains(&format!("[{title}]")))
+        .unwrap_or_else(|| panic!("no index row for {title:?}"))
+}
+
+#[test]
+fn export_decision_log_states_the_delegation_next_to_the_decider() -> Result<()> {
+    let (ledger, graph) = graph_and_ledger(attribution_case_events())?;
+
+    let export = exported(&graph, &ledger, &DecisionLogRequest::default())?;
+
+    // The project index and the root index: three decisions side by side, the delegated one
+    // the only row that says a human sanctioned it.
+    for path in ["INDEX.md", "projects/governance/INDEX.md"] {
+        let index = export.files.get(path).expect("index present");
+        assert!(
+            index_row(index, "Human chose the license").ends_with(" | human:alex |"),
+            "{path}: a human decider stays plain"
+        );
+        assert!(
+            index_row(index, "Agent bumped the dependency")
+                .ends_with(" | agent:claude:builder (Delegated by: human:alex) |"),
+            "{path}: the delegation sits in the Decided by cell"
+        );
+        assert!(
+            index_row(index, "Agent picked the log format").ends_with(" | agent:claude:builder |"),
+            "{path}: an agent deciding alone reads as exactly that"
+        );
+    }
+
+    // The decision file states it in Provenance, right after who accepted.
+    let delegated = decision_file(&export, "Agent bumped the dependency");
+    assert!(
+        delegated.contains(
+            "- Accepted by: agent:claude:builder\n- Delegated by: human:alex\n- Rejected by:"
+        ),
+        "{delegated}"
+    );
+    for title in ["Human chose the license", "Agent picked the log format"] {
+        let content = decision_file(&export, title);
+        assert!(
+            !content.contains("Delegated by"),
+            "{title}: no delegation, so no line, and never a `None recorded.` placeholder"
+        );
+    }
+
+    // The front matter is a fixed machine-readable shape; the delegation is not added to it.
+    assert!(!delegated
+        .split("\n---\n")
+        .next()
+        .unwrap_or_default()
+        .contains("delegated_by"));
+    Ok(())
+}
+
 #[test]
 fn export_decision_log_filters_are_anded() -> Result<()> {
     let events = vec![

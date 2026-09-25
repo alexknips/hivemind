@@ -107,10 +107,14 @@ agent deciding under a delegation still derives `agent_only` +
 `self_accepted`, and `delegated_by` is the extra fact that separates it from an
 agent deciding alone. `hivemind digest` prints it as a `Delegated by:` line
 under `By:`; `query verify` prints `delegated by:` and returns
-`decided_by.delegated_by`; `get_decision_context` returns `delegated_by`; and
-the failure-attribution report splits agent self-accepted decisions into a
-`delegation` dimension (`delegated` vs `agent_alone`). A decision with no
-marker has no `delegated_by` key at all, never a null.
+`decided_by.delegated_by`; `get_decision_context` returns `delegated_by`; the
+Markdown decision-log export (`hivemind export --format markdown`) appends
+`(Delegated by: human:<name>)` to the decider in the `Decided by` cell of each
+`INDEX.md` row and adds a `Delegated by:` line to the decision's Provenance
+section; and the failure-attribution report splits agent self-accepted
+decisions into a `delegation` dimension (`delegated` vs `agent_alone`). A
+decision with no marker has no `delegated_by` key at all, never a null, and
+the export prints no `Delegated by` text for it.
 
 Rules enforced at write time (CLI, MCP `capture_decision`, REST), each refused
 before anything is appended:

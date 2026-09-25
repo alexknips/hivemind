@@ -16,14 +16,15 @@ use crate::projector::{
     project_from_ledger, GraphParams, GraphRow, GraphValue, GraphView, NodeKind, RelationKind,
 };
 use crate::queries::{
-    get_decision, get_decision_brief, get_decision_brief_at, get_decision_context,
-    get_decision_context_candidates, get_decision_neighborhood, get_decision_outcome,
-    get_decision_outcome_at, get_decision_quality_candidates, get_decision_quality_score,
-    get_failure_attribution, get_supersession_chain, grounding_of_at,
+    export_decision_log, get_decision, get_decision_brief, get_decision_brief_at,
+    get_decision_context, get_decision_context_candidates, get_decision_neighborhood,
+    get_decision_outcome, get_decision_outcome_at, get_decision_quality_candidates,
+    get_decision_quality_score, get_failure_attribution, get_supersession_chain, grounding_of_at,
     resolve_decision_by_description, scan_decision_quality, search_decisions,
-    DecisionContextRequest, DecisionQualityCandidatesRequest, FailureAttributionRequest,
-    GroundingAdded, GroundingKind, NeighborhoodRequest, QueryContext, ResolveOutcome,
-    ScanQualityRequest, ScorerConfig, SearchDecisionRequest,
+    DecisionContextRequest, DecisionLogOutcome, DecisionLogRequest,
+    DecisionQualityCandidatesRequest, FailureAttributionRequest, GroundingAdded, GroundingKind,
+    NeighborhoodRequest, QueryContext, ResolveOutcome, ScanQualityRequest, ScorerConfig,
+    SearchDecisionRequest,
 };
 use crate::summarize::{recall_decisions, RecallRequest, RECALL_MAX_LIMIT};
 use crate::Result;
@@ -941,6 +942,37 @@ fn delegation_marker_reads_match_memory() -> Result<()> {
         {
             return Err(test_error(format!(
                 "search graph_context delegated_by mismatch: memory={memory_markers:?} pg={pg_markers:?}"
+            )));
+        }
+
+        // The decision-log export states the delegation next to the decider (hivemind-o7p2),
+        // and reads it the same on both backends.
+        let request = DecisionLogRequest::default();
+        let (DecisionLogOutcome::Exported(memory_export), DecisionLogOutcome::Exported(pg_export)) = (
+            export_decision_log(&memory, &ledger, &request)?,
+            export_decision_log(pg, &ledger, &request)?,
+        ) else {
+            return Err(test_error(
+                "an unfiltered export cannot be project_not_found",
+            ));
+        };
+        if memory_export != pg_export {
+            return Err(test_error(format!(
+                "decision-log export mismatch: memory={memory_export:?} pg={pg_export:?}"
+            )));
+        }
+        let delegated_lines = pg_export
+            .files
+            .values()
+            .flat_map(|content| content.lines())
+            .filter(|line| line.contains("Delegated by"))
+            .count();
+        // One INDEX cell in the root and one in the personal project's index, plus the
+        // decision's own Provenance line; the two other decisions add none.
+        if delegated_lines != 3 {
+            return Err(test_error(format!(
+                "export must state the delegation for the delegated decision only, found {delegated_lines} line(s): {:?}",
+                pg_export.files
             )));
         }
 
