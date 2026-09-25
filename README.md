@@ -2,18 +2,18 @@
 
 [![CI](https://github.com/alexknips/hivemind/actions/workflows/ci.yml/badge.svg)](https://github.com/alexknips/hivemind/actions/workflows/ci.yml)
 
-HiveMind is the substrate for human governance of agentic decision-making.
-It records what was decided, why it was decided, who acted (human or agent),
-what options were considered, and what evidence or hypotheses the decision
-depends on — so humans can see, query, and contest every decision their
-agents make, instead of relinquishing oversight as agents take on more work.
+HiveMind is memory for decisions. Your coding agents record what was decided,
+which options lost and why, and who decided, you or the agent. The next session
+does not reintroduce what you dropped or rewrite what you agreed. When a
+decision is contested or replaced, its status changes; nothing goes quietly
+stale. One engineer and their agents, local-first, AGPL-3.0, free to self-host.
 
-The project is deliberately a decision graph, not a chat archive, notes app,
-or task tracker. Humans and agents are both represented as actors,
-disagreement is preserved as first-class state, and decision status is
-derived from graph relations instead of being silently overwritten.
+It is deliberately a decision graph, not a chat archive, notes app, or task
+tracker. Humans and agents are both represented as actors, disagreement is
+preserved as first-class state, and decision status is derived from graph
+relations instead of being silently overwritten.
 
-See [VISION.md](VISION.md) for the full positioning,
+See [VISION.md](VISION.md) for why it exists,
 [PRINCIPLES.md](PRINCIPLES.md) for the load-bearing constraints, and
 [STRATEGY.md](STRATEGY.md) for the active investment fronts.
 
@@ -136,6 +136,9 @@ multi-user, production checklist, troubleshooting) and
 walkthrough that needs no `ANTHROPIC_API_KEY`.
 
 ## Install
+
+HiveMind is self-hosted: you install it and run it yourself, and the ledger
+stays on your own machine or infrastructure.
 
 Install the default CLI directly from Git:
 
@@ -468,8 +471,7 @@ navigation, and exports the focused one-hop neighborhood as DOT with `x`.
 
 Level-1 guidance (read these first):
 
-- [`VISION.md`](VISION.md) — why HiveMind exists, who it's for, and the bet on
-  human governance of agentic decision-making.
+- [`VISION.md`](VISION.md) — why HiveMind exists and who it's for.
 - [`PRINCIPLES.md`](PRINCIPLES.md) — the constraints HiveMind cannot trade
   away.
 - [`STRATEGY.md`](STRATEGY.md) — active investment fronts; the filter a bead
