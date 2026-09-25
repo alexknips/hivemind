@@ -1648,10 +1648,12 @@ pub(crate) struct OutputEnvelope {
     pub(crate) placement: Option<DecisionPlacement>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) project_notice: Option<&'static str>,
-    /// Set when `--project-from-context` found no project to attach the capture to: the
-    /// folder is not attached, and how to attach it.
+    /// Set when `--project-from-context` has something to say about how the project was worked
+    /// out: it found none to attach the capture to (the folder is not attached, and how to
+    /// attach it), or the change spans several projects (recorded for their parent, or saved to
+    /// the personal project with how to move it).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) project_reminder: Option<&'static str>,
+    pub(crate) project_reminder: Option<String>,
 }
 
 impl OutputEnvelope {
@@ -1672,7 +1674,7 @@ impl OutputEnvelope {
         self
     }
 
-    pub(crate) fn with_project_reminder(mut self, reminder: Option<&'static str>) -> Self {
+    pub(crate) fn with_project_reminder(mut self, reminder: Option<String>) -> Self {
         self.project_reminder = reminder;
         self
     }
@@ -1701,7 +1703,7 @@ pub(crate) struct SupersedeCommandOutput {
     pub(crate) project_notice: Option<&'static str>,
     /// See `OutputEnvelope::project_reminder`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) project_reminder: Option<&'static str>,
+    pub(crate) project_reminder: Option<String>,
     /// What the new decision rests on, as recorded.
     pub(crate) rests_on: Vec<RestsOn>,
     /// Premise decisions already superseded or rejected when named.
@@ -1722,7 +1724,7 @@ pub(crate) struct CaptureCommandOutput {
     pub(crate) project_notice: Option<&'static str>,
     /// See `OutputEnvelope::project_reminder`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) project_reminder: Option<&'static str>,
+    pub(crate) project_reminder: Option<String>,
     pub(crate) rests_on: Vec<RestsOn>,
     pub(crate) premise_stale: Vec<String>,
 }

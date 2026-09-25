@@ -9,7 +9,7 @@
 //! against removes the same way `commands::active_project_links` does for the write
 //! layer, and gives every fact its own `event_origin` for free.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
@@ -637,6 +637,63 @@ pub fn get_project_by_anchor(
         latency_ms: started.elapsed().as_millis(),
         data: outcome,
     })
+}
+
+/// One project's place in the `part_of` tree.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProjectAncestry {
+    pub handle: String,
+    /// The projects above `handle`, nearest parent first. Empty for a top-level project and for
+    /// a handle that is not registered (a miss is data, as on `get_project`). The walk stops
+    /// before it would revisit a project: the write layer allows one parent per project but
+    /// does not forbid a `part_of` cycle.
+    pub ancestors: Vec<String>,
+}
+
+/// The `part_of` ancestry of each of `handles`, one registry replay however many are asked
+/// about, in the order asked.
+///
+/// A read of the registry's shape and nothing more: which of these a change belongs to is the
+/// caller's rule (the client works out "the nearest project they are all part of").
+pub fn get_project_ancestries(
+    ledger: &impl EventLedger,
+    handles: &[String],
+) -> Result<QueryResponse<Vec<ProjectAncestry>>> {
+    let started = query_timer_start();
+    let handles: Vec<&str> = handles.iter().map(|handle| handle.trim()).collect();
+    if handles.iter().any(|handle| handle.is_empty()) {
+        return Err(query_error("handle must not be empty").into());
+    }
+
+    let registry = collect_project_registry(ledger)?;
+    let items: Vec<ProjectAncestry> = handles
+        .into_iter()
+        .map(|handle| ProjectAncestry {
+            handle: handle.to_owned(),
+            ancestors: part_of_ancestors(&registry, handle),
+        })
+        .collect();
+
+    Ok(QueryResponse {
+        result_count: items.len(),
+        truncated: false,
+        latency_ms: started.elapsed().as_millis(),
+        data: items,
+    })
+}
+
+fn part_of_ancestors(registry: &ProjectRegistry, handle: &str) -> Vec<String> {
+    let mut walked: BTreeSet<&str> = BTreeSet::from([handle]);
+    let mut ancestors: Vec<&str> = Vec::new();
+    let mut current = handle;
+    while let Some(parent) = registry.part_of_parent(current) {
+        if !walked.insert(parent) {
+            break;
+        }
+        ancestors.push(parent);
+        current = parent;
+    }
+    ancestors.into_iter().map(str::to_owned).collect()
 }
 
 #[cfg(test)]

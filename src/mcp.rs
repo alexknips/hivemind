@@ -26,7 +26,7 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use tracing::{debug, warn};
 
-use crate::cli::project_context::{resolve_project_in_ledger, ProjectContextEnv};
+use crate::cli::project_context::{resolve_project_in_ledger, ProjectContextEnv, ResolvedProject};
 use crate::commands::{CommandContext, Commands};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, ProjectSource, TenantId};
@@ -487,7 +487,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "evidence_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"evidence\", evidence_id}` grounding items." },
                     "quote": { "type": "string", "description": "Verbatim words of the decider, self-contained — not a bare reference like \"1a\" into an external numbered list. Requires `question`. A quote with no stated question is unreadable once the source conversation is gone." },
                     "question": { "type": "string", "description": "The question `quote` answers, spelled out in the capturer's own words. Requires `quote`." },
-                    "project": { "type": "string", "description": "Registered project handle to file the decision under. An unknown handle is refused with the register command. Omit it and the decision is saved to the actor's personal project — the reply says so (`project_notice`). HiveMind checks the handle and never works out the project itself, so pass it whenever you know it; an HTTP-served MCP cannot see the caller's working directory. A stdio server started with `--project-from-context` works it out from its own working directory when you omit it (nearest `.hivemind-project` file, then the rig, then the actor's current project; `project_source` says which), and adds `project_reminder` when the folder is not attached to any project." },
+                    "project": { "type": "string", "description": "Registered project handle to file the decision under. An unknown handle is refused with the register command. Omit it and the decision is saved to the actor's personal project — the reply says so (`project_notice`). HiveMind checks the handle and never works out the project itself, so pass it whenever you know it; an HTTP-served MCP cannot see the caller's working directory. A stdio server started with `--project-from-context` works it out from its own working directory when you omit it (the `.hivemind-project` files of the folders the uncommitted change touches, else the nearest one above the working directory, then the rig, then the actor's current project; `project_source` says which), and adds `project_reminder` when the folder is not attached to any project or the change spans several: several projects are recorded for the nearest project they are all part of, or saved to the personal project when they share none." },
                     "project_source": { "type": "string", "enum": ["stated", "folder_marker", "rig", "current_project", "job"], "description": "How `project` was determined. Defaults to `stated`. Requires `project`." }
                 }
             }
@@ -974,28 +974,28 @@ fn tool_capture_decision(args: Value, config: &McpConfig) -> std::result::Result
     let args = args.as_object().cloned().unwrap_or_default();
     let actor_id = actor_id_or_default(&args, config)?;
     let mut core_args = CaptureDecisionArgs::from_json(&args, actor_id)?;
-    let reminder = fill_project_from_context(
+    let resolved = fill_project_from_context(
         config,
         &mut core_args.project,
         &mut core_args.project_source,
     )?;
     let provider = StdioLedgerProvider { config };
     let mut reply = core::capture_decision(&provider, core_args)?.into_value();
-    insert_project_reminder(&mut reply, reminder);
+    insert_project_reminder(&mut reply, resolved.as_ref());
     Ok(reply)
 }
 
 /// stdio only, and only under `--project-from-context`: a write call that names no `project`
-/// gets one worked out from where the server runs (folder marker, then rig, then the current
-/// project), recorded with how it was determined. A call that names a `project` is left
-/// alone. Returns the "this folder is not attached" reminder when nothing applied, for the
-/// reply. For `supersede_decision` a call that resolves to nothing stays unstated, so the new
-/// decision inherits the old one's project.
+/// gets one worked out from where the server runs (the folders the change touches, else the
+/// folder it stands in, then the rig, then the current project), recorded with how it was
+/// determined. A call that names a `project` is left alone. Returns what was worked out, for
+/// the reply to say so (`insert_project_reminder`). For `supersede_decision` a call that
+/// resolves to nothing stays unstated, so the new decision inherits the old one's project.
 fn fill_project_from_context(
     config: &McpConfig,
     project: &mut Option<String>,
     project_source: &mut Option<ProjectSource>,
-) -> std::result::Result<Option<&'static str>, RpcError> {
+) -> std::result::Result<Option<ResolvedProject>, RpcError> {
     let Some(env) = &config.project_context else {
         return Ok(None);
     };
@@ -1015,20 +1015,23 @@ fn fill_project_from_context(
         *project = Some(determined.handle.to_owned());
         *project_source = Some(determined.source);
     }
-    Ok(resolved.reminder())
+    Ok(Some(resolved))
 }
 
-/// Adds `project_reminder` to a write reply, but only when the decision really landed in the
-/// personal project: a superseding decision that inherited a shared project has nothing to be
-/// reminded about.
-fn insert_project_reminder(reply: &mut Value, reminder: Option<&'static str>) {
-    let Some(reminder) = reminder else {
+/// Adds `project_reminder` to a write reply when working the project out from context has
+/// something to say: the folder is not attached, or the change spans several projects. A
+/// fallback reminder is only true when the decision really landed in the personal project: a
+/// superseding decision that inherited a shared project has nothing to be reminded about.
+fn insert_project_reminder(reply: &mut Value, resolved: Option<&ResolvedProject>) {
+    let Some(resolved) = resolved else {
         return;
     };
     let Some(reply) = reply.as_object_mut() else {
         return;
     };
-    if reply.get("project_source") == Some(&json!(ProjectSource::PersonalFallback)) {
+    let landed_in_personal =
+        reply.get("project_source") == Some(&json!(ProjectSource::PersonalFallback));
+    if let Some(reminder) = resolved.reminder(landed_in_personal) {
         reply.insert("project_reminder".to_owned(), json!(reminder));
     }
 }
@@ -1080,14 +1083,14 @@ fn tool_supersede_decision(
     let args = args.as_object().cloned().unwrap_or_default();
     let actor_id = mcp_actor_id(&args, config)?;
     let mut core_args = SupersedeDecisionArgs::from_json(&args, actor_id)?;
-    let reminder = fill_project_from_context(
+    let resolved = fill_project_from_context(
         config,
         &mut core_args.project,
         &mut core_args.project_source,
     )?;
     let provider = StdioLedgerProvider { config };
     let mut reply = core::supersede_decision(&provider, core_args)?.into_value();
-    insert_project_reminder(&mut reply, reminder);
+    insert_project_reminder(&mut reply, resolved.as_ref());
     Ok(reply)
 }
 

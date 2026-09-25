@@ -11,11 +11,24 @@
 //! The order, first match wins, each rung naming how it was determined:
 //!
 //! 1. the project the caller stated (`--project`)                     -> as stated
-//! 2. the nearest `.hivemind-project` marker walking up from the cwd  -> `folder_marker`
+//! 2. the `.hivemind-project` markers of the folders the change
+//!    touches (see below), else the nearest one walking up from the
+//!    cwd                                                             -> `folder_marker`
 //! 3. the registered project anchored to the rig in `GC_RIG`          -> `rig`
 //! 4. the actor's current project (`hivemind project use`)            -> `current_project`
 //! 5. none of the above: the personal project, with a reminder that
 //!    the folder is not attached                                      -> `personal_fallback`
+//!
+//! A change that spans folders (hivemind-s15q.14). The files the change touches -- the same
+//! working-tree diff plus staged set the situational query reads -- each name the marker
+//! nearest above them; the distinct handles are the projects the change spans. One handle is
+//! the project. Several are recorded for the nearest project they are all `part_of` (a
+//! decision is made for the parent project, never for two projects), `folder_marker`, and the
+//! reply says so. With no common parent the decision is saved to the actor's personal project
+//! (`personal_fallback`) and the reply names the projects and how to move it: losing the
+//! decision is worse than misfiling it, since moves are allowed. There is no refused or
+//! ambiguous outcome, and the write path is only ever handed one project. A change whose
+//! files sit under no marker falls back to the folder the session stands in.
 //!
 //! Standing constraint (Alex, choice 2a, provisional): sub-projects must stay possible.
 //! Nothing here forecloses them. A marker nested inside an attached folder names a
@@ -24,13 +37,16 @@
 //! narrow interface (`resolve_project_from_context`) over an injectable set of sources --
 //! so the rule can move (into a plugin, or server-side) without untangling it.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::commands::DeterminedProject;
 use crate::error::CliError;
 use crate::events::{ProjectAnchorKind, ProjectSource, TenantId};
 use crate::ledger::{EventLedger, TenantScopedLedger};
-use crate::queries::{get_project_by_anchor, ProjectOutcome};
+use crate::queries::{
+    get_project_ancestries, get_project_by_anchor, ProjectAncestry, ProjectOutcome,
+};
 use crate::Result;
 
 use super::current_project::CurrentProjectStore;
@@ -47,6 +63,33 @@ pub(crate) const UNATTACHED_FOLDER_REMINDER: &str =
 /// The environment variable every Gas City session carries its rig in.
 const RIG_ENV_VAR: &str = "GC_RIG";
 
+/// Said next to a capture that fell back to the personal project because the change spans
+/// projects with no parent in common. Follows the placement line, which already says
+/// "saved to your personal project".
+fn spans_unrelated_reminder(spanned: &[String]) -> String {
+    format!(
+        "this change spans {}, which share no parent. Move it with hivemind move ..., or register a parent.",
+        join_handles(spanned)
+    )
+}
+
+/// Said next to a capture recorded for the parent of the projects a change spans.
+fn spans_under_parent_note(parent: &str, spanned: &[String]) -> String {
+    format!(
+        "recorded for {parent}: this change spans {}",
+        join_handles(spanned)
+    )
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn join_handles(handles: &[String]) -> String {
+    match handles {
+        [] => String::new(),
+        [only] => only.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
 /// What the ladder settled on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolvedProject {
@@ -56,8 +99,19 @@ pub(crate) enum ResolvedProject {
         handle: String,
         source: ProjectSource,
     },
+    /// The change touches folders attached to several projects that share a parent: it is
+    /// recorded for `parent`, the nearest project they are all part of (`folder_marker`).
+    /// `spanned` are the projects the change touches, sorted.
+    SpansUnderParent {
+        parent: String,
+        spanned: Vec<String>,
+    },
     /// No rung matched. The write layer records the personal fallback itself.
     PersonalFallback,
+    /// The change touches folders attached to several projects that share no parent. The
+    /// write layer records the personal fallback itself; the reply names `spanned` (sorted)
+    /// so the decision can be moved or a parent registered.
+    SpansUnrelated { spanned: Vec<String> },
 }
 
 impl From<DeterminedProject<'_>> for ResolvedProject {
@@ -78,13 +132,31 @@ impl ResolvedProject {
                 handle,
                 source: *source,
             }),
-            Self::PersonalFallback => None,
+            Self::SpansUnderParent { parent, .. } => Some(DeterminedProject {
+                handle: parent,
+                source: ProjectSource::FolderMarker,
+            }),
+            Self::PersonalFallback | Self::SpansUnrelated { .. } => None,
         }
     }
 
-    /// The "not attached" reminder, present exactly when nothing matched.
-    pub(crate) fn reminder(&self) -> Option<&'static str> {
-        matches!(self, Self::PersonalFallback).then_some(UNATTACHED_FOLDER_REMINDER)
+    /// What the reply tells the reader about how the project was worked out, if anything.
+    /// `landed_in_personal` says whether the write layer really recorded the personal
+    /// project: a fallback reminder is only true then (a superseding decision that inherited a
+    /// shared project has nothing to be reminded about).
+    pub(crate) fn reminder(&self, landed_in_personal: bool) -> Option<String> {
+        match self {
+            Self::Determined { .. } => None,
+            Self::SpansUnderParent { parent, spanned } => {
+                Some(spans_under_parent_note(parent, spanned))
+            }
+            Self::PersonalFallback => {
+                landed_in_personal.then(|| UNATTACHED_FOLDER_REMINDER.to_owned())
+            }
+            Self::SpansUnrelated { spanned } => {
+                landed_in_personal.then(|| spans_unrelated_reminder(spanned))
+            }
+        }
     }
 }
 
@@ -103,6 +175,15 @@ pub(crate) trait ProjectContextSources {
 
     /// The acting person's current-project setting.
     fn current_project(&self) -> Result<Option<String>>;
+
+    /// The files the change under way in `dir` touches, as absolute paths: the working-tree
+    /// diff plus the staged set, the same source the situational query reads. Empty when
+    /// there is no change or git cannot say (not a repository, no `git` on PATH).
+    fn touched_paths(&self, dir: &Path) -> Vec<PathBuf>;
+
+    /// The `part_of` ancestry of each handle, from one registry read. Only asked when a
+    /// change spans several projects.
+    fn part_of_ancestries(&self, handles: &[String]) -> Result<Vec<ProjectAncestry>>;
 }
 
 /// Work out the project for one capture. `stated` is what the caller passed outright; it
@@ -115,11 +196,8 @@ pub(crate) fn resolve_project_from_context(
         return Ok(stated.into());
     }
 
-    if let Some(handle) = nearest_marker_handle(&sources.start_dir()?)? {
-        return Ok(ResolvedProject::Determined {
-            handle,
-            source: ProjectSource::FolderMarker,
-        });
+    if let Some(project) = folder_marker_project(sources)? {
+        return Ok(project);
     }
 
     if let Some(rig) = sources.rig() {
@@ -139,6 +217,73 @@ pub(crate) fn resolve_project_from_context(
     }
 
     Ok(ResolvedProject::PersonalFallback)
+}
+
+/// The folder-marker rung. The projects the change's own files are attached to when it
+/// touches any attached folder, otherwise the folder the session stands in.
+fn folder_marker_project(sources: &impl ProjectContextSources) -> Result<Option<ResolvedProject>> {
+    let start = sources.start_dir()?;
+    let spanned: Vec<String> = touched_marker_handles(&sources.touched_paths(&start))?
+        .into_iter()
+        .collect();
+
+    match spanned.as_slice() {
+        [] => Ok(nearest_marker_handle(&start)?.map(folder_marker)),
+        [only] => Ok(Some(folder_marker(only.clone()))),
+        _ => spans_projects(spanned, sources).map(Some),
+    }
+}
+
+fn folder_marker(handle: String) -> ResolvedProject {
+    ResolvedProject::Determined {
+        handle,
+        source: ProjectSource::FolderMarker,
+    }
+}
+
+/// A change that touches several projects: recorded for the nearest project they are all
+/// part of, or -- with none in common -- left to the personal fallback, never refused.
+fn spans_projects(
+    spanned: Vec<String>,
+    sources: &impl ProjectContextSources,
+) -> Result<ResolvedProject> {
+    let ancestries = sources.part_of_ancestries(&spanned)?;
+    Ok(match nearest_common_ancestor(&ancestries) {
+        Some(parent) => ResolvedProject::SpansUnderParent { parent, spanned },
+        None => ResolvedProject::SpansUnrelated { spanned },
+    })
+}
+
+/// The nearest project every one of `ancestries` is part of. A project is the start of its
+/// own chain, so a change touching a project's own files and one of its sub-projects belongs
+/// to that project. An unregistered handle has no chain beyond itself, so it shares a parent
+/// with nothing: a typo in a marker never silently picks a parent.
+fn nearest_common_ancestor(ancestries: &[ProjectAncestry]) -> Option<String> {
+    let chains: Vec<Vec<&str>> = ancestries
+        .iter()
+        .map(|ancestry| {
+            std::iter::once(ancestry.handle.as_str())
+                .chain(ancestry.ancestors.iter().map(String::as_str))
+                .collect()
+        })
+        .collect();
+    let (first, rest) = chains.split_first()?;
+    first
+        .iter()
+        .find(|candidate| rest.iter().all(|chain| chain.contains(candidate)))
+        .map(|candidate| (*candidate).to_owned())
+}
+
+/// The distinct project handles the touched files' folders are attached to: the nearest
+/// marker at or above each file's folder. A file under no marker adds nothing. A broken
+/// marker is refused, as on the cwd walk.
+fn touched_marker_handles(touched: &[PathBuf]) -> Result<BTreeSet<String>> {
+    let folders: BTreeSet<&Path> = touched.iter().filter_map(|path| path.parent()).collect();
+    let mut handles = BTreeSet::new();
+    for folder in folders {
+        handles.extend(nearest_marker_handle(folder)?);
+    }
+    Ok(handles)
 }
 
 /// The handle in the nearest `.hivemind-project` at or above `start`. A marker nested inside
@@ -241,6 +386,57 @@ impl<L: EventLedger> ProjectContextSources for LedgerProjectSources<'_, L> {
     fn current_project(&self) -> Result<Option<String>> {
         CurrentProjectStore::new(self.hivemind_dir).get(self.tenant.as_str(), &self.env.person)
     }
+
+    fn touched_paths(&self, dir: &Path) -> Vec<PathBuf> {
+        git_touched_paths(dir)
+    }
+
+    fn part_of_ancestries(&self, handles: &[String]) -> Result<Vec<ProjectAncestry>> {
+        Ok(get_project_ancestries(self.ledger, handles)?.data)
+    }
+}
+
+/// The files the change under way in the repository around `dir` touches: the working-tree
+/// diff plus the staged set, the same two reads the situational query defaults to (see
+/// `git_default_diff_paths` in the runner), made absolute so each file can be walked up to its
+/// marker. `git diff` prints repository-root-relative names, hence the top-level join.
+///
+/// Empty when `dir` is not in a repository or `git` is not there: no change is known, so the
+/// caller falls back to the folder it stands in rather than refusing to capture.
+fn git_touched_paths(dir: &Path) -> Vec<PathBuf> {
+    let Some(toplevel) = git_stdout(dir, &["rev-parse", "--show-toplevel"]) else {
+        return Vec::new();
+    };
+    let toplevel = PathBuf::from(String::from_utf8_lossy(&toplevel).trim_end_matches(['\n', '\r']));
+
+    let mut touched = BTreeSet::new();
+    for scope in [None, Some("--cached")] {
+        // `diff.relative=false` because a repository may set it, which would print names
+        // relative to `dir` instead. `-z` keeps a name with unusual characters unquoted.
+        let mut args = vec!["-c", "diff.relative=false", "diff", "--name-only", "-z"];
+        args.extend(scope);
+        let Some(names) = git_stdout(dir, &args) else {
+            continue;
+        };
+        touched.extend(
+            String::from_utf8_lossy(&names)
+                .split('\0')
+                .filter(|name| !name.is_empty())
+                .map(|name| toplevel.join(name)),
+        );
+    }
+    touched.into_iter().collect()
+}
+
+/// `git -C dir args...`'s stdout, `None` when git could not be run or exited non-zero.
+fn git_stdout(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
+    output.status.success().then_some(output.stdout)
 }
 
 /// [`resolve_project_from_context`] against a tenant's ledger and the local config

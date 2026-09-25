@@ -3669,6 +3669,94 @@ mod transport_parity {
         let _ = std::fs::remove_dir_all(&tree);
     }
 
+    /// A committed git repository of two attached folders, `billing` and `payments`, each with
+    /// its own marker and an uncommitted edit -- one change spanning both.
+    fn spanning_repo(label: &str) -> std::path::PathBuf {
+        let root = unique_dir(&format!("context-{label}"));
+        let repo = root.join("repo");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.email=test@example.com", "-c", "user.name=Test"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .output()
+                .expect("run git"); // ubs:ignore: test-only; panicking is correct in tests
+            assert!(output.status.success(), "git {args:?}"); // ubs:ignore: test-only assertion
+        };
+        for folder in ["billing", "payments"] {
+            std::fs::create_dir_all(repo.join(folder)).expect("create folder"); // ubs:ignore: test-only; panicking is correct in tests
+            std::fs::write(
+                repo.join(folder).join(".hivemind-project"),
+                format!("{folder}\n"),
+            )
+            .expect("write marker"); // ubs:ignore: test-only; panicking is correct in tests
+            std::fs::write(repo.join(folder).join("code.rs"), "one\n").expect("write code");
+            // ubs:ignore: test-only; panicking is correct in tests
+        }
+        git(&["init", "--quiet"]);
+        git(&["add", "."]);
+        git(&["commit", "--quiet", "-m", "first"]);
+        for folder in ["billing", "payments"] {
+            std::fs::write(repo.join(folder).join("code.rs"), "two\n").expect("edit code");
+            // ubs:ignore: test-only; panicking is correct in tests
+        }
+        root
+    }
+
+    #[test]
+    fn stdio_capture_from_context_says_when_the_change_spans_several_projects() {
+        let dir = context_ledger("capture-spanning");
+        let root = spanning_repo("capture-spanning");
+
+        // Two projects with no parent in common: saved to the personal project, and the
+        // reminder names both and says how to move it.
+        let response = stdio_call_from(
+            &dir,
+            root.join("repo"),
+            None,
+            "capture_decision",
+            capture_args("Adopt one queue for billing and payments"),
+        );
+        let reply = &response["result"]["structuredContent"];
+        assert_eq!(reply["project_source"], "personal_fallback"); // ubs:ignore: test-only assertion
+        assert_eq!(
+            reply["project_reminder"],
+            "this change spans billing and payments, which share no parent. Move it with hivemind move ..., or register a parent."
+        ); // ubs:ignore: test-only assertion
+
+        // Once one is part of the other, the change is recorded for the parent -- a shared
+        // project, so no personal-project notice -- and the reply still says it spans both.
+        let ledger = SqliteEventLedger::open(&dir).expect("ledger opens"); // ubs:ignore: test-only; panicking is correct in tests
+        Commands::new(&ledger)
+            .link_project(
+                "human:parity",
+                "payments",
+                "billing",
+                crate::events::ProjectLinkKind::PartOf,
+            )
+            .expect("link payments part of billing"); // ubs:ignore: test-only; panicking is correct in tests
+        let response = stdio_call_from(
+            &dir,
+            root.join("repo"),
+            None,
+            "capture_decision",
+            capture_args("Adopt one queue for payments and billing"),
+        );
+        let reply = &response["result"]["structuredContent"];
+        assert_eq!(reply["project"], "billing"); // ubs:ignore: test-only assertion
+        assert_eq!(reply["project_source"], "folder_marker"); // ubs:ignore: test-only assertion
+        assert!(reply.get("project_notice").is_none(), "{reply:?}"); // ubs:ignore: test-only assertion
+        assert_eq!(
+            reply["project_reminder"],
+            "recorded for billing: this change spans billing and payments"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn stdio_capture_without_the_flag_never_reads_the_folder() {
         let dir = context_ledger("capture-opt-in");

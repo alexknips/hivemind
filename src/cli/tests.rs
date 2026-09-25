@@ -9051,6 +9051,280 @@ fn supersede_from_context_follows_the_folder_or_inherits_postgres() -> CliTestRe
     supersede_from_context_follows_the_folder_or_inherits_body(&backend)
 }
 
+// ---------------------------------------------------------------------------
+// A change that spans several attached folders (hivemind-s15q.14): the files the change
+// touches, read from git, name the projects; their nearest common parent takes the decision.
+// ---------------------------------------------------------------------------
+
+fn run_test_git(dir: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.email=test@example.com", "-c", "user.name=Test"])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A committed git repository of three attached folders, no marker at its root:
+/// `services/billing` (billing), `services/auth` (auth) and `services/ledger` (ledger). Nothing
+/// has changed yet; `edit` makes an uncommitted change in a folder, `restore` takes it back.
+struct SpanningTree {
+    root: PathBuf,
+}
+
+impl SpanningTree {
+    const FOLDERS: [(&'static str, &'static str); 3] = [
+        ("services/billing", "billing"),
+        ("services/auth", "auth"),
+        ("services/ledger", "ledger"),
+    ];
+
+    fn new(name: &str) -> Self {
+        let tree = Self {
+            root: unique_test_dir(name),
+        };
+        for (folder, handle) in Self::FOLDERS {
+            let dir = tree.repo().join(folder);
+            std::fs::create_dir_all(&dir).expect("create attached folder");
+            std::fs::write(dir.join(".hivemind-project"), format!("{handle}\n"))
+                .expect("write marker");
+            std::fs::write(dir.join("code.rs"), "one\n").expect("write code");
+        }
+        run_test_git(&tree.repo(), &["init", "--quiet"]);
+        run_test_git(&tree.repo(), &["add", "."]);
+        run_test_git(&tree.repo(), &["commit", "--quiet", "-m", "first"]);
+        tree
+    }
+
+    fn repo(&self) -> PathBuf {
+        self.root.join("repo")
+    }
+
+    fn edit(&self, folder: &str) {
+        std::fs::write(self.repo().join(folder).join("code.rs"), "two\n").expect("edit code");
+    }
+
+    fn restore(&self, folder: &str) {
+        run_test_git(
+            &self.repo(),
+            &["checkout", "--quiet", "--", &format!("{folder}/code.rs")],
+        );
+    }
+
+    /// The session stands at the repository root, as an agent's does.
+    fn env(&self, person: &str) -> ProjectContextEnv {
+        ProjectContextEnv::new(Some(self.repo()), None, person)
+    }
+}
+
+impl Drop for SpanningTree {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn spanning_change_goes_to_the_common_parent_or_the_personal_project_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    for handle in ["platform", "billing", "auth", "ledger"] {
+        register_test_project(backend, handle)?;
+    }
+    link_test_projects(backend, "billing", "platform", "part_of")?;
+    link_test_projects(backend, "auth", "platform", "part_of")?;
+    let tree = SpanningTree::new("context-spanning");
+    let capture = |title: &str| {
+        capture_json_in(
+            backend,
+            &tree.env("human:alice"),
+            title,
+            &["--project-from-context"],
+        )
+    };
+
+    // One folder changed: its project, with nothing to say about it.
+    tree.edit("services/billing");
+    let single = capture("Adopt async billing queue")?;
+    ensure_json_eq(
+        &single,
+        serde_json::json!({
+            "subcommand": "emit",
+            "kind": "decision_id",
+            "value": "<decision-id>",
+            "project": "billing",
+            "project_source": "folder_marker",
+        }),
+        "a change in one attached folder",
+    )?;
+
+    // Two folders that share a parent: recorded for the parent, and the reply says so.
+    tree.edit("services/auth");
+    let under_parent = capture("Adopt one token store for billing and auth")?;
+    ensure_json_eq(
+        &under_parent,
+        serde_json::json!({
+            "subcommand": "emit",
+            "kind": "decision_id",
+            "value": "<decision-id>",
+            "project": "platform",
+            "project_source": "folder_marker",
+            "project_reminder": "recorded for platform: this change spans auth and billing",
+        }),
+        "a change spanning two projects with a parent",
+    )?;
+
+    // Two folders that share none: saved to the personal project -- never refused, never
+    // dropped -- naming both, with the way out.
+    tree.restore("services/auth");
+    tree.edit("services/ledger");
+    let unrelated = capture("Adopt one queue for billing and ledger")?;
+    ensure_json_eq(
+        &unrelated,
+        serde_json::json!({
+            "subcommand": "emit",
+            "kind": "decision_id",
+            "value": "<decision-id>",
+            "project": "personal:agent:claude",
+            "project_source": "personal_fallback",
+            "project_notice": crate::commands::PERSONAL_FALLBACK_NOTICE,
+            "project_reminder": "this change spans billing and ledger, which share no parent. Move it with hivemind move ..., or register a parent.",
+        }),
+        "a change spanning two projects with no parent",
+    )
+}
+
+#[test]
+fn spanning_change_goes_to_the_common_parent_or_the_personal_project() -> CliTestResult {
+    spanning_change_goes_to_the_common_parent_or_the_personal_project_body(&TestBackend::sqlite(
+        "context-spanning",
+    ))
+}
+
+#[test]
+fn spanning_change_goes_to_the_common_parent_or_the_personal_project_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("context-spanning-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    spanning_change_goes_to_the_common_parent_or_the_personal_project_body(&backend)
+}
+
+#[test]
+fn spanning_change_text_announces_the_project_then_says_how_it_was_worked_out() -> CliTestResult {
+    let backend = TestBackend::sqlite("context-spanning-text");
+    for handle in ["platform", "billing", "auth", "ledger"] {
+        register_test_project(&backend, handle)?;
+    }
+    link_test_projects(&backend, "billing", "platform", "part_of")?;
+    link_test_projects(&backend, "auth", "platform", "part_of")?;
+    let tree = SpanningTree::new("context-spanning-text");
+    let capture = |title: &str| {
+        let mut rest = vec!["--actor", "human:alice"];
+        rest.extend(capture_args_for(title, &["--project-from-context"]));
+        run_emit_text_in(&backend, &tree.env("human:alice"), &rest)
+    };
+
+    tree.edit("services/billing");
+    tree.edit("services/auth");
+    let (stdout, notices) = capture("Adopt one token store for billing and auth")?;
+    ensure(
+        stdout.starts_with("decision-") && !stdout.contains(char::is_whitespace),
+        "text stdout stays the bare decision id",
+    )?;
+    ensure_eq(
+        notices.as_str(),
+        "project: platform (folder_marker)\nrecorded for platform: this change spans auth and billing\n",
+        "the parent, then the note that the change spans two projects",
+    )?;
+
+    tree.restore("services/auth");
+    tree.edit("services/ledger");
+    let (_stdout, notices) = capture("Adopt one queue for billing and ledger")?;
+    ensure_eq(
+        notices.as_str(),
+        format!(
+            "project: personal:agent:claude (personal_fallback) — {}\n{}\n",
+            crate::commands::PERSONAL_FALLBACK_NOTICE,
+            "this change spans billing and ledger, which share no parent. Move it with hivemind move ..., or register a parent.",
+        )
+        .as_str(),
+        "the fallback line, then which projects the change spans and how to move it",
+    )
+}
+
+#[test]
+fn supersede_of_a_spanning_change_follows_the_parent_or_inherits() -> CliTestResult {
+    let backend = TestBackend::sqlite("context-spanning-supersede");
+    for handle in ["platform", "billing", "auth", "ledger"] {
+        register_test_project(&backend, handle)?;
+    }
+    link_test_projects(&backend, "billing", "platform", "part_of")?;
+    link_test_projects(&backend, "auth", "platform", "part_of")?;
+    let tree = SpanningTree::new("context-spanning-supersede");
+    let supersede = |old: &str,
+                     title: &str|
+     -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let (stdout, _notices) = run_supersede_text_in(
+            &backend,
+            &tree.env("human:bob"),
+            &[
+                "--json",
+                "--actor",
+                "human:bob",
+                "supersede",
+                "--old",
+                old,
+                "--title",
+                title,
+                "--rationale",
+                PROJECT_TEST_RATIONALE,
+                "--bet",
+                "--project-from-context",
+            ],
+        )?;
+        Ok(serde_json::from_str(&stdout)?)
+    };
+    let (old, _notices) = run_emit_text(
+        &backend,
+        &capture_args_for("Use shared admin token", &["--project", "ledger"]),
+    )?;
+
+    // Two projects with a parent: the superseding decision is recorded for the parent.
+    tree.edit("services/billing");
+    tree.edit("services/auth");
+    let reply = supersede(&old, "Use scoped service tokens")?;
+    ensure_eq(reply["project"].as_str(), Some("platform"), "the parent")?;
+    ensure_eq(
+        reply["project_reminder"].as_str(),
+        Some("recorded for platform: this change spans auth and billing"),
+        "the note",
+    )?;
+
+    // Two projects with none: a supersede inherits the old decision's project, so there is
+    // no personal-project reminder to give.
+    tree.restore("services/auth");
+    tree.edit("services/ledger");
+    let reply = supersede(
+        reply["new_decision_id"].as_str().unwrap_or_default(),
+        "Rotate scoped service tokens monthly",
+    )?;
+    ensure_eq(
+        reply["project"].as_str(),
+        Some("platform"),
+        "the inherited project",
+    )?;
+    ensure(
+        reply.get("project_notice").is_none() && reply.get("project_reminder").is_none(),
+        "an inherited project needs neither",
+    )
+}
+
 #[test]
 fn project_from_context_parses_on_the_capture_verbs_and_mcp() -> CliTestResult {
     let dir = unique_test_dir("context-flag-parse");

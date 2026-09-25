@@ -602,3 +602,117 @@ fn get_project_by_anchor_ignores_an_unanchored_anchor() -> Result<()> {
     assert_eq!(response.data, ProjectOutcome::NotFound);
     Ok(())
 }
+
+#[test]
+fn get_project_ancestries_walks_part_of_nearest_parent_first_in_one_read() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    for handle in ["city", "platform", "billing", "auth", "loner"] {
+        commands.register_project("human:alice", handle, None, None)?;
+    }
+    commands.link_project("human:alice", "platform", "city", ProjectLinkKind::PartOf)?;
+    commands.link_project(
+        "human:alice",
+        "billing",
+        "platform",
+        ProjectLinkKind::PartOf,
+    )?;
+    commands.link_project("human:alice", "auth", "platform", ProjectLinkKind::PartOf)?;
+    // A dependency is not a parent: only `part_of` builds the ancestry.
+    commands.link_project(
+        "human:alice",
+        "loner",
+        "billing",
+        ProjectLinkKind::DependsOn,
+    )?;
+
+    let response = get_project_ancestries(
+        &ledger,
+        &[
+            "billing".to_owned(),
+            "city".to_owned(),
+            "loner".to_owned(),
+            "not-registered".to_owned(),
+        ],
+    )?;
+
+    let ancestries: Vec<(&str, Vec<&str>)> = response
+        .data
+        .iter()
+        .map(|item| {
+            (
+                item.handle.as_str(),
+                item.ancestors.iter().map(String::as_str).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        ancestries,
+        vec![
+            ("billing", vec!["platform", "city"]),
+            ("city", vec![]),
+            ("loner", vec![]),
+            ("not-registered", vec![]),
+        ],
+        "in the order asked, nearest parent first; a miss has no ancestors"
+    );
+    assert_eq!(response.result_count, 4);
+    assert!(!response.truncated);
+    Ok(())
+}
+
+#[test]
+fn get_project_ancestries_stops_at_a_part_of_cycle() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    for handle in ["alpha", "beta", "gamma"] {
+        commands.register_project("human:alice", handle, None, None)?;
+    }
+    commands.link_project("human:alice", "alpha", "beta", ProjectLinkKind::PartOf)?;
+    commands.link_project("human:alice", "beta", "gamma", ProjectLinkKind::PartOf)?;
+    commands.link_project("human:alice", "gamma", "alpha", ProjectLinkKind::PartOf)?;
+
+    let response = get_project_ancestries(&ledger, &["alpha".to_owned()])?;
+
+    assert_eq!(
+        response.data[0].ancestors,
+        vec!["beta".to_owned(), "gamma".to_owned()],
+        "the walk ends before it would come back around to alpha"
+    );
+    Ok(())
+}
+
+#[test]
+fn get_project_ancestries_ignores_a_removed_part_of_link() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands.register_project("human:alice", "platform", None, None)?;
+    commands.register_project("human:alice", "billing", None, None)?;
+    commands.link_project(
+        "human:alice",
+        "billing",
+        "platform",
+        ProjectLinkKind::PartOf,
+    )?;
+    commands.unlink_project(
+        "human:alice",
+        "billing",
+        "platform",
+        ProjectLinkKind::PartOf,
+    )?;
+
+    let response = get_project_ancestries(&ledger, &["billing".to_owned()])?;
+
+    assert!(response.data[0].ancestors.is_empty(), "no silent staleness");
+    Ok(())
+}
+
+#[test]
+fn get_project_ancestries_refuses_an_empty_handle() {
+    let ledger = InMemoryEventLedger::new();
+
+    assert!(
+        get_project_ancestries(&ledger, &["  ".to_owned()]).is_err(),
+        "an empty handle is a malformed question, not a miss"
+    );
+}

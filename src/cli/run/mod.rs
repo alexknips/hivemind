@@ -807,7 +807,7 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
                 &resolved.plan,
             )?;
             let reminder = project_reminder(&project, &proposal.placement);
-            announce_placement(cli, &proposal.placement, reminder, notices);
+            announce_placement(cli, &proposal.placement, reminder.as_deref(), notices);
             return format_capture_output(
                 cli.json,
                 &CaptureCommandOutput {
@@ -964,7 +964,7 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
     };
 
     if let Some(placement) = &output.placement {
-        announce_placement(cli, placement, output.project_reminder, notices);
+        announce_placement(cli, placement, output.project_reminder.as_deref(), notices);
     }
     format_output(cli.json, &output)
 }
@@ -972,8 +972,10 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
 /// Text mode only: say where a capture landed on `notices` (stderr in the CLI). JSON replies
 /// carry `project`/`project_source` in-band, and text stdout stays machine-readable (the bare
 /// id), so this is the one place a human or agent reading the terminal sees the project --
-/// and the "saved to your personal project" sentence on fallback, followed by the "this
-/// folder is not attached" reminder when `--project-from-context` found nothing to attach to.
+/// and the "saved to your personal project" sentence on fallback, followed by whatever
+/// `--project-from-context` has to say about how it worked the project out: the "this folder is
+/// not attached" reminder when it found nothing to attach to, or the note that a change
+/// spanning several projects was recorded for their parent or saved to the personal project.
 /// Best-effort: the event is already appended, so an unwritable stderr must not turn a
 /// recorded capture into an error.
 fn announce_placement<W: IoWrite>(
@@ -1306,7 +1308,7 @@ pub(crate) fn run_supersede_in_context<W: IoWrite>(
         decision_status_after_write(&ledger, &tenant_id, &outcome.new_decision_id)?;
 
     let reminder = project_reminder(&project, &outcome.placement);
-    announce_placement(cli, &outcome.placement, reminder, notices);
+    announce_placement(cli, &outcome.placement, reminder.as_deref(), notices);
     format_supersede_output(
         cli.json,
         &SupersedeCommandOutput {
@@ -2068,16 +2070,16 @@ fn determined_project(project: &Option<ResolvedProject>) -> Option<DeterminedPro
     project.as_ref().and_then(ResolvedProject::determined)
 }
 
-/// The "this folder is not attached" reminder for a capture's reply: only when the ladder
-/// found nothing *and* the capture really did land in the personal project (a superseding
-/// decision that inherited a shared project has nothing to be reminded about).
+/// What `--project-from-context` has to say about how a capture's project was worked out,
+/// for its reply: the "this folder is not attached" reminder, or the note about a change that
+/// spans several projects. A fallback reminder is only said when the capture really did land
+/// in the personal project (a superseding decision that inherited a shared project has
+/// nothing to be reminded about).
 fn project_reminder(
     project: &Option<ResolvedProject>,
     placement: &DecisionPlacement,
-) -> Option<&'static str> {
-    placement
-        .notice()
-        .and(project.as_ref().and_then(ResolvedProject::reminder))
+) -> Option<String> {
+    project.as_ref()?.reminder(placement.notice().is_some())
 }
 
 fn run_query(cli: &Cli, query: &QueryArgs) -> Result<String> {

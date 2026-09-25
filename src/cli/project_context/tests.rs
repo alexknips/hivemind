@@ -44,8 +44,13 @@ struct FakeSources {
     /// rig name -> handle of the project anchored to it
     rig_anchors: BTreeMap<String, String>,
     current_project: Option<String>,
+    /// The files the change under way touches
+    touched: Vec<PathBuf>,
+    /// project handle -> handle of the project it is part of
+    parents: BTreeMap<String, String>,
     registry_reads: Cell<usize>,
     current_project_reads: Cell<usize>,
+    ancestry_reads: Cell<usize>,
 }
 
 impl FakeSources {
@@ -55,8 +60,11 @@ impl FakeSources {
             rig: None,
             rig_anchors: BTreeMap::new(),
             current_project: None,
+            touched: Vec::new(),
+            parents: BTreeMap::new(),
             registry_reads: Cell::new(0),
             current_project_reads: Cell::new(0),
+            ancestry_reads: Cell::new(0),
         }
     }
 
@@ -70,6 +78,18 @@ impl FakeSources {
 
     fn with_current_project(mut self, handle: &str) -> Self {
         self.current_project = Some(handle.to_owned());
+        self
+    }
+
+    /// The change touches these files.
+    fn with_touched(mut self, paths: &[PathBuf]) -> Self {
+        self.touched = paths.to_vec();
+        self
+    }
+
+    /// `child` is registered as part of `parent`.
+    fn with_part_of(mut self, child: &str, parent: &str) -> Self {
+        self.parents.insert(child.to_owned(), parent.to_owned());
         self
     }
 }
@@ -92,6 +112,32 @@ impl ProjectContextSources for FakeSources {
         self.current_project_reads
             .set(self.current_project_reads.get() + 1);
         Ok(self.current_project.clone())
+    }
+
+    fn touched_paths(&self, _dir: &Path) -> Vec<PathBuf> {
+        self.touched.clone()
+    }
+
+    fn part_of_ancestries(&self, handles: &[String]) -> Result<Vec<ProjectAncestry>> {
+        self.ancestry_reads.set(self.ancestry_reads.get() + 1);
+        Ok(handles
+            .iter()
+            .map(|handle| {
+                let mut ancestors: Vec<String> = Vec::new();
+                let mut current = handle;
+                while let Some(parent) = self.parents.get(current) {
+                    if parent == handle || ancestors.contains(parent) {
+                        break;
+                    }
+                    ancestors.push(parent.clone());
+                    current = parent;
+                }
+                ProjectAncestry {
+                    handle: handle.clone(),
+                    ancestors,
+                }
+            })
+            .collect())
     }
 }
 
@@ -269,10 +315,15 @@ fn with_nothing_to_go_on_the_personal_fallback_carries_the_reminder() {
     assert_eq!(resolved, ResolvedProject::PersonalFallback);
     assert_eq!(resolved.determined(), None);
     assert_eq!(
-        resolved.reminder(),
+        resolved.reminder(true).as_deref(),
         Some(
             "this folder is not attached to a project yet; run hivemind project anchor ... to attach it"
         )
+    );
+    assert_eq!(
+        resolved.reminder(false),
+        None,
+        "a supersede that inherited a shared project has nothing to be reminded about"
     );
 }
 
@@ -280,7 +331,7 @@ fn with_nothing_to_go_on_the_personal_fallback_carries_the_reminder() {
 fn a_determined_project_carries_no_reminder() {
     let resolved = determined("billing", ProjectSource::FolderMarker);
 
-    assert_eq!(resolved.reminder(), None);
+    assert_eq!(resolved.reminder(true), None);
     assert_eq!(
         resolved.determined(),
         Some(DeterminedProject {
@@ -384,6 +435,452 @@ fn the_ladder_steps_down_one_rung_at_a_time() {
     // Clear the current project, and it is the personal fallback.
     sources.current_project = None;
     assert_eq!(resolve(&sources), ResolvedProject::PersonalFallback);
+}
+
+// ---------------------------------------------------------------------------
+// A change that spans several attached folders (hivemind-s15q.14)
+// ---------------------------------------------------------------------------
+
+/// A platform repo with two sub-project folders, each with its own marker, and a folder no
+/// marker reaches:
+///
+/// ```text
+/// repo/.hivemind-project                   platform
+/// repo/services/billing/.hivemind-project  billing
+/// repo/services/auth/.hivemind-project     auth
+/// repo/services/ledger/.hivemind-project   ledger
+/// unattached/
+/// ```
+fn spanning_tree() -> TempTree {
+    let tree = TempTree::new();
+    tree.marker("repo", "platform");
+    tree.marker("repo/services/billing", "billing");
+    tree.marker("repo/services/auth", "auth");
+    tree.marker("repo/services/ledger", "ledger");
+    tree.dir("unattached");
+    tree
+}
+
+fn files(tree: &TempTree, relative: &[&str]) -> Vec<PathBuf> {
+    relative.iter().map(|path| tree.root.join(path)).collect()
+}
+
+fn spanned(handles: &[&str]) -> Vec<String> {
+    handles.iter().map(|handle| (*handle).to_owned()).collect()
+}
+
+#[test]
+fn a_change_under_one_marker_is_that_project_without_a_registry_read() {
+    let tree = spanning_tree();
+    let sources = FakeSources::at(tree.dir("repo"))
+        .with_touched(&files(
+            &tree,
+            &[
+                "repo/services/billing/queue.rs",
+                "repo/services/billing/src/worker.rs",
+                "repo/services/billing/README.md",
+            ],
+        ))
+        .with_part_of("billing", "platform");
+
+    assert_eq!(
+        resolve(&sources),
+        determined("billing", ProjectSource::FolderMarker)
+    );
+    assert_eq!(
+        sources.ancestry_reads.get(),
+        0,
+        "one project needs no registry"
+    );
+}
+
+#[test]
+fn the_touched_files_decide_over_the_folder_the_session_stands_in() {
+    let tree = spanning_tree();
+    // Standing at the repo root (marker `platform`), but the change is all in auth.
+    let sources = FakeSources::at(tree.dir("repo"))
+        .with_touched(&files(&tree, &["repo/services/auth/tokens.rs"]));
+
+    assert_eq!(
+        resolve(&sources),
+        determined("auth", ProjectSource::FolderMarker)
+    );
+}
+
+#[test]
+fn files_under_no_marker_add_nothing_to_the_projects_a_change_spans() {
+    let tree = spanning_tree();
+    let sources = FakeSources::at(tree.dir("unattached")).with_touched(&files(
+        &tree,
+        &["unattached/notes.md", "repo/services/billing/queue.rs"],
+    ));
+
+    assert_eq!(
+        resolve(&sources),
+        determined("billing", ProjectSource::FolderMarker)
+    );
+}
+
+#[test]
+fn a_change_touching_no_attached_folder_falls_back_to_the_folder_the_session_stands_in() {
+    let tree = spanning_tree();
+    let sources = FakeSources::at(tree.dir("repo/services/auth"))
+        .with_touched(&files(&tree, &["unattached/notes.md"]));
+
+    assert_eq!(
+        resolve(&sources),
+        determined("auth", ProjectSource::FolderMarker)
+    );
+}
+
+#[test]
+fn two_projects_under_one_parent_are_recorded_for_the_parent_and_the_reply_says_so() {
+    let tree = spanning_tree();
+    let sources = FakeSources::at(tree.dir("repo"))
+        .with_touched(&files(
+            &tree,
+            &[
+                "repo/services/billing/queue.rs",
+                "repo/services/auth/tokens.rs",
+            ],
+        ))
+        .with_part_of("billing", "platform")
+        .with_part_of("auth", "platform");
+
+    let resolved = resolve(&sources);
+
+    assert_eq!(
+        resolved,
+        ResolvedProject::SpansUnderParent {
+            parent: "platform".to_owned(),
+            spanned: spanned(&["auth", "billing"]),
+        }
+    );
+    assert_eq!(
+        resolved.determined(),
+        Some(DeterminedProject {
+            handle: "platform",
+            source: ProjectSource::FolderMarker,
+        }),
+        "the write path is handed the one parent, never the two"
+    );
+    assert_eq!(
+        resolved.reminder(false).as_deref(),
+        Some("recorded for platform: this change spans auth and billing"),
+        "said whether or not anything landed in the personal project"
+    );
+    assert_eq!(sources.ancestry_reads.get(), 1, "the registry is read once");
+    assert_eq!(
+        sources.registry_reads.get(),
+        0,
+        "and the rig is never asked"
+    );
+}
+
+#[test]
+fn two_projects_with_no_common_parent_land_in_the_personal_project_and_the_reminder_names_both() {
+    let tree = spanning_tree();
+    let sources = FakeSources::at(tree.dir("repo"))
+        // Even offered by the rest of the ladder, the change is not misattributed to it.
+        .with_rig("some-rig", Some("from-rig"))
+        .with_current_project("from-current")
+        .with_touched(&files(
+            &tree,
+            &[
+                "repo/services/billing/queue.rs",
+                "repo/services/auth/tokens.rs",
+            ],
+        ));
+
+    let resolved = resolve(&sources);
+
+    assert_eq!(
+        resolved,
+        ResolvedProject::SpansUnrelated {
+            spanned: spanned(&["auth", "billing"]),
+        }
+    );
+    assert_eq!(
+        resolved.determined(),
+        None,
+        "the write layer falls back to the personal project itself, and says so"
+    );
+    let reminder = resolved.reminder(true).expect("the fallback is announced");
+    assert_eq!(
+        reminder,
+        "this change spans auth and billing, which share no parent. Move it with hivemind move ..., or register a parent."
+    );
+    assert_eq!(
+        resolved.reminder(false),
+        None,
+        "a supersede that inherited a shared project was not saved to the personal project"
+    );
+    assert_eq!(
+        sources.registry_reads.get(),
+        0,
+        "the rig rung is not consulted"
+    );
+    assert_eq!(sources.current_project_reads.get(), 0);
+}
+
+#[test]
+fn three_projects_at_mixed_depths_resolve_to_their_nearest_common_ancestor() {
+    let tree = spanning_tree();
+    // billing and auth are part of platform, platform of city; ledger is part of city directly.
+    let sources = FakeSources::at(tree.dir("repo"))
+        .with_touched(&files(
+            &tree,
+            &[
+                "repo/services/billing/queue.rs",
+                "repo/services/auth/tokens.rs",
+                "repo/services/ledger/books.rs",
+            ],
+        ))
+        .with_part_of("billing", "platform")
+        .with_part_of("auth", "platform")
+        .with_part_of("platform", "city")
+        .with_part_of("ledger", "city");
+
+    let resolved = resolve(&sources);
+
+    assert_eq!(
+        resolved,
+        ResolvedProject::SpansUnderParent {
+            parent: "city".to_owned(),
+            spanned: spanned(&["auth", "billing", "ledger"]),
+        }
+    );
+    assert_eq!(
+        resolved.reminder(true).as_deref(),
+        Some("recorded for city: this change spans auth, billing and ledger")
+    );
+}
+
+#[test]
+fn two_projects_that_share_a_parent_plus_a_third_that_does_not_go_personal_naming_all_three() {
+    let tree = spanning_tree();
+    let sources = FakeSources::at(tree.dir("repo"))
+        .with_touched(&files(
+            &tree,
+            &[
+                "repo/services/billing/queue.rs",
+                "repo/services/auth/tokens.rs",
+                "repo/services/ledger/books.rs",
+            ],
+        ))
+        .with_part_of("billing", "platform")
+        .with_part_of("auth", "platform");
+
+    let resolved = resolve(&sources);
+
+    assert_eq!(
+        resolved,
+        ResolvedProject::SpansUnrelated {
+            spanned: spanned(&["auth", "billing", "ledger"]),
+        }
+    );
+    assert!(resolved
+        .reminder(true)
+        .expect("announced")
+        .starts_with("this change spans auth, billing and ledger, which share no parent."));
+}
+
+#[test]
+fn a_project_and_its_own_sub_project_are_recorded_for_the_outer_one() {
+    let tree = spanning_tree();
+    // A file at the repo root (marker platform) and one in billing (marker billing, part of
+    // platform): a project is the start of its own chain.
+    let sources = FakeSources::at(tree.dir("repo"))
+        .with_touched(&files(
+            &tree,
+            &["repo/Cargo.toml", "repo/services/billing/queue.rs"],
+        ))
+        .with_part_of("billing", "platform");
+
+    assert_eq!(
+        resolve(&sources),
+        ResolvedProject::SpansUnderParent {
+            parent: "platform".to_owned(),
+            spanned: spanned(&["billing", "platform"]),
+        }
+    );
+}
+
+#[test]
+fn an_unregistered_marker_handle_shares_a_parent_with_nothing_and_is_never_dropped() {
+    let tree = spanning_tree();
+    tree.marker("repo/services/auth", "authn");
+    let sources = FakeSources::at(tree.dir("repo"))
+        .with_touched(&files(
+            &tree,
+            &[
+                "repo/services/billing/queue.rs",
+                "repo/services/auth/tokens.rs",
+            ],
+        ))
+        .with_part_of("billing", "platform");
+
+    let resolved = resolve(&sources);
+
+    assert_eq!(
+        resolved,
+        ResolvedProject::SpansUnrelated {
+            spanned: spanned(&["authn", "billing"]),
+        },
+        "the typo is named in the reminder; the decision is saved, not lost"
+    );
+}
+
+#[test]
+fn a_broken_marker_in_a_touched_folder_is_refused_not_skipped() {
+    let tree = spanning_tree();
+    tree.marker("repo/services/auth", "auth billing");
+    let sources = FakeSources::at(tree.dir("repo")).with_touched(&files(
+        &tree,
+        &[
+            "repo/services/billing/queue.rs",
+            "repo/services/auth/tokens.rs",
+        ],
+    ));
+
+    let error = resolve_project_from_context(None, &sources)
+        .expect_err("a malformed marker is refused, as on the cwd walk");
+
+    assert!(
+        error.to_string().contains("exactly one project handle"),
+        "{error}"
+    );
+}
+
+#[test]
+fn the_same_project_named_by_two_folders_is_one_project() {
+    let tree = spanning_tree();
+    tree.marker("repo/services/auth", "billing");
+    let sources = FakeSources::at(tree.dir("repo")).with_touched(&files(
+        &tree,
+        &[
+            "repo/services/billing/queue.rs",
+            "repo/services/auth/tokens.rs",
+        ],
+    ));
+
+    assert_eq!(
+        resolve(&sources),
+        determined("billing", ProjectSource::FolderMarker)
+    );
+    assert_eq!(sources.ancestry_reads.get(), 0);
+}
+
+#[test]
+fn a_stated_project_is_never_second_guessed_by_the_files_touched() {
+    let tree = spanning_tree();
+    let sources = FakeSources::at(tree.dir("repo")).with_touched(&files(
+        &tree,
+        &[
+            "repo/services/billing/queue.rs",
+            "repo/services/auth/tokens.rs",
+        ],
+    ));
+
+    let resolved = resolve_project_from_context(Some(DeterminedProject::stated("ops")), &sources)
+        .expect("stated resolves");
+
+    assert_eq!(resolved, determined("ops", ProjectSource::Stated));
+    assert_eq!(sources.ancestry_reads.get(), 0);
+}
+
+#[test]
+fn nearest_common_ancestor_is_the_nearest_of_the_shared_chain() {
+    let chain = |handle: &str, ancestors: &[&str]| ProjectAncestry {
+        handle: handle.to_owned(),
+        ancestors: spanned(ancestors),
+    };
+
+    assert_eq!(
+        nearest_common_ancestor(&[chain("a", &["p", "root"]), chain("b", &["q", "p", "root"]),])
+            .as_deref(),
+        Some("p"),
+        "p, not root: the nearest they share"
+    );
+    assert_eq!(
+        nearest_common_ancestor(&[chain("a", &[]), chain("b", &[])]),
+        None
+    );
+    assert_eq!(nearest_common_ancestor(&[]), None);
+}
+
+// ---------------------------------------------------------------------------
+// Reading the change from git
+// ---------------------------------------------------------------------------
+
+fn git(dir: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.email=test@example.com", "-c", "user.name=Test"])
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn git_touched_paths_are_absolute_and_cover_the_working_tree_and_the_staged_set() {
+    let tree = TempTree::new();
+    let repo = tree.dir("repo");
+    let repo = std::fs::canonicalize(&repo).expect("canonical repo path");
+    tree.dir("repo/services/billing");
+    tree.dir("repo/services/auth");
+    tree.dir("repo/docs");
+    for file in [
+        "services/billing/queue.rs",
+        "services/auth/tokens.rs",
+        "docs/spare.md",
+    ] {
+        std::fs::write(repo.join(file), "one\n").expect("write file");
+    }
+    git(&repo, &["init", "--quiet"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "--quiet", "-m", "first"]);
+
+    // An unstaged edit, a staged edit, and an untouched file.
+    std::fs::write(repo.join("services/billing/queue.rs"), "two\n").expect("edit file");
+    std::fs::write(repo.join("services/auth/tokens.rs"), "two\n").expect("edit file");
+    git(&repo, &["add", "services/auth/tokens.rs"]);
+
+    // From a subfolder: `git diff` prints repository-root-relative names, made absolute here.
+    let touched = git_touched_paths(&repo.join("services/billing"));
+
+    assert_eq!(
+        touched,
+        vec![
+            repo.join("services/auth/tokens.rs"),
+            repo.join("services/billing/queue.rs"),
+        ]
+    );
+}
+
+#[test]
+fn git_touched_paths_are_empty_outside_a_repository_and_for_a_clean_tree() {
+    let tree = TempTree::new();
+    let plain = tree.dir("plain");
+    assert_eq!(git_touched_paths(&plain), Vec::<PathBuf>::new());
+    assert_eq!(
+        git_touched_paths(&tree.root.join("does-not-exist")),
+        Vec::<PathBuf>::new()
+    );
+
+    let repo = tree.dir("repo");
+    std::fs::write(repo.join("a.txt"), "one\n").expect("write file");
+    git(&repo, &["init", "--quiet"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "--quiet", "-m", "first"]);
+    assert_eq!(git_touched_paths(&repo), Vec::<PathBuf>::new());
 }
 
 // ---------------------------------------------------------------------------

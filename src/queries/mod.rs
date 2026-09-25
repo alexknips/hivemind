@@ -85,9 +85,10 @@ pub use outcome::{
 };
 pub use project_scope::{MatchScope, ScopeNote, ScopeRelation, ScopedProject};
 pub use projects::{
-    decisions_in_project, get_project, get_project_by_anchor, list_projects, ProjectAnchorView,
-    ProjectDecisionItem, ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectDecisionsRequest,
-    ProjectLinkFact, ProjectListRequest, ProjectListResults, ProjectOutcome, ProjectView,
+    decisions_in_project, get_project, get_project_ancestries, get_project_by_anchor,
+    list_projects, ProjectAncestry, ProjectAnchorView, ProjectDecisionItem,
+    ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectDecisionsRequest, ProjectLinkFact,
+    ProjectListRequest, ProjectListResults, ProjectOutcome, ProjectView,
 };
 pub use relevant::get_relevant_decisions;
 pub use resolve::{

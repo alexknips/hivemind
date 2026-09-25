@@ -598,11 +598,13 @@ pub struct McpArgs {
     pub agent_tool: Option<String>,
 
     /// When a `capture_decision` or `supersede_decision` call names no `project`, work it
-    /// out from where this server runs: the nearest `.hivemind-project` file walking up
-    /// from its working directory, then the project anchored to the city rig (`GC_RIG`),
-    /// then this actor's `hivemind project use` setting. A call that names a `project`
-    /// still wins. Off by default, so a bare server files unnamed captures under the
-    /// personal project.
+    /// out from where this server runs: the `.hivemind-project` files of the folders the
+    /// uncommitted change touches (several projects are recorded for the nearest project
+    /// they are all part of, or saved to the personal project when they share none), else
+    /// the nearest one walking up from its working directory, then the project anchored to
+    /// the city rig (`GC_RIG`), then this actor's `hivemind project use` setting. A call
+    /// that names a `project` still wins. Off by default, so a bare server files unnamed
+    /// captures under the personal project.
     #[arg(long = "project-from-context")]
     pub project_from_context: bool,
 }
@@ -705,11 +707,14 @@ pub struct SupersedeArgs {
     #[arg(long = "project-source", value_enum, requires = "project")]
     pub project_source: Option<ProjectSourceArg>,
 
-    /// When `--project` is absent, work the project out from where this runs: the nearest
-    /// `.hivemind-project` file walking up from the working directory, then the project
-    /// anchored to the city rig (`GC_RIG`), then this actor's `hivemind project use`
-    /// setting. Each records how it was determined. When none applies the new decision
-    /// still inherits the old decision's project. `--project` wins over all of these.
+    /// When `--project` is absent, work the project out from where this runs: the
+    /// `.hivemind-project` files of the folders the uncommitted change touches, else the
+    /// nearest one walking up from the working directory, then the project anchored to the
+    /// city rig (`GC_RIG`), then this actor's `hivemind project use` setting. Each records
+    /// how it was determined. A change touching several projects is recorded for the nearest
+    /// project they are all part of. When none applies, or they share no parent, the new
+    /// decision still inherits the old decision's project. `--project` wins over all of
+    /// these.
     #[arg(long = "project-from-context")]
     pub project_from_context: bool,
 
@@ -1153,12 +1158,15 @@ pub struct EmitDecisionProposedArgs {
     #[arg(long = "project-source", value_enum, requires = "project")]
     pub project_source: Option<ProjectSourceArg>,
 
-    /// When `--project` is absent, work the project out from where this runs: the nearest
-    /// `.hivemind-project` file walking up from the working directory, then the project
-    /// anchored to the city rig (`GC_RIG`), then this actor's `hivemind project use`
-    /// setting. Each records how it was determined. When none applies the decision is
-    /// saved to the personal project and the reply reminds you the folder is not attached.
-    /// `--project` wins over all of these.
+    /// When `--project` is absent, work the project out from where this runs: the
+    /// `.hivemind-project` files of the folders the uncommitted change touches, else the
+    /// nearest one walking up from the working directory, then the project anchored to the
+    /// city rig (`GC_RIG`), then this actor's `hivemind project use` setting. Each records
+    /// how it was determined. A change touching several projects is recorded for the nearest
+    /// project they are all part of; with none in common it is saved to the personal project
+    /// and the reply names them. When nothing applies the decision is saved to the personal
+    /// project and the reply reminds you the folder is not attached. `--project` wins over
+    /// all of these.
     #[arg(long = "project-from-context")]
     pub project_from_context: bool,
 }
