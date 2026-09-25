@@ -8,17 +8,23 @@
 //!
 //! # Rules every floor follows
 //! - **Ex ante.** Something counts toward a floor only if it was recorded before the decision or
-//!   attached at capture. Evidence recorded afterwards is shown as `later` and never raises a
-//!   level; a record that pre-dates the decision counts even if it was linked afterwards.
-//! - **Reasoning and Framing stop at `partial`** without a model: they can say the rationale or
-//!   the question is on record, not that it is sound or the right one.
+//!   attached at capture. Evidence, a prior decision, an assumption or a bet recorded afterwards
+//!   is shown as `later` and never raises a level; a record that pre-dates the decision counts
+//!   even if it was linked afterwards.
+//! - **Judged dimensions stop at `partial`** without a model: Framing, Reasoning, Bias exposure
+//!   and Calibration can say what is on record, not that it is sound, right or well matched.
+//! - **What happened next is not quality.** A prior decision that was superseded afterwards is
+//!   shown as a fact ("since superseded (later)") and changes no level: that is outcome, which
+//!   has its own view.
+//! - **A mismatch is attention, not a deduction.** High declared confidence over a bet, or over
+//!   nothing declared, adds an [`Attention`] line; the level does not move with the confidence.
 //! - **Reasons and ids are deterministic:** the same graph gives the same profile, byte for byte.
 //!
 //! # Placement
 //! Layer 3 (`ARCHITECTURE.md` → Layer Boundary). It reads the graph through `queries` and nothing
 //! in `queries/` or `commands/` imports this module (`tests::queries_and_commands_never_import_the_profile`
-//! holds that line). It reads one decision and its direct options and evidence with anchored
-//! lookups: no scan, no model, no network, no write.
+//! holds that line). It reads one decision and its direct options, evidence, prior decisions and
+//! assumptions or bets with anchored lookups: no scan, no model, no network, no write.
 //!
 //! [`FLOOR_VERSION`] moves whenever a rule below changes what level a record gets.
 
@@ -26,12 +32,19 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 
+use crate::events::HypothesisKind;
 use crate::projector::GraphView;
-use crate::queries::{get_record_facts, EvidenceFact, GroundingAdded, OptionFact, RecordFacts};
+use crate::queries::{
+    get_record_facts, EvidenceFact, GroundingAdded, HypothesisFact, OptionFact, PremiseFact,
+    RecordFacts,
+};
 use crate::Result;
 
 /// The version of the floor rules in this module.
-pub const FLOOR_VERSION: u32 = 1;
+///
+/// 2: prior decisions, assumptions and declared bets count toward Information and prior decisions
+/// toward Reasoning; Calibration and Bias exposure have floors.
+pub const FLOOR_VERSION: u32 = 2;
 
 /// The seven dimensions, in the order `docs/DECISION_SCORING.md` lists them.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -78,13 +91,34 @@ pub enum ReasonKind {
     AlternativesRecorded,
     AlternativesDescribed,
     AlternativesUndescribed,
-    NoEvidenceLinked,
+    /// No evidence, prior decision, assumption or bet counts.
+    NothingRestedOn,
     EvidenceCounted,
     EvidenceSourceStated,
     EvidenceSourceMissing,
     EvidenceLater,
+    PremiseCounted,
+    /// A counted prior decision has since been superseded: a fact, never a change of level.
+    PremiseSuperseded,
+    PremiseLater,
+    AssumptionCounted,
+    AssumptionLater,
+    BetCounted,
+    BetLater,
     RationaleStated,
     NoRationale,
+    /// A counted prior decision stands as stated reasoning (linked, not judged sound).
+    PremiseLinked,
+    ConfidenceDeclared,
+    ConfidenceComparedWithGrounding,
+    RestsOnBetOnly,
+    RestsOnNothing,
+    CounterOptionRecorded,
+    NoCounterOption,
+    CounterEvidenceRecorded,
+    NoCounterEvidence,
+    /// How old the prior decisions it rests on were when this one was recorded.
+    PremiseAge,
     /// The dimension needs a judgement, so the floor stops at `partial`.
     NotJudgedWithoutModel,
 }
@@ -144,7 +178,28 @@ impl Assessment {
     }
 }
 
-/// The seven dimensions for one decision, each standing alone.
+/// What a line of attention is about.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttentionKind {
+    /// High confidence declared at capture over a declared bet alone.
+    HighConfidenceOverBet,
+    /// High confidence declared at capture with nothing on record that the decision rests on.
+    HighConfidenceOverNothing,
+}
+
+/// Something worth a second look. It is not a deduction: no level moves because of it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct Attention {
+    pub kind: AttentionKind,
+    /// The dimension whose floor found it.
+    pub dimension: Dimension,
+    pub text: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub node_ids: Vec<String>,
+}
+
+/// The seven dimensions for one decision, each standing alone, and what deserves a look.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct QualityProfile {
     pub decision_id: String,
@@ -157,6 +212,8 @@ pub struct QualityProfile {
     pub values_tradeoffs: Assessment,
     pub bias_exposure: Assessment,
     pub calibration: Assessment,
+    /// Lines that deserve a look, in a fixed order; empty when nothing does.
+    pub attention: Vec<Attention>,
 }
 
 impl QualityProfile {
@@ -181,8 +238,8 @@ impl QualityProfile {
 }
 
 const VALUES_TRADEOFFS_WHY: &str = "Judged only: nothing recorded can stand in for a judgement of whether the values and tradeoffs were made explicit and weighed, and no model assessment is attached.";
-const BIAS_EXPOSURE_WHY: &str = "No floor in this version: it would report whether a counter-option or counter-evidence was recorded and how old the premises were, and that is not computed yet. Nothing is inferred in its place.";
-const CALIBRATION_WHY: &str = "No floor in this version: it would compare the confidence the decider declared at capture with what the decision rests on (evidence, a prior decision, a declared bet), and that is not computed yet. Nothing is inferred in its place.";
+const NO_CONFIDENCE_WHY: &str = "No confidence was declared at capture, so there is nothing to compare with what the decision rests on. None is inferred from the wording of the rationale or from how the decision is grounded.";
+const NOT_JUDGED_REASONING: &str = "whether the inference is sound is judged, not derived: no higher than partial without a model assessment";
 
 /// The profile of one decision, or `None` when the decision does not exist. Read-only.
 pub fn quality_profile_of(
@@ -194,16 +251,19 @@ pub fn quality_profile_of(
 
 /// The profile a record's facts support. Pure: the same facts give the same profile.
 pub fn profile_from_record(facts: &RecordFacts) -> QualityProfile {
+    let rests = Rests::of(facts);
+    let (calibration, attention) = calibration(facts, &rests);
     QualityProfile {
         decision_id: facts.decision_id.clone(),
         floor_version: FLOOR_VERSION,
         framing: framing(facts),
         alternatives: alternatives(facts),
-        information: information(facts),
-        reasoning: reasoning(facts),
+        information: information(facts, &rests),
+        reasoning: reasoning(facts, &rests),
         values_tradeoffs: Assessment::not_assessed(VALUES_TRADEOFFS_WHY),
-        bias_exposure: Assessment::not_assessed(BIAS_EXPOSURE_WHY),
-        calibration: Assessment::not_assessed(CALIBRATION_WHY),
+        bias_exposure: bias_exposure(facts, &rests),
+        calibration,
+        attention,
     }
 }
 
@@ -226,6 +286,132 @@ fn plural(count: usize, noun: &str) -> String {
 /// `Some(text)` when there is text beyond whitespace.
 fn stated(text: Option<&str>) -> Option<&str> {
     text.map(str::trim).filter(|text| !text.is_empty())
+}
+
+/// A node a reason can name.
+trait Node {
+    fn node_id(&self) -> &str;
+}
+
+impl Node for OptionFact {
+    fn node_id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl Node for EvidenceFact {
+    fn node_id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl Node for PremiseFact {
+    fn node_id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl Node for HypothesisFact {
+    fn node_id(&self) -> &str {
+        &self.id
+    }
+}
+
+/// The ids of `nodes`, sorted.
+fn sorted_ids<T: Node>(nodes: &[&T]) -> Vec<String> {
+    let mut ids: Vec<String> = nodes.iter().map(|node| node.node_id().to_owned()).collect();
+    ids.sort();
+    ids
+}
+
+// ---------------------------------------------------------------------------
+// What the record rests on (the ex-ante split every floor below shares)
+// ---------------------------------------------------------------------------
+
+/// Whether something recorded at `recorded` pre-dates a decision recorded at `decided`. An offset
+/// that is not known shows nothing, so it does not.
+fn pre_dates(recorded: Option<i64>, decided: Option<i64>) -> bool {
+    matches!((recorded, decided), (Some(recorded), Some(decided)) if recorded < decided)
+}
+
+/// Grounding counts when it was attached at capture or recorded before the decision (even if it
+/// was linked afterwards). Anything else is `later`.
+fn counts(added: &GroundingAdded, recorded: Option<i64>, decided: Option<i64>) -> bool {
+    matches!(added, GroundingAdded::AtCapture) || pre_dates(recorded, decided)
+}
+
+/// Items of one grounding kind: those that count, and those attached too late to.
+struct Counted<T> {
+    counted: Vec<T>,
+    later: Vec<T>,
+}
+
+impl<T> Counted<T> {
+    fn split(items: impl Iterator<Item = T>, counts: impl Fn(&T) -> bool) -> Self {
+        let (counted, later) = items.partition(counts);
+        Self { counted, later }
+    }
+}
+
+/// Everything a decision rests on, split by the ex-ante rule.
+struct Rests<'a> {
+    evidence: Counted<&'a EvidenceFact>,
+    premises: Counted<&'a PremiseFact>,
+    assumptions: Counted<&'a HypothesisFact>,
+    bets: Counted<&'a HypothesisFact>,
+}
+
+impl<'a> Rests<'a> {
+    fn of(facts: &'a RecordFacts) -> Self {
+        let decided = facts.event_origin;
+        let (bets, assumptions): (Vec<&HypothesisFact>, Vec<&HypothesisFact>) = facts
+            .hypotheses
+            .iter()
+            .partition(|hypothesis| hypothesis.kind == HypothesisKind::Bet);
+        let hypothesis_counts = |hypothesis: &&HypothesisFact| {
+            counts(&hypothesis.added, hypothesis.event_origin, decided)
+        };
+        Self {
+            evidence: Counted::split(facts.evidence.iter(), |item| {
+                counts(&item.added, item.event_origin, decided)
+            }),
+            premises: Counted::split(facts.premises.iter(), |premise| {
+                counts(&premise.added, premise.event_origin, decided)
+            }),
+            assumptions: Counted::split(assumptions.into_iter(), hypothesis_counts),
+            bets: Counted::split(bets.into_iter(), hypothesis_counts),
+        }
+    }
+
+    fn nothing_counted(&self) -> bool {
+        self.evidence.counted.is_empty()
+            && self.premises.counted.is_empty()
+            && self.assumptions.counted.is_empty()
+            && self.bets.counted.is_empty()
+    }
+
+    fn nothing_later(&self) -> bool {
+        self.evidence.later.is_empty()
+            && self.premises.later.is_empty()
+            && self.assumptions.later.is_empty()
+            && self.bets.later.is_empty()
+    }
+
+    /// Something other than a bet counts: an observation, a prior decision or an assumption.
+    fn grounded(&self) -> bool {
+        !self.evidence.counted.is_empty()
+            || !self.premises.counted.is_empty()
+            || !self.assumptions.counted.is_empty()
+    }
+
+    /// The counted hypotheses, assumptions first.
+    fn hypotheses(&self) -> impl Iterator<Item = &'a HypothesisFact> + '_ {
+        self.assumptions
+            .counted
+            .iter()
+            .chain(self.bets.counted.iter())
+            .copied()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -309,61 +495,81 @@ fn has_own_description(option: &OptionFact) -> bool {
     !is_generated_description(option.label.as_deref().map_or("", str::trim), description)
 }
 
-fn option_ids(options: &[&OptionFact]) -> Vec<String> {
-    let mut ids: Vec<String> = options.iter().map(|option| option.id.clone()).collect();
-    ids.sort();
-    ids
+/// The options set against the one taken: every option other than the chosen one (all of them
+/// while none is chosen).
+struct Alternatives<'a> {
+    others: Vec<&'a OptionFact>,
+    chosen: bool,
 }
 
-/// The alternatives are the options other than the chosen one (all of them while none is
-/// chosen). `none` when nothing was set against the option taken, i.e. fewer than two options are
-/// on record; `partial` when some alternative carries no description of its own; `solid` when
-/// every alternative does.
-fn alternatives(facts: &RecordFacts) -> Assessment {
-    let chosen = facts.chosen_option_id.as_deref();
-    let others: Vec<&OptionFact> = facts
-        .options
-        .iter()
-        .filter(|option| Some(option.id.as_str()) != chosen)
-        .collect();
-    let considered = others.len() + usize::from(chosen.is_some());
+impl<'a> Alternatives<'a> {
+    fn of(facts: &'a RecordFacts) -> Self {
+        let chosen = facts.chosen_option_id.as_deref();
+        Self {
+            others: facts
+                .options
+                .iter()
+                .filter(|option| Some(option.id.as_str()) != chosen)
+                .collect(),
+            chosen: chosen.is_some(),
+        }
+    }
 
-    if considered < 2 {
-        let text = if considered == 0 {
-            "no option is recorded"
+    fn considered(&self) -> usize {
+        self.others.len() + usize::from(self.chosen)
+    }
+
+    /// Something was set against the option taken: at least two options are on record.
+    fn set_against(&self) -> bool {
+        self.considered() >= 2
+    }
+
+    fn besides(&self) -> &'static str {
+        if self.chosen {
+            "besides the chosen option"
         } else {
-            "only one option is recorded: nothing was set against it"
-        };
+            "with no option chosen"
+        }
+    }
+}
+
+/// `none` when nothing was set against the option taken, i.e. fewer than two options are on
+/// record; `partial` when some alternative carries no description of its own; `solid` when every
+/// alternative does.
+fn alternatives(facts: &RecordFacts) -> Assessment {
+    let against = Alternatives::of(facts);
+
+    if !against.set_against() {
         return Assessment::assessed(
             Level::None,
             vec![reason(
                 ReasonKind::NoAlternativeRecorded,
-                text.to_owned(),
+                no_alternative_text(&against).to_owned(),
                 Vec::new(),
             )],
         );
     }
 
-    let undescribed: Vec<&OptionFact> = others
+    let undescribed: Vec<&OptionFact> = against
+        .others
         .iter()
         .copied()
         .filter(|option| !has_own_description(option))
         .collect();
-    let besides = if chosen.is_some() {
-        "besides the chosen option"
-    } else {
-        "with no option chosen"
-    };
     let mut reasons = vec![reason(
         ReasonKind::AlternativesRecorded,
-        format!("{} recorded {besides}", plural(others.len(), "alternative")),
-        option_ids(&others),
+        format!(
+            "{} recorded {}",
+            plural(against.others.len(), "alternative"),
+            against.besides()
+        ),
+        sorted_ids(&against.others),
     )];
     let level = if undescribed.is_empty() {
         reasons.push(reason(
             ReasonKind::AlternativesDescribed,
             "every alternative carries a description of its own".to_owned(),
-            option_ids(&others),
+            sorted_ids(&against.others),
         ));
         Level::Solid
     } else {
@@ -373,68 +579,138 @@ fn alternatives(facts: &RecordFacts) -> Assessment {
                 "{} without a description of its own (text a capture surface fills in does not count)",
                 plural(undescribed.len(), "alternative"),
             ),
-            option_ids(&undescribed),
+            sorted_ids(&undescribed),
         ));
         Level::Partial
     };
     Assessment::assessed(level, reasons)
 }
 
+fn no_alternative_text(against: &Alternatives<'_>) -> &'static str {
+    if against.considered() == 0 {
+        "no option is recorded"
+    } else {
+        "only one option is recorded: nothing was set against it"
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Information
 // ---------------------------------------------------------------------------
 
-/// Evidence counts when it was attached at capture or recorded before the decision (even if it
-/// was linked afterwards). Anything else is `later`.
-fn is_ex_ante(evidence: &EvidenceFact, decision_origin: Option<i64>) -> bool {
-    matches!(evidence.added, GroundingAdded::AtCapture)
-        || matches!(
-            (evidence.event_origin, decision_origin),
-            (Some(recorded), Some(decided)) if recorded < decided
+/// A "later" reason for one kind of grounding: shown, never counted.
+fn later_reason<T: Node>(kind: ReasonKind, noun: &str, later: &[&T]) -> Option<Reason> {
+    (!later.is_empty()).then(|| {
+        reason(
+            kind,
+            format!(
+                "{} attached after the decision was captured and not recorded before it (later): shown, never counted",
+                plural(later.len(), noun),
+            ),
+            sorted_ids(later),
         )
+    })
 }
 
-fn evidence_ids(evidence: &[&EvidenceFact]) -> Vec<String> {
-    let mut ids: Vec<String> = evidence.iter().map(|item| item.id.clone()).collect();
-    ids.sort();
-    ids
+/// When a prior decision was superseded, relative to the decision that rests on it.
+#[derive(Clone, Copy)]
+enum SupersededWhen {
+    Later,
+    Before,
+    Unknown,
 }
 
-/// From the evidence linked to the decision. `none` when none counts; `partial` when some does
-/// but none says where it was observed; `solid` when at least one counted item does, so it can be
-/// checked again.
-fn information(facts: &RecordFacts) -> Assessment {
-    let (counted, later): (Vec<&EvidenceFact>, Vec<&EvidenceFact>) = facts
-        .evidence
-        .iter()
-        .partition(|item| is_ex_ante(item, facts.event_origin));
-    let sourced: Vec<&EvidenceFact> = counted
-        .iter()
-        .copied()
-        .filter(|item| stated(item.source.as_deref()).is_some())
-        .collect();
+/// One reason per class of superseded prior decision, in a fixed order. Facts about what
+/// happened to the premise, not about how the decision was made: none of them moves the level.
+fn superseded_reasons(facts: &RecordFacts, premises: &[&PremiseFact]) -> Vec<Reason> {
+    let mut later = Vec::new();
+    let mut before = Vec::new();
+    let mut unknown = Vec::new();
+    for premise in premises {
+        let Some(superseded) = &premise.superseded else {
+            continue;
+        };
+        let when = match (superseded.event_origin, facts.event_origin) {
+            (Some(by), Some(decided)) if by > decided => SupersededWhen::Later,
+            (Some(by), Some(decided)) if by < decided => SupersededWhen::Before,
+            _ => SupersededWhen::Unknown,
+        };
+        let group = match when {
+            SupersededWhen::Later => &mut later,
+            SupersededWhen::Before => &mut before,
+            SupersededWhen::Unknown => &mut unknown,
+        };
+        group.push(&premise.id);
+        if !superseded.by_id.is_empty() {
+            group.push(&superseded.by_id);
+        }
+    }
+    [
+        (later, "since superseded (later)"),
+        (before, "already superseded when this decision was recorded"),
+        (
+            unknown,
+            "superseded, and whether that was before or after this decision is not recorded",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(ids, prefix)| superseded_reason(ids, prefix))
+    .collect()
+}
 
+/// The reason for one class of superseded prior decision, when there is one.
+fn superseded_reason(ids: Vec<&String>, prefix: &str) -> Option<Reason> {
+    if ids.is_empty() {
+        return None;
+    }
+    let mut node_ids: Vec<String> = ids.into_iter().cloned().collect();
+    node_ids.sort();
+    node_ids.dedup();
+    Some(reason(
+        ReasonKind::PremiseSuperseded,
+        format!(
+            "a prior decision it rests on is {prefix}: a fact about what happened next, not about how this was made, so the level does not change"
+        ),
+        node_ids,
+    ))
+}
+
+/// From what the decision rests on: evidence, prior decisions, assumptions and declared bets.
+/// `none` when none counts; `partial` when something does; `solid` when a counted evidence item
+/// says where it was observed, so it can be checked again. A prior decision, an assumption or a
+/// bet counts as information on record, not as an observation.
+fn information(facts: &RecordFacts, rests: &Rests<'_>) -> Assessment {
     let mut reasons = Vec::new();
-    let level = if counted.is_empty() {
-        let text = if later.is_empty() {
-            "no evidence is linked"
+    let mut level = Level::Partial;
+
+    if rests.nothing_counted() {
+        let text = if rests.nothing_later() {
+            "nothing is on record that the decision rests on: no evidence, prior decision, assumption or declared bet"
         } else {
-            "no evidence is linked that pre-dates the decision"
+            "nothing that pre-dates the decision is on record: no evidence, prior decision, assumption or declared bet"
         };
         reasons.push(reason(
-            ReasonKind::NoEvidenceLinked,
+            ReasonKind::NothingRestedOn,
             text.to_owned(),
             Vec::new(),
         ));
-        Level::None
-    } else {
+        level = Level::None;
+    }
+
+    let evidence = &rests.evidence.counted;
+    if !evidence.is_empty() {
+        let sourced: Vec<&EvidenceFact> = evidence
+            .iter()
+            .copied()
+            .filter(|item| stated(item.source.as_deref()).is_some())
+            .collect();
         reasons.push(reason(
             ReasonKind::EvidenceCounted,
             format!(
                 "{} counted: recorded before the decision or attached at capture",
-                plural(counted.len(), "evidence item"),
+                plural(evidence.len(), "evidence item"),
             ),
-            evidence_ids(&counted),
+            sorted_ids(evidence),
         ));
         if sourced.is_empty() {
             reasons.push(reason(
@@ -442,30 +718,71 @@ fn information(facts: &RecordFacts) -> Assessment {
                 "where it was observed is stated for none".to_owned(),
                 Vec::new(),
             ));
-            Level::Partial
         } else {
             reasons.push(reason(
                 ReasonKind::EvidenceSourceStated,
                 format!(
                     "where it was observed is stated for {} of {}",
                     sourced.len(),
-                    counted.len()
+                    evidence.len()
                 ),
-                evidence_ids(&sourced),
+                sorted_ids(&sourced),
             ));
-            Level::Solid
+            level = Level::Solid;
         }
-    };
-    if !later.is_empty() {
+    }
+
+    let premises = &rests.premises.counted;
+    if !premises.is_empty() {
         reasons.push(reason(
-            ReasonKind::EvidenceLater,
+            ReasonKind::PremiseCounted,
             format!(
-                "{} attached after the decision was captured and not recorded before it (later): shown, never counted",
-                plural(later.len(), "evidence item"),
+                "{} counted: recorded before the decision or attached at capture",
+                plural(premises.len(), "prior decision"),
             ),
-            evidence_ids(&later),
+            sorted_ids(premises),
+        ));
+        reasons.extend(superseded_reasons(facts, premises));
+    }
+    let assumptions = &rests.assumptions.counted;
+    if !assumptions.is_empty() {
+        reasons.push(reason(
+            ReasonKind::AssumptionCounted,
+            format!(
+                "{} counted: a stated premise, not yet checked",
+                plural(assumptions.len(), "assumption"),
+            ),
+            sorted_ids(assumptions),
         ));
     }
+    let bets = &rests.bets.counted;
+    if !bets.is_empty() {
+        reasons.push(reason(
+            ReasonKind::BetCounted,
+            format!(
+                "{} declared: an acknowledged unknown, not information gathered",
+                plural(bets.len(), "bet"),
+            ),
+            sorted_ids(bets),
+        ));
+    }
+
+    reasons.extend(later_reason(
+        ReasonKind::EvidenceLater,
+        "evidence item",
+        &rests.evidence.later,
+    ));
+    reasons.extend(later_reason(
+        ReasonKind::PremiseLater,
+        "prior decision",
+        &rests.premises.later,
+    ));
+    reasons.extend(later_reason(
+        ReasonKind::AssumptionLater,
+        "assumption",
+        &rests.assumptions.later,
+    ));
+    reasons.extend(later_reason(ReasonKind::BetLater, "bet", &rests.bets.later));
     Assessment::assessed(level, reasons)
 }
 
@@ -473,34 +790,319 @@ fn information(facts: &RecordFacts) -> Assessment {
 // Reasoning
 // ---------------------------------------------------------------------------
 
-/// `none` when no rationale is recorded; `partial` when one is. Never higher without a model:
-/// whether the inference from information to choice is sound is a judgement.
-fn reasoning(facts: &RecordFacts) -> Assessment {
-    if stated(facts.rationale.as_deref()).is_none() {
-        return Assessment::assessed(
-            Level::None,
-            vec![reason(
-                ReasonKind::NoRationale,
-                "no rationale is recorded".to_owned(),
-                Vec::new(),
-            )],
-        );
+/// `none` when neither a rationale nor a prior decision it follows from is recorded; `partial`
+/// when either is. Never higher without a model: whether the inference from information to
+/// choice is sound is a judgement.
+fn reasoning(facts: &RecordFacts, rests: &Rests<'_>) -> Assessment {
+    let rationale = stated(facts.rationale.as_deref()).is_some();
+    let premises = &rests.premises.counted;
+    let mut reasons = Vec::new();
+
+    if rationale {
+        reasons.push(reason(
+            ReasonKind::RationaleStated,
+            "a rationale is recorded (stated, not judged sound)".to_owned(),
+            vec![facts.decision_id.clone()],
+        ));
+    } else {
+        reasons.push(reason(
+            ReasonKind::NoRationale,
+            "no rationale is recorded".to_owned(),
+            Vec::new(),
+        ));
     }
-    Assessment::assessed(
-        Level::Partial,
-        vec![
-            reason(
-                ReasonKind::RationaleStated,
-                "a rationale is recorded (stated, not judged sound)".to_owned(),
-                vec![facts.decision_id.clone()],
+    if !premises.is_empty() {
+        reasons.push(reason(
+            ReasonKind::PremiseLinked,
+            format!(
+                "it follows from {} (a stated link, not judged sound)",
+                plural(premises.len(), "prior decision"),
             ),
-            reason(
-                ReasonKind::NotJudgedWithoutModel,
-                "whether the inference is sound is judged, not derived: no higher than partial without a model assessment".to_owned(),
-                Vec::new(),
+            sorted_ids(premises),
+        ));
+    }
+    reasons.extend(later_reason(
+        ReasonKind::PremiseLater,
+        "prior decision",
+        &rests.premises.later,
+    ));
+
+    let level = if rationale || !premises.is_empty() {
+        reasons.push(reason(
+            ReasonKind::NotJudgedWithoutModel,
+            NOT_JUDGED_REASONING.to_owned(),
+            Vec::new(),
+        ));
+        Level::Partial
+    } else {
+        Level::None
+    };
+    Assessment::assessed(level, reasons)
+}
+
+// ---------------------------------------------------------------------------
+// Calibration
+// ---------------------------------------------------------------------------
+
+/// The confidence vocabulary the capture verbs accept and the classifier extracts.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Confidence {
+    Low,
+    Medium,
+    High,
+}
+
+impl Confidence {
+    fn parse(text: &str) -> Option<Self> {
+        match text.to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+}
+
+/// What a decision rests on, in words, for the calibration comparison.
+fn rests_on_summary(rests: &Rests<'_>) -> String {
+    let mut parts = Vec::new();
+    for (count, noun) in [
+        (rests.evidence.counted.len(), "evidence item"),
+        (rests.premises.counted.len(), "prior decision"),
+        (rests.assumptions.counted.len(), "assumption"),
+        (rests.bets.counted.len(), "declared bet"),
+    ] {
+        if count > 0 {
+            parts.push(plural(count, noun));
+        }
+    }
+    parts.join(", ")
+}
+
+/// Compares the confidence the decider declared at capture with what the decision rests on.
+///
+/// Not assessed without a declared confidence, and none is ever inferred. Otherwise `none` when
+/// nothing counted is on record to compare it with, and `partial` when something is: whether the
+/// confidence matches it is judged, so no higher without a model. The level never depends on
+/// the confidence itself. High confidence over a bet alone, or over nothing, adds an attention
+/// line instead.
+fn calibration(facts: &RecordFacts, rests: &Rests<'_>) -> (Assessment, Vec<Attention>) {
+    let Some(declared) = stated(facts.expressed_confidence.as_deref()) else {
+        return (Assessment::not_assessed(NO_CONFIDENCE_WHY), Vec::new());
+    };
+    let Some(confidence) = Confidence::parse(declared) else {
+        return (
+            Assessment::not_assessed(&format!(
+                "The declared confidence '{declared}' is not one of low, medium or high, so it is not compared with what the decision rests on. None is inferred in its place."
+            )),
+            Vec::new(),
+        );
+    };
+
+    let mut reasons = vec![reason(
+        ReasonKind::ConfidenceDeclared,
+        format!(
+            "confidence declared at capture: {} (the decider's own words, never system-computed)",
+            confidence.word()
+        ),
+        vec![facts.decision_id.clone()],
+    )];
+    let mut attention = Vec::new();
+    let high = confidence == Confidence::High;
+
+    let level = if rests.grounded() {
+        let mut ids = sorted_ids(&rests.evidence.counted);
+        ids.extend(sorted_ids(&rests.premises.counted));
+        ids.extend(sorted_ids(&rests.assumptions.counted));
+        ids.extend(sorted_ids(&rests.bets.counted));
+        ids.sort();
+        reasons.push(reason(
+            ReasonKind::ConfidenceComparedWithGrounding,
+            format!(
+                "compared with what it rests on: {}",
+                rests_on_summary(rests)
             ),
-        ],
-    )
+            ids,
+        ));
+        Level::Partial
+    } else if !rests.bets.counted.is_empty() {
+        let ids = sorted_ids(&rests.bets.counted);
+        reasons.push(reason(
+            ReasonKind::RestsOnBetOnly,
+            "it rests only on a declared bet: the unknown is acknowledged, and nothing observed or decided stands behind it on record".to_owned(),
+            ids.clone(),
+        ));
+        if high {
+            attention.push(Attention {
+                kind: AttentionKind::HighConfidenceOverBet,
+                dimension: Dimension::Calibration,
+                text: "high confidence was declared at capture over a declared bet alone: worth a look at whether it fits (not a deduction)".to_owned(),
+                node_ids: ids,
+            });
+        }
+        Level::Partial
+    } else {
+        let text = if rests.nothing_later() {
+            "nothing is on record that the decision rests on, so there is nothing to compare it with".to_owned()
+        } else {
+            "nothing that pre-dates the decision is on record, so there is nothing to compare it with (what was attached later is shown under Information, never counted)".to_owned()
+        };
+        reasons.push(reason(ReasonKind::RestsOnNothing, text, Vec::new()));
+        if high {
+            attention.push(Attention {
+                kind: AttentionKind::HighConfidenceOverNothing,
+                dimension: Dimension::Calibration,
+                text: "high confidence was declared at capture with nothing on record that the decision rests on: worth a look at whether it fits (not a deduction)".to_owned(),
+                node_ids: vec![facts.decision_id.clone()],
+            });
+        }
+        Level::None
+    };
+    if level == Level::Partial {
+        reasons.push(reason(
+            ReasonKind::NotJudgedWithoutModel,
+            "whether the confidence matches what it rests on is judged, not derived: no higher than partial without a model assessment".to_owned(),
+            Vec::new(),
+        ));
+    }
+    (Assessment::assessed(level, reasons), attention)
+}
+
+// ---------------------------------------------------------------------------
+// Bias exposure
+// ---------------------------------------------------------------------------
+
+/// Evidence recorded before the decision that refutes something it rests on, even if the link
+/// saying so was added afterwards (the same rule as for any evidence: what pre-dates the decision
+/// was knowable). Sorted pairs of `(evidence id, hypothesis id)`.
+fn counter_evidence<'a>(facts: &RecordFacts, rests: &Rests<'a>) -> Vec<(&'a str, &'a str)> {
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    for hypothesis in rests.hypotheses() {
+        for refutation in &hypothesis.refuted_by {
+            if pre_dates(refutation.evidence_origin, facts.event_origin) {
+                pairs.push((refutation.evidence_id.as_str(), hypothesis.id.as_str()));
+            }
+        }
+    }
+    pairs.sort_unstable();
+    pairs.dedup();
+    pairs
+}
+
+/// How old each counted prior decision was, in whole days, when this decision was recorded.
+/// Left out when either record has no timestamp or the prior decision is stamped later.
+fn premise_ages<'a>(facts: &RecordFacts, premises: &[&'a PremiseFact]) -> Vec<(&'a str, i64)> {
+    let Some(decided_at) = facts.occurred_at else {
+        return Vec::new();
+    };
+    let mut ages: Vec<(&str, i64)> = premises
+        .iter()
+        .filter_map(|premise| {
+            let age = decided_at.signed_duration_since(premise.occurred_at?);
+            (age >= chrono::Duration::zero()).then(|| (premise.id.as_str(), age.num_days()))
+        })
+        .collect();
+    ages.sort();
+    ages
+}
+
+/// Whether the choice was exposed to a counter, reported as facts: an option set against it,
+/// evidence on record before the decision that refutes something it rests on, and how old the
+/// prior decisions it rests on were. `none` when neither a counter-option nor counter-evidence
+/// is on record; `partial` when either is. Never higher without a model: whether a distortion
+/// shaped the choice is a judgement, and the age of a premise is shown, never scored.
+fn bias_exposure(facts: &RecordFacts, rests: &Rests<'_>) -> Assessment {
+    let against = Alternatives::of(facts);
+    let counter = counter_evidence(facts, rests);
+    let mut reasons = Vec::new();
+
+    if against.set_against() {
+        reasons.push(reason(
+            ReasonKind::CounterOptionRecorded,
+            format!(
+                "{} recorded {}: something was set against the option taken",
+                plural(against.others.len(), "counter-option"),
+                against.besides()
+            ),
+            sorted_ids(&against.others),
+        ));
+    } else {
+        reasons.push(reason(
+            ReasonKind::NoCounterOption,
+            no_alternative_text(&against).to_owned(),
+            Vec::new(),
+        ));
+    }
+
+    if counter.is_empty() {
+        reasons.push(reason(
+            ReasonKind::NoCounterEvidence,
+            "no evidence that refutes something the decision rests on was on record before it"
+                .to_owned(),
+            Vec::new(),
+        ));
+    } else {
+        let evidence: BTreeSet<&str> = counter.iter().map(|(evidence, _)| *evidence).collect();
+        let node_ids: BTreeSet<&str> = counter
+            .iter()
+            .flat_map(|(evidence, hypothesis)| [*evidence, *hypothesis])
+            .collect();
+        reasons.push(reason(
+            ReasonKind::CounterEvidenceRecorded,
+            format!(
+                "{} on record before the decision refutes something it rests on: the choice was exposed to counter-evidence (not that it weighed it)",
+                plural(evidence.len(), "evidence item"),
+            ),
+            node_ids.into_iter().map(str::to_owned).collect(),
+        ));
+    }
+
+    let premises = &rests.premises.counted;
+    if !premises.is_empty() {
+        let ages = premise_ages(facts, premises);
+        let text = if ages.is_empty() {
+            "the age of the prior decisions it rests on when this was recorded cannot be derived: a timestamp is missing".to_owned()
+        } else {
+            let listed: Vec<String> = ages
+                .iter()
+                .map(|(id, days)| {
+                    let unit = if *days == 1 { "day" } else { "days" };
+                    format!("{id} {days} {unit}")
+                })
+                .collect();
+            let missing = premises.len() - ages.len();
+            let rest = if missing == 0 {
+                String::new()
+            } else {
+                format!("; not derivable for {missing}")
+            };
+            format!(
+                "age of the prior decisions it rests on when this was recorded: {}{rest}",
+                listed.join(", ")
+            )
+        };
+        reasons.push(reason(ReasonKind::PremiseAge, text, sorted_ids(premises)));
+    }
+
+    let level = if against.set_against() || !counter.is_empty() {
+        reasons.push(reason(
+            ReasonKind::NotJudgedWithoutModel,
+            "whether a distortion shaped the choice is judged, not derived: no higher than partial without a model assessment".to_owned(),
+            Vec::new(),
+        ));
+        Level::Partial
+    } else {
+        Level::None
+    };
+    Assessment::assessed(level, reasons)
 }
 
 #[cfg(test)]

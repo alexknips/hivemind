@@ -97,20 +97,24 @@ seven dimensions for a decision. Each one is either
   rather than guessing.
 
 There is no composite number, no tier and no grade in the profile: each
-dimension stands alone. `none` means the record states nothing toward the
+dimension stands alone, and the `attention` list beside them names what deserves a
+second look. `none` means the record states nothing toward the
 dimension, not that the decision was bad. Every profile records the
 `floor_version` of the rules that produced it; the version moves whenever a rule
-changes the level a record gets.
+changes the level a record gets. Version 1 read evidence, the rationale, the
+question and the options. Version 2 also reads the prior decisions, assumptions
+and declared bets a decision rests on and the confidence declared at capture, so
+Calibration and Bias exposure have floors.
 
 | Dimension | Floor from | Levels | Judged part (needs a model) |
 | --- | --- | --- | --- |
 | **Framing** | the question the decision answers was recorded | `none` no question recorded · `partial` a question is recorded. Never `solid` without a model. | whether it is the right question |
 | **Alternatives** | options recorded, and whether each rejected option carries a description of its own | `none` fewer than two options recorded · `partial` some alternative has no description of its own · `solid` every alternative has one | whether the alternatives are genuine |
-| **Information** | evidence linked to the decision, and whether it says where it was observed | `none` no evidence counts · `partial` evidence counts, none says where it was observed · `solid` at least one counted item says where it was observed | whether it is the relevant information |
-| **Reasoning** | a rationale is recorded (stated, not judged sound) | `none` no rationale · `partial` a rationale is recorded. Never `solid` without a model. | whether the inference is sound |
+| **Information** | what the decision rests on: evidence, a prior decision it follows from, an assumption, a declared bet; and whether counted evidence says where it was observed | `none` nothing counts · `partial` something counts (a prior decision, an assumption and a bet count as information on record, not as observations) · `solid` a counted evidence item says where it was observed | whether it is the relevant information |
+| **Reasoning** | a rationale is recorded, or a prior decision it follows from (stated, not judged sound) | `none` neither · `partial` either. Never `solid` without a model. | whether the inference is sound |
 | **Values / Tradeoffs** | none: judged only | not assessed | whether the values and tradeoffs were made explicit and weighed |
-| **Bias exposure** | none in this version: it would need whether a counter-option or counter-evidence was recorded and how old the premises were | not assessed | whether a distortion shaped the choice |
-| **Calibration** | none in this version: it would need the confidence the decider declared at capture and what the decision rests on | not assessed | whether confidence matches the evidence |
+| **Bias exposure** | whether a counter-option or counter-evidence is on record; the age of the prior decisions it rests on is reported beside it, never scored | `none` neither is on record · `partial` either is. Never `solid` without a model. | whether a distortion shaped the choice |
+| **Calibration** | the confidence the decider declared at capture, and what the decision rests on | not assessed when no confidence was declared · `none` declared, and nothing counted to compare it with · `partial` declared, and something counted to compare it with. Never `solid` without a model. | whether the confidence matches what it rests on |
 
 **Alternatives.** The alternatives are the options other than the chosen one (all
 of them while none is chosen). A description counts only if it is the author's
@@ -129,15 +133,53 @@ does a description that only repeats the option's label:
 A description that merely begins with one of these but goes on (an author who
 kept the generated text and added their reason) is the author's own.
 
-**Information (ex ante).** Something counts toward a floor only if it was
-recorded before the decision or attached at capture. Evidence recorded after the
-decision, then linked to it, is reported as `later` and never raises the level.
-Evidence that was recorded before the decision counts even when it was linked to
-the decision afterwards. "Before" is the ledger offset of the recording event, so
-it does not depend on a clock.
+**Ex ante.** Something counts toward a floor only if it was recorded before the
+decision or attached at capture. Evidence, a prior decision, an assumption or a
+bet recorded after the decision, then linked to it, is reported as `later` and
+never raises a level. One that was recorded before the decision counts even when
+it was linked to the decision afterwards (the backfill of an older decision).
+"Before" is the ledger offset of the recording event, so it does not depend on a
+clock. An offset that is not known shows nothing, so it does not count.
 
-**Read-only and bounded.** A profile reads one decision and its direct options
-and evidence with anchored lookups, never a scan of the graph. The same graph
+**What the decision rests on.** Information counts the four kinds of grounding
+side by side: an observation (evidence), a prior decision (`FOLLOWS_FROM`), an
+assumption and a declared bet (both `ASSUMES`). Only an observation that says
+where it was seen can lift Information to `solid`, because only it can be checked
+again against the world. Reasoning counts a counted prior decision as stated
+reasoning: it is a link, not a judged inference, so it stops at `partial` like a
+rationale does.
+
+**A prior decision that was superseded.** It is shown in Information as a fact,
+`since superseded (later)` when the superseding event came after the decision,
+`already superseded when this decision was recorded` when it came before, and
+`not recorded` when the order is unknown. No level moves: that is what happened
+next, which the outcome view shows, not how well the decision was made.
+
+**Calibration.** The confidence is the decider's own capture-time words (`low`,
+`medium` or `high`), never system-computed and never inferred from the rationale
+or from how the decision is grounded. No declared confidence, or a value outside
+that vocabulary, means not assessed, with the reason. The level depends on what
+is on record to compare the confidence with, never on the confidence itself: a
+`high` and a `low` over the same grounding get the same level. High confidence over
+a declared bet alone (`high_confidence_over_bet`), or with nothing counted on
+record (`high_confidence_over_nothing`), is an attention line on the profile, with
+the node ids it rests on. It is not a deduction. A decision that is grounded on an
+observation, a prior decision or an assumption as well as a bet is grounded, and
+raises no line.
+
+**Bias exposure.** A counter-option is an option set against the one taken (the
+same options the Alternatives floor reads). Counter-evidence is evidence that
+refutes an assumption or bet the decision rests on and was recorded before the
+decision (as for any evidence, the link saying so may have been added afterwards;
+evidence recorded after the decision is what happened next, not exposure). Both
+are reported as facts, as is
+the age in whole days of each counted prior decision when the decision was
+recorded, from the two records' own timestamps. The age is shown and never
+scored: an old premise is not a lower level.
+
+**Read-only and bounded.** A profile reads one decision and its direct options,
+evidence, prior decisions and assumptions or bets with anchored lookups, never a
+scan of the graph. The same graph
 gives the same profile, with reasons and ids in a fixed order, on the in-memory,
 Postgres and Kuzu projections.
 

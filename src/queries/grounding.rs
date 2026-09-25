@@ -484,39 +484,7 @@ pub fn grounding_of_at(
         )?);
     }
 
-    // An assumption or bet hangs off the chosen option when there is one (named at capture) and
-    // off the decision itself when grounded later; the same hypothesis reached both ways is one
-    // item, attributed to its earliest edge.
-    let mut hypothesis_edges = grounding_edges(
-        graph,
-        NodeKind::Decision,
-        decision_id,
-        RelationKind::PremisedOnDirect,
-        NodeKind::Hypothesis,
-    )?;
-    for option_id in neighbor_ids(
-        graph,
-        decision_id,
-        RelationKind::Chose,
-        NodeKind::Option,
-        "option_id",
-    )? {
-        for (hypothesis_id, edge) in grounding_edges(
-            graph,
-            NodeKind::Option,
-            &option_id,
-            RelationKind::PremisedOn,
-            NodeKind::Hypothesis,
-        )? {
-            let keep_existing = hypothesis_edges
-                .get(&hypothesis_id)
-                .is_some_and(|existing| existing.is_not_later_than(&edge));
-            if !keep_existing {
-                hypothesis_edges.insert(hypothesis_id, edge);
-            }
-        }
-    }
-    for (hypothesis_id, edge) in hypothesis_edges {
+    for (hypothesis_id, edge) in hypothesis_grounding_edges(graph, decision_id)? {
         items.push(hypothesis_item(
             graph,
             hypothesis_id,
@@ -550,6 +518,78 @@ pub fn grounding_of_at(
         state,
         dependents_count: dependents_count(graph, decision_id)?,
     })
+}
+
+/// The assumptions and bets a decision rests on, keyed by hypothesis id. An assumption or bet
+/// hangs off the chosen option when there is one (named at capture) and off the decision itself
+/// when grounded later; the same hypothesis reached both ways is one item, attributed to its
+/// earliest edge.
+fn hypothesis_grounding_edges(
+    graph: &impl GraphView,
+    decision_id: &str,
+) -> Result<BTreeMap<String, EdgeProvenance>> {
+    let mut hypothesis_edges = grounding_edges(
+        graph,
+        NodeKind::Decision,
+        decision_id,
+        RelationKind::PremisedOnDirect,
+        NodeKind::Hypothesis,
+    )?;
+    for option_id in neighbor_ids(
+        graph,
+        decision_id,
+        RelationKind::Chose,
+        NodeKind::Option,
+        "option_id",
+    )? {
+        for (hypothesis_id, edge) in grounding_edges(
+            graph,
+            NodeKind::Option,
+            &option_id,
+            RelationKind::PremisedOn,
+            NodeKind::Hypothesis,
+        )? {
+            let keep_existing = hypothesis_edges
+                .get(&hypothesis_id)
+                .is_some_and(|existing| existing.is_not_later_than(&edge));
+            if !keep_existing {
+                hypothesis_edges.insert(hypothesis_id, edge);
+            }
+        }
+    }
+    Ok(hypothesis_edges)
+}
+
+/// The prior decisions a decision follows from (`FOLLOWS_FROM`) and how each was attached. Same
+/// contract as `evidence_attachments`.
+pub(super) fn premise_attachments(
+    graph: &impl GraphView,
+    decision_id: &str,
+    proposal_event: Option<i64>,
+) -> Result<Vec<(String, GroundingAdded)>> {
+    Ok(grounding_edges(
+        graph,
+        NodeKind::Decision,
+        decision_id,
+        RelationKind::FollowsFrom,
+        NodeKind::Decision,
+    )?
+    .into_iter()
+    .map(|(premise_id, edge)| (premise_id, edge.added(proposal_event)))
+    .collect())
+}
+
+/// The assumptions and bets a decision rests on and how each was attached. Same contract as
+/// `evidence_attachments`.
+pub(super) fn hypothesis_attachments(
+    graph: &impl GraphView,
+    decision_id: &str,
+    proposal_event: Option<i64>,
+) -> Result<Vec<(String, GroundingAdded)>> {
+    Ok(hypothesis_grounding_edges(graph, decision_id)?
+        .into_iter()
+        .map(|(hypothesis_id, edge)| (hypothesis_id, edge.added(proposal_event)))
+        .collect())
 }
 
 /// The evidence a decision cites (`BASED_ON`) and how each item was attached: named at capture

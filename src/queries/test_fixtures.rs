@@ -342,8 +342,9 @@ pub(crate) fn record_payload(
     payload
 }
 
-/// Every decision `floor_scenario` records, plus one id that is not in the graph.
-pub(crate) const FLOOR_SCENARIO_DECISIONS: [&str; 10] = [
+/// Every decision `floor_scenario` records that a profile is read for, plus one id that is not in
+/// the graph.
+pub(crate) const FLOOR_SCENARIO_DECISIONS: [&str; 18] = [
     "d:solid",
     "d:placeholders",
     "d:bare",
@@ -353,6 +354,14 @@ pub(crate) const FLOOR_SCENARIO_DECISIONS: [&str; 10] = [
     "d:single",
     "d:undecided",
     "d:stub",
+    "d:premised",
+    "d:bet-high",
+    "d:high-nothing",
+    "d:backfilled-premise",
+    "d:late-premise",
+    "d:on-superseded",
+    "d:challenged",
+    "d:refuted-later",
     "d:missing",
 ];
 
@@ -369,6 +378,15 @@ pub(crate) const FLOOR_SCENARIO_DECISIONS: [&str; 10] = [
 /// - `d:mixed`: unsourced evidence at capture; sourced `e:after-too` linked afterwards.
 /// - `d:single`: one option, the chosen one. `d:undecided`: two described options, none chosen.
 /// - `d:stub`: named by a decision request and never proposed, so its node has no rationale.
+/// - `d:premised`: two options and a medium confidence; follows from `d:solid` at capture.
+/// - `d:bet-high`: high confidence over a declared bet (`h:bet`) alone.
+/// - `d:high-nothing`: high confidence, nothing declared.
+/// - `d:backfilled-premise`: follows from `d:solid`, attributed afterwards; `d:solid` pre-dates it.
+/// - `d:late-premise`: follows from `d:after-premise`, which was recorded after it.
+/// - `d:on-superseded`: follows from `d:old-premise` at capture; `d:new-premise` supersedes that
+///   afterwards.
+/// - `d:challenged`: rests on `h:doubtful`, which `e:counter` refuted before the decision.
+///   `d:refuted-later` rests on `h:later-doubt`, refuted only after it.
 pub(crate) fn floor_scenario() -> Result<Scenario> {
     let s = Scenario::new();
     let crew = "agent:claude:crew";
@@ -517,7 +535,202 @@ pub(crate) fn floor_scenario() -> Result<Scenario> {
         ),
     )?;
     s.request_naming("d:stub", "2026-01-02T00:00:08Z")?;
+    add_grounded_decisions(&s, crew)?;
     Ok(s)
+}
+
+/// The decisions of `floor_scenario` that rest on a prior decision, an assumption or a bet, or
+/// declare a confidence.
+fn add_grounded_decisions(s: &Scenario, crew: &str) -> Result<()> {
+    s.hypothesis(
+        "h:bet",
+        "Load stays flat",
+        "bet",
+        Some("2026-06-01T00:00:00Z"),
+        "2026-01-03T00:00:00Z",
+    )?;
+    s.hypothesis(
+        "h:doubtful",
+        "Users tolerate a slow first load",
+        "assumption",
+        None,
+        "2026-01-03T00:00:01Z",
+    )?;
+    s.evidence(
+        "e:counter",
+        "First load took nine seconds in the field test",
+        Some("field test 2026-01-02"),
+        "2026-01-03T00:00:02Z",
+    )?;
+    s.relation(
+        "REFUTES",
+        "e:counter",
+        "h:doubtful",
+        "agent:tester",
+        None,
+        "2026-01-03T00:00:03Z",
+    )?;
+
+    let mut premised = record_payload(
+        "d:premised",
+        None,
+        &[
+            (
+                "d:premised:a",
+                "Reuse the store",
+                "Keep the ledger store we already chose",
+            ),
+            (
+                "d:premised:b",
+                "Switch again",
+                "Move to a new store; rejected, the churn is not worth it",
+            ),
+        ],
+        Some("d:premised:a"),
+        &[],
+    );
+    premised["expressed_confidence"] = json!("medium");
+    let proposal = s.proposal(crew, "2026-03-01T00:00:00Z", premised)?;
+    s.relation(
+        "FOLLOWS_FROM",
+        "d:premised",
+        "d:solid",
+        crew,
+        Some(proposal),
+        "2026-03-01T00:00:01Z",
+    )?;
+
+    s.decision_with(
+        "d:bet-high",
+        "Ship on the bet",
+        crew,
+        "2026-03-02T00:00:00Z",
+        false,
+        &[],
+        &["h:bet"],
+        Some("high"),
+    )?;
+    s.decision_with(
+        "d:high-nothing",
+        "Trust the vendor",
+        crew,
+        "2026-03-02T00:00:01Z",
+        false,
+        &[],
+        &[],
+        Some("high"),
+    )?;
+
+    s.decision(
+        "d:backfilled-premise",
+        "Keep the store",
+        crew,
+        "2026-03-02T00:00:02Z",
+    )?;
+    s.relation(
+        "FOLLOWS_FROM",
+        "d:backfilled-premise",
+        "d:solid",
+        "human:alex",
+        None,
+        "2026-04-01T00:00:00Z",
+    )?;
+
+    s.decision(
+        "d:late-premise",
+        "Keep the queue",
+        crew,
+        "2026-03-02T00:00:03Z",
+    )?;
+    s.decision(
+        "d:after-premise",
+        "Queue sizing rule",
+        crew,
+        "2026-03-03T00:00:00Z",
+    )?;
+    s.relation(
+        "FOLLOWS_FROM",
+        "d:late-premise",
+        "d:after-premise",
+        "human:alex",
+        None,
+        "2026-04-01T00:00:01Z",
+    )?;
+
+    s.decision(
+        "d:old-premise",
+        "Bill per call",
+        crew,
+        "2026-03-02T00:00:04Z",
+    )?;
+    let proposal = s.decision(
+        "d:on-superseded",
+        "Cache billing reads",
+        crew,
+        "2026-03-02T00:00:05Z",
+    )?;
+    s.relation(
+        "FOLLOWS_FROM",
+        "d:on-superseded",
+        "d:old-premise",
+        crew,
+        Some(proposal),
+        "2026-03-02T00:00:06Z",
+    )?;
+    s.decision(
+        "d:new-premise",
+        "Bill per seat",
+        crew,
+        "2026-03-05T00:00:00Z",
+    )?;
+    s.supersede(
+        "d:old-premise",
+        "d:new-premise",
+        crew,
+        "2026-03-05T00:00:01Z",
+    )?;
+
+    s.decision_with(
+        "d:challenged",
+        "Ship the slow first load",
+        crew,
+        "2026-03-06T00:00:00Z",
+        false,
+        &[],
+        &["h:doubtful"],
+        None,
+    )?;
+    s.hypothesis(
+        "h:later-doubt",
+        "Users will not notice",
+        "assumption",
+        None,
+        "2026-03-06T00:00:01Z",
+    )?;
+    s.decision_with(
+        "d:refuted-later",
+        "Ship the unnoticed change",
+        crew,
+        "2026-03-06T00:00:02Z",
+        false,
+        &[],
+        &["h:later-doubt"],
+        None,
+    )?;
+    s.evidence(
+        "e:counter-later",
+        "Users noticed within a day",
+        Some("support inbox 2026-03-08"),
+        "2026-03-08T00:00:00Z",
+    )?;
+    s.relation(
+        "REFUTES",
+        "e:counter-later",
+        "h:later-doubt",
+        "agent:tester",
+        None,
+        "2026-03-08T00:00:01Z",
+    )
 }
 
 /// The projects and decisions behind the project-first "what should I know" answer
