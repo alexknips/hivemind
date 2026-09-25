@@ -7,7 +7,8 @@
         "./hivemind/",
         "mcp",
         "--agent-tool",
-        "claude"
+        "claude",
+        "--project-from-context"
       ],
       "env": {
         "HIVEMIND_DIR": "./hivemind/"

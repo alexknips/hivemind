@@ -168,20 +168,34 @@ hivemind_context_resolve() {
   fi
 }
 
-# hivemind_context_exec [--write] <subcommand...>
+# hivemind_context_exec [--write] [--project-from-context] <subcommand...>
 # --write injects `--actor agent:<tool>:<name>` ahead of the subcommand so
 # disagree/supersede record agent provenance in actor_id rather than falling
 # back to the CLI's git-derived human default. Read verbs need no such
 # override; they log the CLI's own default actor.
+# --project-from-context, for the verb that records a new decision (supersede),
+# hands the CLI the "work out the project from where this runs" switch. It is
+# a flag of that subcommand, so it goes right after the subcommand name; the
+# CLI owns the rule (nearest .hivemind-project, then the rig, then the current
+# project), a --project the caller passes still wins, and a supersede that
+# finds no project inherits the old decision's.
 hivemind_context_exec() {
   hivemind_context_resolve
   log_hivemind_resolution
 
   local global_args=(--hivemind-dir "$HIVEMIND_DIR")
-  if [[ "${1:-}" == "--write" ]]; then
-    global_args+=(--actor "$AGENT_ACTOR")
+  local subcommand_args=()
+  while [[ "${1:-}" == --write || "${1:-}" == --project-from-context ]]; do
+    if [[ "$1" == "--write" ]]; then
+      global_args+=(--actor "$AGENT_ACTOR")
+    else
+      subcommand_args+=(--project-from-context)
+    fi
     shift
-  fi
+  done
 
-  exec "${BASE_CMD[@]}" "${global_args[@]}" "$@"
+  local subcommand="$1"
+  shift
+  exec "${BASE_CMD[@]}" "${global_args[@]}" "$subcommand" \
+    ${subcommand_args[@]+"${subcommand_args[@]}"} "$@"
 }

@@ -17,6 +17,10 @@ Run the plugin helper:
 ${CLAUDE_PLUGIN_ROOT}/scripts/supersede.sh $ARGUMENTS
 ```
 
+The replacement's project is worked out from the working folder (or named with
+`--project <handle>`); with none found it stays in the old decision's project.
+The confirmation shows `project=` and `project_source=`.
+
 If the description does not resolve to exactly one decision, the CLI
 returns the candidate list and performs **no write**. Show the candidates
 and re-invoke with `--pick N` (or `--old <id>`) once you're certain — never

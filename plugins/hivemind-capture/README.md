@@ -89,6 +89,39 @@ Bare terminal writes such as `hivemind emit decision.proposed ...` default to
 `actor_id=human:<git config user.email>` and `source=human` when `--actor` is
 not supplied.
 
+## Projects
+
+Every decision capture says which project it belongs to and how that was
+determined. The capture helper passes `--project-from-context` (so does the
+bundled MCP server, and the Codex skill's direct `hivemind ... emit
+decision.capture` form), so the CLI works the project out from where the agent
+is running. First match wins:
+
+1. `--project HANDLE`, when the caller names one. An unregistered handle is
+   refused with the register command, never guessed.
+2. The nearest `.hivemind-project` file walking up from the working
+   directory. It holds one project handle; a marker nested inside an attached
+   folder is a sub-project and, being nearer, wins.
+3. The project anchored to the Gas City rig (`GC_RIG`).
+4. The current project set with `hivemind project use`.
+
+When none applies, the decision is saved to the actor's personal project. The
+confirmation line says so and how to attach the folder:
+
+```text
+Captured HiveMind decision decision-... in ./hivemind.
+project: personal:agent:claude (personal_fallback) — saved to your personal project; ...
+this folder is not attached to a project yet; run hivemind project anchor ... to attach it
+```
+
+A capture from an attached folder confirms with the project and how it was
+found instead, for example `project: billing (folder_marker)`. Evidence and
+hypothesis captures carry no project. `/hivemind-context:supersede` works the
+same way for the replacement decision; with none found it stays in the project
+of the decision it replaces. The `--project-from-context` flag needs a
+`hivemind` CLI that has it; an older CLI refuses the flag, so update the CLI
+along with the plugin.
+
 ## Verify
 
 Capture one decision:

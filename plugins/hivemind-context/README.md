@@ -85,6 +85,18 @@ Gas City's session-instance variables. `run_disagree`/`run_supersede`/`run_groun
 (`agent:` prefix → `EventProvenance::agent`, otherwise `::human`), so the
 emitted event's `source` field always matches its `actor_id`'s kind.
 
+## Projects
+
+`supersede` records a new decision, so it passes `--project-from-context` and
+the replacement lands in the project the working folder names: the nearest
+`.hivemind-project` file walking up from the working directory, then the
+project anchored to the Gas City rig (`GC_RIG`), then the current project set
+with `hivemind project use`. `--project HANDLE` names one outright and wins.
+When none applies, the replacement stays in the project of the decision it
+replaces. Its confirmation line shows `project=<handle>` and how it was
+determined (`project_source=`). The other verbs record no decision and take no
+project. See the `hivemind-capture` README for the full order.
+
 ## Verify
 
 Ask what to know before touching a file:

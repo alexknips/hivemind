@@ -131,6 +131,7 @@ ledger write must stay explicit and deterministic.
    ```bash
    HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" emit decision.capture \
+     --project-from-context \
      --agent-tool codex \
      --agent-session "$HIVEMIND_AGENT_SESSION" \
      --title "Prefer direct CLI capture before MCP" \
@@ -154,6 +155,7 @@ ledger write must stay explicit and deterministic.
    ```bash
    HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" emit decision.capture \
+     --project-from-context \
      --agent-tool codex \
      --agent-session "$HIVEMIND_AGENT_SESSION" \
      --title "Use shared ledger storage for the integration demo" \
@@ -195,6 +197,34 @@ ledger write must stay explicit and deterministic.
      --source agent \
      --limit 10
    ```
+
+## Which Project A Capture Lands In
+
+Every decision belongs to a project, and the capture says which and how that
+was determined. You do not work it out: the helper (and the direct
+`hivemind ... emit decision.capture` form above) passes
+`--project-from-context`, and the CLI answers, first match wins:
+
+1. The project you named with `--project <handle>` (only when you were told
+   which project — never guess a handle; an unregistered one is refused).
+2. The nearest `.hivemind-project` file walking up from the working
+   directory. It holds one project handle; a nested one is a sub-project and,
+   being nearer, wins.
+3. The project anchored to the Gas City rig (`GC_RIG`).
+4. The current project set with `hivemind project use`.
+5. None of these: the decision is saved to your personal project.
+
+The confirmation shows the outcome as a `project: <handle> (<how>)` line
+(`folder_marker`, `rig`, `current_project`, `stated`, or `personal_fallback`).
+On the personal fallback it also says the decision was saved to your personal
+project and that the folder is not attached to a project yet, with the
+`hivemind project anchor ...` command that attaches it. Relay that reminder to
+the user rather than dropping it: a decision left in a personal project is
+easy to lose track of, and it can be moved to the right project later.
+
+`supersede` (from the `hivemind-context` plugin) works the same way, except
+that a replacement with no project found stays in the project of the decision
+it replaces. Evidence and hypotheses carry no project.
 
 ## Batch Capture via Haiku Subagent (Keyless)
 

@@ -57,6 +57,12 @@ fn codex_capture_plugin_bundle_is_installable_and_points_at_cli_capture() -> Tes
     assert!(skill.contains("CODEX_THREAD_ID"));
     assert!(skill.contains("Capture immediately after the decision is made"));
     assert!(skill.contains("HIVEMIND_DIR"));
+    // hivemind-s15q.15: decision captures work their project out from where the agent runs, and
+    // the skill tells the agent what it will see and to relay the reminder.
+    assert!(skill.contains("--project-from-context"));
+    assert!(skill.contains("Which Project A Capture Lands In"));
+    assert!(skill.contains(".hivemind-project"));
+    assert!(skill.contains("saved to your personal project"));
     Ok(())
 }
 
@@ -203,6 +209,13 @@ fn claude_code_plugin_bundle_is_installable_and_wires_cli_mcp() -> TestResult<()
         .expect("mcp args")
         .windows(2)
         .any(|pair| pair[0] == "--agent-tool" && pair[1] == "claude"));
+    // hivemind-s15q.15: the bundled stdio server works a capture's project out from its own
+    // working directory when the call names none.
+    assert!(mcp["mcpServers"]["hivemind"]["args"]
+        .as_array()
+        .expect("mcp args")
+        .iter()
+        .any(|arg| arg == "--project-from-context"));
     assert_eq!(
         mcp["mcpServers"]["hivemind"]["env"]["HIVEMIND_DIR"],
         "./hivemind/"
@@ -338,7 +351,7 @@ fn claude_code_plugin_capture_and_query_scripts_write_agent_decision() -> TestRe
 
     let capture_script = root.join("plugins/hivemind-capture/scripts/capture-decision.sh");
     let output = Command::new(&capture_script)
-        .current_dir(root)
+        .current_dir(markerless_cwd())
         .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
         .env("HIVEMIND_DIR", &hivemind_dir)
         .env("CLAUDE_PROJECT_DIR", root)
@@ -414,7 +427,7 @@ fn query_decisions_script_finds_decisions_captured_by_a_different_session() -> T
 
     let capture_script = root.join("plugins/hivemind-capture/scripts/capture-decision.sh");
     let output = Command::new(&capture_script)
-        .current_dir(root)
+        .current_dir(markerless_cwd())
         .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
         .env("HIVEMIND_DIR", &hivemind_dir)
         .env("CLAUDE_PROJECT_DIR", root)
@@ -473,7 +486,7 @@ fn query_decisions_script_finds_decisions_captured_by_a_different_session() -> T
 /// free-text query tests below have exactly one thing to find.
 fn capture_joined_query_fixture(root: &Path, hivemind_dir: &Path) -> TestResult<()> {
     let output = Command::new(root.join("plugins/hivemind-capture/scripts/capture-decision.sh"))
-        .current_dir(root)
+        .current_dir(markerless_cwd())
         .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
         .env("HIVEMIND_DIR", hivemind_dir)
         .env("CLAUDE_PROJECT_DIR", root)
@@ -684,7 +697,7 @@ fn capture_plugin_scripts_derive_codex_session_context() -> TestResult<()> {
 
     let capture_script = root.join("plugins/hivemind-capture/scripts/capture-decision.sh");
     let output = Command::new(&capture_script)
-        .current_dir(root)
+        .current_dir(markerless_cwd())
         .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
         .env("HIVEMIND_DIR", &hivemind_dir)
         .env("CODEX_THREAD_ID", "codex-thread-test")
@@ -1118,7 +1131,7 @@ fn capture_script_forwards_grounding_flags_and_refuses_an_ungrounded_capture() -
     ];
     let run_script = |extra: &[&str]| -> TestResult<std::process::Output> {
         Ok(Command::new(&script)
-            .current_dir(root)
+            .current_dir(markerless_cwd())
             .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
             .env("HIVEMIND_DIR", &hivemind_dir)
             .env("CLAUDE_PROJECT_DIR", root)
@@ -1190,6 +1203,140 @@ fn capture_script_forwards_grounding_flags_and_refuses_an_ungrounded_capture() -
     assert_eq!(proposal.payload["expressed_confidence"], "high");
 
     let _ = fs::remove_dir_all(hivemind_dir);
+    Ok(())
+}
+
+/// hivemind-s15q.15: the capture scripts ask the CLI to work a decision's project out from the
+/// folder they run in (the nearest `.hivemind-project` walking up). Tests that are not about
+/// projects run from here instead of the repository root, where this rig's own marker sits: the
+/// fresh test ledger has never registered that project, so a capture from the root would be
+/// refused.
+fn markerless_cwd() -> std::path::PathBuf {
+    std::env::temp_dir()
+}
+
+#[test]
+fn supersede_script_works_out_the_project_from_the_folder_it_runs_in() -> TestResult<()> {
+    // hivemind-s15q.15: supersede records a new decision, so the context plugin's script hands the
+    // CLI the same "work the project out from where this runs" switch the capture script does. It
+    // is a flag of the `supersede` subcommand: it must land after the subcommand name.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let scratch = unique_temp_dir("hivemind-supersede-project")?;
+    let hivemind_dir = scratch.join("hivemind");
+    let hivemind = |args: &[&str]| -> TestResult<std::process::Output> {
+        Ok(Command::new(env!("CARGO_BIN_EXE_hivemind"))
+            .arg("--hivemind-dir")
+            .arg(&hivemind_dir)
+            .args(["--actor", "human:test-registrar"])
+            .args(args)
+            .output()?)
+    };
+    for handle in ["billing", "payments"] {
+        let registered = hivemind(&["project", "register", handle])?;
+        require(
+            registered.status.success(),
+            format!(
+                "register {handle} failed: {}",
+                String::from_utf8_lossy(&registered.stderr)
+            ),
+        )?;
+    }
+
+    let script_env = |command: &mut Command| {
+        command
+            .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+            .env("HIVEMIND_DIR", &hivemind_dir)
+            .env("CLAUDE_SESSION_ID", "supersede-project-session")
+            .env_remove("CLAUDE_PROJECT_DIR")
+            .env_remove("GC_AGENT")
+            .env_remove("GC_ALIAS")
+            .env_remove("GC_RIG");
+    };
+    let capture_script = root.join("plugins/hivemind-capture/scripts/capture-decision.sh");
+    for title in ["Ship invoices weekly", "Ship refunds daily"] {
+        let mut capture = Command::new(&capture_script);
+        script_env(&mut capture);
+        let output = capture
+            .current_dir(markerless_cwd())
+            .args([
+                "--title",
+                title,
+                "--rationale",
+                "The fixture decision the supersede script will replace under a project",
+                "--topic-keys",
+                "billing,cadence",
+                "--options",
+                "weekly,daily",
+                "--chose",
+                "weekly",
+                "--bet",
+                "--project",
+                "billing",
+            ])
+            .output()?;
+        require(
+            output.status.success(),
+            format!(
+                "fixture capture failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )?;
+    }
+
+    let supersede_script = root.join("plugins/hivemind-context/scripts/supersede.sh");
+    let supersede = |old: &str, title: &str, cwd: &Path| -> TestResult<String> {
+        let mut command = Command::new(&supersede_script);
+        script_env(&mut command);
+        let output = command
+            .current_dir(cwd)
+            .args([
+                old,
+                "--title",
+                title,
+                "--rationale",
+                "Replacing the fixture decision to see which project the replacement lands in",
+                "--topic-keys",
+                "billing,cadence",
+                "--options",
+                "monthly,daily",
+                "--chose",
+                "monthly",
+                "--bet",
+            ])
+            .output()?;
+        require(
+            output.status.success(),
+            format!(
+                "supersede failed: {}\nstdout: {}",
+                String::from_utf8_lossy(&output.stderr),
+                String::from_utf8_lossy(&output.stdout)
+            ),
+        )?;
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+
+    // From a folder attached to another project, the replacement goes there.
+    let attached = scratch.join("attached");
+    fs::create_dir_all(&attached)?;
+    fs::write(attached.join(".hivemind-project"), "payments\n")?;
+    let marked = supersede("Ship invoices weekly", "Ship invoices monthly", &attached)?;
+    require_contains(
+        &marked,
+        "project=payments project_source=folder_marker",
+        "supersede from a marker folder",
+    )?;
+
+    // From an unattached folder nothing is found, so the replacement stays where the old one was.
+    let bare = scratch.join("bare");
+    fs::create_dir_all(&bare)?;
+    let inherited = supersede("Ship refunds daily", "Ship refunds monthly", &bare)?;
+    require_contains(
+        &inherited,
+        "project=billing",
+        "supersede from a bare folder",
+    )?;
+
+    let _ = fs::remove_dir_all(scratch);
     Ok(())
 }
 

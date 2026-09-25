@@ -51,6 +51,15 @@ is refused (exit 2) and nothing is written. Answer with at least one of:
 Existing --evidence <id> / --hypotheses <id> also count. --confidence
 low|medium|high records the decider's own stated confidence; omit it otherwise.
 The decider's own words are not a grounding — they go in --quote.
+
+Every decision capture says which project it belongs to and how that was
+determined. Without --project the CLI works it out from where this runs (the
+nearest .hivemind-project file walking up from the working directory, then the
+project anchored to the Gas City rig, then your `hivemind project use`
+setting); when none applies the decision is saved to your personal project and
+the confirmation says so, with how to attach the folder.
+  --project HANDLE            Name the project outright. It wins over all of
+                              the above. Unregistered handles are refused.
 USAGE
 }
 
@@ -278,8 +287,14 @@ resolve_kind() {
   fi
 }
 
+# What the CLI says on stderr about where a decision landed: a `project: <handle>
+# (<how determined>)` line, plus -- when nothing attached the folder -- the
+# reminder to attach it. They are part of the capture's confirmation, so
+# emit_decision moves them there; everything else on stderr stays on stderr.
+PROJECT_ANNOUNCEMENT='^(project: |this folder is not attached to a project)'
+
 emit_decision() {
-  local result
+  local result errfile status=0 announcement
   if [[ "${#FORWARDED[@]}" -eq 0 ]]; then
     cat >&2 <<'ERROR'
 decision captures require structured decision.capture flags:
@@ -288,9 +303,23 @@ decision captures require structured decision.capture flags:
 ERROR
     exit 2
   fi
+  errfile="$(mktemp "${TMPDIR:-/tmp}/hivemind-capture.XXXXXX")"
+  # --project-from-context is always on: the CLI, not this script, decides the project
+  # (a --project stated by the caller still wins), so it is one rule in one place.
   result="$("${BASE_CMD[@]}" --hivemind-dir "$HIVEMIND_DIR" emit decision.capture \
-    "${PROVENANCE[@]}" "${FORWARDED[@]}")"
+    "${PROVENANCE[@]}" --project-from-context "${FORWARDED[@]}" 2>"$errfile")" || status=$?
+  if [[ "$status" -ne 0 ]]; then
+    cat "$errfile" >&2
+    rm -f "$errfile"
+    exit "$status"
+  fi
+  announcement="$(grep -E "$PROJECT_ANNOUNCEMENT" "$errfile" || true)"
+  grep -Ev "$PROJECT_ANNOUNCEMENT" "$errfile" >&2 || true
+  rm -f "$errfile"
   printf 'Captured HiveMind decision %s in %s.\n' "$result" "$HIVEMIND_DIR"
+  if [[ -n "$announcement" ]]; then
+    printf '%s\n' "$announcement"
+  fi
 }
 
 emit_evidence() {
@@ -361,9 +390,14 @@ while [[ $# -gt 0 ]]; do
       HIVEMIND_DIR="${2:-}"
       shift 2
       ;;
-    --title|--rationale|--topic-keys|--options|--chose|--decided-by|--delegated-by|--hypotheses|--evidence|--quote|--question|--rests-on-decision|--rests-on-evidence|--evidence-source|--rests-on-assumption|--would-change-if|--check-by|--confidence)
+    --title|--rationale|--topic-keys|--options|--chose|--decided-by|--delegated-by|--hypotheses|--evidence|--quote|--question|--rests-on-decision|--rests-on-evidence|--evidence-source|--rests-on-assumption|--would-change-if|--check-by|--confidence|--project|--project-source)
       FORWARDED+=("$1" "${2:-}")
       shift 2
+      ;;
+    --project-from-context)
+      # Always on for decision captures (see emit_decision); a second copy would be
+      # refused by the CLI ("cannot be used multiple times"), so accept and drop it.
+      shift
       ;;
     --bet)
       # Optional statement: a following argument that is not another flag belongs to --bet.

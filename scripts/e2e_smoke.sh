@@ -200,15 +200,26 @@ CLI_DATA_DIR=$(mktemp -d)
 trap 'rm -rf "$CLI_DATA_DIR" "${EDGE_DIR:-}" "${CONTEXT_DIR:-}"' EXIT
 
 if command -v "$HIVEMIND_BIN" > /dev/null 2>&1; then
+  # --project-from-context (what the capture plugins pass) works the project out from the
+  # working directory: the nearest .hivemind-project walking up. The captures below run from
+  # folders under the throwaway ledger dir, so this repository's own marker (a project this
+  # ledger has never registered) can never decide them; the binary path is made absolute
+  # because CI hands us a relative one.
+  CLI_BIN=$(command -v "$HIVEMIND_BIN")
+  case "$CLI_BIN" in /*) ;; *) CLI_BIN="$PWD/$CLI_BIN" ;; esac
+  CLI_BARE_DIR="$CLI_DATA_DIR/bare"
+  mkdir -p "$CLI_BARE_DIR"
+
   # Fresh --hivemind-dir only seeds the "local" default tenant; register
   # ours before the emit below hits the unknown-tenant hard error.
-  "$HIVEMIND_BIN" --hivemind-dir "$CLI_DATA_DIR" tenant create "$TENANT" > /dev/null
-  cli_out=$("$HIVEMIND_BIN" \
+  "$CLI_BIN" --hivemind-dir "$CLI_DATA_DIR" tenant create "$TENANT" > /dev/null
+  cli_out=$(cd "$CLI_BARE_DIR" && "$CLI_BIN" \
     --hivemind-dir "$CLI_DATA_DIR" \
     --actor "agent:e2e:smoke-cli" \
     --tenant "$TENANT" \
     --json \
     emit decision.proposed \
+    --project-from-context \
     --title "e2e-smoke CLI: adopt semantic versioning" \
     --rationale "Semver gives downstream consumers predictable upgrade signals" \
     --options semver,calver \
@@ -222,6 +233,37 @@ if command -v "$HIVEMIND_BIN" > /dev/null 2>&1; then
     pass "CLI (local ledger): emit decision.proposed — $CLI_DECISION_ID"
   else
     fail "CLI (local ledger): emit decision.proposed — output: $cli_out"
+  fi
+
+  # The reply names the project the capture landed in. Nothing here attaches the folder, so it
+  # is the personal project — announced, with the reminder to attach the folder.
+  if echo "$cli_out" | jq -e '.project_source == "personal_fallback" and (.project | type == "string") and (.project_notice | type == "string") and (.project_reminder | type == "string")' > /dev/null 2>&1; then
+    pass "CLI (local ledger): project: $(echo "$cli_out" | jq -r '.project + " (" + .project_source + ")"') — personal-project notice and attach-the-folder reminder present"
+  else
+    fail "CLI (local ledger): capture from an unattached folder did not name its personal project with notice and reminder — output: $cli_out"
+  fi
+
+  # A folder attached to a registered project files the capture there: no fallback, no reminder.
+  "$CLI_BIN" --hivemind-dir "$CLI_DATA_DIR" --actor "agent:e2e:smoke-cli" --tenant "$TENANT" \
+    project register e2e-smoke-project > /dev/null 2>&1 || true
+  mkdir -p "$CLI_DATA_DIR/attached/src"
+  printf 'e2e-smoke-project\n' > "$CLI_DATA_DIR/attached/.hivemind-project"
+  cli_marker_out=$(cd "$CLI_DATA_DIR/attached/src" && "$CLI_BIN" \
+    --hivemind-dir "$CLI_DATA_DIR" \
+    --actor "agent:e2e:smoke-cli" \
+    --tenant "$TENANT" \
+    --json \
+    emit decision.proposed \
+    --project-from-context \
+    --title "e2e-smoke CLI: pin the release tooling version" \
+    --rationale "A pinned toolchain makes release builds reproducible across machines" \
+    --options pinned,floating \
+    --chose pinned \
+    --topic-keys e2e,tooling 2>&1) || true
+  if echo "$cli_marker_out" | jq -e '.project == "e2e-smoke-project" and .project_source == "folder_marker" and (has("project_reminder") | not)' > /dev/null 2>&1; then
+    pass "CLI (local ledger): project: e2e-smoke-project (folder_marker) — captured from a marked folder, no reminder"
+  else
+    fail "CLI (local ledger): capture from a marked folder did not land in its project — output: $cli_marker_out"
   fi
 else
   skip "CLI leg — hivemind binary not on PATH (set HIVEMIND_BIN)"
@@ -564,7 +606,11 @@ if ! command -v docker > /dev/null 2>&1 \
   skip "CLI (in-container): supersede --pick 2 — no running 'hivemind' compose service"
   skip "CLI (in-container): query verify (post-supersede) — no running 'hivemind' compose service"
 else
+  # --project-from-context is what the capture plugins pass. The container's working directory
+  # has no .hivemind-project above it and no rig, so this lands in the actor's personal project
+  # on whichever backend the stack runs -- and the reply must say so.
   ic_d1=$(hm_ic emit decision.proposed \
+    --project-from-context \
     --title "Adopt async retry queue for the ingestion pipeline" \
     --rationale "Bounded retries avoid unbounded backlog growth under load" \
     --topic-keys "$CLI_IC_TOPIC" \
@@ -573,6 +619,11 @@ else
   if echo "$ic_d1" | jq -e 'select(.kind=="decision_id")' > /dev/null 2>&1; then
     IC_D1_ID=$(echo "$ic_d1" | jq -r '.value')
     pass "CLI (in-container): emit decision.proposed — ingestion decision ($IC_D1_ID)"
+    if echo "$ic_d1" | jq -e '.project_source == "personal_fallback" and (.project | type == "string") and (.project_notice | type == "string") and (.project_reminder | type == "string")' > /dev/null 2>&1; then
+      pass "CLI (in-container): project: $(echo "$ic_d1" | jq -r '.project + " (" + .project_source + ")"') — personal-project notice and attach-the-folder reminder present"
+    else
+      fail "CLI (in-container): capture did not name its personal project with notice and reminder — response: $ic_d1"
+    fi
   else
     fail "CLI (in-container): emit decision.proposed — ingestion decision — response: $ic_d1"
     IC_D1_ID=""

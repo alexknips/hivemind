@@ -1,9 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
 use clap::Parser;
 use hivemind::cli::{run, Cli};
+use hivemind::events::EventType;
+use hivemind::ledger::{EventLedger, SqliteEventLedger};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -146,6 +149,166 @@ fn local_slack_and_agent_capture_share_one_query_path() -> TestResult<()> {
     );
 
     Ok(())
+}
+
+/// hivemind-s15q.15: the capture plugin works the project out from where the agent is
+/// working. A checked-in `.hivemind-project` file attaches its folder (and everything beneath
+/// it) to a project; the capture lands there, records how that was determined, and says so.
+#[test]
+fn plugin_capture_files_a_decision_under_the_project_its_folder_names() -> TestResult<()> {
+    let scratch = TempDir::new("local-capture-project-marker")?;
+    let hivemind_dir = scratch.path().join("hivemind");
+    register_project(&hivemind_dir, "billing")?;
+    register_project(&hivemind_dir, "payments")?;
+
+    let repo = scratch.path().join("repo");
+    let nested = repo.join("src").join("invoices");
+    fs::create_dir_all(&nested)?;
+    fs::write(repo.join(".hivemind-project"), "billing\n")?;
+
+    // Captured from a subfolder: the walk goes up to the marker.
+    let marked = run_capture_script(&hivemind_dir, &nested, "Bill from the marker folder", &[])?;
+    let stdout = String::from_utf8_lossy(&marked.stdout);
+    assert!(
+        stdout.contains("Captured HiveMind decision decision-"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("project: billing (folder_marker)"),
+        "the confirmation names the project and how it was determined: {stdout}"
+    );
+    assert!(
+        !stdout.contains("not attached"),
+        "an attached folder gets no reminder: {stdout}"
+    );
+    let proposal = decision_proposed_payload(&hivemind_dir, "Bill from the marker folder")?;
+    assert_eq!(proposal["project"], "billing");
+    assert_eq!(proposal["project_source"], "folder_marker");
+
+    // A project the caller states outright still wins over the folder's marker.
+    let stated = run_capture_script(
+        &hivemind_dir,
+        &nested,
+        "Bill from a stated project",
+        &["--project", "payments"],
+    )?;
+    let stdout = String::from_utf8_lossy(&stated.stdout);
+    assert!(stdout.contains("project: payments (stated)"), "{stdout}");
+    let proposal = decision_proposed_payload(&hivemind_dir, "Bill from a stated project")?;
+    assert_eq!(proposal["project"], "payments");
+    assert_eq!(proposal["project_source"], "stated");
+    Ok(())
+}
+
+/// hivemind-s15q.15: with no marker, rig or current project the capture is never silent about
+/// landing in the personal project, and the confirmation says how to attach the folder.
+#[test]
+fn plugin_capture_outside_any_project_says_it_landed_in_the_personal_project() -> TestResult<()> {
+    let scratch = TempDir::new("local-capture-project-fallback")?;
+    let hivemind_dir = scratch.path().join("hivemind");
+    let bare = scratch.path().join("bare");
+    fs::create_dir_all(&bare)?;
+
+    let output = run_capture_script(&hivemind_dir, &bare, "Save from an unattached folder", &[])?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Captured HiveMind decision decision-"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("project: personal:agent:claude (personal_fallback)"),
+        "the confirmation names the personal project: {stdout}"
+    );
+    assert!(
+        stdout.contains("saved to your personal project"),
+        "the fallback is announced, never silent: {stdout}"
+    );
+    assert!(
+        stdout
+            .contains("this folder is not attached to a project yet; run hivemind project anchor"),
+        "the reminder says how to attach the folder: {stdout}"
+    );
+
+    let proposal = decision_proposed_payload(&hivemind_dir, "Save from an unattached folder")?;
+    assert_eq!(proposal["project_source"], "personal_fallback");
+    assert!(
+        proposal.get("project").is_none(),
+        "the personal address is derived, never stored: {proposal}"
+    );
+    Ok(())
+}
+
+fn register_project(hivemind_dir: &Path, handle: &str) -> TestResult<()> {
+    run_cli_json(
+        hivemind_dir,
+        vec![
+            "--actor".to_owned(),
+            "human:test-registrar".to_owned(),
+            "project".to_owned(),
+            "register".to_owned(),
+            handle.to_owned(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Runs the plugin's own `capture.sh` for one bet-grounded decision from `cwd`, with the
+/// ambient city identity and rig removed so only the folder decides the project.
+fn run_capture_script(
+    hivemind_dir: &Path,
+    cwd: &Path,
+    title: &str,
+    extra: &[&str],
+) -> TestResult<Output> {
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/hivemind-capture/scripts/capture.sh");
+    let output = Command::new(script)
+        .current_dir(cwd)
+        .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+        .env("HIVEMIND_DIR", hivemind_dir)
+        .env("CLAUDE_SESSION_ID", "project-demo-session")
+        .env_remove("CLAUDE_PROJECT_DIR")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("GC_AGENT")
+        .env_remove("GC_ALIAS")
+        .env_remove("GC_RIG")
+        .args([
+            "--kind",
+            "decision",
+            "--title",
+            title,
+            "--rationale",
+            "The plugin script should file a decision where its working folder says it belongs",
+            "--topic-keys",
+            "projects,capture",
+            "--options",
+            "folder-marker,ask-every-time",
+            "--chose",
+            "folder-marker",
+            "--bet",
+        ])
+        .args(extra)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "capture.sh failed: {}\nstdout: {}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    Ok(output)
+}
+
+/// The `decision.proposed` payload for the decision with this title, as the ledger holds it.
+fn decision_proposed_payload(hivemind_dir: &Path, title: &str) -> TestResult<Value> {
+    SqliteEventLedger::open(hivemind_dir)?
+        .read(0, 1000)?
+        .into_iter()
+        .find(|event| {
+            event.event_type == EventType::DecisionProposed
+                && event.payload.get("title").and_then(Value::as_str) == Some(title)
+        })
+        .map(|event| event.payload)
+        .ok_or_else(|| format!("a decision.proposed event titled {title:?} should exist").into())
 }
 
 fn capture_agent_decision(

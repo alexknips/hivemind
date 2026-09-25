@@ -46,5 +46,11 @@ Default to `--source agent`, which records `actor_id=agent:claude:<name>`
 session id) and `source=agent`. Use `--source human` only when the user
 explicitly asks you to record their write as human-authored.
 
+A decision's confirmation also names its project (`project: billing
+(folder_marker)`): the helper has the CLI work it out from the working folder,
+or pass `--project <handle>` only when you were told which project. When the
+confirmation says the decision was saved to the personal project and the folder
+is not attached to a project yet, tell the user, with the attach hint it prints.
+
 Do not query, rank, summarize, or infer related decisions before capturing.
 This command is a write-layer path only.
