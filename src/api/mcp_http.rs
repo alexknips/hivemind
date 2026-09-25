@@ -23,7 +23,7 @@ use crate::mcp::args::{
 use crate::mcp::core::{
     CaptureDecisionArgs, CompactViewArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
     GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSupersessionChainArgs, LedgerHandle,
-    LedgerProvider, RecallDecisionsArgs, SupersedeDecisionArgs,
+    LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs, SupersedeDecisionArgs,
 };
 use crate::projector::memory::MemoryGraph;
 use crate::queries::{
@@ -186,6 +186,7 @@ fn mcp_tools_call_blocking(
         "capture_hypothesis" => mcp_capture_hypothesis(backend, ctx, &actor_id, args),
         "disagree_decision" => mcp_disagree(backend, ctx, &actor_id, args),
         "supersede_decision" => mcp_supersede(backend, ctx, &actor_id, args),
+        "move_decision" => mcp_move(backend, ctx, &actor_id, args),
         "get_decision" => mcp_get_decision(backend, ctx, args, cache),
         "get_decision_outcome" => mcp_get_decision_outcome(backend, ctx, args),
         "get_relevant_decisions" => mcp_get_relevant_decisions(backend, ctx, args, cache),
@@ -383,6 +384,21 @@ fn mcp_supersede(
         tenant_id: &ctx.tenant_id,
     };
     let output = crate::mcp::core::supersede_decision(&provider, core_args)?;
+    Ok(output.into_value())
+}
+
+fn mcp_move(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    actor_id: &str,
+    args: serde_json::Map<String, serde_json::Value>,
+) -> McpToolResult {
+    let core_args = MoveDecisionArgs::from_json(&args, actor_id.to_owned())?;
+    let provider = HttpLedgerProvider {
+        backend,
+        tenant_id: &ctx.tenant_id,
+    };
+    let output = crate::mcp::core::move_decision(&provider, core_args)?;
     Ok(output.into_value())
 }
 

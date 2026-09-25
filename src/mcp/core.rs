@@ -20,7 +20,7 @@
 //!
 //! Migrated so far: `capture_decision`, `get_situational_decisions`,
 //! `resolve_target`/`get_decision_neighborhood`, `get_supersession_chain`,
-//! `recall_decisions`, `supersede_decision`, `disagree_decision`,
+//! `recall_decisions`, `supersede_decision`, `disagree_decision`, `move_decision`,
 //! `get_decision_outcome`, `hivemind_compact_view`. Later
 //! tools follow the same shape — an `Args::from_json` parser plus a
 //! `core::<tool>` function — one pair per tool, each independently
@@ -1128,6 +1128,83 @@ pub(crate) fn disagree_decision<P: LedgerProvider>(
         "event_id": event_id,
         "decision_status": decision_status,
     })))
+}
+
+// ---------------------------------------------------------------------------
+// move_decision
+// ---------------------------------------------------------------------------
+
+/// Parsed, validated arguments for the `move_decision` tool. The decision is selected like
+/// `disagree_decision`'s: `decision_id` bypasses resolution, otherwise `description` (+ optional
+/// `topic`) resolves via [`resolve_target`]. `to` is required whichever way the target resolves;
+/// where the decision is now is read from the ledger, never passed.
+pub(crate) struct MoveDecisionArgs {
+    pub(crate) actor_id: String,
+    pub(crate) decision_id: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) topic: Option<String>,
+    pub(crate) to: String,
+    pub(crate) reason: Option<String>,
+}
+
+impl MoveDecisionArgs {
+    pub(crate) fn from_json(
+        args: &Map<String, Value>,
+        actor_id: String,
+    ) -> Result<Self, CoreError> {
+        Ok(Self {
+            actor_id,
+            decision_id: optional_string(args, "decision_id")?,
+            description: optional_string(args, "description")?,
+            topic: optional_string(args, "topic")?,
+            to: require_string(args, "to")?.trim().to_owned(),
+            reason: optional_string(args, "reason")?,
+        })
+    }
+}
+
+/// The migrated core for the `move_decision` MCP tool: one implementation consumed by both
+/// transports. Resolves its target via [`resolve_target`] first; on `Ambiguous` or `NotFound`
+/// the resolver's envelope is returned as-is and no event is appended — the same write gate
+/// `disagree_decision` and `supersede_decision` apply, so a move never acts on a guess. The
+/// reply is [`crate::commands::DecisionMoveOutcome`], the shape `hivemind move --json` prints.
+pub(crate) fn move_decision<P: LedgerProvider>(
+    provider: &P,
+    args: MoveDecisionArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let target = resolve_target(
+        &handle,
+        args.decision_id.as_deref(),
+        args.description.as_deref(),
+        args.topic.as_deref(),
+        "decision_id",
+    )?;
+    let decision_id = match target {
+        ResolvedTarget::Id(id) => id,
+        ResolvedTarget::Ambiguous(output) => return Ok(output),
+        ResolvedTarget::NotFound(output) => return Ok(output),
+    };
+
+    let commands = Commands::new_with_context(
+        &handle.ledger,
+        CommandContext::new(
+            handle.tenant_id.clone(),
+            EventProvenance::agent(args.actor_id.clone()),
+        ),
+    );
+    let outcome = commands
+        .move_decision_to(
+            &args.actor_id,
+            &decision_id,
+            &args.to,
+            args.reason.as_deref(),
+        )
+        .map_err(CoreError::from)?;
+
+    serde_json::to_value(outcome)
+        .map(ToolOutput)
+        .map_err(|error| CoreError::Internal(error.to_string()))
 }
 
 // ---------------------------------------------------------------------------

@@ -370,6 +370,7 @@ Cursor uses the same shape under `mcp.servers`. The server exposes these tools:
 | `capture_hypothesis` | write | `emit hypothesis.recorded` |
 | `disagree_decision` | write | `disagree` |
 | `supersede_decision` | write | `supersede` |
+| `move_decision` | write | `move` |
 | `get_decision` | read | `query get_decision` |
 | `get_relevant_decisions` | read | `query get_relevant_decisions` |
 | `get_supersession_chain` | read | `query get_supersession_chain` |

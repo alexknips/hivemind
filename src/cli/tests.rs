@@ -7917,3 +7917,272 @@ fn every_query_answer_names_its_project() -> CliTestResult {
     let _ = std::fs::remove_dir_all(&backend.hivemind_dir);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// `hivemind move` (hivemind-s15q.11): move a decision by describing it, through the same
+// write ambiguity gate as `disagree` and `supersede`.
+// ---------------------------------------------------------------------------
+
+/// `hivemind --actor human:alice --json move <rest>`, parsed.
+fn move_json(
+    backend: &TestBackend,
+    rest: &[&str],
+) -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut args = vec!["--actor", "human:alice", "--json", "move"];
+    args.extend_from_slice(rest);
+    Ok(serde_json::from_str(&run(&Cli::parse_from(cli_args(
+        backend, &args,
+    )))?)?)
+}
+
+/// The reply of a `move` that wrote, with the ledger offset (which varies with what came
+/// before) checked for presence and then removed, so the rest can be compared whole.
+fn without_event_id(
+    mut reply: serde_json::Value,
+) -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
+    ensure(
+        reply["event_id"].is_u64(),
+        "a move that wrote names its event",
+    )?;
+    reply
+        .as_object_mut()
+        .ok_or("a move reply is an object")?
+        .remove("event_id");
+    Ok(reply)
+}
+
+fn move_by_description_records_the_move_and_reverses_body(backend: &TestBackend) -> CliTestResult {
+    register_test_project(backend, "billing")?;
+    register_test_project(backend, "pricing")?;
+    let decision_id = capture_for_project_list(
+        backend,
+        "human:alice",
+        "Adopt async billing queue",
+        Some("billing"),
+    )?;
+
+    let moved = move_json(
+        backend,
+        &[
+            "async billing queue",
+            "--to",
+            "pricing",
+            "--reason",
+            "belongs under pricing",
+        ],
+    )?;
+    ensure_json_eq(
+        &without_event_id(moved)?,
+        serde_json::json!({
+            "decision_id": decision_id,
+            "from": "billing",
+            "to": "pricing",
+            "reason": "belongs under pricing"
+        }),
+        "move golden (by description)",
+    )?;
+
+    // The decision is now found under pricing, and says it got there by a move.
+    let pricing = project_decisions_json(backend, &["pricing"])?;
+    ensure_json_eq(
+        &pricing["data"]["items"],
+        serde_json::json!([{
+            "decision_id": decision_id,
+            "title": "Adopt async billing queue",
+            "status": "accepted",
+            "proposed_by": "human:alice",
+            "project_source": "moved"
+        }]),
+        "the moved decision is listed under its new project",
+    )?;
+    ensure_json_eq(
+        &project_decisions_json(backend, &["billing"])?["data"]["total_matches"],
+        serde_json::json!(0),
+        "and no longer under the old one",
+    )?;
+
+    // Reversal is another move by id, in text mode; `from` is read, so it follows the first.
+    let text = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "move",
+            "--decision",
+            &decision_id,
+            "--to",
+            "billing",
+        ],
+    )))?;
+    ensure(
+        text.starts_with("event_id=")
+            && text.ends_with(&format!(
+                " decision_id={decision_id} from=pricing to=billing"
+            )),
+        &format!("text reply names the decision and both ends: {text}"),
+    )?;
+    ensure_json_eq(
+        &project_decisions_json(backend, &["billing"])?["data"]["total_matches"],
+        serde_json::json!(1),
+        "moving it back puts it under the first project again",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn move_by_description_records_the_move_and_reverses() -> CliTestResult {
+    move_by_description_records_the_move_and_reverses_body(&TestBackend::sqlite("move-by-desc"))
+}
+
+#[test]
+fn move_by_description_records_the_move_and_reverses_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("move-by-desc-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    move_by_description_records_the_move_and_reverses_body(&backend)
+}
+
+fn move_refusals_and_misses_write_nothing_body(backend: &TestBackend) -> CliTestResult {
+    register_test_project(backend, "billing")?;
+    let decision_id = capture_for_project_list(
+        backend,
+        "human:alice",
+        "Adopt async billing queue",
+        Some("billing"),
+    )?;
+
+    // A description that matches nothing is a success envelope, not an error.
+    let missing = move_json(backend, &["no such decision zzz", "--to", "billing"])?;
+    ensure_json_eq(
+        &missing["data"]["outcome"],
+        serde_json::json!("not_found"),
+        "a miss is data",
+    )?;
+
+    for (rest, expected) in [
+        (
+            vec!["--decision", decision_id.as_str(), "--to", "nowhere"],
+            "project not registered: nowhere",
+        ),
+        (
+            vec!["--decision", decision_id.as_str(), "--to", "billing"],
+            "already in project billing",
+        ),
+    ] {
+        let mut args = vec!["--actor", "human:alice", "move"];
+        args.extend(rest);
+        let error = run(&Cli::parse_from(cli_args(backend, &args)))
+            .err()
+            .ok_or("a refused move is an error")?
+            .to_string();
+        ensure(
+            error.contains(expected),
+            &format!("expected `{expected}` in: {error}"),
+        )?;
+    }
+
+    ensure_json_eq(
+        &project_decisions_json(backend, &["billing"])?["data"]["items"][0]["project_source"],
+        serde_json::json!("stated"),
+        "nothing was moved: the decision still carries the project it was captured with",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn move_refusals_and_misses_write_nothing() -> CliTestResult {
+    move_refusals_and_misses_write_nothing_body(&TestBackend::sqlite("move-refused"))
+}
+
+#[test]
+fn move_refusals_and_misses_write_nothing_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("move-refused-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    move_refusals_and_misses_write_nothing_body(&backend)
+}
+
+fn move_ambiguous_description_lists_candidates_and_pick_resolves_it_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    register_test_project(backend, "billing")?;
+    register_test_project(backend, "pricing")?;
+    let mut decision_ids = Vec::new();
+    for topic in ["billing", "notifications"] {
+        decision_ids.push(capture_for_project_list(
+            backend,
+            "human:alice",
+            &format!("Adopt async queue for {topic}"),
+            Some("billing"),
+        )?);
+    }
+
+    // Two equally good matches: the candidates come back and nothing is written.
+    let ambiguous = move_json(backend, &["adopt async queue", "--to", "pricing"])?;
+    ensure_json_eq(
+        &ambiguous["data"]["outcome"],
+        serde_json::json!("ambiguous"),
+        "two matches are ambiguous",
+    )?;
+    ensure_eq(
+        ambiguous["data"]["candidates"].as_array().map(Vec::len),
+        Some(2),
+        "both decisions are offered",
+    )?;
+    ensure_json_eq(
+        &project_decisions_json(backend, &["billing"])?["data"]["total_matches"],
+        serde_json::json!(2),
+        "an ambiguous move leaves both decisions where they were",
+    )?;
+
+    // --pick 1 is the newest candidate, and moves only that one.
+    let picked = move_json(
+        backend,
+        &["adopt async queue", "--to", "pricing", "--pick", "1"],
+    )?;
+    ensure_json_eq(
+        &without_event_id(picked)?,
+        serde_json::json!({
+            "decision_id": decision_ids[1],
+            "from": "billing",
+            "to": "pricing"
+        }),
+        "move golden (--pick)",
+    )?;
+
+    // `#2` addresses the other candidate of that same resolver call.
+    let handled = move_json(backend, &["#2", "--to", "pricing"])?;
+    ensure_json_eq(
+        &without_event_id(handled)?,
+        serde_json::json!({
+            "decision_id": decision_ids[0],
+            "from": "billing",
+            "to": "pricing"
+        }),
+        "move golden (#N)",
+    )?;
+    ensure_json_eq(
+        &project_decisions_json(backend, &["pricing"])?["data"]["total_matches"],
+        serde_json::json!(2),
+        "both ended up under pricing",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn move_ambiguous_description_lists_candidates_and_pick_resolves_it() -> CliTestResult {
+    move_ambiguous_description_lists_candidates_and_pick_resolves_it_body(&TestBackend::sqlite(
+        "move-pick",
+    ))
+}
+
+#[test]
+fn move_ambiguous_description_lists_candidates_and_pick_resolves_it_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("move-pick-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    move_ambiguous_description_lists_candidates_and_pick_resolves_it_body(&backend)
+}

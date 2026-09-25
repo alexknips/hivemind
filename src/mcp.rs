@@ -47,7 +47,7 @@ use crate::Result;
 use core::{
     CaptureDecisionArgs, CompactViewArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
     GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSupersessionChainArgs, LedgerHandle,
-    LedgerProvider, RecallDecisionsArgs, SupersedeDecisionArgs,
+    LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs, SupersedeDecisionArgs,
 };
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -331,6 +331,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "capture_hypothesis" => tool_capture_hypothesis(arguments, config),
         "disagree_decision" => tool_disagree_decision(arguments, config),
         "supersede_decision" => tool_supersede_decision(arguments, config),
+        "move_decision" => tool_move_decision(arguments, config),
         "get_decision" => tool_get_decision(arguments, config),
         "get_decision_outcome" => tool_get_decision_outcome(arguments, config),
         "decision_quality_candidates" => tool_decision_quality_candidates(arguments, config),
@@ -538,6 +539,22 @@ pub fn tool_definitions() -> Vec<Value> {
                     "evidence_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"evidence\", evidence_id}` grounding items." },
                     "project": { "type": "string", "description": "Registered project handle to file the superseding decision under. An unknown handle is refused with the register command. Omit it and the new decision inherits the old decision's project. HiveMind never works out the project itself; an HTTP-served MCP cannot see the caller's working directory." },
                     "project_source": { "type": "string", "enum": ["stated", "folder_marker", "rig", "current_project", "job"], "description": "How `project` was determined. Defaults to `stated`. Requires `project`." }
+                }
+            }
+        }),
+        json!({
+            "name": "move_decision",
+            "description": "Move a decision to another project, recorded with who, when, from, to and why. Reversible: moving it back is another recorded move; nothing is deleted or rewritten. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error, and no event is appended; re-call with decision_id from that list. The same shape is returned when no decision contains every word but some contain most of them: each such close candidate lists the words it lacks in `missing_terms`, and none is picked for you. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}`, and no event is appended. On success the reply is `{decision_id, event_id, from, to, reason?}`, where `from` is the project the decision was in, read from the ledger. `to` must be a registered project handle or the acting actor's own personal address (`personal:<actor>`); an unknown handle is refused with the register command, and a decision already in `to` is refused. Wraps `hivemind move`.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["to"],
+                "properties": {
+                    "actor_id": { "type": "string", "description": "Moving actor. Defaults to `agent:<tool>:<name>` when omitted." },
+                    "decision_id": { "type": "string", "description": "The decision to move. Provide this or `description`, not both." },
+                    "description": { "type": "string", "description": "Free-text description to resolve to a decision when the id is not known." },
+                    "topic": { "type": "string", "description": "Narrows description resolution to decisions carrying this topic key." },
+                    "to": { "type": "string", "description": "Project to move the decision to: a registered handle, or the acting actor's own personal address. Where the decision is now is read from the ledger, never passed." },
+                    "reason": { "type": "string", "description": "Why the decision belongs in `to`; kept with the move and shown in the decision's history." }
                 }
             }
         }),
@@ -966,6 +983,15 @@ fn tool_supersede_decision(
     let core_args = SupersedeDecisionArgs::from_json(&args, actor_id)?;
     let provider = StdioLedgerProvider { config };
     let output = core::supersede_decision(&provider, core_args)?;
+    Ok(output.into_value())
+}
+
+fn tool_move_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let actor_id = mcp_actor_id(&args, config)?;
+    let core_args = MoveDecisionArgs::from_json(&args, actor_id)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::move_decision(&provider, core_args)?;
     Ok(output.into_value())
 }
 

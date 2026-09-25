@@ -72,24 +72,25 @@ use super::args::{
     DisagreeArgs, DumpArgs, DumpFormat, EmitArgs, EmitCaptureProvenanceArgs, EmitCommand,
     EmitDecisionProposedArgs, EmitHypothesisKind, EmitRelationKind, ExportArgs, GraphBackend,
     ImportArgs, ImportCommand, ImportConnectorCommand, ImportDocumentsArgs, IngestArgs,
-    IngestCommand, IngestSlackThreadArgs, MapArgs, McpArgs, ProjectAnchorArgs, ProjectArgs,
-    ProjectCommand, ProjectDecisionsArgs, ProjectLinkArgs, ProjectListArgs, ProjectRegisterArgs,
-    ProjectShowArgs, ProjectSourceArg, ProjectUseArgs, QualityScanArgs, QueryAddedSinceArgs,
-    QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus,
-    QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs, QueryQualityTier,
-    QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
-    QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
-    SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs, TuiArgs,
+    IngestCommand, IngestSlackThreadArgs, MapArgs, McpArgs, MoveArgs, ProjectAnchorArgs,
+    ProjectArgs, ProjectCommand, ProjectDecisionsArgs, ProjectLinkArgs, ProjectListArgs,
+    ProjectRegisterArgs, ProjectShowArgs, ProjectSourceArg, ProjectUseArgs, QualityScanArgs,
+    QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand,
+    QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs,
+    QueryQualityTier, QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
+    QuerySearchDecisionsArgs, QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs,
+    SlackAppArgs, SlackAppCommand, SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs,
+    TuiArgs,
 };
 use super::current_project::CurrentProjectStore;
 use super::render::{
     append_truncation_notice, decision_status_label, format_capture_output,
     format_current_project_output, format_disagree_output, format_export_output,
-    format_import_output, format_json_value, format_output, format_prepare_documents_output,
-    format_project_anchor_output, format_project_decisions_output, format_project_link_output,
-    format_project_list_output, format_project_register_output, format_project_show_output,
-    format_query_response, format_review_output, format_supersede_output,
-    render_active_blockers_summary, render_added_since_summary,
+    format_import_output, format_json_value, format_move_output, format_output,
+    format_prepare_documents_output, format_project_anchor_output, format_project_decisions_output,
+    format_project_link_output, format_project_list_output, format_project_register_output,
+    format_project_show_output, format_query_response, format_review_output,
+    format_supersede_output, render_active_blockers_summary, render_added_since_summary,
     render_blocker_notifications_summary, render_changed_since_summary,
     render_compact_view_summary, render_decision_brief_summary, render_decision_list_summary,
     render_decision_summary, render_dot, render_misfiled_scan_summary, render_neighborhood_summary,
@@ -112,6 +113,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Emit(command) => run_emit(cli, command),
         Command::Disagree(args) => run_disagree(cli, args),
         Command::Supersede(args) => run_supersede(cli, args),
+        Command::Move(args) => run_move(cli, args),
         Command::Review(args) => run_review(cli, args),
         Command::Import(import) => run_import(cli, import),
         Command::Query(query) => run_query(cli, query),
@@ -1135,6 +1137,40 @@ fn run_disagree(cli: &Cli, args: &DisagreeArgs) -> Result<String> {
             decision_status,
         },
     )
+}
+
+fn run_move(cli: &Cli, args: &MoveArgs) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
+    let ledger = open_ledger(cli)?;
+
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
+    let target = resolve_fluent_target(
+        &cli.hivemind_dir,
+        !cli.json,
+        &graph,
+        args.decision_id.as_deref(),
+        args.description.as_deref(),
+        args.pick,
+        args.topic.as_deref(),
+    )?;
+    let decision_id = match target {
+        FluentResolution::Id(decision_id) => decision_id,
+        FluentResolution::Output(output) => return Ok(output),
+    };
+
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(tenant_id, fluent_write_provenance(&cli.actor)),
+    );
+    let outcome = commands.move_decision_to(
+        &cli.actor,
+        &decision_id,
+        args.to.trim(),
+        args.reason.as_deref(),
+    )?;
+
+    format_move_output(cli.json, &outcome)
 }
 
 fn run_supersede(cli: &Cli, args: &SupersedeArgs) -> Result<String> {

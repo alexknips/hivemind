@@ -284,6 +284,7 @@ unaffected (the field is optional) and `--id` continues to work unchanged.
 |---|---|---|
 | `disagree` | `--decision <id> --reason <r>` (`args.rs:281`) | add positional `Option<String>` description; `--decision`/`--id` stays the escape hatch |
 | `supersede` | `--old <id> --title ... --rationale ...` (`args.rs:290`) | add positional description resolving `--old`; rest unchanged |
+| `move` (**new**, hivemind-s15q.11) | does not exist | positional description or `--decision <id>`, plus `--to <project>` `[--pick N] [--topic T] [--reason R]`; the same write gate as `disagree`/`supersede`; where the decision is now is read from the ledger, never typed |
 | `get_supersession_chain` | `--id <id>` (`QueryDecisionArgs`, `args.rs:940`) | add positional description; **new alias** `chain` (friendlier name per bead item b) |
 | `get_decision_neighborhood` | `--id <id> --depth --relations --compact` (`args.rs:959`) | add positional description; **new alias** `why` |
 | `compact-view` | `--id <id>` (`QueryDecisionArgs`) | add positional description |
@@ -335,7 +336,9 @@ Shipped (`hivemind-ot72.5`–`hivemind-ot72.8`, via the shared `resolve_target`
 core in `src/mcp/core.rs`): `get_decision_neighborhood` (why),
 `get_decision_outcome` (verify), `disagree_decision`, and `supersede_decision`
 each take an optional `description` string alongside their existing
-`decision_id`/`old_decision_id`, plus an optional `topic` narrowing filter.
+`decision_id`/`old_decision_id`, plus an optional `topic` narrowing filter;
+`move_decision` (`hivemind-s15q.11`) was built on the same core and takes the
+same `decision_id`/`description`/`topic` selectors.
 `decision_id` is simply left out of the tool's JSON Schema `required` array
 rather than expressed via `oneOf` — the mutual-exclusion rule ("exactly one
 of `decision_id`/`description`") is enforced at runtime, not in the schema,

@@ -375,8 +375,8 @@ and friends always attribute writes to the bearer token's own bound identity
 and ignore any client-supplied actor — that is what "Actor identity is locked
 to the token" means in the auth story above. The `/mcp` tool-call surface is
 more permissive: `capture_decision`, `capture_evidence`, `capture_hypothesis`,
-`disagree_decision`, and `supersede_decision` all accept an optional
-`actor_id` argument that, when present, overrides the token's bound identity
+`disagree_decision`, `supersede_decision`, and `move_decision` all accept an
+optional `actor_id` argument that, when present, overrides the token's bound identity
 for that one call (`src/api/mcp_http.rs::mcp_resolve_actor`; verified against
 a running cell — a `tools/call capture_decision` with
 `"actor_id": "agent:claude:some-session"` produces a `PROPOSED_BY` edge to

@@ -247,6 +247,76 @@ const QUERY_SPECS: &[QuerySpec] = &[
     },
 ];
 
+// `move` writes, so its specs run after every read spec above, in order, against the same seed
+// ledger: MOVE_SETUP first (not snapshotted), then each spec. The seed's decisions were recorded
+// by `actor:planner`, so they start in `personal:actor:planner`.
+const MOVE_SETUP: &[&[&str]] = &[&["--actor", "actor:planner", "project", "register", "pricing"]];
+
+const MOVE_SPECS: &[QuerySpec] = &[
+    QuerySpec {
+        name: "move_not_found",
+        snapshot_file: "move_not_found.json",
+        args: &[
+            "--actor",
+            "actor:planner",
+            "--json",
+            "move",
+            "no-such-decision-needle",
+            "--to",
+            "pricing",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "move_by_id",
+        snapshot_file: "move_by_id.json",
+        args: &[
+            "--actor",
+            "actor:planner",
+            "--json",
+            "move",
+            "--decision",
+            "decision-005",
+            "--to",
+            "pricing",
+            "--reason",
+            "Pricing owns this decision",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "move_by_id_reversal",
+        snapshot_file: "move_by_id_reversal.json",
+        args: &[
+            "--actor",
+            "actor:planner",
+            "--json",
+            "move",
+            "--decision",
+            "decision-005",
+            "--to",
+            "personal:actor:planner",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "move_pick",
+        snapshot_file: "move_pick.json",
+        args: &[
+            "--actor",
+            "actor:planner",
+            "--json",
+            "move",
+            "Seed decision",
+            "--pick",
+            "1",
+            "--to",
+            "pricing",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+];
+
 fn main() {
     if let Err(error) = run_harness() {
         eprintln!("{error}");
@@ -313,9 +383,17 @@ fn parse_args() -> TestResult<bool> {
 
 fn capture_query_outputs(seed_dir: &Path) -> TestResult<Vec<QueryOutput>> {
     let seed_dir = seed_dir.display().to_string();
-    let mut outputs = Vec::with_capacity(QUERY_SPECS.len());
+    let mut outputs = Vec::with_capacity(QUERY_SPECS.len() + MOVE_SPECS.len());
 
-    for spec in QUERY_SPECS {
+    for (index, spec) in QUERY_SPECS.iter().chain(MOVE_SPECS).enumerate() {
+        if index == QUERY_SPECS.len() {
+            for setup in MOVE_SETUP {
+                let mut argv = vec!["hivemind", "--hivemind-dir", seed_dir.as_str()];
+                argv.extend(setup.iter().copied());
+                run(&Cli::parse_from(argv))
+                    .map_err(|error| format!("golden setup {setup:?} failed: {error}"))?;
+            }
+        }
         let mut argv = vec!["hivemind", "--hivemind-dir", seed_dir.as_str()];
         argv.extend(spec.args.iter().copied());
         let cli = Cli::parse_from(argv);
@@ -342,7 +420,10 @@ fn capture_query_outputs(seed_dir: &Path) -> TestResult<Vec<QueryOutput>> {
 fn canonical_query_json(raw_json: &str) -> TestResult<String> {
     let mut value: serde_json::Value = serde_json::from_str(raw_json)?;
     if let Some(object) = value.as_object_mut() {
-        object.insert("latency_ms".to_owned(), json!(0));
+        // Only where the reply has one: a write's reply carries no latency to normalise.
+        if object.contains_key("latency_ms") {
+            object.insert("latency_ms".to_owned(), json!(0));
+        }
     }
     Ok(serde_json::to_string_pretty(&value)?)
 }

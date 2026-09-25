@@ -3008,6 +3008,133 @@ fn move_decision_rejects_missing_decision() {
 }
 
 #[test]
+fn move_decision_to_reads_the_current_project_and_reports_both_ends() {
+    // The caller names only where the decision goes; `from` is whatever the ledger resolves
+    // now, so a second move needs no bookkeeping and reversal is just another `to`.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing", "pricing"]);
+    let decision_id = commands
+        .propose_decision(fixture.proposal(
+            "actor:alice",
+            "Per-seat pricing",
+            Some(DeterminedProject::stated("billing")),
+        ))
+        .expect("propose succeeds");
+
+    let first = commands
+        .move_decision_to(
+            "actor:alice",
+            &decision_id,
+            "pricing",
+            Some("belongs there"),
+        )
+        .expect("move succeeds");
+    assert_eq!(first.decision_id, decision_id);
+    assert_eq!(first.from, "billing");
+    assert_eq!(first.to, "pricing");
+    assert_eq!(first.reason.as_deref(), Some("belongs there"));
+
+    let back = commands
+        .move_decision_to("actor:alice", &decision_id, "billing", None)
+        .expect("reversal succeeds");
+    assert_eq!(back.from, "pricing", "from follows the earlier move");
+    assert_eq!(back.to, "billing");
+    assert_eq!(back.reason, None);
+    assert!(back.event_id > first.event_id);
+
+    let moves = ledger
+        .read(0, 20)
+        .expect("read succeeds")
+        .into_iter()
+        .filter(|event| event.event_type == EventType::DecisionMoved)
+        .count();
+    assert_eq!(moves, 2, "both moves are recorded, none rewritten");
+}
+
+#[test]
+fn move_decision_to_leaves_the_personal_fallback_without_naming_it() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing"]);
+    let decision_id = commands
+        .propose_decision(fixture.proposal("actor:alice", "Judgement call", None))
+        .expect("propose succeeds");
+
+    let moved = commands
+        .move_decision_to("actor:alice", &decision_id, "billing", None)
+        .expect("move succeeds");
+    assert_eq!(moved.from, personal_project_handle("actor:alice"));
+}
+
+#[test]
+fn move_decision_to_says_when_the_decision_is_already_there() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing"]);
+    let decision_id = commands
+        .propose_decision(fixture.proposal(
+            "actor:alice",
+            "Per-seat pricing",
+            Some(DeterminedProject::stated("billing")),
+        ))
+        .expect("propose succeeds");
+
+    let error = commands
+        .move_decision_to("actor:alice", &decision_id, "billing", None)
+        .expect_err("a move to the same project is refused");
+    let message = error.to_string();
+    assert!(
+        message.contains("already in project billing"),
+        "message was: {message}"
+    );
+    let moves = ledger
+        .read(0, 20)
+        .expect("read succeeds")
+        .into_iter()
+        .filter(|event| event.event_type == EventType::DecisionMoved)
+        .count();
+    assert_eq!(moves, 0, "the refused move must not append");
+}
+
+#[test]
+fn move_decision_to_keeps_every_rule_of_move_decision() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["billing"]);
+    let decision_id = commands
+        .propose_decision(fixture.proposal(
+            "actor:alice",
+            "Per-seat pricing",
+            Some(DeterminedProject::stated("billing")),
+        ))
+        .expect("propose succeeds");
+
+    let unregistered = commands
+        .move_decision_to("actor:alice", &decision_id, "pricing", None)
+        .expect_err("an unregistered project is refused");
+    assert!(unregistered.to_string().contains("project not registered"));
+
+    let bob_personal = personal_project_handle("actor:bob");
+    assert!(
+        commands
+            .move_decision_to("actor:alice", &decision_id, &bob_personal, None)
+            .is_err(),
+        "someone else's personal project is refused"
+    );
+
+    let missing = commands
+        .move_decision_to("actor:alice", "decision-does-not-exist", "billing", None)
+        .expect_err("a missing decision is refused");
+    assert!(missing.to_string().contains("decision does not exist"));
+
+    let own = personal_project_handle("actor:alice");
+    commands
+        .move_decision_to("actor:alice", &decision_id, &own, None)
+        .expect("the actor's own personal project is allowed");
+}
+
+#[test]
 fn propose_decision_normalizes_topic_keys() {
     let ledger = InMemoryEventLedger::new();
     let commands = Commands::new(&ledger);

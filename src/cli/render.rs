@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::commands::{DecisionPlacement, RestsOn};
+use crate::commands::{DecisionMoveOutcome, DecisionPlacement, RestsOn};
 use crate::error::{CliError, CommandError};
 use crate::events::{EventId, EventType};
 use crate::ingest::{DocumentImportReport, DocumentPreparationReport};
@@ -1081,6 +1081,17 @@ pub(crate) fn format_disagree_output(
         output.event_id,
         output.decision_id,
         decision_status_label(output.decision_status)
+    ))
+}
+
+pub(crate) fn format_move_output(as_json: bool, output: &DecisionMoveOutcome) -> Result<String> {
+    if as_json {
+        return format_json_value(true, output);
+    }
+
+    Ok(format!(
+        "event_id={} decision_id={} from={} to={}",
+        output.event_id, output.decision_id, output.from, output.to
     ))
 }
 

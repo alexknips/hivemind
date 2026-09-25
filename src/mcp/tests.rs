@@ -51,7 +51,7 @@ fn tools_list_includes_all_eighteen_tools() {
     );
     assert_eq!(responses.len(), 1); // ubs:ignore: test-only; index guaranteed by test setup
     let tools = responses[0]["result"]["tools"].as_array().expect("array"); // ubs:ignore: test-only; panicking is correct in tests
-    assert_eq!(tools.len(), 26, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
+    assert_eq!(tools.len(), 27, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("string name")) // ubs:ignore: test-only; panicking is correct in tests
@@ -62,6 +62,7 @@ fn tools_list_includes_all_eighteen_tools() {
         "capture_hypothesis",
         "disagree_decision",
         "supersede_decision",
+        "move_decision",
         "get_decision",
         "get_decision_outcome",
         "decision_quality_candidates",
@@ -2790,6 +2791,318 @@ mod transport_parity {
                 "{name}: a refused supersede writes nothing"
             ); // ubs:ignore: test-only assertion
         }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // move_decision (hivemind-s15q.11): same resolve-by-description write gate as
+    // disagree/supersede, same envelope on both transports.
+    // -----------------------------------------------------------------------
+
+    /// `decision.moved` payloads under `dir`, oldest first.
+    fn moved_payloads(dir: &std::path::Path) -> Vec<Value> {
+        let ledger = SqliteEventLedger::open(dir).expect("ledger opens"); // ubs:ignore: test-only; panicking is correct in tests
+        ledger
+            .read(0, 1000)
+            .expect("read ledger") // ubs:ignore: test-only; panicking is correct in tests
+            .into_iter()
+            .filter(|event| event.event_type == crate::events::EventType::DecisionMoved)
+            .map(|event| event.payload)
+            .collect()
+    }
+
+    fn captured_id(reply: &Value) -> String {
+        reply["result"]["structuredContent"]["decision_id"]
+            .as_str()
+            .expect("decision id") // ubs:ignore: test-only; panicking is correct in tests
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn move_decision_by_id_records_from_and_to_and_reverses_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs("move-by-id", &["billing", "pricing"]);
+
+        for (name, dir, http) in [("stdio", &stdio_dir, false), ("http", &http_dir, true)] {
+            let call = |tool: &'static str, args: Value| async move {
+                if http {
+                    http_call(dir, tool, args).await
+                } else {
+                    stdio_call(dir, tool, args)
+                }
+            };
+            let decision_id = captured_id(
+                &call(
+                    "capture_decision",
+                    with_args(
+                        capture_args("Per-seat pricing"),
+                        json!({ "project": "billing" }),
+                    ),
+                )
+                .await,
+            );
+
+            let moved = call(
+                "move_decision",
+                json!({
+                    "decision_id": decision_id,
+                    "to": "pricing",
+                    "reason": "per-seat pricing decisions live under Pricing",
+                }),
+            )
+            .await;
+            assert_eq!(moved["result"]["isError"], false, "{name}: {moved:?}"); // ubs:ignore: test-only assertion
+            let reply = &moved["result"]["structuredContent"];
+            assert_eq!(reply["decision_id"], json!(decision_id), "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(reply["from"], "billing", "{name}: from is read, not passed"); // ubs:ignore: test-only assertion
+            assert_eq!(reply["to"], "pricing", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                reply["reason"], "per-seat pricing decisions live under Pricing",
+                "{name}"
+            ); // ubs:ignore: test-only assertion
+            assert!(reply["event_id"].is_u64(), "{name}: {reply:?}"); // ubs:ignore: test-only assertion
+
+            // Reversal is another recorded move, and `from` follows the first one.
+            let back = call(
+                "move_decision",
+                json!({ "decision_id": decision_id, "to": "billing" }),
+            )
+            .await;
+            let reply = &back["result"]["structuredContent"];
+            assert_eq!(reply["from"], "pricing", "{name}: reversal from"); // ubs:ignore: test-only assertion
+            assert_eq!(reply["to"], "billing", "{name}: reversal to"); // ubs:ignore: test-only assertion
+            assert!(reply.get("reason").is_none(), "{name}: no reason given"); // ubs:ignore: test-only assertion
+
+            let moves = moved_payloads(dir);
+            assert_eq!(moves.len(), 2, "{name}: both moves recorded"); // ubs:ignore: test-only assertion
+            assert_eq!(moves[0]["from"], "billing", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(moves[0]["to"], "pricing", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(moves[1]["from"], "pricing", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(moves[1]["to"], "billing", "{name}"); // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn move_decision_resolves_a_unique_description_and_writes_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs("move-unique-desc", &["billing", "pricing"]);
+
+        for (name, dir, http) in [("stdio", &stdio_dir, false), ("http", &http_dir, true)] {
+            let call = |tool: &'static str, args: Value| async move {
+                if http {
+                    http_call(dir, tool, args).await
+                } else {
+                    stdio_call(dir, tool, args)
+                }
+            };
+            let decision_id = captured_id(
+                &call(
+                    "capture_decision",
+                    with_args(
+                        capture_args("Adopt async billing queue"),
+                        json!({ "project": "billing" }),
+                    ),
+                )
+                .await,
+            );
+
+            let moved = call(
+                "move_decision",
+                json!({ "description": "adopt async billing queue", "to": "pricing" }),
+            )
+            .await;
+            assert_eq!(moved["result"]["isError"], false, "{name}: {moved:?}"); // ubs:ignore: test-only assertion
+            let reply = &moved["result"]["structuredContent"];
+            assert_eq!(
+                reply["decision_id"],
+                json!(decision_id),
+                "{name}: the description resolved to the captured decision"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(reply["from"], "billing", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(reply["to"], "pricing", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(moved_payloads(dir).len(), 1, "{name}: one move recorded");
+            // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn move_decision_ambiguous_description_returns_candidates_and_writes_nothing_across_transports(
+    ) {
+        let (stdio_dir, http_dir) = project_dirs("move-ambiguous", &["billing", "pricing"]);
+
+        for (name, dir, http) in [("stdio", &stdio_dir, false), ("http", &http_dir, true)] {
+            let call = |tool: &'static str, args: Value| async move {
+                if http {
+                    http_call(dir, tool, args).await
+                } else {
+                    stdio_call(dir, tool, args)
+                }
+            };
+            for title in [
+                "Adopt async queue for billing",
+                "Adopt async queue for notifications",
+            ] {
+                call(
+                    "capture_decision",
+                    with_args(capture_args(title), json!({ "project": "billing" })),
+                )
+                .await;
+            }
+            let offset_before = ledger_offset(dir);
+
+            let reply = call(
+                "move_decision",
+                json!({ "description": "adopt async queue", "to": "pricing" }),
+            )
+            .await;
+            let result = &reply["result"];
+            assert_eq!(
+                result["isError"], false,
+                "{name}: ambiguous is not an error"
+            ); // ubs:ignore: test-only assertion
+            let structured = &result["structuredContent"];
+            assert_eq!(structured["data"]["outcome"], "ambiguous", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                structured["data"]["candidates"].as_array().map(Vec::len),
+                Some(2),
+                "{name}: candidate count"
+            );
+            assert_eq!(
+                ledger_offset(dir),
+                offset_before,
+                "{name}: an ambiguous move writes nothing"
+            ); // ubs:ignore: test-only assertion
+            assert!(moved_payloads(dir).is_empty(), "{name}"); // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn move_decision_not_found_description_is_a_success_envelope_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs("move-not-found", &["billing", "pricing"]);
+
+        for (name, dir, http) in [("stdio", &stdio_dir, false), ("http", &http_dir, true)] {
+            let call = |tool: &'static str, args: Value| async move {
+                if http {
+                    http_call(dir, tool, args).await
+                } else {
+                    stdio_call(dir, tool, args)
+                }
+            };
+            call(
+                "capture_decision",
+                with_args(
+                    capture_args("Adopt async billing queue"),
+                    json!({ "project": "billing" }),
+                ),
+            )
+            .await;
+            let offset_before = ledger_offset(dir);
+
+            let reply = call(
+                "move_decision",
+                json!({ "description": "totally unrelated widget factory zzz", "to": "pricing" }),
+            )
+            .await;
+            let result = &reply["result"];
+            assert_eq!(
+                result["isError"], false,
+                "{name}: not-found is not an error: {result:?}"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["data"]["outcome"],
+                "not_found", // ubs:ignore: test-only assertion
+                "{name}: outcome"
+            );
+            assert_eq!(
+                ledger_offset(dir),
+                offset_before,
+                "{name}: a not-found move writes nothing"
+            ); // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn move_decision_refusals_write_nothing_and_read_alike_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs("move-refused", &["billing", "pricing"]);
+        let mut messages: Vec<(&str, Vec<String>)> = Vec::new();
+
+        for (name, dir, http) in [("stdio", &stdio_dir, false), ("http", &http_dir, true)] {
+            let call = |tool: &'static str, args: Value| async move {
+                if http {
+                    http_call(dir, tool, args).await
+                } else {
+                    stdio_call(dir, tool, args)
+                }
+            };
+            let decision_id = captured_id(
+                &call(
+                    "capture_decision",
+                    with_args(
+                        capture_args("Per-seat pricing"),
+                        json!({ "project": "billing" }),
+                    ),
+                )
+                .await,
+            );
+
+            let mut seen = Vec::new();
+            for (label, args, expected) in [
+                (
+                    "unknown project",
+                    json!({ "decision_id": decision_id, "to": "not-registered" }),
+                    "project not registered: not-registered",
+                ),
+                (
+                    "already there",
+                    json!({ "decision_id": decision_id, "to": "billing" }),
+                    "already in project billing",
+                ),
+                (
+                    "no destination",
+                    json!({ "decision_id": decision_id }),
+                    "missing `to`",
+                ),
+                (
+                    "no target",
+                    json!({ "to": "pricing" }),
+                    "one of `decision_id` or `description` is required",
+                ),
+            ] {
+                let reply = call("move_decision", args).await;
+                let result = &reply["result"];
+                assert_eq!(result["isError"], true, "{name}/{label}: {result:?}"); // ubs:ignore: test-only assertion
+                assert!(
+                    error_text(result).contains(expected),
+                    "{name}/{label}: {:?}",
+                    error_text(result)
+                ); // ubs:ignore: test-only assertion
+                   // Decision ids are generated per ledger; the words around them must match.
+                seen.push(error_text(result).replace(&decision_id, "<decision>"));
+            }
+            assert!(
+                moved_payloads(dir).is_empty(),
+                "{name}: a refused move writes nothing"
+            ); // ubs:ignore: test-only assertion
+            messages.push((name, seen));
+        }
+
+        assert_eq!(
+            messages[0].1, messages[1].1,
+            "both transports refuse with the same words"
+        ); // ubs:ignore: test-only assertion
 
         let _ = std::fs::remove_dir_all(&stdio_dir);
         let _ = std::fs::remove_dir_all(&http_dir);

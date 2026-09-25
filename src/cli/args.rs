@@ -87,6 +87,11 @@ pub enum Command {
     Emit(Box<EmitArgs>),
     Disagree(DisagreeArgs),
     Supersede(SupersedeArgs),
+    /// Move a decision to another project, found by describing it. A description that
+    /// matches more than one decision lists the candidates and writes nothing; pick one with
+    /// --pick N. One that matches nothing is a successful `not_found` answer. Recorded with
+    /// who, when, from, to and why; reversed by moving it back.
+    Move(MoveArgs),
     Review(ReviewArgs),
     Import(ImportArgs),
     /// Run deterministic read queries. JSON is the default; pass --summary for compact text.
@@ -605,6 +610,33 @@ pub struct DisagreeArgs {
 
     #[arg(long)]
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct MoveArgs {
+    /// Free-text description to resolve to the decision being moved (fluent alternative to
+    /// --decision). A bare `#N` refers to candidate N from the previous ambiguous resolver output.
+    pub description: Option<String>,
+
+    #[arg(long = "decision")]
+    pub decision_id: Option<String>,
+
+    /// Select candidate N when a description resolves ambiguously.
+    #[arg(long = "pick")]
+    pub pick: Option<usize>,
+
+    /// Narrow resolution to decisions carrying this topic key.
+    #[arg(long = "topic")]
+    pub topic: Option<String>,
+
+    /// Where the decision goes: a registered project handle, or your own personal address.
+    /// Where it is now is read from the ledger, never typed.
+    #[arg(long = "to")]
+    pub to: String,
+
+    /// Why it belongs there; kept with the move.
+    #[arg(long)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]

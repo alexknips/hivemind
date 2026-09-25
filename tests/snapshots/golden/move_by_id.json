@@ -1,0 +1,7 @@
+{
+  "decision_id": "decision-005",
+  "event_id": 52,
+  "from": "personal:actor:planner",
+  "reason": "Pricing owns this decision",
+  "to": "pricing"
+}

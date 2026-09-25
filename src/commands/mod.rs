@@ -212,6 +212,21 @@ impl DecisionPlacement {
     }
 }
 
+/// The recorded result of moving a decision to another project: the `decision.moved` event
+/// and both ends of the move. The one shape every surface (CLI `--json`, both MCP
+/// transports) serializes, so they can't drift.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DecisionMoveOutcome {
+    pub decision_id: DecisionId,
+    pub event_id: EventId,
+    /// The project the decision left: the address it resolved to when this move was recorded.
+    pub from: String,
+    /// The project it is in now.
+    pub to: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupersedeOutcome {
     pub new_decision_id: DecisionId,
@@ -799,6 +814,47 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         )?;
 
         self.append_event(event)
+    }
+
+    /// `move_decision` for a caller that names only where the decision should go, the way a
+    /// person or agent does ("move the per-seat decision to Pricing"): `from` is the
+    /// decision's current project as the ledger resolves it now, never typed. Every rule
+    /// `move_decision` enforces still applies; a decision already in `to` is refused with that
+    /// said plainly rather than as "from and to must differ".
+    pub fn move_decision_to(
+        &self,
+        actor_id: &str,
+        decision_id: &str,
+        to: &str,
+        reason: Option<&str>,
+    ) -> Result<DecisionMoveOutcome> {
+        require_valid_actor_id(actor_id)?;
+        require_non_empty("decision_id", decision_id)?;
+        require_non_empty("to", to)?;
+
+        if !self.decision_exists(decision_id)? {
+            return Err(
+                CommandError::Invariant(format!("decision does not exist: {decision_id}")).into(),
+            );
+        }
+        let from = self.current_decision_project(decision_id)?.ok_or_else(|| {
+            CommandError::Invariant(format!("decision has no recorded project: {decision_id}"))
+        })?;
+        if same_identifier(&from, to) {
+            return Err(CommandError::Validation(format!(
+                "decision {decision_id} is already in project {to}"
+            ))
+            .into());
+        }
+
+        let event_id = self.move_decision(actor_id, decision_id, &from, to, reason)?;
+        Ok(DecisionMoveOutcome {
+            decision_id: decision_id.to_owned(),
+            event_id,
+            from,
+            to: to.to_owned(),
+            reason: reason.map(ToOwned::to_owned),
+        })
     }
 
     pub fn record_ingest_batch(
