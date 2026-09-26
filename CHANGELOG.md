@@ -71,6 +71,13 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A capture refused for its project leaves nothing behind.** `decision.capture` and
+  `capture_decision` checked the stated project (registered, no reserved `personal:` prefix, a
+  source a caller may claim) only after they had recorded the evidence, assumptions and bet named
+  on the same call, so a refusal left those as unattached nodes and every retry added more. The
+  project is now checked before the first write, and a refused capture appends nothing. Events
+  already written that way stay in the ledger; they are unattached nodes, not part of any
+  decision. (hivemind-s15q.20)
 - **Six tools that `POST /mcp` listed now run there.** `recent_decisions`,
   `decision_quality_candidates`, `get_decision_context`, `decision_context_candidates`,
   `scan_misfiled_decisions` and `analyze_failure_modes` were in the HTTP endpoint's `tools/list`

@@ -6829,6 +6829,23 @@ fn register_test_project(backend: &TestBackend, handle: &str) -> CliTestResult {
     Ok(())
 }
 
+/// Events the CLI's ledger holds for the test tenant, on whichever backend `backend` is: it opens
+/// the ledger the way a command does, so a refused capture is measured where it would have
+/// written.
+fn backend_event_count(backend: &TestBackend) -> usize {
+    use crate::ledger::EventLedger;
+
+    let cli = Cli::parse_from(cli_args(backend, &["project", "list"]));
+    let tenant = cli_tenant(&cli).expect("test tenant is valid");
+    let ledger =
+        crate::ledger::AnyLedger::open(&crate::ledger::LedgerConfig::from_cli(&cli), &tenant)
+            .expect("ledger opens");
+    ledger
+        .read_for_tenant(&tenant, 0, 1000)
+        .expect("read events")
+        .len()
+}
+
 /// Runs an `emit` command in text mode, returning stdout and what was written to the notices
 /// stream (stderr in the real CLI).
 fn run_emit_text(
@@ -7071,6 +7088,59 @@ fn emit_capture_refuses_an_unknown_project_with_the_register_hint() -> CliTestRe
                 .contains("hivemind project register not-registered"),
         "the refusal names the handle and the register command",
     )
+}
+
+/// A capture refused for its project leaves the ledger as it was: the grounding it names (a
+/// bet, an assumption) is not recorded either (hivemind-s15q.20).
+fn emit_capture_refused_for_its_project_writes_nothing_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    register_test_project(backend, "billing")?;
+    let events_before = backend_event_count(backend);
+
+    for (project, expected) in [
+        ("not-registered", "project not registered: not-registered"),
+        ("personal:human:alex", "reserved \"personal:\" prefix"),
+    ] {
+        let error = run_emit_text(
+            backend,
+            &capture_args_for(
+                "Adopt async billing queue",
+                &[
+                    "--rests-on-assumption",
+                    "Customers accept euro invoices",
+                    "--project",
+                    project,
+                ],
+            ),
+        )
+        .expect_err("a refused project refuses the capture");
+        ensure(
+            error.to_string().contains(expected),
+            &format!("refusal for {project}: {error}"),
+        )?;
+        ensure(
+            backend_event_count(backend) == events_before,
+            &format!("refusing {project} must not leave a bet or assumption behind"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn emit_capture_refused_for_its_project_writes_nothing() -> CliTestResult {
+    emit_capture_refused_for_its_project_writes_nothing_body(&TestBackend::sqlite(
+        "emit-project-refused-writes-nothing",
+    ))
+}
+
+#[test]
+fn emit_capture_refused_for_its_project_writes_nothing_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("emit-project-refused-writes-nothing-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    emit_capture_refused_for_its_project_writes_nothing_body(&backend)
 }
 
 #[test]

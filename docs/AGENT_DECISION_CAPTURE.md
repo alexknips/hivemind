@@ -212,10 +212,10 @@ captures carry no project.
 `capture_decision` and `supersede_decision`, name a registered project outright.
 `--project-source` (MCP `project_source`) says how the caller got the handle:
 `stated` (the default), `folder_marker`, `rig`, `current_project`, or `job`, and
-it needs a `--project` to describe. A handle that is not registered is refused,
-no decision is recorded, and the refusal carries the command that fixes it
-(options and grounding nodes named on the same call may already be in the ledger
-as unattached nodes):
+it needs a `--project` to describe. A handle that is not registered is refused
+before anything is written, so nothing is recorded (no decision, and no evidence or
+assumption named on the same call), and the refusal carries the command that fixes
+it:
 
 ```text
 error: invariant violated: project not registered: nosuch -- register it first with `hivemind project register nosuch`

@@ -4362,6 +4362,125 @@ fn grounded_capture_refusals_leave_no_orphan_node_behind() {
 }
 
 #[test]
+fn grounded_capture_refused_for_its_project_leaves_no_orphan_node_behind() {
+    // The project is the one refusal that used to fire after the plan's new nodes were
+    // recorded (hivemind-s15q.20): each refusal below must leave the ledger untouched.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands
+        .register_project("actor:alice", "billing", None, None)
+        .expect("register billing");
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let labels = ["A".to_owned()];
+    let topics = ["topic".to_owned()];
+    let plan = GroundingPlan {
+        new_evidence: vec![NewEvidence {
+            content: "an observation that must not be stranded".to_owned(),
+            source: None,
+        }],
+        new_assumptions: vec!["an assumption that must not be stranded".to_owned()],
+        bet: Some(NewBet::default()),
+        ..GroundingPlan::default()
+    };
+    let events_before = ledger.read(0, 50).expect("read events").len();
+
+    for (project, expected) in [
+        (
+            DeterminedProject::stated("nosuch"),
+            "project not registered: nosuch",
+        ),
+        (
+            DeterminedProject::stated("personal:human:alex"),
+            "reserved \"personal:\" prefix",
+        ),
+        (
+            DeterminedProject {
+                handle: "billing",
+                source: ProjectSource::PersonalFallback,
+            },
+            "cannot accompany a project handle",
+        ),
+        (
+            DeterminedProject {
+                handle: "billing",
+                source: ProjectSource::Moved,
+            },
+            "cannot accompany a project handle",
+        ),
+    ] {
+        let error = commands
+            .propose_grounded_decision(
+                DecisionProposalInput {
+                    project: Some(project),
+                    ..grounded_input(&option_id, &labels, &topics, "Fine title")
+                },
+                &plan,
+            )
+            .expect_err("a refused project must refuse the capture");
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected error for {}: {error}",
+            project.handle
+        );
+        assert_eq!(
+            ledger.read(0, 50).expect("read events").len(),
+            events_before,
+            "refusing {} must not leave an evidence or hypothesis node behind",
+            project.handle
+        );
+    }
+
+    // The same plan and a registered project records its nodes: the refusals above really
+    // were the only thing between the plan and the ledger.
+    commands
+        .propose_grounded_decision(
+            DecisionProposalInput {
+                project: Some(DeterminedProject::stated("billing")),
+                ..grounded_input(&option_id, &labels, &topics, "Fine title")
+            },
+            &plan,
+        )
+        .expect("a registered project is accepted");
+    let hypotheses = ledger
+        .read(0, 50)
+        .expect("read events")
+        .into_iter()
+        .filter(|event| event.event_type == EventType::HypothesisRecorded)
+        .count();
+    assert_eq!(hypotheses, 2, "the assumption and the bet are recorded");
+}
+
+#[test]
+fn grounded_supersede_refused_for_its_project_leaves_no_orphan_node_behind() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let old_decision_id = propose_minimal_decision(&commands, "Decision A");
+    let plan = GroundingPlan {
+        new_assumptions: vec!["an assumption that must not be stranded".to_owned()],
+        ..GroundingPlan::default()
+    };
+    let events_before = ledger.read(0, 50).expect("read events").len();
+
+    let error = commands
+        .supersede(SupersedeInput {
+            project: Some(DeterminedProject::stated("nosuch")),
+            ..grounded_supersede_input(&old_decision_id, &plan)
+        })
+        .expect_err("an unregistered project must refuse the supersede");
+    assert!(
+        error.to_string().contains("project not registered: nosuch"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        ledger.read(0, 50).expect("read events").len(),
+        events_before,
+        "a refused supersede must not leave an assumption behind"
+    );
+}
+
+#[test]
 fn grounded_capture_takes_its_grounding_only_from_the_plan() {
     let ledger = InMemoryEventLedger::new();
     let commands = Commands::new(&ledger);

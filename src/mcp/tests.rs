@@ -2996,6 +2996,14 @@ mod transport_parity {
             .collect()
     }
 
+    /// Every event under `dir`, whatever its type: a refused write must leave this unchanged,
+    /// which `proposed_payloads` alone cannot show (a stranded bet or assumption is a
+    /// `hypothesis.recorded`, not a `decision.proposed`).
+    fn event_count(dir: &std::path::Path) -> usize {
+        let ledger = SqliteEventLedger::open(dir).expect("ledger opens"); // ubs:ignore: test-only; panicking is correct in tests
+        ledger.read(0, 1000).expect("read ledger").len() // ubs:ignore: test-only; panicking is correct in tests
+    }
+
     fn capture_args(title: &str) -> Value {
         json!({
             "title": title,
@@ -3087,10 +3095,15 @@ mod transport_parity {
             json!({ "project": "not-registered" }),
         );
 
+        let stdio_events_before = event_count(&stdio_dir);
+        let http_events_before = event_count(&http_dir);
         let stdio = stdio_call(&stdio_dir, "capture_decision", args.clone());
         let http = http_call(&http_dir, "capture_decision", args).await;
 
-        for (name, response, dir) in [("stdio", &stdio, &stdio_dir), ("http", &http, &http_dir)] {
+        for (name, response, dir, events_before) in [
+            ("stdio", &stdio, &stdio_dir, stdio_events_before),
+            ("http", &http, &http_dir, http_events_before),
+        ] {
             let result = &response["result"];
             assert_eq!(
                 result["isError"], true,
@@ -3102,8 +3115,11 @@ mod transport_parity {
                     && text.contains("hivemind project register not-registered"),
                 "{name}: refusal names the handle and the register command: {text}"
             ); // ubs:ignore: test-only assertion
-            assert!(
-                proposed_payloads(dir).is_empty(),
+               // The capture names a bet: it must not be stranded as an unattached hypothesis
+               // (hivemind-s15q.20), so nothing at all may have been appended.
+            assert_eq!(
+                event_count(dir),
+                events_before,
                 "{name}: a refused capture writes nothing"
             ); // ubs:ignore: test-only assertion
         }

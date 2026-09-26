@@ -31,7 +31,8 @@
 //! - An empty plan is refused with the `Grounding::Declared` validation error; nothing is
 //!   written. A bet counts.
 //! - Every rule that can refuse the proposal (title, rationale, options, premise existence,
-//!   pre-existing evidence/hypothesis ids, the new nodes' own fields) runs BEFORE the first
+//!   pre-existing evidence/hypothesis ids, the new nodes' own fields, the stated project:
+//!   registered, no `personal:` prefix, a source a caller may claim) runs BEFORE the first
 //!   write, so a refusal never leaves an orphan evidence or hypothesis node behind.
 //! - New evidence, assumptions and the bet are recorded in the same call as the decision, then
 //!   linked by the same fan-out `propose_decision_with_id` performs (`BASED_ON`, `ASSUMES`,
