@@ -4,7 +4,8 @@ services:
     # To build from source instead: docker compose up --build
     # HIVEMIND_IMAGE overrides this — scripts/cell-update.sh sets it to a
     # locally-built, commit-sha-tagged image so an update never depends on
-    # a tagged release existing (hivemind-zdsh.7).
+    # a tagged release existing (hivemind-zdsh.7), and pins it in .env so a
+    # later `docker compose up -d` keeps it (hivemind-2mgj).
     image: ${HIVEMIND_IMAGE:-ghcr.io/alexknips/hivemind:latest}
     build:
       context: .

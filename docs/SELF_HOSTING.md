@@ -552,10 +552,40 @@ Builds the server image from the given ref (default `origin/master`), tags
 it by commit sha — never `:latest`, which only moves when a `v*` tag is
 pushed (see `.github/workflows/release.yml`) and can otherwise sit behind
 master for weeks — restarts the `hivemind` service with it, and waits for
-`/v1/health` before declaring success. On failure the previous container is
-left running; nothing is torn down until the replacement is confirmed
-healthy. Confirm what's actually running with `curl
-http://localhost:8080/v1/version`.
+`/v1/health` before declaring success. Confirm what's actually running with
+`curl http://localhost:8080/v1/version`.
+
+**The update stays.** Before the restart, the script writes the tag it built
+as `HIVEMIND_IMAGE=hivemind:<sha>` in the compose project's `.env`.
+Anything that later runs `docker compose up -d` there — a systemd timer or
+cron job that keeps the cell up, or you — recreates the container on the
+image you deployed, not back on `:latest`. An existing `.env` keeps its mode
+and every other line; a new one is created owner-only (`0600`).
+
+The pin is kept only once the new container is healthy and `/v1/version`
+reports the sha. If either fails, the script exits non-zero and puts `.env`
+back exactly as it found it. The container it started keeps running so you
+can look at it, and anything reconciling with `docker compose up -d` returns
+the cell to the previous image.
+
+A cell kept in its own directory, with override files, tells the script
+which files it is reconciled with:
+
+```bash
+HIVEMIND_COMPOSE_FILE=/srv/cell/docker-compose.yml:/srv/cell/docker-compose.local-agents.yml \
+  ./scripts/cell-update.sh
+```
+
+`HIVEMIND_COMPOSE_FILE` lists every compose file, colon-separated as
+`COMPOSE_FILE` is (default `docker-compose.yml`); the restart uses all of
+them, and `.env` is the one next to the first, where `docker compose` looks
+for it. Set `HIVEMIND_ENV_FILE` to pin in a different file; the script hands
+that file to `docker compose --env-file` as well.
+
+To roll back, run the script for the earlier ref (`./scripts/cell-update.sh
+<previous sha>`): it rebuilds that image and pins it the same way. To go back
+to the release images, delete the `HIVEMIND_IMAGE` line from `.env`, then
+`docker compose pull && docker compose up -d`.
 
 Equivalent by hand, without the health check or sha tagging:
 
@@ -568,7 +598,10 @@ docker compose up -d
 Note: with `image:` and `build:` both set in `docker-compose.yml`, a bare
 `docker compose up -d` reuses whatever image already carries that tag
 locally rather than pulling — so `docker compose build` must run first, or
-this silently keeps serving the old container.
+this silently keeps serving the old container. If `.env` pins
+`HIVEMIND_IMAGE` (the script does), that tag is the pinned one, and
+`docker compose build` would overwrite it with the fresh build; delete the
+pin before updating by hand.
 
 Postgres schema migrations run automatically at startup.
 

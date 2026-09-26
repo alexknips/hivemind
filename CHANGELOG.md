@@ -82,6 +82,17 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   score, and it could not store a blocker resolved with a reason but no event id. A
   `graph.kuzu` left by an earlier build needs nothing from you: every run rebuilds it from the
   ledger. (hivemind-cbab)
+- **`scripts/cell-update.sh` keeps the update.** It restarted the cell on the sha-tagged image
+  but named that image only for its own `docker compose up`, so a systemd timer or cron job that
+  keeps the cell up with `docker compose up -d` recreated the container on `:latest` at its next
+  run, and the update quietly undid itself. The script now writes `HIVEMIND_IMAGE=hivemind:<sha>`
+  into the compose project's `.env` before the restart and keeps it once the new container is
+  healthy and `/v1/version` reports the sha; a failed update puts the file back as it was, so a
+  reconciler returns the cell to the previous image. An existing `.env` keeps its mode and every
+  other line, and a new one is created owner-only. `HIVEMIND_COMPOSE_FILE` now takes several
+  compose files, colon-separated, so a cell with an override file is restarted with all of them,
+  and `HIVEMIND_ENV_FILE` names an env file other than the `.env` next to the first compose
+  file. Documented in `docs/SELF_HOSTING.md`. (hivemind-2mgj)
 
 ## v0.7.0 — 2026-09-25 — M6: Fluent verbs and grounded capture
 
