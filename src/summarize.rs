@@ -204,8 +204,10 @@ fn render_single(view: &DecisionView, option_labels: &[(String, String)]) -> Str
         parts.push(format!("Topics: {}", view.topic_keys.join(", ")));
     }
     parts.push(format!("Why: {}", view.rationale));
-    if let (Some(question), Some(quote)) = (&view.question, &view.quote) {
+    if let Some(question) = &view.question {
         parts.push(format!("Answers: {question}"));
+    }
+    if let Some(quote) = &view.quote {
         parts.push(format!("Quote: \"{quote}\""));
     }
     if !option_labels.is_empty() {
@@ -719,8 +721,10 @@ fn render_digest_text(
 
             let rationale = trim_rationale(&entry.rationale, RATIONALE_TRIM_CHARS);
             let _ = writeln!(out, "  Why: {rationale}");
-            if let (Some(question), Some(quote)) = (&entry.question, &entry.quote) {
+            if let Some(question) = &entry.question {
                 let _ = writeln!(out, "  Answers: {question}");
+            }
+            if let Some(quote) = &entry.quote {
                 let _ = writeln!(out, "  Quote: \"{quote}\"");
             }
 

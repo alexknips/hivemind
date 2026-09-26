@@ -1475,11 +1475,13 @@ impl DecisionIndex {
                     }
                     EventRelationKind::Supports
                     | EventRelationKind::Refutes
-                    | EventRelationKind::SameAs => {}
+                    | EventRelationKind::SameAs
+                    | EventRelationKind::Answers => {}
                 },
                 EventPayload::RelationRemoved(_)
                 | EventPayload::EvidenceRecorded(_)
                 | EventPayload::HypothesisRecorded(_)
+                | EventPayload::QuestionRecorded(_)
                 | EventPayload::BlockerResolved(_)
                 | EventPayload::NotificationSent(_)
                 | EventPayload::NotificationAcknowledged(_)
@@ -1691,10 +1693,13 @@ fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
             // signal: `HistoryChangeKind::StalePremise`, driven by decision.superseded /
             // decision.rejected on the premise (see `stale_premise_dependents`), not by this
             // relation.added event itself.
-            | EventRelationKind::FollowsFrom => HistoryChangeKind::ContextChange,
+            | EventRelationKind::FollowsFrom
+            // Naming the question a decision answers adds context to it, nothing more.
+            | EventRelationKind::Answers => HistoryChangeKind::ContextChange,
         },
         EventPayload::RelationRemoved(_)
         | EventPayload::HypothesisRecorded(_)
+        | EventPayload::QuestionRecorded(_)
         | EventPayload::DecisionRequested(_)
         | EventPayload::BlockerReported(_)
         | EventPayload::BlockerResolved(_)
@@ -1746,7 +1751,8 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
             | EventRelationKind::HasOption
             | EventRelationKind::Chose
             | EventRelationKind::SameAs
-            | EventRelationKind::FollowsFrom => {
+            | EventRelationKind::FollowsFrom
+            | EventRelationKind::Answers => {
                 ids.insert(from_id.clone());
             }
             EventRelationKind::Assumes => {
@@ -1770,6 +1776,7 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
         }
         EventPayload::EvidenceRecorded(_)
         | EventPayload::HypothesisRecorded(_)
+        | EventPayload::QuestionRecorded(_)
         | EventPayload::BlockerResolved(_)
         | EventPayload::NotificationSent(_)
         | EventPayload::NotificationAcknowledged(_)
@@ -1841,6 +1848,9 @@ fn affected_nodes_for_event(event: &Event, payload: &EventPayload) -> Vec<Affect
         }
         EventPayload::HypothesisRecorded(payload) => {
             nodes.insert(affected_node(&payload.hypothesis_id, NodeKind::Hypothesis));
+        }
+        EventPayload::QuestionRecorded(payload) => {
+            nodes.insert(affected_node(&payload.question_id, NodeKind::Question));
         }
         EventPayload::RelationAdded(payload) => {
             if payload.relation == EventRelationKind::Assumes {
@@ -1936,6 +1946,7 @@ fn event_relation_endpoints(relation: EventRelationKind) -> (NodeKind, NodeKind)
         EventRelationKind::SameAs | EventRelationKind::FollowsFrom => {
             (NodeKind::Decision, NodeKind::Decision)
         }
+        EventRelationKind::Answers => (NodeKind::Decision, NodeKind::Question),
     }
 }
 

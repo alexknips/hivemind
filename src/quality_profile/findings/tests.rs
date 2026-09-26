@@ -143,7 +143,7 @@ fn request(kinds: &[FindingKind], limit: usize) -> AttentionRequest {
     AttentionRequest {
         kinds: kinds.to_vec(),
         limit,
-        cursor: None,
+        ..AttentionRequest::default()
     }
 }
 
@@ -1224,6 +1224,7 @@ fn a_large_graph_pages_through_every_finding_once_within_the_stated_cost() -> Re
                 kinds: Vec::new(),
                 limit,
                 cursor: cursor.take(),
+                ..AttentionRequest::default()
             },
             &config,
             now(),
@@ -1245,5 +1246,174 @@ fn a_large_graph_pages_through_every_finding_once_within_the_stated_cost() -> Re
     assert_eq!(ids.len(), seen.len(), "no finding twice");
     let one_page = all_findings(&graph)?;
     assert_eq!(seen, one_page);
+    Ok(())
+}
+
+// ── leaving findings out ──────────────────────────────────────────────────────
+
+fn finding_ids(findings: &[AttentionFinding]) -> BTreeSet<String> {
+    findings
+        .iter()
+        .map(|finding| finding.finding_id.clone())
+        .collect()
+}
+
+fn leaving_out(
+    excluded: &BTreeSet<String>,
+    kinds: &[FindingKind],
+    limit: usize,
+) -> AttentionRequest {
+    AttentionRequest {
+        excluded: excluded.clone(),
+        ..request(kinds, limit)
+    }
+}
+
+#[test]
+fn a_finding_that_is_left_out_is_on_no_page_and_the_others_keep_their_order() -> Result<()> {
+    let graph = attention_scenario()?.graph()?;
+    let everything = all_findings(&graph)?;
+    // Every third finding, so the gaps fall inside pages and on their edges.
+    let excluded = finding_ids(&everything.iter().step_by(3).cloned().collect::<Vec<_>>());
+    let expected: Vec<AttentionFinding> = everything
+        .iter()
+        .filter(|finding| !excluded.contains(&finding.finding_id))
+        .cloned()
+        .collect();
+    assert_eq!(expected.len(), 8);
+
+    for limit in [1, 2, 3, 4, 7, 8, 9, 13, 1000] {
+        let (sizes, findings) = walk(
+            &graph,
+            &leaving_out(&excluded, &[], limit),
+            &AttentionConfig::default(),
+            now(),
+        )?;
+        assert_eq!(findings, expected, "limit {limit}");
+        // Leaving findings out never leaves a short page in the middle of a walk.
+        let (last, before_last) = sizes.split_last().expect("a page");
+        assert!(
+            before_last.iter().all(|size| *size == limit),
+            "limit {limit}: {sizes:?}"
+        );
+        assert!((1..=limit).contains(last), "limit {limit}: {sizes:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_page_is_truncated_only_when_a_finding_that_is_not_left_out_follows() -> Result<()> {
+    let graph = attention_scenario()?.graph()?;
+    let config = AttentionConfig::default();
+    let everything = all_findings(&graph)?;
+    // Everything from the fifth finding on is left out.
+    let excluded = finding_ids(&everything[5..]);
+
+    let exact = attention_findings_at(&graph, &leaving_out(&excluded, &[], 5), &config, now())?;
+    assert_eq!(exact.findings, everything[..5]);
+    assert!(!exact.truncated);
+    assert_eq!(exact.next_cursor, None);
+
+    // One short of the five that remain: the fifth follows, and the next page is that one alone.
+    let one_short = attention_findings_at(&graph, &leaving_out(&excluded, &[], 4), &config, now())?;
+    assert_eq!(one_short.findings, everything[..4]);
+    assert!(one_short.truncated);
+    let rest = attention_findings_at(
+        &graph,
+        &AttentionRequest {
+            cursor: one_short.next_cursor,
+            ..leaving_out(&excluded, &[], 4)
+        },
+        &config,
+        now(),
+    )?;
+    assert_eq!(rest.findings, everything[4..5]);
+    assert!(!rest.truncated);
+    assert_eq!(rest.next_cursor, None);
+    Ok(())
+}
+
+#[test]
+fn leaving_out_every_finding_leaves_an_empty_page_that_is_not_truncated() -> Result<()> {
+    let graph = attention_scenario()?.graph()?;
+    let excluded = finding_ids(&all_findings(&graph)?);
+
+    let page = attention_findings_at(
+        &graph,
+        &leaving_out(&excluded, &[], 5),
+        &AttentionConfig::default(),
+        now(),
+    )?;
+
+    assert!(page.findings.is_empty());
+    assert!(!page.truncated);
+    assert_eq!(page.next_cursor, None);
+    Ok(())
+}
+
+#[test]
+fn an_id_that_matches_no_finding_leaves_nothing_out() -> Result<()> {
+    let graph = attention_scenario()?.graph()?;
+    let excluded = BTreeSet::from(["finding-00000000000000000000000000000000".to_owned()]);
+
+    let page = attention_findings_at(
+        &graph,
+        &leaving_out(&excluded, &[], MAX_QUERY_RESULTS),
+        &AttentionConfig::default(),
+        now(),
+    )?;
+
+    assert_eq!(page.findings, all_findings(&graph)?);
+    Ok(())
+}
+
+#[test]
+fn a_finding_whose_basis_changed_is_not_left_out_by_its_old_id() -> Result<()> {
+    let scenario = attention_scenario()?;
+    let excluded = finding_ids(&all_findings(&scenario.graph()?)?);
+    // Newer evidence is linked to `d:ev-stale` afterwards: its finding has a new basis.
+    scenario.relation(
+        "BASED_ON",
+        "d:ev-stale",
+        "e:just-over",
+        "human:alex",
+        None,
+        "2026-09-20T00:00:00Z",
+    )?;
+
+    let page = attention_findings_at(
+        &scenario.graph()?,
+        &leaving_out(&excluded, &[], MAX_QUERY_RESULTS),
+        &AttentionConfig::default(),
+        now(),
+    )?;
+
+    assert_eq!(page.findings.len(), 1);
+    assert_eq!(page.findings[0].decision_id, "d:ev-stale");
+    assert_eq!(page.findings[0].basis_at, Some(ts("2026-06-27T23:59:59Z")));
+    Ok(())
+}
+
+#[test]
+fn stepping_over_findings_that_are_left_out_costs_one_anchored_read_each() -> Result<()> {
+    let graph = bulk_scenario(800)?.graph()?;
+    let config = AttentionConfig::default();
+    let kinds = [FindingKind::PremiseSuperseded];
+    let first = attention_findings_at(&graph, &request(&kinds, 35), &config, now())?;
+    let excluded = finding_ids(&first.findings[..10]);
+
+    let counting = CountingGraph::new(&graph);
+    let page = attention_findings_at(
+        &counting,
+        &leaving_out(&excluded, &kinds, 25),
+        &config,
+        now(),
+    )?;
+
+    assert_eq!(page.findings, first.findings[10..35]);
+    assert!(page.truncated);
+    // Each dependent has its own premise and superseder here: the ten stepped over, the 25 on the
+    // page and the one after it, which is how the page is known to be cut short.
+    assert_eq!(counting.queries(), GROUNDING_FACT_READS + 10 + 25 + 1);
     Ok(())
 }

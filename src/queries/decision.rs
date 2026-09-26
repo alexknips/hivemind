@@ -13,6 +13,7 @@ use super::grounding::{
     grounding_state_of, hypothesis_facts, premise_decision_ids, rests_on_clause, GroundingState,
 };
 use super::project_label::ProjectLabels;
+use super::question::{question_id_of, question_text};
 use super::shared::{
     neighbor_ids, optional_string, optional_string_list, premised_on_hypothesis_ids,
     required_string,
@@ -63,9 +64,14 @@ pub struct DecisionView {
     /// `question` (hivemind-zdsh.13).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quote: Option<String>,
-    /// The question `quote` answers, spelled out.
+    /// The question this decision answers, in the capturer's own words.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
+    /// The `Question` node the decision answers (`ANSWERS`), shared with every decision whose
+    /// question text matches. Absent for a decision captured without a question, and for one
+    /// recorded before question nodes existed (its `question` text stays, with no node).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question_id: Option<String>,
 }
 
 /// The single-decision row shape every backend's `query` recognizes (memory.rs matches this
@@ -161,6 +167,8 @@ pub(crate) fn get_decision_with_labels(
             "evidence_id",
         )?;
         let premise_decision_ids = premise_decision_ids(graph, &id)?;
+        let question_id = question_id_of(graph, &id)?;
+        let question = question_text(graph, question, question_id.as_deref())?;
         let hypothesis_ids = premised_on_hypothesis_ids(graph, &id)?;
         let mut hypotheses = Vec::with_capacity(hypothesis_ids.len());
         for hypothesis_id in hypothesis_ids {
@@ -189,6 +197,7 @@ pub(crate) fn get_decision_with_labels(
             premise_decision_ids,
             quote,
             question,
+            question_id,
         })
     } else {
         None

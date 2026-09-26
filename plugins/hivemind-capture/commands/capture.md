@@ -44,7 +44,8 @@ then capture with the consulted decision as the premise.
 
 The decider's own words are not a grounding: never pass a Slack message or chat
 reply as `--rests-on-evidence`. They go in `--quote` (verbatim), paired with
-`--question` (what they answered). Pass `--confidence low|medium|high` only when
+`--question` (what they answered). `--question` alone names the question the decision
+answers, one line (optional; decisions that answer the same question share a node). Pass `--confidence low|medium|high` only when
 the decider's own words state it; omit it otherwise.
 
 A capture that names nothing exits 2 and writes nothing. After any refusal (no

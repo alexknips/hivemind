@@ -22,9 +22,9 @@ use crate::mcp::args::{
 };
 use crate::mcp::core::{
     CaptureDecisionArgs, CompactViewArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
-    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSupersessionChainArgs,
-    GroundDecisionArgs, LedgerHandle, LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs,
-    ScanDecisionQualityArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
+    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSuggestionsArgs,
+    GetSupersessionChainArgs, GroundDecisionArgs, LedgerHandle, LedgerProvider, MoveDecisionArgs,
+    RecallDecisionsArgs, ScanDecisionQualityArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
 };
 use crate::projector::memory::MemoryGraph;
 use crate::queries::{
@@ -198,6 +198,7 @@ fn mcp_tools_call_blocking(
         "search_decisions" => mcp_search_decisions(backend, ctx, args, cache),
         "score_decision" => mcp_score_decision(backend, ctx, args, cache),
         "scan_decision_quality" => mcp_scan_decision_quality(backend, ctx, args, cache),
+        "get_suggestions" => mcp_get_suggestions(backend, ctx, args, cache),
         "dump_graph" => mcp_dump_graph(backend, ctx, cache),
         "hivemind_compact_view" => mcp_compact_view(backend, ctx, args),
         "summarize_decisions" => mcp_summarize(backend, ctx, args, cache),
@@ -605,6 +606,18 @@ fn mcp_scan_decision_quality(
     let core_args = ScanDecisionQualityArgs::from_json(&args)?;
     let graph = mcp_open_graph(backend, ctx, cache)?;
     let output = crate::mcp::core::scan_decision_quality(&*graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn mcp_get_suggestions(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
+) -> McpToolResult {
+    let core_args = GetSuggestionsArgs::from_json(&args)?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let output = crate::mcp::core::get_suggestions(&*graph, core_args)?;
     Ok(output.into_value())
 }
 

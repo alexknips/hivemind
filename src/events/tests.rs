@@ -60,6 +60,16 @@ const FIXTURES: &[(&str, &str, EventType)] = &[
         EventType::RelationAdded,
     ),
     (
+        include_str!("../../schemas/v0/relation.added.json"),
+        include_str!("../../tests/fixtures/v0/grounding/relation.added.answers.json"),
+        EventType::RelationAdded,
+    ),
+    (
+        include_str!("../../schemas/v0/question.recorded.json"),
+        include_str!("../../tests/fixtures/v0/question.recorded.json"),
+        EventType::QuestionRecorded,
+    ),
+    (
         include_str!("../../schemas/v0/relation.removed.json"),
         include_str!("../../tests/fixtures/v0/grounding/relation.removed.follows_from.json"),
         EventType::RelationRemoved,
@@ -340,20 +350,16 @@ fn decision_proposed_rejects_quote_without_question() {
 }
 
 #[test]
-fn decision_proposed_rejects_question_without_quote() {
+fn decision_proposed_accepts_question_without_quote() {
+    // A question names the Question node the decision answers; only a quote needs it
+    // (hivemind-zdsh.16).
     let mut event: Event = serde_json::from_str(include_str!(
         "../../tests/fixtures/v0/decision.proposed.json"
     ))
     .unwrap();
     event.payload["question"] = json!("Should a personal project be visible to the whole tenant?");
 
-    assert!(matches!(
-        validate(&event),
-        Err(EventValidationError::RequiresPairedField(
-            "payload.question",
-            "payload.quote"
-        ))
-    ));
+    assert!(validate(&event).is_ok());
 }
 
 #[test]
@@ -556,4 +562,74 @@ fn blocker_notification_events_require_source_provenance() {
         validate(&event),
         Err(EventValidationError::EmptyField("source_ref"))
     ));
+}
+
+fn question_recorded_event() -> Event {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/question.recorded.json"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn question_recorded_requires_a_question_id_and_words() {
+    for (field, value) in [("question_id", ""), ("text", "  "), ("text", "?")] {
+        let mut event = question_recorded_event();
+        event.payload[field] = json!(value);
+        assert!(
+            matches!(validate(&event), Err(EventValidationError::EmptyField(_))),
+            "{field}={value:?} must be refused"
+        );
+    }
+}
+
+#[test]
+fn question_recorded_rejects_unknown_fields() {
+    let mut event = question_recorded_event();
+    event.payload["normalized_text"] = json!("which storage engine should the prototype use");
+
+    assert!(matches!(
+        validate(&event),
+        Err(EventValidationError::Payload { .. })
+    ));
+}
+
+#[test]
+fn relation_kind_answers_uses_the_answers_wire_value() {
+    assert_eq!(
+        serde_json::to_value(RelationKind::Answers).unwrap(),
+        json!("ANSWERS")
+    );
+    assert_eq!(
+        serde_json::from_value::<RelationKind>(json!("answers")).unwrap(),
+        RelationKind::Answers
+    );
+}
+
+#[test]
+fn normalize_question_text_ignores_case_spacing_and_trailing_punctuation() {
+    let spellings = [
+        "Which storage engine should the prototype use?",
+        "  which storage   engine should the\tprototype use ",
+        "WHICH STORAGE ENGINE SHOULD THE PROTOTYPE USE?!",
+        "Which storage engine should the prototype use ?",
+    ];
+    let expected = "which storage engine should the prototype use";
+    for spelling in spellings {
+        assert_eq!(normalize_question_text(spelling), expected, "{spelling:?}");
+    }
+}
+
+#[test]
+fn normalize_question_text_keeps_words_that_differ() {
+    assert_ne!(
+        normalize_question_text("Which storage engine should the prototype use?"),
+        normalize_question_text("Which storage engine should production use?")
+    );
+    // Interior punctuation is part of the question, not trailing noise.
+    assert_ne!(
+        normalize_question_text("Do we ship v1.0 now?"),
+        normalize_question_text("Do we ship v10 now?")
+    );
+    assert_eq!(normalize_question_text("?!"), "");
 }

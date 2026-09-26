@@ -765,6 +765,7 @@ fn collect_graph_search_results(
     let evidence_rows = node_rows(graph, NodeKind::Evidence)?;
     let option_rows = node_rows(graph, NodeKind::Option)?;
     let hypothesis_rows = node_rows(graph, NodeKind::Hypothesis)?;
+    let question_rows = node_rows(graph, NodeKind::Question)?;
     let edges = relation_edges_by_kind(graph)?;
     let labels = ProjectLabels::from_graph(graph)?;
 
@@ -838,6 +839,9 @@ fn collect_graph_search_results(
         let supersedes_decision_ids = relation_targets(&edges, &[RelationKind::Supersedes], &id);
         let superseded_by_decision_ids = relation_sources(&edges, RelationKind::Supersedes, &id);
         let premise_decision_ids = relation_targets(&edges, &[RelationKind::FollowsFrom], &id);
+        let question_id = relation_targets(&edges, &[RelationKind::Answers], &id)
+            .into_iter()
+            .next();
 
         let mut hypotheses = Vec::with_capacity(hypothesis_ids.len());
         for hypothesis_id in &hypothesis_ids {
@@ -960,7 +964,15 @@ fn collect_graph_search_results(
             hypotheses: hypotheses.clone(),
             premise_decision_ids,
             quote: quote.clone(), // ubs:ignore: clone necessary — building owned DecisionView
-            question: question.clone(), // ubs:ignore: clone necessary — building owned DecisionView
+            // A decision linked to a question after the fact has no question text of its own.
+            question: question.clone().or_else(|| {
+                // ubs:ignore: clone necessary — building owned DecisionView
+                question_id
+                    .as_ref()
+                    .and_then(|question_id| question_rows.get(question_id))
+                    .and_then(|row| optional_string(row, "text"))
+            }),
+            question_id,
         };
         let grounding_state = decision.grounding_state();
 

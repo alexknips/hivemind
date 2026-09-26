@@ -45,9 +45,9 @@ use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
 use core::{
     CaptureDecisionArgs, CompactViewArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
-    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSupersessionChainArgs,
-    GroundDecisionArgs, LedgerHandle, LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs,
-    ScanDecisionQualityArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
+    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSuggestionsArgs,
+    GetSupersessionChainArgs, GroundDecisionArgs, LedgerHandle, LedgerProvider, MoveDecisionArgs,
+    RecallDecisionsArgs, ScanDecisionQualityArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
 };
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -352,6 +352,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "decision_context_candidates" => tool_decision_context_candidates(arguments, config),
         "score_decision" => tool_score_decision(arguments, config),
         "scan_decision_quality" => tool_scan_decision_quality(arguments, config),
+        "get_suggestions" => tool_get_suggestions(arguments, config),
         "scan_misfiled_decisions" => tool_scan_misfiled_decisions(arguments, config),
         "analyze_failure_modes" => tool_analyze_failure_modes(arguments, config),
         "get_relevant_decisions" => tool_get_relevant_decisions(arguments, config),
@@ -444,7 +445,7 @@ fn ground_grounding_property() -> Value {
     if let Some(object) = property.as_object_mut() {
         object.insert(
             "description".to_owned(),
-            json!("What the decision rests on — required, at least one item. Four ways to answer: a decision we already made (`{kind:\"decision\", description}` — name it the way you would describe it — or `{kind:\"decision\", decision_id}` when you hold the id), something observed (`{kind:\"evidence\", content, source?}` — the observation and where: URL, file@commit, test run, measurement), something assumed (`{kind:\"assumption\", statement}`), or nothing yet (`{kind:\"bet\", statement?, would_change_if?, check_by?}` — a declared bet). An existing node can be named by id: `{kind:\"evidence\", evidence_id}` / `{kind:\"assumption\", hypothesis_id}`. The decider's own words are not a grounding. A `description` that matches more than one decision returns a successful result shaped `{outcome: \"ambiguous\", field: \"grounding[i]\", candidates: [...]}`, and one that matches none returns `{outcome: \"not_found\", field: \"grounding[i]\", description}`; in both cases NO event is appended — re-call with that item's `decision_id`. A decision that already rests, directly or through others, on the decision being grounded cannot be its premise: that is refused as an error and nothing is written."),
+            json!("What the decision rests on — at least one item unless `answers` is given. Four ways to answer: a decision we already made (`{kind:\"decision\", description}` — name it the way you would describe it — or `{kind:\"decision\", decision_id}` when you hold the id), something observed (`{kind:\"evidence\", content, source?}` — the observation and where: URL, file@commit, test run, measurement), something assumed (`{kind:\"assumption\", statement}`), or nothing yet (`{kind:\"bet\", statement?, would_change_if?, check_by?}` — a declared bet). An existing node can be named by id: `{kind:\"evidence\", evidence_id}` / `{kind:\"assumption\", hypothesis_id}`. The decider's own words are not a grounding. A `description` that matches more than one decision returns a successful result shaped `{outcome: \"ambiguous\", field: \"grounding[i]\", candidates: [...]}`, and one that matches none returns `{outcome: \"not_found\", field: \"grounding[i]\", description}`; in both cases NO event is appended — re-call with that item's `decision_id`. A decision that already rests, directly or through others, on the decision being grounded cannot be its premise: that is refused as an error and nothing is written."),
         );
     }
     property
@@ -484,7 +485,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "hypothesis_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"assumption\", hypothesis_id}` grounding items." },
                     "evidence_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"evidence\", evidence_id}` grounding items." },
                     "quote": { "type": "string", "description": "Verbatim words of the decider, self-contained — not a bare reference like \"1a\" into an external numbered list. Requires `question`. A quote with no stated question is unreadable once the source conversation is gone." },
-                    "question": { "type": "string", "description": "The question `quote` answers, spelled out in the capturer's own words. Requires `quote`." },
+                    "question": { "type": "string", "description": "The question this decision answers, in the capturer's own words: one line. Required when `quote` is given; otherwise optional. Two captures whose question is the same after lowercasing, collapsing spaces and dropping trailing punctuation share one question node, so a decision that answers the same question again, or one that answers it differently, is findable. The reply's `question_id` names the node." },
                     "project": { "type": "string", "description": "Registered project handle to file the decision under. An unknown handle is refused with the register command. Omit it and the decision is saved to the actor's personal project — the reply says so (`project_notice`). HiveMind checks the handle and never works out the project itself, so pass it whenever you know it; an HTTP-served MCP cannot see the caller's working directory. A stdio server started with `--project-from-context` works it out from its own working directory when you omit it (the `.hivemind-project` files of the folders the uncommitted change touches, else the nearest one above the working directory, then the rig, then the actor's current project; `project_source` says which), and adds `project_reminder` when the folder is not attached to any project or the change spans several: several projects are recorded for the nearest project they are all part of, or saved to the personal project when they share none." },
                     "project_source": { "type": "string", "enum": ["stated", "folder_marker", "rig", "current_project", "job"], "description": "How `project` was determined. Defaults to `stated`. Requires `project`." }
                 }
@@ -586,15 +587,15 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "ground_decision",
-            "description": "Record what an existing decision rests on, after the fact — for a decision captured without saying (older decisions read `nothing declared`) or one whose premises came to light later. Append-only, and attributed to `actor_id` (the grounder, not the decision's proposer), so a reader sees it was added later rather than at capture. Wraps `hivemind ground`. Resolves the decision by `decision_id` or a free-text `description` (+ optional `topic`) — exactly one is required, the same fluent resolution `supersede_decision` uses. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error, with no write; re-call with `decision_id` from that list. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}`, also with no write. `grounding` names what it rests on (required). The reply lists `rests_on` (what was recorded) and `premise_stale` (named decisions already superseded or rejected). To check whether a bet held, record evidence and relate it with `emit evidence.recorded` + `relation.added` SUPPORTS|REFUTES.",
+            "description": "Record what an existing decision rests on, after the fact — for a decision captured without saying (older decisions read `nothing declared`) or one whose premises came to light later. Append-only, and attributed to `actor_id` (the grounder, not the decision's proposer), so a reader sees it was added later rather than at capture. Wraps `hivemind ground`. Resolves the decision by `decision_id` or a free-text `description` (+ optional `topic`) — exactly one is required, the same fluent resolution `supersede_decision` uses. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error, with no write; re-call with `decision_id` from that list. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}`, also with no write. `grounding` names what it rests on (required unless `answers` is given). `answers` names the question this decision answers (a decision captured without one); the reply's `answers` gives the question node's id. The reply lists `rests_on` (what was recorded) and `premise_stale` (named decisions already superseded or rejected). To check whether a bet held, record evidence and relate it with `emit evidence.recorded` + `relation.added` SUPPORTS|REFUTES.",
             "inputSchema": {
                 "type": "object",
-                "required": ["grounding"],
                 "properties": {
                     "actor_id": { "type": "string", "description": "Grounding actor. Defaults to `agent:<tool>:<name>` when omitted." },
                     "decision_id": { "type": "string", "description": "The decision to ground. Provide this or `description`, not both." },
                     "description": { "type": "string", "description": "Free-text match for the decision to ground. Required when `decision_id` is omitted." },
                     "topic": { "type": "string", "description": "Optional topic_key filter narrowing the `description` match." },
+                    "answers": { "type": "string", "description": "The question this decision answers, for a decision captured without saying: links it to the question node whose text matches (lowercase, spaces collapsed, trailing punctuation dropped), creating the node if none does. Attributed to `actor_id`, so a reader sees it was added later. A decision answers one question: naming a different one than it already answers is refused. May stand alone; then `grounding` is optional." },
                     "grounding": ground_grounding_property()
                 }
             }
@@ -875,6 +876,47 @@ pub fn tool_definitions() -> Vec<Value> {
                     "evidence_window_days": {
                         "type": "integer",
                         "description": "Days after which the newest evidence linked to a decision counts as not re-checked (default 90)."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum findings to return (1–1000, default 25)."
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Pagination cursor: the `data.next_cursor` of a previous response."
+                    }
+                }
+            }
+        }),
+        json!({
+            "name": "get_suggestions",
+            "description": "One page of what needs a look and has not been dealt with: the attention findings of scan_decision_quality (same kinds, same shape: finding_id, kind, decision_id, the reason in words, the node ids it rests on, basis_at when the graph records one, and the dimensions it bears on with their levels and reasons), without the findings that have been acknowledged (matched by finding_id) unless exclude_acknowledged is false. A finding's finding_id changes when its basis does, so a finding whose premise moved on after it was acknowledged is shown again. The page is filled from the findings that remain: it holds limit findings whenever that many remain, and when truncated is true, data.next_cursor resumes. Nothing records an acknowledgement yet, so today both settings return the same findings as scan_decision_quality. Findings are ordered by decision id, not by priority; this is not a ranking or a grade. No LLM involved; works self-hosted.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kinds": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "bet_past_check_date",
+                                "premise_superseded",
+                                "premise_rejected",
+                                "assumption_refuted",
+                                "bet_failed",
+                                "evidence_not_rechecked"
+                            ]
+                        },
+                        "description": "Only these kinds of finding. Omit for all six."
+                    },
+                    "evidence_window_days": {
+                        "type": "integer",
+                        "description": "Days after which the newest evidence linked to a decision counts as not re-checked (default 90)."
+                    },
+                    "exclude_acknowledged": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Leave out findings that have been acknowledged: what is new since you last looked (default true). False returns every finding."
                     },
                     "limit": {
                         "type": "integer",
@@ -1427,6 +1469,14 @@ fn tool_scan_decision_quality(
     let core_args = ScanDecisionQualityArgs::from_json(&args)?;
     let graph = open_memory_graph(config)?;
     let output = core::scan_decision_quality(&graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn tool_get_suggestions(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let core_args = GetSuggestionsArgs::from_json(&args)?;
+    let graph = open_memory_graph(config)?;
+    let output = core::get_suggestions(&graph, core_args)?;
     Ok(output.into_value())
 }
 

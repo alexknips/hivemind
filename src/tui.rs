@@ -983,9 +983,13 @@ fn render_detail(frame: &mut Frame<'_>, area: Rect, app: &DecisionSearchApp) {
         lines.push(Line::from(""));
         lines.push(Line::from("rationale:"));
         lines.extend(wrapped_lines(&detail.rationale));
-        if let (Some(question), Some(quote)) = (&detail.question, &detail.quote) {
+        if detail.question.is_some() || detail.quote.is_some() {
             lines.push(Line::from(""));
+        }
+        if let Some(question) = &detail.question {
             lines.push(Line::from(format!("answers: {question}")));
+        }
+        if let Some(quote) = &detail.quote {
             lines.push(Line::from(format!("quote: \"{quote}\"")));
         }
         lines.push(Line::from(""));

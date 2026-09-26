@@ -38,12 +38,19 @@
 //! findings that appear or vanish between pages never make a consumer skip or repeat one that
 //! stood throughout.
 //!
-//! A page issues [`GROUNDING_FACT_READS`](crate::queries::GROUNDING_FACT_READS) bulk reads however many decisions there are, plus one
-//! anchored read per distinct superseding decision on the page (to state when it was made), so
-//! at most `limit` more. The rows those bulk reads return grow with the grounding links,
-//! hypotheses and evidence, not with decisions times a per-decision cost. Nothing walks the
-//! premise graph: a premise link is read once, so a `FOLLOWS_FROM` cycle costs nothing extra and
-//! cannot loop.
+//! A request may list findings to leave out ([`AttentionRequest::excluded`], by `finding_id`).
+//! They are left out before the page is cut, not after: the page is filled from the findings that
+//! remain, so a consumer that has dealt with a long run of them still gets a full page, and
+//! `truncated` is true only when another finding that was not left out follows.
+//!
+//! A page issues [`GROUNDING_FACT_READS`](crate::queries::GROUNDING_FACT_READS) bulk reads
+//! however many decisions there are, plus one anchored read per distinct superseding decision on
+//! the page (to state when it was made), so at most `limit` more. When findings are left out, the
+//! same anchored read is made for each one stepped over on the way to a full page: the extra cost
+//! grows with the findings left out that sort before the end of the page, and stops there. The
+//! rows those bulk reads return grow with the grounding links, hypotheses and evidence, not with
+//! decisions times a per-decision cost. Nothing walks the premise graph: a premise link is read
+//! once, so a `FOLLOWS_FROM` cycle costs nothing extra and cannot loop.
 //!
 //! # Placement
 //! Layer 3, with the rest of the profile. It reads the graph through `queries::get_grounding_facts`
@@ -144,6 +151,10 @@ pub struct AttentionRequest {
     pub limit: usize,
     /// The `next_cursor` of the previous page.
     pub cursor: Option<String>,
+    /// Findings to leave out, by `finding_id`: a page is filled from the findings that are not
+    /// listed here, so it holds `limit` of them whenever that many remain, and `truncated` says
+    /// whether another one that is not listed follows. Nothing is left out when empty.
+    pub excluded: BTreeSet<String>,
 }
 
 /// One decision that needs a look, and why.
@@ -220,29 +231,57 @@ pub fn attention_findings_at(
         candidates.partition_point(|candidate| candidate.key() <= after)
     });
     let rest = candidates.get(start..).unwrap_or_default();
-    let truncated = rest.len() > limit;
-    let page = rest.get(..limit).unwrap_or(rest);
-
-    let next_cursor = match page.last() {
-        Some(last) if truncated => Some(cursor_of(last)?),
-        _ => None,
-    };
-    let superseders = page
-        .iter()
-        .flat_map(|candidate| candidate.other_superseders());
-    let times = get_decision_times(graph, superseders)?;
-    let findings = page
-        .iter()
-        .map(|candidate| candidate.to_finding(&times, config))
-        .collect();
+    let (findings, next_cursor) = take_page(graph, rest, limit, &request.excluded, config)?;
 
     Ok(AttentionPage {
         as_of: now,
         evidence_window_days: config.evidence_window_days,
         findings,
-        truncated,
+        truncated: next_cursor.is_some(),
         next_cursor,
     })
+}
+
+/// The first `limit` findings of `rest` that are not `excluded`, in order, and the cursor that
+/// resumes after the last of them when another finding follows.
+///
+/// A candidate is worded, and so given its id, only when it is reached; the superseding decisions
+/// it needs dated are read then, one anchored read per distinct id however many candidates share
+/// it. With nothing excluded that is the page and no more: the candidate after it is known to be
+/// a finding without being worded, so a page costs at most `limit` anchored reads. With findings
+/// excluded, what a page costs grows with the excluded findings it has to step over.
+fn take_page(
+    graph: &impl GraphView,
+    rest: &[Candidate<'_>],
+    limit: usize,
+    excluded: &BTreeSet<String>,
+    config: &AttentionConfig,
+) -> Result<(Vec<AttentionFinding>, Option<String>)> {
+    let mut times: BTreeMap<String, DateTime<Utc>> = BTreeMap::new();
+    let mut dated: BTreeSet<&str> = BTreeSet::new();
+    let mut findings = Vec::with_capacity(limit.min(rest.len()));
+    let mut last: Option<&Candidate<'_>> = None;
+
+    for candidate in rest {
+        if findings.len() == limit && excluded.is_empty() {
+            return Ok((findings, last.map(cursor_of).transpose()?));
+        }
+        let undated: Vec<&str> = candidate
+            .other_superseders()
+            .filter(|by_id| dated.insert(*by_id))
+            .collect();
+        times.extend(get_decision_times(graph, undated)?);
+        let finding = candidate.to_finding(&times, config);
+        if excluded.contains(&finding.finding_id) {
+            continue;
+        }
+        if findings.len() == limit {
+            return Ok((findings, last.map(cursor_of).transpose()?));
+        }
+        findings.push(finding);
+        last = Some(candidate);
+    }
+    Ok((findings, None))
 }
 
 // ---------------------------------------------------------------------------

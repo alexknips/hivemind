@@ -23,7 +23,7 @@
 //! `recall_decisions`, `supersede_decision`, `disagree_decision`, `move_decision`,
 //! `ground_decision`,
 //! `get_decision_outcome`, `hivemind_compact_view`, `score_decision`,
-//! `scan_decision_quality`. Later
+//! `scan_decision_quality`, `get_suggestions`. Later
 //! tools follow the same shape — an `Args::from_json` parser plus a
 //! `core::<tool>` function — one pair per tool, each independently
 //! reviewable.
@@ -42,7 +42,9 @@ use crate::grounding::{
 };
 use crate::ledger::{AnyLedger, EventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
-use crate::quality_profile::{self, parse_kinds, ScanRequest, SCAN_DEFAULT_LIMIT};
+use crate::quality_profile::{
+    self, parse_kinds, ScanRequest, SuggestionsRequest, SCAN_DEFAULT_LIMIT,
+};
 use crate::queries::{
     derive_decision_status, get_compact_view, get_decision_brief as query_get_decision_brief,
     get_decision_neighborhood as query_get_decision_neighborhood,
@@ -53,8 +55,9 @@ use crate::queries::{
 use crate::summarize::{RecallRequest, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT};
 
 use super::args::{
-    default_option_description, optional_bool, optional_datetime, optional_option_labels,
-    optional_string, optional_string_array, optional_usize, require_string, require_string_array,
+    default_option_description, optional_bool, optional_bool_or, optional_datetime,
+    optional_option_labels, optional_string, optional_string_array, optional_usize, require_string,
+    require_string_array,
 };
 
 // ---------------------------------------------------------------------------
@@ -252,7 +255,8 @@ pub(crate) struct CaptureDecisionArgs {
     /// Verbatim words of the decider, self-contained. Requires `question`. See `quote` on
     /// `DecisionProposalInput`.
     pub(crate) quote: Option<String>,
-    /// The question `quote` answers, spelled out. Requires `quote`.
+    /// The question this decision answers. Required by `quote`; otherwise optional. Resolved to
+    /// a `Question` node. See `question` on `DecisionProposalInput`.
     pub(crate) question: Option<String>,
     /// Registered project handle to file the decision under. See [`project_args`].
     pub(crate) project: Option<String>,
@@ -268,6 +272,16 @@ fn require_wire_grounding(
     args: &Map<String, Value>,
     refusal: &str,
 ) -> Result<GroundingSpec, CoreError> {
+    let spec = wire_grounding(args)?;
+    if spec.is_empty() {
+        return Err(CoreError::InvalidArgument(refusal.to_owned()));
+    }
+    Ok(spec)
+}
+
+/// The wire grounding, possibly naming nothing: [`require_wire_grounding`] without the refusal,
+/// for a call (`ground_decision` with `answers`) that may legitimately carry none.
+fn wire_grounding(args: &Map<String, Value>) -> Result<GroundingSpec, CoreError> {
     let items = match args.get("grounding") {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(items)) => items.clone(),
@@ -279,12 +293,8 @@ fn require_wire_grounding(
     };
     let hypothesis_ids = optional_string_array(args, "hypothesis_ids")?;
     let evidence_ids = optional_string_array(args, "evidence_ids")?;
-    let spec = GroundingSpec::from_wire(&items, &hypothesis_ids, &evidence_ids)
-        .map_err(CoreError::InvalidArgument)?;
-    if spec.is_empty() {
-        return Err(CoreError::InvalidArgument(refusal.to_owned()));
-    }
-    Ok(spec)
+    GroundingSpec::from_wire(&items, &hypothesis_ids, &evidence_ids)
+        .map_err(CoreError::InvalidArgument)
 }
 
 impl CaptureDecisionArgs {
@@ -369,9 +379,9 @@ impl CaptureDecisionArgs {
         let question = optional_string(args, "question")?;
         let (project, project_source) = project_args(args)?;
 
-        if quote.is_some() != question.is_some() {
+        if quote.is_some() && question.is_none() {
             return Err(CoreError::InvalidArgument(
-                "quote and question must be given together — a verbatim answer needs the question it answers spelled out, not a bare reference like '1a' into an external list".to_owned(),
+                "quote requires question — a verbatim answer needs the question it answers spelled out, not a bare reference like '1a' into an external list".to_owned(),
             ));
         }
 
@@ -482,6 +492,9 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
         "rests_on": resolved.label(proposal.rests_on),
         "premise_stale": proposal.premise_stale,
     });
+    if let Some(question) = proposal.question {
+        reply["question_id"] = json!(question.question_id);
+    }
     insert_placement(&mut reply, &proposal.placement);
     Ok(ToolOutput(reply))
 }
@@ -1281,7 +1294,7 @@ pub(crate) fn get_supersession_chain<P: LedgerProvider>(
 // ---------------------------------------------------------------------------
 
 /// The refusal for a `ground_decision` call that names nothing the decision rests on.
-const WIRE_GROUND_REFUSAL: &str = "nothing to ground: pass `grounding` with at least one item — {kind:\"decision\", description|decision_id} (a decision already made), {kind:\"evidence\", content, source?} (something observed, and where), {kind:\"assumption\", statement} (something assumed), or {kind:\"bet\", statement?, would_change_if?, check_by?} (nothing yet: a declared bet)";
+const WIRE_GROUND_REFUSAL: &str = "nothing to ground: pass `grounding` with at least one item — {kind:\"decision\", description|decision_id} (a decision already made), {kind:\"evidence\", content, source?} (something observed, and where), {kind:\"assumption\", statement} (something assumed), or {kind:\"bet\", statement?, would_change_if?, check_by?} (nothing yet: a declared bet); or pass `answers` (the question this decision answers)";
 
 /// Parsed, validated arguments for the `ground_decision` tool. The decision is selected the way
 /// `disagree_decision` selects its target: `decision_id` bypasses resolution, otherwise
@@ -1291,8 +1304,11 @@ pub(crate) struct GroundDecisionArgs {
     pub(crate) decision_id: Option<String>,
     pub(crate) description: Option<String>,
     pub(crate) topic: Option<String>,
-    /// What the decision rests on; see [`CaptureDecisionArgs::grounding`].
+    /// What the decision rests on; see [`CaptureDecisionArgs::grounding`]. May name nothing when
+    /// `answers` is given.
     pub(crate) grounding: GroundingSpec,
+    /// The question the decision answers (hivemind-zdsh.16). May stand alone.
+    pub(crate) answers: Option<String>,
 }
 
 impl GroundDecisionArgs {
@@ -1300,12 +1316,19 @@ impl GroundDecisionArgs {
         args: &Map<String, Value>,
         actor_id: String,
     ) -> Result<Self, CoreError> {
+        let answers = optional_string(args, "answers")?;
+        let grounding = if answers.is_some() {
+            wire_grounding(args)?
+        } else {
+            require_wire_grounding(args, WIRE_GROUND_REFUSAL)?
+        };
         Ok(Self {
             actor_id,
             decision_id: optional_string(args, "decision_id")?,
             description: optional_string(args, "description")?,
             topic: optional_string(args, "topic")?,
-            grounding: require_wire_grounding(args, WIRE_GROUND_REFUSAL)?,
+            grounding,
+            answers,
         })
     }
 }
@@ -1359,16 +1382,28 @@ pub(crate) fn ground_decision<P: LedgerProvider>(
         ),
     );
     let added = commands
-        .ground_decision_with_plan(&args.actor_id, &decision_id, &resolved.plan)
+        .ground_and_answer(
+            &args.actor_id,
+            &decision_id,
+            &resolved.plan,
+            args.answers.as_deref(),
+        )
         .map_err(CoreError::from)?;
 
-    Ok(ToolOutput(json!({
+    let mut reply = json!({
         "decision_id": added.decision_id,
         "actor_id": args.actor_id,
         "relation_event_ids": added.relation_event_ids,
         "rests_on": resolved.label(added.rests_on),
         "premise_stale": added.premise_stale,
-    })))
+    });
+    if let Some(question) = added.question {
+        reply["answers"] = json!({
+            "question_id": question.question_id,
+            "reused": question.reused,
+        });
+    }
+    Ok(ToolOutput(reply))
 }
 
 // ---------------------------------------------------------------------------
@@ -1449,5 +1484,34 @@ pub(crate) fn scan_decision_quality(
 ) -> Result<ToolOutput, CoreError> {
     let response =
         quality_profile::scan_decision_quality(graph, &args.request).map_err(CoreError::from)?;
+    quality_output(&response)
+}
+
+/// Parsed, validated arguments for the `get_suggestions` tool: the arguments of
+/// `scan_decision_quality`, parsed and refused the same way, and `exclude_acknowledged`.
+pub(crate) struct GetSuggestionsArgs {
+    pub(crate) request: SuggestionsRequest,
+}
+
+impl GetSuggestionsArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            request: SuggestionsRequest {
+                scan: ScanDecisionQualityArgs::from_json(args)?.request,
+                exclude_acknowledged: optional_bool_or(args, "exclude_acknowledged", true)?,
+            },
+        })
+    }
+}
+
+/// The core for the `get_suggestions` MCP tool: one page of attention findings, without the ones
+/// someone has acknowledged unless `exclude_acknowledged` is false. The page is filled from what
+/// remains, `truncated` says whether more follow and `data.next_cursor` resumes.
+pub(crate) fn get_suggestions(
+    graph: &impl GraphView,
+    args: GetSuggestionsArgs,
+) -> Result<ToolOutput, CoreError> {
+    let response =
+        quality_profile::get_suggestions(graph, &args.request).map_err(CoreError::from)?;
     quality_output(&response)
 }

@@ -780,6 +780,10 @@ impl GraphView for FixtureGraph {
                     })
                     .collect());
             }
+            // The fixture records no questions (hivemind-zdsh.16).
+            if cypher.contains("`Question`") {
+                return Ok(Vec::new());
+            }
         }
 
         if cypher.contains("RETURN from.id AS from_id, to.id AS to_id") {

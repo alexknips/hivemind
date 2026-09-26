@@ -1,0 +1,15 @@
+{
+  "event_id": 6,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe06",
+  "correlation_id": "session-1",
+  "causation_event_id": 4,
+  "type": "question.recorded",
+  "actor_id": "agent-a",
+  "source": "agent",
+  "source_ref": "agent:codex:session-1",
+  "payload": {
+    "question_id": "question-storage-engine",
+    "text": "Which storage engine should the prototype use?"
+  },
+  "ts": "2026-05-17T20:44:53Z"
+}

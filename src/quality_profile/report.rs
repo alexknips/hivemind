@@ -24,11 +24,24 @@
 //! | `bet_failed` | Information, Calibration | as for a bet past its check date |
 //! | `evidence_not_rechecked` | Information | the evidence is what Information counts |
 //!
+//! # `get_suggestions`
+//! The same page of findings, without the ones someone has already acknowledged. A finding is
+//! acknowledged by its `finding_id`, and that id changes when the finding's basis does, so a
+//! finding whose premise moved on since it was acknowledged is a new finding and is shown again.
+//! `exclude_acknowledged` (true unless a caller says otherwise) is "what is new since I last
+//! looked"; false is every finding, which is what `scan_decision_quality` always returns.
+//! Acknowledged findings are left out before the page is cut ([`AttentionRequest::excluded`]), so
+//! a page is full whenever that many findings remain and `truncated` is exact. What counts as
+//! acknowledged is read by [`acknowledged_finding_ids`]: no event records an acknowledgement yet,
+//! so today both settings return the same findings.
+//!
 //! # Cost
 //! A scan page costs what [`attention_findings_at`] costs (a fixed number of bulk reads plus at
 //! most one anchored read per distinct superseding decision on the page) plus one profile read
 //! per distinct decision on the page: never more than `limit` of each, however many decisions the
 //! graph holds. A profile read is a handful of anchored lookups, not a scan.
+//! A suggestions page adds one read of the acknowledged ids and, for each acknowledged finding it
+//! steps over, what wording that finding costs (see [`attention_findings_at`]).
 //!
 //! # Placement
 //! Layer 3, with the rest of the profile. Nothing in `queries/` or `commands/` imports it; the
@@ -220,6 +233,64 @@ pub fn scan_decision_quality_at(
     request: &ScanRequest,
     now: DateTime<Utc>,
 ) -> Result<QueryResponse<ScanReport>> {
+    scan_page_at(graph, request, BTreeSet::new(), now)
+}
+
+/// Which suggestions to page through: the findings of a [`ScanRequest`], with or without the ones
+/// that have been acknowledged.
+#[derive(Clone, Debug)]
+pub struct SuggestionsRequest {
+    pub scan: ScanRequest,
+    /// Leave out findings someone has acknowledged (matched by `finding_id`); every finding when
+    /// false.
+    pub exclude_acknowledged: bool,
+}
+
+impl Default for SuggestionsRequest {
+    fn default() -> Self {
+        Self {
+            scan: ScanRequest::default(),
+            exclude_acknowledged: true,
+        }
+    }
+}
+
+/// One page of suggestions as of now. Reads the clock once; see [`get_suggestions_at`].
+pub fn get_suggestions(
+    graph: &impl GraphView,
+    request: &SuggestionsRequest,
+) -> Result<QueryResponse<ScanReport>> {
+    get_suggestions_at(graph, request, Utc::now())
+}
+
+/// One page of the findings as of `now`, without the acknowledged ones unless the request asks for
+/// them. Read-only.
+pub fn get_suggestions_at(
+    graph: &impl GraphView,
+    request: &SuggestionsRequest,
+    now: DateTime<Utc>,
+) -> Result<QueryResponse<ScanReport>> {
+    let excluded = if request.exclude_acknowledged {
+        acknowledged_finding_ids(graph)?
+    } else {
+        BTreeSet::new()
+    };
+    scan_page_at(graph, &request.scan, excluded, now)
+}
+
+/// The `finding_id`s someone has acknowledged. No event records an acknowledgement yet, so nothing
+/// is acknowledged and this is empty; the event and the read of it belong together.
+pub fn acknowledged_finding_ids(_graph: &impl GraphView) -> Result<BTreeSet<String>> {
+    Ok(BTreeSet::new())
+}
+
+/// One page of findings without those in `excluded`, each with the dimensions it bears on.
+fn scan_page_at(
+    graph: &impl GraphView,
+    request: &ScanRequest,
+    excluded: BTreeSet<String>,
+    now: DateTime<Utc>,
+) -> Result<QueryResponse<ScanReport>> {
     // ubs:ignore: Instant measures response latency only; it does not generate secrets.
     let started = Instant::now();
     let config = AttentionConfig {
@@ -233,6 +304,7 @@ pub fn scan_decision_quality_at(
             kinds: request.kinds.clone(),
             limit: request.limit,
             cursor: request.cursor.clone(),
+            excluded,
         },
         &config,
         now,

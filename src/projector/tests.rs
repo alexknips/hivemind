@@ -2445,6 +2445,75 @@ fn relation_added_follows_from_projects_decision_to_decision_edge() -> Result<()
     Ok(())
 }
 
+// ── Questions (hivemind-zdsh.16): a decision ANSWERS a question node ──
+
+#[test]
+fn question_recorded_projects_a_question_node_with_its_normalized_text() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::QuestionRecorded,
+        "actor:alice",
+        json!({
+            "question_id": "question:storage",
+            "text": "  Which storage ENGINE should the prototype use? "
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    let props = nodes
+        .get(&(NodeKind::Question, "question:storage".to_owned()))
+        .expect("question node present");
+    assert_eq!(
+        props.get("text"),
+        Some(&GraphValue::String(
+            "  Which storage ENGINE should the prototype use? ".to_owned()
+        )),
+        "the words as first written"
+    );
+    assert_eq!(
+        props.get("normalized_text"),
+        Some(&GraphValue::String(
+            "which storage engine should the prototype use".to_owned()
+        )),
+        "the form two spellings of one question are compared in"
+    );
+    Ok(())
+}
+
+#[test]
+fn relation_added_answers_projects_decision_to_question_edge() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::RelationAdded,
+        "actor:alice",
+        json!({
+            "relation": "ANSWERS",
+            "from_id": "decision:pick",
+            "to_id": "question:storage"
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    assert!(
+        graph.edges().contains_key(&(
+            RelationKind::Answers,
+            "decision:pick".to_owned(),
+            "question:storage".to_owned()
+        )),
+        "ANSWERS edge must project decision -> question"
+    );
+    assert_eq!(
+        RelationKind::Answers.endpoints(),
+        (NodeKind::Decision, NodeKind::Question)
+    );
+    Ok(())
+}
+
 #[test]
 fn hypothesis_recorded_with_bet_kind_stores_kind_check_by_would_change_if() -> Result<()> {
     let ledger = InMemoryEventLedger::new();
@@ -2877,6 +2946,11 @@ fn natural_order_scenario() -> Result<InMemoryEventLedger> {
             json!({"hypothesis_id": "hypothesis:1", "statement": "Graph projection is viable"}),
         ),
         event(
+            EventType::QuestionRecorded,
+            "actor:alice",
+            json!({"question_id": "question:1", "text": "Which graph store should slice 1 use?"}),
+        ),
+        event(
             EventType::DecisionProposed,
             "actor:alice",
             json!({
@@ -2948,6 +3022,11 @@ fn natural_order_scenario() -> Result<InMemoryEventLedger> {
             EventType::RelationAdded,
             "actor:alice",
             json!({"relation": "FOLLOWS_FROM", "from_id": "decision:2", "to_id": "decision:1"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "ANSWERS", "from_id": "decision:1", "to_id": "question:1"}),
         ),
         event(
             EventType::DecisionRequested,
@@ -3589,6 +3668,18 @@ fn late_attachment_scenario() -> Result<InMemoryEventLedger> {
             EventType::RelationAdded,
             "actor:alice",
             json!({"relation": "FOLLOWS_FROM", "from_id": "decision:old", "to_id": "decision:new"}),
+        ),
+        // ANSWERS: the first answer to a question is older than the question node its capture
+        // records after the proposal.
+        event(
+            EventType::QuestionRecorded,
+            "actor:alice",
+            json!({"question_id": "question:late", "text": "Which arrow runs which way?"}),
+        ),
+        event(
+            EventType::RelationAdded,
+            "actor:alice",
+            json!({"relation": "ANSWERS", "from_id": "decision:old", "to_id": "question:late"}),
         ),
         event(
             EventType::ProjectLinked,

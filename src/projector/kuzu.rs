@@ -42,6 +42,10 @@ const NODE_DDL: &[(NodeKind, &str)] = &[
         "CREATE NODE TABLE IF NOT EXISTS `Hypothesis` (id STRING, statement STRING, kind STRING, check_by STRING, would_change_if STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
+        NodeKind::Question,
+        "CREATE NODE TABLE IF NOT EXISTS `Question` (id STRING, text STRING, normalized_text STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+    ),
+    (
         NodeKind::Blocker,
         "CREATE NODE TABLE IF NOT EXISTS `Blocker` (id STRING, blocked_actor_id STRING, decision_id STRING, topic_keys STRING[], blocked_ref STRING, blocked_ref_type STRING, reason STRING, priority STRING, last_progress_at STRING, required_owner_id STRING, reported_at STRING, reported_event_origin INT64, resolved_at STRING, resolution_event_id INT64, resolution_reason STRING, resolved_event_origin INT64, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
@@ -167,6 +171,10 @@ const RELATION_DDL: &[(RelationKind, &str)] = &[
     (
         RelationKind::FollowsFrom,
         "CREATE REL TABLE IF NOT EXISTS `FOLLOWS_FROM` (FROM `Decision` TO `Decision`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, added_by STRING, added_at STRING, causation_event_id INT64);",
+    ),
+    (
+        RelationKind::Answers,
+        "CREATE REL TABLE IF NOT EXISTS `ANSWERS` (FROM `Decision` TO `Question`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
 ];
 

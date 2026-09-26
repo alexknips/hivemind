@@ -1,7 +1,7 @@
 ---
 name: ground
 description: Say what an existing decision rests on, after the fact, resolved by description, never by id.
-argument-hint: '"description of the decision" --rests-on-decision "..." | --rests-on-evidence "..." --evidence-source "..." | --rests-on-assumption "..." | --bet'
+argument-hint: '"description of the decision" --rests-on-decision "..." | --rests-on-evidence "..." --evidence-source "..." | --rests-on-assumption "..." | --bet | --answers "the question it answers"'
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/ground.sh:*)
 disable-model-invocation: true
 ---
@@ -17,6 +17,9 @@ Run the plugin helper:
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/scripts/ground.sh $ARGUMENTS
 ```
+
+`--answers "<question>"` names the question the decision answers, for a decision
+captured without one (it may stand alone; a decision answers one question).
 
 The grounding is append-only and attributed to you, so a reader sees it was
 added later rather than at capture. If the description does not resolve to

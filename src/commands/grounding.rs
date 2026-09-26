@@ -16,8 +16,8 @@ use crate::util::require_non_empty;
 use crate::Result;
 
 use super::{
-    bet_statement, generate_entity_id, require_optional_non_empty, Commands, DecisionId,
-    DecisionPlacement, DecisionProposalInput, EvidenceId, Grounding, HypothesisId,
+    bet_statement, generate_entity_id, require_optional_non_empty, AnsweredQuestion, Commands,
+    DecisionId, DecisionPlacement, DecisionProposalInput, EvidenceId, Grounding, HypothesisId,
 };
 
 /// The refusal for a capture that names nothing it rests on. The verbs wrap this with the four
@@ -104,6 +104,8 @@ pub struct GroundedProposal {
     pub rests_on: Vec<RestsOn>,
     /// Premise decisions already superseded or rejected when named.
     pub premise_stale: Vec<DecisionId>,
+    /// The question the decision answers, when the capture named one.
+    pub question: Option<AnsweredQuestion>,
 }
 
 /// How new grounding nodes get their ids.
@@ -329,6 +331,7 @@ impl<L: EventLedger> Commands<'_, L> {
             placement,
             rests_on: planned.rests_on(&plan.premise_decision_ids),
             premise_stale: event_ids.premise_stale,
+            question: event_ids.question,
         })
     }
 

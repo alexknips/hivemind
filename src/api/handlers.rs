@@ -79,7 +79,8 @@ pub(super) struct CaptureDecisionRequest {
     /// `DecisionProposalInput`.
     #[serde(default)]
     quote: Option<String>,
-    /// The question `quote` answers, spelled out. Requires `quote`.
+    /// The question this decision answers. Required by `quote`; otherwise optional. Resolved to
+    /// a `Question` node.
     #[serde(default)]
     question: Option<String>,
 }
@@ -387,9 +388,9 @@ fn capture_decision_blocking(
         ));
     }
 
-    if req.quote.is_some() != req.question.is_some() {
+    if req.quote.is_some() && req.question.is_none() {
         return Err(ApiError::validation(
-            "quote and question must be given together — a verbatim answer needs the question it answers spelled out, not a bare reference like '1a' into an external list",
+            "quote requires question — a verbatim answer needs the question it answers spelled out, not a bare reference like '1a' into an external list",
         ));
     }
 
@@ -419,13 +420,17 @@ fn capture_decision_blocking(
         )
         .map_err(to_api_error)?;
 
-    Ok(serde_json::json!({
+    let mut reply = serde_json::json!({
         "decision_id": proposal.decision_id,
         "option_ids": option_ids,
         "chosen_option_id": chosen_option_id,
         "rests_on": resolved.label(proposal.rests_on),
         "premise_stale": proposal.premise_stale,
-    }))
+    });
+    if let Some(question) = proposal.question {
+        reply["question_id"] = serde_json::json!(question.question_id);
+    }
+    Ok(reply)
 }
 
 /// Parse and require the REST `grounding` body: the same typed items and deprecated

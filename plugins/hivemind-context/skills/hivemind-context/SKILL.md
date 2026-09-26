@@ -115,6 +115,13 @@ what it wants to ask.
   accepted here: it is the decider's words at capture. A premise that already
   rests on this decision is refused — it would close a loop.
 
+  A decision captured without saying which question it answers takes
+  `--answers "<the question, one line>"`: it links to the question node whose
+  text matches (decisions that answer the same question share one), and it may
+  stand alone. `verify` then shows `answers:` and `also answered by:` for the
+  other decisions that answer it, and flags two accepted answers that chose
+  differently.
+
 ## The Ambiguity Gate — Never Guess
 
 Every command above resolves your description deterministically (term match

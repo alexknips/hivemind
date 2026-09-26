@@ -69,6 +69,7 @@ pub fn get_relevant_decisions(
             // quote/question or what the decision rests on follow up with get_decision.
             quote: None,
             question: None,
+            question_id: None,
         });
     }
 

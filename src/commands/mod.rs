@@ -62,6 +62,29 @@
 //! - Refusing a premise that would close a `FOLLOWS_FROM` loop (the premise already rests,
 //!   transitively, on the decision being grounded) needs the graph, so it is the calling verb's
 //!   rule (`crate::grounding::premise_cycle_refusal`), applied before this function is called.
+//!
+//! # Questions (`question` module, hivemind-zdsh.16)
+//!
+//! A decision names or creates the question it answers. Enforced by `propose_decision` /
+//! `propose_decision_with_id` (at capture, from `DecisionProposalInput::question`) and by
+//! `ground_and_answer` / `answer_question` (later, `ground --answers`):
+//!
+//! - A `question` is never required. A `quote` requires its `question` (zdsh.13); a `question`
+//!   stands alone. A question must contain words, not only punctuation.
+//! - The question text is stored on the decision exactly as before AND resolved to a `Question`
+//!   node by exact match on `events::normalize_question_text` (lowercase, whitespace collapsed,
+//!   trailing punctuation dropped) within the tenant: a match is reused, otherwise
+//!   `question.recorded` creates the node. Nothing fuzzier: no ranking, no model.
+//! - A new question's id is derived from the tenant and the normalized text, so two captures
+//!   racing to create the same question create the same node.
+//! - The decision is then linked with `relation.added ANSWERS` (decision -> question). At
+//!   capture both events carry `causation_event_id` = the proposal event; later they carry none,
+//!   which is how "at capture" and "attributed later" stay distinguishable.
+//! - Resolution happens before the first write, so a refusal never leaves a decision behind.
+//! - A decision answers one question: naming a different one than it already answers is refused;
+//!   naming the same one again writes nothing.
+//! - Event uuids of a capture's question events derive from the proposal's uuid, so an identical
+//!   retry is deduplicated by the ledger.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -73,6 +96,7 @@ use uuid::Uuid;
 
 mod ground_later;
 mod grounding;
+mod question;
 
 pub use ground_later::GroundedAddition;
 use grounding::{plan_grounding_nodes, IdMode};
@@ -80,6 +104,8 @@ pub use grounding::{
     GroundedProposal, GroundingPlan, NewBet, NewEvidence, RestsOn, RestsOnKind,
     GROUNDING_REQUIRED_MESSAGE,
 };
+use question::{require_question_text, QuestionEventUuids};
+pub use question::{AnsweredQuestion, QuestionAnswerPlan, QuestionId};
 
 use crate::error::CommandError;
 use crate::events::{
@@ -135,6 +161,9 @@ pub struct DecisionProposalEventIds {
     /// about staleness is the renderer's job, not a write-time gate), but the caller needs
     /// this to build an honest reply.
     pub premise_stale: Vec<DecisionId>,
+    /// The question the decision answers, when the capture named one: the `Question` node it
+    /// was linked to and whether that node already existed.
+    pub question: Option<AnsweredQuestion>,
 }
 
 /// What a proposed decision rests on, named at the moment of capture. `Declared` requires
@@ -300,7 +329,9 @@ pub struct DecisionProposalInput<'a> {
     /// Verbatim words of the decider, self-contained. Requires `question` — see
     /// `propose_decision`.
     pub quote: Option<&'a str>,
-    /// The question `quote` answers, spelled out. Requires `quote`.
+    /// The question this decision answers, in the capturer's own words. Stored on the decision
+    /// and resolved to a `Question` node (see the `question` module). Required by `quote`;
+    /// otherwise optional.
     pub question: Option<&'a str>,
     /// What this decision rests on. See `Grounding`.
     pub grounding: Grounding<'a>,
@@ -1351,6 +1382,13 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
         let premise_stale: Vec<DecisionId> = stale_premises.into_iter().cloned().collect();
 
+        // Resolved before the first write, like every other refusal: a question that names
+        // nothing must not leave a decision behind.
+        let question_plan = input
+            .question
+            .map(|question| self.question_answer_plan(decision_id, question))
+            .transpose()?;
+
         let root_event = self.event_with_uuid(
             input.actor_id,
             EventPayload::DecisionProposed(DecisionProposedPayload {
@@ -1440,10 +1478,25 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             )?);
         }
 
+        let question = match question_plan {
+            Some(plan) => {
+                let (answered, event_ids) = self.record_question_answer(
+                    input.actor_id,
+                    &plan,
+                    Some(root_event_id),
+                    QuestionEventUuids::derived_from(event_uuids.proposal),
+                )?;
+                relation_event_ids.extend(event_ids);
+                Some(answered)
+            }
+            None => None,
+        };
+
         Ok(DecisionProposalEventIds {
             proposal_event_id: root_event_id,
             relation_event_ids,
             premise_stale,
+            question,
         })
     }
 
@@ -2753,6 +2806,46 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
     }
 
+    /// Every event of this tenant, in ledger order, one page at a time.
+    fn for_each_event(&self, mut visit: impl FnMut(&Event)) -> Result<()> {
+        let mut offset = 0;
+        const PAGE_SIZE: usize = 1024;
+
+        loop {
+            let events = self
+                .ledger
+                .read_for_tenant(&self.context.tenant_id, offset, PAGE_SIZE)?;
+            for event in &events {
+                visit(event);
+            }
+            match events.last().and_then(|event| event.event_id) {
+                Some(last_event_id) => offset = last_event_id,
+                None => return Ok(()),
+            }
+        }
+    }
+
+    /// The first value `find` returns over the tenant's events, in ledger order.
+    fn find_in_events<T>(&self, find: impl Fn(&Event) -> Option<T>) -> Result<Option<T>> {
+        let mut offset = 0;
+        const PAGE_SIZE: usize = 1024;
+
+        loop {
+            let events = self
+                .ledger
+                .read_for_tenant(&self.context.tenant_id, offset, PAGE_SIZE)?;
+            for event in &events {
+                if let Some(found) = find(event) {
+                    return Ok(Some(found));
+                }
+            }
+            match events.last().and_then(|event| event.event_id) {
+                Some(last_event_id) => offset = last_event_id,
+                None => return Ok(None),
+            }
+        }
+    }
+
     fn scan_events(&self, predicate: impl Fn(&Event) -> bool) -> Result<bool> {
         let mut offset = 0;
         const PAGE_SIZE: usize = 1024;
@@ -2941,18 +3034,20 @@ fn require_delegation_shape(accepter_id: &str, delegated_by: &str) -> Result<()>
         .map_err(|error| CommandError::Validation(error.to_string()).into())
 }
 
-/// `quote` and `question` must be given together: a verbatim quote answering no stated
-/// question is unreadable once the source conversation is gone (hivemind-zdsh.13).
+/// A `quote` needs the `question` it answers: a verbatim quote answering no stated question is
+/// unreadable once the source conversation is gone (hivemind-zdsh.13). A `question` stands
+/// alone: it names the `Question` node the decision answers (hivemind-zdsh.16). Either given
+/// must be non-blank, and a question must contain words, not only punctuation.
 fn require_quote_pairing(quote: Option<&str>, question: Option<&str>) -> Result<()> {
     if let Some(value) = quote {
         require_non_empty("quote", value)?;
     }
     if let Some(value) = question {
-        require_non_empty("question", value)?;
+        require_question_text(value)?;
     }
-    if quote.is_some() != question.is_some() {
+    if quote.is_some() && question.is_none() {
         return Err(CommandError::Validation(
-            "quote and question must be given together — a verbatim answer needs the question it answers spelled out, not a bare reference like '1a' into an external list".to_owned(),
+            "quote requires question — a verbatim answer needs the question it answers spelled out, not a bare reference like '1a' into an external list".to_owned(),
         )
         .into());
     }
@@ -3121,6 +3216,7 @@ const fn relation_kind_name(relation_kind: RelationKind) -> &'static str {
         RelationKind::Refutes => "REFUTES",
         RelationKind::SameAs => "SAME_AS",
         RelationKind::FollowsFrom => "FOLLOWS_FROM",
+        RelationKind::Answers => "ANSWERS",
     }
 }
 

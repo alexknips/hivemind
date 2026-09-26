@@ -723,7 +723,7 @@ pub struct SupersedeArgs {
 /// `hivemind ground`: give an existing decision what it rests on. Takes the grounding flags of
 /// `emit decision.capture` (`--rests-on-decision`, `--rests-on-evidence` with `--evidence-source`,
 /// `--rests-on-assumption`, `--bet`) except `--confidence`, which is the decider's own words at
-/// capture and cannot be added afterwards.
+/// capture and cannot be added afterwards. `--answers` names the question the decision answers.
 #[derive(Debug, Clone, Args)]
 pub struct GroundArgs {
     /// Free-text description to resolve to the decision being grounded (fluent alternative to
@@ -748,6 +748,13 @@ pub struct GroundArgs {
     /// Existing hypothesis ids this decision rests on (a node recorded earlier).
     #[arg(long = "hypotheses", value_delimiter = ',')]
     pub hypothesis_ids: Vec<String>,
+
+    /// The question this decision answers, for a decision captured without saying: links it to
+    /// the question node whose text matches (lowercase, spaces collapsed, trailing punctuation
+    /// dropped), creating the node if none does. Attributed to whoever runs it, so a reader can
+    /// tell it was added later. May stand alone, or come with what the decision rests on.
+    #[arg(long = "answers")]
+    pub answers: Option<String>,
 
     #[command(flatten)]
     pub grounding: GroundingArgs,
@@ -1140,9 +1147,12 @@ pub struct EmitDecisionProposedArgs {
     #[arg(long = "quote", requires = "question")]
     pub quote: Option<String>,
 
-    /// The question `--quote` answers, spelled out in the capturer's own words. Requires
-    /// `--quote`.
-    #[arg(long = "question", requires = "quote")]
+    /// The question this decision answers, in the capturer's own words: one line. Required by
+    /// `--quote`; otherwise optional. Two captures whose question is the same after lowercasing,
+    /// collapsing spaces and dropping trailing punctuation share one question node, so a
+    /// decision that answers the same question again, or one that answers it differently, is
+    /// findable (hivemind-zdsh.16).
+    #[arg(long = "question")]
     pub question: Option<String>,
 
     /// Registered project handle to file this decision under. An unknown handle is refused
@@ -1574,6 +1584,10 @@ pub enum QueryCommand {
     /// premise that changed, evidence nobody re-checked), each with the dimensions it bears on.
     #[command(name = "scan_decision_quality")]
     ScanDecisionQuality(QueryScanDecisionQualityArgs),
+    /// One page of attention findings without the ones someone has acknowledged (the findings of
+    /// `scan_decision_quality`, less what has been dealt with): what is new since you last looked.
+    #[command(name = "get_suggestions")]
+    GetSuggestions(QueryGetSuggestionsArgs),
     /// Flag decisions carrying a caller-named "foreign" topic key — a decision
     /// tagged with another ledger's name most likely belongs there instead.
     /// Read-only: report only, never moves anything (see hivemind-s15q C1).
@@ -2130,6 +2144,22 @@ pub struct QueryScanDecisionQualityArgs {
     /// Pagination cursor: the `next_cursor` of a previous response.
     #[arg(long)]
     pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryGetSuggestionsArgs {
+    #[command(flatten)]
+    pub scan: QueryScanDecisionQualityArgs,
+
+    /// Leave out findings someone has acknowledged (default true, what is new since you last
+    /// looked). `--exclude-acknowledged false` returns every finding.
+    #[arg(
+        long = "exclude-acknowledged",
+        default_value_t = true,
+        action = ArgAction::Set,
+        value_name = "BOOL"
+    )]
+    pub exclude_acknowledged: bool,
 }
 
 #[derive(Debug, Clone, Args)]

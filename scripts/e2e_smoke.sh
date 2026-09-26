@@ -826,6 +826,21 @@ else
   fail "MCP HTTP scan_decision_quality — response: $qs_resp"
 fi
 
+gs_resp=$(curl -s \
+  -H "Content-Type: application/json" \
+  -H "X-HiveMind-Tenant: $TENANT" \
+  -H "X-HiveMind-Actor: agent:e2e:smoke" \
+  "${mcp_auth_args[@]}" \
+  "${mcp_session_args[@]}" \
+  -X POST \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_suggestions","arguments":{}}}' \
+  "$BASE_URL/mcp")
+if echo "$gs_resp" | jq -e '.result.structuredContent.data.findings | type == "array"' > /dev/null 2>&1; then
+  pass "MCP HTTP get_suggestions — returned a page of findings"
+else
+  fail "MCP HTTP get_suggestions — response: $gs_resp"
+fi
+
 # ── quality score + summarize (rule-based, always runs) ──────────────────────
 section "Quality score + summarize"
 

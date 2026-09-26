@@ -51,7 +51,7 @@ fn tools_list_includes_all_eighteen_tools() {
     );
     assert_eq!(responses.len(), 1); // ubs:ignore: test-only; index guaranteed by test setup
     let tools = responses[0]["result"]["tools"].as_array().expect("array"); // ubs:ignore: test-only; panicking is correct in tests
-    assert_eq!(tools.len(), 28, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
+    assert_eq!(tools.len(), 29, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("string name")) // ubs:ignore: test-only; panicking is correct in tests
@@ -71,6 +71,7 @@ fn tools_list_includes_all_eighteen_tools() {
         "decision_context_candidates",
         "score_decision",
         "scan_decision_quality",
+        "get_suggestions",
         "scan_misfiled_decisions",
         "analyze_failure_modes",
         "get_relevant_decisions",
@@ -89,6 +90,29 @@ fn tools_list_includes_all_eighteen_tools() {
         assert!(names.contains(&expected), "missing tool {expected}"); // ubs:ignore: test-only assertion
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn get_suggestions_takes_the_arguments_of_a_scan_and_exclude_acknowledged() {
+    let tools = crate::mcp::tool_definitions();
+    let properties = |name: &str| -> Value {
+        tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("tool {name} is listed"))["inputSchema"]["properties"]
+            .clone()
+    };
+
+    let scan = properties("scan_decision_quality");
+    let mut suggestions = properties("get_suggestions");
+    let flag = suggestions
+        .as_object_mut()
+        .and_then(|properties| properties.remove("exclude_acknowledged"))
+        .expect("exclude_acknowledged is an argument");
+
+    assert_eq!(flag["type"], "boolean");
+    assert_eq!(flag["default"], true);
+    assert_eq!(suggestions, scan, "the shared arguments are spelled alike");
 }
 
 #[test]
@@ -421,6 +445,128 @@ fn capture_decision_stores_paired_quote_and_question() {
     let responses = drive(&config, &[capture.as_str()]);
     let result = &responses[0]["result"];
     assert_ne!(result.get("isError"), Some(&serde_json::Value::Bool(true)));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn capture_with_question_request(id: u64, title: &str, question: Option<&str>) -> String {
+    let mut arguments = json!({
+        "grounding": [{"kind": "bet"}],
+        "actor_id": "agent:claude:hivemind-crew",
+        "title": title,
+        "rationale": "Spelled out: the reasons are written here in full sentences.",
+        "topic_keys": ["storage"],
+        "options": [{"label": "Only option"}],
+        "chosen_option_label": "Only option"
+    });
+    if let Some(question) = question {
+        arguments["question"] = json!(question);
+    }
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": { "name": "capture_decision", "arguments": arguments }
+    })
+    .to_string()
+}
+
+#[test]
+fn capture_decision_takes_a_question_alone_and_two_captures_share_its_node() {
+    let dir = unique_dir("question-node");
+    let config = McpConfig::new(&dir).with_session_id("scribe-session");
+
+    let first = capture_with_question_request(
+        1,
+        "Use SQLite for the prototype",
+        Some("Which storage engine should the prototype use?"),
+    );
+    let second = capture_with_question_request(
+        2,
+        "Use Postgres for the prototype",
+        Some("which storage engine should the PROTOTYPE use"),
+    );
+    let neither = capture_with_question_request(3, "Ship the prototype in October", None);
+    let responses = drive(
+        &config,
+        &[first.as_str(), second.as_str(), neither.as_str()],
+    );
+
+    let question_ids: Vec<Option<&str>> = responses
+        .iter()
+        .map(|response| response["result"]["structuredContent"]["question_id"].as_str())
+        .collect();
+    assert!(question_ids[0].is_some_and(|id| id.starts_with("question-")));
+    assert_eq!(
+        question_ids[0], question_ids[1],
+        "one node for one question"
+    );
+    assert_eq!(question_ids[2], None, "no question, no node");
+
+    let ledger = SqliteEventLedger::open(&dir).expect("ledger opens");
+    let events = crate::ledger::EventLedger::read(&ledger, 0, 64).expect("events read");
+    let recorded = events
+        .iter()
+        .filter(|event| event.event_type == crate::events::EventType::QuestionRecorded)
+        .count();
+    assert_eq!(recorded, 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ground_decision_answers_alone_links_the_decision_to_its_question() {
+    let dir = unique_dir("ground-answers");
+    let config = McpConfig::new(&dir).with_session_id("scribe-session");
+
+    let capture = capture_with_question_request(1, "Use SQLite for the prototype", None);
+    let ground = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "ground_decision",
+            "arguments": {
+                "actor_id": "agent:claude:grounder",
+                "description": "Use SQLite for the prototype",
+                "answers": "Which storage engine should the prototype use?"
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[capture.as_str(), ground.as_str()]);
+
+    let reply = &responses[1]["result"];
+    assert_eq!(
+        reply["isError"],
+        serde_json::Value::Bool(false),
+        "{reply:?}"
+    );
+    let answers = &reply["structuredContent"]["answers"];
+    assert!(answers["question_id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("question-")));
+    assert_eq!(answers["reused"], serde_json::Value::Bool(false));
+    assert_eq!(
+        reply["structuredContent"]["rests_on"],
+        json!([]),
+        "the question alone records nothing it rests on"
+    );
+
+    let ledger = SqliteEventLedger::open(&dir).expect("ledger opens");
+    let events = crate::ledger::EventLedger::read(&ledger, 0, 64).expect("events read");
+    let link = events
+        .iter()
+        .find(|event| {
+            event.event_type == crate::events::EventType::RelationAdded
+                && event.payload["relation"] == "ANSWERS"
+        })
+        .expect("the ANSWERS link is recorded");
+    assert_eq!(link.actor_id, "agent:claude:grounder");
+    assert_eq!(
+        link.causation_event_id, None,
+        "attributed later, not at capture"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1613,6 +1759,120 @@ mod transport_parity {
         ];
         for (label, arguments, expected_message) in cases {
             let (stdio, http) = run("scan_decision_quality", label, arguments.clone()).await;
+            for (name, result) in [("stdio", &stdio), ("http", &http)] {
+                assert!(
+                    result["isError"].as_bool().unwrap_or(false), // ubs:ignore: test-only assertion
+                    "{label}: {name} should error: {result:?}"
+                );
+                assert_eq!(
+                    result["content"][0]["text"].as_str(), // ubs:ignore: test-only assertion
+                    Some(*expected_message),
+                    "{label}: {name} message"
+                );
+            }
+        }
+    }
+
+    /// `get_suggestions` shares the scan's core (hivemind-m306.4.1): the stdio server, the HTTP
+    /// endpoint and the CLI read the same ledger and must answer alike, and with nothing
+    /// acknowledged yet the answer is the scan's, whichever way `exclude_acknowledged` is set.
+    #[tokio::test]
+    async fn get_suggestions_answers_the_same_on_stdio_http_and_the_cli() {
+        let dir = unique_dir("parity-suggestions");
+        let overdue = capture_on(&dir, "Use SQLite for the ledger", overdue_bet());
+        let _open = capture_on(&dir, "Cache in memory", json!([{"kind": "bet"}]));
+        let scanned = without_clocks(
+            stdio_call(&dir, "scan_decision_quality", json!({}))["result"]["structuredContent"]
+                .clone(),
+        );
+
+        let cases: [(&str, Value, &[&str]); 3] = [
+            ("default", json!({}), &[]),
+            (
+                "exclude",
+                json!({"exclude_acknowledged": true}),
+                &["--exclude-acknowledged", "true"],
+            ),
+            (
+                "include",
+                json!({"exclude_acknowledged": false}),
+                &["--exclude-acknowledged", "false"],
+            ),
+        ];
+        for (label, args, cli_args) in cases {
+            let stdio = stdio_call(&dir, "get_suggestions", args.clone());
+            let http = http_call(&dir, "get_suggestions", args).await;
+            let mut argv = vec!["get_suggestions"];
+            argv.extend_from_slice(cli_args);
+            let cli = cli_query(&dir, &argv);
+            let stdio = without_clocks(stdio["result"]["structuredContent"].clone());
+            let http = without_clocks(http["result"]["structuredContent"].clone());
+            assert_eq!(stdio, http, "{label}: stdio vs http");
+            assert_eq!(stdio, without_clocks(cli), "{label}: stdio vs cli");
+            assert_eq!(stdio, scanned, "{label}: get_suggestions vs scan");
+            crate::quality_profile::report::tests::assert_no_grade(&stdio, "$");
+            let findings = stdio["data"]["findings"].as_array().expect("findings"); // ubs:ignore: test-only; panicking is correct in tests
+            assert_eq!(
+                findings.len(),
+                1,
+                "{label}: only the overdue bet needs a look"
+            );
+            assert_eq!(findings[0]["decision_id"], json!(overdue), "{label}");
+            assert!(findings[0]["finding_id"].is_string(), "{label}");
+            assert!(findings[0]["dimensions"].is_array(), "{label}");
+        }
+
+        // The arguments it shares with a scan are read the same on each surface.
+        let args = json!({
+            "kinds": ["bet_past_check_date", "premise_superseded"],
+            "limit": 1,
+            "evidence_window_days": 30,
+        });
+        let stdio = stdio_call(&dir, "get_suggestions", args.clone());
+        let http = http_call(&dir, "get_suggestions", args).await;
+        let cli = cli_query(
+            &dir,
+            &[
+                "get_suggestions",
+                "--kind",
+                "bet_past_check_date,premise_superseded",
+                "--limit",
+                "1",
+                "--evidence-window-days",
+                "30",
+            ],
+        );
+        let stdio = without_clocks(stdio["result"]["structuredContent"].clone());
+        let http = without_clocks(http["result"]["structuredContent"].clone());
+        assert_eq!(stdio, http, "filtered: stdio vs http");
+        assert_eq!(stdio, without_clocks(cli), "filtered: stdio vs cli");
+        assert_eq!(stdio["data"]["evidence_window_days"], 30);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn get_suggestions_refuses_the_same_bad_arguments_on_both_transports() {
+        let unknown = crate::quality_profile::parse_kinds(&["high_concern"]).unwrap_err(); // ubs:ignore: test-only; panicking is correct in tests
+        let cases: &[(&str, Value, &str)] = &[
+            (
+                "unknown-kind",
+                json!({"kinds": ["high_concern"]}),
+                unknown.as_str(),
+            ),
+            (
+                "negative-limit",
+                json!({"limit": -1}),
+                "`limit` must be a non-negative integer",
+            ),
+            (
+                "exclude-not-a-boolean",
+                json!({"exclude_acknowledged": "yes"}),
+                "`exclude_acknowledged` must be a boolean",
+            ),
+        ];
+        for (label, arguments, expected_message) in cases {
+            let (stdio, http) = run("get_suggestions", label, arguments.clone()).await;
             for (name, result) in [("stdio", &stdio), ("http", &http)] {
                 assert!(
                     result["isError"].as_bool().unwrap_or(false), // ubs:ignore: test-only assertion

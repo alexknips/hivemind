@@ -127,8 +127,17 @@ pub(crate) fn optional_usize(
 }
 
 pub(crate) fn optional_bool(args: &Map<String, Value>, field: &str) -> Result<bool, (i32, String)> {
+    optional_bool_or(args, field, false)
+}
+
+/// A boolean argument, `default` when it is omitted or null.
+pub(crate) fn optional_bool_or(
+    args: &Map<String, Value>,
+    field: &str,
+    default: bool,
+) -> Result<bool, (i32, String)> {
     match args.get(field) {
-        None | Some(Value::Null) => Ok(false),
+        None | Some(Value::Null) => Ok(default),
         Some(Value::Bool(b)) => Ok(*b),
         Some(_) => Err((INVALID_PARAMS, format!("`{field}` must be a boolean"))),
     }

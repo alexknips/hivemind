@@ -93,9 +93,11 @@ required; works self-hosted.
 **Attention findings (shipped).** `scan_decision_quality` lists the decisions that need a
 look now: a bet past its check date, a decision whose premise was superseded, rejected or
 refuted, evidence nobody has re-checked. Each finding carries a stable id, the reason in
-words and the dimensions it bears on. What happened to a decision afterwards (superseded,
-contested, refuted premise) is shown as outcome, status or staleness, not folded into a
-quality grade. See [`docs/DECISION_SCORING.md`](docs/DECISION_SCORING.md).
+words and the dimensions it bears on. `get_suggestions` returns the same page without the
+findings someone has acknowledged (`exclude_acknowledged`, true by default). What happened to
+a decision afterwards (superseded, contested, refuted premise) is shown as outcome, status or
+staleness, not folded into a quality grade. See
+[`docs/DECISION_SCORING.md`](docs/DECISION_SCORING.md).
 
 **Failure-mode attribution and organizational self-improvement (planned).**
 The goal is understanding *how* mistakes happen in an organization — by

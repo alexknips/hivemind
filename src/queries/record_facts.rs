@@ -19,6 +19,7 @@ use super::grounding::{
     evidence_attachments, hypothesis_attachments, hypothesis_facts_from_row, premise_attachments,
     GroundingAdded,
 };
+use super::question::{question_id_of, question_text};
 use super::shared::{
     neighbor_ids, neighbor_pairs, node_row, optional_datetime, optional_int, optional_string,
     query_superseder, Direction,
@@ -227,7 +228,11 @@ pub fn get_record_facts(graph: &impl GraphView, decision_id: &str) -> Result<Opt
         decision_id: decision_id.to_owned(),
         event_origin,
         occurred_at: optional_datetime(&row, "occurred_at")?,
-        question: optional_string(&row, "question"),
+        question: question_text(
+            graph,
+            optional_string(&row, "question"),
+            question_id_of(graph, decision_id)?.as_deref(),
+        )?,
         rationale: optional_string(&row, "rationale"),
         expressed_confidence: optional_string(&row, "expressed_confidence"),
         chosen_option_id,

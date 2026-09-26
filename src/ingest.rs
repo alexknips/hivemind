@@ -2260,7 +2260,8 @@ fn affected_dependencies_for_decision<L: EventLedger>(
                         events::RelationKind::Supports
                         | events::RelationKind::Refutes
                         | events::RelationKind::SameAs
-                        | events::RelationKind::FollowsFrom => {}
+                        | events::RelationKind::FollowsFrom
+                        | events::RelationKind::Answers => {}
                     }
                 }
                 EventPayload::DecisionSuperseded(payload)

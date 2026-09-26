@@ -894,6 +894,7 @@ fn render_decision_section(entry: &DecisionEntry) -> String {
         (Some(question), Some(quote)) => {
             format!("{base}\n\n**Answers:** {question}\n\n**Quote:** \"{quote}\"")
         }
+        (Some(question), None) => format!("{base}\n\n**Answers:** {question}"),
         _ => base,
     }
 }
@@ -996,6 +997,9 @@ fn render_outcome_reason(reason: &OutcomeReason) -> String {
             format!("Follows from {decision_id}, which was rejected")
         }
         OutcomeReason::Contested => "Contested".to_owned(),
+        OutcomeReason::ConflictingAnswer { other_id } => format!(
+            "Conflicting answer: {other_id} is also accepted and answers the same question with a different choice"
+        ),
         OutcomeReason::ThinStructure {
             no_options,
             nothing_declared,

@@ -294,7 +294,7 @@ unaffected (the field is optional) and `--id` continues to work unchanged.
 | `disagree` | `--decision <id> --reason <r>` (`args.rs:281`) | add positional `Option<String>` description; `--decision`/`--id` stays the escape hatch |
 | `supersede` | `--old <id> --title ... --rationale ...` (`args.rs:290`) | add positional description resolving `--old`; rest unchanged |
 | `move` (**new**, hivemind-s15q.11) | does not exist | positional description or `--decision <id>`, plus `--to <project>` `[--pick N] [--topic T] [--reason R]`; the same write gate as `disagree`/`supersede`; where the decision is now is read from the ledger, never typed |
-| `ground` (**new**, hivemind-gwhr.4) | does not exist | positional description or `--id <id>`, plus `[--pick N] [--topic T]` and the capture grounding flags (`--rests-on-decision`, `--rests-on-evidence` with `--evidence-source`, `--rests-on-assumption`, `--bet`); the same write gate as `disagree`/`supersede`; says what an existing decision rests on after the fact |
+| `ground` (**new**, hivemind-gwhr.4) | does not exist | positional description or `--id <id>`, plus `[--pick N] [--topic T]` and the capture grounding flags (`--rests-on-decision`, `--rests-on-evidence` with `--evidence-source`, `--rests-on-assumption`, `--bet`) and `--answers "<question>"` (hivemind-zdsh.16; may stand alone); the same write gate as `disagree`/`supersede`; says what an existing decision rests on, or which question it answers, after the fact |
 | `get_supersession_chain` | `--id <id>` (`QueryDecisionArgs`, `args.rs:940`) | add positional description; **new alias** `chain` (friendlier name per bead item b) |
 | `get_decision_neighborhood` | `--id <id> --depth --relations --compact` (`args.rs:959`) | add positional description; **new alias** `why` |
 | `compact-view` | `--id <id>` (`QueryDecisionArgs`) | add positional description |
@@ -454,6 +454,9 @@ pub struct DecisionBrief {
     pub project: String,                      // address: a registered handle or the recorder's derived personal address
     pub project_label: String,                // what a person calls it: display name, handle, or "alex's personal project"
     pub rationale: String,
+    pub question: Option<String>,             // the question it answers, in the capturer's words (a decision linked later reads the question node's words)
+    pub question_id: Option<String>,          // the shared Question node it answers (ANSWERS); absent when it names none
+    pub other_answers: Vec<QuestionAnswer>,   // other decisions answering the same question, in event order, each with status + chosen option
     pub chosen_option: Option<OptionLabel>,
     pub rejected_options: Vec<OptionLabel>,   // label-resolved, rationale shared not per-option
     pub decided_by: DecidedBy,                // proposer_id, decider_ids, source, source_ref, delegated_by, review shape
@@ -474,6 +477,19 @@ pub struct StillHolds { pub held_up: bool, pub reasons: Vec<OutcomeReason>, pub 
 `get_decision_brief` composes the three existing query calls plus the new
 option-label lookup — it does not duplicate their logic, and it stays
 `Layer 2`: three deterministic graph reads, no write, no LLM.
+
+**Which question it answers** (hivemind-zdsh.16). Decisions whose question is
+the same after lowercasing, collapsing spaces and dropping trailing punctuation
+share one `Question` node. The brief prints `answers: <question>` and one
+`also answered by: <title> [status] (chose <option>)` line per other decision
+that answers it, a superseded answer included. Two accepted, non-superseded
+decisions that chose different options carry `conflicting_answer` in
+`still_holds.reasons` on both. It is attention, not staleness: `held_up` is
+unaffected and neither answer is resolved for the reader. `situational` lists
+the accepted answers recorded after a matched decision as `newer_answers` (text:
+`answer<TAB>newer<TAB><id><TAB><title> [accepted] (chose ...)`). The pure read
+`answers_to(question_id | text)` lists every answer to one question in event
+order.
 
 **What it rests on** (hivemind-zdsh.15 §5, hivemind-gwhr.3). `rests_on` answers
 "what does this decision rest on?" from the graph: a prior decision

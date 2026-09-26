@@ -348,31 +348,31 @@ fn propose_decision_rejects_quote_without_question() {
         })
         .expect_err("quote without question must be refused");
     assert!(
-        error
-            .to_string()
-            .contains("quote and question must be given together"),
+        error.to_string().contains("quote requires question"),
         "unexpected error: {error}"
     );
 }
 
 #[test]
-fn propose_decision_rejects_question_without_quote() {
+fn propose_decision_accepts_a_question_without_a_quote() {
+    // A question names the question node the decision answers; only a quote needs it
+    // (hivemind-zdsh.16).
     let ledger = InMemoryEventLedger::new();
     let commands = Commands::new(&ledger);
     let option_id = commands
         .record_option("actor:alice", "A", "Option A")
         .expect("option a");
 
-    let error = commands
+    let decision_id = commands
         .propose_decision(DecisionProposalInput {
             grounding: Grounding::NotAsked,
             expressed_confidence: None,
             actor_id: "actor:alice",
             title: "Decision with a question but no quote",
-            rationale: "Rationale text",
+            rationale: "The whole tenant should see it, which keeps the answer simple",
             topic_keys: &["topic".to_owned()],
             option_ids: std::slice::from_ref(&option_id),
-            option_labels: &[],
+            option_labels: &["A".to_owned()],
             chosen_option_id: Some(option_id.as_str()),
             decided_by: None,
             delegated_by: None,
@@ -383,13 +383,8 @@ fn propose_decision_rejects_question_without_quote() {
             question: Some("Should a personal project be visible to the whole tenant?"),
             project: None,
         })
-        .expect_err("question without quote must be refused");
-    assert!(
-        error
-            .to_string()
-            .contains("quote and question must be given together"),
-        "unexpected error: {error}"
-    );
+        .expect("a question needs no quote");
+    assert!(decision_id.starts_with("decision-"));
 }
 
 #[test]

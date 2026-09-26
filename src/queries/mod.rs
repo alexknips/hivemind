@@ -18,6 +18,7 @@ mod outcome;
 mod project_label;
 mod project_scope;
 mod projects;
+mod question;
 mod record_facts;
 mod relevant;
 mod resolve;
@@ -90,6 +91,7 @@ pub use projects::{
     ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectDecisionsRequest, ProjectLinkFact,
     ProjectListRequest, ProjectListResults, ProjectOutcome, ProjectView,
 };
+pub use question::{answers_to, QuestionAnswer, QuestionAnswers, QuestionKey};
 pub use record_facts::{
     get_record_facts, EvidenceFact, HypothesisFact, OptionFact, PremiseFact, RecordFacts,
     RefutationFact, SupersessionFact,

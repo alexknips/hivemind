@@ -32,7 +32,7 @@ every kind on projected data, and the table below is checked against the code ro
   edge.
 - **Actors are identities, not records.** An actor has no place on the time axis and counts
   as older than every record, so an edge to an actor always points at the actor. This is
-  why 13 of the 28 kinds never reverse.
+  why 13 of the 29 kinds never reverse.
 - **No inverse kinds.** The server has no "superseded by" relation. To ask what supersedes
   a decision, read `SUPERSEDES` edges *into* it; to ask what it supersedes, read them *out
   of* it. A reversed label appears only when the stored direction cannot point backward in
@@ -116,9 +116,10 @@ stored; the reversed label when the stored target was recorded after the stored 
 | `PART_OF` | Project → Project | is part of | contains |
 | `DEPENDS_ON` | Project → Project | depends on | is needed by |
 | `FOLLOWS_FROM` | Decision → Decision | follows from | underlies |
+| `ANSWERS` | Decision → Question | answers | is answered by |
 
 Why these reverse. Most edges are written by the event that creates their source, so the
-target already exists and the arrow runs as stored. The 15 kinds with a reversed label can
+target already exists and the arrow runs as stored. The 16 kinds with a reversed label can
 also be written later, by `relation.added`, `decision.superseded` or `project.linked`, or
 name a placeholder that a later event fills in:
 
@@ -132,6 +133,10 @@ name a placeholder that a later event fills in:
   project recorded after the source: `FOLLOWS_FROM`, `SAME_AS`, `HAS_OPTION`, `CHOSE`,
   `SUPERSEDES`, `PART_OF`, `DEPENDS_ON`. A `SUPERSEDES` reverses only when the decision
   named as the superseder was recorded before the decision it supersedes.
+- A question recorded after the decision that answers it: `ANSWERS`. A capture appends
+  `question.recorded` after the proposal it is caused by, so the first answer to a question
+  is older than its question; a later answer to the same question is newer, and its arrow
+  runs as stored.
 
 ## Forward references
 
