@@ -2252,8 +2252,8 @@ mod transport_parity {
             "title": "Adopt blue-green deploys",
             "rationale": "Zero-downtime releases keep users unaffected during deploys",
             "topic_keys": ["deploy"],
-            "options": [{"label": "blue-green"}],
-            "chosen_option_label": "blue-green",
+            "options": [{"label": "Blue-green rollout"}],
+            "chosen_option_label": "Blue-green rollout",
         });
         let (stdio, http) = run_after_with_id(
             "capture_decision",
@@ -2271,7 +2271,7 @@ mod transport_parity {
                                                                                     // ledger, so the chosen option's real label survives — no more falling back to
                                                                                     // the generated option_id.
             assert_eq!(
-                data["chosen_option"]["label"], "blue-green",
+                data["chosen_option"]["label"], "Blue-green rollout",
                 "{name}: chosen_option label must be the real label, not the generated id"
             ); // ubs:ignore: test-only assertion
                // hivemind-zdsh.10: option ids are opaque now (no longer a slug of the label), so

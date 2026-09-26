@@ -684,6 +684,8 @@ pub struct SupersedeArgs {
     #[arg(long = "topic-keys", value_delimiter = ',')]
     pub topic_keys: Vec<String>,
 
+    /// Comma-separated short human labels ("Direct CLI,MCP server"), never slugs or letter
+    /// codes. `--chose` repeats one label exactly.
     #[arg(long = "options", value_delimiter = ',')]
     pub option_labels: Vec<String>,
 
@@ -918,6 +920,8 @@ pub struct SlackEnqueueCaptureArgs {
     #[arg(long = "topic-keys", value_delimiter = ',')]
     pub topic_keys: Vec<String>,
 
+    /// Comma-separated short human labels ("Direct CLI,MCP server"), never slugs or letter
+    /// codes. `--chose` repeats one label exactly.
     #[arg(long = "options", value_delimiter = ',')]
     pub option_labels: Vec<String>,
 
@@ -1108,6 +1112,8 @@ pub struct EmitDecisionProposedArgs {
     #[arg(long = "topic-keys", value_delimiter = ',')]
     pub topic_keys: Vec<String>,
 
+    /// Comma-separated short human labels ("Direct CLI,MCP server"), never slugs or letter
+    /// codes. `--chose` repeats one label exactly.
     #[arg(long = "options", value_delimiter = ',')]
     pub option_ids: Vec<String>,
 

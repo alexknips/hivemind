@@ -5,7 +5,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage:
   .claude/scripts/capture-decision.sh --title "..." --rationale "..." \
-    --topic-keys topic[,topic] --options option[,option] [--chose option]
+    --topic-keys topic[,topic] --options "Label[,Label]" [--chose "Label"]
 
 Options:
   --source human|agent       Provenance source. Defaults to human.

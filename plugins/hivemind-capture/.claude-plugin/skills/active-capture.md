@@ -49,7 +49,7 @@ this rest on?" (next section). The other kinds take the statement alone.
 Examples:
 
 ```text
-/capture "Use SQLite WAL for local concurrent writes" --kind decision --title "Use SQLite WAL for local concurrent writes" --rationale "It preserves single-process setup while allowing read concurrency" --topic-keys storage --options sqlite-wal,rollback-journal --chose sqlite-wal --rests-on-evidence "The WAL multiprocess test passed with two concurrent readers and one writer" --evidence-source "cargo test wal_multiprocess"
+/capture "Use SQLite WAL for local concurrent writes" --kind decision --title "Use SQLite WAL for local concurrent writes" --rationale "It preserves single-process setup while allowing read concurrency" --topic-keys storage --options "SQLite WAL,Rollback journal" --chose "SQLite WAL" --rests-on-evidence "The WAL multiprocess test passed with two concurrent readers and one writer" --evidence-source "cargo test wal_multiprocess"
 /capture The WAL multiprocess test passed against two concurrent readers and one writer. --kind evidence
 /capture Shared backend adoption assumes teams will accept service-managed identity instead of per-repo local actors. --kind hypothesis
 /capture Release packaging is blocked on choosing GitHub Actions retries versus local DSR fallback. --kind blocker

@@ -283,8 +283,8 @@ using your agent's subscription seat. No key, no extra configuration.
      --title "Use Postgres for the shared backend" \
      --rationale "SQLite WAL mode does not scale across concurrent writers" \
      --topic-keys infrastructure,storage \
-     --options sqlite,postgres \
-     --chose postgres \
+     --options "SQLite,Postgres" \
+     --chose "Postgres" \
      --rests-on-assumption "More than one agent writes to the shared ledger at once"
    ```
 

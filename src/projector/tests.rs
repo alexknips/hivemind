@@ -1246,7 +1246,193 @@ fn decision_proposed_legacy_slug_option_id_derives_readable_label() -> Result<()
                 "option-other-rejected-options-a1b2c3d4-e5f6-47f8-9abc-1234567890ab".to_owned()
             ))
             .and_then(|p| p.get("label")),
-        Some(&GraphValue::String("other rejected options".to_owned()))
+        Some(&GraphValue::String("Other rejected options".to_owned()))
+    );
+    Ok(())
+}
+
+/// Projects one `decision.proposed` and returns each option's `label` property in `option_ids`
+/// order. `labels` is the event's `option_labels` (`None` = an event from before the field).
+fn projected_option_labels(
+    option_ids: &[&str],
+    labels: Option<&[&str]>,
+) -> Result<Vec<GraphValue>> {
+    let ledger = InMemoryEventLedger::new();
+    let mut payload = json!({
+        "decision_id": "decision:labels",
+        "title": "Pick one",
+        "rationale": "Need a readable record",
+        "topic_keys": ["infra"],
+        "option_ids": option_ids,
+        "chosen_option_id": null,
+        "hypothesis_ids": [],
+        "evidence_ids": []
+    });
+    if let Some(labels) = labels {
+        payload["option_labels"] = json!(labels);
+    }
+    ledger.append(event(EventType::DecisionProposed, "actor:alice", payload))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    Ok(option_ids
+        .iter()
+        .map(|id| {
+            nodes
+                .get(&(NodeKind::Option, (*id).to_owned()))
+                .and_then(|properties| properties.get("label"))
+                .cloned()
+                .unwrap_or(GraphValue::Null)
+        })
+        .collect())
+}
+
+fn strings(values: &[&str]) -> Vec<GraphValue> {
+    values
+        .iter()
+        .map(|value| GraphValue::String((*value).to_owned()))
+        .collect()
+}
+
+#[test]
+fn slug_labels_with_answer_letters_project_as_the_words_after_the_letter() -> Result<()> {
+    // hivemind-hk5z: the product-name decision recorded `name-a-upheld` and friends. The stem
+    // shared by every option (`name`) and the answer letter are not part of the option.
+    assert_eq!(
+        projected_option_labels(
+            &["option:1", "option:2", "option:3"],
+            Some(&["name-a-upheld", "name-b-standing", "name-c-decisis"]),
+        )?,
+        strings(&["Upheld", "Standing", "Decisis"])
+    );
+    // A question number is part of the shared stem, and the letters may arrive out of order.
+    assert_eq!(
+        projected_option_labels(
+            &["option:1", "option:2", "option:3"],
+            Some(&[
+                "q1-c-decide-when-first-company-asks",
+                "q1-a-drop-the-commercial-licence-line",
+                "q1-b-keep-the-line",
+            ]),
+        )?,
+        strings(&[
+            "Decide when first company asks",
+            "Drop the commercial licence line",
+            "Keep the line"
+        ])
+    );
+    Ok(())
+}
+
+#[test]
+fn slug_labels_without_letters_project_as_words() -> Result<()> {
+    assert_eq!(
+        projected_option_labels(
+            &["option:1", "option:2"],
+            Some(&["verify-brief-plus-client-parse", "widen-v1-graph"]),
+        )?,
+        strings(&["Verify brief plus client parse", "Widen v1 graph"])
+    );
+    Ok(())
+}
+
+#[test]
+fn single_letter_words_that_are_not_answer_letters_stay() -> Result<()> {
+    // `x` and `y` are words here, not the a, b, c... codes of a lettered list.
+    assert_eq!(
+        projected_option_labels(
+            &["option:1", "option:2"],
+            Some(&["use-x-ray-tool", "use-y-axis-scale"]),
+        )?,
+        strings(&["Use x ray tool", "Use y axis scale"])
+    );
+    // Letters that repeat are not a list of answers either.
+    assert_eq!(
+        projected_option_labels(
+            &["option:1", "option:2"],
+            Some(&["plan-a-fast", "plan-a-slow"])
+        )?,
+        strings(&["Plan a fast", "Plan a slow"])
+    );
+    Ok(())
+}
+
+#[test]
+fn a_label_that_is_already_words_is_left_as_recorded() -> Result<()> {
+    // Capitalised words, a lone lowercase word, and words that only look coded are the
+    // caller's own labels: no capitalising, no letter stripping.
+    assert_eq!(
+        projected_option_labels(
+            &["option:1", "option:2", "option:3"],
+            Some(&["Direct CLI", "sqlite", "a new table"]),
+        )?,
+        strings(&["Direct CLI", "sqlite", "a new table"])
+    );
+    // A slug next to human labels is turned into words on its own, with nothing stripped.
+    assert_eq!(
+        projected_option_labels(&["option:1", "option:2"], Some(&["Kafka", "sqs-queue"]))?,
+        strings(&["Kafka", "Sqs queue"])
+    );
+    Ok(())
+}
+
+#[test]
+fn legacy_ids_with_answer_letters_project_as_the_words_after_the_letter() -> Result<()> {
+    // hivemind-hk5z: events from before option_labels carry `option-<slug>-<uuid>`; the slug
+    // of a lettered list gets the same treatment as a recorded slug label.
+    assert_eq!(
+        projected_option_labels(
+            &[
+                "option-channel-a-claude-code-plugin-first-cd4a4ee9-d211-41a8-8a99-df2009d1a2b3",
+                "option-channel-b-mcp-registry-first-18637b40-c454-4123-a0b3-758566d7f3c4",
+                "option-channel-c-community-lists-first-dd7c5711-55c0-4345-a47c-d4b907f2e1a9",
+            ],
+            None,
+        )?,
+        strings(&[
+            "Claude code plugin first",
+            "Mcp registry first",
+            "Community lists first"
+        ])
+    );
+    Ok(())
+}
+
+#[test]
+fn legacy_ids_with_a_uuid_cut_off_in_the_label_drop_the_fragments() -> Result<()> {
+    // The label itself ended in a UUID that the old id generator then cut at a fixed length:
+    // `18643473 3836 4f34 8006 d2ae` is not part of what anyone named the option.
+    assert_eq!(
+        projected_option_labels(
+            &[
+                "option-option-shelf-a-memory-for-decisions-18643473-3836-4f34-8006-d2ae-d83b7503-cbd9-4b78-98b0-023f0e5c933a",
+                "option-option-shelf-b-decision-governance-7321a3a6-6361-4956-97f4-95d8b-59362fe4-8397-4c0a-b721-c8dd370359b0",
+                "option-option-shelf-c-adr-tooling-4c2c0683-dd13-4556-9cb4-0ffcc9dcf175-4db0337c-d12a-4a7c-b18a-9a87fec38c56",
+            ],
+            None,
+        )?,
+        strings(&["Memory for decisions", "Decision governance", "Adr tooling"])
+    );
+    Ok(())
+}
+
+#[test]
+fn an_option_without_any_label_text_stays_null_beside_readable_siblings() -> Result<()> {
+    // Nothing is invented for an option whose id carries no label (`option-<uuid>`).
+    assert_eq!(
+        projected_option_labels(
+            &[
+                "option-9d4f1c2e-6b7a-4c3d-8e9f-0a1b2c3d4e5f",
+                "option-batch-delete-7430e283-3854-44c1-aa6e-2232e2349027",
+            ],
+            None,
+        )?,
+        vec![
+            GraphValue::Null,
+            GraphValue::String("Batch delete".to_owned())
+        ]
     );
     Ok(())
 }

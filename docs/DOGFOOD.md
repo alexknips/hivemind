@@ -34,8 +34,8 @@ HIVEMIND_DIR="$(mktemp -d)" hivemind emit decision.capture \
   --title "Smoke test isolated capture" \
   --rationale "Verify the local binary without touching the shared dogfood ledger" \
   --topic-keys dogfood,smoke \
-  --options shared-ledger,temp-ledger \
-  --chose temp-ledger \
+  --options "Shared ledger,Temporary ledger" \
+  --chose "Temporary ledger" \
   --bet
 ```
 
@@ -162,7 +162,7 @@ If Claude Code prompts for the plugin, install it and reload plugins:
 Capture a smoke decision:
 
 ```text
-/hivemind-capture:capture-decision --title "Verify Claude dogfood capture" --rationale "The repo plugin should write to ./hivemind/ with Claude actor provenance" --topic-keys dogfood,claude --options plugin,manual-cli --chose plugin --bet
+/hivemind-capture:capture-decision --title "Verify Claude dogfood capture" --rationale "The repo plugin should write to ./hivemind/ with Claude actor provenance" --topic-keys dogfood,claude --options "Repo plugin,Manual CLI" --chose "Repo plugin" --bet
 ```
 
 Query it back:
@@ -198,8 +198,8 @@ plugins/hivemind-capture/scripts/capture-decision.sh \
   --title "Verify Codex dogfood capture" \
   --rationale "The Codex helper should write to ./hivemind/ with Codex actor provenance" \
   --topic-keys dogfood,codex \
-  --options helper,manual-cli \
-  --chose helper
+  --options "Plugin helper,Manual CLI" \
+  --chose "Plugin helper"
 ```
 
 Query it back:

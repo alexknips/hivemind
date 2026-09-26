@@ -5,7 +5,7 @@ usage() {
   cat >&2 <<'USAGE'
 Usage:
   capture.sh "<text>" --kind decision --title "..." --rationale "..." \
-    --topic-keys topic[,topic] --options option[,option] [--chose option] \
+    --topic-keys topic[,topic] --options "Label[,Label]" [--chose "Label"] \
     (--rests-on-decision "..." | --rests-on-evidence "..." --evidence-source "..." | \
      --rests-on-assumption "..." | --bet ["..."])
   capture.sh "<text>" --kind evidence

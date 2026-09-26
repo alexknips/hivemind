@@ -23,7 +23,7 @@ assumptions that may later be supported or refuted.
 For decisions, keep using structured decision fields:
 
 ```text
-/hivemind-capture:capture "selected direction" --kind decision --title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option] [--decided-by actor-id] [--delegated-by human:name] (--rests-on-decision "..." | --rests-on-evidence "..." --evidence-source "..." | --rests-on-assumption "..." | --bet ["..."])
+/hivemind-capture:capture "selected direction" --kind decision --title "..." --rationale "..." --topic-keys topic[,topic] --options "Label[,Label]" [--chose "Label"] [--decided-by actor-id] [--delegated-by human:name] (--rests-on-decision "..." | --rests-on-evidence "..." --evidence-source "..." | --rests-on-assumption "..." | --bet ["..."])
 ```
 
 Every decision must say what it rests on. Before writing, answer "what does
@@ -52,7 +52,10 @@ grounding, an ambiguous premise, no match), add the grounding and re-run: never
 drop the capture. For an ambiguous premise, re-run with `--rests-on-decision
 '#N'` in place of the description.
 
-`--chose option` means the decision was already made: it self-accepts
+Options are short human labels (`"Direct CLI"`, `"Cap at 30 seconds"`), never
+slugs (`direct-cli`) or letter codes (`q1-a-...`); `why` and `verify` print them
+as written. `--chose "Label"` repeats one of them exactly and means the decision
+was already made: it self-accepts
 immediately (or accepts from `--decided-by <actor-id>` when someone else
 decided). Pass `--still-proposed` instead to float a leaning that still
 awaits someone else's decision.

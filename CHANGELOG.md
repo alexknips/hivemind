@@ -103,6 +103,20 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   replacer's own personal project, since a personal address belongs to one actor and cannot be
   stated or moved into by anyone else; `--help` and the plugin README now say so. Replacements
   already on the ledger are not moved: `hivemind move` fixes one. (hivemind-9lzi)
+- **`why`, `verify`, the recall digest and the export show options as words, not slugs and
+  letter codes.** An option recorded as `name-a-upheld` read `chose: name-a-upheld` and
+  `rejected: name-b-standing, name-c-decisis`, with the answer letter inside the label, and
+  options from before labels existed read as the raw id or the id's slug. Options are now shown
+  as `Upheld`, `Standing` and `Decisis`: a label that is a slug (lowercase words joined by `-` or
+  `_`) is turned into words, and when every option of a decision is lettered `a`, `b`, `c`... the
+  shared stem and the letter are dropped. A label that is already words (`Direct CLI`, `sqlite`)
+  is shown as recorded, and an option whose only record is an id with no words in it stays as
+  that id. The ledger is unchanged: the words are derived each time it is replayed, so existing
+  ledgers read this way with no migration step. The capture skill, its slash commands, the
+  README, the CLI `--options` help and the MCP `capture_decision` schema now teach short human
+  labels (`--options "Direct CLI,MCP server" --chose "Direct CLI"`) instead of `--options
+  direct-cli,mcp`, and `hivemind quickstart` records `Local ledger` and `Spreadsheet`. New
+  captures that still use slugs are not refused; they read as words. (hivemind-hk5z)
 - **A capture refused for its project leaves nothing behind.** `decision.capture` and
   `capture_decision` checked the stated project (registered, no reserved `personal:` prefix, a
   source a caller may claim) only after they had recorded the evidence, assumptions and bet named

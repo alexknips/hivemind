@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash(.claude/scripts/capture-decision.sh:*)
-argument-hint: --title "..." --rationale "..." --topic-keys topic[,topic] --options option[,option] [--chose option] [--decided-by actor-id] [--still-proposed] (--rests-on-decision "..." | --rests-on-evidence "..." --evidence-source "..." | --rests-on-assumption "..." | --bet ["..."]) [--source human|agent]
+argument-hint: --title "..." --rationale "..." --topic-keys topic[,topic] --options "Label[,Label]" [--chose "Label"] [--decided-by actor-id] [--still-proposed] (--rests-on-decision "..." | --rests-on-evidence "..." --evidence-source "..." | --rests-on-assumption "..." | --bet ["..."]) [--source human|agent]
 description: Capture a HiveMind decision in the local ledger
 ---
 

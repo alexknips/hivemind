@@ -46,8 +46,8 @@ hivemind --actor human:alice --hivemind-dir ./hivemind emit decision.proposed \
   --title "Use HiveMind for architecture decisions" \
   --rationale "We need a durable record of what was decided, why, and by whom" \
   --topic-keys onboarding,architecture \
-  --options hivemind,notes \
-  --chose hivemind
+  --options "HiveMind,Notes" \
+  --chose "HiveMind"
 
 hivemind --hivemind-dir ./hivemind query search_decisions \
   --topic onboarding \
@@ -257,8 +257,8 @@ hivemind emit decision.proposed \
   --title "Use embedded storage for the local prototype" \
   --rationale "It keeps the local install single-process and easy to replay" \
   --topic-keys architecture,storage \
-  --options sqlite,postgres \
-  --chose sqlite
+  --options "SQLite,Postgres" \
+  --chose "SQLite"
 ```
 
 Agents can use the noninteractive capture path. It defaults the actor to a
@@ -269,10 +269,13 @@ hivemind --hivemind-dir ./hivemind/ emit decision.capture \
   --title "Use direct CLI capture for agent decisions" \
   --rationale "The local command is deterministic and does not depend on hooks" \
   --topic-keys agents,capture \
-  --options direct-cli,mcp \
-  --chose direct-cli \
+  --options "Direct CLI,MCP server" \
+  --chose "Direct CLI" \
   --rests-on-assumption "Agents already have shell access to the local ledger"
 ```
+
+Options are short human labels (`"Direct CLI"`), never slugs or letter codes:
+`why` and `verify` print them as written, and `--chose` alone says which one won.
 
 Every capture says what it rests on (a decision we already made, something
 observed, something assumed, or a declared `--bet`); one that names nothing is

@@ -158,8 +158,8 @@ cargo run -- --hivemind-dir ./hivemind --json slack-app enqueue-capture \
   --title "Use local Slack app capture" \
   --rationale "The reviewed thread records the decision context" \
   --topic-keys slack,integrations \
-  --options local-first,hosted-service \
-  --chose local-first \
+  --options "Local first,Hosted service" \
+  --chose "Local first" \
   --thread-text "Thread text or API-fetched excerpt"
 ```
 

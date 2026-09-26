@@ -127,12 +127,27 @@ plugins/hivemind-capture/scripts/capture.sh "Cap retry delay at 30 seconds" \
   --title "Cap retry delay at 30 seconds" \
   --rationale "An uncapped exponential delay stalled clients for minutes after a short outage" \
   --topic-keys retries \
-  --options cap30,uncapped \
-  --chose cap30 \
+  --options "Cap at 30 seconds,Uncapped" \
+  --chose "Cap at 30 seconds" \
   --rests-on-decision "exponential backoff for retries" \
   --rests-on-evidence "Uncapped backoff reached 8 minutes in the June incident" \
   --evidence-source "https://example.test/incidents/june"
 ```
+
+### Options are short human labels
+
+Write each option the way a person would say it in a sentence: a short phrase
+with capitals and spaces (`"Cap at 30 seconds"`, `"Direct CLI"`), quoted so the
+shell keeps it as one value. `--chose` repeats one of those labels exactly.
+
+- No slugs (`cap-at-30`, `direct-cli`) and no codes (`cap30`, `q1-a-...`,
+  `option-a`). `why` and `verify` print the label as written, and a reader
+  should not have to decode it.
+- The choice is a fact on the record: `--chose` alone says which option won.
+  Never put the winning letter, "chosen", or "recommended" inside a label.
+- One label per real alternative. No bucket such as "other options", and no
+  label that packs several answers together. Put detail in the rationale.
+- A label cannot contain a comma: `--options` splits on commas.
 
 ### The decider's words are not a grounding
 
@@ -155,8 +170,8 @@ plugins/hivemind-capture/scripts/capture.sh "Keep the retry budget at 3" \
   --title "Keep the retry budget at 3 attempts" \
   --rationale "More retries hide an outage from the operator instead of surfacing it" \
   --topic-keys retries \
-  --options three,five \
-  --chose three \
+  --options "Keep 3 attempts,Raise to 5 attempts" \
+  --chose "Keep 3 attempts" \
   --decided-by human:alex \
   --quote "keep it at 3, more just hides outages" \
   --question "Should the worker retry budget go from 3 to 5 attempts?" \
@@ -218,8 +233,8 @@ ledger write must stay explicit and deterministic.
      --title "Prefer direct CLI capture before MCP" \
      --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" \
      --topic-keys agents,capture \
-     --options direct-cli,mcp,hook \
-     --chose direct-cli \
+     --options "Direct CLI,MCP server,Git hook" \
+     --chose "Direct CLI" \
      --rests-on-assumption "Agents already have shell access to the ledger"
    ```
 
@@ -253,8 +268,8 @@ ledger write must stay explicit and deterministic.
      --title "Prefer direct CLI capture before MCP" \
      --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" \
      --topic-keys agents,capture \
-     --options direct-cli,mcp,hook \
-     --chose direct-cli \
+     --options "Direct CLI,MCP server,Git hook" \
+     --chose "Direct CLI" \
      --rests-on-assumption "Agents already have shell access to the ledger"
    ```
 
@@ -264,7 +279,7 @@ ledger write must stay explicit and deterministic.
    From the Claude Code plugin, prefer the installed slash command:
 
    ```text
-   /hivemind-capture:capture "Prefer direct CLI capture before MCP" --kind decision --title "Prefer direct CLI capture before MCP" --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" --topic-keys agents,capture --options direct-cli,mcp,hook --chose direct-cli --rests-on-assumption "Agents already have shell access to the ledger"
+   /hivemind-capture:capture "Prefer direct CLI capture before MCP" --kind decision --title "Prefer direct CLI capture before MCP" --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" --topic-keys agents,capture --options "Direct CLI,MCP server,Git hook" --chose "Direct CLI" --rests-on-assumption "Agents already have shell access to the ledger"
    ```
 
 4. Attach existing evidence or hypotheses only when their ids are already known.
@@ -280,8 +295,8 @@ ledger write must stay explicit and deterministic.
      --title "Use shared ledger storage for the integration demo" \
      --rationale "Multiple agents must query the same provenance without local file copying" \
      --topic-keys agents,capture,storage \
-     --options local-ledger,shared-ledger \
-     --chose shared-ledger \
+     --options "Local ledger,Shared ledger" \
+     --chose "Shared ledger" \
      --evidence evidence-001 \
      --hypotheses hypothesis-001
    ```
@@ -663,6 +678,8 @@ the keyless plugin path and its own Haiku call. Do not invent a
   or superseded context just because it complicates the answer.
 - Write the rationale in durable organizational language. Avoid "because we
   discussed it" or "seems best" as the only why.
+- Write each option as a short human label (see "Options are short human
+  labels"), never a slug or a letter code.
 - Include all meaningful options in `--options`, and set `--chose` only when a
   selected option exists. `--chose` means the decision was already made — it
   self-accepts immediately (or accepts from `--decided-by` when someone else

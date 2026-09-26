@@ -6,7 +6,7 @@ usage() {
 Usage:
   supersede.sh "description of the old decision" \
                --title "new decision title" --rationale "why the new direction" \
-               [--topic-keys t,...] [--options o,...] [--chose o] [--still-proposed] \
+               [--topic-keys t,...] [--options "Label,..."] [--chose "Label"] [--still-proposed] \
                [--hypotheses h,...] [--evidence e,...] \
                (--rests-on-decision "..." | --rests-on-evidence "..." \
                 --evidence-source "..." | --rests-on-assumption "..." | --bet ["..."]) \

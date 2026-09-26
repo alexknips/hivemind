@@ -469,7 +469,7 @@ pub fn tool_definitions() -> Vec<Value> {
                             "type": "object",
                             "required": ["label"],
                             "properties": {
-                                "label": { "type": "string" },
+                                "label": { "type": "string", "description": "A short human label for the option, as a person would say it (\"Direct CLI\", \"Cap at 30 seconds\"). Not a slug (`direct-cli`) and not a letter code (`a`, `q1-a-...`): `why` and `verify` print it as written, and `chosen_option_label` alone records which option won." },
                                 "description": { "type": "string" }
                             }
                         }
@@ -551,7 +551,7 @@ pub fn tool_definitions() -> Vec<Value> {
                                     "type": "object",
                                     "required": ["label"],
                                     "properties": {
-                                        "label": { "type": "string" }
+                                        "label": { "type": "string", "description": "A short human label for the option, as a person would say it (\"Direct CLI\", \"Cap at 30 seconds\"). Not a slug (`direct-cli`) and not a letter code (`a`, `q1-a-...`)." }
                                     }
                                 }
                             ]

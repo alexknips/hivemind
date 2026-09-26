@@ -18,10 +18,13 @@ use crate::events::{
 use crate::ledger::EventLedger;
 use crate::Result;
 
+use option_labels::{readable_option_labels, FoundLabel};
+
 pub mod arrow;
 #[cfg(feature = "graph-kuzu")]
 pub mod kuzu;
 pub mod memory;
+mod option_labels;
 #[cfg(feature = "shared-backend-postgres")]
 pub mod postgres;
 
@@ -937,20 +940,42 @@ fn project_decision_proposed(
             .position(|id| id == option_id)
             .and_then(|index| payload.option_descriptions.get(index).cloned())
     };
-    // Historical events predate the option_labels field entirely and so never carry a real
-    // label (hivemind-zdsh.10 migration). Those events' option ids are themselves a slug of
-    // the label text (e.g. "option-other-rejected-options-<uuid>") from the id-generation
-    // scheme that predated opaque ids; derive a readable label from that slug once, here at
-    // projection time, rather than showing the raw id. `derive_legacy_option_label` returns
-    // `None` (kept as Null, not re-indexed as a second copy of the id) when the id doesn't
-    // decode into anything more readable than itself.
-    let label_or_derived = |option_id: &str| -> GraphValue {
+    // Two kinds of recorded option text are not yet a readable label (hivemind-zdsh.10,
+    // hivemind-hk5z). Events from before `option_labels` existed carry no label at all, but
+    // their option ids are a slug of it (e.g. "option-other-rejected-options-<uuid>", from the
+    // id scheme that predated opaque ids): `derive_legacy_option_label` recovers that text.
+    // And a recorded label can itself be a slug ("name-a-upheld"). `readable_option_labels`
+    // turns both into words once, here at projection, looking at the whole option set so a
+    // shared stem plus answer letter ("name-a-", "channel a ") is dropped. `None` stays Null
+    // (not re-indexed as a second copy of the id) when nothing readable can be recovered.
+    let found_label = |option_id: &str| -> Option<FoundLabel> {
         match option_label(option_id) {
-            Some(label) => GraphValue::String(label),
-            None => {
-                derive_legacy_option_label(option_id).map_or(GraphValue::Null, GraphValue::String)
-            }
+            Some(text) => Some(FoundLabel {
+                text,
+                recovered_from_id: false,
+            }),
+            None => derive_legacy_option_label(option_id).map(|text| FoundLabel {
+                text,
+                recovered_from_id: true,
+            }),
         }
+    };
+    let found_labels: Vec<Option<FoundLabel>> = payload
+        .option_ids
+        .iter()
+        .map(|option_id| found_label(option_id))
+        .collect();
+    let readable_labels = readable_option_labels(&found_labels);
+    let label_or_derived = |option_id: &str| -> GraphValue {
+        let readable = match payload.option_ids.iter().position(|id| id == option_id) {
+            Some(index) => readable_labels.get(index).cloned().flatten(),
+            // The chosen option is not among the proposed ones: no siblings to compare with.
+            None => readable_option_labels(&[found_label(option_id)])
+                .into_iter()
+                .next()
+                .flatten(),
+        };
+        readable.map_or(GraphValue::Null, GraphValue::String)
     };
 
     for option_id in &payload.option_ids {

@@ -151,7 +151,7 @@ and [`docs/MULTI_TENANCY.md`](../../docs/MULTI_TENANCY.md#projects-inside-a-tena
 Capture one decision:
 
 ```text
-/hivemind-capture:capture "Use the Claude plugin for local capture" --kind decision --title "Use the Claude plugin for local capture" --rationale "The plugin installs commands, skill guidance, and MCP without project-local setup" --topic-keys agents,claude,distribution --options plugin,manual-mcp --chose plugin --rests-on-assumption "Contributors install Claude Code plugins from the repository marketplace"
+/hivemind-capture:capture "Use the Claude plugin for local capture" --kind decision --title "Use the Claude plugin for local capture" --rationale "The plugin installs commands, skill guidance, and MCP without project-local setup" --topic-keys agents,claude,distribution --options "Claude plugin,Manual MCP setup" --chose "Claude plugin" --rests-on-assumption "Contributors install Claude Code plugins from the repository marketplace"
 ```
 
 Every decision capture says what it rests on: `--rests-on-decision` (a decision we

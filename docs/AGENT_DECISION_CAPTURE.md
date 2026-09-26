@@ -17,8 +17,8 @@ cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
   --title "Use direct CLI capture for agent decisions" \
   --rationale "The local command is deterministic and does not depend on hooks" \
   --topic-keys agents,capture \
-  --options direct-cli,mcp,hook \
-  --chose direct-cli \
+  --options "Direct CLI,MCP server,Git hook" \
+  --chose "Direct CLI" \
   --rests-on-assumption "Agents already have shell access to the local ledger"
 ```
 
@@ -359,8 +359,8 @@ cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
   --title "Keep capture in the commands layer" \
   --rationale "The write path should validate and append events without query-time inference" \
   --topic-keys agents,capture \
-  --options direct-cli,mcp \
-  --chose direct-cli \
+  --options "Direct CLI,MCP server" \
+  --chose "Direct CLI" \
   --rests-on-assumption "The write path stays deterministic without query-time inference"
 ```
 
@@ -370,8 +370,8 @@ This repository also ships a project-local Claude Code command:
 /capture-decision --title "Keep capture in the commands layer" \
   --rationale "The write path should validate and append events without query-time inference" \
   --topic-keys agents,capture \
-  --options direct-cli,mcp \
-  --chose direct-cli \
+  --options "Direct CLI,MCP server" \
+  --chose "Direct CLI" \
   --rests-on-assumption "The write path stays deterministic without query-time inference"
 ```
 
@@ -422,8 +422,8 @@ cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
   --title "Prefer direct CLI capture before MCP" \
   --rationale "Codex can invoke the same local command in any checkout" \
   --topic-keys agents,capture \
-  --options direct-cli,mcp \
-  --chose direct-cli \
+  --options "Direct CLI,MCP server" \
+  --chose "Direct CLI" \
   --rests-on-assumption "Codex can run a local command in any checkout"
 ```
 

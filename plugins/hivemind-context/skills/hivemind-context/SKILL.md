@@ -93,7 +93,8 @@ what it wants to ask.
   ${CLAUDE_PLUGIN_ROOT}/scripts/supersede.sh "the decision being replaced" \
     --title "the new decision" \
     --rationale "why the new direction" \
-    --topic-keys same,topics --options a,b --chose a
+    --topic-keys same,topics --options "The new direction,Keep the old direction" \
+    --chose "The new direction"
   ```
 
 - **Say what it rests on** — a decision captured without saying reads
