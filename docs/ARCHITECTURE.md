@@ -156,7 +156,9 @@ onboarding fast and requires no native graph build.
 `./hivemind/graph.kuzu` is the local persistent Kuzu projection when the binary
 is built with `--features graph-kuzu` and commands are run with
 `--graph-backend kuzu` or `HIVEMIND_GRAPH_BACKEND=kuzu`. In this mode, query and
-dump rebuild Kuzu from the SQLite ledger before reading it.
+dump rebuild Kuzu from the SQLite ledger before reading it. The rebuild drops and
+recreates every table, so a `graph.kuzu` written by an older build needs no
+migration: its old columns are replaced on the next run.
 
 The in-memory graph remains the fast unit-test and golden-test path. It is not a
 separate product backend.

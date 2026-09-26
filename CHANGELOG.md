@@ -40,6 +40,13 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 - **`recall`, `why`, `verify`, `disagree` and `supersede` in the hivemind-context plugin print
   their usage when called with no arguments**, instead of dying on macOS's bash 3.2 with an
   unbound-variable error. (hivemind-f4ng)
+- **`--graph-backend kuzu` works again.** It is only there in a binary built from source with
+  `--features graph-kuzu`, and building its graph from a ledger stopped at the first event: the
+  Kuzu graph had no column for an actor's kind and no table for the `SAME_AS`, `PARTICIPATED_BY`
+  and `INITIATED_BY` links, nor a column for an evidence capture's topic keys or a decision's
+  score, and it could not store a blocker resolved with a reason but no event id. A
+  `graph.kuzu` left by an earlier build needs nothing from you: every run rebuilds it from the
+  ledger. (hivemind-cbab)
 
 ## v0.7.0 — 2026-09-25 — M6: Fluent verbs and grounded capture
 

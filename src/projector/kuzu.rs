@@ -19,7 +19,7 @@ const GRAPH_DB_NAME: &str = "graph.kuzu";
 const NODE_DDL: &[(NodeKind, &str)] = &[
     (
         NodeKind::Decision,
-        "CREATE NODE TABLE IF NOT EXISTS `Decision` (id STRING, title STRING, rationale STRING, topic_keys STRING[], expressed_confidence STRING, project STRING, project_source STRING, occurred_at STRING, quote STRING, question STRING, delegated_by STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Decision` (id STRING, title STRING, rationale STRING, topic_keys STRING[], expressed_confidence STRING, project STRING, project_source STRING, occurred_at STRING, quote STRING, question STRING, delegated_by STRING, score_framing DOUBLE, score_alternatives DOUBLE, score_information DOUBLE, score_reasoning DOUBLE, score_values_tradeoffs DOUBLE, score_bias_exposure DOUBLE, score_calibration DOUBLE, score_weight_version STRING, importance_stakes DOUBLE, importance_irreversibility DOUBLE, importance_actionability DOUBLE, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::DecisionRequest,
@@ -27,11 +27,11 @@ const NODE_DDL: &[(NodeKind, &str)] = &[
     ),
     (
         NodeKind::Actor,
-        "CREATE NODE TABLE IF NOT EXISTS `Actor` (id STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Actor` (id STRING, kind STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Evidence,
-        "CREATE NODE TABLE IF NOT EXISTS `Evidence` (id STRING, content STRING, evidence_source STRING, recorded_at STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Evidence` (id STRING, content STRING, evidence_source STRING, recorded_at STRING, topic_keys STRING[], tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Option,
@@ -145,6 +145,18 @@ const RELATION_DDL: &[(RelationKind, &str)] = &[
         "CREATE REL TABLE IF NOT EXISTS `REFUTES` (FROM `Evidence` TO `Hypothesis`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
     (
+        RelationKind::SameAs,
+        "CREATE REL TABLE IF NOT EXISTS `SAME_AS` (FROM `Decision` TO `Decision`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::ParticipatedBy,
+        "CREATE REL TABLE IF NOT EXISTS `PARTICIPATED_BY` (FROM `Decision` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::InitiatedBy,
+        "CREATE REL TABLE IF NOT EXISTS `INITIATED_BY` (FROM `Decision` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
         RelationKind::PartOf,
         "CREATE REL TABLE IF NOT EXISTS `PART_OF` (FROM `Project` TO `Project`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
@@ -178,6 +190,11 @@ impl KuzuGraph {
         &self.path
     }
 
+    /// Creates any table this build defines that the database lacks. `IF NOT EXISTS` never
+    /// alters a table that is already there, so a `graph.kuzu` written by an older build keeps
+    /// its old columns until `wipe` drops and recreates every table. The projection is derived
+    /// state and every caller rebuilds it from the ledger straight after `open`
+    /// (`rebuild_graph_for_tenant`), so an old database is replaced, never migrated.
     pub fn initialize_schema(&self) -> Result<()> {
         let connection = self.connection()?;
         for (_, statement) in NODE_DDL {
@@ -198,7 +215,7 @@ impl GraphView for KuzuGraph {
     fn upsert_node(&self, kind: NodeKind, id: &str, properties: &GraphProperties) -> Result<()> {
         let table = quote_identifier(kind.table_name())?;
         let mut params = BTreeMap::from([("id".to_string(), GraphValue::String(id.to_string()))]);
-        params.extend(properties.clone());
+        params.extend(bound_properties(properties));
         let query = format!(
             "MERGE (node:{table} {{id: $id}}){};",
             set_clause("node", properties)?
@@ -224,7 +241,7 @@ impl GraphView for KuzuGraph {
             ),
             ("to_id".to_string(), GraphValue::String(to_id.to_string())),
         ]);
-        params.extend(properties.clone());
+        params.extend(bound_properties(properties));
         let query = format!(
             "MATCH (from:{from_table} {{id: $from_id}}), (to:{to_table} {{id: $to_id}}) MERGE (from)-[rel:{relation}]->(to){};",
             set_clause("rel", properties)?
@@ -280,19 +297,36 @@ impl KuzuGraph {
     }
 }
 
+/// A null property is written as the `NULL` literal, which takes the type of the column it lands
+/// in. Bound as a parameter it would be a null STRING, and Kuzu refuses to store that in an
+/// INT64 column (`resolution_event_id` is null for a resolution that names only a reason).
 fn set_clause(alias: &str, properties: &GraphProperties) -> Result<String> {
     if properties.is_empty() {
         return Ok(String::new());
     }
 
     let mut assignments = Vec::new();
-    for key in properties.keys() {
+    for (key, value) in properties {
         let quoted = quote_identifier(key.as_str())?;
         let mut assignment = String::with_capacity(alias.len() + quoted.len() + key.len() + 5);
-        let _ = write!(assignment, "{alias}.{quoted} = ${key}");
+        if matches!(value, GraphValue::Null) {
+            let _ = write!(assignment, "{alias}.{quoted} = NULL");
+        } else {
+            let _ = write!(assignment, "{alias}.{quoted} = ${key}");
+        }
         assignments.push(assignment);
     }
     Ok(format!(" SET {}", assignments.join(", ")))
+}
+
+/// The properties `set_clause` binds as parameters: every one but the nulls it writes inline.
+fn bound_properties(
+    properties: &GraphProperties,
+) -> impl Iterator<Item = (String, GraphValue)> + '_ {
+    properties
+        .iter()
+        .filter(|(_, value)| !matches!(value, GraphValue::Null))
+        .map(|(key, value)| (key.clone(), value.clone()))
 }
 
 fn drop_table_query(table: &str) -> Result<String> {

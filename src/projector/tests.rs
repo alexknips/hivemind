@@ -3071,6 +3071,157 @@ fn natural_order_scenario() -> Result<InMemoryEventLedger> {
     Ok(ledger)
 }
 
+/// `natural_order_scenario` plus one event of every kind it lacks that writes to the graph: a
+/// delegated acceptance, a score, a move, a blocker resolution, an acknowledgement, an anchor and a
+/// classified batch of the capture kinds it does not carry. Replayed into a graph backend that
+/// declares its schema up front, it fails on any node property or relation the projector writes
+/// and the backend does not know.
+pub(super) fn every_event_scenario() -> Result<InMemoryEventLedger> {
+    let ledger = natural_order_scenario()?;
+    let notification_id = ledger
+        .read(0, 1000)?
+        .into_iter()
+        .find(|event| event.event_type == EventType::NotificationSent)
+        .map(|event| event.event_uuid.to_string())
+        .ok_or_else(|| projector_error("the natural-order scenario sends a notification"))?;
+    let capture = |kind: &str, title: &str, extra: serde_json::Value| {
+        let mut capture = json!({
+            "kind": kind,
+            "title": title,
+            "rationale": "",
+            "topic_keys": ["kuzu"],
+            "evidence_ids": [],
+            "options": null,
+            "chosen_option": null,
+            "extraction_confidence": 0.9,
+            "expressed_confidence": null,
+            "supersedes_id": null,
+            "premised_on_ids": [],
+            "supports_ids": [],
+            "refutes_ids": [],
+            "actor_id": "human:dana",
+            "accepted_by": [],
+            "rejected_by": [],
+            "blocked_actor_id": null,
+            "decision_id": null
+        });
+        if let (Some(base), Some(extra)) = (capture.as_object_mut(), extra.as_object()) {
+            base.extend(extra.clone());
+        }
+        capture
+    };
+    for event in [
+        event(
+            EventType::DecisionAccepted,
+            "agent:claude:builder",
+            json!({"decision_id": "decision:2", "delegated_by": "human:alice"}),
+        ),
+        event(
+            EventType::DecisionScored,
+            "agent:hivemind:scorer",
+            json!({
+                "capture_node_id": "decision:1",
+                "scorer_model": "claude-haiku-4-5-20251001",
+                "weight_version": "v1",
+                "supersedes_score_id": null,
+                "quality_dims": {
+                    "framing": {"score": 0.8, "explanation": "clear"},
+                    "alternatives": {"score": 0.7, "explanation": "two options"},
+                    "information": {"score": 0.6, "explanation": "some data"},
+                    "reasoning": {"score": 0.9, "explanation": "sound"},
+                    "values_tradeoffs": {"score": 0.5, "explanation": "implicit"},
+                    "bias_exposure": {"score": 0.8, "explanation": "none seen"},
+                    "calibration": {"score": 0.7, "explanation": "reasonable"}
+                },
+                "importance": {
+                    "stakes": 10.0,
+                    "stakes_explanation": "wide",
+                    "irreversibility": 0.6,
+                    "irreversibility_explanation": "some cost",
+                    "actionability": 1.0,
+                    "actionability_explanation": "clear owner"
+                }
+            }),
+        ),
+        event(
+            EventType::DecisionMoved,
+            "actor:alice",
+            json!({"decision_id": "decision:1", "from": "billing", "to": "platform"}),
+        ),
+        event(
+            EventType::BlockerResolved,
+            "agent:release-bot",
+            json!({
+                "blocker_id": "blocker:release-owner",
+                "resolution_event_id": null,
+                "resolution_reason": "owner approved"
+            }),
+        ),
+        event(
+            EventType::NotificationAcknowledged,
+            "human:release-owner",
+            json!({
+                "notification_id": notification_id,
+                "ack_at": "2026-05-19T11:00:00Z",
+                "snooze_until": "2026-05-19T12:00:00Z"
+            }),
+        ),
+        event(
+            EventType::ProjectAnchored,
+            "actor:alice",
+            json!({"handle": "platform", "anchor_kind": "folder", "value": "services/platform"}),
+        ),
+        event(
+            EventType::IngestBatchClassified,
+            "agent:hivemind:classifier",
+            json!({
+                "batch_id": "batch:every-capture-kind",
+                "classifier_model": "claude-haiku-4-5-20251001",
+                "schema_version": "2",
+                "captures": [
+                    capture(
+                        "evidence",
+                        "Latency measured at 12ms",
+                        json!({"supports_ids": ["hypothesis:1"]}),
+                    ),
+                    capture("hypothesis", "Load stays flat", json!({})),
+                    capture(
+                        "blocker",
+                        "Waiting on review",
+                        json!({"blocked_actor_id": "human:erin", "decision_id": "decision:1"}),
+                    ),
+                    capture("notification", "slack", json!({}))
+                ]
+            }),
+        ),
+    ] {
+        ledger.append(event)?;
+    }
+    Ok(ledger)
+}
+
+#[test]
+fn every_event_scenario_writes_every_node_and_relation_kind() -> Result<()> {
+    let graph = RecordingGraph::default();
+    project_from_ledger(&every_event_scenario()?, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    for kind in NodeKind::ALL {
+        assert!(
+            nodes.keys().any(|(node_kind, _)| *node_kind == kind),
+            "the scenario writes no {kind:?} node"
+        );
+    }
+    let edges = graph.edges();
+    for kind in RelationKind::ALL {
+        assert!(
+            edges.keys().any(|(edge_kind, _, _)| *edge_kind == kind),
+            "the scenario writes no {kind:?} edge"
+        );
+    }
+    Ok(())
+}
+
 // ── Arrow orientation (hivemind-ku1x): every arrow runs newer -> older ──
 
 use super::arrow::{orient, Arrow};
