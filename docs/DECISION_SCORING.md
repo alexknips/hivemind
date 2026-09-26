@@ -408,12 +408,18 @@ for reading; nothing is added and nothing is graded.
 
 Floor rules version 2: what the record states, not whether it is sound.
 
-- **Framing** — partial
-  - the question this decision answers was recorded (`decision-1`)
-- **Alternatives** — solid
+- **Framing** — none
+  - no question is recorded: the record does not say what question this decision answers
+- **Alternatives** — partial
+  - 1 alternative recorded besides the chosen option (`org:launch:option:delay`)
+  - 1 alternative without a description of its own (text a capture surface fills in does not count) (`org:launch:option:delay`)
+- **Information** — solid
+  - 2 evidence items counted: recorded before the decision or attached at capture (`org:launch:evidence:legal-caveat`, `org:launch:evidence:qa-failures`)
   - ...
-- **Values / Tradeoffs** — not assessed: Judged only: ...
+- **Values / Tradeoffs** — not assessed: Judged only: nothing recorded can stand in for a judgement ...
 ```
+
+(An excerpt of a real exported decision; the other dimensions read the same way.)
 
 The Outcome section states what happened to the decision (superseded, premise refuted or
 superseded, contested) and lists no quality signal: a decision with no options or nothing

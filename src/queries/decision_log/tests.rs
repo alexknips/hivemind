@@ -1186,7 +1186,7 @@ fn the_profile_section_is_asked_for_only_the_decisions_the_filters_keep() -> Res
 }
 
 #[test]
-fn without_a_profile_section_the_file_has_no_quality_profile_heading() -> Result<()> {
+fn without_a_profile_section_the_file_has_no_profile_heading() -> Result<()> {
     let (ledger, graph) = graph_and_ledger(thin_supersession_events())?;
 
     let export = exported(&graph, &ledger, &DecisionLogRequest::default())?;
