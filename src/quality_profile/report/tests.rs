@@ -193,7 +193,9 @@ pub(crate) fn assert_report_scenario(graph: &impl GraphView) -> Result<()> {
     )?;
     assert_eq!(page.data.findings, all.data.findings[3..7]);
     assert!(page.truncated);
-    Ok(())
+
+    // The same profile and findings as Markdown: a decision-log section and a scan ticket.
+    crate::quality_profile::markdown::tests::assert_markdown_scenario(graph)
 }
 
 // ── what a scan returns ───────────────────────────────────────────────────────

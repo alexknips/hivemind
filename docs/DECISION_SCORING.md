@@ -376,9 +376,54 @@ part in `findings` like any other. stdio MCP only.
 ### `quality-scan`
 
 `hivemind quality-scan` reads the first page of findings (at most `--limit`, 1–50,
-default 10) and files one Linear ticket for each, or prints them with `--dry-run`. The
-ticket names the kind of finding and the decision, and carries the reason and the node
-ids. Its `finding_id` is what to dedupe on across runs.
+default 10) and files one Linear ticket for each, or prints them with `--dry-run`. Its
+`finding_id` is what to dedupe on across runs.
+
+A ticket is titled `[HiveMind] <kind>: <decision title>` (the decision id when it has no
+title). Its body, in Markdown, has:
+
+- the decision id, the kind of finding and the `finding_id`, and a link to the decision when
+  `--hivemind-base-url` is set;
+- **Why it needs a look**: the finding's reason in words;
+- **Node IDs**: every node the finding rests on;
+- **Dimensions it bears on**: the dimensions in the table under `scan_decision_quality`, one
+  bullet each with its level and, beneath it, each reason with the ids it rests on, or "not
+  assessed" and why. These are the profile's own lines, worded as in the export below.
+
+There is no score and no tier in a ticket, and none in the dry-run JSON (`finding_id`,
+`decision_id`, `kind`, `title`, `description`).
+
+### The decision-log export
+
+`hivemind export --format markdown` writes each decision's file with a **Quality profile**
+section after Outcome and before Provenance: a line saying what the floors are (rules version
+`floor_version`, what the record states and not whether it is sound), then the seven
+dimensions in order, each as a bullet with its level and one nested bullet per reason with
+the ids it rests on, or "not assessed" and why, and, when there are any, the attention lines
+under "Worth a second look". It is the text of `score_decision` for that decision, laid out
+for reading; nothing is added and nothing is graded.
+
+```markdown
+## Quality profile
+
+Floor rules version 2: what the record states, not whether it is sound.
+
+- **Framing** — partial
+  - the question this decision answers was recorded (`decision-1`)
+- **Alternatives** — solid
+  - ...
+- **Values / Tradeoffs** — not assessed: Judged only: ...
+```
+
+The Outcome section states what happened to the decision (superseded, premise refuted or
+superseded, contested) and lists no quality signal: a decision with no options or nothing
+declared it rests on is no longer a "Thin structure" reason there, and reads as its
+Alternatives and Information lines instead.
+
+The export itself is a pure Layer 2 projection and never imports the profile: the CLI passes
+it a function that returns each exported decision's section, and an export given none omits
+the section and changes nothing else. **Cost:** one profile read per exported decision (a
+handful of anchored lookups each), on top of the reads the export already makes for it.
 
 ## Where the retired deductions went
 
@@ -392,7 +437,7 @@ status and provenance signals wearing a quality label, and they are gone from
 | premised on a refuted assumption, or on a superseded or rejected decision | staleness: the `assumption_refuted`, `bet_failed`, `premise_superseded` and `premise_rejected` findings |
 | contested | a status, shown as such: deducting for disagreement would be conformity bias |
 | agent-only, unreviewed | the provenance line |
-| thin structure (no options, nothing declared it rests on) | the Alternatives and Information floors. It is no longer an outcome reason either: `verify`, `why`, `decision_quality_candidates` and the export do not list it |
+| thin structure (no options, nothing declared it rests on) | the Alternatives and Information floors. It is no longer an outcome reason either: `verify`, `why`, `decision_quality_candidates` and the export do not list it; the decision-log export states it in its Quality profile section instead |
 
 
 ## Deferred, not built

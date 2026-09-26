@@ -61,7 +61,7 @@ pub use context::{
 };
 pub use decision::{get_decision, get_hypothesis_statement, DecisionView, HypothesisContext};
 pub use decision_log::{
-    export_decision_log, DecisionLogExport, DecisionLogOutcome, DecisionLogRequest,
+    export_decision_log, DecisionLogExport, DecisionLogOutcome, DecisionLogRequest, ProfileSection,
 };
 pub use follows_from::follows_from_path;
 pub use grounding::{

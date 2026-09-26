@@ -19,6 +19,7 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CliError;
+use crate::quality_profile::{dimension_markdown, ScanFinding};
 use crate::Result;
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
@@ -188,7 +189,8 @@ mutation IssueCreate($teamId: String!, $title: String!, $description: String) {
 
 /// Format an attention finding as a Linear issue title: the kind of finding and the decision.
 /// Kept short (≤ 140 chars) because Linear truncates long titles.
-pub fn format_issue_title(decision_id: &str, kind: &str, decision_title: Option<&str>) -> String {
+pub fn format_issue_title(scanned: &ScanFinding, decision_title: Option<&str>) -> String {
+    let kind = scanned.finding.kind.as_str();
     match decision_title.filter(|t| !t.is_empty()) {
         Some(title) => {
             let truncated = if title.chars().count() > 80 {
@@ -198,42 +200,49 @@ pub fn format_issue_title(decision_id: &str, kind: &str, decision_title: Option<
             };
             format!("[HiveMind] {kind}: {truncated}")
         }
-        None => format!("[HiveMind] {kind}: decision {decision_id}"),
+        None => format!(
+            "[HiveMind] {kind}: decision {}",
+            scanned.finding.decision_id
+        ),
     }
 }
 
-/// Format an attention finding as a Linear issue description (Markdown).
-pub fn format_issue_description(
-    decision_id: &str,
-    kind: &str,
-    reasons: &[String],
-    node_ids: &[String],
-    hivemind_base_url: Option<&str>,
-) -> String {
+/// Format an attention finding as a Linear issue description (Markdown): the decision and the
+/// finding with its id, why it needs a look, the nodes it rests on, and the dimensions of the
+/// decision it bears on, each with its level, reasons and ids (or why it was not assessed).
+/// Nothing in it grades the decision.
+pub fn format_issue_description(scanned: &ScanFinding, hivemind_base_url: Option<&str>) -> String {
+    let finding = &scanned.finding;
     let mut out = String::new();
 
     let _ = write!(
         out,
-        "## Decision needs a look\n\n**Decision ID:** `{decision_id}`  \n**Finding:** {kind}\n\n"
+        "## Decision needs a look\n\n**Decision ID:** `{}`  \n**Finding:** {}  \n**Finding ID:** `{}`\n\n",
+        finding.decision_id,
+        finding.kind.as_str(),
+        finding.finding_id,
     );
 
     if let Some(base) = hivemind_base_url {
         let base = base.trim_end_matches('/');
-        let _ = writeln!(out, "**Link:** {base}/decisions/{decision_id}\n");
+        let _ = writeln!(out, "**Link:** {base}/decisions/{}\n", finding.decision_id);
     }
 
-    if !reasons.is_empty() {
-        out.push_str("### Reasons\n\n");
-        for reason in reasons {
-            let _ = writeln!(out, "- {reason}");
+    let _ = write!(out, "### Why it needs a look\n\n{}\n\n", finding.reason);
+
+    if !finding.node_ids.is_empty() {
+        out.push_str("### Node IDs\n\n");
+        for id in &finding.node_ids {
+            let _ = writeln!(out, "- `{id}`");
         }
         out.push('\n');
     }
 
-    if !node_ids.is_empty() {
-        out.push_str("### Node IDs\n\n");
-        for id in node_ids {
-            let _ = writeln!(out, "- `{id}`");
+    if !scanned.dimensions.is_empty() {
+        out.push_str("### Dimensions it bears on\n\n");
+        for line in &scanned.dimensions {
+            out.push_str(&dimension_markdown(line.dimension, &line.assessment));
+            out.push('\n');
         }
         out.push('\n');
     }
@@ -244,59 +253,4 @@ pub fn format_issue_description(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn format_title_with_title() {
-        let t = format_issue_title("d-001", "premise_superseded", Some("Deploy to prod"));
-        assert!(t.starts_with("[HiveMind]")); // ubs:ignore: test assertion
-        assert!(t.contains("Deploy to prod")); // ubs:ignore: test assertion
-        assert!(t.len() <= 140); // ubs:ignore: test assertion
-    }
-
-    #[test]
-    fn format_title_without_title() {
-        let t = format_issue_title("d-001", "premise_superseded", None);
-        assert!(t.contains("d-001")); // ubs:ignore: test assertion
-    }
-
-    #[test]
-    fn format_title_truncates_long_titles() {
-        let long = "A".repeat(100);
-        let t = format_issue_title("d-001", "premise_superseded", Some(&long));
-        assert!(t.len() <= 140); // ubs:ignore: test assertion
-        assert!(t.contains('…')); // ubs:ignore: test assertion
-    }
-
-    #[test]
-    fn format_description_contains_required_fields() {
-        let desc = format_issue_description(
-            "d-001",
-            "premise_superseded",
-            &["reason A".to_owned()],
-            &["h-001".to_owned()],
-            Some("https://hivemind.example.com"),
-        );
-        assert!(desc.contains("d-001")); // ubs:ignore: test assertion
-        assert!(desc.contains("premise_superseded")); // ubs:ignore: test assertion
-        assert!(desc.contains("reason A")); // ubs:ignore: test assertion
-        assert!(desc.contains("h-001")); // ubs:ignore: test assertion
-        assert!(desc.contains("hivemind.example.com")); // ubs:ignore: test assertion
-        assert!(desc.contains("Human review required")); // ubs:ignore: test assertion
-    }
-
-    #[test]
-    fn format_description_carries_no_score_or_tier() {
-        let desc = format_issue_description(
-            "d-001",
-            "bet_past_check_date",
-            &["reason A".to_owned()],
-            &["h-001".to_owned()],
-            None,
-        );
-        let lower = desc.to_lowercase();
-        assert!(!lower.contains("score")); // ubs:ignore: test assertion
-        assert!(!lower.contains("tier")); // ubs:ignore: test assertion
-    }
-}
+mod tests;

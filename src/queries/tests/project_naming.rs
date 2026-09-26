@@ -557,7 +557,7 @@ fn the_decision_log_names_the_project_in_front_matter_and_body() -> Result<()> {
     let s = scenario()?;
 
     let DecisionLogOutcome::Exported(export) =
-        export_decision_log(&s.graph, &s.ledger, &DecisionLogRequest::default())?
+        export_decision_log(&s.graph, &s.ledger, &DecisionLogRequest::default(), None)?
     else {
         return Err(query_error("an unfiltered decision log export succeeds").into());
     };

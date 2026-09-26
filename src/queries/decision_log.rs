@@ -17,6 +17,13 @@
 //! an export must still render every decision, so branches are surfaced as a list rather
 //! than treated as fatal.
 //!
+//! Each decision file also carries a "Quality profile" section, but the export does not compute
+//! it: the profile is derived by a layer above the queries, so the caller hands the export a
+//! [`ProfileSection`] that returns each decision's section body. Without one the section is
+//! omitted and the rest of the file is unchanged. The Outcome section states what happened to
+//! the decision (superseded, premise gone, contested) and nothing about how well it was
+//! recorded; that is the profile's.
+//!
 //! Graph reads reuse the same generic, shared helpers (`node_rows`, `neighbor_pairs`) that
 //! every other query module uses, rather than hand-rolled Cypher: bespoke query strings
 //! have no fixture support in the in-memory `GraphView` test double
@@ -95,8 +102,16 @@ pub enum DecisionLogOutcome {
     },
 }
 
+/// Returns the body of one decision's "Quality profile" section, given the decision's id. The
+/// export writes what it returns under that heading and reads nothing itself: an error stops the
+/// export before anything is returned.
+pub type ProfileSection<'a> = &'a dyn Fn(&str) -> Result<String>;
+
 /// Compose per-decision facts into a full Markdown export, grouped per project. Pure
 /// projection — no filesystem writes; the caller decides where these go.
+///
+/// `profile_section`, when given, is called once for each exported decision (after the filters)
+/// and its result becomes that decision's "Quality profile" section.
 ///
 /// The projects in the export are every registered project plus every project a matching
 /// decision belongs to (so a registered project with no decisions still gets its — empty —
@@ -106,6 +121,7 @@ pub fn export_decision_log(
     graph: &impl GraphView,
     ledger: &impl EventLedger,
     req: &DecisionLogRequest,
+    profile_section: Option<ProfileSection<'_>>,
 ) -> Result<DecisionLogOutcome> {
     let registered = registered_project_names(ledger)?;
     let requested = match req.project.as_deref().map(str::trim) {
@@ -147,6 +163,11 @@ pub fn export_decision_log(
     entries.sort_by(|a, b| {
         (a.occurred_at, a.event_origin, &a.id).cmp(&(b.occurred_at, b.event_origin, &b.id))
     });
+    if let Some(section) = profile_section {
+        for entry in &mut entries {
+            entry.profile_section = Some(section(&entry.id)?);
+        }
+    }
 
     let handles: BTreeSet<&str> = match requested {
         Some(handle) => BTreeSet::from([handle]),
@@ -257,6 +278,8 @@ struct DecisionEntry {
     dependents_count: usize,
     held_up: bool,
     outcome_reasons: Vec<OutcomeReason>,
+    /// The body of the "Quality profile" section, when the caller supplied one.
+    profile_section: Option<String>,
     accepted_by: Vec<String>,
     rejected_by: Vec<String>,
     /// Immediate predecessor (this decision's own `SUPERSEDES` target), if any.
@@ -405,6 +428,7 @@ fn build_entry(
         dependents_count: brief.dependents_count,
         held_up: brief.still_holds.held_up,
         outcome_reasons: brief.still_holds.reasons,
+        profile_section: None,
         accepted_by,
         rejected_by,
         supersedes,
@@ -739,6 +763,10 @@ fn render_decision_file(
     body.push_str(&render_evidence_section(entry));
     body.push_str("\n\n## Outcome\n\n");
     body.push_str(&render_outcome_section(entry, paths, titles, from_dir));
+    if let Some(profile) = &entry.profile_section {
+        body.push_str("\n\n## Quality profile\n\n");
+        body.push_str(profile);
+    }
     body.push_str("\n\n## Provenance\n\n");
     body.push_str(&render_provenance_section(entry));
     body.push('\n');

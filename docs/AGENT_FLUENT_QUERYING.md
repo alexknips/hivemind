@@ -633,7 +633,10 @@ listed; picking a decision from it and moving it is the review.
 `projects/<handle>/INDEX.md` plus one file per decision; personal projects go
 under `projects/personal/<actor>/`. `--project <handle-or-personal-address>`
 exports one project, and an unknown handle writes nothing and reports
-`outcome=not_found`.
+`outcome=not_found`. Each decision file ends with Outcome (what happened to it:
+superseded, premise gone, contested), Quality profile (the seven dimensions of
+`score_decision`, each with its level, reasons and ids, or why it was not assessed)
+and Provenance.
 
 ---
 

@@ -43,6 +43,23 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   failure rates for each quality dimension at each level (`none`, `partial`, `solid`,
   `not_assessed`). A level only sorts decisions into groups; it is never itself a failure.
   (hivemind-qo11.7)
+- **The Markdown decision-log export shows each decision's quality profile, and its Outcome
+  no longer lists thin structure; `quality-scan` tickets carry the dimension lines.** Every
+  decision file from `hivemind export --format markdown` gains a `## Quality profile` section
+  between `## Outcome` and `## Provenance`: the seven dimensions of `score_decision`, each as
+  a bullet with its level and, beneath it, its reasons with the node ids they rest on, or
+  "not assessed" and why, plus the attention lines when there are any. The Outcome section's
+  `Reasons` no longer includes `Thin structure: ...` (a decision with no options or nothing
+  declared it rests on reads as its Alternatives and Information lines instead); it lists only
+  what happened to the decision. Exports written before this hold the old shape until
+  re-exported. A `quality-scan` ticket body now names the finding id (`Finding ID`) and lists
+  the dimensions the finding bears on (`Dimensions it bears on`), each with its level,
+  reasons and ids, or why it was not assessed; the reason heading reads `Why it needs a look`.
+  Neither the export nor a ticket contains a score or a tier. Library callers:
+  `queries::export_decision_log` takes a fourth argument, `Option<ProfileSection>`, that
+  returns each exported decision's section (pass `None` to omit it; the CLI passes
+  `quality_profile::decision_log_section`), and `linear::format_issue_title` and
+  `format_issue_description` take the scan's `ScanFinding`. (hivemind-qo11.6)
 
 ### Added
 

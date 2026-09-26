@@ -50,6 +50,7 @@ src/tui/tests.rs
 src/projector/kuzu/tests.rs
 src/projector/postgres/tests.rs
 src/error/tests.rs
+src/linear/tests.rs
 src/map/tests.rs
 src/classifier/tests.rs
 src/scorer/tests.rs
@@ -57,5 +58,6 @@ src/quality_profile/tests.rs
 src/quality_profile/findings/tests.rs
 src/quality_profile/failure_modes/tests.rs
 src/quality_profile/report/tests.rs
+src/quality_profile/markdown/tests.rs
 src/queries/grounding_facts/tests.rs
 work-orf0.5/

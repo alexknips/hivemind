@@ -915,11 +915,15 @@ fn delegation_marker_reads_match_memory() -> Result<()> {
         }
 
         // The decision-log export states the delegation next to the decider (hivemind-o7p2),
-        // and reads it the same on both backends.
+        // and reads it the same on both backends. Each decision's "Quality profile" section
+        // (hivemind-qo11.6) is the profile's Markdown read from the same backend, so a profile
+        // that read differently on Postgres would show as a difference in the export.
         let request = DecisionLogRequest::default();
+        let memory_profile = |id: &str| crate::quality_profile::decision_log_section(&memory, id);
+        let pg_profile = |id: &str| crate::quality_profile::decision_log_section(pg, id);
         let (DecisionLogOutcome::Exported(memory_export), DecisionLogOutcome::Exported(pg_export)) = (
-            export_decision_log(&memory, &ledger, &request)?,
-            export_decision_log(pg, &ledger, &request)?,
+            export_decision_log(&memory, &ledger, &request, Some(&memory_profile))?,
+            export_decision_log(pg, &ledger, &request, Some(&pg_profile))?,
         ) else {
             return Err(test_error(
                 "an unfiltered export cannot be project_not_found",
@@ -941,6 +945,24 @@ fn delegation_marker_reads_match_memory() -> Result<()> {
         if delegated_lines != 3 {
             return Err(test_error(format!(
                 "export must state the delegation for the delegated decision only, found {delegated_lines} line(s): {:?}",
+                pg_export.files
+            )));
+        }
+
+        let decision_files: Vec<&String> = pg_export
+            .files
+            .iter()
+            .filter(|(path, _)| path.contains("/decisions/"))
+            .map(|(_, content)| content)
+            .collect();
+        if decision_files.len() != 3
+            || decision_files.iter().any(|content| {
+                !content.contains("\n## Quality profile\n\nFloor rules version ")
+                    || content.matches("\n- **").count() < 7
+            })
+        {
+            return Err(test_error(format!(
+                "every exported decision states its quality profile, seven dimensions each: {:?}",
                 pg_export.files
             )));
         }

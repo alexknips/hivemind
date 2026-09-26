@@ -6,6 +6,7 @@ use clap::Parser;
 use hivemind::cli::{run, Cli};
 use hivemind::ledger::{EventLedger, InMemoryEventLedger};
 use hivemind::projector::{memory::MemoryGraph, rebuild_graph};
+use hivemind::quality_profile::decision_log_section;
 use hivemind::queries::{export_decision_log, DecisionLogOutcome, DecisionLogRequest};
 use serde_json::json;
 
@@ -508,19 +509,47 @@ fn capture_export_outputs() -> TestResult<Vec<ExportOutput>> {
         }
         let graph = MemoryGraph::default();
         rebuild_graph(&ledger, &graph)?;
-        let DecisionLogOutcome::Exported(export) =
-            export_decision_log(&graph, &ledger, &DecisionLogRequest::default())?
+        // The export is Layer 2; each decision's "Quality profile" section is the profile's own
+        // Markdown, handed in the way the CLI hands it.
+        let profile_section = |decision_id: &str| decision_log_section(&graph, decision_id);
+        let DecisionLogOutcome::Exported(export) = export_decision_log(
+            &graph,
+            &ledger,
+            &DecisionLogRequest::default(),
+            Some(&profile_section),
+        )?
         else {
             return Err(
                 format!("{label}: an unfiltered export cannot be project_not_found").into(),
             );
         };
+        assert_export_grades_nothing(label, &export.files)?;
         outputs.push(ExportOutput {
             label,
             files: export.files,
         });
     }
     Ok(outputs)
+}
+
+/// No exported file grades a decision: the words score and tier appear in none, so a blessed
+/// tree cannot bring them back (hivemind-qo11.6).
+fn assert_export_grades_nothing(
+    label: &str,
+    files: &std::collections::BTreeMap<String, String>,
+) -> TestResult<()> {
+    for (path, content) in files {
+        let words: BTreeSet<String> = content
+            .split(|c: char| !c.is_alphanumeric())
+            .map(str::to_lowercase)
+            .collect();
+        for banned in ["score", "scores", "tier", "tiers"] {
+            if words.contains(banned) {
+                return Err(format!("{label}/{path} uses the word `{banned}`").into());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn bless_export_outputs(outputs: &[ExportOutput]) -> TestResult<()> {

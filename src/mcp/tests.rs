@@ -1807,9 +1807,39 @@ mod transport_parity {
             description.contains("was to be checked by"),
             "{description}"
         );
-        let lower = description.to_lowercase();
+        // The dimensions the finding bears on, with their levels and reasons, and its id.
+        let finding_id = issue["finding_id"].as_str().expect("a finding id"); // ubs:ignore: test-only; panicking is correct in tests
         assert!(
-            !lower.contains("score") && !lower.contains("tier"),
+            description.contains(&format!("**Finding ID:** `{finding_id}`")),
+            "{description}"
+        );
+        let dimensions = description
+            .split_once("### Dimensions it bears on\n\n")
+            .expect("the ticket lists the dimensions the finding bears on") // ubs:ignore: test-only; panicking is correct in tests
+            .1;
+        let bullets: Vec<&str> = dimensions
+            .lines()
+            .filter(|line| line.starts_with("- **"))
+            .collect();
+        assert_eq!(bullets.len(), 2, "{description}");
+        assert!(
+            bullets[0].starts_with("- **Information** — "),
+            "{description}"
+        );
+        assert!(
+            bullets[1].starts_with("- **Calibration** — "),
+            "{description}"
+        );
+        assert!(
+            dimensions.contains("\n  - "),
+            "reasons are listed: {description}"
+        );
+        let words: Vec<String> = description
+            .split(|c: char| !c.is_alphanumeric())
+            .map(str::to_lowercase)
+            .collect();
+        assert!(
+            !words.iter().any(|w| w == "score" || w == "tier"),
             "{description}"
         );
         assert!(issue.get("score").is_none() && issue.get("tier").is_none());

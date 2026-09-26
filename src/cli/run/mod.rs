@@ -34,7 +34,9 @@ use crate::ingest::{
 use crate::ledger::PostgresEventLedger;
 use crate::ledger::{AnyLedger, EventLedger, LedgerConfig, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
-use crate::quality_profile::{self, parse_kinds, ScanRequest, SuggestionsRequest};
+use crate::quality_profile::{
+    self, decision_log_section, parse_kinds, ScanRequest, SuggestionsRequest,
+};
 use crate::queries::{
     decisions_in_project, derive_decision_status, export_decision_log, export_read_only_summary,
     get_active_decision_blockers, get_blocker_notification_candidates, get_compact_view,
@@ -3631,14 +3633,8 @@ fn run_quality_scan(cli: &Cli, args: &QualityScanArgs) -> Result<String> {
             .map(|d| d.title);
 
         let kind = finding.kind.as_str();
-        let issue_title = format_issue_title(&finding.decision_id, kind, title_lookup.as_deref());
-        let issue_body = format_issue_description(
-            &finding.decision_id,
-            kind,
-            std::slice::from_ref(&finding.reason),
-            &finding.node_ids,
-            base_url,
-        );
+        let issue_title = format_issue_title(scanned, title_lookup.as_deref());
+        let issue_body = format_issue_description(scanned, base_url);
 
         if args.dry_run {
             results.push(serde_json::json!({
@@ -3713,12 +3709,16 @@ fn run_export(cli: &Cli, args: &ExportArgs) -> Result<String> {
     // The export replays this tenant's project registry and stamps its ledger offset, so it
     // reads through the tenant-scoped ledger like `project list` does, not the raw one.
     let scoped_ledger = TenantScopedLedger::new(&ledger, tenant_id);
-    let export = match export_decision_log(&graph, &scoped_ledger, &request)? {
-        DecisionLogOutcome::Exported(export) => export,
-        DecisionLogOutcome::ProjectNotFound { project } => {
-            return format_export_output(cli.json, &ExportReport::NotFound { project });
-        }
-    };
+    // Each decision's "Quality profile" section is the profile's own Markdown, read from the same
+    // graph. The export is Layer 2 and cannot import the profile, so it is handed in here.
+    let profile_section = |decision_id: &str| decision_log_section(&graph, decision_id);
+    let export =
+        match export_decision_log(&graph, &scoped_ledger, &request, Some(&profile_section))? {
+            DecisionLogOutcome::Exported(export) => export,
+            DecisionLogOutcome::ProjectNotFound { project } => {
+                return format_export_output(cli.json, &ExportReport::NotFound { project });
+            }
+        };
 
     let summary = write_export_tree(&args.out, &export)?;
 

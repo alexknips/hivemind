@@ -44,6 +44,9 @@
 //! `get_suggestions` on the stdio MCP server, the HTTP MCP endpoint and the CLI: the profile with
 //! its provenance line, and a page of findings each with the dimensions it bears on (for
 //! `get_suggestions`, without the ones already acknowledged).
+//!
+//! [`markdown`] is the same profile laid out for reading: the dimension lines of a scan ticket
+//! and the "Quality profile" section of each decision in the Markdown decision-log export.
 
 use std::collections::BTreeSet;
 
@@ -59,6 +62,7 @@ use crate::Result;
 
 pub mod failure_modes;
 pub mod findings;
+pub mod markdown;
 pub mod report;
 
 pub use failure_modes::{analyze_failure_modes, profile_conditions};
@@ -66,6 +70,7 @@ pub use findings::{
     attention_findings, attention_findings_at, AttentionConfig, AttentionFinding, AttentionPage,
     AttentionRequest, FindingKind, DEFAULT_EVIDENCE_WINDOW_DAYS,
 };
+pub use markdown::{decision_log_section, dimension_markdown, profile_markdown};
 pub use report::{
     acknowledged_finding_ids, get_suggestions, get_suggestions_at, parse_kinds,
     scan_decision_quality, scan_decision_quality_at, score_decision, DimensionLine, Provenance,

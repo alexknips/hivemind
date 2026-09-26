@@ -32,7 +32,7 @@ fn exported(
     ledger: &impl EventLedger,
     req: &DecisionLogRequest,
 ) -> Result<DecisionLogExport> {
-    match export_decision_log(graph, ledger, req)? {
+    match export_decision_log(graph, ledger, req, None)? {
         DecisionLogOutcome::Exported(export) => Ok(export),
         DecisionLogOutcome::ProjectNotFound { project } => {
             panic!("unexpected ProjectNotFound for {project}")
@@ -912,7 +912,7 @@ fn export_unknown_project_is_not_found_and_a_known_empty_one_is_not() -> Result<
         ..DecisionLogRequest::default()
     };
     assert_eq!(
-        export_decision_log(&graph, &ledger, &typo)?,
+        export_decision_log(&graph, &ledger, &typo, None)?,
         DecisionLogOutcome::ProjectNotFound {
             project: "billng".to_owned()
         }
@@ -939,7 +939,7 @@ fn export_unknown_project_is_not_found_and_a_known_empty_one_is_not() -> Result<
         project: Some("  ".to_owned()),
         ..DecisionLogRequest::default()
     };
-    assert!(export_decision_log(&graph, &ledger, &blank).is_err());
+    assert!(export_decision_log(&graph, &ledger, &blank, None).is_err());
     Ok(())
 }
 
@@ -1037,4 +1037,188 @@ fn relative_link_walks_up_only_as_far_as_needed() {
         relative_link("projects/personal/x", "INDEX.md"),
         "../../../INDEX.md"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Quality profile section and the Outcome section (hivemind-qo11.6)
+// ---------------------------------------------------------------------------
+
+/// Two decisions with nothing declared about what they rest on (thin structure), the first
+/// superseded by the second.
+fn thin_supersession_events() -> Vec<Event> {
+    vec![
+        decision_event(
+            1,
+            "decision-old",
+            "Keep the cache layer",
+            "2026-01-02T00:00:00Z",
+            &[],
+            &[],
+        ),
+        decision_event(
+            2,
+            "decision-new",
+            "Replace the cache layer",
+            "2026-01-03T00:00:00Z",
+            &[],
+            &[],
+        ),
+        event(
+            3,
+            EventType::DecisionSuperseded,
+            "actor:architect",
+            json!({"old_decision_id": "decision-old", "new_decision_id": "decision-new"}),
+            "2026-01-03T00:00:01Z",
+        ),
+    ]
+}
+
+#[test]
+fn the_outcome_states_what_happened_and_never_lists_thin_structure() -> Result<()> {
+    let (ledger, graph) = graph_and_ledger(thin_supersession_events())?;
+
+    let export = exported(&graph, &ledger, &DecisionLogRequest::default())?;
+
+    let old_file = decision_file(&export, "Keep the cache layer");
+    let (_, outcome) = old_file
+        .split_once("## Outcome\n\n")
+        .expect("an Outcome section");
+    let reasons: Vec<&str> = outcome
+        .lines()
+        .skip_while(|line| *line != "Reasons:")
+        .skip(1)
+        .take_while(|line| line.starts_with("- "))
+        .collect();
+    assert_eq!(reasons.len(), 1, "{old_file}");
+    assert!(
+        reasons[0].starts_with("- Superseded by decision-new"),
+        "{old_file}"
+    );
+    assert!(outcome.starts_with("Still holds: **no**\n"), "{old_file}");
+    let new_file = decision_file(&export, "Replace the cache layer");
+    assert!(
+        new_file.contains("## Outcome\n\nStill holds: **yes**\nReasons: None recorded.\n"),
+        "{new_file}"
+    );
+    for (path, content) in &export.files {
+        assert!(
+            !content.to_lowercase().contains("thin structure"),
+            "{path} lists thin structure: {content}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_supplied_profile_section_sits_between_the_outcome_and_the_provenance() -> Result<()> {
+    let (ledger, graph) = graph_and_ledger(thin_supersession_events())?;
+    let asked = std::cell::RefCell::new(Vec::new());
+    let section = |decision_id: &str| -> Result<String> {
+        asked.borrow_mut().push(decision_id.to_owned());
+        Ok(format!("- a line for {decision_id}"))
+    };
+
+    let DecisionLogOutcome::Exported(export) = export_decision_log(
+        &graph,
+        &ledger,
+        &DecisionLogRequest::default(),
+        Some(&section),
+    )?
+    else {
+        panic!("an unfiltered export exists");
+    };
+
+    for (title, id) in [
+        ("Keep the cache layer", "decision-old"),
+        ("Replace the cache layer", "decision-new"),
+    ] {
+        let file = decision_file(&export, title);
+        let outcome = file.find("\n## Outcome\n\n").expect("an Outcome section");
+        let profile = file
+            .find(&format!(
+                "\n\n## Quality profile\n\n- a line for {id}\n\n## Provenance\n\n"
+            ))
+            .expect("the Quality profile section sits before Provenance");
+        assert!(outcome < profile, "{file}");
+        assert_eq!(file.matches("## Quality profile").count(), 1, "{file}");
+    }
+    let mut asked = asked.into_inner();
+    asked.sort();
+    assert_eq!(asked, ["decision-new", "decision-old"]);
+    // Only the decision files carry it.
+    for (path, content) in &export.files {
+        assert_eq!(
+            content.contains("## Quality profile"),
+            path.contains("/decisions/"),
+            "{path}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_profile_section_is_asked_for_only_the_decisions_the_filters_keep() -> Result<()> {
+    let (ledger, graph) = graph_and_ledger(thin_supersession_events())?;
+    let asked = std::cell::RefCell::new(Vec::new());
+    let section = |decision_id: &str| -> Result<String> {
+        asked.borrow_mut().push(decision_id.to_owned());
+        Ok("- a line".to_owned())
+    };
+    let request = DecisionLogRequest {
+        statuses: vec![DecisionStatus::Superseded],
+        ..DecisionLogRequest::default()
+    };
+
+    let DecisionLogOutcome::Exported(export) =
+        export_decision_log(&graph, &ledger, &request, Some(&section))?
+    else {
+        panic!("an unfiltered-by-project export exists");
+    };
+
+    assert_eq!(asked.into_inner(), ["decision-old"]);
+    let sections = export
+        .files
+        .values()
+        .filter(|content| content.contains("## Quality profile"))
+        .count();
+    assert_eq!(sections, 1);
+    Ok(())
+}
+
+#[test]
+fn without_a_profile_section_the_file_has_no_quality_profile_heading() -> Result<()> {
+    let (ledger, graph) = graph_and_ledger(thin_supersession_events())?;
+
+    let export = exported(&graph, &ledger, &DecisionLogRequest::default())?;
+
+    for (path, content) in &export.files {
+        assert!(!content.contains("Quality profile"), "{path}");
+    }
+    let file = decision_file(&export, "Keep the cache layer");
+    assert!(
+        file.contains("\n\n## Outcome\n\n") && file.contains("\n\n## Provenance\n\n"),
+        "{file}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_profile_section_that_fails_fails_the_export() -> Result<()> {
+    let (ledger, graph) = graph_and_ledger(thin_supersession_events())?;
+    let failing = |decision_id: &str| -> Result<String> {
+        Err(query_error(format!("no profile for {decision_id}")).into())
+    };
+
+    let outcome = export_decision_log(
+        &graph,
+        &ledger,
+        &DecisionLogRequest::default(),
+        Some(&failing),
+    );
+
+    assert!(
+        outcome.is_err(),
+        "an export with a missing section is not returned"
+    );
+    Ok(())
 }
