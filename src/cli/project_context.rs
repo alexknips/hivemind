@@ -18,6 +18,10 @@
 //! 4. the actor's current project (`hivemind project use`)            -> `current_project`
 //! 5. none of the above: the personal project, with a reminder that
 //!    the folder is not attached                                      -> `personal_fallback`
+//!    ...unless the session is in a rig that no project in this ledger is anchored
+//!    to. That is a session writing to the wrong ledger, not a folder nobody attached
+//!    yet, so a capture is refused instead of filed (hivemind-zywz); a supersede,
+//!    whose project is the old decision's, is not.
 //!
 //! A change that spans folders (hivemind-s15q.14). The files the change touches -- the same
 //! working-tree diff plus staged set the situational query reads -- each name the marker
@@ -43,7 +47,7 @@ use std::path::{Path, PathBuf};
 use crate::commands::DeterminedProject;
 use crate::error::CliError;
 use crate::events::{ProjectAnchorKind, ProjectSource, TenantId};
-use crate::ledger::{EventLedger, TenantScopedLedger};
+use crate::ledger::{EventLedger, LedgerConfig, TenantScopedLedger};
 use crate::queries::{
     get_project_ancestries, get_project_by_anchor, ProjectAncestry, ProjectOutcome,
 };
@@ -108,6 +112,12 @@ pub(crate) enum ResolvedProject {
     },
     /// No rung matched. The write layer records the personal fallback itself.
     PersonalFallback,
+    /// No rung matched, but the session runs in `rig` and no project in this ledger is
+    /// anchored to it: the capture is heading for a ledger that does not know the place it
+    /// comes from. `ledger` says which one (never a credential). The write layer would file
+    /// it under the personal project, so a capture refuses it (`wrong_ledger_refusal`); a
+    /// supersede inherits the old decision's project and never reaches for a personal one.
+    UnanchoredRig { rig: String, ledger: String },
     /// The change touches folders attached to several projects that share no parent. The
     /// write layer records the personal fallback itself; the reply names `spanned` (sorted)
     /// so the decision can be moved or a parent registered.
@@ -136,8 +146,27 @@ impl ResolvedProject {
                 handle: parent,
                 source: ProjectSource::FolderMarker,
             }),
-            Self::PersonalFallback | Self::SpansUnrelated { .. } => None,
+            Self::PersonalFallback | Self::SpansUnrelated { .. } | Self::UnanchoredRig { .. } => {
+                None
+            }
         }
+    }
+
+    /// Why a capture must not be written with this outcome, or `None` when it may be. The
+    /// only refusal is a rig this ledger has no project for (hivemind-zywz): the message
+    /// names the rig and the ledger and gives the three ways out, so the caller can tell
+    /// "wrong ledger" from "folder nobody attached yet".
+    pub(crate) fn wrong_ledger_refusal(&self) -> Option<String> {
+        let Self::UnanchoredRig { rig, ledger } = self else {
+            return None;
+        };
+        Some(format!(
+            "this session runs in rig `{rig}` (GC_RIG), but no project in {ledger} is anchored to that rig, \
+             so this capture would be filed under your personal project in what looks like the wrong ledger. \
+             Write to the ledger that holds the rig's project (--tenant or HIVEMIND_TENANT, --hivemind-dir, \
+             or --database-url), anchor the rig here with `hivemind project anchor --handle <project> --kind rig --value {rig}`, \
+             or name the project yourself with --project <handle>."
+        ))
     }
 
     /// What the reply tells the reader about how the project was worked out, if anything.
@@ -153,6 +182,8 @@ impl ResolvedProject {
             Self::PersonalFallback => {
                 landed_in_personal.then(|| UNATTACHED_FOLDER_REMINDER.to_owned())
             }
+            // A capture never gets this far (it is refused first); a supersede inherits.
+            Self::UnanchoredRig { .. } => None,
             Self::SpansUnrelated { spanned } => {
                 landed_in_personal.then(|| spans_unrelated_reminder(spanned))
             }
@@ -169,6 +200,10 @@ pub(crate) trait ProjectContextSources {
 
     /// The rig this session runs in, if any.
     fn rig(&self) -> Option<String>;
+
+    /// Which ledger a capture would be written to, in words ("tenant `t` in the local ledger
+    /// under DIR"). Names the address only; never a database credential.
+    fn ledger_address(&self) -> String;
 
     /// Handle of the registered project anchored to `rig`. The one registry read.
     fn project_anchored_to_rig(&self, rig: &str) -> Result<Option<String>>;
@@ -200,12 +235,16 @@ pub(crate) fn resolve_project_from_context(
         return Ok(project);
     }
 
+    let mut unanchored_rig = None;
     if let Some(rig) = sources.rig() {
-        if let Some(handle) = sources.project_anchored_to_rig(&rig)? {
-            return Ok(ResolvedProject::Determined {
-                handle,
-                source: ProjectSource::Rig,
-            });
+        match sources.project_anchored_to_rig(&rig)? {
+            Some(handle) => {
+                return Ok(ResolvedProject::Determined {
+                    handle,
+                    source: ProjectSource::Rig,
+                });
+            }
+            None => unanchored_rig = Some(rig),
         }
     }
 
@@ -216,7 +255,13 @@ pub(crate) fn resolve_project_from_context(
         });
     }
 
-    Ok(ResolvedProject::PersonalFallback)
+    Ok(match unanchored_rig {
+        Some(rig) => ResolvedProject::UnanchoredRig {
+            rig,
+            ledger: sources.ledger_address(),
+        },
+        None => ResolvedProject::PersonalFallback,
+    })
 }
 
 /// The folder-marker rung. The projects the change's own files are attached to when it
@@ -356,6 +401,8 @@ struct LedgerProjectSources<'a, L: EventLedger> {
     ledger: &'a L,
     tenant: &'a TenantId,
     hivemind_dir: &'a Path,
+    /// See [`ProjectContextSources::ledger_address`].
+    ledger_address: String,
 }
 
 impl<L: EventLedger> ProjectContextSources for LedgerProjectSources<'_, L> {
@@ -373,6 +420,10 @@ impl<L: EventLedger> ProjectContextSources for LedgerProjectSources<'_, L> {
 
     fn rig(&self) -> Option<String> {
         self.env.rig.clone()
+    }
+
+    fn ledger_address(&self) -> String {
+        self.ledger_address.clone()
     }
 
     fn project_anchored_to_rig(&self, rig: &str) -> Result<Option<String>> {
@@ -445,8 +496,8 @@ pub(crate) fn resolve_project_in_ledger<L: EventLedger + ?Sized>(
     stated: Option<DeterminedProject<'_>>,
     env: &ProjectContextEnv,
     ledger: &L,
+    ledger_config: &LedgerConfig,
     tenant: &TenantId,
-    hivemind_dir: &Path,
 ) -> Result<ResolvedProject> {
     let scoped = TenantScopedLedger::new(ledger, tenant.clone());
     resolve_project_from_context(
@@ -455,7 +506,8 @@ pub(crate) fn resolve_project_in_ledger<L: EventLedger + ?Sized>(
             env,
             ledger: &scoped,
             tenant,
-            hivemind_dir,
+            hivemind_dir: &ledger_config.hivemind_dir,
+            ledger_address: ledger_config.address(tenant),
         },
     )
 }

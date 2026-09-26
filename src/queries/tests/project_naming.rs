@@ -40,6 +40,11 @@ fn propose(
     topic: &str,
     project: Option<&str>,
 ) -> Result<String> {
+    // A registered project's topic vocabulary is explicit (hivemind-zywz): declare the topic
+    // this decision files under (declaring a key the project has records nothing).
+    if let Some(handle) = project {
+        commands.declare_project_topic(actor, handle, topic)?;
+    }
     let option_id = commands.record_option(actor, "Per seat", "Charge each seat")?;
     let decision_id = commands.propose_decision(DecisionProposalInput {
         grounding: Grounding::NotAsked,

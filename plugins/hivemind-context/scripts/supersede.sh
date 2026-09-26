@@ -11,7 +11,7 @@ Usage:
                (--rests-on-decision "..." | --rests-on-evidence "..." \
                 --evidence-source "..." | --rests-on-assumption "..." | --bet ["..."]) \
                [--would-change-if "..."] [--check-by DATE] [--confidence low|medium|high] \
-               [--project HANDLE] [--old ID] [--pick N] [--topic T]
+               [--project HANDLE] [--declare-topic KEY,...] [--old ID] [--pick N] [--topic T]
 
   supersede.sh '#1' --title "..." --rationale "..." --bet   # resolve candidate #1
 
@@ -30,7 +30,9 @@ anchored to the Gas City rig, then your `hivemind project use` setting);
 --project HANDLE names it outright and wins. When none applies, the
 replacement stays in the project the decision it replaces is filed in now
 (after a move, the project it was moved to). A decision saved to a personal
-project is replaced into your own personal project.
+project is replaced into your own personal project. Under a registered project
+the replacement may use only that project's declared topic keys; --declare-topic
+KEY adds a new one (it must be one of --topic-keys).
 
 Replace an existing decision by description, never by guessing an id. This
 is a WRITE verb: the ambiguity gate is strict here. If the description does

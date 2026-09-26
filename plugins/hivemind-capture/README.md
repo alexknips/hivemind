@@ -134,6 +134,17 @@ folder. `hivemind project anchor --kind folder` only records a fact about the
 project and does not attach the folder; the marker file is what a capture reads,
 and `--kind rig` with the rig's name is what binds a Gas City rig.
 
+A session in a Gas City rig that no project in the ledger is anchored to is
+refused instead of filed under the personal project: it is writing to the wrong
+ledger, and the refusal names the rig, the ledger, and the ways out. A folder
+marker, a rig anchor, or a current project is tried first.
+
+Topic keys are declared per project. A capture under a registered project may use
+only the keys that project declared; pass `--declare-topic KEY` (each also in
+`--topic-keys`) to add a new one, and the confirmation lists what was declared.
+`hivemind project show billing` lists a project's keys. A personal project has no
+vocabulary.
+
 A capture from an attached folder confirms with the project and how it was
 found instead, for example `project: billing (folder_marker)`. Evidence and
 hypothesis captures carry no project. `/hivemind-context:supersede` works the

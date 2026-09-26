@@ -1530,7 +1530,8 @@ impl DecisionIndex {
                 | EventPayload::ProjectLinked(_)
                 | EventPayload::ProjectUnlinked(_)
                 | EventPayload::ProjectAnchored(_)
-                | EventPayload::ProjectUnanchored(_) => {}
+                | EventPayload::ProjectUnanchored(_)
+                | EventPayload::ProjectTopicDeclared(_) => {}
                 EventPayload::DecisionMoved(payload) => {
                     index
                         .decisions
@@ -1775,7 +1776,8 @@ fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
         | EventPayload::ProjectLinked(_)
         | EventPayload::ProjectUnlinked(_)
         | EventPayload::ProjectAnchored(_)
-        | EventPayload::ProjectUnanchored(_) => HistoryChangeKind::ContextChange,
+        | EventPayload::ProjectUnanchored(_)
+        | EventPayload::ProjectTopicDeclared(_) => HistoryChangeKind::ContextChange,
     }
 }
 
@@ -1855,7 +1857,8 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
         | EventPayload::ProjectLinked(_)
         | EventPayload::ProjectUnlinked(_)
         | EventPayload::ProjectAnchored(_)
-        | EventPayload::ProjectUnanchored(_) => {}
+        | EventPayload::ProjectUnanchored(_)
+        | EventPayload::ProjectTopicDeclared(_) => {}
     }
     ids.into_iter().collect()
 }
@@ -1996,7 +1999,8 @@ fn affected_nodes_for_event(event: &Event, payload: &EventPayload) -> Vec<Affect
         | EventPayload::ProjectLinked(_)
         | EventPayload::ProjectUnlinked(_)
         | EventPayload::ProjectAnchored(_)
-        | EventPayload::ProjectUnanchored(_) => {}
+        | EventPayload::ProjectUnanchored(_)
+        | EventPayload::ProjectTopicDeclared(_) => {}
     }
     nodes.into_iter().collect()
 }

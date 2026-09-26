@@ -719,8 +719,12 @@ fn mcp_scan_misfiled_decisions(
     cache: &Arc<GraphCache>,
 ) -> McpToolResult {
     let core_args = ScanMisfiledDecisionsArgs::from_json(&args)?;
+    let provider = HttpLedgerProvider {
+        backend,
+        tenant_id: &ctx.tenant_id,
+    };
     let graph = mcp_open_graph(backend, ctx, cache)?;
-    let output = crate::mcp::core::scan_misfiled_decisions(&*graph, core_args)?;
+    let output = crate::mcp::core::scan_misfiled_decisions(&provider, &*graph, core_args)?;
     Ok(output.into_value())
 }
 

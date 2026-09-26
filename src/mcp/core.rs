@@ -43,7 +43,7 @@ use crate::grounding::{
     premise_cycle_refusal, resolve_grounding, GroundingResolution, GroundingSpec,
     WIRE_GROUNDING_REFUSAL,
 };
-use crate::ledger::{AnyLedger, EventLedger};
+use crate::ledger::{AnyLedger, EventLedger, TenantScopedLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::quality_profile::{
     self, parse_kinds, ScanRequest, SuggestionsRequest, SCAN_DEFAULT_LIMIT,
@@ -54,11 +54,12 @@ use crate::queries::{
     get_decision_context as query_get_decision_context, get_decision_context_candidates,
     get_decision_neighborhood as query_get_decision_neighborhood, get_decision_quality_candidates,
     get_recent_decisions, get_supersession_chain as query_get_supersession_chain,
-    misfiled_next_cursor, outcome_next_cursor, resolve_decision_by_description,
-    scan_misfiled_decisions as query_scan_misfiled_decisions, DecisionContextRequest,
-    DecisionQualityCandidatesRequest, DecisionStatus, FailureAttributionRequest,
-    MisfiledScanRequest, NeighborhoodRequest, QueryContext, QueryResponse,
-    RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome, SituationalRequest,
+    misfiled_next_cursor, outcome_next_cursor, require_registered_project,
+    resolve_decision_by_description, scan_misfiled_decisions as query_scan_misfiled_decisions,
+    DecisionContextRequest, DecisionQualityCandidatesRequest, DecisionStatus,
+    FailureAttributionRequest, MisfiledScanRequest, NeighborhoodRequest, QueryContext,
+    QueryResponse, RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome,
+    SituationalRequest,
 };
 use crate::summarize::{RecallRequest, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT};
 
@@ -219,6 +220,12 @@ fn insert_placement(reply: &mut Value, placement: &DecisionPlacement) {
         if let Some(notice) = placement.notice() {
             reply.insert("project_notice".to_owned(), json!(notice));
         }
+        if !placement.declared_topics.is_empty() {
+            reply.insert(
+                "declared_topics".to_owned(),
+                json!(placement.declared_topics),
+            );
+        }
     }
 }
 
@@ -276,6 +283,9 @@ pub(crate) struct CaptureDecisionArgs {
     pub(crate) project: Option<String>,
     /// How `project` was determined; `stated` when omitted. Requires `project`.
     pub(crate) project_source: Option<ProjectSource>,
+    /// Topic keys this capture adds to its project's vocabulary; each must be one of
+    /// `topic_keys`. See `Commands::declaring_topics`.
+    pub(crate) declare_topics: Vec<String>,
 }
 
 /// Parse and require the wire grounding shared by `capture_decision`, `supersede_decision` and
@@ -425,6 +435,7 @@ impl CaptureDecisionArgs {
             answers,
             project,
             project_source,
+            declare_topics: optional_string_array(args, "declare_topics")?,
         })
     }
 }
@@ -452,7 +463,8 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
             handle.tenant_id,
             EventProvenance::agent(args.actor_id.clone()),
         ),
-    );
+    )
+    .declaring_topics(&args.declare_topics);
 
     let mut option_ids: Vec<String> = Vec::with_capacity(args.options.len());
     let mut option_labels: Vec<String> = Vec::with_capacity(args.options.len());
@@ -1077,6 +1089,9 @@ pub(crate) struct SupersedeDecisionArgs {
     pub(crate) project: Option<String>,
     /// How `project` was determined; `stated` when omitted. Requires `project`.
     pub(crate) project_source: Option<ProjectSource>,
+    /// Topic keys this supersession adds to its project's vocabulary; each must be one of the
+    /// keys it ends up with. See `Commands::declaring_topics`.
+    pub(crate) declare_topics: Vec<String>,
 }
 
 impl SupersedeDecisionArgs {
@@ -1100,6 +1115,7 @@ impl SupersedeDecisionArgs {
             still_proposed: optional_bool(args, "still_proposed")?,
             grounding: require_wire_grounding(args, WIRE_GROUNDING_REFUSAL)?,
             expressed_confidence: optional_string(args, "expressed_confidence")?,
+            declare_topics: optional_string_array(args, "declare_topics")?,
         })
     }
 }
@@ -1144,7 +1160,8 @@ pub(crate) fn supersede_decision<P: LedgerProvider>(
             handle.tenant_id.clone(),
             EventProvenance::agent(args.actor_id.clone()),
         ),
-    );
+    )
+    .declaring_topics(&args.declare_topics);
     let outcome = commands
         .supersede(SupersedeInput {
             project: determined_project(args.project.as_deref(), args.project_source),
@@ -1846,6 +1863,8 @@ impl ScanMisfiledDecisionsArgs {
         Ok(Self {
             request: MisfiledScanRequest {
                 foreign_topic_keys: require_string_array(args, "foreign_topic_keys")?,
+                project: optional_string(args, "project")?,
+                move_to: optional_string(args, "move_to")?,
                 limit: optional_usize(args, "limit")?.unwrap_or(25),
                 cursor: optional_string(args, "cursor")?,
             },
@@ -1856,10 +1875,26 @@ impl ScanMisfiledDecisionsArgs {
 /// The core for the `scan_misfiled_decisions` MCP tool: one page of decisions carrying a topic key
 /// the caller named as foreign to this ledger, `next_cursor` set when more follow. A report only:
 /// nothing is moved.
-pub(crate) fn scan_misfiled_decisions(
+///
+/// The scan reads the graph, which has no project registry, so a `project` or `move_to` handle is
+/// checked against the ledger first: a typo is a refusal, never "nothing misfiled".
+pub(crate) fn scan_misfiled_decisions<P: LedgerProvider>(
+    provider: &P,
     graph: &impl GraphView,
     args: ScanMisfiledDecisionsArgs,
 ) -> Result<ToolOutput, CoreError> {
+    if args.request.project.is_some() || args.request.move_to.is_some() {
+        let handle = provider.ledger()?;
+        let scoped = TenantScopedLedger::new(&handle.ledger, handle.tenant_id.clone());
+        for project in args
+            .request
+            .project
+            .iter()
+            .chain(args.request.move_to.iter())
+        {
+            require_registered_project(&scoped, project).map_err(CoreError::from)?;
+        }
+    }
     let response = query_scan_misfiled_decisions(graph, &args.request).map_err(CoreError::from)?;
     paged_output(
         &response,

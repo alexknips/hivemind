@@ -3376,6 +3376,8 @@ fn memory_graph_scan_misfiled_decisions_flags_foreign_topics() -> Result<()> {
         &graph,
         &MisfiledScanRequest {
             foreign_topic_keys: vec!["Beadline".to_owned(), "GC".to_owned()],
+            project: None,
+            move_to: None,
             limit: 100,
             cursor: None,
         },
@@ -3421,6 +3423,8 @@ fn memory_graph_scan_misfiled_decisions_requires_foreign_topic_keys() {
         &graph,
         &MisfiledScanRequest {
             foreign_topic_keys: Vec::new(),
+            project: None,
+            move_to: None,
             limit: 100,
             cursor: None,
         },
@@ -3437,6 +3441,8 @@ fn memory_graph_scan_misfiled_decisions_paginates() -> Result<()> {
         &graph,
         &MisfiledScanRequest {
             foreign_topic_keys: vec!["beadline".to_owned(), "gc".to_owned()],
+            project: None,
+            move_to: None,
             limit: 2,
             cursor: None,
         },
@@ -3449,6 +3455,8 @@ fn memory_graph_scan_misfiled_decisions_paginates() -> Result<()> {
         &graph,
         &MisfiledScanRequest {
             foreign_topic_keys: vec!["beadline".to_owned(), "gc".to_owned()],
+            project: None,
+            move_to: None,
             limit: 2,
             cursor: Some(cursor),
         },

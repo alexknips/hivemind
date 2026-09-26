@@ -246,6 +246,9 @@ if command -v "$HIVEMIND_BIN" > /dev/null 2>&1; then
   # A folder attached to a registered project files the capture there: no fallback, no reminder.
   "$CLI_BIN" --hivemind-dir "$CLI_DATA_DIR" --actor "agent:e2e:smoke-cli" --tenant "$TENANT" \
     project register e2e-smoke-project > /dev/null 2>&1 || true
+  # A registered project's topic keys are declared (hivemind-zywz); the capture below uses these.
+  "$CLI_BIN" --hivemind-dir "$CLI_DATA_DIR" --actor "agent:e2e:smoke-cli" --tenant "$TENANT" \
+    project declare-topic e2e-smoke-project e2e tooling > /dev/null 2>&1 || true
   mkdir -p "$CLI_DATA_DIR/attached/src"
   printf 'e2e-smoke-project\n' > "$CLI_DATA_DIR/attached/.hivemind-project"
   cli_marker_out=$(cd "$CLI_DATA_DIR/attached/src" && "$CLI_BIN" \

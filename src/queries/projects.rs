@@ -18,7 +18,7 @@ use crate::commands::{
 };
 use crate::events::{
     EventType, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload,
-    ProjectRegisteredPayload,
+    ProjectRegisteredPayload, ProjectTopicDeclaredPayload,
 };
 use crate::ledger::EventLedger;
 use crate::projector::{GraphParams, GraphRow, GraphValue, GraphView, NodeKind, RelationKind};
@@ -35,6 +35,14 @@ use super::QueryResponse;
 pub struct ProjectAnchorView {
     pub kind: String,
     pub value: String,
+}
+
+/// One key of a project's topic vocabulary and the ledger offset of the declaration that
+/// added it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProjectTopicFact {
+    pub topic_key: String,
+    pub event_origin: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -54,6 +62,10 @@ pub struct ProjectView {
     /// registered, always resolves, no anchors or links (see `get_project`).
     pub personal: bool,
     pub anchors: Vec<ProjectAnchorView>,
+    /// The topic keys a capture into this project may use, in key order. Empty for a personal
+    /// project, which has no vocabulary, and for a project nobody has declared a key for yet
+    /// (a capture into it must declare the keys it uses).
+    pub topics: Vec<ProjectTopicFact>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub part_of: Option<ProjectLinkFact>,
     pub depends_on: Vec<ProjectLinkFact>,
@@ -164,6 +176,8 @@ struct ProjectRecord {
     purpose: Option<String>,
     registered_event_origin: i64,
     anchors: Vec<ProjectAnchorView>,
+    /// Declared topic keys, each with the offset of its first declaration.
+    topics: BTreeMap<String, i64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -252,6 +266,19 @@ pub(super) fn collect_project_registry(ledger: &impl EventLedger) -> Result<Proj
                     }
                 }
             }
+            EventType::ProjectTopicDeclared => {
+                if let Ok(payload) =
+                    serde_json::from_value::<ProjectTopicDeclaredPayload>(event.payload.clone())
+                {
+                    registry
+                        .projects
+                        .entry(payload.handle)
+                        .or_default()
+                        .topics
+                        .entry(payload.topic_key)
+                        .or_insert(event_origin);
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -326,6 +353,14 @@ fn project_view(handle: &str, record: &ProjectRecord, registry: &ProjectRegistry
         purpose: record.purpose.clone(),
         personal: false,
         anchors: record.anchors.clone(),
+        topics: record
+            .topics
+            .iter()
+            .map(|(topic_key, event_origin)| ProjectTopicFact {
+                topic_key: topic_key.clone(),
+                event_origin: *event_origin,
+            })
+            .collect(),
         part_of: registry.part_of.get(handle).cloned(),
         depends_on: registry.depends_on.get(handle).cloned().unwrap_or_default(),
         registered_event_origin: Some(record.registered_event_origin),
@@ -344,6 +379,7 @@ fn personal_project_view(handle: &str) -> ProjectView {
         purpose: None,
         personal: true,
         anchors: Vec::new(),
+        topics: Vec::new(),
         part_of: None,
         depends_on: Vec::new(),
         registered_event_origin: None,
