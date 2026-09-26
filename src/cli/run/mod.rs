@@ -660,6 +660,7 @@ fn run_slack_app(cli: &Cli, args: &SlackAppArgs) -> Result<String> {
             let manifest = slack_app_manifest(
                 &args.request_url,
                 args.event_url.as_deref(),
+                args.interactivity_url.as_deref(),
                 args.redirect_url.as_deref(),
             )?;
             format_json_value(cli.json, &manifest)

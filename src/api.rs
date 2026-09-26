@@ -155,6 +155,11 @@ pub struct ApiConfig {
     /// to verify the signature-less-by-team `url_verification` handshake
     /// and to populate new installs created via OAuth.
     pub slack_signing_secret: Option<String>,
+    /// Root of the Slack Web API the front door calls back into
+    /// (`HIVEMIND_SLACK_API_BASE_URL`); `None` = `https://slack.com/api`. The
+    /// front door's outbound calls (`views.open`, `conversations.history`) go
+    /// here, so pointing it at a stand-in keeps them off the real Slack.
+    pub slack_api_base_url: Option<String>,
 }
 
 impl ApiConfig {
@@ -202,6 +207,9 @@ impl ApiConfig {
             slack_client_id: std::env::var("HIVEMIND_SLACK_CLIENT_ID").ok(),
             slack_client_secret: std::env::var("HIVEMIND_SLACK_CLIENT_SECRET").ok(),
             slack_signing_secret: std::env::var("HIVEMIND_SLACK_SIGNING_SECRET").ok(),
+            slack_api_base_url: std::env::var("HIVEMIND_SLACK_API_BASE_URL")
+                .ok()
+                .filter(|url| !url.is_empty()),
         }
     }
 
@@ -375,6 +383,8 @@ pub struct AppState {
     slack_client_secret: Option<String>,
     /// App-level Slack signing secret — see `ApiConfig::slack_signing_secret`.
     slack_app_signing_secret: Option<String>,
+    /// Outbound Slack Web API client — see `api::slack::web`.
+    slack_web: slack::SlackWebClient,
 }
 
 impl AppState {
@@ -382,6 +392,7 @@ impl AppState {
         // Fetch WorkOS config and JWKS once at startup (blocking I/O, pre-tokio).
         let (workos_config, cached_jwks) = auth::build_workos_state(config);
         let workos_jwks = Arc::new(RwLock::new(cached_jwks));
+        let slack_web = slack::SlackWebClient::new(config.slack_api_base_url.as_deref())?;
 
         #[cfg(feature = "shared-backend-postgres")]
         if let Some(ref url) = config.database_url {
@@ -411,6 +422,7 @@ impl AppState {
                 slack_client_id: config.slack_client_id.clone(),
                 slack_client_secret: config.slack_client_secret.clone(),
                 slack_app_signing_secret: config.slack_signing_secret.clone(),
+                slack_web,
             });
         }
 
@@ -437,6 +449,7 @@ impl AppState {
             slack_client_id: config.slack_client_id.clone(),
             slack_client_secret: config.slack_client_secret.clone(),
             slack_app_signing_secret: config.slack_signing_secret.clone(),
+            slack_web,
         })
     }
 }
@@ -630,6 +643,10 @@ fn build_router(state: AppState) -> Router {
         // extract_ctx's bearer/JWT path. See api::slack's module docs.
         .route("/v1/slack/events", post(slack::events_handler))
         .route("/v1/slack/commands", post(slack::commands_handler))
+        .route(
+            "/v1/slack/interactivity",
+            post(slack::interactivity_handler),
+        )
         .route(
             "/v1/slack/oauth/callback",
             get(slack::oauth_callback_handler),

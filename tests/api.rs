@@ -36,6 +36,7 @@ fn app(hivemind_dir: PathBuf) -> axum::Router {
         slack_client_id: None,
         slack_client_secret: None,
         slack_signing_secret: None,
+        slack_api_base_url: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -58,6 +59,7 @@ fn app_with_key(hivemind_dir: PathBuf, key: &str) -> axum::Router {
         slack_client_id: None,
         slack_client_secret: None,
         slack_signing_secret: None,
+        slack_api_base_url: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -80,6 +82,7 @@ fn app_with_cors(hivemind_dir: PathBuf, origins: Vec<String>) -> axum::Router {
         slack_client_id: None,
         slack_client_secret: None,
         slack_signing_secret: None,
+        slack_api_base_url: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -1523,6 +1526,7 @@ mod classify_queue_postgres {
             slack_client_id: None,
             slack_client_secret: None,
             slack_signing_secret: None,
+            slack_api_base_url: None,
         };
         hivemind::api::create_router(&config)
     }
@@ -2229,6 +2233,7 @@ async fn cors_auth_still_enforced_on_cross_origin_request() {
         slack_client_id: None,
         slack_client_secret: None,
         slack_signing_secret: None,
+        slack_api_base_url: None,
     };
     let req = Request::builder()
         .method("GET")
@@ -2269,6 +2274,7 @@ fn app_with_admin_key(hivemind_dir: PathBuf, admin_key: &str) -> axum::Router {
         slack_client_id: None,
         slack_client_secret: None,
         slack_signing_secret: None,
+        slack_api_base_url: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -2987,6 +2993,7 @@ fn app_with_shared_and_admin_keys(
         slack_client_id: None,
         slack_client_secret: None,
         slack_signing_secret: None,
+        slack_api_base_url: None,
     };
     hivemind::api::create_router(&config)
 }
@@ -3018,6 +3025,7 @@ fn app_with_auth(
         slack_client_id: None,
         slack_client_secret: None,
         slack_signing_secret: None,
+        slack_api_base_url: None,
     };
     hivemind::api::create_router(&config)
 }
