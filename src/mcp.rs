@@ -45,9 +45,9 @@ use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
 use core::{
     CaptureDecisionArgs, CompactViewArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
-    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSupersessionChainArgs,
-    GroundDecisionArgs, LedgerHandle, LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs,
-    ScanDecisionQualityArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
+    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSuggestionsArgs,
+    GetSupersessionChainArgs, GroundDecisionArgs, LedgerHandle, LedgerProvider, MoveDecisionArgs,
+    RecallDecisionsArgs, ScanDecisionQualityArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
 };
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -352,6 +352,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "decision_context_candidates" => tool_decision_context_candidates(arguments, config),
         "score_decision" => tool_score_decision(arguments, config),
         "scan_decision_quality" => tool_scan_decision_quality(arguments, config),
+        "get_suggestions" => tool_get_suggestions(arguments, config),
         "scan_misfiled_decisions" => tool_scan_misfiled_decisions(arguments, config),
         "analyze_failure_modes" => tool_analyze_failure_modes(arguments, config),
         "get_relevant_decisions" => tool_get_relevant_decisions(arguments, config),
@@ -875,6 +876,47 @@ pub fn tool_definitions() -> Vec<Value> {
                     "evidence_window_days": {
                         "type": "integer",
                         "description": "Days after which the newest evidence linked to a decision counts as not re-checked (default 90)."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum findings to return (1–1000, default 25)."
+                    },
+                    "cursor": {
+                        "type": "string",
+                        "description": "Pagination cursor: the `data.next_cursor` of a previous response."
+                    }
+                }
+            }
+        }),
+        json!({
+            "name": "get_suggestions",
+            "description": "One page of what needs a look and has not been dealt with: the attention findings of scan_decision_quality (same kinds, same shape: finding_id, kind, decision_id, the reason in words, the node ids it rests on, basis_at when the graph records one, and the dimensions it bears on with their levels and reasons), without the findings that have been acknowledged (matched by finding_id) unless exclude_acknowledged is false. A finding's finding_id changes when its basis does, so a finding whose premise moved on after it was acknowledged is shown again. The page is filled from the findings that remain: it holds limit findings whenever that many remain, and when truncated is true, data.next_cursor resumes. Nothing records an acknowledgement yet, so today both settings return the same findings as scan_decision_quality. Findings are ordered by decision id, not by priority; this is not a ranking or a grade. No LLM involved; works self-hosted.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kinds": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "bet_past_check_date",
+                                "premise_superseded",
+                                "premise_rejected",
+                                "assumption_refuted",
+                                "bet_failed",
+                                "evidence_not_rechecked"
+                            ]
+                        },
+                        "description": "Only these kinds of finding. Omit for all six."
+                    },
+                    "evidence_window_days": {
+                        "type": "integer",
+                        "description": "Days after which the newest evidence linked to a decision counts as not re-checked (default 90)."
+                    },
+                    "exclude_acknowledged": {
+                        "type": "boolean",
+                        "default": true,
+                        "description": "Leave out findings that have been acknowledged: what is new since you last looked (default true). False returns every finding."
                     },
                     "limit": {
                         "type": "integer",
@@ -1427,6 +1469,14 @@ fn tool_scan_decision_quality(
     let core_args = ScanDecisionQualityArgs::from_json(&args)?;
     let graph = open_memory_graph(config)?;
     let output = core::scan_decision_quality(&graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn tool_get_suggestions(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let core_args = GetSuggestionsArgs::from_json(&args)?;
+    let graph = open_memory_graph(config)?;
+    let output = core::get_suggestions(&graph, core_args)?;
     Ok(output.into_value())
 }
 

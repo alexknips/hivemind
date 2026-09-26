@@ -32,6 +32,16 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`get_suggestions` returns what needs a look and has not been dealt with.** A new MCP tool
+  on the stdio server and the HTTP endpoint, and `hivemind query get_suggestions`: the
+  attention findings of `scan_decision_quality`, less the ones that have been acknowledged
+  (matched by `finding_id`). `exclude_acknowledged` (`--exclude-acknowledged` on the CLI) is
+  true by default; false returns every finding. The page is filled from the findings that
+  remain, so it holds `limit` findings whenever that many remain and `truncated` is exact. A
+  finding whose basis changed has a new `finding_id`, so an old acknowledgement never hides
+  it. Nothing records an acknowledgement yet, so today both settings return the same findings
+  as the scan. Same arguments, response shape and refusals as `scan_decision_quality`; no
+  score, no tier. (hivemind-m306.4.1)
 - **`GET /v1/graph` says who decided what and whether it held up.** Every `decisions[]` entry
   carries its derived `status` (`proposed`, `accepted`, `rejected`, `contested`, `superseded`)
   and `deciders` (the actors who accepted it, each with `kind` `human` or `agent`; empty until

@@ -1574,6 +1574,10 @@ pub enum QueryCommand {
     /// premise that changed, evidence nobody re-checked), each with the dimensions it bears on.
     #[command(name = "scan_decision_quality")]
     ScanDecisionQuality(QueryScanDecisionQualityArgs),
+    /// One page of attention findings without the ones someone has acknowledged (the findings of
+    /// `scan_decision_quality`, less what has been dealt with): what is new since you last looked.
+    #[command(name = "get_suggestions")]
+    GetSuggestions(QueryGetSuggestionsArgs),
     /// Flag decisions carrying a caller-named "foreign" topic key — a decision
     /// tagged with another ledger's name most likely belongs there instead.
     /// Read-only: report only, never moves anything (see hivemind-s15q C1).
@@ -2130,6 +2134,22 @@ pub struct QueryScanDecisionQualityArgs {
     /// Pagination cursor: the `next_cursor` of a previous response.
     #[arg(long)]
     pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct QueryGetSuggestionsArgs {
+    #[command(flatten)]
+    pub scan: QueryScanDecisionQualityArgs,
+
+    /// Leave out findings someone has acknowledged (default true, what is new since you last
+    /// looked). `--exclude-acknowledged false` returns every finding.
+    #[arg(
+        long = "exclude-acknowledged",
+        default_value_t = true,
+        action = ArgAction::Set,
+        value_name = "BOOL"
+    )]
+    pub exclude_acknowledged: bool,
 }
 
 #[derive(Debug, Clone, Args)]

@@ -34,7 +34,7 @@ use crate::ingest::{
 use crate::ledger::PostgresEventLedger;
 use crate::ledger::{AnyLedger, EventLedger, LedgerConfig, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
-use crate::quality_profile::{self, parse_kinds, ScanRequest};
+use crate::quality_profile::{self, parse_kinds, ScanRequest, SuggestionsRequest};
 use crate::queries::{
     decisions_in_project, derive_decision_status, export_decision_log, export_read_only_summary,
     get_active_decision_blockers, get_blocker_notification_candidates, get_compact_view,
@@ -78,9 +78,10 @@ use super::args::{
     ProjectRegisterArgs, ProjectShowArgs, ProjectSourceArg, ProjectUseArgs, QualityScanArgs,
     QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand,
     QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs,
-    QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
-    QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
-    SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs, TuiArgs,
+    QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
+    QueryScanDecisionQualityArgs, QuerySearchDecisionsArgs, QuerySituationalArgs, QuickstartArgs,
+    ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand, SupersedeArgs, TenantArgs, TenantCommand,
+    TenantCreateArgs, TuiArgs,
 };
 use super::current_project::CurrentProjectStore;
 use super::project_context::{resolve_project_in_ledger, ProjectContextEnv, ResolvedProject};
@@ -2174,6 +2175,7 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
         | QueryCommand::GetBlockerNotificationCandidates(_)
         | QueryCommand::ScoreDecision(_)
         | QueryCommand::ScanDecisionQuality(_)
+        | QueryCommand::GetSuggestions(_)
         | QueryCommand::ScanMisfiledDecisions(_)
         | QueryCommand::GetSituationalDecisions(_) => {
             return Err(
@@ -2719,6 +2721,16 @@ fn parse_utc_timestamp(
     }
 }
 
+/// The findings a `scan_decision_quality` or `get_suggestions` command asks for.
+fn scan_request(args: &QueryScanDecisionQualityArgs) -> Result<ScanRequest> {
+    Ok(ScanRequest {
+        kinds: parse_kinds(&args.kinds).map_err(CliError::InvalidInput)?,
+        limit: args.limit,
+        cursor: args.cursor.clone(),
+        evidence_window_days: args.evidence_window_days,
+    })
+}
+
 fn run_query_with_graph(
     context: &QueryContext,
     ledger: &AnyLedger,
@@ -2928,13 +2940,21 @@ fn run_query_with_graph(
             format_query_response(query.summary, &response, render_score_report_summary, None)?
         }
         QueryCommand::ScanDecisionQuality(args) => {
-            let request = ScanRequest {
-                kinds: parse_kinds(&args.kinds).map_err(CliError::InvalidInput)?,
-                limit: args.limit,
-                cursor: args.cursor.clone(),
-                evidence_window_days: args.evidence_window_days,
-            };
+            let request = scan_request(args)?;
             let response = quality_profile::scan_decision_quality(graph, &request)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_scan_report_summary,
+                response.data.next_cursor.as_deref(),
+            )?
+        }
+        QueryCommand::GetSuggestions(args) => {
+            let request = SuggestionsRequest {
+                scan: scan_request(&args.scan)?,
+                exclude_acknowledged: args.exclude_acknowledged,
+            };
+            let response = quality_profile::get_suggestions(graph, &request)?;
             format_query_response(
                 query.summary,
                 &response,

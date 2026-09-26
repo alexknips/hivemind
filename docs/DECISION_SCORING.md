@@ -1,9 +1,10 @@
 # Decision Scoring
 
 > **Status: shipped as a quality *profile* and a list of *attention findings*. There is
-> no score.** `score_decision` returns the profile of one decision and
-> `scan_decision_quality` returns one page of attention findings, on the stdio MCP
-> server, the HTTP MCP endpoint and the CLI. Both are read on demand from what the
+> no score.** `score_decision` returns the profile of one decision,
+> `scan_decision_quality` returns one page of attention findings and `get_suggestions`
+> returns the same page without the findings someone has acknowledged, on the stdio MCP
+> server, the HTTP MCP endpoint and the CLI. All are read on demand from what the
 > ledger states, with no model and no network. No response carries a composite number,
 > a tier or a grade. **Deferred, not built:** Composite, Confidence, Reputation,
 > Importance, and model assessments beside the floors (see [Deferred](#deferred-not-built)).
@@ -221,18 +222,26 @@ findings that appear or vanish between two pages never make a consumer skip or
 repeat one that stood throughout. Findings are never dropped silently, and no
 request returns the whole graph.
 
+A request may list findings to leave out, by `finding_id`. They are left out before
+the page is cut, not after: the page is filled from the findings that remain, so it
+holds `limit` of them whenever that many remain, and `truncated` is true only when
+another finding that was not left out follows.
+
 A page issues 12 bulk reads (`GROUNDING_FACT_READS`: who superseded, accepted or
 rejected which decision; the `FOLLOWS_FROM`, `BASED_ON`, `PREMISED_ON_DIRECT`,
 `PREMISED_ON` and `CHOSE` links; the hypothesis and evidence rows; what refutes or
 supports a hypothesis), however many decisions there are, plus one anchored read
-for each distinct superseding decision on the page, at most `limit` more. The
-rows those reads return grow with the grounding links, hypotheses and evidence,
-not with decisions times a per-decision cost. Nothing walks the premise graph, so
-a `FOLLOWS_FROM` cycle cannot loop and costs nothing extra.
+for each distinct superseding decision on the page, at most `limit` more. When
+findings are left out, the same anchored read is made for each one stepped over on
+the way to a full page: the extra cost grows with the findings left out that sort
+before the end of the page, and stops there. The rows those reads return grow with
+the grounding links, hypotheses and evidence, not with decisions times a per-decision
+cost. Nothing walks the premise graph, so a `FOLLOWS_FROM` cycle cannot loop and
+costs nothing extra.
 
 ## What the tools return
 
-One core, `src/quality_profile/report.rs`, builds both answers. The stdio server, the
+One core, `src/quality_profile/report.rs`, builds every answer. The stdio server, the
 HTTP endpoint and the CLI each parse their own arguments, call it and serialize what it
 returns, so the three cannot drift (`transport_parity` tests run the same ledger through
 all three). Responses use the usual envelope: `result_count`, `truncated`, `latency_ms`
@@ -242,6 +251,7 @@ and `data`.
 | --- | --- | --- |
 | Profile of one decision | `score_decision {decision_id}` | `hivemind query score_decision --id <id>` |
 | A page of findings | `scan_decision_quality {kinds?, evidence_window_days?, limit?, cursor?}` | `hivemind query scan_decision_quality [--kind a,b] [--evidence-window-days N] [--limit N] [--cursor C]` |
+| A page of findings not yet acknowledged | `get_suggestions {kinds?, evidence_window_days?, exclude_acknowledged?, limit?, cursor?}` | `hivemind query get_suggestions [--kind a,b] [--evidence-window-days N] [--exclude-acknowledged BOOL] [--limit N] [--cursor C]` |
 | One Linear ticket per finding | | `hivemind quality-scan [--kind a,b] [--limit N] [--dry-run]` |
 
 ### `score_decision`
@@ -322,6 +332,31 @@ cursor no scan returned, is refused.
 **Cost.** A page costs what the findings cost (see below) plus one profile read per
 distinct decision on the page: never more than `limit` of each, however many decisions
 the graph holds. A profile read is a handful of anchored lookups, not a scan.
+
+### `get_suggestions`
+
+`data` is the page `scan_decision_quality` returns, in the same shape and order, without
+the findings that have been acknowledged. It takes the same arguments (`kinds`,
+`evidence_window_days`, `limit`, `cursor`), reads and refuses them the same way, and adds
+`exclude_acknowledged`: true by default, "what is new since I last looked"; false returns
+every finding, as `scan_decision_quality` always does. On the CLI it is
+`--exclude-acknowledged false`.
+
+A finding is acknowledged by its `finding_id`. The id changes when the finding's basis
+does (newer evidence is linked, another decision supersedes the premise, a bet gets
+another check date), so a finding whose basis moved on after it was acknowledged is a new
+finding and is shown again: an old acknowledgement never hides it.
+
+Acknowledged findings are left out before the page is cut (see
+[Paging and cost](#attention-findings-what-needs-a-look)), so a consumer that has dealt
+with a long run of findings still gets a full page, and `truncated` and `data.next_cursor`
+say exactly whether more follow.
+
+**No event records an acknowledgement yet.** Until one does, nothing is acknowledged and
+`get_suggestions` returns what `scan_decision_quality` returns, whichever way
+`exclude_acknowledged` is set. The argument, its default and the way findings are left
+out are in place, so a consumer written against `get_suggestions` today needs no change
+when acknowledgements arrive.
 
 ### `quality-scan`
 

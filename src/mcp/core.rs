@@ -23,7 +23,7 @@
 //! `recall_decisions`, `supersede_decision`, `disagree_decision`, `move_decision`,
 //! `ground_decision`,
 //! `get_decision_outcome`, `hivemind_compact_view`, `score_decision`,
-//! `scan_decision_quality`. Later
+//! `scan_decision_quality`, `get_suggestions`. Later
 //! tools follow the same shape — an `Args::from_json` parser plus a
 //! `core::<tool>` function — one pair per tool, each independently
 //! reviewable.
@@ -42,7 +42,9 @@ use crate::grounding::{
 };
 use crate::ledger::{AnyLedger, EventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
-use crate::quality_profile::{self, parse_kinds, ScanRequest, SCAN_DEFAULT_LIMIT};
+use crate::quality_profile::{
+    self, parse_kinds, ScanRequest, SuggestionsRequest, SCAN_DEFAULT_LIMIT,
+};
 use crate::queries::{
     derive_decision_status, get_compact_view, get_decision_brief as query_get_decision_brief,
     get_decision_neighborhood as query_get_decision_neighborhood,
@@ -53,8 +55,9 @@ use crate::queries::{
 use crate::summarize::{RecallRequest, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT};
 
 use super::args::{
-    default_option_description, optional_bool, optional_datetime, optional_option_labels,
-    optional_string, optional_string_array, optional_usize, require_string, require_string_array,
+    default_option_description, optional_bool, optional_bool_or, optional_datetime,
+    optional_option_labels, optional_string, optional_string_array, optional_usize, require_string,
+    require_string_array,
 };
 
 // ---------------------------------------------------------------------------
@@ -1449,5 +1452,34 @@ pub(crate) fn scan_decision_quality(
 ) -> Result<ToolOutput, CoreError> {
     let response =
         quality_profile::scan_decision_quality(graph, &args.request).map_err(CoreError::from)?;
+    quality_output(&response)
+}
+
+/// Parsed, validated arguments for the `get_suggestions` tool: the arguments of
+/// `scan_decision_quality`, parsed and refused the same way, and `exclude_acknowledged`.
+pub(crate) struct GetSuggestionsArgs {
+    pub(crate) request: SuggestionsRequest,
+}
+
+impl GetSuggestionsArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            request: SuggestionsRequest {
+                scan: ScanDecisionQualityArgs::from_json(args)?.request,
+                exclude_acknowledged: optional_bool_or(args, "exclude_acknowledged", true)?,
+            },
+        })
+    }
+}
+
+/// The core for the `get_suggestions` MCP tool: one page of attention findings, without the ones
+/// someone has acknowledged unless `exclude_acknowledged` is false. The page is filled from what
+/// remains, `truncated` says whether more follow and `data.next_cursor` resumes.
+pub(crate) fn get_suggestions(
+    graph: &impl GraphView,
+    args: GetSuggestionsArgs,
+) -> Result<ToolOutput, CoreError> {
+    let response =
+        quality_profile::get_suggestions(graph, &args.request).map_err(CoreError::from)?;
     quality_output(&response)
 }

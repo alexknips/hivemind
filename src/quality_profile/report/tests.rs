@@ -35,11 +35,19 @@ fn attention(graph: &impl GraphView) -> Result<Vec<AttentionFinding>> {
             kinds: Vec::new(),
             limit: MAX_QUERY_RESULTS,
             cursor: None,
+            ..AttentionRequest::default()
         },
         &AttentionConfig::default(),
         now(),
     )?
     .findings)
+}
+
+fn finding_ids(findings: &[ScanFinding]) -> BTreeSet<String> {
+    findings
+        .iter()
+        .map(|scanned| scanned.finding.finding_id.clone())
+        .collect()
 }
 
 fn to_json<T: Serialize>(value: &T) -> Value {
@@ -163,6 +171,28 @@ pub(crate) fn assert_report_scenario(graph: &impl GraphView) -> Result<()> {
     let missing = score_decision(graph, "d:does-not-exist")?;
     assert_eq!(missing.result_count, 0);
     assert!(missing.data.is_none());
+
+    // Suggestions: nothing is acknowledged, so either setting is the scan; with the first three
+    // findings acknowledged, a page is filled from what remains.
+    for exclude_acknowledged in [true, false] {
+        let request = SuggestionsRequest {
+            scan: everything(),
+            exclude_acknowledged,
+        };
+        assert_eq!(get_suggestions_at(graph, &request, now())?.data, all.data);
+    }
+    let acknowledged = finding_ids(&all.data.findings[..3]);
+    let page = scan_page_at(
+        graph,
+        &ScanRequest {
+            limit: 4,
+            ..ScanRequest::default()
+        },
+        acknowledged,
+        now(),
+    )?;
+    assert_eq!(page.data.findings, all.data.findings[3..7]);
+    assert!(page.truncated);
     Ok(())
 }
 
@@ -326,6 +356,7 @@ fn a_page_costs_the_attention_reads_plus_one_profile_read_per_decision_on_it() -
             kinds: Vec::new(),
             limit: 6,
             cursor: None,
+            ..AttentionRequest::default()
         },
         &AttentionConfig::default(),
         now(),
@@ -347,6 +378,78 @@ fn a_page_costs_the_attention_reads_plus_one_profile_read_per_decision_on_it() -
 
     assert_eq!(page.result_count, 6);
     assert_eq!(total, attention_only.queries() + profile_reads);
+    Ok(())
+}
+
+// ── what suggestions return ───────────────────────────────────────────────────
+
+#[test]
+fn suggestions_leave_acknowledged_findings_out_unless_told_not_to() {
+    assert!(SuggestionsRequest::default().exclude_acknowledged);
+}
+
+#[test]
+fn nothing_is_acknowledged_yet_so_suggestions_are_the_findings_of_a_scan() -> Result<()> {
+    let graph = attention_scenario()?.graph()?;
+
+    assert!(acknowledged_finding_ids(&graph)?.is_empty());
+    let scanned = scan(&graph, &everything())?;
+    for exclude_acknowledged in [true, false] {
+        let suggested = get_suggestions_at(
+            &graph,
+            &SuggestionsRequest {
+                scan: everything(),
+                exclude_acknowledged,
+            },
+            now(),
+        )?;
+        assert_eq!(suggested.data, scanned.data, "{exclude_acknowledged}");
+        assert_eq!(suggested.result_count, scanned.result_count);
+        assert_eq!(suggested.truncated, scanned.truncated);
+    }
+    Ok(())
+}
+
+#[test]
+fn an_acknowledged_finding_is_left_out_and_the_page_is_filled_from_what_remains() -> Result<()> {
+    let graph = attention_scenario()?.graph()?;
+    let all = scan(&graph, &everything())?.data.findings;
+    let acknowledged = finding_ids(&all[..3]);
+
+    let first = scan_page_at(
+        &graph,
+        &ScanRequest {
+            limit: 4,
+            ..ScanRequest::default()
+        },
+        acknowledged.clone(),
+        now(),
+    )?;
+
+    // The first three are gone and the page still holds four, each with its dimensions.
+    assert_eq!(first.data.findings, all[3..7]);
+    assert_eq!(first.result_count, 4);
+    assert!(first.truncated);
+    assert!(first
+        .data
+        .findings
+        .iter()
+        .all(|scanned| !scanned.dimensions.is_empty()));
+
+    // Its cursor resumes after the seventh: the rest, and then nothing follows.
+    let rest = scan_page_at(
+        &graph,
+        &ScanRequest {
+            limit: 100,
+            cursor: first.data.next_cursor.clone(),
+            ..ScanRequest::default()
+        },
+        acknowledged,
+        now(),
+    )?;
+    assert_eq!(rest.data.findings, all[7..]);
+    assert!(!rest.truncated);
+    assert!(rest.data.next_cursor.is_none());
     Ok(())
 }
 

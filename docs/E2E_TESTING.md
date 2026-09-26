@@ -173,7 +173,7 @@ The script exercises these paths in order:
 | Review | `POST /v1/decisions/{id}/disagreements`, `/{id}/supersessions` |
 | Supersession chain | `GET /v1/decisions/{id}/supersession-chain` |
 | Multi-tenant isolation | Two-tenant capture + graph cross-check |
-| Quality scan | MCP `scan_decision_quality` tool |
+| Quality scan | MCP `scan_decision_quality` and `get_suggestions` tools |
 | Quality score + summarize | MCP `score_decision`, `summarize_decisions` (rule-based) |
 | Fidelity binary (ceiling) | `fidelity-eval --ceiling` (no LLM; validates binary + projector) |
 | LLM-gated (Slice 2) | Edge classifier + quality-score enrichment via `claude -p` + plugin, and fidelity smoke via `fidelity-eval`'s claude-cli backend (all LOCAL-only, subscription) |
