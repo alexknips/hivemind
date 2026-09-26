@@ -5,6 +5,31 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Breaking changes
+
+- **`score_decision` and `scan_decision_quality` return the quality profile and attention
+  findings; the score, the tier and the five deductions are gone.** `score_decision` now
+  returns the decision's seven dimensions (framing, alternatives, information, reasoning,
+  values_tradeoffs, bias_exposure, calibration), each `assessed` (a level of `none`,
+  `partial` or `solid`, the reasons and the node ids behind it) or `not_assessed` (and why),
+  plus attention lines and a provenance object whose `line` reads "not yet reviewed by a
+  human" when an agent authored the decision and no human accepted it. `scan_decision_quality`
+  returns one page of attention findings (a bet past its check date, a premise that was
+  superseded or rejected, an assumption or bet that was refuted, evidence nobody re-checked),
+  each with a stable `finding_id`, the reason, the node ids and the dimensions it bears on;
+  `truncated` and `data.next_cursor` page through them. Both work self-hosted, with no model.
+  Removed with no alias: the `score` and `tier` fields, `reasons[].deduction`,
+  `contributing_ids`, the `min_tier` argument and `--min-tier` flag, and the `since_event_origin`
+  argument on the scan (pass `kinds`, `evidence_window_days`, `limit` and `cursor`, or
+  `--kind`, `--evidence-window-days`, `--limit` and `--cursor`). Superseded, premise-stale,
+  contested, agent-only and thin-structure signals are no longer graded as quality: they are
+  outcome, staleness, status, provenance and Alternatives / Information, shown as such. The
+  stdio server, the HTTP endpoint and the CLI share one core, so the three answer the same.
+  `hivemind quality-scan` files one ticket per finding (title `[HiveMind] <kind>: <decision>`),
+  without a score or tier; `--min-tier` and `--since-event-origin` are gone, `--kind` is new.
+  `docs/DECISION_SCORING.md` describes what exists and marks Composite, Confidence and
+  Reputation deferred. (hivemind-qo11.5)
+
 ### Added
 
 - **`GET /v1/graph` says who decided what and whether it held up.** Every `decisions[]` entry

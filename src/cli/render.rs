@@ -12,6 +12,7 @@ use crate::projector::{
     GraphParams, GraphProperties, GraphRow, GraphValue, GraphView, NodeKind,
     RelationKind as GraphRelationKind,
 };
+use crate::quality_profile::{Assessment, Dimension, ScanReport, ScoreReport};
 use crate::queries::{
     derive_decision_status, derive_hypothesis_status, oriented_edges,
     BlockerNotificationCandidates, CompactView, DecidedBy, DecisionBlockerResults, DecisionBrief,
@@ -19,10 +20,10 @@ use crate::queries::{
     DecisionsChangedSinceResults, GroundingAdded, GroundingItem, GroundingItemState, GroundingKind,
     GroundingState, HistoryChangeKind, HypothesisStatus, MatchReason, MisfiledDecisionCandidate,
     NeighborhoodView, OutcomeReason, ProjectDecisionsOutcome, ProjectDecisionsPage,
-    ProjectListResults, ProjectMove, ProjectOutcome, QualityTier, QueryResponse, ReadOnlyExport,
+    ProjectListResults, ProjectMove, ProjectOutcome, QueryResponse, ReadOnlyExport,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
-    RecentActivityResults, RecentDecisionsResults, ResolveOutcome, ScoredDecision,
-    SituationalResults, SupersessionChain,
+    RecentActivityResults, RecentDecisionsResults, ResolveOutcome, SituationalResults,
+    SupersessionChain,
 };
 use crate::{HivemindError, Result};
 
@@ -415,51 +416,116 @@ pub(crate) fn render_recall_summary(response: &crate::summarize::RecallResponse)
     output.trim_end().to_owned()
 }
 
-pub(crate) fn render_scored_decision_summary(scored: &Option<ScoredDecision>) -> String {
-    let Some(s) = scored else {
+/// The name a serde enum has on the wire (`information`, `agent_only`), so the text summary and
+/// the JSON never name a thing differently.
+fn wire_name<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// One line for one dimension: its level, the node ids behind it and the reasons in words; or, for
+/// a dimension that was not assessed, why. No number stands in for either.
+fn dimension_summary_line(dimension: Dimension, assessment: &Assessment) -> String {
+    let name = wire_name(&dimension);
+    match assessment {
+        Assessment::Assessed {
+            level,
+            reasons,
+            node_ids,
+        } => {
+            let reasons: Vec<String> = reasons
+                .iter()
+                .map(|reason| summary_cell(&reason.text))
+                .collect();
+            format!(
+                "dimension\t{name}\tlevel={}\tids={}\treasons={}",
+                wire_name(level),
+                node_ids.join(","),
+                reasons.join(" | ")
+            )
+        }
+        Assessment::NotAssessed { why } => {
+            format!("dimension\t{name}\tnot_assessed\twhy={}", summary_cell(why))
+        }
+    }
+}
+
+pub(crate) fn render_score_report_summary(report: &Option<ScoreReport>) -> String {
+    let Some(report) = report else {
         return "No decision found".to_owned();
     };
+    let profile = &report.profile;
     let mut output = String::new();
     let _ = writeln!(
         output,
-        "scored\t{}\tscore={:.3}\ttier={}",
-        s.decision_id,
-        s.score,
-        quality_tier_label(s.tier)
+        "profile\t{}\tfloor_version={}",
+        profile.decision_id, profile.floor_version
     );
-    for reason in &s.reasons {
+    for (dimension, assessment) in profile.iter() {
+        let _ = writeln!(output, "{}", dimension_summary_line(dimension, assessment));
+    }
+    for attention in &profile.attention {
         let _ = writeln!(
             output,
-            "reason\t{}",
-            summary_cell(&format!("{reason:?}")), // ubs:ignore: Debug-format alloc in loop; no &str alternative
+            "attention\t{}\t{}\tids={}\t{}",
+            wire_name(&attention.kind),
+            wire_name(&attention.dimension),
+            attention.node_ids.join(","),
+            summary_cell(&attention.text)
         );
     }
-    if !s.contributing_ids.is_empty() {
-        let _ = writeln!(output, "contributing\t{}", s.contributing_ids.join(","));
+    let provenance = &report.provenance;
+    let _ = write!(
+        output,
+        "provenance\tauthorship={}\treview={}",
+        wire_name(&provenance.authorship),
+        wire_name(&provenance.review)
+    );
+    if let Some(line) = provenance.line {
+        let _ = write!(output, "\t{line}");
     }
-    output.trim_end().to_owned()
+    output
 }
 
-pub(crate) fn render_scan_quality_summary(decisions: &[ScoredDecision]) -> String {
-    if decisions.is_empty() {
-        return "No decisions found".to_owned();
+pub(crate) fn render_scan_report_summary(report: &ScanReport) -> String {
+    if report.findings.is_empty() {
+        return "No decision needs a look".to_owned();
     }
     let mut output = String::new();
-    for s in decisions {
+    let _ = writeln!(
+        output,
+        "attention\tas_of={}\tevidence_window_days={}",
+        report
+            .as_of
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        report.evidence_window_days
+    );
+    for scanned in &report.findings {
+        let finding = &scanned.finding;
+        let basis = finding.basis_at.map_or_else(
+            || "-".to_owned(),
+            |at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        );
         let _ = writeln!(
             output,
-            "scored\t{}\tscore={:.3}\ttier={}\treasons={}",
-            s.decision_id,
-            s.score,
-            quality_tier_label(s.tier),
-            s.reasons.len()
+            "finding\t{}\t{}\t{}\tbasis_at={basis}\tids={}\t{}",
+            finding.finding_id,
+            finding.kind.as_str(),
+            finding.decision_id,
+            finding.node_ids.join(","),
+            summary_cell(&finding.reason)
         );
+        for line in &scanned.dimensions {
+            let _ = writeln!(
+                output,
+                "{}",
+                dimension_summary_line(line.dimension, &line.assessment)
+            );
+        }
     }
     output.trim_end().to_owned()
-}
-
-fn quality_tier_label(tier: QualityTier) -> &'static str {
-    tier.as_str()
 }
 
 pub(crate) fn render_misfiled_scan_summary(candidates: &[MisfiledDecisionCandidate]) -> String {

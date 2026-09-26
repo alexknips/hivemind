@@ -33,6 +33,11 @@
 //! a look across the graph is a separate, derived list: bets past their check date, decisions
 //! whose premise changed, evidence nobody has re-checked. That is [`findings`], and it is the
 //! roll-up in place of a grade.
+//!
+//! # What people and agents see
+//! [`report`] is the one core behind `score_decision` and `scan_decision_quality` on the stdio
+//! MCP server, the HTTP MCP endpoint and the CLI: the profile with its provenance line, and a page
+//! of findings each with the dimensions it bears on.
 
 use std::collections::BTreeSet;
 
@@ -47,10 +52,16 @@ use crate::queries::{
 use crate::Result;
 
 pub mod findings;
+pub mod report;
 
 pub use findings::{
     attention_findings, attention_findings_at, AttentionConfig, AttentionFinding, AttentionPage,
     AttentionRequest, FindingKind, DEFAULT_EVIDENCE_WINDOW_DAYS,
+};
+pub use report::{
+    parse_kinds, scan_decision_quality, scan_decision_quality_at, score_decision, DimensionLine,
+    Provenance, ScanFinding, ScanReport, ScanRequest, ScoreReport, NOT_REVIEWED_BY_A_HUMAN,
+    SCAN_DEFAULT_LIMIT,
 };
 
 /// The version of the floor rules in this module.

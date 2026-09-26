@@ -74,25 +74,28 @@ hivemind --hivemind-dir ./hivemind query search_decisions \
 
 ## Decision Quality — Where HiveMind is Heading
 
-*This section describes the planned roadmap direction, not shipped capability.*
+*The quality profile and attention findings below are shipped; failure-mode attribution is planned.*
 
 Recording decisions is the foundation. The next layer is measuring whether
 they held up — and feeding that signal back so organizations can improve how
 they make decisions.
 
-**Decision-quality signals (planned).** HiveMind will derive per-decision
-outcome signals directly from graph structure — how quickly a decision was
-superseded, whether it was premised on a hypothesis later refuted by evidence or follows
-from a prior decision since superseded or rejected, whether it remains
-contested and unresolved, and whether it was recorded with thin structure (no
-options considered, nothing declared about what it rests on). All signals are
-derivable from existing edges. No LLM required; works self-hosted.
+**Quality profile (shipped).** For any decision, `score_decision` (MCP, and
+`hivemind query score_decision`) returns seven dimensions: framing, alternatives,
+information, reasoning, values and tradeoffs, bias exposure and calibration. Each is
+either assessed (a level of none, partial or solid, with the reasons and the ids of the
+records behind it) or *not assessed*, with the reason. The levels come from what the
+record states (options recorded, evidence and prior decisions it rests on, a rationale, a
+declared confidence), never from a judgement of whether it is sound, and nothing recorded
+after the decision raises them. There is no composite number, no tier and no grade. No LLM
+required; works self-hosted.
 
-**Explainable in-house scoring (planned).** Those signals will feed a
-decision-quality scorer that lives inside HiveMind and always ships a score
-*with* its reasons and the contributing decision IDs — never a bare number.
-Scores are auditable by the same standard as every other HiveMind claim.
-Scores apply to decisions and interaction patterns, never to individual people.
+**Attention findings (shipped).** `scan_decision_quality` lists the decisions that need a
+look now: a bet past its check date, a decision whose premise was superseded, rejected or
+refuted, evidence nobody has re-checked. Each finding carries a stable id, the reason in
+words and the dimensions it bears on. What happened to a decision afterwards (superseded,
+contested, refuted premise) is shown as outcome, status or staleness, not folded into a
+quality grade. See [`docs/DECISION_SCORING.md`](docs/DECISION_SCORING.md).
 
 **Failure-mode attribution and organizational self-improvement (planned).**
 The goal is understanding *how* mistakes happen in an organization — by
@@ -100,8 +103,8 @@ condition and pattern (model choice, context sufficiency, presence and quality
 of review, evidence thinness, human/AI/joint authorship), not by assigning
 blame to individuals. Engineers are becoming decision engineers; HiveMind aims
 to give that discipline measurable metrics and a structured feedback loop.
-External consumers — dashboards, automation, factory loops — will pull scores
-and signals via MCP.
+External consumers — dashboards, automation, factory loops — pull profiles,
+findings and signals via MCP.
 
 The default CLI stores events in SQLite at `./hivemind/ledger.sqlite` or the
 directory passed with `--hivemind-dir`. Queries and DOT dumps replay the

@@ -186,9 +186,9 @@ mutation IssueCreate($teamId: String!, $title: String!, $description: String) {
 // Issue formatting helpers (public for tests and CLI)
 // ---------------------------------------------------------------------------
 
-/// Format a quality-scan result as a Linear issue title.
+/// Format an attention finding as a Linear issue title: the kind of finding and the decision.
 /// Kept short (≤ 140 chars) because Linear truncates long titles.
-pub fn format_issue_title(decision_id: &str, tier: &str, decision_title: Option<&str>) -> String {
+pub fn format_issue_title(decision_id: &str, kind: &str, decision_title: Option<&str>) -> String {
     match decision_title.filter(|t| !t.is_empty()) {
         Some(title) => {
             let truncated = if title.chars().count() > 80 {
@@ -196,24 +196,26 @@ pub fn format_issue_title(decision_id: &str, tier: &str, decision_title: Option<
             } else {
                 title.to_owned()
             };
-            format!("[HiveMind] {tier}: {truncated}")
+            format!("[HiveMind] {kind}: {truncated}")
         }
-        None => format!("[HiveMind] {tier}: decision {decision_id}"),
+        None => format!("[HiveMind] {kind}: decision {decision_id}"),
     }
 }
 
-/// Format a quality-scan result as a Linear issue description (Markdown).
+/// Format an attention finding as a Linear issue description (Markdown).
 pub fn format_issue_description(
     decision_id: &str,
-    score: f64,
-    tier: &str,
+    kind: &str,
     reasons: &[String],
-    contributing_ids: &[String],
+    node_ids: &[String],
     hivemind_base_url: Option<&str>,
 ) -> String {
     let mut out = String::new();
 
-    let _ = write!(out, "## Decision quality concern\n\n**Decision ID:** `{decision_id}`  \n**Score:** {score:.3}  \n**Tier:** {tier}\n\n");
+    let _ = write!(
+        out,
+        "## Decision needs a look\n\n**Decision ID:** `{decision_id}`  \n**Finding:** {kind}\n\n"
+    );
 
     if let Some(base) = hivemind_base_url {
         let base = base.trim_end_matches('/');
@@ -228,9 +230,9 @@ pub fn format_issue_description(
         out.push('\n');
     }
 
-    if !contributing_ids.is_empty() {
-        out.push_str("### Contributing node IDs\n\n");
-        for id in contributing_ids {
+    if !node_ids.is_empty() {
+        out.push_str("### Node IDs\n\n");
+        for id in node_ids {
             let _ = writeln!(out, "- `{id}`");
         }
         out.push('\n');
@@ -247,7 +249,7 @@ mod tests {
 
     #[test]
     fn format_title_with_title() {
-        let t = format_issue_title("d-001", "high_concern", Some("Deploy to prod"));
+        let t = format_issue_title("d-001", "premise_superseded", Some("Deploy to prod"));
         assert!(t.starts_with("[HiveMind]")); // ubs:ignore: test assertion
         assert!(t.contains("Deploy to prod")); // ubs:ignore: test assertion
         assert!(t.len() <= 140); // ubs:ignore: test assertion
@@ -255,14 +257,14 @@ mod tests {
 
     #[test]
     fn format_title_without_title() {
-        let t = format_issue_title("d-001", "high_concern", None);
+        let t = format_issue_title("d-001", "premise_superseded", None);
         assert!(t.contains("d-001")); // ubs:ignore: test assertion
     }
 
     #[test]
     fn format_title_truncates_long_titles() {
         let long = "A".repeat(100);
-        let t = format_issue_title("d-001", "high_concern", Some(&long));
+        let t = format_issue_title("d-001", "premise_superseded", Some(&long));
         assert!(t.len() <= 140); // ubs:ignore: test assertion
         assert!(t.contains('…')); // ubs:ignore: test assertion
     }
@@ -271,17 +273,30 @@ mod tests {
     fn format_description_contains_required_fields() {
         let desc = format_issue_description(
             "d-001",
-            0.3,
-            "high_concern",
+            "premise_superseded",
             &["reason A".to_owned()],
             &["h-001".to_owned()],
             Some("https://hivemind.example.com"),
         );
         assert!(desc.contains("d-001")); // ubs:ignore: test assertion
-        assert!(desc.contains("0.300")); // ubs:ignore: test assertion
+        assert!(desc.contains("premise_superseded")); // ubs:ignore: test assertion
         assert!(desc.contains("reason A")); // ubs:ignore: test assertion
         assert!(desc.contains("h-001")); // ubs:ignore: test assertion
         assert!(desc.contains("hivemind.example.com")); // ubs:ignore: test assertion
         assert!(desc.contains("Human review required")); // ubs:ignore: test assertion
+    }
+
+    #[test]
+    fn format_description_carries_no_score_or_tier() {
+        let desc = format_issue_description(
+            "d-001",
+            "bet_past_check_date",
+            &["reason A".to_owned()],
+            &["h-001".to_owned()],
+            None,
+        );
+        let lower = desc.to_lowercase();
+        assert!(!lower.contains("score")); // ubs:ignore: test assertion
+        assert!(!lower.contains("tier")); // ubs:ignore: test assertion
     }
 }

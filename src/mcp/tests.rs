@@ -1457,6 +1457,232 @@ mod transport_parity {
         }
     }
 
+    /// `hivemind query <args>` against `dir`, as the JSON it prints.
+    fn cli_query(dir: &std::path::Path, args: &[&str]) -> Value {
+        use clap::Parser as _;
+        let mut argv = vec![
+            "hivemind",
+            "--hivemind-dir",
+            dir.to_str().expect("utf-8 dir"), // ubs:ignore: test-only; panicking is correct in tests
+            "--json",
+            "query",
+        ];
+        argv.extend_from_slice(args);
+        let output = crate::cli::run(&crate::cli::Cli::parse_from(argv)).expect("cli query runs"); // ubs:ignore: test-only; panicking is correct in tests
+        serde_json::from_str(&output).expect("cli prints json") // ubs:ignore: test-only; panicking is correct in tests
+    }
+
+    /// Captures a decision with two described options on `dir`'s ledger through the stdio
+    /// server and returns its id.
+    fn capture_on(dir: &std::path::Path, title: &str, grounding: Value) -> String {
+        let response = stdio_call(
+            dir,
+            "capture_decision",
+            json!({
+                "grounding": grounding,
+                "title": title,
+                "rationale": "Chosen because it is enough for the first version",
+                "topic_keys": ["quality"],
+                "options": [
+                    {"label": "sqlite", "description": "A single file, nothing to run"},
+                    {"label": "postgres", "description": "A server to run and back up"}
+                ],
+                "chosen_option_label": "sqlite",
+            }),
+        );
+        response["result"]["structuredContent"]["decision_id"]
+            .as_str()
+            .expect("decision_id") // ubs:ignore: test-only; panicking is correct in tests
+            .to_owned()
+    }
+
+    /// A declared bet whose check date is long past and that nothing has checked.
+    fn overdue_bet() -> Value {
+        json!([{"kind": "bet", "statement": "Load stays flat", "check_by": "2020-01-01"}])
+    }
+
+    /// What the three surfaces must agree on: the whole response but the two things that differ
+    /// between calls, how long it took and the clock a scan was read at.
+    fn without_clocks(mut response: Value) -> Value {
+        if let Some(response) = response.as_object_mut() {
+            response.remove("latency_ms");
+            if let Some(data) = response.get_mut("data").and_then(Value::as_object_mut) {
+                data.remove("as_of");
+            }
+        }
+        response
+    }
+
+    /// `score_decision` and `scan_decision_quality` share one core (hivemind-qo11.5): the stdio
+    /// server, the HTTP endpoint and the CLI read the same ledger and must answer with the same
+    /// response, which carries a level and reasons for every dimension and no grade.
+    #[tokio::test]
+    async fn score_and_scan_decision_quality_answer_the_same_on_stdio_http_and_the_cli() {
+        let dir = unique_dir("parity-quality");
+        let overdue = capture_on(&dir, "Use SQLite for the ledger", overdue_bet());
+        let _open = capture_on(&dir, "Cache in memory", json!([{"kind": "bet"}]));
+
+        let score_args = json!({ "decision_id": overdue });
+        let stdio = stdio_call(&dir, "score_decision", score_args.clone());
+        let http = http_call(&dir, "score_decision", score_args).await;
+        let cli = cli_query(&dir, &["score_decision", "--id", &overdue]);
+        let stdio = without_clocks(stdio["result"]["structuredContent"].clone());
+        let http = without_clocks(http["result"]["structuredContent"].clone());
+        assert_eq!(stdio, http, "score_decision: stdio vs http");
+        assert_eq!(stdio, without_clocks(cli), "score_decision: stdio vs cli");
+        crate::quality_profile::report::tests::assert_no_grade(&stdio, "$");
+        assert_eq!(stdio["data"]["decision_id"], json!(overdue));
+        assert_eq!(
+            stdio["data"]["provenance"]["line"],
+            "not yet reviewed by a human"
+        );
+        assert_eq!(stdio["data"]["alternatives"]["level"], "solid");
+
+        let stdio = stdio_call(&dir, "scan_decision_quality", json!({}));
+        let http = http_call(&dir, "scan_decision_quality", json!({})).await;
+        let cli = cli_query(&dir, &["scan_decision_quality"]);
+        let stdio = without_clocks(stdio["result"]["structuredContent"].clone());
+        let http = without_clocks(http["result"]["structuredContent"].clone());
+        assert_eq!(stdio, http, "scan_decision_quality: stdio vs http");
+        assert_eq!(
+            stdio,
+            without_clocks(cli),
+            "scan_decision_quality: stdio vs cli"
+        );
+        crate::quality_profile::report::tests::assert_no_grade(&stdio, "$");
+        let findings = stdio["data"]["findings"].as_array().expect("findings"); // ubs:ignore: test-only; panicking is correct in tests
+        assert_eq!(findings.len(), 1, "only the overdue bet needs a look");
+        assert_eq!(findings[0]["kind"], "bet_past_check_date");
+        assert_eq!(findings[0]["decision_id"], json!(overdue));
+        let dimensions: Vec<&str> = findings[0]["dimensions"]
+            .as_array()
+            .expect("dimensions") // ubs:ignore: test-only; panicking is correct in tests
+            .iter()
+            .filter_map(|line| line["dimension"].as_str())
+            .collect();
+        assert_eq!(dimensions, ["information", "calibration"]);
+
+        // The same arguments on each: a kind filter, a page size and a window.
+        let args = json!({
+            "kinds": ["bet_past_check_date", "premise_superseded"],
+            "limit": 1,
+            "evidence_window_days": 30,
+        });
+        let stdio = stdio_call(&dir, "scan_decision_quality", args.clone());
+        let http = http_call(&dir, "scan_decision_quality", args).await;
+        let cli = cli_query(
+            &dir,
+            &[
+                "scan_decision_quality",
+                "--kind",
+                "bet_past_check_date,premise_superseded",
+                "--limit",
+                "1",
+                "--evidence-window-days",
+                "30",
+            ],
+        );
+        let stdio = without_clocks(stdio["result"]["structuredContent"].clone());
+        let http = without_clocks(http["result"]["structuredContent"].clone());
+        assert_eq!(stdio, http, "filtered scan: stdio vs http");
+        assert_eq!(stdio, without_clocks(cli), "filtered scan: stdio vs cli");
+        assert_eq!(stdio["data"]["evidence_window_days"], 30);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn scan_decision_quality_refuses_the_same_bad_arguments_on_both_transports() {
+        let unknown = crate::quality_profile::parse_kinds(&["high_concern"]).unwrap_err(); // ubs:ignore: test-only; panicking is correct in tests
+        let cases: &[(&str, Value, &str)] = &[
+            (
+                "unknown-kind",
+                json!({"kinds": ["high_concern"]}),
+                unknown.as_str(),
+            ),
+            (
+                "kinds-not-an-array",
+                json!({"kinds": "bet_failed"}),
+                "`kinds` must be an array of strings",
+            ),
+            (
+                "negative-limit",
+                json!({"limit": -1}),
+                "`limit` must be a non-negative integer",
+            ),
+        ];
+        for (label, arguments, expected_message) in cases {
+            let (stdio, http) = run("scan_decision_quality", label, arguments.clone()).await;
+            for (name, result) in [("stdio", &stdio), ("http", &http)] {
+                assert!(
+                    result["isError"].as_bool().unwrap_or(false), // ubs:ignore: test-only assertion
+                    "{label}: {name} should error: {result:?}"
+                );
+                assert_eq!(
+                    result["content"][0]["text"].as_str(), // ubs:ignore: test-only assertion
+                    Some(*expected_message),
+                    "{label}: {name} message"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn quality_scan_files_a_ticket_per_finding_without_a_score_or_a_tier() {
+        use clap::Parser as _;
+        let dir = unique_dir("quality-scan");
+        let overdue = capture_on(&dir, "Use SQLite for the ledger", overdue_bet());
+        let _open = capture_on(&dir, "Cache in memory", json!([{"kind": "bet"}]));
+        let scan = |extra: &[&str]| -> String {
+            let mut argv = vec![
+                "hivemind",
+                "--hivemind-dir",
+                dir.to_str().expect("utf-8 dir"), // ubs:ignore: test-only; panicking is correct in tests
+                "quality-scan",
+                "--dry-run",
+            ];
+            argv.extend_from_slice(extra);
+            crate::cli::run(&crate::cli::Cli::parse_from(argv)).expect("quality-scan runs")
+            // ubs:ignore: test-only; panicking is correct in tests
+        };
+
+        let output: Value = serde_json::from_str(&scan(&[])).expect("json"); // ubs:ignore: test-only; panicking is correct in tests
+
+        assert_eq!(output["dry_run"], true);
+        assert_eq!(output["scanned"], 1);
+        assert_eq!(output["filed"], 1);
+        assert_eq!(output["truncated"], false);
+        let issue = &output["issues"][0];
+        assert_eq!(issue["decision_id"], json!(overdue));
+        assert_eq!(issue["kind"], "bet_past_check_date");
+        assert!(issue["finding_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("finding-")));
+        assert_eq!(
+            issue["title"],
+            "[HiveMind] bet_past_check_date: Use SQLite for the ledger"
+        );
+        let description = issue["description"].as_str().expect("a description"); // ubs:ignore: test-only; panicking is correct in tests
+        assert!(description.contains(&overdue), "{description}");
+        assert!(
+            description.contains("was to be checked by"),
+            "{description}"
+        );
+        let lower = description.to_lowercase();
+        assert!(
+            !lower.contains("score") && !lower.contains("tier"),
+            "{description}"
+        );
+        assert!(issue.get("score").is_none() && issue.get("tier").is_none());
+
+        // The same ledger, another kind: nothing needs a look.
+        assert_eq!(
+            scan(&["--kind", "premise_superseded"]),
+            "quality-scan: no decision needs a look — nothing to file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Like `run`, but first captures one decision per `titles` entry on each
     /// transport's own fresh ledger via `capture_decision`, then runs `tool`.
     /// Used to seed the graph `get_decision_neighborhood` resolves against.

@@ -841,12 +841,12 @@ if [[ -n "$DECISION_ID" ]]; then
     "$BASE_URL/mcp")
   if echo "$score_resp" | jq -e '.result.content[0].text' > /dev/null 2>&1; then
     score_text=$(echo "$score_resp" | jq -r '.result.content[0].text')
-    if echo "$score_text" | jq -e '.data | (has("score") or . == null)' > /dev/null 2>&1; then
-      tier=$(echo "$score_text" | jq -r '.data.tier // "no-data"')
-      score=$(echo "$score_text" | jq -r '.data.score // "n/a"')
-      pass "MCP score_decision — tier=$tier score=$score"
+    if echo "$score_text" | jq -e '.data | (has("framing") and has("provenance"))' > /dev/null 2>&1; then
+      info_status=$(echo "$score_text" | jq -r '.data.information.status')
+      info_level=$(echo "$score_text" | jq -r '.data.information.level // "not assessed"')
+      pass "MCP score_decision — profile returned (information: $info_status, $info_level)"
     else
-      pass "MCP score_decision — returned result"
+      fail "MCP score_decision — not a quality profile: $score_text"
     fi
   else
     fail "MCP score_decision — unexpected response: $score_resp"

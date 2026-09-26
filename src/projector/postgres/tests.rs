@@ -19,11 +19,10 @@ use crate::queries::{
     export_decision_log, get_decision, get_decision_brief, get_decision_brief_at,
     get_decision_context, get_decision_context_candidates, get_decision_neighborhood,
     get_decision_outcome, get_decision_outcome_at, get_decision_quality_candidates,
-    get_decision_quality_score, get_failure_attribution, get_supersession_chain, grounding_of_at,
-    resolve_decision_by_description, scan_decision_quality, search_decisions,
-    DecisionContextRequest, DecisionLogOutcome, DecisionLogRequest,
-    DecisionQualityCandidatesRequest, FailureAttributionRequest, GroundingAdded, GroundingKind,
-    NeighborhoodRequest, QueryContext, ResolveOutcome, ScanQualityRequest, ScorerConfig,
+    get_failure_attribution, get_supersession_chain, grounding_of_at,
+    resolve_decision_by_description, search_decisions, DecisionContextRequest, DecisionLogOutcome,
+    DecisionLogRequest, DecisionQualityCandidatesRequest, FailureAttributionRequest,
+    GroundingAdded, GroundingKind, NeighborhoodRequest, QueryContext, ResolveOutcome,
     SearchDecisionRequest,
 };
 use crate::summarize::{recall_decisions, RecallRequest, RECALL_MAX_LIMIT};
@@ -764,59 +763,11 @@ fn get_decision_context_candidates_matches_memory() -> Result<()> {
     })
 }
 
-// ── scan_decision_quality / get_decision_quality_score / get_failure_attribution parity
-//    (hivemind-bbnw.1) — these MCP-facing entry points chain through
+// ── get_failure_attribution parity
+//    (hivemind-bbnw.1) — this MCP-facing entry point chains through
 //    get_decision_quality_candidates and get_decision_context_candidates above, but had no
-//    direct parity coverage of their own; a dispatch-table gap specific to how they call
-//    through (e.g. a cursor/limit combination neither of the callers above exercises) would
-//    have gone undetected.
-
-#[test]
-fn scan_decision_quality_matches_memory() -> Result<()> {
-    with_postgres_graph("scan-quality-parity", |pg| {
-        let memory = MemoryGraph::default();
-        let ledger = outcome_fixture_ledger()?;
-        project_from_ledger(&ledger, &memory, 0)?;
-        project_from_ledger(&ledger, pg, 0)?;
-
-        let request = ScanQualityRequest {
-            limit: 100,
-            ..Default::default()
-        };
-        let memory_scored =
-            scan_decision_quality(&memory, &request, &ScorerConfig::default())?.data;
-        let pg_scored = scan_decision_quality(pg, &request, &ScorerConfig::default())?.data;
-        if memory_scored != pg_scored {
-            return Err(test_error(format!(
-                "scan_decision_quality mismatch: memory={memory_scored:?} pg={pg_scored:?}"
-            )));
-        }
-        Ok(())
-    })
-}
-
-#[test]
-fn get_decision_quality_score_matches_memory() -> Result<()> {
-    with_postgres_graph("quality-score-parity", |pg| {
-        let memory = MemoryGraph::default();
-        let ledger = outcome_fixture_ledger()?;
-        project_from_ledger(&ledger, &memory, 0)?;
-        project_from_ledger(&ledger, pg, 0)?;
-
-        for decision_id in ["decision:clean", "decision:contested", "decision:missing"] {
-            let memory_result =
-                get_decision_quality_score(&memory, decision_id, &ScorerConfig::default())?.data;
-            let pg_result =
-                get_decision_quality_score(pg, decision_id, &ScorerConfig::default())?.data;
-            if memory_result != pg_result {
-                return Err(test_error(format!(
-                    "get_decision_quality_score mismatch for {decision_id}: memory={memory_result:?} pg={pg_result:?}"
-                )));
-            }
-        }
-        Ok(())
-    })
-}
+//    direct parity coverage of its own; a dispatch-table gap specific to how it calls
+//    through would have gone undetected.
 
 #[test]
 fn get_failure_attribution_matches_memory() -> Result<()> {
@@ -2189,6 +2140,49 @@ fn quality_profile_matches_memory() -> Result<()> {
             }
         }
         crate::quality_profile::tests::assert_scenario_profiles(pg)
+    })
+}
+
+// ── score_decision / scan_decision_quality parity (hivemind-qo11.5) ──────────────
+//
+// The reports compose the profile, the attention findings and the decision's authorship shape,
+// each already compared with the in-memory graph on its own. This compares the composed answer:
+// every decision the scan flags (the dimensions each finding carries) and its score, field for
+// field, and runs the same assertions on Postgres that run on the in-memory graph.
+
+#[test]
+fn score_and_scan_reports_match_memory() -> Result<()> {
+    use crate::quality_profile::{scan_decision_quality_at, score_decision, ScanRequest};
+    use crate::queries::test_fixtures::{attention_scenario, ts, ATTENTION_NOW};
+
+    with_postgres_graph("quality-report-parity", |pg| {
+        let scenario = attention_scenario()?;
+        let memory = scenario.graph()?;
+        project_from_ledger(scenario.ledger(), pg, 0)?;
+
+        let request = ScanRequest {
+            limit: 100,
+            ..ScanRequest::default()
+        };
+        let now = ts(ATTENTION_NOW);
+        let memory_scan = scan_decision_quality_at(&memory, &request, now)?.data;
+        let pg_scan = scan_decision_quality_at(pg, &request, now)?.data;
+        if memory_scan != pg_scan {
+            return Err(test_error(format!(
+                "scan_decision_quality mismatch: memory={memory_scan:?} pg={pg_scan:?}"
+            )));
+        }
+        for scanned in &memory_scan.findings {
+            let decision_id = scanned.finding.decision_id.as_str();
+            let memory_score = score_decision(&memory, decision_id)?.data;
+            let pg_score = score_decision(pg, decision_id)?.data;
+            if memory_score != pg_score {
+                return Err(test_error(format!(
+                    "score_decision mismatch for {decision_id}: memory={memory_score:?} pg={pg_score:?}"
+                )));
+            }
+        }
+        crate::quality_profile::report::tests::assert_report_scenario(pg)
     })
 }
 

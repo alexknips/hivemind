@@ -34,23 +34,23 @@ use crate::ingest::{
 use crate::ledger::PostgresEventLedger;
 use crate::ledger::{AnyLedger, EventLedger, LedgerConfig, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
+use crate::quality_profile::{self, parse_kinds, ScanRequest};
 use crate::queries::{
     decisions_in_project, derive_decision_status, export_decision_log, export_read_only_summary,
     get_active_decision_blockers, get_blocker_notification_candidates, get_compact_view,
-    get_decision, get_decision_brief, get_decision_neighborhood, get_decision_quality_score,
-    get_decisions_added_since, get_decisions_changed_since, get_project, get_recent_activity,
-    get_recent_decisions, get_relevant_decisions, get_situational_decisions,
-    get_supersession_chain, list_projects, misfiled_next_cursor, resolve_decision_by_description,
-    scan_decision_quality, scan_misfiled_decisions, scorer_next_cursor, search_decisions,
-    search_decisions_any, ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest,
-    ChangedSinceRequest, DecisionBlockerFilters, DecisionLogExport, DecisionLogOutcome,
-    DecisionLogRequest, DecisionStatus, DecisionsAddedSinceFilterRequest,
-    DecisionsAddedSinceRequest, HistoryFilterRequest, MisfiledScanRequest, NeighborhoodRequest,
-    ProjectDecisionsRequest, ProjectListRequest, ProjectOutcome, QualityTier, QueryContext,
-    ReadOnlyExportQuery, ReadOnlyExportRequest, RecentActivityRequest, RecentDecisionEntry,
-    RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome, ResolvedCandidate,
-    ScanQualityRequest, ScorerConfig, ScorerReason, SearchDecisionRequest, SituationalRequest,
-    SupersessionSpeed,
+    get_decision, get_decision_brief, get_decision_neighborhood, get_decisions_added_since,
+    get_decisions_changed_since, get_project, get_recent_activity, get_recent_decisions,
+    get_relevant_decisions, get_situational_decisions, get_supersession_chain, list_projects,
+    misfiled_next_cursor, resolve_decision_by_description, scan_misfiled_decisions,
+    search_decisions, search_decisions_any, ActiveDecisionBlockersRequest,
+    BlockerNotificationCandidatesRequest, ChangedSinceRequest, DecisionBlockerFilters,
+    DecisionLogExport, DecisionLogOutcome, DecisionLogRequest, DecisionStatus,
+    DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest, HistoryFilterRequest,
+    MisfiledScanRequest, NeighborhoodRequest, ProjectDecisionsRequest, ProjectListRequest,
+    ProjectOutcome, QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest,
+    RecentActivityRequest, RecentDecisionEntry, RecentDecisionFilterRequest,
+    RecentDecisionsRequest, ResolveOutcome, ResolvedCandidate, SearchDecisionRequest,
+    SituationalRequest,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -78,10 +78,9 @@ use super::args::{
     ProjectRegisterArgs, ProjectShowArgs, ProjectSourceArg, ProjectUseArgs, QualityScanArgs,
     QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand,
     QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs,
-    QueryQualityTier, QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
-    QuerySearchDecisionsArgs, QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs,
-    SlackAppArgs, SlackAppCommand, SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs,
-    TuiArgs,
+    QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
+    QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
+    SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs, TuiArgs,
 };
 use super::current_project::CurrentProjectStore;
 use super::project_context::{resolve_project_in_ledger, ProjectContextEnv, ResolvedProject};
@@ -98,7 +97,7 @@ use super::render::{
     render_decision_summary, render_dot, render_misfiled_scan_summary, render_neighborhood_summary,
     render_placement_line, render_read_only_export_summary, render_recall_summary,
     render_recent_activity_summary, render_recent_decisions_summary,
-    render_resolve_outcome_summary, render_scan_quality_summary, render_scored_decision_summary,
+    render_resolve_outcome_summary, render_scan_report_summary, render_score_report_summary,
     render_search_summary, render_situational_summary, render_supersession_summary,
     CaptureCommandOutput, CurrentProjectOutput, DisagreeCommandOutput, ExportReport,
     OutputEnvelope, ProjectAnchorOutput, ProjectLinkOutput, ProjectRegisterOutput,
@@ -2925,38 +2924,22 @@ fn run_query_with_graph(
             )?
         }
         QueryCommand::ScoreDecision(args) => {
-            let response =
-                get_decision_quality_score(graph, &args.decision_id, &ScorerConfig::default())?;
-            format_query_response(
-                query.summary,
-                &response,
-                render_scored_decision_summary,
-                None,
-            )?
+            let response = quality_profile::score_decision(graph, &args.decision_id)?;
+            format_query_response(query.summary, &response, render_score_report_summary, None)?
         }
         QueryCommand::ScanDecisionQuality(args) => {
-            let request = ScanQualityRequest {
-                since_event_origin: args.since_event_origin,
+            let request = ScanRequest {
+                kinds: parse_kinds(&args.kinds).map_err(CliError::InvalidInput)?,
                 limit: args.limit,
                 cursor: args.cursor.clone(),
-                min_tier: args.min_tier.map(query_quality_tier_to_tier),
+                evidence_window_days: args.evidence_window_days,
             };
-            let response = scan_decision_quality(graph, &request, &ScorerConfig::default())?;
-            let skip: usize = args
-                .cursor
-                .as_deref()
-                .and_then(|c| c.parse().ok())
-                .unwrap_or(0);
-            let next_cursor = if response.truncated {
-                scorer_next_cursor(skip, response.result_count)
-            } else {
-                None
-            };
+            let response = quality_profile::scan_decision_quality(graph, &request)?;
             format_query_response(
                 query.summary,
                 &response,
-                |d: &Vec<_>| render_scan_quality_summary(d),
-                next_cursor.as_deref(),
+                render_scan_report_summary,
+                response.data.next_cursor.as_deref(),
             )?
         }
         QueryCommand::ScanMisfiledDecisions(args) => {
@@ -3005,15 +2988,6 @@ fn run_query_with_graph(
     };
 
     Ok(output)
-}
-
-fn query_quality_tier_to_tier(t: QueryQualityTier) -> QualityTier {
-    match t {
-        QueryQualityTier::Clean => QualityTier::Clean,
-        QueryQualityTier::MinorConcerns => QualityTier::MinorConcerns,
-        QueryQualityTier::SignificantConcerns => QualityTier::SignificantConcerns,
-        QueryQualityTier::HighConcern => QualityTier::HighConcern,
-    }
 }
 
 fn parse_query_datetime(value: Option<&str>, flag: &str) -> Result<Option<DateTime<Utc>>> {
@@ -3582,17 +3556,16 @@ fn run_quality_scan(cli: &Cli, args: &QualityScanArgs) -> Result<String> {
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
 
-    let limit = args.limit.clamp(1, 50);
-    let request = ScanQualityRequest {
-        since_event_origin: args.since_event_origin,
-        limit,
+    let request = ScanRequest {
+        kinds: parse_kinds(&args.kinds).map_err(CliError::InvalidInput)?,
+        limit: args.limit.clamp(1, 50),
         cursor: None,
-        min_tier: Some(query_quality_tier_to_tier(args.min_tier)),
+        evidence_window_days: None,
     };
-    let scan = scan_decision_quality(&graph, &request, &ScorerConfig::default())?;
+    let scan = quality_profile::scan_decision_quality(&graph, &request)?;
 
-    if scan.data.is_empty() {
-        return Ok("quality-scan: no decisions above threshold — nothing to file".to_owned());
+    if scan.data.findings.is_empty() {
+        return Ok("quality-scan: no decision needs a look — nothing to file".to_owned());
     }
 
     // Resolve Linear API key from env (not a CLI flag to avoid accidental exposure).
@@ -3627,32 +3600,30 @@ fn run_quality_scan(cli: &Cli, args: &QualityScanArgs) -> Result<String> {
 
     let mut results: Vec<serde_json::Value> = Vec::new();
 
-    for scored in &scan.data {
+    for scanned in &scan.data.findings {
+        let finding = &scanned.finding;
         // Look up the decision title for a friendlier ticket subject.
-        let title_lookup = get_decision(&graph, &scored.decision_id)
+        let title_lookup = get_decision(&graph, &finding.decision_id)
             .ok()
             .and_then(|r| r.data)
             .map(|d| d.title);
 
-        let reasons: Vec<String> = scored.reasons.iter().map(format_reason).collect();
-        let tier = scored.tier.as_str();
-
-        let issue_title = format_issue_title(&scored.decision_id, tier, title_lookup.as_deref());
+        let kind = finding.kind.as_str();
+        let issue_title = format_issue_title(&finding.decision_id, kind, title_lookup.as_deref());
         let issue_body = format_issue_description(
-            &scored.decision_id,
-            scored.score,
-            tier,
-            &reasons,
-            &scored.contributing_ids,
+            &finding.decision_id,
+            kind,
+            std::slice::from_ref(&finding.reason),
+            &finding.node_ids,
             base_url,
         );
 
         if args.dry_run {
             results.push(serde_json::json!({
                 "dry_run": true,
-                "decision_id": scored.decision_id,
-                "tier": tier,
-                "score": scored.score,
+                "finding_id": finding.finding_id,
+                "decision_id": finding.decision_id,
+                "kind": kind,
                 "title": issue_title,
                 "description": issue_body,
             }));
@@ -3662,9 +3633,9 @@ fn run_quality_scan(cli: &Cli, args: &QualityScanArgs) -> Result<String> {
                 .ok_or_else(|| CliError::InvalidInput("Linear client not initialized".to_owned()))?
                 .create_issue(&team_id, &issue_title, &issue_body)?;
             results.push(serde_json::json!({
-                "decision_id": scored.decision_id,
-                "tier": tier,
-                "score": scored.score,
+                "finding_id": finding.finding_id,
+                "decision_id": finding.decision_id,
+                "kind": kind,
                 "linear_identifier": created.identifier,
                 "linear_url": created.url,
             }));
@@ -3681,65 +3652,6 @@ fn run_quality_scan(cli: &Cli, args: &QualityScanArgs) -> Result<String> {
     });
 
     format_json_value(cli.json || true, &output)
-}
-
-/// Convert a `ScorerReason` to a human-readable one-liner for Linear tickets.
-fn format_reason(reason: &ScorerReason) -> String {
-    match reason {
-        ScorerReason::SupersededBy {
-            by_id,
-            gap_events,
-            speed,
-            deduction,
-        } => {
-            let speed_label = match speed {
-                SupersessionSpeed::Rapid => "rapidly",
-                SupersessionSpeed::Quick => "quickly",
-                SupersessionSpeed::Normal => "",
-            };
-            let gap_note = gap_events
-                .map(|g| format!(" ({g} ledger events later)"))
-                .unwrap_or_default();
-            format!("Superseded {speed_label} by `{by_id}`{gap_note} (deduction: -{deduction:.2})",)
-        }
-        ScorerReason::PremisedOnRefuted {
-            hypothesis_ids,
-            deduction,
-        } => {
-            format!(
-                "Premised on refuted hypothesis: {} (deduction: -{deduction:.2})",
-                hypothesis_ids.join(", ")
-            )
-        }
-        ScorerReason::Contested { deduction } => {
-            format!("Contested (accepted + rejected actors disagree) (deduction: -{deduction:.2})")
-        }
-        ScorerReason::PremiseStale {
-            decision_ids,
-            deduction,
-        } => {
-            format!(
-                "Follows from a prior decision that no longer stands: {} (deduction: -{deduction:.2})",
-                decision_ids.join(", ")
-            )
-        }
-        ScorerReason::ThinStructure {
-            no_options,
-            nothing_declared,
-            deduction,
-        } => {
-            let detail = match (no_options, nothing_declared) {
-                (true, true) => "no options attached and nothing declared about what it rests on",
-                (true, false) => "no options attached",
-                (false, true) => "nothing declared about what it rests on",
-                (false, false) => "thin structure",
-            };
-            format!("Thin structure: {detail} (deduction: -{deduction:.2})")
-        }
-        ScorerReason::AgentOnlyUnreviewed { deduction } => {
-            format!("Agent-only authorship with no human review (deduction: -{deduction:.2})")
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

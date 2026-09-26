@@ -15,6 +15,7 @@ use crate::ingest::{
 };
 use crate::ledger::LedgerConfig;
 use crate::projector::RelationKind as GraphRelationKind;
+use crate::quality_profile::SCAN_DEFAULT_LIMIT;
 use crate::queries::{DecisionStatus, ReadOnlyExportFormat as QueryReadOnlyExportFormat};
 use crate::slack_app::SlackCaptureSurface;
 use crate::summarize::DIGEST_MAX_DECISIONS;
@@ -140,8 +141,8 @@ pub enum Command {
     /// Manage connector authentication (e.g., Google Docs OAuth).
     /// Set HIVEMIND_GOOGLE_CLIENT_ID and HIVEMIND_GOOGLE_CLIENT_SECRET before running.
     Connector(ConnectorArgs),
-    /// Scan recent decisions for quality concerns and file Linear tickets for human review.
-    /// Precision-biased: only files tickets on strong signals (high_concern tier by default).
+    /// File a Linear ticket for each decision that needs a look (an attention finding: a bet
+    /// past its check date, a premise that changed, evidence nobody re-checked) for human review.
     /// Set HIVEMIND_LINEAR_API_KEY and HIVEMIND_LINEAR_TEAM_ID before running.
     /// Pass --dry-run to preview what would be filed without calling Linear.
     #[command(name = "quality-scan")]
@@ -393,17 +394,14 @@ pub struct ConnectorAuthArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct QualityScanArgs {
-    /// Minimum quality tier to flag. Defaults to high_concern (precision-biased).
-    #[arg(long, value_enum, default_value = "high_concern")]
-    pub min_tier: QueryQualityTier,
+    /// Only these kinds of finding (comma-separated): bet_past_check_date, premise_superseded,
+    /// premise_rejected, assumption_refuted, bet_failed, evidence_not_rechecked. Default: all.
+    #[arg(long = "kind", value_delimiter = ',')]
+    pub kinds: Vec<String>,
 
-    /// Maximum decisions to file tickets for per run (1–50). Prevents flooding Linear.
+    /// Maximum tickets to file per run (1–50). Prevents flooding Linear.
     #[arg(long, default_value_t = 10)]
     pub limit: usize,
-
-    /// Minimum ledger event offset (inclusive). Use to restrict the scan to recent decisions.
-    #[arg(long)]
-    pub since_event_origin: Option<i64>,
 
     /// Preview mode: show what would be filed without calling the Linear API.
     #[arg(long)]
@@ -1568,10 +1566,12 @@ pub enum QueryCommand {
     GetDecisionsAddedSince(QueryAddedSinceArgs),
     #[command(name = "export_read_only_summary")]
     ExportReadOnlySummary(QueryExportReadOnlySummaryArgs),
-    /// In-house explainable quality score for a single decision.
+    /// The quality profile of one decision: seven dimensions, each with its level and reasons
+    /// (or why it was not assessed), attention lines and provenance. No score, no tier.
     #[command(name = "score_decision")]
     ScoreDecision(QueryScoreDecisionArgs),
-    /// Bulk in-house quality scan: scores all decisions (or a filtered subset).
+    /// One page of attention findings: decisions that need a look (a bet past its check date, a
+    /// premise that changed, evidence nobody re-checked), each with the dimensions it bears on.
     #[command(name = "scan_decision_quality")]
     ScanDecisionQuality(QueryScanDecisionQualityArgs),
     /// Flag decisions carrying a caller-named "foreign" topic key — a decision
@@ -2106,37 +2106,30 @@ pub enum DumpFormat {
 
 #[derive(Debug, Clone, Args)]
 pub struct QueryScoreDecisionArgs {
-    /// Decision ID to score.
+    /// Decision ID to profile.
     #[arg(long = "id")]
     pub decision_id: String,
 }
 
 #[derive(Debug, Clone, Args)]
 pub struct QueryScanDecisionQualityArgs {
-    /// Minimum ledger event offset (inclusive). Filters to decisions proposed at or after this offset.
-    #[arg(long = "since-event-origin")]
-    pub since_event_origin: Option<i64>,
+    /// Only these kinds of finding (comma-separated): bet_past_check_date, premise_superseded,
+    /// premise_rejected, assumption_refuted, bet_failed, evidence_not_rechecked. Default: all.
+    #[arg(long = "kind", value_delimiter = ',')]
+    pub kinds: Vec<String>,
 
-    /// Maximum results to return (1–1000, default 25).
-    #[arg(long, default_value_t = 25)]
+    /// Days after which the newest evidence linked to a decision counts as not re-checked.
+    /// Default 90.
+    #[arg(long = "evidence-window-days")]
+    pub evidence_window_days: Option<u32>,
+
+    /// Maximum findings to return (1–1000, default 25).
+    #[arg(long, default_value_t = SCAN_DEFAULT_LIMIT)]
     pub limit: usize,
 
-    /// Pagination cursor from a previous response.
+    /// Pagination cursor: the `next_cursor` of a previous response.
     #[arg(long)]
     pub cursor: Option<String>,
-
-    /// Only return decisions at this tier or worse.
-    #[arg(long, value_enum)]
-    pub min_tier: Option<QueryQualityTier>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-#[clap(rename_all = "snake_case")]
-pub enum QueryQualityTier {
-    Clean,
-    MinorConcerns,
-    SignificantConcerns,
-    HighConcern,
 }
 
 #[derive(Debug, Clone, Args)]

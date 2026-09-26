@@ -112,6 +112,11 @@ impl FindingKind {
             Self::EvidenceNotRechecked => "evidence_not_rechecked",
         }
     }
+
+    /// The kind a wire name spells, or `None` for a name that is no kind.
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == name)
+    }
 }
 
 /// The definitions the findings depend on.

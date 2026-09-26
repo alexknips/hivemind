@@ -12,7 +12,6 @@ mod follows_from;
 mod grounding;
 mod grounding_facts;
 mod history;
-mod inhouse_scorer;
 mod misfiled;
 mod neighborhood;
 mod outcome;
@@ -73,10 +72,6 @@ pub use grounding_facts::{
     get_decision_times, get_grounding_facts, GroundingFacts, HypothesisRecord, GROUNDING_FACT_READS,
 };
 pub use history::*;
-pub use inhouse_scorer::{
-    get_decision_quality_score, scan_decision_quality, scorer_next_cursor, QualityTier,
-    ScanQualityRequest, ScoredDecision, ScorerConfig, ScorerReason, SupersessionSpeed,
-};
 pub use misfiled::{
     misfiled_next_cursor, scan_misfiled_decisions, MisfiledDecisionCandidate, MisfiledScanRequest,
 };

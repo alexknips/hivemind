@@ -1,7 +1,10 @@
 // Parent module gates this file with #[cfg(test)]; repeat the marker so UBS can filter test-only assertions.
 #[cfg(test)]
 use crate::projector::memory::MemoryGraph;
-use crate::queries::test_fixtures::{project_first_fixture, ts, Scenario};
+use crate::quality_profile::{scan_decision_quality_at, score_decision, ScanRequest};
+use crate::queries::test_fixtures::{
+    attention_scenario, project_first_fixture, ts, Scenario, ATTENTION_NOW,
+};
 use crate::queries::{
     get_compact_view, get_decision_brief_at, get_decisions_changed_since, get_recent_activity,
     get_situational_decisions, search_decisions_with_ledger, ChangedSinceRequest, QueryContext,
@@ -575,4 +578,136 @@ fn history_lines_say_where_a_moved_decision_went_and_when_and_leave_other_lines_
         "{changed_text}"
     );
     Ok(())
+}
+
+// ── score_decision / scan_decision_quality summaries (hivemind-qo11.5) ───────────────────────
+
+#[test]
+fn a_score_summary_has_one_line_per_dimension_with_its_reasons_and_ids() -> Result<()> {
+    let graph = attention_scenario()?.graph()?;
+
+    let response = score_decision(&graph, "d:bet-overdue")?;
+    let text = render_score_report_summary(&response.data);
+
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "profile\td:bet-overdue\tfloor_version=2");
+    let names: Vec<&str> = lines
+        .iter()
+        .filter(|line| line.starts_with("dimension\t"))
+        .filter_map(|line| line.split('\t').nth(1))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "framing",
+            "alternatives",
+            "information",
+            "reasoning",
+            "values_tradeoffs",
+            "bias_exposure",
+            "calibration",
+        ]
+    );
+    let information = lines
+        .iter()
+        .find(|line| line.starts_with("dimension\tinformation\t"))
+        .expect("an information line");
+    assert!(information.contains("\tlevel=partial\t"), "{information}");
+    assert!(information.contains("ids=h:bet-overdue"), "{information}");
+    assert!(
+        information.contains("\treasons=1 bet declared"),
+        "{information}"
+    );
+    let values = lines
+        .iter()
+        .find(|line| line.starts_with("dimension\tvalues_tradeoffs\t"))
+        .expect("a values line");
+    assert!(
+        values.contains("\tnot_assessed\twhy=Judged only"),
+        "{values}"
+    );
+    assert!(!values.contains("level="), "{values}");
+    assert_eq!(
+        lines.last().copied(),
+        Some("provenance\tauthorship=agent_only\treview=unreviewed\tnot yet reviewed by a human")
+    );
+    Ok(())
+}
+
+#[test]
+fn a_score_summary_of_a_missing_decision_says_so() -> Result<()> {
+    let graph = attention_scenario()?.graph()?;
+
+    let response = score_decision(&graph, "d:nobody")?;
+
+    assert_eq!(
+        render_score_report_summary(&response.data),
+        "No decision found"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_scan_summary_lists_each_finding_with_the_dimensions_it_bears_on() -> Result<()> {
+    let graph = attention_scenario()?.graph()?;
+    let request = ScanRequest {
+        kinds: vec![crate::quality_profile::FindingKind::BetPastCheckDate],
+        limit: 10,
+        ..ScanRequest::default()
+    };
+
+    let response = scan_decision_quality_at(&graph, &request, ts(ATTENTION_NOW))?;
+    let text = render_scan_report_summary(&response.data);
+
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[0],
+        "attention\tas_of=2026-09-26T00:00:00Z\tevidence_window_days=90"
+    );
+    let findings: Vec<&&str> = lines
+        .iter()
+        .filter(|l| l.starts_with("finding\t"))
+        .collect();
+    assert_eq!(findings.len(), 2);
+    assert!(
+        findings[0].contains("\tbet_past_check_date\td:bet-overdue\t"),
+        "{}",
+        findings[0]
+    );
+    assert!(
+        findings[0].contains("\tbasis_at=2026-09-01T00:00:00Z\t"),
+        "{}",
+        findings[0]
+    );
+    assert!(
+        findings[0].contains("\tids=d:bet-overdue,h:bet-overdue\t"),
+        "{}",
+        findings[0]
+    );
+    // Each finding is followed by its dimensions: information, then calibration.
+    assert!(
+        lines[2].starts_with("dimension\tinformation\t"),
+        "{}",
+        lines[2]
+    );
+    assert!(
+        lines[3].starts_with("dimension\tcalibration\t"),
+        "{}",
+        lines[3]
+    );
+    assert!(lines[4].starts_with("finding\t"), "{}", lines[4]);
+    Ok(())
+}
+
+#[test]
+fn a_scan_summary_with_no_findings_says_so() {
+    let graph = MemoryGraph::default();
+
+    let response = scan_decision_quality_at(&graph, &ScanRequest::default(), ts(ATTENTION_NOW))
+        .expect("an empty graph scans");
+
+    assert_eq!(
+        render_scan_report_summary(&response.data),
+        "No decision needs a look"
+    );
 }

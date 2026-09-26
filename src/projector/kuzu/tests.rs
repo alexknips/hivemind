@@ -543,6 +543,21 @@ fn attention_findings_read_the_same_lists_as_the_other_backends() -> Result<()> 
     Ok(())
 }
 
+#[test]
+fn score_and_scan_reports_read_the_same_answers_as_the_other_backends() -> Result<()> {
+    use crate::queries::test_fixtures::attention_scenario;
+
+    let temp_dir = test_graph_dir("quality-report");
+    let graph = KuzuGraph::open(&temp_dir)?;
+    let scenario = attention_scenario()?;
+    crate::projector::project_from_ledger(scenario.ledger(), &graph, 0)?;
+
+    crate::quality_profile::report::tests::assert_report_scenario(&graph)?;
+
+    let _ = fs::remove_dir_all(temp_dir);
+    Ok(())
+}
+
 fn test_graph_dir(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -6,8 +6,7 @@
 //!
 //! # What this is, and is not
 //!
-//! Deterministic and precision-biased, like the in-house quality scorer
-//! (`inhouse_scorer.rs`): a decision is flagged only when one of its own
+//! Deterministic and precision-biased: a decision is flagged only when one of its own
 //! (already-normalized) `topic_keys` exactly matches a caller-supplied
 //! "foreign" key — no fuzzy matching, no LLM, no inference about intent.
 //! HiveMind has no notion of "which project a ledger belongs to" yet (that
@@ -77,8 +76,7 @@ pub fn scan_misfiled_decisions(
         );
     }
 
-    // One bounded fetch, same tradeoff `scan_decision_quality` already makes:
-    // beyond MAX_QUERY_RESULTS decisions in the tenant, this scan is itself
+    // One bounded fetch: beyond MAX_QUERY_RESULTS decisions in the tenant, this scan is itself
     // truncated (never silently — `truncated` below says so) rather than
     // paging to exhaustion on every call.
     let search_request = SearchDecisionRequest {

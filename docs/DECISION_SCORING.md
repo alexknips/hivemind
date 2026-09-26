@@ -1,63 +1,52 @@
 # Decision Scoring
 
-> **Status: shipped as of v0.6.0 (decision-quality layer, he9a.3).**
-> The 2-axis scorer described here is implemented in `src/queries/inhouse_scorer.rs`
-> and exposed via MCP tools `score_decision` / `scan_decision_quality` and the
-> `query scan_decision_quality` CLI subcommand. Open questions at the bottom of
-> this file are deferred to post-v0.6.0 follow-ups; this document remains the
-> design reference.
+> **Status: shipped as a quality *profile* and a list of *attention findings*. There is
+> no score.** `score_decision` returns the profile of one decision and
+> `scan_decision_quality` returns one page of attention findings, on the stdio MCP
+> server, the HTTP MCP endpoint and the CLI. Both are read on demand from what the
+> ledger states, with no model and no network. No response carries a composite number,
+> a tier or a grade. **Deferred, not built:** Composite, Confidence, Reputation,
+> Importance, and model assessments beside the floors (see [Deferred](#deferred-not-built)).
 
 HiveMind records *what* was decided, by whom, with what options and evidence
-([`ARCHITECTURE.md`](ARCHITECTURE.md)). Decision scoring adds a separate,
-derived judgement: *how well-made* a decision was and *how much it mattered* —
-computed after the fact by an agent, never mixed into the decision record
-itself.
+([`ARCHITECTURE.md`](ARCHITECTURE.md)). The quality profile adds a separate, derived
+view: *what the record supports* about how the decision was made, along seven
+dimensions, computed after the fact and never mixed into the decision record itself.
+It reports what is written down, never that it is sound, and it says "not assessed"
+where nothing can be said.
 
 The research basis is [`DECISION_QUALITY_LITERATURE.md`](DECISION_QUALITY_LITERATURE.md).
-(That document's model section must be reconciled to match this one — see
-[Reconciliation with the literature doc](#reconciliation-with-the-literature-doc).)
 
 ## Architectural placement (and why it stays in bounds)
 
-Scoring is agentic analysis. It lives strictly in **Layer 3**, above the write
-and query paths, per [`PRINCIPLES.md` §7](../PRINCIPLES.md) and
-[`ARCHITECTURE.md` → Layer Boundary](ARCHITECTURE.md). Four properties keep it
+The profile is agentic analysis. It lives strictly in **Layer 3**, above the write and
+query paths, per [`PRINCIPLES.md` §7](../PRINCIPLES.md) and
+[`ARCHITECTURE.md` → Layer Boundary](ARCHITECTURE.md): `src/quality_profile.rs` (the
+floors), `src/quality_profile/findings.rs` (attention findings) and
+`src/quality_profile/report.rs` (what the tools return). Four properties keep it
 compliant and trustworthy:
 
-1. **Ex ante.** A score uses **only what was knowable at decision time, never the
-   outcome.** It measures the decision, not the luck. Outcome data is forbidden
-   input.
-2. **Server-computed, not client-reported.** The decider supplies *evidence and
-   artifacts*; a **server-side Layer-3 agent assigns the scores.** Clients never
-   self-report scores. This preserves provenance and removes the obvious gaming
-   path.
+1. **Ex ante.** A level uses **only what was knowable at decision time, never the
+   outcome.** It measures how the decision was made, not the luck. Something recorded
+   after the decision is shown as `later` and never raises a level; what happened next
+   has its own view ([below](#where-the-retired-deductions-went)).
+2. **Computed, not reported.** The decider supplies *evidence and artifacts*; the
+   profile is derived from them on every read. Clients never report a level, which
+   removes the obvious gaming path.
 3. **Outside write and query.** Layer 2 "does not call LLMs, rank, cluster,
-   summarize, or invent confidence" ([`ARCHITECTURE.md`](ARCHITECTURE.md)).
-   Scoring does all of those things — so it cannot live there. It reads the
-   ledger/projection and writes only its own annotations.
-4. **Append-only annotations.** Scores are stored as **immutable annotation
-   events that reference the decision**, not as edits to it. Re-assessment on new
-   evidence appends a **new annotation that supersedes the prior one by
-   reference** — the same supersession-not-overwrite pattern decisions already
-   use. Full history is preserved; auditability ([`PRINCIPLES.md` §2](../PRINCIPLES.md))
-   holds.
+   summarize, or invent confidence" ([`ARCHITECTURE.md`](ARCHITECTURE.md)). Nothing in
+   `src/queries/` or `src/commands/` imports the profile (a test holds that line), so
+   queries stay pure and the profile can be replaced without touching ingest or
+   queries. It reads the graph through the same read interface as everything else and
+   writes nothing.
+4. **No model, no network.** The floors run self-hosted with no API key. A model
+   assessment beside a floor is deferred; when it lands it is stored as an append-only
+   annotation that supersedes the previous one by reference, never as an edit to the
+   decision.
 
-## The model
+## The seven dimensions
 
-Two independent axes, plus two derived quantities.
-
-| Axis | Range | Question |
-| --- | --- | --- |
-| **Quality** | bounded `[0,1]` | How well-made was the decision? |
-| **Importance** | **unbounded magnitude** (not 0–100%) | How much does it matter? |
-| *derived* **Confidence** | from Quality composite | How sure are we it was well-made? |
-| *derived* **Reputation** | per actor | Track record on decisions that mattered |
-
-### Axis 1 — Quality `[0,1]`
-
-A weighted composite of **seven dimensions**. Each dimension is scored
-numerically **with an explanation**, and is **stored individually** so the
-composite (and any reweighting) recomputes for free.
+Each dimension stands alone. There is no composite over them.
 
 | # | Dimension | What it assesses |
 | --- | --- | --- |
@@ -69,24 +58,14 @@ composite (and any reweighting) recomputes for free.
 | 6 | **Bias exposure** | Exposure to **non-calibration** cognitive distortions: anchoring, confirmation, sunk-cost, framing, motivated reasoning. |
 | 7 | **Calibration** | Matching confidence to evidence; acknowledging unknowns; avoiding over- and under-confidence. |
 
-- **Aggregation:** weighted composite. **Weights are tunable and versioned** —
-  start with sensible defaults, then *fit them from validation data*. Each stored
-  composite **records its weight-version** for reproducibility. (A reasonable,
-  explicitly non-binding starting point is equal weights, to be refit.)
-- **Bias vs Calibration are kept separate** by design. Bias covers distortions
-  *other than* confidence/evidence mismatch; calibration covers that mismatch.
-  **Safeguard:** if the two empirically correlate above ~0.7, consider merging
-  them into one dimension.
-- The **Quality composite drives Confidence.**
+Bias and Calibration are separate by design: Bias covers distortions *other than*
+confidence/evidence mismatch; Calibration covers that mismatch. Reversibility is not a
+quality dimension: a reversible decision is not lower *quality*, it simply matters less
+(see [Importance](#deferred-not-built)).
 
-### Floors: what each dimension can say without a model
+## Floors: what each dimension can say without a model
 
-> **Status.** The floors below are implemented in `src/quality_profile.rs` as a
-> library type that returns a *profile* for any decision, however it was captured.
-> No tool, verb or export shows the profile yet; the composite scorer above is
-> still what `score_decision` returns.
-
-A **floor** is the part of a dimension that can be computed from facts the record
+Implemented in `src/quality_profile.rs`. A **floor** is the part of a dimension that can be computed from facts the record
 already states, deterministically, self-hosted, with no model and no network. A
 floor says what is written down, never that it is sound. The profile lists all
 seven dimensions for a decision. Each one is either
@@ -183,12 +162,9 @@ scan of the graph. The same graph
 gives the same profile, with reasons and ids in a fixed order, on the in-memory,
 Postgres and Kuzu projections.
 
-### Attention findings: what needs a look
+## Attention findings: what needs a look
 
-> **Status.** Implemented in `src/quality_profile/findings.rs` as a library
-> function, next to the profile. No tool, verb or export shows the findings yet.
-
-The roll-up of the profile is not a grade. It is a list of decisions that need a
+Implemented in `src/quality_profile/findings.rs`. The roll-up of the profile is not a grade. It is a list of decisions that need a
 look now, each with the reason in words and the nodes it rests on. A finding is
 derived from what the graph already states; nothing is scored, ranked or
 inferred, and the list works self-hosted with no model and no network. The order
@@ -254,100 +230,151 @@ rows those reads return grow with the grounding links, hypotheses and evidence,
 not with decisions times a per-decision cost. Nothing walks the premise graph, so
 a `FOLLOWS_FROM` cycle cannot loop and costs nothing extra.
 
-### Axis 2 — Importance (unbounded magnitude)
+## What the tools return
 
-Importance is a **magnitude, not a probability or percentage.** It is explicitly
-**not** on a 0–100% scale.
+One core, `src/quality_profile/report.rs`, builds both answers. The stdio server, the
+HTTP endpoint and the CLI each parse their own arguments, call it and serialize what it
+returns, so the three cannot drift (`transport_parity` tests run the same ledger through
+all three). Responses use the usual envelope: `result_count`, `truncated`, `latency_ms`
+and `data`.
 
+| | MCP (stdio and HTTP) | CLI (JSON by default, `--summary` for text) |
+| --- | --- | --- |
+| Profile of one decision | `score_decision {decision_id}` | `hivemind query score_decision --id <id>` |
+| A page of findings | `scan_decision_quality {kinds?, evidence_window_days?, limit?, cursor?}` | `hivemind query scan_decision_quality [--kind a,b] [--evidence-window-days N] [--limit N] [--cursor C]` |
+| One Linear ticket per finding | | `hivemind quality-scan [--kind a,b] [--limit N] [--dry-run]` |
+
+### `score_decision`
+
+`data` is `null` when the decision does not exist. Otherwise it is the profile of the
+decision, whichever way it was captured:
+
+```json
+{
+  "decision_id": "decision-…",
+  "floor_version": 2,
+  "framing":          { "status": "assessed", "level": "partial", "reasons": [ { "kind": "question_recorded", "text": "…", "node_ids": ["decision-…"] } ], "node_ids": ["decision-…"] },
+  "alternatives":     { "status": "assessed", "level": "solid", "reasons": [ … ], "node_ids": [ … ] },
+  "information":      { "status": "assessed", "level": "partial", "reasons": [ … ], "node_ids": [ … ] },
+  "reasoning":        { "status": "assessed", "level": "partial", "reasons": [ … ], "node_ids": [ … ] },
+  "values_tradeoffs": { "status": "not_assessed", "why": "Judged only: …" },
+  "bias_exposure":    { "status": "assessed", "level": "partial", "reasons": [ … ], "node_ids": [ … ] },
+  "calibration":      { "status": "not_assessed", "why": "No confidence was declared at capture, …" },
+  "attention": [ { "kind": "high_confidence_over_bet", "dimension": "calibration", "text": "…", "node_ids": [ … ] } ],
+  "provenance": { "authorship": "agent_only", "review": "self_accepted", "line": "not yet reviewed by a human" }
+}
 ```
-Importance = Stakes × Irreversibility × Actionability
+
+Every dimension is either `assessed` (an ordinal `level`, its `reasons` and the
+`node_ids` they rest on) or `not_assessed` (a `why`, and no `level` key). The text
+summary shows one line per dimension: the level, the ids and the reasons, or why it was
+not assessed.
+
+**Provenance.** `authorship` and `review` are the decision's existing authorship and
+review shapes. `line` is `not yet reviewed by a human`, present exactly when an agent
+authored the decision and no human accepted it (whatever else happened to it), and
+absent when someone rejected it: the review shape does not say whether that someone was
+a human, and the line makes a negative claim. It is a provenance label shown beside the
+profile, never a deduction from it.
+
+### `scan_decision_quality`
+
+`data` is one page of [attention findings](#attention-findings-what-needs-a-look), in
+order of decision id. Each carries the dimensions it bears on, each with its level and
+reasons:
+
+```json
+{
+  "as_of": "2026-09-26T00:00:00Z",
+  "evidence_window_days": 90,
+  "findings": [
+    {
+      "finding_id": "finding-…",
+      "kind": "bet_past_check_date",
+      "decision_id": "decision-…",
+      "basis_at": "2026-09-01T00:00:00Z",
+      "node_ids": ["decision-…", "hypothesis-…"],
+      "reason": "the bet hypothesis-… was to be checked by …; nothing has been recorded for or against it",
+      "dimensions": [
+        { "dimension": "information", "status": "assessed", "level": "partial", "reasons": [ … ], "node_ids": [ … ] },
+        { "dimension": "calibration", "status": "not_assessed", "why": "…" }
+      ]
+    }
+  ],
+  "next_cursor": "…"
+}
 ```
 
-- **Stakes** — unbounded, **log-scaled.** Severity and reach are **factors of
-  stakes** (`Stakes ≈ severity × reach`), not separate top-level dimensions.
-- **Irreversibility** ∈ `[0,1]` — a discount. Reversible decisions (two-way
-  doors) are **less important to get right** than one-way doors, so they are
-  discounted toward 0.
-- **Actionability** ∈ `[0,1]` — a **gate.** An unactionable item or non-decision
-  drives importance to ≈ 0.
+`truncated` (in the envelope) says more findings follow, and `data.next_cursor` is
+present exactly then; pass it as `cursor` to continue. Nothing is dropped silently.
+`kinds` limits the page to some of the six kinds, `evidence_window_days` overrides the
+default window (90), and `limit` defaults to 25 (at most 1000). An unknown kind, or a
+cursor no scan returned, is refused.
 
-Note that **reversibility lives here, in Importance** — it is *not* a quality
-dimension. A reversible decision is not lower *quality*; it simply matters less.
+| Kind | Dimensions it bears on | Why |
+| --- | --- | --- |
+| `bet_past_check_date` | Information, Calibration | the bet counts as information on record; confidence was declared over it |
+| `premise_superseded`, `premise_rejected` | Information, Reasoning | the prior decision counts as information and as stated reasoning |
+| `assumption_refuted` | Information | the assumption counts as information on record |
+| `bet_failed` | Information, Calibration | as for a bet past its check date |
+| `evidence_not_rechecked` | Information | the evidence is what Information counts |
 
-### Derived — Confidence
+**Cost.** A page costs what the findings cost (see below) plus one profile read per
+distinct decision on the page: never more than `limit` of each, however many decisions
+the graph holds. A profile read is a handful of anchored lookups, not a scan.
 
-Confidence is derived from the **Quality composite**: it expresses how sure we
-are that a decision was well-made. (This Layer-3 derived confidence is distinct
-from the separate, still-open question of a *capture-time, author-reported*
-confidence field — see [Open questions](#open-questions-for-the-implementation-bead).)
+### `quality-scan`
 
-### Derived — Reputation
+`hivemind quality-scan` reads the first page of findings (at most `--limit`, 1–50,
+default 10) and files one Linear ticket for each, or prints them with `--dry-run`. The
+ticket names the kind of finding and the decision, and carries the reason and the node
+ids. Its `finding_id` is what to dedupe on across runs.
 
-An actor's reputation is the **importance-weighted average of the Quality of
-their decisions** over their history. High-importance, well-made calls dominate;
-reversible or trivial decisions barely move it. Reputation therefore reflects a
-track record on the decisions that actually mattered.
+## Where the retired deductions went
 
-## Storage model
+Earlier versions graded a decision with five deductions and a tier. They were outcome,
+status and provenance signals wearing a quality label, and they are gone from
+`score_decision` and `scan_decision_quality` along with the score and the tier.
 
-- Scores are **append-only annotation events** referencing the decision id
-  (immutable; never an edit to the decision).
-- **Every per-dimension score is stored individually** — the seven Quality
-  dimensions and the Importance factors (stakes severity, reach, irreversibility,
-  actionability) — each as a numeric value plus its explanation.
-- **Composites are derived, not stored as truth.** Quality composite, Importance,
-  Confidence, and Reputation recompute from the stored per-dimension values.
-  Each composite carries its **weight-version**.
-- **Re-assessment** appends a new annotation event that **supersedes the prior
-  assessment by reference.** The decision's own record is untouched.
+| Was a deduction for | Now |
+| --- | --- |
+| superseded (faster meant worse) | the "did it hold up" outcome view (`verify`), shown beside quality and never folded into it; a fast reversal is never penalized |
+| premised on a refuted assumption, or on a superseded or rejected decision | staleness: the `assumption_refuted`, `bet_failed`, `premise_superseded` and `premise_rejected` findings |
+| contested | a status, shown as such: deducting for disagreement would be conformity bias |
+| agent-only, unreviewed | the provenance line |
+| thin structure (no options, nothing declared it rests on) | the Alternatives and Information floors |
 
-This mirrors the existing event model: raw, attributed facts are the stored
-truth; everything aggregate is a rebuildable projection.
 
-## Validation plan
+## Deferred, not built
 
-Post-PoC and **non-blocking** — the "this actually works" proof, run after the
-model exists, not a gate on shipping the PoC.
+Nothing below exists in the code. It is kept as the design the profile was built to
+leave room for, and as the reason there is no number in a response.
 
-1. **Perturbation / ablation.** Degrade a decision along one dimension and
-   confirm *that* dimension's score drops. Ground truth is true by construction;
-   the scorer must beat a trivial baseline.
-2. **Dogfood + expert agreement.** Score the real ledger and compare against
-   expert judgement — concurrent validity against the real decision distribution.
-3. **Prospective revert/supersession prediction.** Ex-ante scores should predict
-   later reverts/supersessions, with **zero outcome leakage** (the scores were
-   assigned before the outcome existed).
+- **Composite.** An earlier design rolled the seven dimensions into a weighted `[0,1]`
+  composite with tunable, versioned weights. It is not built: most dimensions read
+  `not assessed` without a model, and an average over them would be invented
+  confidence. The roll-up is the attention list.
+- **Confidence.** Derived from a composite: how sure we are that a decision was
+  well-made. Deferred with it. (Distinct from the *capture-time, author-reported*
+  confidence the decider declares, which Calibration reads and which is built.)
+- **Reputation.** An actor's importance-weighted average of the quality of their
+  decisions. Deferred, and it needs both a composite and Importance.
+- **Importance (a second axis).** A magnitude, not a percentage:
+  `Importance = Stakes × Irreversibility × Actionability`, with Stakes unbounded and
+  log-scaled (`severity × reach`), Irreversibility in `[0,1]` as a discount (two-way
+  doors matter less) and Actionability in `[0,1]` as a gate. Reversibility lives here,
+  not in the quality dimensions.
+- **Model assessments.** A model may assess Framing and Values / Tradeoffs, which have
+  no floor beyond "a question was recorded", and may enrich the others, but only with
+  its basis quoted from the decision's own text, beside the floor and never replacing
+  it, and stored as an append-only annotation event that supersedes the previous one by
+  reference.
+- **Validation.** Perturbation and ablation (degrade one dimension, confirm that
+  dimension moves), dogfooding against expert agreement, and prospective prediction of
+  reverts with zero outcome leakage.
 
-The historical-decisions study is **optional, stage-2 marketing** — non-blocking
-and *not* the primary validation.
-
-## Reconciliation with the literature doc
-
-[`DECISION_QUALITY_LITERATURE.md`](DECISION_QUALITY_LITERATURE.md)'s model
-section has been brought into line with the locked model above:
-
-- **Reversibility moves to Importance** (it is no longer a quality dimension).
-- **Calibration is split out from Bias** (two separate quality dimensions).
-
-> **Done in this PR.** The literature doc was folded into this branch from an
-> operator-staged backup (the refinery's separate landing was blocked on a
-> permission prompt). Its model section now matches: reversibility under
-> Importance, calibration split out from bias, and the axis named Importance.
-
-## Open questions (for the implementation bead)
-
-All deferred to the post-PoC implementation, not part of this capture:
-
-- The concrete annotation **event schema and name** (a new Layer-3 scoring/
-  assessment event under `schemas/`).
-- **Default weights** and the procedure to fit them from validation data.
-- The **bias/calibration merge** decision, pending the >0.7 correlation check.
-- **When the scorer runs** (on capture, on demand, or batch) and how the
-  server-side agent is invoked.
-- **Reputation** computation and refresh mechanics at scale.
-- Relationship to a possible **capture-time author-reported confidence** field
-  (Layer-1, author-supplied) vs this Layer-3 derived confidence — an operator
-  question currently open and tracked separately.
+Open questions for that work: the annotation event schema and name, when a model
+assessment runs and how the agent is invoked, and Reputation computation at scale.
 
 ## References
 

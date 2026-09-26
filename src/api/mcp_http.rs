@@ -24,13 +24,12 @@ use crate::mcp::core::{
     CaptureDecisionArgs, CompactViewArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
     GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSupersessionChainArgs,
     GroundDecisionArgs, LedgerHandle, LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs,
-    SupersedeDecisionArgs,
+    ScanDecisionQualityArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
 };
 use crate::projector::memory::MemoryGraph;
 use crate::queries::{
-    get_decision, get_decision_quality_score, get_relevant_decisions, scan_decision_quality,
-    scorer_next_cursor, search_decisions_any, DecisionStatus, QualityTier, QueryContext,
-    ScanQualityRequest, ScorerConfig, SearchDecisionRequest,
+    get_decision, get_relevant_decisions, search_decisions_any, DecisionStatus, QueryContext,
+    SearchDecisionRequest,
 };
 
 use super::auth::extract_ctx;
@@ -591,12 +590,10 @@ fn mcp_score_decision(
     args: serde_json::Map<String, serde_json::Value>,
     cache: &Arc<GraphCache>,
 ) -> McpToolResult {
-    let decision_id = mcp_req_str(&args, "decision_id")?;
+    let core_args = ScoreDecisionArgs::from_json(&args)?;
     let graph = mcp_open_graph(backend, ctx, cache)?;
-    let config = ScorerConfig::default();
-    let response = get_decision_quality_score(&*graph, &decision_id, &config)
-        .map_err(|e| (-32603i32, e.to_string()))?;
-    serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
+    let output = crate::mcp::core::score_decision(&*graph, core_args)?;
+    Ok(output.into_value())
 }
 
 fn mcp_scan_decision_quality(
@@ -605,45 +602,10 @@ fn mcp_scan_decision_quality(
     args: serde_json::Map<String, serde_json::Value>,
     cache: &Arc<GraphCache>,
 ) -> McpToolResult {
-    let since_event_origin = args.get("since_event_origin").and_then(|v| v.as_i64());
-    let limit = mcp_opt_usize(&args, "limit")?.unwrap_or(25);
-    let cursor = mcp_opt_str(&args, "cursor")?;
-    let min_tier = match mcp_opt_str(&args, "min_tier")? {
-        None => None,
-        Some(s) => Some(parse_quality_tier_http(&s)?),
-    };
-    let request = ScanQualityRequest {
-        since_event_origin,
-        limit,
-        cursor: cursor.clone(),
-        min_tier,
-    };
+    let core_args = ScanDecisionQualityArgs::from_json(&args)?;
     let graph = mcp_open_graph(backend, ctx, cache)?;
-    let config = ScorerConfig::default();
-    let response = scan_decision_quality(&*graph, &request, &config)
-        .map_err(|e| (-32603i32, e.to_string()))?;
-    let skip: usize = cursor.as_deref().and_then(|c| c.parse().ok()).unwrap_or(0);
-    let next_cursor = if response.truncated {
-        scorer_next_cursor(skip, response.result_count)
-    } else {
-        None
-    };
-    let mut value =
-        serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))?;
-    if let (Some(nc), Some(obj)) = (next_cursor, value.as_object_mut()) {
-        obj.insert("next_cursor".to_owned(), serde_json::Value::String(nc));
-    }
-    Ok(value)
-}
-
-fn parse_quality_tier_http(s: &str) -> std::result::Result<QualityTier, (i32, String)> {
-    match s {
-        "clean" => Ok(QualityTier::Clean),
-        "minor_concerns" => Ok(QualityTier::MinorConcerns),
-        "significant_concerns" => Ok(QualityTier::SignificantConcerns),
-        "high_concern" => Ok(QualityTier::HighConcern),
-        other => Err((-32602, format!("unknown quality tier `{other}`; expected clean, minor_concerns, significant_concerns, or high_concern"))),
-    }
+    let output = crate::mcp::core::scan_decision_quality(&*graph, core_args)?;
+    Ok(output.into_value())
 }
 
 fn mcp_dump_graph(

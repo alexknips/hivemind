@@ -22,7 +22,8 @@
 //! `resolve_target`/`get_decision_neighborhood`, `get_supersession_chain`,
 //! `recall_decisions`, `supersede_decision`, `disagree_decision`, `move_decision`,
 //! `ground_decision`,
-//! `get_decision_outcome`, `hivemind_compact_view`. Later
+//! `get_decision_outcome`, `hivemind_compact_view`, `score_decision`,
+//! `scan_decision_quality`. Later
 //! tools follow the same shape — an `Args::from_json` parser plus a
 //! `core::<tool>` function — one pair per tool, each independently
 //! reviewable.
@@ -41,6 +42,7 @@ use crate::grounding::{
 };
 use crate::ledger::{AnyLedger, EventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
+use crate::quality_profile::{self, parse_kinds, ScanRequest, SCAN_DEFAULT_LIMIT};
 use crate::queries::{
     derive_decision_status, get_compact_view, get_decision_brief as query_get_decision_brief,
     get_decision_neighborhood as query_get_decision_neighborhood,
@@ -1367,4 +1369,85 @@ pub(crate) fn ground_decision<P: LedgerProvider>(
         "rests_on": resolved.label(added.rests_on),
         "premise_stale": added.premise_stale,
     })))
+}
+
+// ---------------------------------------------------------------------------
+// score_decision / scan_decision_quality
+// ---------------------------------------------------------------------------
+
+/// The success payload of a quality tool: the `QueryResponse` envelope every read tool returns.
+/// The response is built by [`crate::quality_profile::report`], the core the CLI shares, so the
+/// two transports and the CLI serialize the same value.
+fn quality_output<T: serde::Serialize>(
+    response: &crate::queries::QueryResponse<T>,
+) -> Result<ToolOutput, CoreError> {
+    serde_json::to_value(response)
+        .map(ToolOutput)
+        .map_err(|error| CoreError::Internal(error.to_string()))
+}
+
+/// Parsed, validated arguments for the `score_decision` tool.
+pub(crate) struct ScoreDecisionArgs {
+    pub(crate) decision_id: String,
+}
+
+impl ScoreDecisionArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            decision_id: require_string(args, "decision_id")?,
+        })
+    }
+}
+
+/// The core for the `score_decision` MCP tool: the decision's quality profile (seven dimensions,
+/// each with its level and reasons or why it was not assessed; attention lines; provenance), or
+/// `data: null` when the decision does not exist. No number in it says how good the decision is.
+pub(crate) fn score_decision(
+    graph: &impl GraphView,
+    args: ScoreDecisionArgs,
+) -> Result<ToolOutput, CoreError> {
+    let response =
+        quality_profile::score_decision(graph, &args.decision_id).map_err(CoreError::from)?;
+    quality_output(&response)
+}
+
+/// Parsed, validated arguments for the `scan_decision_quality` tool.
+pub(crate) struct ScanDecisionQualityArgs {
+    pub(crate) request: ScanRequest,
+}
+
+impl ScanDecisionQualityArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        let kinds = parse_kinds(&optional_string_array(args, "kinds")?)
+            .map_err(CoreError::InvalidArgument)?;
+        let evidence_window_days = optional_usize(args, "evidence_window_days")?
+            .map(|days| {
+                u32::try_from(days).map_err(|_| {
+                    CoreError::InvalidArgument(
+                        "`evidence_window_days` is too large: at most 4294967295".to_owned(),
+                    )
+                })
+            })
+            .transpose()?;
+        Ok(Self {
+            request: ScanRequest {
+                kinds,
+                limit: optional_usize(args, "limit")?.unwrap_or(SCAN_DEFAULT_LIMIT),
+                cursor: optional_string(args, "cursor")?,
+                evidence_window_days,
+            },
+        })
+    }
+}
+
+/// The core for the `scan_decision_quality` MCP tool: one page of attention findings, each with
+/// the dimensions it bears on. `truncated` says whether more follow and `data.next_cursor`
+/// resumes; nothing is dropped silently and no request returns the whole graph.
+pub(crate) fn scan_decision_quality(
+    graph: &impl GraphView,
+    args: ScanDecisionQualityArgs,
+) -> Result<ToolOutput, CoreError> {
+    let response =
+        quality_profile::scan_decision_quality(graph, &args.request).map_err(CoreError::from)?;
+    quality_output(&response)
 }
