@@ -706,7 +706,9 @@ pub struct SupersedeArgs {
     pub evidence_ids: Vec<String>,
 
     /// Registered project handle to file the superseding decision under. Without it the new
-    /// decision inherits the old decision's project.
+    /// decision inherits the project the old decision is filed in now (after a move, the
+    /// project it was moved to). A decision in a personal project is replaced into your own
+    /// personal project, since personal projects belong to one actor.
     #[arg(long = "project")]
     pub project: Option<String>,
 
@@ -720,8 +722,8 @@ pub struct SupersedeArgs {
     /// city rig (`GC_RIG`), then this actor's `hivemind project use` setting. Each records
     /// how it was determined. A change touching several projects is recorded for the nearest
     /// project they are all part of. When none applies, or they share no parent, the new
-    /// decision still inherits the old decision's project. `--project` wins over all of
-    /// these.
+    /// decision still inherits the project the old decision is filed in now, as without this
+    /// flag. `--project` wins over all of these.
     #[arg(long = "project-from-context")]
     pub project_from_context: bool,
 

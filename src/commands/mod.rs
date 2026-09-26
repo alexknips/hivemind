@@ -413,6 +413,45 @@ struct DecisionProposalSnapshot {
     expressed_confidence: Option<String>,
 }
 
+/// Where a decision is filed right now and how that was determined, as the ledger resolves it
+/// (the same view the projector keeps on the Decision node): the proposal's own `project` and
+/// `project_source`, replaced by each later `decision.moved`.
+#[derive(Debug, Clone)]
+struct DecisionFiling {
+    /// The actor that recorded the proposal: whose personal project a proposal naming no
+    /// project belongs to.
+    proposer: String,
+    /// `None` for a proposal that named no project (personal fallback).
+    project: Option<String>,
+    project_source: Option<ProjectSource>,
+}
+
+impl DecisionFiling {
+    /// The address the decision resolves to: its project, or its proposer's personal project.
+    fn address(&self) -> String {
+        self.project
+            .clone()
+            .unwrap_or_else(|| personal_project_handle(&self.proposer))
+    }
+
+    /// The `(project, project_source)` pair a decision replacing this one records when the
+    /// caller states no project: the same project and how it was determined, so a decision
+    /// moved to Billing is replaced inside Billing (`moved`) and a `folder_marker` filing
+    /// stays a `folder_marker` one down the chain. A personal project is derived from the
+    /// actor and cannot be stated, so a replacement of a decision that sits in one is filed
+    /// as the personal fallback of whoever records it, never in another actor's.
+    fn inherited_by_replacement(&self) -> (Option<String>, ProjectSource) {
+        match &self.project {
+            Some(handle) if !handle.starts_with(PERSONAL_PROJECT_HANDLE_PREFIX) => (
+                Some(handle.clone()),
+                self.project_source
+                    .unwrap_or(ProjectSource::PersonalFallback),
+            ),
+            _ => (None, ProjectSource::PersonalFallback),
+        }
+    }
+}
+
 impl<'a, L: EventLedger> Commands<'a, L> {
     pub fn new(ledger: &'a L) -> Self {
         Self::new_with_provenance(ledger, EventProvenance::cli())
@@ -1721,19 +1760,18 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             })
             .transpose()?;
 
-        // The new decision inherits the old decision's project verbatim (both the handle
-        // and how it was determined) unless this call states one explicitly -- an
-        // inherited `folder_marker`/`rig`/etc. project_source stays truthful across the
-        // chain rather than being overwritten with `stated` just because a handle is
-        // present.
+        // The new decision inherits the old decision's project where it is filed now -- its
+        // proposal's project unless a `decision.moved` has taken it elsewhere -- with how
+        // that was determined, unless this call states one explicitly. An inherited
+        // `folder_marker`/`rig`/`moved` project_source stays truthful across the chain
+        // rather than being overwritten with `stated` just because a handle is present.
         let (project, project_source) = match input.project {
             Some(determined) => self.resolve_stated_project(Some(determined))?,
-            None => (
-                old_decision.project.clone(),
-                old_decision
-                    .project_source
-                    .unwrap_or(ProjectSource::PersonalFallback),
-            ),
+            None => self
+                .current_decision_filing(input.old_decision_id)?
+                .map_or((None, ProjectSource::PersonalFallback), |filing| {
+                    filing.inherited_by_replacement()
+                }),
         };
         let placement = DecisionPlacement::from_recorded(
             input.actor_id,
@@ -2436,31 +2474,44 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     /// decision applied in ledger order (last move wins). `None` only when no
     /// `decision.proposed` for `decision_id` has been seen; callers check `decision_exists`
     /// first, so this is a defensive fallback, not an expected path.
+    fn current_decision_project(&self, decision_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .current_decision_filing(decision_id)?
+            .map(|filing| filing.address()))
+    }
+
+    /// `current_decision_project` with how the project was determined: a `decision.moved`
+    /// replaces the pair with `(to, moved)` exactly as `projector::project_decision_moved`
+    /// does to the Decision node, so what a caller reads here is what the graph shows.
     ///
     /// Reads raw payload fields (`payload_value_as_str`/`payload_value_matches`) rather than
     /// a typed `deny_unknown_fields` struct, matching `decision_proposal_snapshot_from_event`
     /// below: a single stray event elsewhere in the ledger must never fail a whole streaming
     /// pass just because its shape doesn't match this decision's payload type.
-    fn current_decision_project(&self, decision_id: &str) -> Result<Option<String>> {
-        let mut current: Option<String> = None;
+    fn current_decision_filing(&self, decision_id: &str) -> Result<Option<DecisionFiling>> {
+        let mut current: Option<DecisionFiling> = None;
 
         self.ledger
             .replay_from_for_tenant(&self.context.tenant_id, 0, &mut |event| {
                 match event.event_type {
                     EventType::DecisionProposed => {
                         if payload_value_matches(event, "decision_id", decision_id) {
-                            current = Some(
-                                payload_value_as_str(event, "project")
-                                    .map(str::to_owned)
-                                    .unwrap_or_else(|| personal_project_handle(&event.actor_id)),
-                            );
+                            current = Some(DecisionFiling {
+                                proposer: event.actor_id.clone(),
+                                project: payload_value_as_str(event, "project").map(str::to_owned),
+                                project_source: payload_value_as_str(event, "project_source")
+                                    .and_then(ProjectSource::parse),
+                            });
                         }
                     }
                     EventType::DecisionMoved
                         if payload_value_matches(event, "decision_id", decision_id) =>
                     {
-                        if let Some(to) = payload_value_as_str(event, "to") {
-                            current = Some(to.to_owned());
+                        if let (Some(filing), Some(to)) =
+                            (current.as_mut(), payload_value_as_str(event, "to"))
+                        {
+                            filing.project = Some(to.to_owned());
+                            filing.project_source = Some(ProjectSource::Moved);
                         }
                     }
                     _ => {}

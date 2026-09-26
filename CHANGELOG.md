@@ -88,6 +88,18 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A replacement of a moved decision is filed where the decision was moved, not in the
+  replacer's personal project.** `hivemind supersede`, `supersede_decision`, the REST supersede
+  and the `review` supersede inherit the old decision's project when none is named, but read it
+  from the decision's first proposal and so ignored a later `hivemind move`. A decision moved
+  to a shared project (say `ui`) was replaced into the replacer's personal project, against
+  what `--help` and the plugin README say. The replacement is now filed where the old decision
+  is now, with `project_source` `moved` when it got there by a move, and the same holds when
+  `--project-from-context` finds nothing. A decision that sits in a personal project is
+  replaced into the replacer's own personal project, since a personal address belongs to one
+  actor and cannot be stated or moved into by anyone else; `--help` and the plugin README now
+  say so. Replacements already on the ledger are not moved: `hivemind move` fixes one.
+  (hivemind-9lzi)
 - **A capture refused for its project leaves nothing behind.** `decision.capture` and
   `capture_decision` checked the stated project (registered, no reserved `personal:` prefix, a
   source a caller may claim) only after they had recorded the evidence, assumptions and bet named

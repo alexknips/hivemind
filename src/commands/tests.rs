@@ -1120,6 +1120,151 @@ fn supersede_of_a_personal_fallback_decision_stays_announced() {
     assert_eq!(outcome.placement.notice(), Some(PERSONAL_FALLBACK_NOTICE));
 }
 
+/// A plain replacement of `old_id` by `actor_id` that states no project.
+fn supersede_unstated(
+    commands: &Commands<'_, InMemoryEventLedger>,
+    actor_id: &str,
+    old_id: &str,
+    title: &str,
+) -> SupersedeOutcome {
+    commands
+        .supersede(SupersedeInput {
+            actor_id,
+            old_decision_id: old_id,
+            new_title: title,
+            new_rationale: "The replacement is filed where the decision it replaces is filed",
+            topic_keys: &["topic".to_owned()],
+            option_labels: &["Option A".to_owned()],
+            chosen_option_label: Some("Option A"),
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            project: None,
+            grounding: None,
+            expressed_confidence: None,
+        })
+        .expect("supersede succeeds")
+}
+
+/// The `project` and `project_source` a decision.proposed event recorded for `decision_id`.
+fn recorded_filing(
+    ledger: &InMemoryEventLedger,
+    decision_id: &str,
+) -> (Option<String>, Option<String>) {
+    let events = ledger.read(0, 1000).expect("read succeeds");
+    let proposal = events
+        .iter()
+        .find(|event| {
+            event.event_type == EventType::DecisionProposed
+                && event.payload.get("decision_id").and_then(|v| v.as_str()) == Some(decision_id)
+        })
+        .expect("proposal recorded");
+    let field = |key: &str| {
+        proposal
+            .payload
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    };
+    (field("project"), field("project_source"))
+}
+
+#[test]
+fn supersede_of_a_moved_decision_is_filed_where_it_was_moved() {
+    // hivemind-9lzi: the replacement inherits where the old decision is filed NOW, not the
+    // project its proposal named before someone moved it.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["ui", "billing"]);
+    let (old_id, _) = commands
+        .propose_decision_placed(fixture.proposal("human:alice", "UI token sign-in", None))
+        .expect("propose lands in the personal project");
+    let moved = commands
+        .move_decision_to("human:alice", &old_id, "ui", Some("UI auth decision"))
+        .expect("move to ui");
+    assert_eq!(moved.from, "personal:human:alice");
+
+    let replacement = supersede_unstated(&commands, "human:alice", &old_id, "Always offer token");
+    assert_eq!(replacement.placement.project, "ui");
+    assert_eq!(replacement.placement.project_source, ProjectSource::Moved);
+    assert_eq!(
+        replacement.placement.notice(),
+        None,
+        "a decision filed in a shared project carries no personal-fallback notice"
+    );
+    assert_eq!(
+        recorded_filing(&ledger, &replacement.new_decision_id),
+        (Some("ui".to_owned()), Some("moved".to_owned())),
+        "the ledger records the inherited pair"
+    );
+
+    // Who records the replacement does not matter: it follows the decision, not the actor.
+    let by_bob = supersede_unstated(
+        &commands,
+        "human:bob",
+        &replacement.new_decision_id,
+        "Offer token first",
+    );
+    assert_eq!(by_bob.placement.project, "ui");
+    assert_eq!(by_bob.placement.notice(), None);
+
+    // The last move wins.
+    commands
+        .move_decision_to("human:alice", &by_bob.new_decision_id, "billing", None)
+        .expect("move on to billing");
+    let after_second_move = supersede_unstated(
+        &commands,
+        "human:alice",
+        &by_bob.new_decision_id,
+        "Token stays offered",
+    );
+    assert_eq!(after_second_move.placement.project, "billing");
+    assert_eq!(
+        after_second_move.placement.project_source,
+        ProjectSource::Moved
+    );
+}
+
+#[test]
+fn supersede_of_a_decision_in_a_personal_project_is_filed_in_the_superseders_own() {
+    // A personal project is derived from the actor and cannot be stated or moved into by
+    // anyone else, so inheriting it verbatim would file bob's decision in alice's project.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let fixture = PlacementFixture::new(&commands, &["ui"]);
+    let (old_id, _) = commands
+        .propose_decision_placed(fixture.proposal("human:alice", "Decision A", None))
+        .expect("propose decision A");
+
+    let by_bob = supersede_unstated(&commands, "human:bob", &old_id, "Decision B");
+    assert_eq!(by_bob.placement.project, "personal:human:bob");
+    assert_eq!(
+        by_bob.placement.project_source,
+        ProjectSource::PersonalFallback
+    );
+    assert_eq!(by_bob.placement.notice(), Some(PERSONAL_FALLBACK_NOTICE));
+    assert_eq!(
+        recorded_filing(&ledger, &by_bob.new_decision_id),
+        (None, Some("personal_fallback".to_owned())),
+        "the ledger names no project, as for any personal capture"
+    );
+
+    // A decision alice moved into her own personal project is the same case.
+    let (shared_id, _) = commands
+        .propose_decision_placed(fixture.proposal(
+            "human:alice",
+            "Decision C",
+            Some(DeterminedProject::stated("ui")),
+        ))
+        .expect("propose decision C");
+    commands
+        .move_decision_to("human:alice", &shared_id, "personal:human:alice", None)
+        .expect("move into her own personal project");
+    let by_bob = supersede_unstated(&commands, "human:bob", &shared_id, "Decision D");
+    assert_eq!(by_bob.placement.project, "personal:human:bob");
+    assert_eq!(by_bob.placement.notice(), Some(PERSONAL_FALLBACK_NOTICE));
+}
+
 #[test]
 fn personal_project_handle_strips_session_from_agent_actor() {
     // Personal address rule (Alex, choice 3a): agent:<tool>:<session> becomes

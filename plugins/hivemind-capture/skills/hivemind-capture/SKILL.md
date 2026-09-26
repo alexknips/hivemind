@@ -351,8 +351,10 @@ decision left in a personal project is easy to lose track of, and it can be move
 to the right project later.
 
 `supersede` (from the `hivemind-context` plugin) works the same way, except
-that a replacement with no project found stays in the project of the decision
-it replaces. Evidence and hypotheses carry no project.
+that a replacement with no project found stays in the project the decision it
+replaces is filed in now (after a move, the project it was moved to). A decision
+saved to a personal project is replaced into your own personal project. Evidence
+and hypotheses carry no project.
 
 ## Batch Capture via Haiku Subagent (Keyless)
 

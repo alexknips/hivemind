@@ -28,7 +28,9 @@ The replacement's project is worked out from where this runs (the nearest
 .hivemind-project file walking up from the working directory, then the project
 anchored to the Gas City rig, then your `hivemind project use` setting);
 --project HANDLE names it outright and wins. When none applies, the
-replacement stays in the project of the decision it replaces.
+replacement stays in the project the decision it replaces is filed in now
+(after a move, the project it was moved to). A decision saved to a personal
+project is replaced into your own personal project.
 
 Replace an existing decision by description, never by guessing an id. This
 is a WRITE verb: the ambiguity gate is strict here. If the description does

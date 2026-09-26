@@ -324,10 +324,15 @@ decision-56e41007-81bd-4589-894e-f609b2a34f0b
 fallback `project_notice` (the sentence above), and, when the project was worked
 out from context, `project_reminder` (the unattached-folder line or the
 spanning sentence). `supersede` prints ` project=<handle> project_source=<how>`
-on its existing key=value line. A superseding decision inherits the project of
-the decision it replaces unless a project is named or worked out from context; when context finds nothing,
-or the change spans projects with no parent in common, a supersede stays in the
-project it replaces instead of falling back to the personal project.
+on its existing key=value line. A superseding decision inherits the project the
+decision it replaces is filed in now (after a move, the project it was moved to,
+with `project_source` `moved`) unless a project is named or worked out from
+context; when context finds nothing, or the change spans projects with no parent
+in common, a supersede stays in that project instead of falling back to the
+personal project. The one exception is a decision in a personal project: that
+address belongs to one actor and cannot be stated or moved into by anyone else,
+so its replacement is saved to the recording actor's own personal project, with
+the usual notice.
 
 **Over HTTP the project is an argument, or absent.** MCP-over-HTTP
 `capture_decision` and `supersede_decision` take `project` and
@@ -335,7 +340,7 @@ project it replaces instead of falling back to the personal project.
 caller's working directory; only the CLI and the stdio server fill it in from
 context. REST takes none: `POST /v1/decisions` records the decision in the
 actor's personal project, and its reply carries no `project` or fallback notice.
-REST supersede takes none either and inherits the replaced decision's project.
+REST supersede takes none either and inherits the project the replaced decision is filed in now.
 Name the project over MCP instead. A decision recorded through REST can be moved
 afterwards. Decisions the classifier extracts from ingested transcripts are not
 `decision.proposed` events, so `hivemind move` cannot move them yet.

@@ -8662,6 +8662,107 @@ fn move_refusals_and_misses_write_nothing_postgres() -> CliTestResult {
     move_refusals_and_misses_write_nothing_body(&backend)
 }
 
+/// hivemind-9lzi: a replacement of a decision that was moved is filed where the decision is
+/// now, with or without `--project-from-context` finding nothing in the folder it runs from.
+fn supersede_of_a_moved_decision_is_filed_where_it_was_moved_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    register_test_project(backend, "ui")?;
+    let old =
+        capture_for_project_list(backend, "agent:claude:session-1", "UI token sign-in", None)?;
+    let moved = move_json(
+        backend,
+        &[
+            "--decision",
+            old.as_str(),
+            "--to",
+            "ui",
+            "--reason",
+            "UI auth decision",
+        ],
+    )?;
+    ensure_json_eq(
+        &moved["to"],
+        serde_json::json!("ui"),
+        "the decision moved to ui",
+    )?;
+
+    let (stdout, notices) = run_supersede_text(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "supersede",
+            "--old",
+            &old,
+            "--title",
+            "UI sign-in always offers the token card",
+            "--rationale",
+            PROJECT_TEST_RATIONALE,
+            "--bet",
+        ],
+    )?;
+    ensure(
+        stdout.contains(" project=ui project_source=moved"),
+        &format!("the replacement is filed in ui: {stdout}"),
+    )?;
+    ensure_eq(
+        notices.as_str(),
+        "project: ui (moved)\n",
+        "a shared project needs no personal-fallback notice",
+    )?;
+    let new_id = stdout
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("new_decision_id="))
+        .ok_or("the supersede line names the new decision")?
+        .to_owned();
+
+    // The plugin path: `--project-from-context` from a folder no marker reaches, no rig.
+    let tree = ContextTree::new("supersede-moved-context");
+    let (stdout, notices) = run_supersede_text_in(
+        backend,
+        &tree.env("unattached/deep", None, "human:alice"),
+        &[
+            "--actor",
+            "human:alice",
+            "supersede",
+            "--old",
+            &new_id,
+            "--title",
+            "UI sign-in offers the token card first",
+            "--rationale",
+            PROJECT_TEST_RATIONALE,
+            "--bet",
+            "--project-from-context",
+        ],
+    )?;
+    ensure(
+        stdout.contains(" project=ui project_source=moved"),
+        &format!("context finding nothing keeps the inherited project: {stdout}"),
+    )?;
+    ensure_eq(
+        notices.as_str(),
+        "project: ui (moved)\n",
+        "no unattached-folder reminder for a decision that landed in a shared project",
+    )
+}
+
+#[test]
+fn supersede_of_a_moved_decision_is_filed_where_it_was_moved() -> CliTestResult {
+    supersede_of_a_moved_decision_is_filed_where_it_was_moved_body(&TestBackend::sqlite(
+        "supersede-moved",
+    ))
+}
+
+#[test]
+fn supersede_of_a_moved_decision_is_filed_where_it_was_moved_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("supersede-moved-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    supersede_of_a_moved_decision_is_filed_where_it_was_moved_body(&backend)
+}
+
 fn move_ambiguous_description_lists_candidates_and_pick_resolves_it_body(
     backend: &TestBackend,
 ) -> CliTestResult {

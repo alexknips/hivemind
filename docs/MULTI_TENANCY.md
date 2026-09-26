@@ -561,6 +561,13 @@ history (`query get_recent_activity` and `get_decisions_changed_since` return a
 own project changes and its `project_source` becomes `moved`. Reversal is
 another move with the ends swapped; nothing is edited or deleted.
 
+A move carries over to a replacement: a `supersede` that names no project is
+filed where the decision it replaces is filed now, so a decision moved to Pricing
+is replaced inside Pricing (`project_source` `moved`), not in the personal project
+its proposal first landed in. A decision in a personal project is the exception:
+that address belongs to one actor, so its replacement is saved to the recording
+actor's own personal project.
+
 ### Sub-projects stay possible
 
 Alex's standing constraint on the first slice: nothing may foreclose

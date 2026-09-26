@@ -95,7 +95,10 @@ the Gas City rig (`GC_RIG`), then the current project set with `hivemind project
 use`. `--project HANDLE` names one outright and wins. A change that spans
 projects is recorded for the nearest project they are all part of. When none
 applies, or the spanned projects share no parent, the replacement stays in the
-project of the decision it replaces. `supersede` runs as the agent (`--actor`),
+project the decision it replaces is filed in now: after `hivemind move`, the
+project it was moved to, with `project_source=moved`. A decision saved to a
+personal project is replaced into the replacer's own personal project (personal
+projects belong to one actor), and the reply says so. `supersede` runs as the agent (`--actor`),
 so the current-project rung reads the agent's own setting, not the person's. Its
 confirmation line shows `project=<handle>` and how it was determined
 (`project_source=`). The other write verbs record no decision and take no
