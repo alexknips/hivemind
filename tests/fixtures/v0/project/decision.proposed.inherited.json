@@ -1,0 +1,25 @@
+{
+  "event_id": 2,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe31",
+  "correlation_id": "session-1",
+  "causation_event_id": null,
+  "type": "decision.proposed",
+  "actor_id": "agent-a",
+  "source": "agent",
+  "source_ref": "agent:codex:session-1",
+  "payload": {
+    "decision_id": "dec-2",
+    "title": "Use SQLite as the ledger for the hosted MVP too",
+    "rationale": "Slice 1 needs an embedded, auditable event store with no server dependency.",
+    "topic_keys": ["storage"],
+    "option_ids": ["opt-sqlite", "opt-postgres"],
+    "option_labels": ["SQLite", "Postgres"],
+    "option_descriptions": ["Embedded, no server dependency", "Requires a separate server process"],
+    "chosen_option_id": "opt-sqlite",
+    "hypothesis_ids": ["hyp-embedded-is-enough"],
+    "evidence_ids": ["ev-sqlite-wal"],
+    "project": "hivemind",
+    "project_source": "inherited"
+  },
+  "ts": "2026-05-17T20:40:43Z"
+}

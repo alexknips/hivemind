@@ -764,6 +764,47 @@ fn decision_proposed_with_stated_project_stores_handle_and_source() -> Result<()
     Ok(())
 }
 
+#[test]
+fn decision_proposed_with_inherited_source_stores_it_as_recorded() -> Result<()> {
+    // hivemind-9lzi: a replacement that took its project from the decision it replaces reads
+    // `inherited` on the node -- not `moved`, which only a `decision.moved` stamps.
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:billing-2",
+            "title": "Use per-seat pricing from the first invoice",
+            "rationale": "The first invoice is where customers see the price",
+            "topic_keys": ["pricing"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": [],
+            "project": "billing",
+            "project_source": "inherited"
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let properties = graph
+        .nodes()
+        .get(&(NodeKind::Decision, "decision:billing-2".to_owned()))
+        .cloned()
+        .expect("decision node projected");
+    assert_eq!(
+        properties.get("project"),
+        Some(&GraphValue::String("billing".to_owned()))
+    );
+    assert_eq!(
+        properties.get("project_source"),
+        Some(&GraphValue::String("inherited".to_owned()))
+    );
+    Ok(())
+}
+
 /// Two decisions proposed by an agent, then the first moved billing -> pricing by a *different*
 /// actor over a *different* source, then moved back. The mover's source/source_ref differ from
 /// the proposal's on purpose: a projector that spread the move event's origin properties onto

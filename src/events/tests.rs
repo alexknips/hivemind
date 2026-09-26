@@ -10,6 +10,11 @@ const FIXTURES: &[(&str, &str, EventType)] = &[
         EventType::DecisionProposed,
     ),
     (
+        include_str!("../../schemas/v0/decision.proposed.json"),
+        include_str!("../../tests/fixtures/v0/project/decision.proposed.inherited.json"),
+        EventType::DecisionProposed,
+    ),
+    (
         include_str!("../../schemas/v0/decision.requested.json"),
         include_str!("../../tests/fixtures/v0/decision.requested.json"),
         EventType::DecisionRequested,
@@ -149,6 +154,30 @@ fn schema_rejects_missing_required_payload_field() {
 
     let validator = jsonschema::validator_for(&schema).expect("schema compiles");
     assert!(!validator.is_valid(&fixture));
+}
+
+#[test]
+fn inherited_project_source_is_a_wire_value_a_replacement_records() {
+    assert_eq!(
+        serde_json::to_value(ProjectSource::Inherited).unwrap(),
+        json!("inherited")
+    );
+    assert_eq!(ProjectSource::Inherited.as_str(), "inherited");
+    assert_eq!(
+        ProjectSource::parse("inherited"),
+        Some(ProjectSource::Inherited)
+    );
+
+    let event: Event = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/project/decision.proposed.inherited.json"
+    ))
+    .unwrap();
+    let payload = validate(&event).expect("inherited proposal validates");
+    assert!(matches!(
+        payload,
+        EventPayload::DecisionProposed(ref proposed)
+            if proposed.project_source == Some(ProjectSource::Inherited)
+    ));
 }
 
 fn delegated_acceptance_event() -> Event {

@@ -563,8 +563,9 @@ another move with the ends swapped; nothing is edited or deleted.
 
 A move carries over to a replacement: a `supersede` that names no project is
 filed where the decision it replaces is filed now, so a decision moved to Pricing
-is replaced inside Pricing (`project_source` `moved`), not in the personal project
-its proposal first landed in. A decision in a personal project is the exception:
+is replaced inside Pricing (`project_source` `inherited`: the replacement took the
+project from the decision it replaces, and was never moved itself), not in the
+personal project its proposal first landed in. A decision in a personal project is the exception:
 that address belongs to one actor, so its replacement is saved to the recording
 actor's own personal project.
 

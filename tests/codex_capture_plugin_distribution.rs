@@ -1326,13 +1326,14 @@ fn supersede_script_works_out_the_project_from_the_folder_it_runs_in() -> TestRe
         "supersede from a marker folder",
     )?;
 
-    // From an unattached folder nothing is found, so the replacement stays where the old one was.
+    // From an unattached folder nothing is found, so the replacement stays where the old one
+    // was, and says it inherited that project.
     let bare = scratch.join("bare");
     fs::create_dir_all(&bare)?;
     let inherited = supersede("Ship refunds daily", "Ship refunds monthly", &bare)?;
     require_contains(
         &inherited,
-        "project=billing",
+        "project=billing project_source=inherited",
         "supersede from a bare folder",
     )?;
 

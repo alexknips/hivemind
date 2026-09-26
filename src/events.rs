@@ -807,6 +807,8 @@ impl ProjectAnchorKind {
 /// from context — folder marker / rig (hivemind-s15q.12), current project
 /// (hivemind-s15q.13), capture job (hivemind-s15q.15), and an explicit move
 /// (hivemind-s15q.10) — so the wire format never needs to widen again as those land.
+/// `Inherited` is recorded by a replacement that states no project and so takes the
+/// project the decision it replaces is filed in (hivemind-9lzi).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectSource {
@@ -817,6 +819,7 @@ pub enum ProjectSource {
     Job,
     PersonalFallback,
     Moved,
+    Inherited,
 }
 
 impl ProjectSource {
@@ -829,6 +832,7 @@ impl ProjectSource {
             Self::Job => "job",
             Self::PersonalFallback => "personal_fallback",
             Self::Moved => "moved",
+            Self::Inherited => "inherited",
         }
     }
 
@@ -841,6 +845,7 @@ impl ProjectSource {
             "job" => Some(Self::Job),
             "personal_fallback" => Some(Self::PersonalFallback),
             "moved" => Some(Self::Moved),
+            "inherited" => Some(Self::Inherited),
             _ => None,
         }
     }

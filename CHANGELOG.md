@@ -94,12 +94,15 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   from the decision's first proposal and so ignored a later `hivemind move`. A decision moved
   to a shared project (say `ui`) was replaced into the replacer's personal project, against
   what `--help` and the plugin README say. The replacement is now filed where the old decision
-  is now, with `project_source` `moved` when it got there by a move, and the same holds when
-  `--project-from-context` finds nothing. A decision that sits in a personal project is
-  replaced into the replacer's own personal project, since a personal address belongs to one
-  actor and cannot be stated or moved into by anyone else; `--help` and the plugin README now
-  say so. Replacements already on the ledger are not moved: `hivemind move` fixes one.
-  (hivemind-9lzi)
+  is now, and the same holds when `--project-from-context` finds nothing. It records
+  `project_source` `inherited`, a new value: the replacement took its project from the decision
+  it replaces, so it is neither `stated` nor a move. (A replacement used to copy the old
+  decision's own source, `rig` or `folder_marker`, which said how the old decision was filed,
+  not the replacement.) A caller cannot claim `inherited` next to a `--project`, as with `moved`
+  and `personal_fallback`. A decision that sits in a personal project is replaced into the
+  replacer's own personal project, since a personal address belongs to one actor and cannot be
+  stated or moved into by anyone else; `--help` and the plugin README now say so. Replacements
+  already on the ledger are not moved: `hivemind move` fixes one. (hivemind-9lzi)
 - **A capture refused for its project leaves nothing behind.** `decision.capture` and
   `capture_decision` checked the stated project (registered, no reserved `personal:` prefix, a
   source a caller may claim) only after they had recorded the evidence, assumptions and bet named

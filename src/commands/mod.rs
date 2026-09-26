@@ -413,9 +413,9 @@ struct DecisionProposalSnapshot {
     expressed_confidence: Option<String>,
 }
 
-/// Where a decision is filed right now and how that was determined, as the ledger resolves it
-/// (the same view the projector keeps on the Decision node): the proposal's own `project` and
-/// `project_source`, replaced by each later `decision.moved`.
+/// Where a decision is filed right now, as the ledger resolves it (the same view the
+/// projector keeps on the Decision node): the proposal's own `project`, replaced by each later
+/// `decision.moved`.
 #[derive(Debug, Clone)]
 struct DecisionFiling {
     /// The actor that recorded the proposal: whose personal project a proposal naming no
@@ -423,7 +423,6 @@ struct DecisionFiling {
     proposer: String,
     /// `None` for a proposal that named no project (personal fallback).
     project: Option<String>,
-    project_source: Option<ProjectSource>,
 }
 
 impl DecisionFiling {
@@ -435,18 +434,18 @@ impl DecisionFiling {
     }
 
     /// The `(project, project_source)` pair a decision replacing this one records when the
-    /// caller states no project: the same project and how it was determined, so a decision
-    /// moved to Billing is replaced inside Billing (`moved`) and a `folder_marker` filing
-    /// stays a `folder_marker` one down the chain. A personal project is derived from the
-    /// actor and cannot be stated, so a replacement of a decision that sits in one is filed
-    /// as the personal fallback of whoever records it, never in another actor's.
+    /// caller states no project: the project this decision is filed in now, recorded as
+    /// `inherited` -- so a decision moved to Billing is replaced inside Billing, and the
+    /// replacement says it took that project from the decision it replaces (`moved` would
+    /// record a move that never happened, `stated` a handle nobody gave). A personal project
+    /// is derived from the actor and cannot be stated, so a replacement of a decision that
+    /// sits in one is filed as the personal fallback of whoever records it, never in another
+    /// actor's.
     fn inherited_by_replacement(&self) -> (Option<String>, ProjectSource) {
         match &self.project {
-            Some(handle) if !handle.starts_with(PERSONAL_PROJECT_HANDLE_PREFIX) => (
-                Some(handle.clone()),
-                self.project_source
-                    .unwrap_or(ProjectSource::PersonalFallback),
-            ),
+            Some(handle) if !handle.starts_with(PERSONAL_PROJECT_HANDLE_PREFIX) => {
+                (Some(handle.clone()), ProjectSource::Inherited)
+            }
             _ => (None, ProjectSource::PersonalFallback),
         }
     }
@@ -1761,10 +1760,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .transpose()?;
 
         // The new decision inherits the old decision's project where it is filed now -- its
-        // proposal's project unless a `decision.moved` has taken it elsewhere -- with how
-        // that was determined, unless this call states one explicitly. An inherited
-        // `folder_marker`/`rig`/`moved` project_source stays truthful across the chain
-        // rather than being overwritten with `stated` just because a handle is present.
+        // proposal's project unless a `decision.moved` has taken it elsewhere -- unless this
+        // call states one explicitly. An inherited project is recorded as `inherited`, not
+        // `stated` just because a handle is present, and not `moved`, which only a move
+        // records.
         let (project, project_source) = match input.project {
             Some(determined) => self.resolve_stated_project(Some(determined))?,
             None => self
@@ -2253,10 +2252,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     /// project (the write rule: a given handle must be registered, else a refusal naming
     /// the handle and the register command; no handle means personal fallback). The caller
     /// says how it got the handle, but only for the ways a caller can: `personal_fallback`
-    /// is recorded by this layer when no handle is given, and `moved` only by a move, so
-    /// neither may accompany a handle. Callers that need to inherit an existing decision's
-    /// project instead of restating one (see `supersede`) bypass this and carry the
-    /// inherited pair through directly.
+    /// is recorded by this layer when no handle is given, `moved` only by a move and
+    /// `inherited` only by a replacement that states no project, so none of them may
+    /// accompany a handle. Callers that need to inherit an existing decision's project
+    /// instead of restating one (see `supersede`) bypass this and carry the inherited pair
+    /// through directly.
     fn resolve_stated_project(
         &self,
         project: Option<DeterminedProject<'_>>,
@@ -2267,10 +2267,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
         if matches!(
             source,
-            ProjectSource::PersonalFallback | ProjectSource::Moved
+            ProjectSource::PersonalFallback | ProjectSource::Moved | ProjectSource::Inherited
         ) {
             return Err(CommandError::Validation(format!(
-                "project_source \"{}\" cannot accompany a project handle: personal_fallback is recorded when no project is given, and moved only by moving a decision",
+                "project_source \"{}\" cannot accompany a project handle: personal_fallback is recorded when no project is given, moved only by moving a decision, and inherited only by a replacement that states no project",
                 source.as_str()
             ))
             .into());
@@ -2480,9 +2480,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .map(|filing| filing.address()))
     }
 
-    /// `current_decision_project` with how the project was determined: a `decision.moved`
-    /// replaces the pair with `(to, moved)` exactly as `projector::project_decision_moved`
-    /// does to the Decision node, so what a caller reads here is what the graph shows.
+    /// `current_decision_project` with the proposer kept, so a caller can tell a personal
+    /// filing from a shared one: a `decision.moved` replaces the project with `to` exactly as
+    /// `projector::project_decision_moved` does to the Decision node, so what a caller reads
+    /// here is what the graph shows.
     ///
     /// Reads raw payload fields (`payload_value_as_str`/`payload_value_matches`) rather than
     /// a typed `deny_unknown_fields` struct, matching `decision_proposal_snapshot_from_event`
@@ -2499,8 +2500,6 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                             current = Some(DecisionFiling {
                                 proposer: event.actor_id.clone(),
                                 project: payload_value_as_str(event, "project").map(str::to_owned),
-                                project_source: payload_value_as_str(event, "project_source")
-                                    .and_then(ProjectSource::parse),
                             });
                         }
                     }
@@ -2511,7 +2510,6 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                             (current.as_mut(), payload_value_as_str(event, "to"))
                         {
                             filing.project = Some(to.to_owned());
-                            filing.project_source = Some(ProjectSource::Moved);
                         }
                     }
                     _ => {}

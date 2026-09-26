@@ -7224,10 +7224,10 @@ fn emit_capture_project_source_needs_a_project_and_a_caller_claimable_value() ->
         parse(&["--project-source", "rig"]).is_err(),
         "--project-source without --project is refused at parse time",
     )?;
-    for reserved in ["personal_fallback", "moved"] {
+    for reserved in ["personal_fallback", "moved", "inherited"] {
         ensure(
             parse(&["--project", "billing", "--project-source", reserved]).is_err(),
-            "HiveMind records personal_fallback and moved itself; a caller cannot claim them",
+            "HiveMind records personal_fallback, moved and inherited itself; a caller cannot claim them",
         )?;
     }
     Ok(())
@@ -7270,8 +7270,7 @@ fn supersede_names_its_project_body(backend: &TestBackend) -> CliTestResult {
             Ok((reply, new_id))
         };
 
-    // Not stated: the superseding decision inherits the old project and how it was
-    // determined.
+    // Not stated: the superseding decision inherits the old project, and says so.
     let old = capture_id(
         &["--project", "billing", "--project-source", "rig"],
         "Use shared admin token",
@@ -7284,7 +7283,7 @@ fn supersede_names_its_project_body(backend: &TestBackend) -> CliTestResult {
     )?;
     ensure_eq(
         reply["project_source"].as_str(),
-        Some("rig"),
+        Some("inherited"),
         "inherited project_source",
     )?;
     ensure(
@@ -8703,12 +8702,12 @@ fn supersede_of_a_moved_decision_is_filed_where_it_was_moved_body(
         ],
     )?;
     ensure(
-        stdout.contains(" project=ui project_source=moved"),
-        &format!("the replacement is filed in ui: {stdout}"),
+        stdout.contains(" project=ui project_source=inherited"),
+        &format!("the replacement is filed in ui, as inherited: {stdout}"),
     )?;
     ensure_eq(
         notices.as_str(),
-        "project: ui (moved)\n",
+        "project: ui (inherited)\n",
         "a shared project needs no personal-fallback notice",
     )?;
     let new_id = stdout
@@ -8716,6 +8715,22 @@ fn supersede_of_a_moved_decision_is_filed_where_it_was_moved_body(
         .find_map(|field| field.strip_prefix("new_decision_id="))
         .ok_or("the supersede line names the new decision")?
         .to_owned();
+
+    // The stored decision says the same, not `moved`: the replacement was never moved.
+    let listed = project_decisions_json(backend, &["ui"])?;
+    let stored = listed["data"]["items"]
+        .as_array()
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|item| item["decision_id"].as_str() == Some(new_id.as_str()))
+        })
+        .ok_or("the replacement is listed under ui")?;
+    ensure_eq(
+        stored["project_source"].as_str(),
+        Some("inherited"),
+        "the stored project_source",
+    )?;
 
     // The plugin path: `--project-from-context` from a folder no marker reaches, no rig.
     let tree = ContextTree::new("supersede-moved-context");
@@ -8737,12 +8752,12 @@ fn supersede_of_a_moved_decision_is_filed_where_it_was_moved_body(
         ],
     )?;
     ensure(
-        stdout.contains(" project=ui project_source=moved"),
+        stdout.contains(" project=ui project_source=inherited"),
         &format!("context finding nothing keeps the inherited project: {stdout}"),
     )?;
     ensure_eq(
         notices.as_str(),
-        "project: ui (moved)\n",
+        "project: ui (inherited)\n",
         "no unattached-folder reminder for a decision that landed in a shared project",
     )
 }
@@ -9279,7 +9294,7 @@ fn supersede_from_context_follows_the_folder_or_inherits_body(
     )?;
     ensure_eq(
         reply["project_source"].as_str(),
-        Some("folder_marker"),
+        Some("inherited"),
         "inherited source",
     )?;
     ensure(
@@ -9585,6 +9600,11 @@ fn supersede_of_a_spanning_change_follows_the_parent_or_inherits() -> CliTestRes
         reply["project"].as_str(),
         Some("platform"),
         "the inherited project",
+    )?;
+    ensure_eq(
+        reply["project_source"].as_str(),
+        Some("inherited"),
+        "and it says so",
     )?;
     ensure(
         reply.get("project_notice").is_none() && reply.get("project_reminder").is_none(),

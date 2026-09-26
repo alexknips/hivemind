@@ -781,8 +781,8 @@ fn supersede_inherits_old_decision_project_when_not_restated() {
             .payload
             .get("project_source")
             .and_then(|v| v.as_str()),
-        Some("stated"),
-        "the inherited project_source must carry over verbatim, not be overwritten"
+        Some("inherited"),
+        "a replacement that names no project records that it inherited it, not the old decision's source"
     );
 }
 
@@ -989,14 +989,19 @@ fn propose_decision_placed_reports_where_the_decision_landed() {
 
 #[test]
 fn a_project_source_only_the_write_layer_may_record_is_refused_with_a_handle() {
-    // `personal_fallback` is what this layer records when no handle is given, and `moved` is
-    // what a move records; a caller stating a handle may claim neither.
+    // `personal_fallback` is what this layer records when no handle is given, `moved` is
+    // what a move records and `inherited` is what a replacement that states no project
+    // records; a caller stating a handle may claim none of them.
     let ledger = InMemoryEventLedger::new();
     let commands = Commands::new(&ledger);
     let fixture = PlacementFixture::new(&commands, &["billing"]);
     let events_before = ledger.read(0, 100).expect("read succeeds").len();
 
-    for source in [ProjectSource::PersonalFallback, ProjectSource::Moved] {
+    for source in [
+        ProjectSource::PersonalFallback,
+        ProjectSource::Moved,
+        ProjectSource::Inherited,
+    ] {
         let error = commands
             .propose_decision_placed(fixture.proposal(
                 "actor:alice",
@@ -1055,10 +1060,11 @@ fn supersede_reports_the_inherited_or_stated_placement() {
         })
     };
 
-    // Not stated: inherits the old decision's project and how it was determined.
+    // Not stated: inherits the old decision's project, and says so -- not how the old
+    // decision came by it.
     let inherited = supersede(&old_id, None).expect("supersede inherits");
     assert_eq!(inherited.placement.project, "billing");
-    assert_eq!(inherited.placement.project_source, ProjectSource::Rig);
+    assert_eq!(inherited.placement.project_source, ProjectSource::Inherited);
     assert_eq!(inherited.placement.notice(), None);
 
     // Stated: overrides it.
@@ -1072,14 +1078,16 @@ fn supersede_reports_the_inherited_or_stated_placement() {
 
     // A refused override supersedes nothing.
     let events_before = ledger.read(0, 100).expect("read succeeds").len();
-    supersede(
-        &stated.new_decision_id,
-        Some(DeterminedProject {
-            handle: "payments",
-            source: ProjectSource::Moved,
-        }),
-    )
-    .expect_err("moved cannot accompany a handle");
+    for source in [ProjectSource::Moved, ProjectSource::Inherited] {
+        supersede(
+            &stated.new_decision_id,
+            Some(DeterminedProject {
+                handle: "payments",
+                source,
+            }),
+        )
+        .expect_err("a source only the write layer records cannot accompany a handle");
+    }
     assert_eq!(
         ledger.read(0, 100).expect("read succeeds").len(),
         events_before
@@ -1186,7 +1194,11 @@ fn supersede_of_a_moved_decision_is_filed_where_it_was_moved() {
 
     let replacement = supersede_unstated(&commands, "human:alice", &old_id, "Always offer token");
     assert_eq!(replacement.placement.project, "ui");
-    assert_eq!(replacement.placement.project_source, ProjectSource::Moved);
+    assert_eq!(
+        replacement.placement.project_source,
+        ProjectSource::Inherited,
+        "the replacement took the project from the decision it replaces; it was never moved"
+    );
     assert_eq!(
         replacement.placement.notice(),
         None,
@@ -1194,7 +1206,7 @@ fn supersede_of_a_moved_decision_is_filed_where_it_was_moved() {
     );
     assert_eq!(
         recorded_filing(&ledger, &replacement.new_decision_id),
-        (Some("ui".to_owned()), Some("moved".to_owned())),
+        (Some("ui".to_owned()), Some("inherited".to_owned())),
         "the ledger records the inherited pair"
     );
 
@@ -1206,6 +1218,7 @@ fn supersede_of_a_moved_decision_is_filed_where_it_was_moved() {
         "Offer token first",
     );
     assert_eq!(by_bob.placement.project, "ui");
+    assert_eq!(by_bob.placement.project_source, ProjectSource::Inherited);
     assert_eq!(by_bob.placement.notice(), None);
 
     // The last move wins.
@@ -1221,7 +1234,7 @@ fn supersede_of_a_moved_decision_is_filed_where_it_was_moved() {
     assert_eq!(after_second_move.placement.project, "billing");
     assert_eq!(
         after_second_move.placement.project_source,
-        ProjectSource::Moved
+        ProjectSource::Inherited
     );
 }
 
@@ -4682,6 +4695,13 @@ fn grounded_capture_refused_for_its_project_leaves_no_orphan_node_behind() {
             DeterminedProject {
                 handle: "billing",
                 source: ProjectSource::Moved,
+            },
+            "cannot accompany a project handle",
+        ),
+        (
+            DeterminedProject {
+                handle: "billing",
+                source: ProjectSource::Inherited,
             },
             "cannot accompany a project handle",
         ),

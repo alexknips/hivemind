@@ -228,8 +228,8 @@ it:
 error: invariant violated: project not registered: nosuch -- register it first with `hivemind project register nosuch`
 ```
 
-A caller may not state a `personal:` address, nor claim `personal_fallback` or
-`moved` next to a handle: HiveMind records those two itself.
+A caller may not state a `personal:` address, nor claim `personal_fallback`,
+`moved` or `inherited` next to a handle: HiveMind records those three itself.
 
 **Not naming it.** With no project, a capture never fails. It is saved to the
 recorder's personal project (`personal:human:alex`, or `personal:agent:claude`
@@ -325,9 +325,9 @@ fallback `project_notice` (the sentence above), and, when the project was worked
 out from context, `project_reminder` (the unattached-folder line or the
 spanning sentence). `supersede` prints ` project=<handle> project_source=<how>`
 on its existing key=value line. A superseding decision inherits the project the
-decision it replaces is filed in now (after a move, the project it was moved to,
-with `project_source` `moved`) unless a project is named or worked out from
-context; when context finds nothing, or the change spans projects with no parent
+decision it replaces is filed in now (after a move, the project it was moved to)
+and records `project_source` `inherited`, unless a project is named or worked out
+from context; when context finds nothing, or the change spans projects with no parent
 in common, a supersede stays in that project instead of falling back to the
 personal project. The one exception is a decision in a personal project: that
 address belongs to one actor and cannot be stated or moved into by anyone else,

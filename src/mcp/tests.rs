@@ -3625,6 +3625,11 @@ mod transport_parity {
                 "cannot accompany a project handle",
             ),
             (
+                "inherited-source-with-a-handle",
+                json!({ "project": "billing", "project_source": "inherited" }),
+                "cannot accompany a project handle",
+            ),
+            (
                 "stated-personal-address",
                 json!({ "project": "personal:agent:claude" }),
                 "reserved \"personal:\" prefix",
@@ -3686,7 +3691,7 @@ mod transport_parity {
                 .expect("decision id") // ubs:ignore: test-only; panicking is correct in tests
                 .to_owned();
 
-            // Not stated: inherits the old decision's project and how it was determined.
+            // Not stated: inherits the old decision's project, and says so.
             let inherited = call(
                 "supersede_decision",
                 json!({
@@ -3701,7 +3706,10 @@ mod transport_parity {
             .await;
             let reply = &inherited["result"]["structuredContent"];
             assert_eq!(reply["project"], "billing", "{name}: inherited project"); // ubs:ignore: test-only assertion
-            assert_eq!(reply["project_source"], "rig", "{name}: inherited source"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                reply["project_source"], "inherited",
+                "{name}: inherited source"
+            ); // ubs:ignore: test-only assertion
             assert!(
                 reply.get("project_notice").is_none(),
                 "{name}: an inherited project is not a fallback: {reply:?}"
@@ -4599,7 +4607,7 @@ mod transport_parity {
         );
         let reply = &inherited["result"]["structuredContent"];
         assert_eq!(reply["project"], "billing", "{reply:?}"); // ubs:ignore: test-only assertion
-        assert_eq!(reply["project_source"], "folder_marker"); // ubs:ignore: test-only assertion
+        assert_eq!(reply["project_source"], "inherited"); // ubs:ignore: test-only assertion
         assert!(
             reply.get("project_notice").is_none() && reply.get("project_reminder").is_none(),
             "an inherited project needs neither: {reply:?}"

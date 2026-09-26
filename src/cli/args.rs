@@ -270,8 +270,8 @@ impl ProjectLinkKindArg {
 }
 
 /// How a capture's `--project` was determined, as a caller may claim it. `personal_fallback`
-/// (recorded by HiveMind when no project is given) and `moved` (recorded by a move) are not
-/// choices here.
+/// (recorded by HiveMind when no project is given), `moved` (recorded by a move) and `inherited`
+/// (recorded by a replacement that names no project) are not choices here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[clap(rename_all = "snake_case")]
 pub enum ProjectSourceArg {
@@ -707,8 +707,9 @@ pub struct SupersedeArgs {
 
     /// Registered project handle to file the superseding decision under. Without it the new
     /// decision inherits the project the old decision is filed in now (after a move, the
-    /// project it was moved to). A decision in a personal project is replaced into your own
-    /// personal project, since personal projects belong to one actor.
+    /// project it was moved to), and its project_source reads `inherited`. A decision in a
+    /// personal project is replaced into your own personal project, since personal projects
+    /// belong to one actor.
     #[arg(long = "project")]
     pub project: Option<String>,
 
