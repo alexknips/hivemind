@@ -126,6 +126,22 @@ fan-out relation events carry:
   available and no explicit `--agent-session`/`--actor-id` was given,
   otherwise `<actor_id>`, unless `--source-ref` is provided
 
+A person running the command themselves is not an agent, and the command does
+not record them as one. With none of `--source`, `--actor-id`, `--agent-tool`,
+`--agent-session` or `--source-ref` given, the CLI's `--actor` is recorded as
+the actor, with `source=human` for a `human:<name>` id and `source=agent` for an
+`agent:<tool>:<name>` id, when either
+
+- `--actor` was typed on the command line (`hivemind --actor human:alice emit
+  decision.capture ...`), or
+- the environment shows no agent at all (no tool or session variable, no Gas
+  City identity), so the actor is the CLI's default: `HIVEMIND_ACTOR`, then
+  `human:<git config user.email>`.
+
+An agent stays an agent: with an agent in the environment and no `--actor`
+typed, the `agent:<tool>:<name>` derivation above applies. The five provenance
+flags are the fuller form the capture plugins pass and win over `--actor`.
+
 Use `--evidence` and `--hypotheses` with existing evidence and hypothesis ids
 when the decision depends on already captured context.
 

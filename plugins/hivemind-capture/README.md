@@ -85,9 +85,11 @@ Codex skill writes use the same convention with `actor_id=agent:codex:<name>`,
 preferring `GC_AGENT`/`GC_ALIAS` and falling back to `CODEX_SESSION_ID`,
 `CODEX_TASK_ID`, or `HIVEMIND_CODEX_SESSION`.
 
-Bare terminal writes such as `hivemind emit decision.proposed ...` default to
+Bare terminal writes such as `hivemind emit decision.proposed ...` or
+`hivemind emit decision.capture ...` default to
 `actor_id=human:<git config user.email>` and `source=human` when `--actor` is
-not supplied.
+not supplied and no agent is present in the environment. A typed
+`--actor human:<name>` is recorded as given.
 
 ## Projects
 

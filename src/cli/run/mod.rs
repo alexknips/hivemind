@@ -20,8 +20,8 @@ use crate::events::{
     RelationKind as EventRelationKind, TenantId,
 };
 use crate::identity::{
-    agent_actor_id, default_agent_session, default_agent_tool, default_human_actor_id,
-    raw_agent_session_from_env,
+    agent_actor_id, agent_present_in_env, default_agent_session, default_agent_tool,
+    default_human_actor_id, raw_agent_session_from_env,
 };
 use crate::ingest::{
     accumulate_file_summary_pub, extract_slack_decision_draft, import_documents,
@@ -767,7 +767,11 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
 
     let output = match &emit.command {
         EmitCommand::DecisionCapture(args) => {
-            let (actor_id, provenance) = capture_actor_and_provenance(&args.provenance)?;
+            let (actor_id, provenance) = decision_capture_actor_and_provenance(
+                cli,
+                &args.provenance,
+                agent_present_in_env(),
+            )?;
             let commands =
                 Commands::new_with_context(&ledger, cli_command_context(cli, provenance)?);
             let spec = grounding::require_grounding(grounding::grounding_spec_from_args(
@@ -1886,6 +1890,30 @@ fn emit_actor_and_commands<'a>(
     let (actor_id, provenance) = capture_actor_and_provenance(provenance_args)?;
     let commands = Commands::new_with_context(ledger, cli_command_context(cli, provenance)?);
     Ok((actor_id, commands))
+}
+
+/// Who `emit decision.capture` records. It is an agent surface, so the agent derivation below
+/// is the default; but it must not overwrite a person. With no provenance flag given, `cli.actor`
+/// is recorded, with the source its shape implies (`human:` a person, `agent:` an agent), when
+///
+/// - `--actor` was typed: a caller who says who is acting is believed (README: `--actor`
+///   overrides the actor), or
+/// - the environment shows no agent at all (`agent_present` is false): the person at a plain
+///   terminal is the CLI's default actor, not an invented `agent:codex:manual-session`.
+///
+/// The provenance flags (`--source`, `--actor-id`, `--agent-tool`, ...) are the fuller form the
+/// capture plugins pass, and still win.
+pub(crate) fn decision_capture_actor_and_provenance(
+    cli: &Cli,
+    args: &EmitCaptureProvenanceArgs,
+    agent_present: bool,
+) -> Result<(String, EventProvenance)> {
+    if !args.has_override() && (cli.actor_given.0 || !agent_present) {
+        let actor_id = trimmed_required("--actor", &cli.actor)?.to_owned();
+        let provenance = fluent_write_provenance(&actor_id);
+        return Ok((actor_id, provenance));
+    }
+    capture_actor_and_provenance(args)
 }
 
 fn capture_actor_and_provenance(
