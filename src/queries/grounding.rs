@@ -376,12 +376,10 @@ pub(crate) enum StalePremise {
     Rejected { decision_id: String },
 }
 
-/// What `derive_outcome` needs from grounding: which premises have gone stale, which bets are
-/// overdue, and enough to tell whether anything was declared at all.
+/// What `derive_outcome` needs from grounding: which premises have gone stale and which bets are
+/// overdue.
 pub(crate) struct PremiseSignals {
-    pub premise_count: usize,
     pub stale: Vec<StalePremise>,
-    pub hypothesis_kinds: Vec<HypothesisKind>,
     pub unchecked: Vec<UncheckedBet>,
 }
 
@@ -405,11 +403,9 @@ pub(crate) fn premise_signals(
         }
     }
 
-    let mut hypothesis_kinds = Vec::new();
     let mut unchecked = Vec::new();
     for hypothesis_id in premised_on_hypothesis_ids(graph, decision_id)? {
         let facts = hypothesis_facts(graph, &hypothesis_id)?;
-        hypothesis_kinds.push(facts.kind);
         if facts.kind != HypothesisKind::Bet {
             continue;
         }
@@ -426,12 +422,7 @@ pub(crate) fn premise_signals(
         }
     }
 
-    Ok(PremiseSignals {
-        premise_count: premise_ids.len(),
-        stale,
-        hypothesis_kinds,
-        unchecked,
-    })
+    Ok(PremiseSignals { stale, unchecked })
 }
 
 // ---------------------------------------------------------------------------

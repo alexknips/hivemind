@@ -64,12 +64,11 @@ fn a_decision_nobody_asked_about_reads_as_nothing_declared() -> Result<()> {
     assert!(grounding.items.is_empty());
     assert_eq!(grounding.state, GroundingState::NothingDeclared);
     assert_eq!(grounding.dependents_count, 0);
+    // Declaring nothing is shown as "nothing declared" (never asked), in the grounding above.
+    // It is not a reason the decision stopped holding.
     let outcome = outcome_of(&graph, "d:1")?;
-    assert_eq!(outcome.grounding_state, GroundingState::NothingDeclared);
-    assert!(outcome.reasons.contains(&OutcomeReason::ThinStructure {
-        no_options: true,
-        nothing_declared: true,
-    }));
+    assert!(outcome.held_up);
+    assert!(outcome.reasons.is_empty());
     Ok(())
 }
 
@@ -97,17 +96,9 @@ fn a_prior_decision_named_at_capture_is_at_capture_and_holds() -> Result<()> {
         1
     );
 
-    // A premise link is a positive answer: the derived decision is no longer "nothing declared".
     let outcome = outcome_of(&graph, "d:derived")?;
     assert!(outcome.held_up);
-    assert_eq!(outcome.grounding_state, GroundingState::Grounded);
-    assert!(!outcome.reasons.iter().any(|reason| matches!(
-        reason,
-        OutcomeReason::ThinStructure {
-            nothing_declared: true,
-            ..
-        }
-    )));
+    assert!(outcome.reasons.is_empty());
     Ok(())
 }
 
@@ -350,18 +341,13 @@ fn a_bet_is_open_held_or_failed_and_only_a_failed_one_makes_the_decision_stale()
     assert_eq!(state_of("h:held")?.1, GroundingItemState::BetHeld);
     assert_eq!(state_of("h:failed")?.1, GroundingItemState::BetFailed);
 
-    // A bet is a positive answer, not thin; only the failed one is stale.
+    // Only the failed bet is stale; a bet still open or held is no reason the decision stopped
+    // holding.
     for id in ["h:open", "h:held"] {
         let outcome = outcome_of(&graph, &format!("d:{id}"))?;
         assert!(outcome.held_up, "{id}");
         assert!(outcome.unchecked.is_empty(), "{id}");
-        assert!(!outcome.reasons.iter().any(|reason| matches!(
-            reason,
-            OutcomeReason::ThinStructure {
-                nothing_declared: true,
-                ..
-            }
-        )));
+        assert!(outcome.reasons.is_empty(), "{id}");
     }
     let failed = outcome_of(&graph, "d:h:failed")?;
     assert!(!failed.held_up);

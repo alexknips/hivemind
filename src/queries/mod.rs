@@ -44,8 +44,9 @@ pub use active_blockers::{
 };
 pub use arrows::oriented_edges;
 pub use attribution::{
-    get_failure_attribution, AttributionFinding, AttributionGroup, ConfidenceLevel, CorpusStats,
-    FailureAttributionRequest, FailureModeReport, SignalBreakdown,
+    get_failure_attribution, get_failure_attribution_with, AttributionFinding, AttributionGroup,
+    ConfidenceLevel, CorpusStats, DecisionCondition, FailureAttributionRequest, FailureModeReport,
+    SignalBreakdown,
 };
 pub use brief::{
     get_decision_brief, get_decision_brief_at, DecidedBy, DecisionBrief, OptionLabel, StillHolds,

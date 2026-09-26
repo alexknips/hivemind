@@ -53,9 +53,8 @@ use crate::queries::{
     get_decision_brief as query_get_decision_brief,
     get_decision_context as query_get_decision_context, get_decision_context_candidates,
     get_decision_neighborhood as query_get_decision_neighborhood, get_decision_quality_candidates,
-    get_failure_attribution, get_recent_decisions,
-    get_supersession_chain as query_get_supersession_chain, misfiled_next_cursor,
-    outcome_next_cursor, resolve_decision_by_description,
+    get_recent_decisions, get_supersession_chain as query_get_supersession_chain,
+    misfiled_next_cursor, outcome_next_cursor, resolve_decision_by_description,
     scan_misfiled_decisions as query_scan_misfiled_decisions, DecisionContextRequest,
     DecisionQualityCandidatesRequest, DecisionStatus, FailureAttributionRequest,
     MisfiledScanRequest, NeighborhoodRequest, QueryContext, QueryResponse,
@@ -1709,12 +1708,13 @@ impl AnalyzeFailureModesArgs {
 }
 
 /// The core for the `analyze_failure_modes` MCP tool: aggregate failure-rate patterns across
-/// authorship, review, source and context richness; only groups of at least `min_sample_size`
-/// decisions are listed as findings.
+/// authorship, review, source, context richness and the seven quality dimensions; only groups of
+/// at least `min_sample_size` decisions are listed as findings.
 pub(crate) fn analyze_failure_modes(
     graph: &impl GraphView,
     args: AnalyzeFailureModesArgs,
 ) -> Result<ToolOutput, CoreError> {
-    let response = get_failure_attribution(graph, &args.request).map_err(CoreError::from)?;
+    let response =
+        quality_profile::analyze_failure_modes(graph, &args.request).map_err(CoreError::from)?;
     query_output(&response)
 }

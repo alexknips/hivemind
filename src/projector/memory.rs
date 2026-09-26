@@ -699,9 +699,9 @@ impl GraphView for MemoryGraph {
             return Ok(rows);
         }
 
-        // context.rs's query_actor_edge_count / query_edge_count and outcome.rs's
-        // query_has_options / query_has_evidence: all four are "count decision's outgoing
-        // edges of one relation kind", differing only in relation and (unused here) target kind.
+        // context.rs's query_actor_edge_count / query_edge_count: both are "count decision's
+        // outgoing edges of one relation kind", differing only in relation and (unused here)
+        // target kind.
         if cypher.contains("RETURN count(*) AS cnt") {
             let relation = query_relation(cypher)?;
             let decision_id = required_param_string(params, "id")?;

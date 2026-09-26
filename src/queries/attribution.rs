@@ -10,6 +10,9 @@
 //! - Do joint human+AI decisions hold up better than either alone?
 //! - Do agent decisions made within a human's delegation hold up differently from ones an
 //!   agent made alone? (`by_delegation`, hivemind-zdsh.6)
+//! - Do decisions that record little on some aspect of how they were made (options weighed,
+//!   what they rest on) fail more often? (`by_condition`, fed by the caller: see
+//!   [`DecisionCondition`])
 //!
 //! # Design constraints
 //! - Pure layer-2 read: no writes, no LLMs, no external APIs.
@@ -17,10 +20,11 @@
 //!   Never per-person rankings. Individuals appear only in their own self-view.
 //! - Effect sizes are failure-rate deltas vs the corpus baseline.
 //! - Confidence is honest: groups with n < 10 are flagged as LOW confidence.
-//! - "Failure" = `held_up == false` (superseded OR stale premises OR contested).
-//!   Thin-structure-only decisions remain in the held-up bucket; they earn a separate signal.
+//! - "Failure" = `held_up == false` (superseded OR stale premises OR contested). How a decision
+//!   was made is never part of that definition: it is a condition to group failures by, never
+//!   a failure.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::Instant;
 
 use serde::Serialize;
@@ -64,8 +68,18 @@ pub struct SignalBreakdown {
     pub superseded_count: usize,
     pub stale_premises_count: usize,
     pub contested_count: usize,
-    /// Thin structure (no options and/or no evidence) — quality signal, not failure signal.
-    pub thin_structure_count: usize,
+}
+
+/// One named condition a decision was in that this analysis does not read from the graph: the
+/// caller derives it (for example how far the record supports each aspect of decision quality)
+/// and hands it in, so failure rates can be grouped by it. The graph read stays pure and works
+/// without any caller supplying conditions.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecisionCondition {
+    /// The axis the condition belongs to; becomes the group's `dimension`.
+    pub dimension: String,
+    /// Which side of that axis the decision falls on; becomes the group's `group_label`.
+    pub label: String,
 }
 
 /// Confidence level for a group finding, based on sample size.
@@ -145,6 +159,9 @@ pub struct FailureModeReport {
     pub by_source: Vec<AttributionGroup>,
     /// Failure rates broken down by context richness (evidence/options/rationale buckets).
     pub by_context_richness: Vec<AttributionGroup>,
+    /// Failure rates broken down by the conditions the caller supplied, one group per
+    /// (dimension, label) it reported. Empty when the caller supplied none.
+    pub by_condition: Vec<AttributionGroup>,
     /// Top findings sorted by absolute effect size. Groups with n < `min_sample_size` excluded.
     pub findings: Vec<AttributionFinding>,
 }
@@ -168,6 +185,18 @@ pub struct FailureAttributionRequest {
 pub fn get_failure_attribution(
     graph: &impl GraphView,
     request: &FailureAttributionRequest,
+) -> Result<QueryResponse<FailureModeReport>> {
+    get_failure_attribution_with(graph, request, |_| Ok(Vec::new()))
+}
+
+/// [`get_failure_attribution`] that also groups failures by conditions the caller derives.
+/// `conditions_of` is asked once for each analysed decision (at most `MAX_QUERY_RESULTS`), and
+/// its answer fills `by_condition`. A failed lookup fails the whole report rather than leaving
+/// that decision out of its groups unnoticed.
+pub fn get_failure_attribution_with(
+    graph: &impl GraphView,
+    request: &FailureAttributionRequest,
+    conditions_of: impl Fn(&str) -> Result<Vec<DecisionCondition>>,
 ) -> Result<QueryResponse<FailureModeReport>> {
     let started = Instant::now();
     let min_sample = if request.min_sample_size == 0 {
@@ -225,10 +254,6 @@ pub fn get_failure_attribution(
         superseded_count: pairs.iter().filter(|(o, _)| o.superseded).count(),
         stale_premises_count: pairs.iter().filter(|(o, _)| o.stale_premises).count(),
         contested_count: pairs.iter().filter(|(o, _)| o.contested).count(),
-        thin_structure_count: pairs
-            .iter()
-            .filter(|(o, _)| !o.has_options || !o.has_evidence)
-            .count(),
     };
 
     let corpus_stats = CorpusStats {
@@ -248,6 +273,11 @@ pub fn get_failure_attribution(
     let by_delegation = breakdown_by(&pairs, baseline, "delegation", |_, c| delegation_label(c));
     let by_source = breakdown_by(&pairs, baseline, "source", |_, c| Some(c.source.clone())); // ubs:ignore: owned String required by F: Fn(…) -> Option<String>
     let by_context_richness = context_richness_breakdown(&pairs, baseline);
+    let conditions = pairs
+        .iter()
+        .map(|(outcome, _)| conditions_of(&outcome.decision_id))
+        .collect::<Result<Vec<_>>>()?;
+    let by_condition = condition_breakdown(&pairs, &conditions, baseline);
 
     // 6. Findings: top patterns by |effect_size|, filtered by min_sample_size.
     let all_groups: Vec<&AttributionGroup> = by_authorship
@@ -256,6 +286,7 @@ pub fn get_failure_attribution(
         .chain(by_delegation.iter())
         .chain(by_source.iter())
         .chain(by_context_richness.iter())
+        .chain(by_condition.iter())
         .collect();
 
     let mut findings: Vec<AttributionFinding> = all_groups
@@ -287,6 +318,7 @@ pub fn get_failure_attribution(
         by_delegation,
         by_source,
         by_context_richness,
+        by_condition,
         findings,
     };
 
@@ -336,21 +368,62 @@ where
         .into_iter()
         .map(|label| {
             let (total, failed) = buckets.get(&label).copied().unwrap_or((0, 0));
-            let failure_rate = if total == 0 {
-                0.0
-            } else {
-                failed as f64 / total as f64
-            };
-            let effect_vs_baseline = failure_rate - baseline;
-            AttributionGroup {
-                dimension: dimension.to_owned(),
-                group_label: label,
-                total,
-                failed,
-                failure_rate,
-                effect_vs_baseline,
-                confidence: ConfidenceLevel::from_n(total),
+            attribution_group(dimension, label, total, failed, baseline)
+        })
+        .collect()
+}
+
+/// The group for `total` decisions of which `failed` did not hold up, against `baseline`.
+fn attribution_group(
+    dimension: &str,
+    group_label: String,
+    total: usize,
+    failed: usize,
+    baseline: f64,
+) -> AttributionGroup {
+    let failure_rate = if total == 0 {
+        0.0
+    } else {
+        failed as f64 / total as f64
+    };
+    AttributionGroup {
+        dimension: dimension.to_owned(),
+        group_label,
+        total,
+        failed,
+        failure_rate,
+        effect_vs_baseline: failure_rate - baseline,
+        confidence: ConfidenceLevel::from_n(total),
+    }
+}
+
+/// Breakdown by the conditions the caller supplied: `conditions[i]` belongs to `pairs[i]`.
+/// One group per (dimension, label), sorted by both for stable output.
+fn condition_breakdown(
+    pairs: &[(
+        super::outcome::DecisionOutcome,
+        super::context::DecisionContext,
+    )],
+    conditions: &[Vec<DecisionCondition>],
+    baseline: f64,
+) -> Vec<AttributionGroup> {
+    let mut buckets: BTreeMap<(&str, &str), (usize, usize)> = BTreeMap::new();
+    for ((outcome, _), decision_conditions) in pairs.iter().zip(conditions) {
+        for condition in decision_conditions {
+            let entry = buckets
+                .entry((condition.dimension.as_str(), condition.label.as_str()))
+                .or_insert((0, 0));
+            entry.0 += 1;
+            if !outcome.held_up {
+                entry.1 += 1;
             }
+        }
+    }
+
+    buckets
+        .into_iter()
+        .map(|((dimension, label), (total, failed))| {
+            attribution_group(dimension, label.to_owned(), total, failed, baseline)
         })
         .collect()
 }
@@ -413,21 +486,7 @@ fn context_richness_breakdown(
         .into_iter()
         .map(|label| {
             let (total, failed) = buckets.get(label).copied().unwrap_or((0, 0));
-            let failure_rate = if total == 0 {
-                0.0
-            } else {
-                failed as f64 / total as f64
-            };
-            let effect_vs_baseline = failure_rate - baseline;
-            AttributionGroup {
-                dimension: dimension.to_owned(),
-                group_label: label.to_owned(),
-                total,
-                failed,
-                failure_rate,
-                effect_vs_baseline,
-                confidence: ConfidenceLevel::from_n(total),
-            }
+            attribution_group(dimension, label.to_owned(), total, failed, baseline)
         })
         .collect()
 }

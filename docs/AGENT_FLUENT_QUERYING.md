@@ -425,8 +425,9 @@ separate query functions:
   scope an agent's self-acceptance fell within; absent when the agent decided
   alone — hivemind-zdsh.6) — this is "who decided."
 - `get_decision_outcome` (`outcome.rs:94`) → `DecisionOutcome`: `held_up`
-  plus structured `reasons` (superseded / stale premises / contested / thin
-  structure) — this is "STILL-HOLDS."
+  plus structured `reasons` (superseded / stale premises / contested) — this is
+  "STILL-HOLDS." How the decision was made (options weighed, what it rests on)
+  is quality, not outcome: `score_decision` reports it.
 
 **Known gap:** `option_ids` are ids, not labels. Option node `label` is a
 real graph property (`opt_props.insert("label", ...)`,
@@ -489,10 +490,12 @@ decision that was superseded or rejected adds `PremiseSuperseded` /
 assumption); a contested premise is shown but does not flip it; an overdue bet
 is reported under `still_holds.unchecked` (attention, not staleness) and does
 not. `grounding_state: nothing_declared` means "never asked" (legacy records,
-classifier extraction, document import, raw `emit decision.proposed`) and is what
-`ThinStructure.nothing_declared` reports; a premise link, evidence, an assumption
-or a declared bet all count as declared. Text renderers show labels and keep ids
-in the JSON.
+classifier extraction, document import, raw `emit decision.proposed`) and is shown
+as "rests on: nothing declared" (a premise link, evidence, an assumption or a
+declared bet all count as declared). It is not a reason the decision stopped
+holding: `still_holds.reasons` lists only what happened to it (superseded, a stale
+premise, contested), and how well it was made is the quality profile's
+(`score_decision`). Text renderers show labels and keep ids in the JSON.
 
 Every fluent verb's output, on success, leads with a `DecisionBrief` (or a
 list of them for multi-decision verbs like `get_supersession_chain`). JSON

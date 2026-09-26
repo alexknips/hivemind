@@ -47,8 +47,7 @@ None recorded.
 ## Outcome
 
 Still holds: **yes**
-Reasons:
-- Thin structure: nothing declared about what it rests on
+Reasons: None recorded.
 
 Supersedes: None recorded.
 Superseded by: None recorded.

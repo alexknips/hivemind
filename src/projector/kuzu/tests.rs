@@ -558,6 +558,21 @@ fn score_and_scan_reports_read_the_same_answers_as_the_other_backends() -> Resul
     Ok(())
 }
 
+#[test]
+fn failure_modes_group_by_the_profile_like_the_other_backends() -> Result<()> {
+    use crate::queries::test_fixtures::attention_scenario;
+
+    let temp_dir = test_graph_dir("failure-modes");
+    let graph = KuzuGraph::open(&temp_dir)?;
+    let scenario = attention_scenario()?;
+    crate::projector::project_from_ledger(scenario.ledger(), &graph, 0)?;
+
+    crate::quality_profile::failure_modes::tests::assert_failure_mode_scenario(&graph)?;
+
+    let _ = fs::remove_dir_all(temp_dir);
+    Ok(())
+}
+
 fn test_graph_dir(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

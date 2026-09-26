@@ -34,6 +34,11 @@
 //! whose premise changed, evidence nobody has re-checked. That is [`findings`], and it is the
 //! roll-up in place of a grade.
 //!
+//! # Failure modes
+//! The analysis of which conditions go with decisions that did not hold up takes the seven
+//! dimensions as conditions ([`failure_modes`]): for each dimension, how the decisions at each
+//! level fared. A level sorts decisions into groups; it is never itself a failure.
+//!
 //! # What people and agents see
 //! [`report`] is the one core behind `score_decision`, `scan_decision_quality` and
 //! `get_suggestions` on the stdio MCP server, the HTTP MCP endpoint and the CLI: the profile with
@@ -52,9 +57,11 @@ use crate::queries::{
 };
 use crate::Result;
 
+pub mod failure_modes;
 pub mod findings;
 pub mod report;
 
+pub use failure_modes::{analyze_failure_modes, profile_conditions};
 pub use findings::{
     attention_findings, attention_findings_at, AttentionConfig, AttentionFinding, AttentionPage,
     AttentionRequest, FindingKind, DEFAULT_EVIDENCE_WINDOW_DAYS,
@@ -95,6 +102,19 @@ impl Dimension {
         Self::BiasExposure,
         Self::Calibration,
     ];
+
+    /// The wire name (`bias_exposure`), the one serialization gives.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Framing => "framing",
+            Self::Alternatives => "alternatives",
+            Self::Information => "information",
+            Self::Reasoning => "reasoning",
+            Self::ValuesTradeoffs => "values_tradeoffs",
+            Self::BiasExposure => "bias_exposure",
+            Self::Calibration => "calibration",
+        }
+    }
 }
 
 /// How much of a dimension the record supports. Ordinal, from published rules; not a fraction.
@@ -105,6 +125,17 @@ pub enum Level {
     None,
     Partial,
     Solid,
+}
+
+impl Level {
+    /// The wire name (`partial`), the one serialization gives.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Partial => "partial",
+            Self::Solid => "solid",
+        }
+    }
 }
 
 /// Which rule produced a reason, so a consumer can tell them apart without reading the text.

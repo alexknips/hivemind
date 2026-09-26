@@ -769,7 +769,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_decision_outcome",
-            "description": "\"Did this decision hold up?\" — leads with the decision, rationale, chosen and rejected options, and who decided it, then whether it still holds: superseded (and how fast), stale premises (premised on a refuted hypothesis), contested (unresolved disagreement), or thin structure (no options/evidence), each with its contributing reasons attached. No LLM involved; derived purely from graph edges. Equivalent to `hivemind query verify`. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error; re-call with decision_id from that list. The same shape is returned when no decision contains every word but some contain most of them: each such close candidate lists the words it lacks in `missing_terms`, and none is picked for you. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}` (there is no #N/--pick over MCP to retry against, so there is nothing further to disambiguate).",
+            "description": "\"Did this decision hold up?\" — leads with the decision, rationale, chosen and rejected options, and who decided it, then whether it still holds: superseded (by which decision), stale premises (premised on a refuted hypothesis, or a prior decision it follows from that was superseded or rejected), or contested (unresolved disagreement), each with its contributing reasons attached. How well the decision was made is not part of this answer; that is `score_decision`. No LLM involved; derived purely from graph edges. Equivalent to `hivemind query verify`. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error; re-call with decision_id from that list. The same shape is returned when no decision contains every word but some contain most of them: each such close candidate lists the words it lacks in `missing_terms`, and none is picked for you. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}` (there is no #N/--pick over MCP to retry against, so there is nothing further to disambiguate).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -781,7 +781,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "decision_quality_candidates",
-            "description": "Bulk quality-signal pull for external scorers: returns outcome records for all decisions (or a filtered subset), each with the four quality signals and their contributing reasons. Designed for Mechanism A — the factory loop calls this to pull recent decisions and their signals, then defines its own scoring logic. No LLM involved.",
+            "description": "Bulk outcome pull: returns the \"did it hold up\" record for all decisions (or a filtered subset), each with its outcome signals (superseded, stale premises, contested) and their contributing reasons. These are outcomes, not quality: how well a decision was made is `score_decision`. Designed for Mechanism A — the factory loop calls this to pull recent decisions and their signals. No LLM involved.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -799,7 +799,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     },
                     "only_with_signals": {
                         "type": "boolean",
-                        "description": "When true, only decisions with at least one quality signal are returned. Default false."
+                        "description": "When true, only decisions with at least one outcome signal are returned. Default false."
                     }
                 }
             }
@@ -953,7 +953,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "analyze_failure_modes",
-            "description": "Failure-mode attribution: which conditions predict decisions that do not hold up? Joins outcome signals (superseded / stale-premises / contested) with context features (authorship shape, review depth, source, evidence/options richness, and — for decisions an agent made for itself — whether a human had delegated the scope) and computes AGGREGATE failure-rate patterns across each dimension. Reports effect sizes (failure-rate delta vs corpus baseline) and honest confidence flags based on sample size. Never returns per-person rankings — all findings are aggregate patterns. Use to answer: does agent-only authorship predict failure? Does peer review improve outcomes? Do agent decisions within a human's delegation hold up differently from ones an agent made alone? Does thin context predict failure? Works on any deployment, no LLM.",
+            "description": "Failure-mode attribution: which conditions predict decisions that do not hold up? Joins outcome signals (superseded / stale-premises / contested) with context features (authorship shape, review depth, source, evidence/options richness, and — for decisions an agent made for itself — whether a human had delegated the scope) and with the seven quality dimensions of `score_decision` (`by_condition`: one group per dimension and level — none, partial, solid, or not_assessed) and computes AGGREGATE failure-rate patterns across each. A quality level only sorts decisions into groups; it is never itself a failure, and how quickly a decision was superseded is not weighed. Reports effect sizes (failure-rate delta vs corpus baseline) and honest confidence flags based on sample size. Never returns per-person rankings — all findings are aggregate patterns. Use to answer: does agent-only authorship predict failure? Does peer review improve outcomes? Do agent decisions within a human's delegation hold up differently from ones an agent made alone? Do decisions that recorded no alternatives, or nothing they rest on, fail more often? Works on any deployment, no LLM.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

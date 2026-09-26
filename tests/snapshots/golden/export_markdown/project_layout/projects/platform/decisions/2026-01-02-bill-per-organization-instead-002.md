@@ -47,8 +47,7 @@ None recorded.
 ## Outcome
 
 Still holds: **yes**
-Reasons:
-- Thin structure: nothing declared about what it rests on
+Reasons: None recorded.
 
 Supersedes: [Charge per seat](../../billing/decisions/2026-01-02-charge-per-seat-001.md)
 Superseded by: None recorded.

@@ -29,6 +29,20 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   without a score or tier; `--min-tier` and `--since-event-origin` are gone, `--kind` is new.
   `docs/DECISION_SCORING.md` describes what exists and marks Composite, Confidence and
   Reputation deferred. (hivemind-qo11.5)
+- **The "did it hold up" view stops carrying quality signals.** `verify`, `why`
+  (`get_decision_neighborhood`), `decision_quality_candidates` and the Markdown decision-log
+  export no longer list a `thin_structure` reason: how a decision was made (options weighed,
+  what it rests on) is quality, and `score_decision` reports it as Alternatives and
+  Information. What stays is what happened to the decision: superseded (by which decision;
+  nothing weighs how quickly), a premise that no longer stands, contested. Removed with no
+  alias: the `thin_structure` reason kind and its `no_options` / `nothing_declared` fields, the
+  `has_options`, `has_evidence` and `grounding_state` fields on each `decision_quality_candidates`
+  record, and `signal_breakdown.thin_structure_count` on `analyze_failure_modes`. A decision
+  with no options and nothing it rests on now reads "still holds: yes" with no reasons; its
+  `rests_on` still says "nothing declared". `analyze_failure_modes` gains `by_condition`:
+  failure rates for each quality dimension at each level (`none`, `partial`, `solid`,
+  `not_assessed`). A level only sorts decisions into groups; it is never itself a failure.
+  (hivemind-qo11.7)
 
 ### Added
 

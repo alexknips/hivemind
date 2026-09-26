@@ -19,6 +19,6 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/verify.sh $ARGUMENTS
 
 Leads with the decision, rationale, rejected options, who decided, and
 whether it still holds (`held_up` + structured reasons — superseded, stale
-premises, contested, thin structure). If the description resolves
+premises, contested). If the description resolves
 ambiguously, the CLI returns a numbered candidate list instead of guessing
 — re-invoke with `--pick N` or `#N`.

@@ -23,8 +23,10 @@ The research basis is [`DECISION_QUALITY_LITERATURE.md`](DECISION_QUALITY_LITERA
 The profile is agentic analysis. It lives strictly in **Layer 3**, above the write and
 query paths, per [`PRINCIPLES.md` §7](../PRINCIPLES.md) and
 [`ARCHITECTURE.md` → Layer Boundary](ARCHITECTURE.md): `src/quality_profile.rs` (the
-floors), `src/quality_profile/findings.rs` (attention findings) and
-`src/quality_profile/report.rs` (what the tools return). Four properties keep it
+floors), `src/quality_profile/findings.rs` (attention findings),
+`src/quality_profile/report.rs` (what the tools return) and
+`src/quality_profile/failure_modes.rs` (the failure-mode analysis by dimension). Four
+properties keep it
 compliant and trustworthy:
 
 1. **Ex ante.** A level uses **only what was knowable at decision time, never the
@@ -358,6 +360,19 @@ say exactly whether more follow.
 out are in place, so a consumer written against `get_suggestions` today needs no change
 when acknowledgements arrive.
 
+### `analyze_failure_modes`
+
+The failure-mode analysis (which conditions go with decisions that did not hold up)
+groups decisions by the profile too. Its `by_condition` lists one group for each
+dimension and level: `framing`, `alternatives`, `information`, `reasoning`,
+`values_tradeoffs`, `bias_exposure` or `calibration`, each with the group label `none`,
+`partial`, `solid` or `not_assessed`, and the same `total`, `failed`, `failure_rate`,
+`effect_vs_baseline` and `confidence` as every other group. These groups sort decisions
+and nothing else: what counts as a failure is still the outcome view's call
+(superseded, a premise that no longer stands, contested), a level is never itself a
+failure, and `not_assessed` is its own group, never folded into `none`. The groups take
+part in `findings` like any other. stdio MCP only.
+
 ### `quality-scan`
 
 `hivemind quality-scan` reads the first page of findings (at most `--limit`, 1–50,
@@ -373,11 +388,11 @@ status and provenance signals wearing a quality label, and they are gone from
 
 | Was a deduction for | Now |
 | --- | --- |
-| superseded (faster meant worse) | the "did it hold up" outcome view (`verify`), shown beside quality and never folded into it; a fast reversal is never penalized |
+| superseded | the "did it hold up" outcome view (`verify`), shown beside quality and never folded into it. Supersession is a fact there (which decision replaced it); nothing weighs how quickly it happened, and a fast reversal is never penalized |
 | premised on a refuted assumption, or on a superseded or rejected decision | staleness: the `assumption_refuted`, `bet_failed`, `premise_superseded` and `premise_rejected` findings |
 | contested | a status, shown as such: deducting for disagreement would be conformity bias |
 | agent-only, unreviewed | the provenance line |
-| thin structure (no options, nothing declared it rests on) | the Alternatives and Information floors |
+| thin structure (no options, nothing declared it rests on) | the Alternatives and Information floors. It is no longer an outcome reason either: `verify`, `why`, `decision_quality_candidates` and the export do not list it |
 
 
 ## Deferred, not built

@@ -55,6 +55,7 @@ src/classifier/tests.rs
 src/scorer/tests.rs
 src/quality_profile/tests.rs
 src/quality_profile/findings/tests.rs
+src/quality_profile/failure_modes/tests.rs
 src/quality_profile/report/tests.rs
 src/queries/grounding_facts/tests.rs
 work-orf0.5/

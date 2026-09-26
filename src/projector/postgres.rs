@@ -292,7 +292,8 @@ fn dispatch_query(
         return query_contested(client, tenant_id, params);
     }
 
-    // query_has_options / query_has_evidence: outgoing edge count of one relation kind.
+    // context.rs's query_actor_edge_count / query_edge_count: outgoing edge count of one
+    // relation kind.
     if cypher.contains("RETURN count(*) AS cnt") {
         return query_has_relation(client, tenant_id, cypher, params);
     }

@@ -1544,8 +1544,9 @@ fn situational_fixture_ledger() -> Result<InMemoryEventLedger> {
 }
 
 /// Exercises every get_decision_outcome signal (superseded, stale_premises via both
-/// PREMISED_ON_DIRECT and CHOSE->PREMISED_ON, contested, thin_structure) plus a clean
-/// decision, so the outcome-parity tests can diff backend behavior signal-by-signal.
+/// PREMISED_ON_DIRECT and CHOSE->PREMISED_ON, contested) plus a clean decision and a bare one
+/// (no options, nothing it rests on: not a signal), so the outcome-parity tests can diff backend
+/// behavior signal-by-signal.
 fn outcome_fixture_ledger() -> Result<InMemoryEventLedger> {
     let ledger = InMemoryEventLedger::new();
     for event in [
@@ -2183,6 +2184,35 @@ fn score_and_scan_reports_match_memory() -> Result<()> {
             }
         }
         crate::quality_profile::report::tests::assert_report_scenario(pg)
+    })
+}
+
+// ── failure modes by the quality profile parity (hivemind-qo11.7) ────────────────
+//
+// The analysis reads every decision's outcome, its context and, per decision, its profile. The
+// attention scenario puts decisions on several rungs of each floor and on both sides of "held
+// up", so agreeing with the in-memory graph is not agreeing on emptiness; the same group
+// assertions run on Postgres.
+
+#[test]
+fn failure_modes_by_profile_match_memory() -> Result<()> {
+    use crate::quality_profile::analyze_failure_modes;
+    use crate::queries::test_fixtures::attention_scenario;
+
+    with_postgres_graph("failure-modes-parity", |pg| {
+        let scenario = attention_scenario()?;
+        let memory = scenario.graph()?;
+        project_from_ledger(scenario.ledger(), pg, 0)?;
+
+        let request = FailureAttributionRequest::default();
+        let memory_report = analyze_failure_modes(&memory, &request)?.data;
+        let pg_report = analyze_failure_modes(pg, &request)?.data;
+        if memory_report != pg_report {
+            return Err(test_error(format!(
+                "analyze_failure_modes mismatch: memory={memory_report:?} pg={pg_report:?}"
+            )));
+        }
+        crate::quality_profile::failure_modes::tests::assert_failure_mode_scenario(pg)
     })
 }
 

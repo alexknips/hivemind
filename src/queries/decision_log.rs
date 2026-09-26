@@ -996,19 +996,6 @@ fn render_outcome_reason(reason: &OutcomeReason) -> String {
             format!("Follows from {decision_id}, which was rejected")
         }
         OutcomeReason::Contested => "Contested".to_owned(),
-        OutcomeReason::ThinStructure {
-            no_options,
-            nothing_declared,
-        } => {
-            let mut parts = Vec::new();
-            if *no_options {
-                parts.push("no options");
-            }
-            if *nothing_declared {
-                parts.push("nothing declared about what it rests on");
-            }
-            format!("Thin structure: {}", parts.join(" and "))
-        }
     }
 }
 

@@ -49,7 +49,6 @@ None recorded.
 Still holds: **no**
 Reasons:
 - Superseded by decision-002 (2 ledger events later)
-- Thin structure: nothing declared about what it rests on
 
 Supersedes: None recorded.
 Superseded by: [Bill per organization instead](../../platform/decisions/2026-01-02-bill-per-organization-instead-002.md)

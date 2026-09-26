@@ -700,7 +700,7 @@ fn write_decided_by(output: &mut String, decided_by: &DecidedBy) {
 
 /// The short reasons a decision no longer holds, in the order they were derived and without
 /// repeats: `superseded`, `premise superseded`, `premise rejected`, `assumption refuted`,
-/// `contested`. Thin structure is a quality note, not a reason it stopped holding.
+/// `contested`.
 fn still_holds_labels(reasons: &[OutcomeReason]) -> Vec<&'static str> {
     let mut labels: Vec<&'static str> = Vec::new();
     for reason in reasons {
@@ -710,7 +710,6 @@ fn still_holds_labels(reasons: &[OutcomeReason]) -> Vec<&'static str> {
             OutcomeReason::PremiseSuperseded { .. } => "premise superseded",
             OutcomeReason::PremiseRejected { .. } => "premise rejected",
             OutcomeReason::Contested => "contested",
-            OutcomeReason::ThinStructure { .. } => continue,
         };
         if !labels.contains(&label) {
             labels.push(label);
@@ -760,18 +759,6 @@ fn format_outcome_reason(reason: &OutcomeReason, rests_on: &[GroundingItem]) -> 
             format!("follows from {}, which was rejected", named(decision_id))
         }
         OutcomeReason::Contested => "contested: accepted and rejected actors disagree".to_owned(),
-        OutcomeReason::ThinStructure {
-            no_options,
-            nothing_declared,
-        } => match (no_options, nothing_declared) {
-            (true, true) => {
-                "thin structure: no options attached, nothing declared about what it rests on"
-                    .to_owned()
-            }
-            (true, false) => "thin structure: no options attached".to_owned(),
-            (false, true) => "thin structure: nothing declared about what it rests on".to_owned(),
-            (false, false) => "thin structure".to_owned(),
-        },
     }
 }
 

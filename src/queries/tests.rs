@@ -2309,30 +2309,6 @@ impl GraphView for OutcomeGraph {
             ])]);
         }
 
-        if cypher.contains("HAS_OPTION") {
-            let cnt = self
-                .edges
-                .iter()
-                .filter(|(k, from, _)| *k == RelationKind::HasOption && from == id)
-                .count() as i64;
-            return Ok(vec![GraphRow::from([(
-                "cnt".to_owned(),
-                GraphValue::Int(cnt),
-            )])]);
-        }
-
-        if cypher.contains("BASED_ON") {
-            let cnt = self
-                .edges
-                .iter()
-                .filter(|(k, from, _)| *k == RelationKind::BasedOn && from == id)
-                .count() as i64;
-            return Ok(vec![GraphRow::from([(
-                "cnt".to_owned(),
-                GraphValue::Int(cnt),
-            )])]);
-        }
-
         if cypher.contains("MATCH (d:`Decision`)")
             && cypher.contains("d.event_origin")
             && !cypher.contains("{id:")
@@ -2369,11 +2345,11 @@ impl GraphView for OutcomeGraph {
 
 #[test]
 fn clean_decision_holds_up() -> Result<()> {
-    let graph = OutcomeGraph::default()
-        .add_decision("d:1", 10)
-        .add_edge(RelationKind::AcceptedBy, "d:1", "actor:alice")
-        .add_edge(RelationKind::HasOption, "d:1", "opt:1")
-        .add_edge(RelationKind::BasedOn, "d:1", "ev:1");
+    let graph = OutcomeGraph::default().add_decision("d:1", 10).add_edge(
+        RelationKind::AcceptedBy,
+        "d:1",
+        "actor:alice",
+    );
 
     let result = get_decision_outcome(&graph, "d:1")?;
     let outcome = result.data.unwrap();
@@ -2382,8 +2358,6 @@ fn clean_decision_holds_up() -> Result<()> {
     assert!(!outcome.superseded);
     assert!(!outcome.stale_premises);
     assert!(!outcome.contested);
-    assert!(outcome.has_options);
-    assert!(outcome.has_evidence);
     assert!(outcome.reasons.is_empty());
     Ok(())
 }
@@ -2393,9 +2367,7 @@ fn superseded_decision_does_not_hold_up() -> Result<()> {
     let graph = OutcomeGraph::default()
         .add_decision("d:old", 10)
         .add_decision("d:new", 50)
-        .add_edge_with_origin(RelationKind::Supersedes, "d:new", "d:old", 55)
-        .add_edge(RelationKind::HasOption, "d:old", "opt:1")
-        .add_edge(RelationKind::BasedOn, "d:old", "ev:1");
+        .add_edge_with_origin(RelationKind::Supersedes, "d:new", "d:old", 55);
 
     let result = get_decision_outcome(&graph, "d:old")?;
     let outcome = result.data.unwrap();
@@ -2417,9 +2389,7 @@ fn stale_premise_does_not_hold_up() -> Result<()> {
     let graph = OutcomeGraph::default()
         .add_decision("d:1", 10)
         .add_edge(RelationKind::PremisedOnDirect, "d:1", "hyp:1")
-        .add_edge(RelationKind::Refutes, "ev:refutation", "hyp:1")
-        .add_edge(RelationKind::HasOption, "d:1", "opt:1")
-        .add_edge(RelationKind::BasedOn, "d:1", "ev:1");
+        .add_edge(RelationKind::Refutes, "ev:refutation", "hyp:1");
 
     let result = get_decision_outcome(&graph, "d:1")?;
     let outcome = result.data.unwrap();
@@ -2439,9 +2409,7 @@ fn contested_decision_does_not_hold_up() -> Result<()> {
     let graph = OutcomeGraph::default()
         .add_decision("d:1", 10)
         .add_edge(RelationKind::AcceptedBy, "d:1", "actor:alice")
-        .add_edge(RelationKind::RejectedBy, "d:1", "actor:bob")
-        .add_edge(RelationKind::HasOption, "d:1", "opt:1")
-        .add_edge(RelationKind::BasedOn, "d:1", "ev:1");
+        .add_edge(RelationKind::RejectedBy, "d:1", "actor:bob");
 
     let result = get_decision_outcome(&graph, "d:1")?;
     let outcome = result.data.unwrap();
@@ -2456,26 +2424,19 @@ fn contested_decision_does_not_hold_up() -> Result<()> {
 }
 
 #[test]
-fn thin_structure_still_holds_up_but_has_reason() -> Result<()> {
+fn how_a_decision_was_structured_is_not_an_outcome_signal() -> Result<()> {
+    // No options, no evidence, nothing declared about what it rests on: that is a question
+    // about quality (the profile's), not about whether the decision held up.
     let graph = OutcomeGraph::default().add_decision("d:1", 10).add_edge(
         RelationKind::AcceptedBy,
         "d:1",
         "actor:alice",
     );
 
-    let result = get_decision_outcome(&graph, "d:1")?;
-    let outcome = result.data.unwrap();
+    let outcome = get_decision_outcome(&graph, "d:1")?.data.unwrap();
 
     assert!(outcome.held_up);
-    assert!(!outcome.has_options);
-    assert!(!outcome.has_evidence);
-    assert!(outcome.reasons.iter().any(|r| matches!(
-        r,
-        OutcomeReason::ThinStructure {
-            no_options: true,
-            nothing_declared: true
-        }
-    )));
+    assert!(outcome.reasons.is_empty());
     Ok(())
 }
 
@@ -2491,9 +2452,7 @@ fn missing_decision_returns_none() -> Result<()> {
 fn bulk_query_returns_all_decisions() -> Result<()> {
     let graph = OutcomeGraph::default()
         .add_decision("d:1", 10)
-        .add_decision("d:2", 20)
-        .add_edge(RelationKind::HasOption, "d:1", "opt:1")
-        .add_edge(RelationKind::BasedOn, "d:1", "ev:1");
+        .add_decision("d:2", 20);
 
     let req = DecisionQualityCandidatesRequest {
         limit: 10,
@@ -2510,10 +2469,11 @@ fn bulk_query_returns_all_decisions() -> Result<()> {
 fn bulk_query_only_with_signals_filters_clean_decisions() -> Result<()> {
     let graph = OutcomeGraph::default()
         .add_decision("d:clean", 10)
-        .add_decision("d:thin", 20)
+        .add_decision("d:bare", 15)
+        .add_decision("d:contested", 20)
         .add_edge(RelationKind::AcceptedBy, "d:clean", "actor:alice")
-        .add_edge(RelationKind::HasOption, "d:clean", "opt:1")
-        .add_edge(RelationKind::BasedOn, "d:clean", "ev:1");
+        .add_edge(RelationKind::AcceptedBy, "d:contested", "actor:alice")
+        .add_edge(RelationKind::RejectedBy, "d:contested", "actor:bob");
 
     let req = DecisionQualityCandidatesRequest {
         limit: 10,
@@ -2522,7 +2482,9 @@ fn bulk_query_only_with_signals_filters_clean_decisions() -> Result<()> {
     };
     let result = get_decision_quality_candidates(&graph, &req)?;
 
-    assert!(result.data.iter().all(|o| o.decision_id == "d:thin"));
+    // `d:bare` records no options and nothing it rests on, and still carries no signal.
+    let ids: Vec<&str> = result.data.iter().map(|o| o.decision_id.as_str()).collect();
+    assert_eq!(ids, ["d:contested"]);
     Ok(())
 }
 
@@ -2768,8 +2730,6 @@ fn memory_graph_clean_decision_holds_up() -> Result<()> {
         .expect("decision:clean exists");
     assert!(outcome.held_up);
     assert!(outcome.reasons.is_empty());
-    assert!(outcome.has_options);
-    assert!(outcome.has_evidence);
     Ok(())
 }
 
@@ -2832,21 +2792,14 @@ fn memory_graph_contested_decision_does_not_hold_up() -> Result<()> {
 }
 
 #[test]
-fn memory_graph_thin_structure_still_holds_up() -> Result<()> {
+fn memory_graph_a_bare_decision_holds_up_with_no_reasons() -> Result<()> {
+    // decision:thin has no options and nothing it rests on; that is not an outcome signal.
     let graph = outcome_signals_fixture()?;
     let outcome = get_decision_outcome(&graph, "decision:thin")?
         .data
         .expect("decision:thin exists");
-    assert!(outcome.held_up); // thin structure alone does not flip held_up
-    assert!(!outcome.has_options);
-    assert!(!outcome.has_evidence);
-    assert!(outcome.reasons.iter().any(|r| matches!(
-        r,
-        OutcomeReason::ThinStructure {
-            no_options: true,
-            nothing_declared: true
-        }
-    )));
+    assert!(outcome.held_up);
+    assert!(outcome.reasons.is_empty());
     Ok(())
 }
 
@@ -2891,7 +2844,7 @@ fn memory_graph_quality_candidates_bulk_and_since_filter() -> Result<()> {
         BTreeSet::from(["decision:contested".to_owned(), "decision:thin".to_owned(),])
     );
 
-    // only_with_signals excludes decision:clean (no reasons) from the full set.
+    // only_with_signals excludes decision:clean and decision:thin (no reasons) from the full set.
     let signals_only = get_decision_quality_candidates(
         &graph,
         &DecisionQualityCandidatesRequest {
@@ -2900,10 +2853,20 @@ fn memory_graph_quality_candidates_bulk_and_since_filter() -> Result<()> {
             ..Default::default()
         },
     )?;
-    assert!(signals_only
+    let flagged: BTreeSet<_> = signals_only
         .data
         .iter()
-        .all(|o| o.decision_id != "decision:clean"));
+        .map(|o| o.decision_id.as_str())
+        .collect();
+    assert_eq!(
+        flagged,
+        BTreeSet::from([
+            "decision:contested",
+            "decision:old",
+            "decision:stale-direct",
+            "decision:stale-option",
+        ])
+    );
 
     Ok(())
 }
@@ -2959,6 +2922,122 @@ fn memory_graph_failure_attribution_real_graph() -> Result<()> {
     assert_eq!(report.corpus_stats.failed_decisions, 4);
     assert!(!report.by_source.is_empty());
 
+    Ok(())
+}
+
+/// The four decisions of `outcome_signals_fixture` that did not hold up.
+const OUTCOME_FIXTURE_FAILED: [&str; 4] = [
+    "decision:contested",
+    "decision:old",
+    "decision:stale-direct",
+    "decision:stale-option",
+];
+
+/// Sorts every decision into a condition by its id alone, so the analysis is shown to group by
+/// whatever the caller says and to know nothing about why.
+fn failed_or_not(decision_id: &str) -> Result<Vec<DecisionCondition>> {
+    let label = if OUTCOME_FIXTURE_FAILED.contains(&decision_id) {
+        "listed"
+    } else {
+        "unlisted"
+    };
+    Ok(vec![DecisionCondition {
+        dimension: "shape".to_owned(),
+        label: label.to_owned(),
+    }])
+}
+
+#[test]
+fn memory_graph_failure_attribution_has_no_conditions_unless_supplied() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+    let report = get_failure_attribution(&graph, &FailureAttributionRequest::default())?.data;
+    assert!(report.by_condition.is_empty());
+    Ok(())
+}
+
+#[test]
+fn memory_graph_failure_attribution_groups_by_the_conditions_it_is_given() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+    let request = FailureAttributionRequest::default();
+    let plain = get_failure_attribution(&graph, &request)?.data;
+    let grouped = get_failure_attribution_with(&graph, &request, failed_or_not)?.data;
+
+    // Sorted by dimension then label; every decision is in exactly one group.
+    let groups: Vec<(&str, &str, usize, usize)> = grouped
+        .by_condition
+        .iter()
+        .map(|g| {
+            (
+                g.dimension.as_str(),
+                g.group_label.as_str(),
+                g.total,
+                g.failed,
+            )
+        })
+        .collect();
+    assert_eq!(
+        groups,
+        [("shape", "listed", 4, 4), ("shape", "unlisted", 3, 0)]
+    );
+    let listed = &grouped.by_condition[0];
+    assert!((listed.failure_rate - 1.0).abs() < f64::EPSILON);
+    assert!((listed.effect_vs_baseline - (1.0 - 4.0 / 7.0)).abs() < 1e-9);
+
+    // A condition sorts decisions into groups; it never changes who failed or any other breakdown.
+    assert_eq!(grouped.corpus_stats, plain.corpus_stats);
+    assert_eq!(grouped.by_authorship, plain.by_authorship);
+    assert_eq!(grouped.by_review, plain.by_review);
+    assert_eq!(grouped.by_delegation, plain.by_delegation);
+    assert_eq!(grouped.by_source, plain.by_source);
+    assert_eq!(grouped.by_context_richness, plain.by_context_richness);
+
+    // Its groups take part in the findings like every other group.
+    assert!(grouped
+        .findings
+        .iter()
+        .any(|f| f.dimension == "shape" && f.group_label == "listed" && f.sample_size == 4));
+    Ok(())
+}
+
+#[test]
+fn memory_graph_failure_attribution_fails_when_a_condition_cannot_be_read() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+    let result = get_failure_attribution_with(
+        &graph,
+        &FailureAttributionRequest::default(),
+        |decision_id| {
+            if decision_id == "decision:old" {
+                Err(query_error("condition lookup failed").into())
+            } else {
+                failed_or_not(decision_id)
+            }
+        },
+    );
+    // Not a report with that decision quietly missing from its groups.
+    assert!(result.is_err());
+    Ok(())
+}
+
+#[test]
+fn failure_attribution_no_longer_counts_thin_structure() -> Result<()> {
+    let graph = outcome_signals_fixture()?;
+    let report = get_failure_attribution(&graph, &FailureAttributionRequest::default())?.data;
+    let wire = serde_json::to_value(&report.corpus_stats.signal_breakdown)
+        .expect("the breakdown serializes");
+    let keys: BTreeSet<&str> = wire
+        .as_object()
+        .expect("the breakdown is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        BTreeSet::from([
+            "superseded_count",
+            "stale_premises_count",
+            "contested_count"
+        ])
+    );
     Ok(())
 }
 

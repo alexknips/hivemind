@@ -120,11 +120,6 @@
             "by_id": "decision-019",
             "gap_events": 21,
             "kind": "superseded_by"
-          },
-          {
-            "kind": "thin_structure",
-            "no_options": false,
-            "nothing_declared": true
           }
         ]
       },

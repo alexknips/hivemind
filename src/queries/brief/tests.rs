@@ -98,15 +98,11 @@ fn brief_composes_context_and_outcome_for_a_clean_decision() -> Result<()> {
     assert_eq!(brief.decided_by.source, "cli");
     assert_eq!(brief.decided_by.review, ReviewShape::PeerReviewed);
 
-    // Options exist but no evidence was attached: thin_structure fires without flipping held_up.
+    // Options exist but no evidence was attached, and nothing says it rests on anything. That
+    // is a question about quality (the profile's), not a reason it stopped holding.
     assert!(brief.still_holds.held_up);
-    assert!(brief.still_holds.reasons.iter().any(|reason| matches!(
-        reason,
-        OutcomeReason::ThinStructure {
-            nothing_declared: true,
-            ..
-        }
-    )));
+    assert!(brief.still_holds.reasons.is_empty());
+    assert_eq!(brief.grounding_state, GroundingState::NothingDeclared);
 
     Ok(())
 }
