@@ -41,15 +41,13 @@
 //! SQLite backend (`AppState::slack_store` is `None` on Postgres); see
 //! docs/SLACK_APP.md for the tracked follow-up.
 //!
-//! ## What this slice does not implement
+//! ## Outbound calls
 //!
-//! `POST /v1/slack/interactivity` (block actions / view submissions for the
-//! "Capture this thread as a decision" message shortcut and its modal) is
-//! deliberately out of scope — see docs/SLACK_APP.md and the follow-up
-//! bead it names. `reaction_added` is verified and acknowledged but does
-//! not yet complete a capture: the Events API payload for a reaction
-//! carries no message text, and fetching it needs an outbound Slack Web API
-//! call this slice does not add.
+//! Two flows need Slack's Web API, through [`web::SlackWebClient`] and the
+//! install's bot token: the capture modal (`views.open`, see
+//! [`interactivity`]) and `reaction_added` capture (`conversations.history`,
+//! because the Events API payload for a reaction carries no message text).
+//! Both are bounded by a short timeout and never retried.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -69,12 +67,19 @@ use crate::ingest::{
 };
 use crate::ledger::{AnyLedger, SqliteEventLedger, TenantScopedLedger, TenantScopedOwnedLedger};
 use crate::slack_app::{
-    handle_slack_command, SlackAppStore, SlackCaptureRequest, SlackCaptureSurface,
-    SlackCommandRequest, SlackWorkspaceInstall,
+    handle_slack_command, message_evidence, SlackAppStore, SlackCaptureRequest,
+    SlackCaptureSurface, SlackCommandRequest, SlackWorkspaceInstall,
 };
 
 use super::graph::get_cached_graph;
 use super::{respond, ApiBackend, ApiError, ApiResult, AppState};
+
+mod interactivity;
+mod web;
+
+pub(super) use interactivity::interactivity_handler;
+use web::SlackMessage;
+pub(super) use web::SlackWebClient;
 
 const SLACK_SIGNATURE_HEADER: &str = "x-slack-signature";
 const SLACK_TIMESTAMP_HEADER: &str = "x-slack-request-timestamp";
@@ -187,6 +192,26 @@ fn required_header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str, Re
         .ok_or_else(|| ApiError::unauthorized(format!("missing {name} header")).into_response())
 }
 
+/// The gate every workspace-scoped route passes before acting on a request:
+/// finds the install for the claimed `team_id` and verifies the signature
+/// against *that* install's signing secret. An unknown workspace and a bad
+/// signature answer identically, so the route does not reveal which
+/// workspaces are installed.
+fn authenticate_install(
+    store: &SlackAppStore,
+    team_id: &str,
+    timestamp: &str,
+    signature: &str,
+    body: &[u8],
+) -> ApiResult<SlackWorkspaceInstall> {
+    let install = store
+        .installation(team_id)
+        .map_err(|_| ApiError::unauthorized("invalid slack request signature"))?;
+    verify_slack_signature(&install.signing_secret, timestamp, body, signature)
+        .map_err(|_| ApiError::unauthorized("invalid slack request signature"))?;
+    Ok(install)
+}
+
 // ---------------------------------------------------------------------------
 // Events API — POST /v1/slack/events
 // ---------------------------------------------------------------------------
@@ -226,6 +251,21 @@ struct SlackInnerEvent {
     bot_id: Option<String>,
     #[serde(default)]
     reaction: Option<String>,
+    /// What a `reaction_added` was added to.
+    #[serde(default)]
+    item: Option<SlackReactionItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SlackReactionItem {
+    /// `message` for the only item this app acts on; defaulted so an item of
+    /// any other shape is ignored instead of failing the whole event.
+    #[serde(rename = "type", default)]
+    item_type: String,
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    ts: Option<String>,
 }
 
 pub(super) async fn events_handler(
@@ -270,18 +310,43 @@ pub(super) async fn events_handler(
                 .into_response()
         }
         SlackEventEnvelope::EventCallback { team_id, event } => {
+            let queue = store.clone();
             let result = tokio::task::spawn_blocking(move || {
                 handle_event_callback(&store, &team_id, &event, &timestamp, &signature, &body)
             })
             .await;
             match result {
-                Ok(Ok(())) => StatusCode::OK.into_response(),
+                Ok(Ok(EventFollowUp::Done)) => StatusCode::OK.into_response(),
+                Ok(Ok(EventFollowUp::CaptureReaction(reaction))) => {
+                    // Always acknowledged: a failed capture is logged, not
+                    // answered with a 5xx, because Slack retries failed
+                    // deliveries and disables subscriptions that keep failing.
+                    complete_reaction_capture(&state.slack_web, queue, *reaction).await;
+                    StatusCode::OK.into_response()
+                }
                 Ok(Err(e)) => e.into_response(),
                 Err(e) => ApiError::internal(e.to_string()).into_response(),
             }
         }
         SlackEventEnvelope::Other => StatusCode::OK.into_response(),
     }
+}
+
+/// What is left to do for an authenticated event once its synchronous part is
+/// done.
+enum EventFollowUp {
+    Done,
+    /// A `reaction_added` on the install's capture emoji: the reacted-to
+    /// message has to be fetched from Slack before it can be parsed.
+    CaptureReaction(Box<ReactionCapture>),
+}
+
+struct ReactionCapture {
+    install: SlackWorkspaceInstall,
+    /// The Slack user who added the reaction.
+    reactor: String,
+    channel: String,
+    ts: String,
 }
 
 fn handle_event_callback(
@@ -291,37 +356,165 @@ fn handle_event_callback(
     timestamp: &str,
     signature: &str,
     body: &[u8],
-) -> ApiResult<()> {
-    let install = store
-        .installation(team_id)
-        .map_err(|_| ApiError::unauthorized("invalid slack request signature"))?;
-    verify_slack_signature(&install.signing_secret, timestamp, body, signature)
-        .map_err(|_| ApiError::unauthorized("invalid slack request signature"))?;
+) -> ApiResult<EventFollowUp> {
+    let install = authenticate_install(store, team_id, timestamp, signature, body)?;
 
     match event.event_type.as_str() {
-        "app_mention" => enqueue_marker_capture(store, &install, event, None),
+        "app_mention" => {
+            enqueue_marker_capture(store, &install, event, None).map(|()| EventFollowUp::Done)
+        }
         // Only plain user messages: skip edits/deletes/bot echoes (`subtype`)
         // and our own bot's own posts (`bot_id`), which would otherwise loop.
         "message" if event.subtype.is_none() && event.bot_id.is_none() => {
             enqueue_marker_capture(store, &install, event, Some(DEFAULT_SLACK_MENTION))
+                .map(|()| EventFollowUp::Done)
         }
-        "reaction_added" => {
-            if event.reaction.as_deref() == Some(install.reaction_emoji.as_str()) {
-                // Recognized but not completed in this slice: the Events API
-                // reaction payload carries no message text, and fetching it
-                // needs an outbound Slack Web API call this slice does not
-                // add. See module docs and docs/SLACK_APP.md.
-                info!(
-                    target: "hivemind::api::slack",
-                    team_id,
-                    "reaction_added matched the configured capture trigger; \
-                     auto-capture from a reaction is not yet implemented"
-                );
-            }
-            Ok(())
-        }
-        _ => Ok(()),
+        "reaction_added" => Ok(reaction_follow_up(install, event)),
+        _ => Ok(EventFollowUp::Done),
     }
+}
+
+/// A reaction only starts a capture when it is the install's configured
+/// emoji, on a message, from an identifiable user.
+fn reaction_follow_up(install: SlackWorkspaceInstall, event: &SlackInnerEvent) -> EventFollowUp {
+    if event.reaction.as_deref() != Some(install.reaction_emoji.as_str()) {
+        return EventFollowUp::Done;
+    }
+    let (Some(reactor), Some(item)) = (&event.user, &event.item) else {
+        return EventFollowUp::Done;
+    };
+    let (true, Some(channel), Some(ts)) = (item.item_type == "message", &item.channel, &item.ts)
+    else {
+        return EventFollowUp::Done;
+    };
+    EventFollowUp::CaptureReaction(Box::new(ReactionCapture {
+        install,
+        reactor: reactor.clone(),
+        channel: channel.clone(),
+        ts: ts.clone(),
+    }))
+}
+
+/// Fetches the message a matching reaction was added to and, when it carries
+/// the deterministic `Decision:`/`Rationale:`/`Options:` markers, enqueues it
+/// like any other capture. Every way this can end without a capture is
+/// logged; none of them fails the acknowledgement of the event.
+async fn complete_reaction_capture(
+    web: &SlackWebClient,
+    store: SlackAppStore,
+    reaction: ReactionCapture,
+) {
+    let team_id = reaction.install.team_id.clone();
+    let message = match web
+        .fetch_message(&reaction.install.bot_token, &reaction.channel, &reaction.ts)
+        .await
+    {
+        Ok(Some(message)) => message,
+        Ok(None) => {
+            info!(
+                target: "hivemind::api::slack",
+                team_id = %team_id,
+                channel = %reaction.channel,
+                ts = %reaction.ts,
+                "reacted-to message could not be fetched by ts (a thread reply, or deleted \
+                 since); nothing captured"
+            );
+            return;
+        }
+        Err(error) => {
+            warn!(
+                target: "hivemind::api::slack",
+                team_id = %team_id,
+                error = %error,
+                "could not fetch the reacted-to message; nothing captured"
+            );
+            return;
+        }
+    };
+
+    let queued =
+        tokio::task::spawn_blocking(move || enqueue_reaction_capture(&store, &reaction, &message))
+            .await;
+    match queued {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => warn!(
+            target: "hivemind::api::slack",
+            team_id = %team_id,
+            error = %error,
+            "reaction capture could not be queued"
+        ),
+        Err(error) => warn!(
+            target: "hivemind::api::slack",
+            team_id = %team_id,
+            error = %error,
+            "reaction capture task panicked"
+        ),
+    }
+}
+
+/// The capture is attributed to the user who *reacted* — the actor who took
+/// the action — while the message's own author and timestamp are kept in the
+/// evidence text ([`message_evidence`]), so who wrote the words is not lost.
+fn enqueue_reaction_capture(
+    store: &SlackAppStore,
+    reaction: &ReactionCapture,
+    message: &SlackMessage,
+) -> ApiResult<()> {
+    let install = &reaction.install;
+    let Some(author) = message.user.as_deref() else {
+        info!(
+            target: "hivemind::api::slack",
+            team_id = %install.team_id,
+            "reacted-to message has no user author (posted by an app?); nothing captured"
+        );
+        return Ok(());
+    };
+
+    let fixture = SlackThreadFixture {
+        team_id: install.team_id.clone(),
+        channel_id: reaction.channel.clone(),
+        thread_ts: message
+            .thread_ts
+            .clone()
+            .unwrap_or_else(|| message.ts.clone()),
+        messages: vec![SlackMessageFixture {
+            user_id: author.to_owned(),
+            ts: message.ts.clone(),
+            text: message.text.clone(),
+        }],
+    };
+    let markers: SlackDecisionMarkers = match parse_decision_markers(&fixture) {
+        Ok(markers) => markers,
+        Err(error) => {
+            info!(
+                target: "hivemind::api::slack",
+                team_id = %install.team_id,
+                reason = %error,
+                "reacted-to message is not a decision capture; nothing captured"
+            );
+            return Ok(());
+        }
+    };
+
+    store
+        .enqueue_capture(SlackCaptureRequest {
+            team_id: install.team_id.clone(),
+            user_id: reaction.reactor.clone(),
+            channel_id: reaction.channel.clone(),
+            message_ts: message.ts.clone(),
+            thread_ts: fixture.thread_ts.clone(),
+            permalink: slack_thread_source_ref(&fixture),
+            surface: SlackCaptureSurface::Reaction,
+            reaction_emoji: Some(install.reaction_emoji.clone()),
+            title: markers.title,
+            rationale: markers.rationale,
+            topic_keys: markers.topic_keys,
+            option_labels: markers.option_labels,
+            chosen_option_label: markers.chosen_option_label,
+            thread_text: message_evidence(&message.ts, author, &message.text),
+        })
+        .map(|_| ())
+        .map_err(|e| ApiError::internal(e.to_string()))
 }
 
 /// Builds a single-message [`SlackThreadFixture`] from a live event and
@@ -423,11 +616,7 @@ pub(super) async fn commands_handler(
     let backend = Arc::clone(&state.backend);
     let cache = Arc::clone(&state.graph_cache);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<serde_json::Value> {
-        let install = store
-            .installation(&form.team_id)
-            .map_err(|_| ApiError::unauthorized("invalid slack request signature"))?;
-        verify_slack_signature(&install.signing_secret, &timestamp, &body, &signature)
-            .map_err(|_| ApiError::unauthorized("invalid slack request signature"))?;
+        let install = authenticate_install(&store, &form.team_id, &timestamp, &signature, &body)?;
 
         let tenant_id = TenantId::new(&form.team_id)
             .map_err(|_| ApiError::validation("team_id must not be empty"))?;
@@ -454,18 +643,20 @@ pub(super) async fn commands_handler(
         )
         .map_err(|e| ApiError::internal(e.to_string()))?;
 
-        // `handle_slack_command`'s bare "capture" reply asks the caller to
-        // open a modal descriptor — meaningful for the CLI/testing shim, but
-        // a slash command's synchronous HTTP response cannot open a Slack
-        // modal (that needs `views.open` with the request's `trigger_id`,
-        // an outbound Web API call interactivity would make, not this
-        // route). Rewrite the text so live Slack users see an accurate
-        // message instead of a capture that silently never opens.
+        // `handle_slack_command`'s bare "capture" reply hands back a modal
+        // descriptor — meaningful for the CLI/testing shim, but a slash
+        // command names no message to attach a capture to, so this route
+        // opens no modal. Point at the surfaces that do have one, instead of
+        // claiming a modal that never opens.
         if response.action.as_deref() == Some("open_modal") {
-            response.text = "Decision capture via a Slack modal is coming soon. For now, use \
-                `hivemind emit decision.capture` from the CLI, or `/hivemind query <topic>` / \
-                `/hivemind show <id>` to browse HiveMind decisions."
-                .to_owned();
+            response.text = format!(
+                "To capture a decision from Slack, use the *Capture this thread as a decision* \
+                 message shortcut on the message (its ⋯ menu), or react to a message with \
+                 :{}: when it carries `Decision:`, `Rationale:` and `Options:` lines. From a \
+                 terminal, use `hivemind emit decision.capture`. Browse decisions with \
+                 `/hivemind query <topic>` or `/hivemind show <id>`.",
+                install.reaction_emoji
+            );
             response.action = None;
             response.modal = None;
         }

@@ -19,6 +19,14 @@ use crate::queries::{
 };
 use crate::Result;
 
+mod modal;
+
+pub use modal::{
+    capture_from_modal_submission, capture_message_modal, message_evidence,
+    SlackCaptureModalContext, SlackModalSubmissionError, CAPTURE_MODAL_CALLBACK_ID,
+    CAPTURE_SHORTCUT_CALLBACK_ID,
+};
+
 const APP_DIR: &str = "slack-app";
 const INSTALLS_FILE: &str = "installations.json";
 const QUEUE_FILE: &str = "queue.jsonl";
@@ -414,9 +422,14 @@ pub struct SlackCitation {
     pub source_ref: Option<String>,
 }
 
+/// `interactivity_request_url` is where Slack posts the message shortcut and
+/// its modal's submission — `/v1/slack/interactivity` on the HTTP front door.
+/// Like `event_request_url`, it defaults to `request_url` for the local-first
+/// flow, where one tunnel URL serves everything.
 pub fn slack_app_manifest(
     request_url: &str,
     event_request_url: Option<&str>,
+    interactivity_request_url: Option<&str>,
     redirect_url: Option<&str>,
 ) -> Result<Value> {
     let request_url = non_empty("request_url", request_url)?;
@@ -425,6 +438,13 @@ pub fn slack_app_manifest(
         return Err(
             CommandError::Validation("event_request_url must not be empty".to_owned()).into(),
         );
+    }
+    let interactivity_request_url = interactivity_request_url.unwrap_or(request_url).trim();
+    if interactivity_request_url.is_empty() {
+        return Err(CommandError::Validation(
+            "interactivity_request_url must not be empty".to_owned(),
+        )
+        .into());
     }
     let redirect_urls = redirect_url
         .map(str::trim)
@@ -453,8 +473,8 @@ pub fn slack_app_manifest(
             "shortcuts": [{
                 "name": "Capture this thread as a decision",
                 "type": "message",
-                "callback_id": "hivemind_capture_thread",
-                "description": "Preserve a Slack thread permalink as HiveMind evidence"
+                "callback_id": CAPTURE_SHORTCUT_CALLBACK_ID,
+                "description": "Capture this message as a HiveMind decision"
             }]
         },
         "oauth_config": {
@@ -474,7 +494,7 @@ pub fn slack_app_manifest(
         "settings": {
             "interactivity": {
                 "is_enabled": true,
-                "request_url": request_url
+                "request_url": interactivity_request_url
             },
             "event_subscriptions": {
                 "request_url": event_request_url,
@@ -660,23 +680,10 @@ fn capture_modal_response(install: &SlackWorkspaceInstall, user_id: &str) -> Sla
         text: "Opening HiveMind capture modal.".to_owned(),
         blocks: Vec::new(),
         action: Some("open_modal".to_owned()),
-        modal: Some(json!({
-            "type": "modal",
-            "callback_id": "hivemind_capture_decision",
-            "title": {"type": "plain_text", "text": "HiveMind"},
-            "submit": {"type": "plain_text", "text": "Capture"},
-            "close": {"type": "plain_text", "text": "Cancel"},
-            "private_metadata": {
-                "team_id": install.team_id,
-                "actor_id": slack_actor_id(install, user_id)
-            },
-            "blocks": [
-                input_block("title", "Decision", "plain_text_input"),
-                input_block("rationale", "Rationale", "plain_text_input"),
-                input_block("topics", "Topics", "plain_text_input"),
-                input_block("options", "Options", "plain_text_input")
-            ]
-        })),
+        modal: Some(modal::capture_modal_view(json!({
+            "team_id": install.team_id,
+            "actor_id": slack_actor_id(install, user_id)
+        }))),
     }
 }
 
@@ -689,15 +696,6 @@ fn unknown_command_response(text: &str) -> Result<SlackAppResponse> {
         blocks: Vec::new(),
         action: None,
         modal: None,
-    })
-}
-
-fn input_block(block_id: &str, label: &str, element_type: &str) -> Value {
-    json!({
-        "type": "input",
-        "block_id": block_id,
-        "label": {"type": "plain_text", "text": label},
-        "element": {"type": element_type, "action_id": "value"}
     })
 }
 
