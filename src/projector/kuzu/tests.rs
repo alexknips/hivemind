@@ -477,6 +477,26 @@ fn assert_scenario_columns(graph: &KuzuGraph) -> Result<()> {
     )?;
     assert_eq!(same_as.get("id").cloned(), text("decision:1"));
 
+    let question = row_for(
+        graph,
+        "MATCH (q:`Question` {id: $id}) RETURN q.text AS text, q.normalized_text AS normalized_text;",
+        "question:1",
+    )?;
+    assert_eq!(
+        question.get("text").cloned(),
+        text("Which graph store should slice 1 use?")
+    );
+    assert_eq!(
+        question.get("normalized_text").cloned(),
+        text("which graph store should slice 1 use")
+    );
+    let answers = row_for(
+        graph,
+        "MATCH (d:`Decision` {id: $id})-[:`ANSWERS`]->(q:`Question`) RETURN q.id AS id;",
+        "decision:1",
+    )?;
+    assert_eq!(answers.get("id").cloned(), text("question:1"));
+
     let captured_evidence = graph.query(
         "MATCH (e:`Evidence`) WHERE e.id STARTS WITH 'capture:' RETURN e.topic_keys AS topic_keys;",
         &GraphParams::new(),

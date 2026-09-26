@@ -2,12 +2,13 @@
 //! after the fact, attributed to whoever runs it.
 //!
 //! Every refusal — nothing named, an ambiguous or unmatched target or premise, a premise that
-//! would close a loop — happens before the first write.
+//! would close a loop, a question the decision cannot answer — happens before the first write.
+//! `--answers` names the question the decision answers (hivemind-zdsh.16); it may stand alone.
 
 use std::fmt::Write as _;
 
 use crate::cli::args::{Cli, GroundArgs};
-use crate::cli::render::{format_ground_output, GroundCommandOutput};
+use crate::cli::render::{format_ground_output, GroundAnswerOutput, GroundCommandOutput};
 use crate::commands::{CommandContext, Commands};
 use crate::error::CliError;
 use crate::grounding::{premise_cycle_refusal, GroundingSpec, PremiseTarget};
@@ -23,11 +24,12 @@ use super::{
 
 /// The refusal for a call that names nothing the decision rests on: the four ways to answer and
 /// the existing-node escape hatches.
-const GROUND_REFUSAL: &str = "nothing to ground: name at least one thing the decision rests on; nothing was written. Answer with at least one of: \
+const GROUND_REFUSAL: &str = "nothing to ground: name at least one thing the decision rests on, or the question it answers; nothing was written. Answer with at least one of: \
 --rests-on-decision <description|#N|decision-id> (a decision we already made), \
 --rests-on-evidence <what was observed> with --evidence-source <where> (something observed), \
---rests-on-assumption <statement> (something we assume), or \
---bet [statement] with optional --would-change-if / --check-by (nothing yet: a declared bet). \
+--rests-on-assumption <statement> (something we assume), \
+--bet [statement] with optional --would-change-if / --check-by (nothing yet: a declared bet), or \
+--answers <question> (the question this decision answers). \
 Existing nodes also count: --evidence <id>, --hypotheses <id>";
 
 /// `--confidence` is a capture flag: the decider's own words when the decision was made.
@@ -49,7 +51,21 @@ pub(super) fn run_ground(cli: &Cli, args: &GroundArgs) -> Result<String> {
         &args.evidence_ids,
         &args.hypothesis_ids,
     )?;
-    if spec.is_empty() {
+    let answers = args
+        .answers
+        .as_deref()
+        .map(|text| {
+            let text = text.trim();
+            if text.is_empty() {
+                Err(CliError::InvalidInput(
+                    "--answers must not be empty".to_owned(),
+                ))
+            } else {
+                Ok(text)
+            }
+        })
+        .transpose()?;
+    if spec.is_empty() && answers.is_none() {
         return Err(CliError::InvalidInput(GROUND_REFUSAL.to_owned()).into());
     }
 
@@ -88,7 +104,7 @@ pub(super) fn run_ground(cli: &Cli, args: &GroundArgs) -> Result<String> {
         &ledger,
         CommandContext::new(tenant_id, fluent_write_provenance(&cli.actor)),
     );
-    let added = commands.ground_decision_with_plan(&cli.actor, &decision_id, &resolved.plan)?;
+    let added = commands.ground_and_answer(&cli.actor, &decision_id, &resolved.plan, answers)?;
     let decision_title = get_decision(&graph, &decision_id)?
         .data
         .map(|decision| decision.title);
@@ -102,6 +118,14 @@ pub(super) fn run_ground(cli: &Cli, args: &GroundArgs) -> Result<String> {
             relation_event_ids: added.relation_event_ids,
             rests_on: resolved.label(added.rests_on),
             premise_stale: added.premise_stale,
+            answers: added
+                .question
+                .zip(answers)
+                .map(|(question, text)| GroundAnswerOutput {
+                    question_id: question.question_id,
+                    text: text.to_owned(),
+                    reused: question.reused,
+                }),
         },
     )
 }

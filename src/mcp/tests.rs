@@ -449,6 +449,128 @@ fn capture_decision_stores_paired_quote_and_question() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+fn capture_with_question_request(id: u64, title: &str, question: Option<&str>) -> String {
+    let mut arguments = json!({
+        "grounding": [{"kind": "bet"}],
+        "actor_id": "agent:claude:hivemind-crew",
+        "title": title,
+        "rationale": "Spelled out: the reasons are written here in full sentences.",
+        "topic_keys": ["storage"],
+        "options": [{"label": "Only option"}],
+        "chosen_option_label": "Only option"
+    });
+    if let Some(question) = question {
+        arguments["question"] = json!(question);
+    }
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": { "name": "capture_decision", "arguments": arguments }
+    })
+    .to_string()
+}
+
+#[test]
+fn capture_decision_takes_a_question_alone_and_two_captures_share_its_node() {
+    let dir = unique_dir("question-node");
+    let config = McpConfig::new(&dir).with_session_id("scribe-session");
+
+    let first = capture_with_question_request(
+        1,
+        "Use SQLite for the prototype",
+        Some("Which storage engine should the prototype use?"),
+    );
+    let second = capture_with_question_request(
+        2,
+        "Use Postgres for the prototype",
+        Some("which storage engine should the PROTOTYPE use"),
+    );
+    let neither = capture_with_question_request(3, "Ship the prototype in October", None);
+    let responses = drive(
+        &config,
+        &[first.as_str(), second.as_str(), neither.as_str()],
+    );
+
+    let question_ids: Vec<Option<&str>> = responses
+        .iter()
+        .map(|response| response["result"]["structuredContent"]["question_id"].as_str())
+        .collect();
+    assert!(question_ids[0].is_some_and(|id| id.starts_with("question-")));
+    assert_eq!(
+        question_ids[0], question_ids[1],
+        "one node for one question"
+    );
+    assert_eq!(question_ids[2], None, "no question, no node");
+
+    let ledger = SqliteEventLedger::open(&dir).expect("ledger opens");
+    let events = crate::ledger::EventLedger::read(&ledger, 0, 64).expect("events read");
+    let recorded = events
+        .iter()
+        .filter(|event| event.event_type == crate::events::EventType::QuestionRecorded)
+        .count();
+    assert_eq!(recorded, 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ground_decision_answers_alone_links_the_decision_to_its_question() {
+    let dir = unique_dir("ground-answers");
+    let config = McpConfig::new(&dir).with_session_id("scribe-session");
+
+    let capture = capture_with_question_request(1, "Use SQLite for the prototype", None);
+    let ground = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "ground_decision",
+            "arguments": {
+                "actor_id": "agent:claude:grounder",
+                "description": "Use SQLite for the prototype",
+                "answers": "Which storage engine should the prototype use?"
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[capture.as_str(), ground.as_str()]);
+
+    let reply = &responses[1]["result"];
+    assert_eq!(
+        reply["isError"],
+        serde_json::Value::Bool(false),
+        "{reply:?}"
+    );
+    let answers = &reply["structuredContent"]["answers"];
+    assert!(answers["question_id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("question-")));
+    assert_eq!(answers["reused"], serde_json::Value::Bool(false));
+    assert_eq!(
+        reply["structuredContent"]["rests_on"],
+        json!([]),
+        "the question alone records nothing it rests on"
+    );
+
+    let ledger = SqliteEventLedger::open(&dir).expect("ledger opens");
+    let events = crate::ledger::EventLedger::read(&ledger, 0, 64).expect("events read");
+    let link = events
+        .iter()
+        .find(|event| {
+            event.event_type == crate::events::EventType::RelationAdded
+                && event.payload["relation"] == "ANSWERS"
+        })
+        .expect("the ANSWERS link is recorded");
+    assert_eq!(link.actor_id, "agent:claude:grounder");
+    assert_eq!(
+        link.causation_event_id, None,
+        "attributed later, not at capture"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn write_tools_default_actor_to_configured_agent_session() {
     let dir = unique_dir("default-actor");

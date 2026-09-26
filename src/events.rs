@@ -65,6 +65,10 @@ pub enum EventType {
     EvidenceRecorded,
     #[serde(rename = "hypothesis.recorded")]
     HypothesisRecorded,
+    /// A question that decisions answer, recorded as its own node so several decisions answering
+    /// the same question are findable deterministically (hivemind-zdsh.16).
+    #[serde(rename = "question.recorded")]
+    QuestionRecorded,
     #[serde(rename = "relation.added")]
     RelationAdded,
     #[serde(rename = "relation.removed")]
@@ -397,6 +401,30 @@ pub struct HypothesisRecordedPayload {
     pub would_change_if: Option<String>,
 }
 
+/// A question a decision answers, recorded once so every later decision that answers the same
+/// question shares one node. `text` is the words as first written; the projector derives the
+/// normalized form (`normalize_question_text`) the exact-match reuse compares on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionRecordedPayload {
+    pub question_id: String,
+    pub text: String,
+}
+
+/// The form two spellings of one question are compared in: lowercase, whitespace collapsed to
+/// single spaces, trailing sentence punctuation dropped. Exact match on this form, and nothing
+/// fuzzier, is what lets two captures share a `Question` node: deterministic, no ranking, no
+/// model (hivemind-zdsh.16). A text with no word in it normalizes to the empty string.
+pub fn normalize_question_text(text: &str) -> String {
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    collapsed
+        .to_lowercase()
+        .trim_end_matches(|c: char| {
+            c.is_whitespace() || matches!(c, '?' | '!' | '.' | ',' | ';' | ':' | '…')
+        })
+        .to_owned()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelationKind {
     #[serde(rename = "BASED_ON", alias = "based_on")]
@@ -424,6 +452,10 @@ pub enum RelationKind {
     /// which name a claim about the world, not a decision already made).
     #[serde(rename = "FOLLOWS_FROM", alias = "follows_from")]
     FollowsFrom,
+    /// A decision answers a question (`Decision` -> `Question`). A supersession chain is the same
+    /// question answered again; two accepted answers that choose differently are a conflict.
+    #[serde(rename = "ANSWERS", alias = "answers")]
+    Answers,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -900,6 +932,7 @@ pub enum EventPayload {
     DecisionSuperseded(DecisionSupersededPayload),
     EvidenceRecorded(EvidenceRecordedPayload),
     HypothesisRecorded(HypothesisRecordedPayload),
+    QuestionRecorded(QuestionRecordedPayload),
     RelationAdded(RelationAddedPayload),
     RelationRemoved(RelationRemovedPayload),
     BlockerReported(BlockerReportedPayload),
@@ -928,6 +961,7 @@ impl EventPayload {
             Self::DecisionSuperseded(_) => EventType::DecisionSuperseded,
             Self::EvidenceRecorded(_) => EventType::EvidenceRecorded,
             Self::HypothesisRecorded(_) => EventType::HypothesisRecorded,
+            Self::QuestionRecorded(_) => EventType::QuestionRecorded,
             Self::RelationAdded(_) => EventType::RelationAdded,
             Self::RelationRemoved(_) => EventType::RelationRemoved,
             Self::BlockerReported(_) => EventType::BlockerReported,
@@ -956,6 +990,7 @@ impl EventPayload {
             Self::DecisionSuperseded(payload) => serde_json::to_value(payload),
             Self::EvidenceRecorded(payload) => serde_json::to_value(payload),
             Self::HypothesisRecorded(payload) => serde_json::to_value(payload),
+            Self::QuestionRecorded(payload) => serde_json::to_value(payload),
             Self::RelationAdded(payload) => serde_json::to_value(payload),
             Self::RelationRemoved(payload) => serde_json::to_value(payload),
             Self::BlockerReported(payload) => serde_json::to_value(payload),
@@ -1129,7 +1164,7 @@ pub enum EventValidationError {
     #[error("{0} contains a non-positive event id")]
     InvalidEventIdListValue(&'static str),
 
-    #[error("{0} requires {1} — a verbatim quote with no stated question, or a question with no quote, is unreadable once the source conversation is gone")]
+    #[error("{0} requires {1} — a verbatim quote with no stated question is unreadable once the source conversation is gone")]
     RequiresPairedField(&'static str, &'static str),
 
     #[error("payload.delegated_by must name a human actor (human:<name>), got {0:?}")]
@@ -1167,13 +1202,13 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty_values("payload.evidence_ids", &payload.evidence_ids)?;
             require_optional_non_empty("payload.quote", payload.quote.as_deref())?;
             require_optional_non_empty("payload.question", payload.question.as_deref())?;
-            if payload.quote.is_some() != payload.question.is_some() {
-                let (present, missing) = if payload.quote.is_some() {
-                    ("payload.quote", "payload.question")
-                } else {
-                    ("payload.question", "payload.quote")
-                };
-                return Err(EventValidationError::RequiresPairedField(present, missing));
+            // A quote needs the question it answers; a question stands alone (it names the
+            // `Question` node the decision answers, hivemind-zdsh.16).
+            if payload.quote.is_some() && payload.question.is_none() {
+                return Err(EventValidationError::RequiresPairedField(
+                    "payload.quote",
+                    "payload.question",
+                ));
             }
             require_optional_non_empty("payload.project", payload.project.as_deref())?;
             Ok(EventPayload::DecisionProposed(payload))
@@ -1231,6 +1266,15 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
                 payload.would_change_if.as_deref(),
             )?;
             Ok(EventPayload::HypothesisRecorded(payload))
+        }
+        EventType::QuestionRecorded => {
+            let payload: QuestionRecordedPayload = parse_payload(event)?;
+            require_non_empty("payload.question_id", &payload.question_id)?;
+            require_non_empty("payload.text", &payload.text)?;
+            if normalize_question_text(&payload.text).is_empty() {
+                return Err(EventValidationError::EmptyField("payload.text"));
+            }
+            Ok(EventPayload::QuestionRecorded(payload))
         }
         EventType::RelationAdded => {
             let payload: RelationAddedPayload = parse_payload(event)?;

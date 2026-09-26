@@ -169,10 +169,17 @@ plugins/hivemind-capture/scripts/capture.sh "Keep the retry budget at 3" \
 - Pass `--confidence low|medium|high` only when the decider's own words say how
   sure they are ("pretty sure", "just a guess"). Never your own certainty, never
   inferred from tone. Otherwise omit it.
-- Suggested, never required: open `--rationale` with one line naming the question
-  the decision answers ("Which retry policy for the worker pool?"). When a
-  person's words answer a question you asked, `--question` with `--quote`
-  already carries it.
+- Suggested, never required: name the question the decision answers with
+  `--question` ("Which retry policy for the worker pool?"), one line. It stands
+  alone; a person's words answered it, `--question` with `--quote` carries both.
+  Two captures whose question is the same after lowercasing, collapsing spaces
+  and dropping trailing punctuation share one question node, so a decision that
+  answers the same question again, or answers it differently, is found: the
+  brief shows `also answered by`, and two accepted answers that chose
+  differently are flagged as a conflict. Reuse the exact words when you are
+  answering a question that was already answered; a decision already captured
+  without one can be linked afterwards with `hivemind ground "<decision>" --answers
+  "<question>"`.
 
 ### When the capture is refused
 
@@ -187,7 +194,8 @@ Add the grounding and re-run the same command. Never drop the capture.
   recorded, or you worded it differently: try other words from `recall`. If the
   ground truly is not recorded, answer with what you do have (something
   observed, an assumption, or a bet). Never invent an id.
-- **Quote without question, or the reverse.** The two only work as a pair.
+- **Quote without question.** A quote needs the question it answers. A question
+  stands alone.
 
 If the reply reports `premise_stale`, a decision you named has since been
 superseded or rejected. The capture is recorded and reads as stale; check it
@@ -745,7 +753,10 @@ The four kinds are the same four answers. An ambiguous or unmatched
 `description` comes back as a successful `{outcome: "ambiguous" | "not_found",
 field: "grounding[i]"}` result with nothing written (there is no `#N` over MCP):
 re-call with that item's `decision_id`. The decider's words go in `quote` with
-`question`, and `expressed_confidence` follows the same rule as `--confidence`.
+`question` (the question alone is fine: it names the shared question node, and the
+reply's `question_id` says which), and `expressed_confidence` follows the same
+rule as `--confidence`. To link a decision captured without a question, call
+`ground_decision` with `answers`.
 
 **Always pass `actor_id` explicitly on every write call** when the token is
 shared across more than one session (e.g. one per-role token for a pool of

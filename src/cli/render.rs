@@ -20,7 +20,7 @@ use crate::queries::{
     DecisionsChangedSinceResults, GroundingAdded, GroundingItem, GroundingItemState, GroundingKind,
     GroundingState, HistoryChangeKind, HypothesisStatus, MatchReason, MisfiledDecisionCandidate,
     NeighborhoodView, OutcomeReason, ProjectDecisionsOutcome, ProjectDecisionsPage,
-    ProjectListResults, ProjectMove, ProjectOutcome, QueryResponse, ReadOnlyExport,
+    ProjectListResults, ProjectMove, ProjectOutcome, QueryResponse, QuestionAnswer, ReadOnlyExport,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
     RecentActivityResults, RecentDecisionsResults, ResolveOutcome, SituationalResults,
     SupersessionChain,
@@ -40,8 +40,11 @@ pub(crate) fn render_compact_view_summary(view: &Option<CompactView>) -> String 
         summary_cell(&v.decision.project_label),
         v.decision.rationale,
     );
-    if let (Some(question), Some(quote)) = (&v.decision.question, &v.decision.quote) {
-        out.push_str(&format!("  answers: {question}\n  quote: \"{quote}\"\n"));
+    if let Some(question) = &v.decision.question {
+        out.push_str(&format!("  answers: {question}\n"));
+    }
+    if let Some(quote) = &v.decision.quote {
+        out.push_str(&format!("  quote: \"{quote}\"\n"));
     }
     if let Some(chain) = &v.supersession_chain {
         out.push_str(&format!(
@@ -363,6 +366,21 @@ pub(crate) fn render_situational_summary(results: &SituationalResults) -> String
             }
         }
         output.push('\n');
+        // A newer accepted answer to the question this decision answers, and any accepted
+        // answer that chose differently, sit on their own lines: never folded into `holds`.
+        for newer in &item.newer_answers {
+            let _ = writeln!(
+                output,
+                "answer\tnewer\t{}\t{}",
+                newer.decision_id,
+                format_question_answer(newer)
+            );
+        }
+        for reason in &item.outcome.reasons {
+            if let OutcomeReason::ConflictingAnswer { other_id } = reason {
+                let _ = writeln!(output, "answer\tconflict\t{other_id}");
+            }
+        }
     }
     output.trim_end().to_owned()
 }
@@ -585,9 +603,18 @@ fn write_decision_brief(output: &mut String, brief: &DecisionBrief) {
     );
     let _ = writeln!(output, "  project: {}", summary_cell(&brief.project_label));
     let _ = writeln!(output, "  rationale: {}", summary_cell(&brief.rationale));
-    if let (Some(question), Some(quote)) = (&brief.question, &brief.quote) {
+    if let Some(question) = &brief.question {
         let _ = writeln!(output, "  answers: {}", summary_cell(question));
+    }
+    if let Some(quote) = &brief.quote {
         let _ = writeln!(output, "  quote: \"{}\"", summary_cell(quote));
+    }
+    for other in &brief.other_answers {
+        let _ = writeln!(
+            output,
+            "  also answered by: {}",
+            format_question_answer(other)
+        );
     }
     if let Some(chosen) = &brief.chosen_option {
         let _ = writeln!(output, "  chose: {}", summary_cell(&chosen.label));
@@ -623,7 +650,7 @@ fn write_decision_brief(output: &mut String, brief: &DecisionBrief) {
         let _ = writeln!(
             output,
             "    - {}",
-            format_outcome_reason(reason, &brief.rests_on)
+            format_outcome_reason(reason, &brief.rests_on, &brief.other_answers)
         );
     }
     for unchecked in &brief.still_holds.unchecked {
@@ -710,7 +737,10 @@ fn still_holds_labels(reasons: &[OutcomeReason]) -> Vec<&'static str> {
             OutcomeReason::PremiseSuperseded { .. } => "premise superseded",
             OutcomeReason::PremiseRejected { .. } => "premise rejected",
             OutcomeReason::Contested => "contested",
-            OutcomeReason::ThinStructure { .. } => continue,
+            // A disagreement to resolve, not a reason this decision stopped holding.
+            OutcomeReason::ConflictingAnswer { .. } | OutcomeReason::ThinStructure { .. } => {
+                continue
+            }
         };
         if !labels.contains(&label) {
             labels.push(label);
@@ -719,9 +749,26 @@ fn still_holds_labels(reasons: &[OutcomeReason]) -> Vec<&'static str> {
     labels
 }
 
+/// One decision that answers the same question, as `<title> [status]` plus what it chose.
+fn format_question_answer(answer: &QuestionAnswer) -> String {
+    let mut line = format!(
+        "{} [{}]",
+        summary_cell(&answer.title),
+        decision_status_label(answer.status)
+    );
+    if let Some(chosen) = &answer.chosen_option {
+        let _ = write!(line, " (chose {})", summary_cell(chosen));
+    }
+    line
+}
+
 /// One outcome reason as a sentence. Ids are output handles, so a premise decision is named by
 /// its title when `rests_on` carries it.
-fn format_outcome_reason(reason: &OutcomeReason, rests_on: &[GroundingItem]) -> String {
+fn format_outcome_reason(
+    reason: &OutcomeReason,
+    rests_on: &[GroundingItem],
+    other_answers: &[QuestionAnswer],
+) -> String {
     let named = |id: &str| -> String {
         rests_on.iter().find(|item| item.id == id).map_or_else(
             || id.to_owned(),
@@ -760,6 +807,18 @@ fn format_outcome_reason(reason: &OutcomeReason, rests_on: &[GroundingItem]) -> 
             format!("follows from {}, which was rejected", named(decision_id))
         }
         OutcomeReason::Contested => "contested: accepted and rejected actors disagree".to_owned(),
+        OutcomeReason::ConflictingAnswer { other_id } => {
+            let other = other_answers
+                .iter()
+                .find(|answer| answer.decision_id == *other_id)
+                .map_or_else(
+                    || other_id.clone(), // ubs:ignore: fallback owned copy for the sentence; the reason is only borrowed
+                    |answer| format!("\"{}\"", summary_cell(&answer.title)),
+                );
+            format!(
+                "conflicting answer: {other} is also accepted and answers the same question with a different choice"
+            )
+        }
         OutcomeReason::ThinStructure {
             no_options,
             nothing_declared,
@@ -1086,6 +1145,7 @@ fn event_type_label(event_type: EventType) -> &'static str {
         EventType::DecisionSuperseded => "decision.superseded",
         EventType::EvidenceRecorded => "evidence.recorded",
         EventType::HypothesisRecorded => "hypothesis.recorded",
+        EventType::QuestionRecorded => "question.recorded",
         EventType::RelationAdded => "relation.added",
         EventType::RelationRemoved => "relation.removed",
         EventType::BlockerReported => "blocker.reported",
@@ -1246,12 +1306,16 @@ pub(crate) fn format_ground_output(as_json: bool, output: &GroundCommandOutput) 
     if let Some(title) = &output.decision_title {
         let _ = write!(rendered, " \"{title}\"");
     }
-    let _ = write!(
-        rendered,
-        ": added {} thing(s) it rests on, attributed to {}",
-        output.rests_on.len(),
-        output.actor_id
-    );
+    if output.rests_on.is_empty() && output.answers.is_some() {
+        let _ = write!(rendered, ": attributed to {}", output.actor_id);
+    } else {
+        let _ = write!(
+            rendered,
+            ": added {} thing(s) it rests on, attributed to {}",
+            output.rests_on.len(),
+            output.actor_id
+        );
+    }
     for item in &output.rests_on {
         let kind = match item.kind {
             RestsOnKind::Decision => "decision",
@@ -1267,6 +1331,18 @@ pub(crate) fn format_ground_output(as_json: bool, output: &GroundCommandOutput) 
                 let _ = write!(rendered, "\n  {kind} {}", item.id);
             }
         }
+    }
+    if let Some(answers) = &output.answers {
+        let how = if answers.reused {
+            "existing question"
+        } else {
+            "new question"
+        };
+        let _ = write!(
+            rendered,
+            "\n  answers \"{}\" ({how} {})",
+            answers.text, answers.question_id
+        );
     }
     for premise_id in &output.premise_stale {
         let _ = write!(
@@ -1475,6 +1551,7 @@ pub(crate) fn render_dot(graph: &impl GraphView) -> Result<String> {
                 .unwrap_or_else(|| id.clone()),
             _ => graph_property_string(properties, "content")
                 .or_else(|| graph_property_string(properties, "label"))
+                .or_else(|| graph_property_string(properties, "text"))
                 .unwrap_or_else(|| id.clone()),
         };
 
@@ -1565,6 +1642,7 @@ fn node_dump_query(kind: NodeKind) -> String {
             "node.id AS id, node.label AS label, node.description AS description"
         }
         NodeKind::Hypothesis => "node.id AS id, node.statement AS statement",
+        NodeKind::Question => "node.id AS id, node.text AS text",
         NodeKind::Project => {
             "node.id AS id, node.handle AS handle, node.display_name AS display_name, node.purpose AS purpose, node.anchors AS anchors"
         }
@@ -1622,6 +1700,7 @@ fn node_properties_from_row(kind: NodeKind, row: &GraphRow) -> GraphProperties {
             insert_if_present(&mut properties, row, "description");
         }
         NodeKind::Hypothesis => insert_if_present(&mut properties, row, "statement"),
+        NodeKind::Question => insert_if_present(&mut properties, row, "text"),
         NodeKind::Project => {
             insert_if_present(&mut properties, row, "handle");
             insert_if_present(&mut properties, row, "display_name");
@@ -1659,6 +1738,7 @@ fn node_color(kind: NodeKind) -> &'static str {
         NodeKind::Notification => "#d2b4de",
         NodeKind::Option => "#f9e79f",
         NodeKind::Hypothesis => "#f5cba7",
+        NodeKind::Question => "#d4e6f1",
         NodeKind::Project => "#aed6f1",
     }
 }
@@ -1793,6 +1873,18 @@ pub(crate) struct CaptureCommandOutput {
     pub(crate) project_reminder: Option<String>,
     pub(crate) rests_on: Vec<RestsOn>,
     pub(crate) premise_stale: Vec<String>,
+    /// The question node the decision was linked to, when the capture named a question.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) question_id: Option<String>,
+}
+
+/// The question a `ground --answers` linked the decision to.
+#[derive(Debug, Serialize)]
+pub(crate) struct GroundAnswerOutput {
+    pub(crate) question_id: String,
+    pub(crate) text: String,
+    /// True when the question node already existed; false when this call created it.
+    pub(crate) reused: bool,
 }
 
 /// The `ground` reply: the decision that was grounded and what it now rests on.
@@ -1808,6 +1900,9 @@ pub(crate) struct GroundCommandOutput {
     pub(crate) rests_on: Vec<RestsOn>,
     /// Premise decisions already superseded or rejected when named.
     pub(crate) premise_stale: Vec<String>,
+    /// The question the decision now answers, when `--answers` named one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) answers: Option<GroundAnswerOutput>,
 }
 
 #[derive(Debug, Serialize)]

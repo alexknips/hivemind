@@ -723,7 +723,7 @@ pub struct SupersedeArgs {
 /// `hivemind ground`: give an existing decision what it rests on. Takes the grounding flags of
 /// `emit decision.capture` (`--rests-on-decision`, `--rests-on-evidence` with `--evidence-source`,
 /// `--rests-on-assumption`, `--bet`) except `--confidence`, which is the decider's own words at
-/// capture and cannot be added afterwards.
+/// capture and cannot be added afterwards. `--answers` names the question the decision answers.
 #[derive(Debug, Clone, Args)]
 pub struct GroundArgs {
     /// Free-text description to resolve to the decision being grounded (fluent alternative to
@@ -748,6 +748,13 @@ pub struct GroundArgs {
     /// Existing hypothesis ids this decision rests on (a node recorded earlier).
     #[arg(long = "hypotheses", value_delimiter = ',')]
     pub hypothesis_ids: Vec<String>,
+
+    /// The question this decision answers, for a decision captured without saying: links it to
+    /// the question node whose text matches (lowercase, spaces collapsed, trailing punctuation
+    /// dropped), creating the node if none does. Attributed to whoever runs it, so a reader can
+    /// tell it was added later. May stand alone, or come with what the decision rests on.
+    #[arg(long = "answers")]
+    pub answers: Option<String>,
 
     #[command(flatten)]
     pub grounding: GroundingArgs,
@@ -1140,9 +1147,12 @@ pub struct EmitDecisionProposedArgs {
     #[arg(long = "quote", requires = "question")]
     pub quote: Option<String>,
 
-    /// The question `--quote` answers, spelled out in the capturer's own words. Requires
-    /// `--quote`.
-    #[arg(long = "question", requires = "quote")]
+    /// The question this decision answers, in the capturer's own words: one line. Required by
+    /// `--quote`; otherwise optional. Two captures whose question is the same after lowercasing,
+    /// collapsing spaces and dropping trailing punctuation share one question node, so a
+    /// decision that answers the same question again, or one that answers it differently, is
+    /// findable (hivemind-zdsh.16).
+    #[arg(long = "question")]
     pub question: Option<String>,
 
     /// Registered project handle to file this decision under. An unknown handle is refused

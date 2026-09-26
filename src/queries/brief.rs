@@ -22,6 +22,7 @@ use super::decision::get_decision_with_labels;
 use super::grounding::{grounding_of_at, GroundingItem, GroundingState, UncheckedBet};
 use super::outcome::{get_decision_outcome_with_labels, OutcomeReason};
 use super::project_label::ProjectLabels;
+use super::question::{other_answers, QuestionAnswer};
 use super::shared::{node_row, optional_datetime, optional_string, query_error, query_timer_start};
 use super::status::DecisionStatus;
 use super::QueryResponse;
@@ -79,9 +80,18 @@ pub struct DecisionBrief {
     /// `question` (hivemind-zdsh.13).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quote: Option<String>,
-    /// The question `quote` answers, spelled out.
+    /// The question this decision answers, in the capturer's own words.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
+    /// The `Question` node the decision answers (see `DecisionView::question_id`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question_id: Option<String>,
+    /// Other decisions that answer the same question, in the order they were recorded, each with
+    /// where it stands. A superseded answer is listed too: it is part of the question's history.
+    /// Never resolved for the reader: two accepted answers that choose differently also appear
+    /// as `still_holds.reasons` `conflicting_answer`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub other_answers: Vec<QuestionAnswer>,
     /// Display-only; `event_origin` stays canonical for resolver ranking (SEARCH_DESIGN.md).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub occurred_at: Option<DateTime<Utc>>,
@@ -152,6 +162,11 @@ pub(crate) fn get_decision_brief_with_labels(
         .ok_or_else(|| query_error("decision exists but has no outcome"))?;
     let (occurred_at, expressed_confidence) = decision_capture_facts(graph, decision_id)?;
     let grounding = grounding_of_at(graph, decision_id, now)?;
+    let other_answers = if decision.question_id.is_some() {
+        other_answers(graph, decision_id)?
+    } else {
+        Vec::new()
+    };
 
     let chosen_option = match &decision.chosen_option_id {
         Some(option_id) => Some(resolve_option_label(graph, option_id)?),
@@ -173,6 +188,8 @@ pub(crate) fn get_decision_brief_with_labels(
         rationale: decision.rationale,
         quote: decision.quote,
         question: decision.question,
+        question_id: decision.question_id,
+        other_answers,
         occurred_at,
         chosen_option,
         rejected_options,

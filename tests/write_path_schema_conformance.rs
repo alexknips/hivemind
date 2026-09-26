@@ -493,6 +493,15 @@ fn every_write_path_event_validates_against_its_schema() {
     commands
         .link_follows_from(&old_decision_id, &decision_id, actor)
         .expect("link follows_from");
+    // A later link to a question node: the first decision already answers one at capture
+    // (its `question` above), this one is backfilled (hivemind-zdsh.16).
+    commands
+        .answer_question(
+            actor,
+            &grounded_decision_id,
+            "Which grounding should a decision carry?",
+        )
+        .expect("answer question later");
 
     // -- validate every emitted event against its schemas/v0 file --
     let events = ledger.read(0, 1000).expect("read events");
@@ -509,6 +518,7 @@ fn every_write_path_event_validates_against_its_schema() {
         EventType::DecisionSuperseded,
         EventType::EvidenceRecorded,
         EventType::HypothesisRecorded,
+        EventType::QuestionRecorded,
         EventType::RelationAdded,
         EventType::RelationRemoved,
         EventType::IngestBatchReceived,
@@ -542,6 +552,12 @@ fn every_write_path_event_validates_against_its_schema() {
                 && event.payload["relation"] == "FOLLOWS_FROM"
         }),
         "expected a FOLLOWS_FROM relation.added event"
+    );
+    assert!(
+        events.iter().any(|event| {
+            event.event_type == EventType::RelationAdded && event.payload["relation"] == "ANSWERS"
+        }),
+        "expected an ANSWERS relation.added event"
     );
     assert!(
         events.iter().any(|event| {
@@ -581,6 +597,7 @@ fn schema_file_stem(event_type: EventType) -> &'static str {
         EventType::DecisionSuperseded => "decision.superseded",
         EventType::EvidenceRecorded => "evidence.recorded",
         EventType::HypothesisRecorded => "hypothesis.recorded",
+        EventType::QuestionRecorded => "question.recorded",
         EventType::RelationAdded => "relation.added",
         EventType::RelationRemoved => "relation.removed",
         EventType::BlockerReported => "blocker.reported",

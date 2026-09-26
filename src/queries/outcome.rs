@@ -9,6 +9,11 @@
 //!   premises on has been refuted (a failed bet included), or a prior decision it follows from
 //!   has been superseded or rejected.
 //! - `contested`: the decision has both accepting and rejecting actors, unresolved.
+//! - `conflicting_answer`: another accepted, non-superseded decision answers the same question
+//!   with a different chosen option (hivemind-zdsh.16). Reported on both, never resolved. It does
+//!   not flip `held_up`: neither answer has been shown wrong, and the same question can
+//!   legitimately be answered differently in different projects — it is attention, like an
+//!   overdue bet, so a reader sees the disagreement without either side being marked stale.
 //! - `thin_structure`: no options attached and/or nothing declared about what it rests on
 //!   (never asked — a premise link, evidence, an assumption or a declared bet all count).
 //!
@@ -29,6 +34,7 @@ use super::grounding::{
     grounding_state_of, premise_signals, GroundingState, StalePremise, UncheckedBet,
 };
 use super::project_label::ProjectLabels;
+use super::question::conflicting_answer_ids;
 use super::shared::{
     optional_int, optional_string, query_error, query_superseder, query_timer_start,
     required_string, MAX_QUERY_RESULTS,
@@ -59,6 +65,9 @@ pub enum OutcomeReason {
     PremiseRejected { decision_id: String },
     /// The decision is actively contested: at least one actor accepted it and at least one rejected it.
     Contested,
+    /// Another accepted, non-superseded decision answers the same question with a different
+    /// chosen option. Present on both decisions; the disagreement is surfaced, never resolved.
+    ConflictingAnswer { other_id: String },
     /// The decision has thin structure — no options listed and/or nothing declared about what
     /// it rests on (`nothing_declared`: never asked, as opposed to a declared bet).
     ThinStructure {
@@ -313,6 +322,12 @@ fn derive_outcome(
     let contested = query_contested(graph, decision_id)?;
     if contested {
         reasons.push(OutcomeReason::Contested);
+    }
+
+    // --- Signal: conflicting answers to one question. Attention, not staleness: `held_up`
+    // is unaffected (see the module docs). ---
+    for other_id in conflicting_answer_ids(graph, decision_id)? {
+        reasons.push(OutcomeReason::ConflictingAnswer { other_id });
     }
 
     // --- Signal 4: thin structure ---

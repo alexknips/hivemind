@@ -42,6 +42,20 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   it. Nothing records an acknowledgement yet, so today both settings return the same findings
   as the scan. Same arguments, response shape and refusals as `scan_decision_quality`; no
   score, no tier. (hivemind-m306.4.1)
+- **A decision answers a question, and decisions that answer the same one are findable.**
+  `--question "<one line>"` on `emit decision.capture` (MCP `question`) now names the
+  question the decision answers, and it no longer needs a `--quote`: only a quote needs its
+  question. Two captures whose question is equal after lowercasing, collapsing spaces and
+  dropping trailing punctuation share one question node (a new `question.recorded` event and an
+  `ANSWERS` relation; the capture reply gains `question_id`). The match is exact, with no ranking
+  and no model. `query verify` / `why` print `answers: <question>` and `also answered by: <title>
+  [status]`; two accepted, non-superseded decisions that chose different options are flagged on
+  both as `conflicting_answer` (attention, not staleness: neither is marked stale, nothing is
+  resolved); `query situational` shows a newer accepted answer to the question of a decision it
+  matched. `hivemind ground "<decision>" --answers "<question>"` (MCP `ground_decision` with
+  `answers`) links a decision captured without one, attributed to whoever runs it. Existing
+  ledgers replay unchanged: a decision recorded with question text and no node keeps the text and
+  gets no node. (hivemind-zdsh.16)
 - **`GET /v1/graph` says who decided what and whether it held up.** Every `decisions[]` entry
   carries its derived `status` (`proposed`, `accepted`, `rejected`, `contested`, `superseded`)
   and `deciders` (the actors who accepted it, each with `kind` `human` or `agent`; empty until

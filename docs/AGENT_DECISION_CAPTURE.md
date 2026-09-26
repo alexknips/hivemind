@@ -85,8 +85,8 @@ assumption), and declare a `--bet` when nothing is known.
 `--confidence` comes only from the decider's own words ("pretty sure", "just a
 guess"); an agent's own certainty is never recorded, and the flag is omitted
 otherwise. Saying which question the decision answers is suggested, never
-required: one line at the start of `--rationale`, or `--question` with `--quote`
-when a person's words answered it.
+required: `--question`, one line (MCP `question`), with `--quote` when a person's
+words answered it. See [Which question a decision answers](#which-question-a-decision-answers).
 
 After a refusal (nothing named, an ambiguous premise, no match) the agent adds the
 grounding and re-runs; it never drops the capture. An ambiguous premise is
@@ -186,9 +186,9 @@ into `--rationale`: `--quote "1a" --question "Should a personal project be
 visible to the whole tenant?"`. `--quote` is the decider's own words,
 self-contained; `--question` is what those words answer, spelled out in your
 own words — not a bare reference like `"1a"` that only makes sense next to
-the source conversation. Neither flag works without the other: a quote with
-no stated question is unreadable once the source conversation is gone
-(hivemind-zdsh.13). `--rationale` still carries the self-contained summary of
+the source conversation. A quote needs its question: a quote with no stated
+question is unreadable once the source conversation is gone (hivemind-zdsh.13).
+The question stands alone (hivemind-zdsh.16). `--rationale` still carries the self-contained summary of
 why, independent of any quote.
 
 `--rationale` is refused, on every capture surface (CLI, MCP, REST), unless
@@ -198,6 +198,34 @@ same "1a"/"2. a" shape `--quote`/`--question` exist to carry instead
 (hivemind-763i, follow-up to hivemind-zdsh.13). If the rationale legitimately
 needs one of those tokens (e.g. quoting someone else's outline), pair
 `--quote`/`--question` rather than folding it into `--rationale`.
+
+## Which question a decision answers
+
+`--question "<one line>"` (MCP `question`) names the question the decision
+answers. It is never required, and it does not need a `--quote`. The text is
+kept on the decision exactly as written, and it also names a **question node**:
+two captures whose question is equal after lowercasing, collapsing whitespace
+and dropping trailing punctuation share one node. The match is exact and
+deterministic (no ranking, no model); a question worded differently is a
+different question. The reply's `question_id` names the node.
+
+What sharing buys, in every answer:
+
+- `also answered by: <title> [status]` under the question, one line per other
+  decision that answers it (a superseded answer stays listed: it is the history
+  of the question).
+- Two **accepted**, not superseded decisions that answer one question and
+  chose different options are flagged on both as `conflicting answer`. Neither
+  is marked stale and nothing is resolved: it is a disagreement to settle, not
+  a failure of either decision.
+- `situational` shows a newer accepted answer to the question of a decision it
+  matched.
+
+A decision captured without a question, or before question nodes existed, is
+linked afterwards with `hivemind ground "<decision>" --answers "<question>"`
+(MCP `ground_decision` with `answers`), attributed to whoever runs it. A
+decision answers one question: naming a different one than it already answers
+is refused, and nothing is written.
 
 ## Which project a capture lands in
 
