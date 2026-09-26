@@ -4325,7 +4325,7 @@ mod transport_parity {
         ); // ubs:ignore: test-only assertion
         assert_eq!(
             reply["project_reminder"],
-            "this folder is not attached to a project yet; run hivemind project anchor ... to attach it"
+            "this folder is not attached to a project yet; register the project (hivemind project register <handle>) and commit a .hivemind-project file holding the handle in this folder"
         ); // ubs:ignore: test-only assertion
 
         let _ = std::fs::remove_dir_all(&dir);

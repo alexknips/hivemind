@@ -341,11 +341,12 @@ was determined. You do not work it out: the helper (and the direct
 The confirmation shows the outcome as a `project: <handle> (<how>)` line
 (`folder_marker`, `rig`, `current_project`, `stated`, or `personal_fallback`).
 On the personal fallback it also says the decision was saved to your personal
-project and that the folder is not attached to a project yet, with a hint that
-names `hivemind project anchor`. A folder is really attached by registering the
-project (`hivemind project register <handle>`) and committing a
-`.hivemind-project` file holding the handle; a folder anchor is only recorded and
-never read back. Relay that reminder to the user rather than dropping it: a
+project and that the folder is not attached to a project yet, with the two steps
+that attach it: register the project (`hivemind project register <handle>`) and
+commit a `.hivemind-project` file holding the handle in the folder.
+`hivemind project anchor --kind folder` does not attach a folder: it records a
+fact that a capture never reads back. Relay that reminder to the user rather
+than dropping it: a
 decision left in a personal project is easy to lose track of, and it can be moved
 to the right project later.
 

@@ -292,15 +292,15 @@ the personal fallback comes with one more line, so the way out is next to the
 problem:
 
 ```text
-this folder is not attached to a project yet; run hivemind project anchor ... to attach it
+this folder is not attached to a project yet; register the project (hivemind project register <handle>) and commit a .hivemind-project file holding the handle in this folder
 ```
 
-The line names `project anchor`, but a folder is attached by a marker file, and
-`hivemind project anchor --kind folder` only records a fact about the project:
-nothing reads a folder anchor back and no command writes the marker. Attaching a
-folder is two steps: register the project (`hivemind project register billing`),
-then commit a `.hivemind-project` file containing `billing` at the folder root.
-`--kind rig` is the one anchor a capture does read, for a Gas City rig.
+The line is the whole recipe. Attaching a folder is two steps: register the
+project (`hivemind project register billing`), then commit a `.hivemind-project`
+file containing `billing` at the folder root. `hivemind project anchor --kind
+folder` does not attach a folder: it only records a fact about the project,
+nothing reads a folder anchor back and no command writes the marker. `--kind
+rig` is the one anchor a capture does read, for a Gas City rig.
 
 **What the reply says.** Every capture reply names the project and how it was
 determined. In text mode stdout stays the decision id (followed, as before, by a

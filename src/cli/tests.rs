@@ -8883,7 +8883,7 @@ fn context_ladder_picks_the_nearest_rung_body(backend: &TestBackend) -> CliTestR
             "project": "personal:agent:claude",
             "project_source": "personal_fallback",
             "project_notice": crate::commands::PERSONAL_FALLBACK_NOTICE,
-            "project_reminder": "this folder is not attached to a project yet; run hivemind project anchor ... to attach it",
+            "project_reminder": "this folder is not attached to a project yet; register the project (hivemind project register <handle>) and commit a .hivemind-project file holding the handle in this folder",
         }),
         "the personal fallback names the reminder",
     )?;
@@ -8945,7 +8945,7 @@ fn context_fallback_text_announces_the_project_then_the_reminder() -> CliTestRes
         format!(
             "project: personal:agent:claude (personal_fallback) — {}\n{}\n",
             crate::commands::PERSONAL_FALLBACK_NOTICE,
-            "this folder is not attached to a project yet; run hivemind project anchor ... to attach it",
+            "this folder is not attached to a project yet; register the project (hivemind project register <handle>) and commit a .hivemind-project file holding the handle in this folder",
         )
         .as_str(),
         "the fallback line, then the reminder on its own line",
@@ -9063,7 +9063,7 @@ fn supersede_from_context_follows_the_folder_or_inherits_body(
     )?;
     ensure_eq(
         reply["project_reminder"].as_str(),
-        Some("this folder is not attached to a project yet; run hivemind project anchor ... to attach it"),
+        Some("this folder is not attached to a project yet; register the project (hivemind project register <handle>) and commit a .hivemind-project file holding the handle in this folder"),
         "reminder",
     )
 }

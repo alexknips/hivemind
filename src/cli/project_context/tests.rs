@@ -317,7 +317,7 @@ fn with_nothing_to_go_on_the_personal_fallback_carries_the_reminder() {
     assert_eq!(
         resolved.reminder(true).as_deref(),
         Some(
-            "this folder is not attached to a project yet; run hivemind project anchor ... to attach it"
+            "this folder is not attached to a project yet; register the project (hivemind project register <handle>) and commit a .hivemind-project file holding the handle in this folder"
         )
     );
     assert_eq!(

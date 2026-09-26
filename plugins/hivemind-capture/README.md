@@ -123,14 +123,14 @@ confirmation line says so and how to attach the folder:
 ```text
 Captured HiveMind decision decision-... in ./hivemind.
 project: personal:agent:claude (personal_fallback) — saved to your personal project; ...
-this folder is not attached to a project yet; run hivemind project anchor ... to attach it
+this folder is not attached to a project yet; register the project (hivemind project register <handle>) and commit a .hivemind-project file holding the handle in this folder
 ```
 
-To attach a folder, register the project (`hivemind project register billing`)
-and commit a `.hivemind-project` file containing `billing` in the folder.
-`hivemind project anchor --kind folder` only records a fact about the project;
-the marker file is what a capture reads, and `--kind rig` with the rig's name is
-what binds a Gas City rig.
+The line is the whole recipe: register the project (`hivemind project register
+billing`) and commit a `.hivemind-project` file containing `billing` in the
+folder. `hivemind project anchor --kind folder` only records a fact about the
+project and does not attach the folder; the marker file is what a capture reads,
+and `--kind rig` with the rig's name is what binds a Gas City rig.
 
 A capture from an attached folder confirms with the project and how it was
 found instead, for example `project: billing (folder_marker)`. Evidence and

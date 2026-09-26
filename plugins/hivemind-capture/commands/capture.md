@@ -77,8 +77,9 @@ A decision's confirmation also names its project (`project: billing
 or pass `--project <handle>` only when you were told which project. When the
 confirmation says the decision was saved to the personal project and the folder
 is not attached to a project yet, tell the user, with the attach hint it prints
-(the hint names `hivemind project anchor`; a folder is attached by committing a
-`.hivemind-project` file holding the project handle).
+(a folder is attached by registering the project and committing a
+`.hivemind-project` file holding the project handle; `hivemind project anchor
+--kind folder` does not attach it).
 
 This command is a write-layer path only: it does not query, rank, summarize, or
 infer related decisions itself. Consulting is a separate step you take before

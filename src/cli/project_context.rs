@@ -58,7 +58,7 @@ pub(crate) const PROJECT_MARKER_FILE_NAME: &str = ".hivemind-project";
 /// Shown next to a capture that found no project to attach to, so the personal fallback is
 /// never silent and the way out is in the same message.
 pub(crate) const UNATTACHED_FOLDER_REMINDER: &str =
-    "this folder is not attached to a project yet; run hivemind project anchor ... to attach it";
+    "this folder is not attached to a project yet; register the project (hivemind project register <handle>) and commit a .hivemind-project file holding the handle in this folder";
 
 /// The environment variable every Gas City session carries its rig in.
 const RIG_ENV_VAR: &str = "GC_RIG";

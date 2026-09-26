@@ -224,8 +224,9 @@ fn plugin_capture_outside_any_project_says_it_landed_in_the_personal_project() -
         "the fallback is announced, never silent: {stdout}"
     );
     assert!(
-        stdout
-            .contains("this folder is not attached to a project yet; run hivemind project anchor"),
+        stdout.contains(
+            "this folder is not attached to a project yet; register the project (hivemind project register <handle>) and commit a .hivemind-project file"
+        ),
         "the reminder says how to attach the folder: {stdout}"
     );
 
