@@ -15,7 +15,7 @@ use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 use super::{
     agent_actor_session, normalize_topic_key, personal_project_handle, Commands,
     DecisionProposalInput, DeterminedProject, GroundInput, Grounding, GroundingPlan, NewBet,
-    NewEvidence, RestsOnKind, SupersedeInput, MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN,
+    NewEvidence, RestsOnKind, SupersedeInput, SupersedeOutcome, MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN,
     PERSONAL_FALLBACK_NOTICE,
 };
 
@@ -753,6 +753,7 @@ fn supersede_inherits_old_decision_project_when_not_restated() {
             topic_keys: &["topic".to_owned()],
             option_labels: &["Option A".to_owned()],
             chosen_option_label: Some("Option A"),
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             project: None,
@@ -829,6 +830,7 @@ fn supersede_overrides_project_when_explicitly_stated() {
             topic_keys: &["topic".to_owned()],
             option_labels: &["Option A".to_owned()],
             chosen_option_label: Some("Option A"),
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             project: Some(DeterminedProject::stated("payments")),
@@ -1044,6 +1046,7 @@ fn supersede_reports_the_inherited_or_stated_placement() {
             topic_keys: &["topic".to_owned()],
             option_labels: &["Option A".to_owned()],
             chosen_option_label: Some("Option A"),
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             project,
@@ -1101,6 +1104,7 @@ fn supersede_of_a_personal_fallback_decision_stays_announced() {
             topic_keys: &["topic".to_owned()],
             option_labels: &["Option A".to_owned()],
             chosen_option_label: Some("Option A"),
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             project: None,
@@ -2057,6 +2061,7 @@ fn supersede_rejects_new_title_over_max_length() {
         topic_keys: &[],
         option_labels: &["Replacement".to_owned()],
         chosen_option_label: None,
+        still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],
         grounding: None,
@@ -2300,6 +2305,7 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
             topic_keys: &[],
             option_labels: &["Replacement".to_owned()],
             chosen_option_label: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             grounding: None,
@@ -2317,6 +2323,7 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
             topic_keys: &[],
             option_labels: &["Replacement".to_owned()],
             chosen_option_label: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             grounding: None,
@@ -2353,6 +2360,129 @@ fn supersede_proposes_replacement_marks_old_and_is_idempotent() {
     );
 }
 
+fn supersede_choosing(
+    commands: &Commands<'_, InMemoryEventLedger>,
+    actor_id: &str,
+    old_decision_id: &str,
+    chosen_option_label: Option<&str>,
+    still_proposed: bool,
+) -> SupersedeOutcome {
+    commands
+        .supersede(SupersedeInput {
+            project: None,
+            actor_id,
+            old_decision_id,
+            new_title: "Decision B",
+            new_rationale: "New rationale that explains the replacement decision.",
+            topic_keys: &[],
+            option_labels: &["Replacement".to_owned()],
+            chosen_option_label,
+            still_proposed,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            grounding: None,
+            expressed_confidence: None,
+        })
+        .expect("supersede succeeds")
+}
+
+#[test]
+fn supersede_with_a_chosen_option_accepts_the_replacement_from_the_actor_and_stays_idempotent() {
+    // hivemind-k7o9 (rule H3): a person who replaces a decision and says which option they
+    // chose has decided it. The replacement must not sit at "proposed, not yet decided".
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let old_decision_id = propose_minimal_decision(&commands, "Decision A");
+
+    let outcome = supersede_choosing(
+        &commands,
+        "human:alice",
+        &old_decision_id,
+        Some("Replacement"),
+        false,
+    );
+
+    let accepted = accepted_events(&ledger);
+    assert_eq!(accepted.len(), 1, "exactly one acceptance is recorded");
+    assert_eq!(accepted[0].actor_id, "human:alice");
+    assert_eq!(
+        accepted[0]
+            .payload
+            .get("decision_id")
+            .and_then(|value| value.as_str()),
+        Some(outcome.new_decision_id.as_str()),
+        "the replacement is what was accepted, not the decision it replaced"
+    );
+    assert!(
+        accepted[0].event_id > Some(outcome.superseded_event_id),
+        "the acceptance follows the supersession, so a failure never strands an accepted \
+         replacement that nothing supersedes"
+    );
+
+    let latest_after_first = ledger.latest_offset().expect("latest offset");
+    let retry = supersede_choosing(
+        &commands,
+        "human:alice",
+        &old_decision_id,
+        Some("Replacement"),
+        false,
+    );
+    assert_eq!(retry, outcome);
+    assert_eq!(
+        ledger.latest_offset().expect("latest offset unchanged"),
+        latest_after_first,
+        "an identical retry must not accept the replacement a second time"
+    );
+}
+
+#[test]
+fn supersede_self_accepts_an_agents_chosen_replacement_like_capture_does() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let old_decision_id = propose_minimal_decision(&commands, "Decision A");
+
+    let outcome = supersede_choosing(
+        &commands,
+        "agent:claude:builder",
+        &old_decision_id,
+        Some("Replacement"),
+        false,
+    );
+
+    let accepted = accepted_events(&ledger);
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(accepted[0].actor_id, "agent:claude:builder");
+    assert_eq!(
+        accepted[0]
+            .payload
+            .get("decision_id")
+            .and_then(|value| value.as_str()),
+        Some(outcome.new_decision_id.as_str())
+    );
+}
+
+#[test]
+fn supersede_still_proposed_or_without_a_chosen_option_leaves_the_replacement_proposed() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let old_decision_id = propose_minimal_decision(&commands, "Decision A");
+
+    // A genuine open recommendation: chosen, but explicitly not decided.
+    supersede_choosing(
+        &commands,
+        "human:alice",
+        &old_decision_id,
+        Some("Replacement"),
+        true,
+    );
+    assert!(accepted_events(&ledger).is_empty());
+
+    // Nothing chosen, nothing decided — with or without the flag.
+    supersede_choosing(&commands, "human:alice", &old_decision_id, None, false);
+    supersede_choosing(&commands, "human:alice", &old_decision_id, None, true);
+    assert!(accepted_events(&ledger).is_empty());
+}
+
 #[test]
 fn first_class_disagree_and_supersede_require_existing_targets() {
     let ledger = InMemoryEventLedger::new();
@@ -2371,6 +2501,7 @@ fn first_class_disagree_and_supersede_require_existing_targets() {
             topic_keys: &["Core".to_owned()],
             option_labels: &["Replacement".to_owned()],
             chosen_option_label: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             grounding: None,
@@ -4572,6 +4703,7 @@ fn grounded_supersede_input<'a>(
         topic_keys: &[],
         option_labels: &[],
         chosen_option_label: None,
+        still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],
         grounding: Some(plan),

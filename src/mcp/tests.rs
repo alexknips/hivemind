@@ -872,9 +872,10 @@ fn supersede_decision_tool_marks_old_and_is_idempotent() {
         first_structured["old_decision_status"],
         serde_json::json!("superseded")
     );
+    // The chosen option means the replacement was already decided: it is accepted.
     assert_eq!(
         first_structured["new_decision_status"],
-        serde_json::json!("proposed")
+        serde_json::json!("accepted")
     );
 
     let ledger = SqliteEventLedger::open(&dir).expect("ledger opens");
@@ -2017,8 +2018,8 @@ mod transport_parity {
             );
             assert_eq!(
                 content["new_decision_status"],
-                "proposed", // ubs:ignore: test-only assertion
-                "{name}: new_decision_status"
+                "accepted", // ubs:ignore: test-only assertion
+                "{name}: new_decision_status — a chosen option means the replacement was decided"
             );
             assert!(
                 // ubs:ignore: test-only assertion
@@ -2061,6 +2062,34 @@ mod transport_parity {
                 content["new_decision_status"],
                 "proposed", // ubs:ignore: test-only assertion
                 "{name}: new_decision_status"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn supersede_decision_still_proposed_keeps_a_chosen_replacement_open_across_transports() {
+        let (stdio, http) = run_seeded(
+            "supersede_decision",
+            "supersede-still-proposed",
+            &["Use shared admin token"],
+            json!({
+                "grounding": [{"kind": "bet"}],
+                "description": "shared admin token",
+                "title": "Recommend scoped service tokens",
+                "rationale": "Scoped tokens preserve audit boundaries",
+                "options": [{"label": "scoped-service-tokens"}],
+                "chosen_option_label": "scoped-service-tokens",
+                "still_proposed": true,
+            }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let content = &result["structuredContent"];
+            assert_eq!(
+                content["new_decision_status"],
+                "proposed", // ubs:ignore: test-only assertion
+                "{name}: an open recommendation stays proposed"
             );
         }
     }

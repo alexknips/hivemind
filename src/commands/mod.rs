@@ -325,6 +325,13 @@ pub struct SupersedeInput<'a> {
     pub topic_keys: &'a [String],
     pub option_labels: &'a [String],
     pub chosen_option_label: Option<&'a str>,
+    /// Keep the replacement at `proposed` even though `chosen_option_label` is set, for a
+    /// genuine open recommendation awaiting someone else's decision. Defaults to `false`: as
+    /// for `DecisionProposalInput::still_proposed`, a chosen option means the decision was
+    /// already made, so `supersede` self-accepts the replacement from `actor_id` right after
+    /// recording the supersession. Without a `chosen_option_label` the replacement stays
+    /// `proposed` either way — nothing was decided.
+    pub still_proposed: bool,
     pub hypothesis_ids: &'a [String],
     pub evidence_ids: &'a [String],
     /// Explicit project override for the superseding decision. `None` means "not
@@ -1784,10 +1791,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             chosen_option_id: chosen_option_id.as_deref(),
             decided_by: None,
             delegated_by: None,
-            // Unread here: this goes through `propose_decision_with_id`, which never
-            // auto-accepts (only `propose_decision` does). Superseding decisions stay
-            // `proposed` until separately accepted — out of scope for hivemind-zdsh.8.
-            still_proposed: true,
+            // Only validation reads this: `propose_decision_with_id_and_project` never
+            // auto-accepts (only `propose_decision_detailed` does), so `supersede` below
+            // accepts a chosen replacement itself, once the supersession is on the ledger.
+            still_proposed: input.still_proposed,
             hypothesis_ids,
             evidence_ids,
             // Superseding decisions don't carry a quote/question in this slice
@@ -1860,6 +1867,14 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             input.actor_id,
             Uuid::new_v4(),
         )?;
+
+        // A chosen option means the decision was already made (hivemind-zdsh.8, rule H3):
+        // the replacement is accepted by whoever made it rather than left "not yet decided".
+        // Recorded after the supersession so a failure here never strands an accepted
+        // replacement that nothing supersedes.
+        if !input.still_proposed && chosen_option_id.is_some() {
+            self.accept_decision(&new_decision_id, input.actor_id)?;
+        }
 
         let rests_on = match (input.grounding, &planned) {
             (Some(plan), Some(planned)) => planned.rests_on(&plan.premise_decision_ids),

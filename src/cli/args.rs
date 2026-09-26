@@ -687,8 +687,17 @@ pub struct SupersedeArgs {
     #[arg(long = "options", value_delimiter = ',')]
     pub option_labels: Vec<String>,
 
+    /// The option the replacement chose. Means the decision was already made: the replacement
+    /// is accepted right away, self-accepted from the recording actor (`--actor`), unless
+    /// `--still-proposed` is also given.
     #[arg(long = "chose")]
     pub chosen_option_label: Option<String>,
+
+    /// Keep the replacement at `proposed` even though `--chose` is set, for a genuine open
+    /// recommendation awaiting someone else's decision. Without `--chose` the replacement
+    /// stays `proposed` regardless.
+    #[arg(long = "still-proposed")]
+    pub still_proposed: bool,
 
     #[arg(long = "hypotheses", value_delimiter = ',')]
     pub hypothesis_ids: Vec<String>,

@@ -17,6 +17,10 @@ Run the plugin helper:
 ${CLAUDE_PLUGIN_ROOT}/scripts/supersede.sh $ARGUMENTS
 ```
 
+`--chose <option>` means the replacement was already decided: it is accepted
+from your actor right away. Add `--still-proposed` to keep an open
+recommendation at `proposed`. The confirmation shows `new_status=`.
+
 The replacement's project is worked out from the working folder (or named with
 `--project <handle>`); with none found it stays in the old decision's project.
 The confirmation shows `project=` and `project_source=`.

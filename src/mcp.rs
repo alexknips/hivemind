@@ -557,7 +557,8 @@ pub fn tool_definitions() -> Vec<Value> {
                             ]
                         }
                     },
-                    "chosen_option_label": { "type": "string" },
+                    "chosen_option_label": { "type": "string", "description": "Label of the option the replacement chose; must match one of `options`. Setting this means the decision was already made: the replacement self-accepts from `actor_id` — see `still_proposed` to keep it open instead." },
+                    "still_proposed": { "type": "boolean", "description": "Keep the replacement at `proposed` even though `chosen_option_label` is set, for a genuine open recommendation awaiting someone else's decision. Defaults to false, which self-accepts immediately after recording the supersession." },
                     "grounding": grounding_property(),
                     "expressed_confidence": expressed_confidence_property(),
                     "hypothesis_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"assumption\", hypothesis_id}` grounding items." },

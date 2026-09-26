@@ -467,6 +467,7 @@ fn decisions_in_project_shows_a_superseded_decision_as_superseded() -> Result<()
         topic_keys: &["topic".to_owned()],
         option_labels: &["Per seat".to_owned()],
         chosen_option_label: Some("Per seat"),
+        still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: &[],
         project: None,
@@ -484,9 +485,9 @@ fn decisions_in_project_shows_a_superseded_decision_as_superseded() -> Result<()
         statuses,
         vec![
             (old.as_str(), DecisionStatus::Superseded),
-            // `supersede` proposes the replacement but never auto-accepts it
-            // (commands::HiveMindCommands::supersede, `still_proposed: true`).
-            (outcome.new_decision_id.as_str(), DecisionStatus::Proposed),
+            // A chosen option means the replacement was already decided, so `supersede`
+            // accepts it (commands::Commands::supersede, `still_proposed: false`).
+            (outcome.new_decision_id.as_str(), DecisionStatus::Accepted),
         ],
         "the replacement inherits the project, and the replaced decision says so"
     );

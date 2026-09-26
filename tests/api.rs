@@ -1990,8 +1990,8 @@ async fn graph_decisions_carry_their_status_and_who_decided() {
         (&contested, "contested", serde_json::json!([agent])),
         // Superseded wins over the acceptance, which stays on record.
         (&superseded, "superseded", serde_json::json!([agent])),
-        // A superseding decision starts proposed: supersede records the call, it does not accept it.
-        (&successor, "proposed", serde_json::json!([])),
+        // The replacement named a chosen option, so the agent that superseded decided it.
+        (&successor, "accepted", serde_json::json!([agent])),
     ];
     for (decision_id, status, deciders) in expected {
         let decision = graph_decision(&graph, decision_id);
@@ -2012,6 +2012,46 @@ async fn graph_decisions_carry_their_status_and_who_decided() {
         assert!(decision["status"].is_string(), "no status: {decision}");
         assert!(decision["deciders"].is_array(), "no deciders: {decision}");
     }
+}
+
+#[tokio::test]
+async fn supersede_still_proposed_keeps_a_chosen_replacement_open() {
+    let dir = test_ledger_dir();
+    let old = capture_for_graph(&dir, "Replaced later", Some("Option two"), None).await;
+    let supersede = |title: &str, extra: serde_json::Value| {
+        let mut body = serde_json::json!({
+            "grounding": [{"kind": "bet"}],
+            "title": title,
+            "rationale": "Learned something that changes the call",
+            "topic_keys": ["graph-standing"],
+            "options": ["Option three"],
+            "chosen_option_label": "Option three"
+        });
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        post_json(&format!("/v1/decisions/{old}/supersessions"), body)
+    };
+
+    // A chosen option decides it, unless the caller says it is still a recommendation.
+    let (status, decided) = call(
+        app(dir.clone()),
+        supersede("Decided replacement", serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "supersede: {decided}");
+    assert_eq!(decided["new_decision_status"], "accepted");
+
+    let (status, open) = call(
+        app(dir),
+        supersede(
+            "Recommended replacement",
+            serde_json::json!({ "still_proposed": true }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "supersede: {open}");
+    assert_eq!(open["new_decision_status"], "proposed");
 }
 
 #[tokio::test]

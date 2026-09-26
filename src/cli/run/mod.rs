@@ -1297,6 +1297,7 @@ pub(crate) fn run_supersede_in_context<W: IoWrite>(
         topic_keys: &args.topic_keys,
         option_labels: &args.option_labels,
         chosen_option_label: args.chosen_option_label.as_deref(),
+        still_proposed: args.still_proposed,
         // The plan carries every id; see `SupersedeInput::grounding`.
         hypothesis_ids: &[],
         evidence_ids: &[],
@@ -1483,6 +1484,7 @@ pub(crate) fn run_review_session<R: BufRead, W: IoWrite>(
                         topic_keys: &item.topic_keys,
                         option_labels: &option_labels,
                         chosen_option_label: chosen_option_label.as_deref(),
+                        still_proposed: false,
                         hypothesis_ids: &item.hypothesis_ids,
                         evidence_ids: &item.evidence_ids,
                         grounding: None,

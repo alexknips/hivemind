@@ -138,7 +138,7 @@ fn every_write_path_event_validates_against_its_schema() {
         .expect("disagree");
 
     // -- decision.superseded via supersede() (also exercises a second decision.proposed
-    // without an auto-accept, since supersede never auto-accepts) --
+    // without an auto-accept, since this supersede names no chosen option) --
     let old_option = commands
         .record_option(actor, "Old option", "n/a")
         .expect("record old option");
@@ -173,6 +173,7 @@ fn every_write_path_event_validates_against_its_schema() {
             topic_keys: &[],
             option_labels: &["New option".to_owned()],
             chosen_option_label: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             grounding: None,
@@ -236,6 +237,7 @@ fn every_write_path_event_validates_against_its_schema() {
             topic_keys: &[],
             option_labels: &["Grounded replacement".to_owned()],
             chosen_option_label: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             grounding: Some(&grounding_plan),

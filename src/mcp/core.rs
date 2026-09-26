@@ -993,6 +993,9 @@ pub(crate) struct SupersedeDecisionArgs {
     pub(crate) topic_keys: Vec<String>,
     pub(crate) option_labels: Vec<String>,
     pub(crate) chosen_option_label: Option<String>,
+    /// Keep the replacement at `proposed` even though `chosen_option_label` is set. See
+    /// `still_proposed` on `SupersedeInput`.
+    pub(crate) still_proposed: bool,
     /// What the replacement rests on; see [`CaptureDecisionArgs::grounding`].
     pub(crate) grounding: GroundingSpec,
     pub(crate) expressed_confidence: Option<String>,
@@ -1021,6 +1024,7 @@ impl SupersedeDecisionArgs {
             topic_keys: optional_string_array(args, "topic_keys")?,
             option_labels: optional_option_labels(args, "options")?,
             chosen_option_label: optional_string(args, "chosen_option_label")?,
+            still_proposed: optional_bool(args, "still_proposed")?,
             grounding: require_wire_grounding(args, WIRE_GROUNDING_REFUSAL)?,
             expressed_confidence: optional_string(args, "expressed_confidence")?,
         })
@@ -1078,6 +1082,7 @@ pub(crate) fn supersede_decision<P: LedgerProvider>(
             topic_keys: &args.topic_keys,
             option_labels: &args.option_labels,
             chosen_option_label: args.chosen_option_label.as_deref(),
+            still_proposed: args.still_proposed,
             // The plan carries every id; see `SupersedeInput::grounding`.
             hypothesis_ids: &[],
             evidence_ids: &[],

@@ -945,6 +945,7 @@ mod tests {
             topic_keys: &supersede_topic_keys,
             option_labels: &[],
             chosen_option_label: None,
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             grounding: None,

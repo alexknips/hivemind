@@ -110,6 +110,10 @@ pub(super) struct SupersedeRequest {
     #[serde(default)]
     options: Vec<String>,
     chosen_option_label: Option<String>,
+    /// Keep the replacement at `proposed` even though `chosen_option_label` is set. See
+    /// `still_proposed` on `SupersedeInput`.
+    #[serde(default)]
+    still_proposed: bool,
     /// What the replacement rests on; see `CaptureDecisionRequest::grounding`. Required.
     #[serde(default)]
     grounding: Option<Vec<serde_json::Value>>,
@@ -618,6 +622,7 @@ pub(super) async fn supersede_handler(
                 topic_keys: &req.topic_keys,
                 option_labels: &req.options,
                 chosen_option_label: req.chosen_option_label.as_deref(),
+                still_proposed: req.still_proposed,
                 // The plan carries every id; see `SupersedeInput::grounding`.
                 hypothesis_ids: &[],
                 evidence_ids: &[],

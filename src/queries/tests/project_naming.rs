@@ -106,6 +106,7 @@ fn scenario() -> Result<Scenario> {
             topic_keys: &["pricing".to_owned()],
             option_labels: &["Per seat".to_owned()],
             chosen_option_label: Some("Per seat"),
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             project: Some(DeterminedProject::stated("auth")),

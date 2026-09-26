@@ -78,6 +78,18 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   project is now checked before the first write, and a refused capture appends nothing. Events
   already written that way stay in the ledger; they are unattached nodes, not part of any
   decision. (hivemind-s15q.20)
+- **A supersede that says which option was chosen no longer leaves the replacement "not yet
+  decided".** `hivemind supersede --chose <option>`, `supersede_decision` with
+  `chosen_option_label`, the REST supersede and the interactive `review` supersede recorded the
+  replacement as a proposal nobody had decided, so the only live answer on the question read
+  `proposed`, and every decision that followed from the old one was told it "was superseded by"
+  something undecided. A chosen option now means the replacement was already decided, as it
+  does for `emit decision.capture`: it is accepted from the acting actor right after the
+  supersession is recorded, and `why` shows who decided. `--still-proposed` (`still_proposed`
+  on MCP and REST) keeps a genuine open recommendation at `proposed`. A supersede that names no
+  chosen option decides nothing and still leaves the replacement `proposed`. Supersedes already
+  on the ledger are not rewritten: no acceptance is invented for a person after the fact.
+  (hivemind-k7o9)
 - **Six tools that `POST /mcp` listed now run there.** `recent_decisions`,
   `decision_quality_candidates`, `get_decision_context`, `decision_context_candidates`,
   `scan_misfiled_decisions` and `analyze_failure_modes` were in the HTTP endpoint's `tools/list`

@@ -1019,9 +1019,10 @@ fn supersede_cli_proposes_replacement_marks_old_and_is_idempotent() {
         first_output["old_decision_status"],
         serde_json::json!("superseded")
     );
+    // `--chose` means the replacement was already decided: it is accepted, not left proposed.
     assert_eq!(
         first_output["new_decision_status"],
-        serde_json::json!("proposed")
+        serde_json::json!("accepted")
     );
 
     let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
@@ -1060,6 +1061,68 @@ fn supersede_cli_proposes_replacement_marks_old_and_is_idempotent() {
     assert_eq!(
         ledger.latest_offset().expect("latest offset unchanged"),
         latest_after_first
+    );
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn supersede_cli_still_proposed_keeps_a_chosen_replacement_open() {
+    let hivemind_dir = unique_test_dir("supersede-cli-still-proposed");
+    let old_decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "actor:alice",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Use shared admin token",
+        "--rationale",
+        "Fastest path to ship given the deadline",
+        "--topic-keys",
+        "auth",
+        "--options",
+        "shared-token",
+    ]))
+    .expect("decision proposed");
+
+    let supersede = |title: &str, extra: &[&str]| {
+        let mut args = vec![
+            "hivemind",
+            "--actor",
+            "human:bob",
+            "--json",
+            "--hivemind-dir",
+            hivemind_dir.to_str().expect("utf-8 temp path"),
+            "supersede",
+            "--old",
+            &old_decision_id,
+            "--bet",
+            "--title",
+            title,
+            "--rationale",
+            "Scoped tokens preserve audit boundaries",
+            "--options",
+            "scoped-service-tokens",
+        ];
+        args.extend_from_slice(extra);
+        let output = run(&Cli::parse_from(args)).expect("supersede succeeds");
+        serde_json::from_str::<serde_json::Value>(&output).expect("valid supersede json")
+    };
+
+    let open = supersede(
+        "Recommend scoped service tokens",
+        &["--chose", "scoped-service-tokens", "--still-proposed"],
+    );
+    assert_eq!(open["new_decision_status"], serde_json::json!("proposed"));
+
+    // Nothing was chosen, so nothing was decided: the replacement stays proposed.
+    let undecided = supersede("Consider scoped service tokens", &[]);
+    assert_eq!(
+        undecided["new_decision_status"],
+        serde_json::json!("proposed")
     );
 
     let _ = std::fs::remove_dir_all(&hivemind_dir);

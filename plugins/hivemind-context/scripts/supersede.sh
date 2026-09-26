@@ -6,7 +6,7 @@ usage() {
 Usage:
   supersede.sh "description of the old decision" \
                --title "new decision title" --rationale "why the new direction" \
-               [--topic-keys t,...] [--options o,...] [--chose o] \
+               [--topic-keys t,...] [--options o,...] [--chose o] [--still-proposed] \
                [--hypotheses h,...] [--evidence e,...] \
                (--rests-on-decision "..." | --rests-on-evidence "..." \
                 --evidence-source "..." | --rests-on-assumption "..." | --bet ["..."]) \
@@ -14,6 +14,10 @@ Usage:
                [--project HANDLE] [--old ID] [--pick N] [--topic T]
 
   supersede.sh '#1' --title "..." --rationale "..." --bet   # resolve candidate #1
+
+--chose means the replacement was already decided: it is accepted from your
+actor right away. Add --still-proposed to keep a genuine open recommendation at
+proposed; with no --chose nothing was decided and the replacement stays proposed.
 
 The replacement must say what it rests on (a decision we already made,
 something observed, something assumed, or a declared --bet); a supersede that

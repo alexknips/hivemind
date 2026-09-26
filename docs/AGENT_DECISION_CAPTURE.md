@@ -135,6 +135,13 @@ self-accepts it immediately after proposing, from `--actor` (or from
 actor). Pass `--still-proposed` to keep a genuine open recommendation at
 `proposed` instead of self-accepting it.
 
+`supersede` follows the same rule: `--chose <option>` on a replacement means
+the replacement was already decided, so it is accepted from `--actor` right
+after the supersession is recorded, and `--still-proposed` keeps it open. A
+supersede that names no chosen option decides nothing and leaves the
+replacement `proposed`. MCP `supersede_decision` and REST supersede take
+`still_proposed` with the same meaning.
+
 ### Who decided: three cases
 
 `--decided-by` and `--delegated-by` are how the ledger tells three different
