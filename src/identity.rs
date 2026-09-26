@@ -21,6 +21,12 @@ pub fn default_human_actor_id() -> String {
 }
 
 pub fn default_agent_tool() -> String {
+    agent_tool_from_env().unwrap_or_else(|| "codex".to_owned())
+}
+
+/// The agent tool the environment names or implies, with no fallback: `None` means
+/// nothing in the environment says which agent (if any) is running this process.
+fn agent_tool_from_env() -> Option<String> {
     env_value("HIVEMIND_AGENT_TOOL")
         .or_else(|| env_value("HIVEMIND_TOOL"))
         .or_else(|| {
@@ -40,7 +46,15 @@ pub fn default_agent_tool() -> String {
                 None
             }
         })
-        .unwrap_or_else(|| "codex".to_owned())
+}
+
+/// Whether the environment carries any evidence that an agent, rather than a person at a
+/// terminal, is running this process: a named tool, or a stable or per-run agent session.
+/// `default_agent_tool` and `default_agent_session` fall back to `codex` and `manual-session`
+/// when there is none, which names an agent nobody saw -- so a caller that must not invent
+/// one (a person's `emit decision.capture`, hivemind-6ait) asks this first.
+pub fn agent_present_in_env() -> bool {
+    agent_tool_from_env().is_some() || agent_session_from_env("codex").is_some()
 }
 
 pub fn default_agent_session(tool: &str) -> String {

@@ -4624,6 +4624,205 @@ fn emit_decision_capture_records_human_provenance_when_requested() {
     let _ = std::fs::remove_dir_all(&hivemind_dir);
 }
 
+/// Every ledger event a `decision.capture` wrote for `decision_id`: the proposal, its
+/// fan-out and the acceptance that `--chose` self-issues.
+fn capture_events_for(
+    hivemind_dir: &std::path::Path,
+    decision_id: &str,
+) -> Vec<crate::events::Event> {
+    let ledger = SqliteEventLedger::open(hivemind_dir).expect("ledger opens");
+    ledger
+        .read(0, 100)
+        .expect("events read")
+        .into_iter()
+        // ubs:ignore: public ledger event payload ids are not secrets.
+        .filter(|event| {
+            event
+                .payload
+                .get("decision_id")
+                .and_then(|value| value.as_str())
+                == Some(decision_id)
+        })
+        .collect()
+}
+
+fn capture_with_actor_flag(hivemind_dir: &std::path::Path, actor: &str, title: &str) -> String {
+    let output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        actor,
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.capture",
+        "--bet",
+        "--title",
+        title,
+        "--rationale",
+        "Which build do testers get? Nightly, because they report bugs on fresh code",
+        "--topic-keys",
+        "releases",
+        "--options",
+        "nightly,tagged",
+        "--chose",
+        "nightly",
+    ]))
+    .expect("capture with --actor succeeds");
+    envelope_value(&output)
+}
+
+#[test]
+fn emit_decision_capture_records_a_typed_human_actor_as_the_decider() {
+    // hivemind-6ait: `--actor human:alice` used to be ignored by `decision.capture`, which
+    // derived an agent identity from the environment instead and recorded a person's
+    // decision as an agent's. Whatever the environment says, a typed --actor is believed.
+    let hivemind_dir = unique_test_dir("emit-capture-typed-human-actor");
+    let decision_id = capture_with_actor_flag(
+        &hivemind_dir,
+        "human:alice",
+        "Use nightly builds for testers",
+    );
+
+    let events = capture_events_for(&hivemind_dir, &decision_id);
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == crate::events::EventType::DecisionAccepted),
+        "--chose self-accepts the decision"
+    ); // ubs:ignore: test-only assertion
+    for event in &events {
+        assert_eq!(event.actor_id, "human:alice", "{:?}", event.event_type);
+        assert_eq!(
+            event.source,
+            crate::events::EventSource::Human,
+            "{:?}",
+            event.event_type
+        );
+        assert_eq!(event.source_ref.as_deref(), Some("human:alice"));
+    }
+
+    let verify = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "query",
+        "--summary",
+        "verify",
+        "--id",
+        &decision_id,
+    ]))
+    .expect("verify summary succeeds");
+    assert!(
+        verify.contains("decided by: human:alice (source=human"),
+        "a person's decision reads as the person's: {verify}"
+    ); // ubs:ignore: test-only assertion
+    assert!(
+        !verify.contains("agent:"),
+        "no agent appears on a decision no agent made: {verify}"
+    ); // ubs:ignore: test-only assertion
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn emit_decision_capture_records_a_typed_agent_actor_as_an_agent() {
+    // The typed --actor is believed in both directions: an agent-shaped id is an agent write.
+    let hivemind_dir = unique_test_dir("emit-capture-typed-agent-actor");
+    let decision_id = capture_with_actor_flag(
+        &hivemind_dir,
+        "agent:claude:crew-x",
+        "Use nightly builds for testers",
+    );
+
+    let events = capture_events_for(&hivemind_dir, &decision_id);
+    assert!(!events.is_empty());
+    for event in &events {
+        assert_eq!(
+            event.actor_id, "agent:claude:crew-x",
+            "{:?}",
+            event.event_type
+        );
+        assert_eq!(
+            event.source,
+            crate::events::EventSource::Agent,
+            "{:?}",
+            event.event_type
+        );
+        assert_eq!(event.source_ref.as_deref(), Some("agent:claude:crew-x"));
+    }
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+fn capture_provenance_args(source: Option<DecisionCaptureSource>) -> EmitCaptureProvenanceArgs {
+    EmitCaptureProvenanceArgs {
+        source,
+        agent_tool: None,
+        agent_session: None,
+        actor_id: None,
+        source_ref: None,
+    }
+}
+
+#[test]
+fn decision_capture_actor_is_the_default_actor_when_no_agent_is_present() {
+    // hivemind-6ait: a person at a plain terminal (no --actor typed, no agent in the
+    // environment) is the CLI's default actor -- never an invented agent:codex:manual-session.
+    let mut cli = Cli::parse_from(["hivemind", "query", "recent", "--since", "7d"]);
+    assert!(!cli.actor_given.0, "no --actor was typed");
+    cli.actor = "human:alice".to_owned();
+
+    let (actor_id, provenance) =
+        decision_capture_actor_and_provenance(&cli, &capture_provenance_args(None), false)
+            .expect("actor resolves");
+    assert_eq!(actor_id, "human:alice");
+    assert_eq!(
+        provenance,
+        crate::events::EventProvenance::human("human:alice")
+    );
+}
+
+#[test]
+fn decision_capture_actor_stays_an_agent_when_an_agent_is_present_and_no_actor_is_typed() {
+    // The agent derivation is unchanged where there is an agent to derive it from: the CLI's
+    // default actor is only a guess about who is at the keyboard, so it must not rename it.
+    let mut cli = Cli::parse_from(["hivemind", "query", "recent", "--since", "7d"]);
+    cli.actor = "human:alice".to_owned();
+
+    let (actor_id, provenance) =
+        decision_capture_actor_and_provenance(&cli, &capture_provenance_args(None), true)
+            .expect("actor resolves");
+    assert!(
+        actor_id.starts_with("agent:"),
+        "an agent's capture stays the agent's: {actor_id}"
+    ); // ubs:ignore: test-only assertion
+    assert_eq!(provenance.source, crate::events::EventSource::Agent);
+}
+
+#[test]
+fn decision_capture_provenance_flags_still_win_over_a_typed_actor() {
+    // `--source`/`--actor-id`/`--agent-*` are the fuller form the capture plugins pass.
+    let cli = Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "query",
+        "recent",
+        "--since",
+        "7d",
+    ]);
+    assert!(cli.actor_given.0, "--actor was typed");
+
+    let mut args = capture_provenance_args(Some(DecisionCaptureSource::Agent));
+    args.agent_tool = Some("claude".to_owned());
+    args.agent_session = Some("crew-x".to_owned());
+    let (actor_id, provenance) =
+        decision_capture_actor_and_provenance(&cli, &args, false).expect("actor resolves");
+    assert_eq!(actor_id, "agent:claude:crew-x");
+    assert_eq!(provenance.source, crate::events::EventSource::Agent);
+}
+
 #[test]
 fn ingest_slack_thread_creates_queryable_decision_with_slack_provenance() {
     let hivemind_dir = unique_test_dir("ingest-slack-thread");

@@ -1340,6 +1340,138 @@ fn supersede_script_works_out_the_project_from_the_folder_it_runs_in() -> TestRe
     Ok(())
 }
 
+/// One grounded `emit decision.capture --chose` through the real binary, in an environment
+/// scrubbed down to `extra_env` plus the HOME/PATH git needs, so the ambient agent (if any) is
+/// exactly what the caller says. Returns who the ledger recorded as proposing it and as
+/// accepting it.
+fn capture_through_binary(
+    repo: &Path,
+    hivemind_dir: &Path,
+    actor_flag: Option<&str>,
+    extra_env: &[(&str, &str)],
+    title: &str,
+) -> TestResult<(hivemind::events::Event, hivemind::events::Event)> {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hivemind"));
+    command
+        .current_dir(repo)
+        .env_clear()
+        .env("HOME", repo)
+        .env("PATH", std::env::var("PATH")?)
+        .envs(extra_env.iter().copied());
+    if let Some(actor) = actor_flag {
+        command.args(["--actor", actor]);
+    }
+    let output = command
+        .arg("--json")
+        .arg("--hivemind-dir")
+        .arg(hivemind_dir)
+        .args([
+            "emit",
+            "decision.capture",
+            "--title",
+            title,
+            "--rationale",
+            "Which build do testers get? Nightly, because they report bugs on fresh code",
+            "--topic-keys",
+            "releases",
+            "--options",
+            "nightly,tagged",
+            "--chose",
+            "nightly",
+            "--rests-on-assumption",
+            "Testers tolerate occasional breakage",
+        ])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "capture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output: Value = serde_json::from_slice(&output.stdout)?;
+    let decision_id = output["value"].as_str().expect("decision id").to_owned();
+    let proposal = proposal_event(hivemind_dir, &decision_id)?;
+    let acceptance = SqliteEventLedger::open(hivemind_dir)?
+        .read(0, 100)?
+        .into_iter()
+        .find(|event| {
+            event.event_type == hivemind::events::EventType::DecisionAccepted
+                && event.payload.get("decision_id").and_then(Value::as_str)
+                    == Some(decision_id.as_str())
+        })
+        .ok_or("--chose self-accepts the decision")?;
+    Ok((proposal, acceptance))
+}
+
+#[test]
+fn human_cli_capture_is_recorded_as_the_human_and_an_agent_stays_an_agent() -> TestResult<()> {
+    // hivemind-6ait: `--actor human:alice emit decision.capture` recorded the person's
+    // decision as agent:codex:manual-session (or agent:claude:<alias> under Claude Code).
+    let scratch = unique_temp_dir("hivemind-human-cli-capture")?;
+    let repo = scratch.join("repo");
+    let hivemind_dir = scratch.join("ledger");
+    fs::create_dir_all(&repo)?;
+    run_git(&repo, ["init"])?;
+    run_git(&repo, ["config", "user.email", "Ada.Example@Example.COM"])?;
+
+    struct Case {
+        name: &'static str,
+        actor_flag: Option<&'static str>,
+        env: &'static [(&'static str, &'static str)],
+        expected_actor: &'static str,
+        expected_source: &'static str,
+    }
+    let cases = [
+        Case {
+            name: "a typed --actor at a plain terminal",
+            actor_flag: Some("human:alice"),
+            env: &[],
+            expected_actor: "human:alice",
+            expected_source: "human",
+        },
+        Case {
+            name: "a typed --actor under Claude Code",
+            actor_flag: Some("human:alice"),
+            env: &[("CLAUDE_CODE_SESSION_ID", "sess-1")],
+            expected_actor: "human:alice",
+            expected_source: "human",
+        },
+        Case {
+            name: "no --actor at a plain terminal",
+            actor_flag: None,
+            env: &[],
+            expected_actor: "human:ada.example@example.com",
+            expected_source: "human",
+        },
+        Case {
+            name: "no --actor under Claude Code",
+            actor_flag: None,
+            env: &[("CLAUDE_CODE_SESSION_ID", "sess-1")],
+            expected_actor: "agent:claude:sess-1",
+            expected_source: "agent",
+        },
+    ];
+    for (index, case) in cases.iter().enumerate() {
+        let title = format!("Use nightly builds for testers ({index})");
+        let (proposal, acceptance) =
+            capture_through_binary(&repo, &hivemind_dir, case.actor_flag, case.env, &title)?;
+        for (what, event) in [("proposal", &proposal), ("acceptance", &acceptance)] {
+            require_eq(
+                event.actor_id.as_str(),
+                case.expected_actor,
+                &format!("{}: {what} actor", case.name),
+            )?;
+            require_eq(
+                event.source.as_str(),
+                case.expected_source,
+                &format!("{}: {what} source", case.name),
+            )?;
+        }
+    }
+
+    let _ = fs::remove_dir_all(scratch);
+    Ok(())
+}
+
 fn unique_temp_dir(label: &str) -> TestResult<std::path::PathBuf> {
     let unique = uuid::Uuid::new_v4().to_string();
     let path = std::env::temp_dir().join(format!("{label}-{unique}"));

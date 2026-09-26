@@ -48,6 +48,7 @@ mod migrate_tests {
     fn test_cli(source_dir: std::path::PathBuf, pg_url: String, tenant: String) -> Cli {
         Cli {
             actor: "human:test".to_owned(),
+            actor_given: hivemind::cli::ActorGiven(true),
             tenant: "local".to_owned(),
             json: true,
             database_url: None,
@@ -166,6 +167,7 @@ mod migrate_tests {
 
         let cli = Cli {
             actor: "human:test".to_owned(),
+            actor_given: hivemind::cli::ActorGiven(true),
             tenant: "local".to_owned(),
             json: true,
             database_url: None,
@@ -210,6 +212,7 @@ mod migrate_tests {
 
         let cli = Cli {
             actor: "human:test".to_owned(),
+            actor_given: hivemind::cli::ActorGiven(true),
             tenant: "local".to_owned(),
             json: true,
             database_url: None,

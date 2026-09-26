@@ -1,7 +1,8 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 
-use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
+use clap::parser::ValueSource;
+use clap::{ArgAction, ArgMatches, Args, FromArgMatches, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
 use crate::events::{
@@ -29,6 +30,12 @@ use crate::summarize::DIGEST_MAX_DECISIONS;
     arg_required_else_help = true
 )]
 pub struct Cli {
+    // Declared before `actor` on purpose: clap's derive takes each field's value out of the
+    // matches in declaration order, and `actor` taking its own out first would leave this
+    // nothing to read.
+    #[command(flatten)]
+    pub actor_given: ActorGiven,
+
     #[arg(long, default_value_t = default_actor())]
     pub actor: String,
 
@@ -61,6 +68,37 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// Whether `--actor` was typed on the command line, as opposed to left to fall back to
+/// `HIVEMIND_ACTOR` or the git identity. The fallback is a guess about who is at the keyboard;
+/// only a typed `--actor` is a claim about who is acting, and `emit decision.capture` believes
+/// the one and not the other (hivemind-6ait). Adds no argument of its own: it reads how clap
+/// resolved `--actor`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ActorGiven(pub bool);
+
+impl Args for ActorGiven {
+    fn augment_args(cmd: clap::Command) -> clap::Command {
+        cmd
+    }
+
+    fn augment_args_for_update(cmd: clap::Command) -> clap::Command {
+        cmd
+    }
+}
+
+impl FromArgMatches for ActorGiven {
+    fn from_arg_matches(matches: &ArgMatches) -> Result<Self, clap::Error> {
+        Ok(Self(
+            matches.value_source("actor") == Some(ValueSource::CommandLine),
+        ))
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &ArgMatches) -> Result<(), clap::Error> {
+        *self = Self::from_arg_matches(matches)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
