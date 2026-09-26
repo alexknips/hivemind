@@ -1,0 +1,65 @@
+name: Kuzu nightly
+
+# Builds and tests the optional Kuzu graph backend (`--features graph-kuzu`) on
+# master every night. Not a merge gate: it is not a required status check and
+# no pull request runs it, so a red run never blocks a merge. It shows on the
+# Actions page and in the README badge. See docs/QUALITY_GATES.md → "Kuzu
+# (Nightly)" (hivemind-rjoi).
+#
+# Why nightly and not per change: the `kuzu` crate compiles a bundled C++
+# database through CMake. A cold build is far past what a merge gate can spend
+# (the old per-pull-request job hit its 20-minute timeout, hivemind-oj7qr),
+# and a change that does not touch Kuzu never exercised it, so master's Kuzu
+# backend broke unnoticed (hivemind-cbab). ci.yml runs default features, tui and
+# shared-backend-postgres; this workflow is the only place graph-kuzu is built.
+#
+# Run it on demand with `gh workflow run kuzu-nightly.yml --ref <branch>`.
+
+on:
+  schedule:
+    # 03:17 UTC, off the top of the hour where scheduled runs queue longest.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  kuzu:
+    name: Kuzu backend (graph-kuzu)
+    runs-on: ubuntu-latest
+    # A cold Kuzu build is slow (about 100 minutes on a loaded 12-core host).
+    # 300 leaves ample headroom over that and stays under GitHub's 360-minute
+    # job cap, so a stuck run still ends on its own.
+    timeout-minutes: 300
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # cache-on-failure: the C++ build is the expensive part, and a red test
+      # run must not throw it away, or the next night pays for it again.
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          cache-on-failure: "true"
+
+      # The binary is what `cargo install --features graph-kuzu` ships
+      # (README), so a compile or link failure there is a Kuzu failure. Only
+      # `--bin hivemind`: libkuzu links whole-archive into every binary, and
+      # the other bins add no Kuzu coverage.
+      - name: Build hivemind with graph-kuzu
+        run: cargo build --locked --features graph-kuzu --bin hivemind
+
+      # --lib is the whole Kuzu test surface: every test gated on the feature
+      # lives in the library crate (`projector::kuzu::tests`, the adapter plus
+      # its parity tests against the other backends, and `cli::tests::kuzu_*`,
+      # the `--graph-backend kuzu` path), and the rest of the lib suite runs
+      # here with the feature on. The integration tests are left out: none
+      # touches Kuzu, and each one is another binary with libkuzu linked in
+      # whole. If a Kuzu-gated test ever lands under tests/, add its `--test`.
+      - name: Run tests with graph-kuzu
+        run: cargo test --locked --features graph-kuzu --lib

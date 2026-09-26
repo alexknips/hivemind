@@ -1,6 +1,7 @@
 # HiveMind
 
 [![CI](https://github.com/alexknips/hivemind/actions/workflows/ci.yml/badge.svg)](https://github.com/alexknips/hivemind/actions/workflows/ci.yml)
+[![Kuzu nightly](https://github.com/alexknips/hivemind/actions/workflows/kuzu-nightly.yml/badge.svg?branch=master)](https://github.com/alexknips/hivemind/actions/workflows/kuzu-nightly.yml)
 
 HiveMind is memory for decisions. Your coding agents record what was decided,
 which options lost and why, and who decided, you or the agent. The next session
@@ -209,7 +210,9 @@ cargo test --features graph-kuzu kuzu -- --nocapture
 ```
 
 Only run the Kuzu feature tests when changing the Kuzu adapter or explicit Kuzu
-CLI path. See `docs/ARCHITECTURE.md` for native dependency notes.
+CLI path. CI does not build Kuzu per change; the `Kuzu nightly` workflow builds
+and tests it on `master` every night. See `docs/ARCHITECTURE.md` for native
+dependency notes.
 
 Additional test harnesses:
 

@@ -86,8 +86,11 @@ cargo test --test seed replay_smoke -- --nocapture
 cargo test --test sqlite_wal_multiprocess shared_sqlite_ledger_accepts_concurrent_process_writes -- --nocapture
 ```
 
-The Kuzu feature is optional and not part of the default suite. Only run it
-when changing the Kuzu adapter:
+The Kuzu feature is optional, compiles bundled C++ (a cold build is slow), and
+is not part of the default suite or of any per-change gate. The
+[Kuzu nightly](docs/QUALITY_GATES.md#kuzu-nightly) builds and tests it on
+`master`, so you do not need to build it to submit a change. To iterate on the
+Kuzu adapter locally:
 
 ```bash
 cargo test --features graph-kuzu kuzu -- --nocapture

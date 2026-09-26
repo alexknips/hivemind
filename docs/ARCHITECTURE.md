@@ -182,11 +182,15 @@ a HiveMind service with a remote canonical ledger and projection.
 
 The Rust `kuzu` crate builds bundled native C++ code. Developers should run
 default `cargo test` for routine work. Run `cargo test --features graph-kuzu`
-only when changing the Kuzu adapter or explicit Kuzu CLI path.
+only when changing the Kuzu adapter or explicit Kuzu CLI path. CI does not build
+Kuzu per change: the `Kuzu nightly` workflow builds and tests it on `master`
+(see [Quality Gates](QUALITY_GATES.md#kuzu-nightly)).
 
 `kuzu 0.11.3` depends on `cxx 1.0.138`, and HiveMind pins the optional
 `cxx-build` dependency to the same version so Kuzu's generated bridge symbols
-match the runtime bridge crate. Do not loosen that pin without running:
+match the runtime bridge crate. Do not loosen that pin without a green Kuzu
+build. Run the command below, or dispatch the nightly on the branch
+(`gh workflow run kuzu-nightly.yml --ref <branch>`):
 
 ```bash
 cargo test --features graph-kuzu kuzu -- --nocapture

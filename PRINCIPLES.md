@@ -110,9 +110,11 @@ the bead claimable in the first place.
 
 Refinery merge contract: gates are verified on the **rebased** state before
 merging to master, not just on the polecat branch before it was rebased.
-Defense in depth: polecats verify locally, refinery re-verifies after rebase.
-The mandatory gate set, proof-line format, and reject-back behavior are
-documented in [`docs/QUALITY_GATES.md`](docs/QUALITY_GATES.md).
+Polecats verify locally; the refinery merges only on green CI for the exact
+rebased head. The Kuzu backend, too slow to build per change, is verified
+nightly on master instead of per bead. The mandatory gate set, proof-line
+format, and reject-back behavior are documented in
+[`docs/QUALITY_GATES.md`](docs/QUALITY_GATES.md).
 
 ---
 

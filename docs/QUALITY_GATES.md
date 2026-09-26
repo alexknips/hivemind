@@ -71,9 +71,9 @@ cargo test --locked
 ```
 
 `cargo clippy` here is default-features only. It does not exercise the
-all-features surface (kuzu, tui, shared-backend-postgres) that CI's `ubs` job
-and CI's `tui` / `shared-backend-postgres` matrix legs cover — a clean local
-run is not proof those configurations are clean.
+feature-gated surfaces: CI's `tui` and `shared-backend-postgres` legs cover
+those two, and the [Kuzu nightly](#kuzu-nightly) covers `graph-kuzu`. A clean
+local run is not proof those configurations are clean.
 
 ubs-critical and ubs-warnings run in CI only — see the next section. Do not
 run the local UBS wrapper as part of this checklist; it is no longer a
@@ -164,6 +164,28 @@ Any warning-count growth blocks submission or merge unless the warning is fixed
 or the baseline is explicitly updated by a separate bead that explains why the
 new warning is acceptable.
 
+## Kuzu (Nightly)
+
+Kuzu (`graph-kuzu`) compiles a bundled C++ database. A cold build takes about
+100 minutes on a loaded host, more than a merge gate can spend, so no per-change
+gate builds it: not the polecat, not the refinery, and not the pull-request CI,
+whose `rust` legs run default features, `tui`, and
+`shared-backend-postgres` only. The evidence for the Kuzu backend is
+`.github/workflows/kuzu-nightly.yml`. Every night on `master`, and on demand, it
+builds `hivemind` with `--features graph-kuzu` and runs the library tests with
+the feature on. Those include the Kuzu adapter's parity tests against the other
+backends and the `--graph-backend kuzu` CLI path. The Kuzu build is cached
+between runs.
+
+The nightly is not a merge gate: it is not a required check, and a red run
+never blocks a merge. It shows on the Actions page and in the README badge. The
+accepted cost is that a change that breaks Kuzu can reach `master` and is caught
+the next night, so a red nightly is a defect in `master`: file a bug for each
+distinct failure.
+
+To get the evidence before the next scheduled run, dispatch it:
+`gh workflow run kuzu-nightly.yml --ref master` (or a pushed branch).
+
 ## Workflow Gate (changes touching `.github/workflows/**`)
 
 A diff touching `.github/workflows/**` is a build file change and therefore a
@@ -205,6 +227,14 @@ For a docs-only diff there is no gate to report; say `docs-only: no local gate`.
 Add `workflow-lint: PASS (./scripts/lint-workflows.sh)` to the code-diff list
 whenever the diff touches `.github/workflows/**`; omit the line otherwise.
 
+Add `kuzu: covered by nightly <run url> after merge` to the code-diff list
+whenever the diff changes the Kuzu backend (the adapter in `src/projector/kuzu*`,
+the `graph-kuzu` paths in `src/cli/`, or the `kuzu` / `cxx-build` lines in
+`Cargo.toml`); omit the line otherwise. Do not build Kuzu to fill it in. The
+run that carries the evidence is the first nightly (or dispatch) after the
+merge, so until it exists link the workflow's run list,
+`https://github.com/alexknips/hivemind/actions/workflows/kuzu-nightly.yml`.
+
 If the `ubs` job's critical count is nonzero but entirely explained by
 category-14 (dependency hygiene) findings that `.cargo/audit.toml` already
 allows, say so instead of treating it as a failure, e.g.:
@@ -223,33 +253,36 @@ of merge-ready status until the failure is accounted for.
 
 ## Refinery Contract
 
-Refinery classifies the rebased diff the same way (docs-only vs code) and
-applies the matching gate set above to the rebased state, not just the
-branch-local result — the rebased state is what actually lands on `master`.
+Refinery classifies the rebased diff the same way (docs-only vs code). The
+rebased state is what actually lands on `master`, so the evidence is CI on the
+rebased head: never the polecat's pre-rebase head, and never a run from before
+`master` moved.
 
-- Code Gate Set (fmt, clippy, test): refinery re-runs these
-  locally on the rebased state. They are fast enough to re-run directly.
-- ubs-critical / ubs-warnings: refinery pushes the rebased branch and opens
-  (or reuses) a draft validation PR, waits for the `ubs` job — along with the
-  rest of CI — to go green for that exact head, then treats that as gate
-  evidence before fast-forwarding `master` onto the verified commit. This
-  mirrors the existing pattern for other CI-only gates (`e2e-compose`,
-  `e2e-compose-postgres`) that already cannot run locally.
-- Docs-only rebased diffs skip the Code Gate Set the same way polecats do;
-  there is no local gate to re-run for them.
+- Code diff: refinery pushes the rebased branch, opens (or reuses) a draft
+  validation PR, and waits for the CI run for that exact head. Green CI for that
+  head is the whole gate: every job in `.github/workflows/ci.yml`, among them
+  fmt, clippy and test on each `rust` leg, `ubs`, `dependency-audit`, and the e2e
+  legs. Refinery does not re-run the Code Gate Set locally and does not build
+  Kuzu (see [Kuzu (Nightly)](#kuzu-nightly)). It then fast-forwards `master`
+  onto the verified commit.
+- If `master` moves before the fast-forward, refinery rebases again and waits
+  for CI on the new head; the earlier run no longer counts.
+- Docs-only rebased diffs are unchanged: there is no local gate to re-run for
+  them, exactly as for polecats.
 
-If any gate fails, refinery must not push. It rejects the BR issue back to the
-polecat pool with the failing gate named in both the notes and `MERGE_FAILED`
-comment. A clean rejection includes the source branch, target branch, failing
-command, and the relevant failure summary.
+If CI is red for the rebased head, refinery must not fast-forward `master`. It
+rejects the BR issue back to the polecat pool with the failing job named in both
+the notes and `MERGE_FAILED` comment. A clean rejection includes the source
+branch, target branch, failing job or command, and the relevant failure summary.
 
-On success, the close reason must include the same proof lines used by
-polecats, with results from the rebased state.
+On success, the close reason names the draft validation PR and the rebased head
+it verified (`ci: draft validation PR <url>, all checks green @ <sha>`),
+alongside the polecat's proof lines.
 
 ## Baseline Rule
 
 For polecats, the warning baseline is the target branch state used to start or
-rebase the work. For refinery, the warning baseline is the fetched target
-branch immediately before applying the source branch. This keeps warning growth
-visible and prevents a stale polecat branch from masking regressions introduced
-by rebasing.
+rebase the work. For refinery, the baseline is the one committed in
+`.github/workflows/ci.yml` on the rebased head, which the `ubs` job enforces.
+This keeps warning growth visible and prevents a stale polecat branch from
+masking regressions introduced by rebasing.
