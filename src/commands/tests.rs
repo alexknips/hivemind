@@ -13,7 +13,7 @@ use crate::events::{
 use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
 use super::{
-    agent_actor_session, normalize_topic_key, personal_project_handle, Commands,
+    agent_actor_session, normalize_topic_key, personal_project_handle, Commands, DecisionPlacement,
     DecisionProposalInput, DeterminedProject, GroundInput, Grounding, GroundingPlan, NewBet,
     NewEvidence, RestsOnKind, SupersedeInput, MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN,
     PERSONAL_FALLBACK_NOTICE,
@@ -581,6 +581,9 @@ fn propose_decision_accepts_registered_project_handle_and_records_stated_source(
     commands
         .register_project("actor:alice", "billing", Some("Billing"), None)
         .expect("register succeeds");
+    commands
+        .declare_project_topic("actor:alice", "billing", "topic")
+        .expect("declare topic");
     let option_id = commands
         .record_option("actor:alice", "A", "Option A")
         .expect("option a");
@@ -719,6 +722,9 @@ fn supersede_inherits_old_decision_project_when_not_restated() {
     commands
         .register_project("actor:alice", "billing", None, None)
         .expect("register succeeds");
+    commands
+        .declare_project_topic("actor:alice", "billing", "topic")
+        .expect("declare topic");
     let option_id = commands
         .record_option("actor:alice", "A", "Option A")
         .expect("option a");
@@ -793,8 +799,14 @@ fn supersede_overrides_project_when_explicitly_stated() {
         .register_project("actor:alice", "billing", None, None)
         .expect("register billing succeeds");
     commands
+        .declare_project_topic("actor:alice", "billing", "topic")
+        .expect("declare topic");
+    commands
         .register_project("actor:alice", "payments", None, None)
         .expect("register payments succeeds");
+    commands
+        .declare_project_topic("actor:alice", "payments", "topic")
+        .expect("declare topic");
     let option_id = commands
         .record_option("actor:alice", "A", "Option A")
         .expect("option a");
@@ -868,6 +880,9 @@ impl PlacementFixture {
             commands
                 .register_project("actor:alice", handle, None, None)
                 .expect("register succeeds");
+            commands
+                .declare_project_topic("actor:alice", handle, "topic")
+                .expect("declare topic");
         }
         let option_id = commands
             .record_option("actor:alice", "A", "Option A")
@@ -2863,7 +2878,7 @@ fn move_decision_rejects_stale_from() {
     assert!(message.contains("pricing"), "message was: {message}");
 
     let moves = ledger
-        .read(0, 10)
+        .read(0, 100)
         .expect("read succeeds")
         .into_iter()
         .filter(|event| event.event_type == EventType::DecisionMoved)
@@ -4616,4 +4631,386 @@ proptest! {
             .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'));
         prop_assert!(!normalized.contains("--"));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Project topic vocabulary (hivemind-zywz)
+// ---------------------------------------------------------------------------
+
+/// One capture by `actor:alice` filed under `project` (`None` is the personal fallback) with
+/// `topic_keys`, declaring `declare` on the way, through a fresh `Commands` like one CLI or MCP
+/// call.
+fn capture_with_topics(
+    ledger: &InMemoryEventLedger,
+    project: Option<&str>,
+    topic_keys: &[&str],
+    declare: &[&str],
+) -> crate::Result<(String, DecisionPlacement)> {
+    let owned = |keys: &[&str]| keys.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>();
+    let topic_keys = owned(topic_keys);
+    let declare = owned(declare);
+    let commands = Commands::new(ledger).declaring_topics(&declare);
+    let option_id = commands.record_option("actor:alice", "A", "Option A")?;
+    commands.propose_decision_placed(DecisionProposalInput {
+        grounding: Grounding::NotAsked,
+        expressed_confidence: None,
+        actor_id: "actor:alice",
+        title: "Filed with topics",
+        rationale: "The vocabulary decides which topic keys this capture may carry",
+        topic_keys: &topic_keys,
+        option_ids: std::slice::from_ref(&option_id),
+        option_labels: &["Option A".to_owned()],
+        chosen_option_id: Some(option_id.as_str()),
+        decided_by: None,
+        delegated_by: None,
+        still_proposed: false,
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+        quote: None,
+        question: None,
+        project: project.map(DeterminedProject::stated),
+    })
+}
+
+fn events_of(ledger: &InMemoryEventLedger, event_type: EventType) -> Vec<crate::events::Event> {
+    ledger
+        .read(0, 500)
+        .expect("read events")
+        .into_iter()
+        .filter(|event| event.event_type == event_type)
+        .collect()
+}
+
+fn ledger_with_project(handle: &str) -> InMemoryEventLedger {
+    let ledger = InMemoryEventLedger::new();
+    Commands::new(&ledger)
+        .register_project("actor:alice", handle, None, None)
+        .expect("register succeeds");
+    ledger
+}
+
+#[test]
+fn a_capture_into_a_project_may_only_use_declared_topics() {
+    let ledger = ledger_with_project("billing");
+
+    let error = capture_with_topics(&ledger, Some("billing"), &["pricing"], &[])
+        .expect_err("an undeclared topic must be refused");
+    let message = error.to_string();
+    assert!(message.contains("`pricing` is not declared"), "{message}");
+    assert!(message.contains("project billing"), "{message}");
+    assert!(message.contains("declared: none yet"), "{message}");
+    assert!(
+        message.contains("--declare-topic pricing"),
+        "the refusal must say how to declare: {message}"
+    );
+    assert!(
+        message.contains("hivemind project declare-topic billing pricing"),
+        "the refusal must name the standalone verb: {message}"
+    );
+    assert!(
+        events_of(&ledger, EventType::DecisionProposed).is_empty()
+            && events_of(&ledger, EventType::ProjectTopicDeclared).is_empty(),
+        "a refused capture writes nothing"
+    );
+}
+
+#[test]
+fn the_refusal_lists_what_the_project_has_declared() {
+    let ledger = ledger_with_project("billing");
+    let commands = Commands::new(&ledger);
+    for topic_key in ["invoicing", "pricing"] {
+        commands
+            .declare_project_topic("actor:alice", "billing", topic_key)
+            .expect("declare succeeds");
+    }
+
+    let message = capture_with_topics(&ledger, Some("billing"), &["pricing", "taxes", "fees"], &[])
+        .expect_err("undeclared topics must be refused")
+        .to_string();
+    assert!(
+        message.contains("topics `fees`, `taxes` are not declared"),
+        "every undeclared key is named, once each, in key order: {message}"
+    );
+    assert!(
+        message.contains("declared: invoicing, pricing"),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_capture_declares_the_new_topics_it_says_so_about_and_the_reply_lists_them() {
+    let ledger = ledger_with_project("billing");
+    Commands::new(&ledger)
+        .declare_project_topic("actor:alice", "billing", "auth")
+        .expect("declare succeeds");
+
+    let (_, placement) = capture_with_topics(
+        &ledger,
+        Some("billing"),
+        &["auth", "Pricing Model"],
+        &["pricing model"],
+    )
+    .expect("a capture may declare the key it introduces");
+
+    assert_eq!(placement.declared_topics, vec!["pricing-model".to_owned()]);
+    let events = ledger.read(0, 100).expect("read events");
+    let declared_at = events
+        .iter()
+        .rposition(|event| event.event_type == EventType::ProjectTopicDeclared)
+        .expect("declaration recorded");
+    let proposed_at = events
+        .iter()
+        .position(|event| event.event_type == EventType::DecisionProposed)
+        .expect("proposal recorded");
+    assert!(
+        declared_at < proposed_at,
+        "declared just before the proposal"
+    );
+    let declaration = &events[declared_at];
+    assert_eq!(declaration.actor_id, "actor:alice");
+    assert_eq!(
+        declaration.payload.get("handle").and_then(|v| v.as_str()),
+        Some("billing")
+    );
+    assert_eq!(
+        declaration
+            .payload
+            .get("topic_key")
+            .and_then(|v| v.as_str()),
+        Some("pricing-model"),
+        "the vocabulary holds the normalised key"
+    );
+
+    // Declared once, used freely: the next capture needs no declaration and records none.
+    let (_, second) = capture_with_topics(&ledger, Some("billing"), &["pricing-model"], &[])
+        .expect("a declared topic needs no declaration");
+    assert!(second.declared_topics.is_empty());
+    assert_eq!(events_of(&ledger, EventType::ProjectTopicDeclared).len(), 2);
+}
+
+#[test]
+fn a_capture_that_still_names_an_undeclared_topic_declares_nothing() {
+    let ledger = ledger_with_project("billing");
+
+    capture_with_topics(
+        &ledger,
+        Some("billing"),
+        &["pricing", "taxes"],
+        &["pricing"],
+    )
+    .expect_err("`taxes` is still undeclared");
+
+    assert!(
+        events_of(&ledger, EventType::ProjectTopicDeclared).is_empty(),
+        "a refused capture must not leave half its declarations behind"
+    );
+}
+
+#[test]
+fn a_capture_may_only_declare_topics_it_uses() {
+    let ledger = ledger_with_project("billing");
+
+    let message = capture_with_topics(
+        &ledger,
+        Some("billing"),
+        &["pricing"],
+        &["pricing", "taxes"],
+    )
+    .expect_err("`taxes` is not one of this capture's keys")
+    .to_string();
+    assert!(message.contains("declared topic taxes"), "{message}");
+    assert!(events_of(&ledger, EventType::ProjectTopicDeclared).is_empty());
+}
+
+#[test]
+fn a_personal_project_has_no_vocabulary() {
+    let ledger = InMemoryEventLedger::new();
+
+    let (_, placement) = capture_with_topics(&ledger, None, &["anything-goes"], &[])
+        .expect("a capture with no project accepts any topic");
+    assert_eq!(placement.project_source, ProjectSource::PersonalFallback);
+
+    let message = capture_with_topics(&ledger, None, &["anything-goes"], &["anything-goes"])
+        .expect_err("declaring needs a registered project")
+        .to_string();
+    assert!(
+        message.contains("declared topics need a registered project"),
+        "{message}"
+    );
+}
+
+#[test]
+fn declare_project_topic_normalises_repeats_quietly_and_refuses_bad_targets() {
+    let ledger = ledger_with_project("billing");
+    let commands = Commands::new(&ledger);
+
+    let first = commands
+        .declare_project_topic("actor:alice", "billing", "Pricing Model")
+        .expect("declare succeeds");
+    assert_eq!(first.topic_key, "pricing-model");
+    assert!(first.newly_declared && first.event_id.is_some());
+
+    let again = commands
+        .declare_project_topic("actor:bob", "billing", "pricing_model")
+        .expect("declaring a key the project has succeeds");
+    assert!(!again.newly_declared && again.event_id.is_none());
+    assert_eq!(
+        events_of(&ledger, EventType::ProjectTopicDeclared).len(),
+        1,
+        "a key already declared is not recorded twice"
+    );
+
+    let personal = commands
+        .declare_project_topic("actor:alice", "personal:human:alex", "pricing")
+        .expect_err("a personal project has no vocabulary")
+        .to_string();
+    assert!(
+        personal.contains("personal project has no topic vocabulary"),
+        "{personal}"
+    );
+
+    let unregistered = commands
+        .declare_project_topic("actor:alice", "nosuch", "pricing")
+        .expect_err("an unregistered project has no vocabulary")
+        .to_string();
+    assert!(
+        unregistered.contains("hivemind project register nosuch"),
+        "{unregistered}"
+    );
+
+    let empty = commands
+        .declare_project_topic("actor:alice", "billing", "!!!")
+        .expect_err("a key of no letters or digits is refused")
+        .to_string();
+    assert!(empty.contains("at least one letter or digit"), "{empty}");
+}
+
+#[test]
+fn a_supersede_answers_to_the_vocabulary_of_the_project_it_inherits() {
+    let ledger = ledger_with_project("billing");
+    let (old_decision_id, _) =
+        capture_with_topics(&ledger, Some("billing"), &["pricing"], &["pricing"])
+            .expect("the first capture declares its key");
+    let supersede = |commands: &Commands<'_, InMemoryEventLedger>, topic_keys: &[String]| {
+        commands.supersede(SupersedeInput {
+            actor_id: "actor:alice",
+            old_decision_id: &old_decision_id,
+            new_title: "Price per seat",
+            new_rationale: "Per-seat pricing replaces the flat fee because usage grew",
+            topic_keys,
+            option_labels: &["Per seat".to_owned()],
+            chosen_option_label: Some("Per seat"),
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            project: None,
+            grounding: None,
+            expressed_confidence: None,
+        })
+    };
+
+    let refused = supersede(&Commands::new(&ledger), &["seats".to_owned()])
+        .expect_err("`seats` is not declared for the inherited project")
+        .to_string();
+    assert!(
+        refused.contains("`seats` is not declared for project billing"),
+        "{refused}"
+    );
+
+    let declared = ["seats".to_owned()];
+    let outcome = supersede(
+        &Commands::new(&ledger).declaring_topics(&declared),
+        &["seats".to_owned()],
+    )
+    .expect("a supersede may declare the key it introduces");
+    assert_eq!(outcome.placement.declared_topics, vec!["seats".to_owned()]);
+}
+
+#[test]
+fn a_grounded_capture_refused_for_its_topics_leaves_no_orphan_nodes() {
+    let ledger = ledger_with_project("billing");
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    let labels = ["A".to_owned()];
+    let topics = ["pricing".to_owned()];
+
+    commands
+        .propose_grounded_decision(
+            DecisionProposalInput {
+                project: Some(DeterminedProject::stated("billing")),
+                ..grounded_input(&option_id, &labels, &topics, "Price per seat")
+            },
+            &GroundingPlan {
+                premise_decision_ids: Vec::new(),
+                evidence_ids: Vec::new(),
+                hypothesis_ids: Vec::new(),
+                new_evidence: vec![NewEvidence {
+                    content: "Usage doubled in Q3".to_owned(),
+                    source: None,
+                }],
+                new_assumptions: vec!["Usage keeps growing".to_owned()],
+                bet: None,
+            },
+        )
+        .expect_err("`pricing` is not declared for billing");
+
+    assert!(
+        events_of(&ledger, EventType::EvidenceRecorded).is_empty()
+            && events_of(&ledger, EventType::HypothesisRecorded).is_empty(),
+        "the vocabulary is checked before the grounding nodes are recorded"
+    );
+}
+
+#[test]
+fn declare_topics_in_use_adopts_what_the_decisions_now_in_the_project_carry() {
+    let ledger = ledger_with_project("billing");
+    Commands::new(&ledger)
+        .register_project("actor:alice", "platform", None, None)
+        .expect("register succeeds");
+    let (staying, _) = capture_with_topics(&ledger, None, &["pricing", "invoicing"], &[])
+        .expect("personal captures have no vocabulary");
+    let (leaving, _) = capture_with_topics(&ledger, None, &["legacy"], &[])
+        .expect("personal captures have no vocabulary");
+
+    // A move never checks the destination's vocabulary: correcting where a decision lives
+    // must not be refused for the keys it was captured with.
+    let commands = Commands::new(&ledger);
+    commands
+        .move_decision_to("actor:alice", &staying, "billing", None)
+        .expect("a move is not refused for undeclared topics");
+    commands
+        .move_decision_to("actor:alice", &leaving, "billing", None)
+        .expect("moved in");
+    commands
+        .move_decision_to("actor:alice", &leaving, "platform", None)
+        .expect("and moved out again");
+
+    let declared = commands
+        .declare_topics_in_use("actor:bob", "billing")
+        .expect("adoption succeeds");
+    let keys: Vec<&str> = declared.iter().map(|d| d.topic_key.as_str()).collect();
+    assert_eq!(
+        keys,
+        vec!["invoicing", "pricing"],
+        "the keys of the decisions now in the project, in key order; `legacy` left with its decision"
+    );
+    assert!(declared
+        .iter()
+        .all(|declaration| declaration.newly_declared));
+    let recorded = events_of(&ledger, EventType::ProjectTopicDeclared);
+    assert!(
+        recorded.iter().all(|event| event.actor_id == "actor:bob"),
+        "adopted by the actor who ran it"
+    );
+
+    assert!(
+        commands
+            .declare_topics_in_use("actor:bob", "billing")
+            .expect("second adoption succeeds")
+            .is_empty(),
+        "nothing left to adopt"
+    );
+    capture_with_topics(&ledger, Some("billing"), &["pricing"], &[])
+        .expect("an adopted topic is usable");
 }

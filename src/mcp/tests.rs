@@ -2542,6 +2542,11 @@ mod transport_parity {
                 commands
                     .register_project("human:parity", handle, None, None)
                     .expect("register project"); // ubs:ignore: test-only; panicking is correct in tests
+                                                 // A project's topic vocabulary is explicit (hivemind-zywz): declare the topic
+                                                 // `capture_args` uses, so a test that is not about topics can file under it.
+                commands
+                    .declare_project_topic("human:parity", handle, "billing")
+                    .expect("declare topic"); // ubs:ignore: test-only; panicking is correct in tests
             }
         }
         (stdio_dir, http_dir)
@@ -2674,6 +2679,75 @@ mod transport_parity {
             error_text(&stdio["result"]),
             error_text(&http["result"]),
             "both transports refuse with the same words"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn capture_decision_declares_new_topics_only_when_it_says_so_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs("capture-declare-topics", &["billing"]);
+        let with_pricing = |extra: Value| {
+            with_args(
+                capture_args("Adopt per-seat pricing"),
+                with_args(
+                    json!({ "project": "billing", "topic_keys": ["billing", "pricing"] }),
+                    extra,
+                ),
+            )
+        };
+
+        let stdio_refused = stdio_call(&stdio_dir, "capture_decision", with_pricing(json!({})));
+        let http_refused = http_call(&http_dir, "capture_decision", with_pricing(json!({}))).await;
+        for (name, response, dir) in [
+            ("stdio", &stdio_refused, &stdio_dir),
+            ("http", &http_refused, &http_dir),
+        ] {
+            let result = &response["result"];
+            assert_eq!(
+                result["isError"], true,
+                "{name}: an undeclared topic is refused"
+            ); // ubs:ignore: test-only assertion
+            let text = error_text(result);
+            assert!(
+                text.contains("`pricing` is not declared for project billing")
+                    && text.contains("declared: billing")
+                    && text.contains("declare_topics"),
+                "{name}: the refusal names the key, the vocabulary and the argument: {text}"
+            ); // ubs:ignore: test-only assertion
+            assert!(
+                proposed_payloads(dir).is_empty(),
+                "{name}: a refused capture writes nothing"
+            ); // ubs:ignore: test-only assertion
+        }
+        assert_eq!(
+            error_text(&stdio_refused["result"]),
+            error_text(&http_refused["result"]),
+            "both transports refuse with the same words"
+        ); // ubs:ignore: test-only assertion
+
+        let extra = json!({ "declare_topics": ["pricing"] });
+        let stdio_ok = stdio_call(&stdio_dir, "capture_decision", with_pricing(extra.clone()));
+        let http_ok = http_call(&http_dir, "capture_decision", with_pricing(extra)).await;
+        for (name, response) in [("stdio", &stdio_ok), ("http", &http_ok)] {
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{name}: {result:?}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["declared_topics"],
+                json!(["pricing"]),
+                "{name}: the reply says what the capture declared"
+            ); // ubs:ignore: test-only assertion
+        }
+
+        // Declared once, used freely: nothing more to say.
+        let again = stdio_call(&stdio_dir, "capture_decision", with_pricing(json!({})));
+        assert_eq!(again["result"]["isError"], false, "{again:?}"); // ubs:ignore: test-only assertion
+        assert!(
+            again["result"]["structuredContent"]
+                .get("declared_topics")
+                .is_none(),
+            "{again:?}"
         ); // ubs:ignore: test-only assertion
 
         let _ = std::fs::remove_dir_all(&stdio_dir);
@@ -3860,6 +3934,68 @@ mod transport_parity {
                 (json!("payments"), json!("stated")),
             ],
             "the ledger records each project and how it was determined"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&tree);
+    }
+
+    #[test]
+    fn stdio_capture_from_a_rig_the_ledger_has_no_project_for_is_refused_and_a_supersede_inherits()
+    {
+        let dir = context_ledger("capture-wrong-ledger");
+        let tree = context_tree("capture-wrong-ledger");
+
+        // `beadline` is not anchored to any project here: the wrong ledger, so no capture and
+        // nothing filed under the personal project.
+        let refused = stdio_call_from(
+            &dir,
+            tree.join("elsewhere"),
+            Some("beadline"),
+            "capture_decision",
+            capture_args("Adopt async beadline queue"),
+        );
+        assert_eq!(refused["result"]["isError"], true, "{refused:?}"); // ubs:ignore: test-only assertion
+        let text = error_text(&refused["result"]);
+        assert!(
+            text.contains("rig `beadline`")
+                && text.contains("wrong ledger")
+                && text.contains(
+                    "hivemind project anchor --handle <project> --kind rig --value beadline"
+                ),
+            "{text}"
+        ); // ubs:ignore: test-only assertion
+        assert!(proposed_payloads(&dir).is_empty(), "nothing was filed"); // ubs:ignore: test-only assertion
+
+        // A supersede's project is the old decision's, which is in this ledger by construction.
+        let old = stdio_call(
+            &dir,
+            "capture_decision",
+            with_args(
+                capture_args("Use one shared admin token"),
+                json!({ "project": "billing" }),
+            ),
+        );
+        let old_id = old["result"]["structuredContent"]["decision_id"]
+            .as_str()
+            .expect("decision id") // ubs:ignore: test-only; panicking is correct in tests
+            .to_owned();
+        let superseded = stdio_call_from(
+            &dir,
+            tree.join("elsewhere"),
+            Some("beadline"),
+            "supersede_decision",
+            json!({
+                "old_decision_id": old_id,
+                "title": "Use per-service tokens",
+                "rationale": "One shared token cannot be rotated without an outage",
+                "grounding": [{"kind": "bet"}],
+            }),
+        );
+        assert_eq!(superseded["result"]["isError"], false, "{superseded:?}"); // ubs:ignore: test-only assertion
+        assert_eq!(
+            superseded["result"]["structuredContent"]["project"], "billing",
+            "{superseded:?}"
         ); // ubs:ignore: test-only assertion
 
         let _ = std::fs::remove_dir_all(&dir);

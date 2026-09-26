@@ -45,6 +45,37 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   Opens no ledger and writes no event; there is no MCP tool for it. Documented in
   `docs/SELF_HOSTING.md`. (hivemind-jro0)
 
+### Changed
+
+- **A capture under a registered project may use only the topic keys that project has
+  declared.** A topic says what a decision is about; left free, every capture invents its
+  own keys and recall by topic becomes a lottery. Keys are lowercase kebab (as before), and
+  a project's vocabulary grows only when someone says so: a capture's `--declare-topic`
+  (MCP `declare_topics`) for a key it uses, or `hivemind project declare-topic <handle>
+  <key>...`. The reply lists what a capture declared; a capture that uses an undeclared key
+  is refused before anything is written, naming the keys, what the project has and how to
+  declare. `hivemind project show` lists a project's keys. A project that already has
+  decisions adopts what they use with `hivemind project declare-topic <handle> --in-use`.
+  Personal projects and captures with no project have no vocabulary and are unchanged. A new
+  ledger event, `project.topic_declared`, records each declaration (upgrade the server
+  before writing one); no existing event changes. Captures into a registered project that
+  omit `--declare-topic` for a new key are refused, so callers that invent keys need the
+  flag. (hivemind-zywz)
+- **A capture from a rig the ledger has no project for is refused, not filed under your
+  personal project.** With `--project-from-context` (the capture plugins, `hivemind mcp
+  --project-from-context`), a session in a Gas City rig that no project in the ledger is
+  anchored to is writing to the wrong ledger, which is how a rig's decisions ended up in
+  another ledger. The refusal names the rig, the ledger (tenant and local directory or shared
+  database, never a credential) and the ways out. A folder marker, a rig anchor or a current
+  project still wins first; a supersede inherits the replaced decision's project and is not
+  refused. (hivemind-zywz)
+- **`scan_misfiled_decisions` says where each decision is filed and where it belongs.** Each
+  candidate carries its `project`; `--project` limits the report to decisions filed exactly
+  under one project (an unregistered handle is refused, never an empty report) and
+  `--move-to <project>` names the destination, skips decisions already there and gives each
+  text row the `hivemind move --decision <id> --to <project>` that moves it. Still a report:
+  it moves nothing. (hivemind-zywz)
+
 ### Fixed
 
 - **"Why did we pick / choose / go with X?" answers in one step.** The verbs people ask about a

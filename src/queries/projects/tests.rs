@@ -241,6 +241,14 @@ impl<'a> DecisionRecorder<'a> {
         project: Option<&str>,
         still_proposed: bool,
     ) -> Result<String> {
+        // A registered project's vocabulary is explicit (hivemind-zywz): declare the one
+        // topic these fixtures use before capturing under it.
+        if let Some(handle) = project {
+            for topic_key in &self.topic_keys {
+                self.commands
+                    .declare_project_topic(actor_id, handle, topic_key)?;
+            }
+        }
         self.commands.propose_decision(DecisionProposalInput {
             actor_id,
             title,
@@ -715,4 +723,161 @@ fn get_project_ancestries_refuses_an_empty_handle() {
         get_project_ancestries(&ledger, &["  ".to_owned()]).is_err(),
         "an empty handle is a malformed question, not a miss"
     );
+}
+
+#[test]
+fn project_show_lists_the_declared_topics_and_where_each_was_declared() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands.register_project("human:alice", "billing", None, None)?;
+    let first = commands.declare_project_topic("human:alice", "billing", "Pricing")?;
+    commands.declare_project_topic("human:bob", "billing", "auth")?;
+    // A key already there is not a second fact.
+    commands.declare_project_topic("human:bob", "billing", "pricing")?;
+    commands.register_project("human:alice", "platform", None, None)?;
+
+    let billing = match get_project(&ledger, "billing")?.data {
+        ProjectOutcome::Found { project } => project,
+        other => panic!("expected Found, got {other:?}"),
+    };
+    let keys: Vec<&str> = billing
+        .topics
+        .iter()
+        .map(|topic| topic.topic_key.as_str())
+        .collect();
+    assert_eq!(keys, vec!["auth", "pricing"], "in key order, each once");
+    let pricing = billing
+        .topics
+        .iter()
+        .find(|topic| topic.topic_key == "pricing")
+        .expect("pricing declared");
+    assert_eq!(
+        Some(pricing.event_origin),
+        first
+            .event_id
+            .map(|event_id| i64::try_from(event_id).expect("offset fits")),
+        "the origin is the declaration that added the key"
+    );
+
+    let platform = match get_project(&ledger, "platform")?.data {
+        ProjectOutcome::Found { project } => project,
+        other => panic!("expected Found, got {other:?}"),
+    };
+    assert!(
+        platform.topics.is_empty(),
+        "another project's keys are not its own"
+    );
+
+    let personal = match get_project(&ledger, "personal:human:alice")?.data {
+        ProjectOutcome::Found { project } => project,
+        other => panic!("expected Found, got {other:?}"),
+    };
+    assert!(
+        personal.topics.is_empty(),
+        "a personal project has no vocabulary"
+    );
+
+    let listed = list_projects(&ledger, &ProjectListRequest::default())?;
+    let billing_listed = listed
+        .data
+        .items
+        .iter()
+        .find(|project| project.handle == "billing")
+        .expect("billing listed");
+    assert_eq!(billing_listed.topics.len(), 2, "the list carries them too");
+
+    Ok(())
+}
+
+#[test]
+fn the_misfiled_report_is_scoped_to_a_project_names_the_move_and_is_clean_after_it() -> Result<()> {
+    use crate::queries::{
+        require_registered_project, scan_misfiled_decisions, MisfiledScanRequest,
+    };
+
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands.register_project("human:alice", "beadline", None, None)?;
+    commands.register_project("human:alice", "company", None, None)?;
+    let recorder = DecisionRecorder::new(&commands)?;
+    let stray = recorder.record("human:alice", "Filed nowhere in particular", None)?;
+    let in_company = recorder.record("human:alice", "Filed under company", Some("company"))?;
+    let in_beadline =
+        recorder.record("human:alice", "Already where it belongs", Some("beadline"))?;
+
+    let scan = |project: Option<&str>, move_to: Option<&str>, graph: &MemoryGraph| {
+        scan_misfiled_decisions(
+            graph,
+            &MisfiledScanRequest {
+                foreign_topic_keys: vec!["topic".to_owned()],
+                project: project.map(ToOwned::to_owned),
+                move_to: move_to.map(ToOwned::to_owned),
+                limit: 100,
+                cursor: None,
+            },
+        )
+    };
+    let ids = |rows: &[crate::queries::MisfiledDecisionCandidate]| {
+        rows.iter()
+            .map(|row| row.decision_id.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let graph = graph_of(&ledger)?;
+    let everywhere = scan(None, None, &graph)?.data;
+    assert_eq!(everywhere.len(), 3);
+    let stray_row = everywhere
+        .iter()
+        .find(|row| row.decision_id == stray)
+        .expect("stray flagged");
+    assert_eq!(
+        stray_row.project.as_deref(),
+        Some("personal:human:alice"),
+        "each row says where the decision is filed now"
+    );
+    assert_eq!(stray_row.proposed_move_to, None);
+
+    let company_only = scan(Some("company"), None, &graph)?.data;
+    assert_eq!(ids(&company_only), vec![in_company.clone()]);
+
+    let to_beadline = scan(None, Some("beadline"), &graph)?.data;
+    let mut expected = vec![stray.clone(), in_company.clone()];
+    expected.sort();
+    assert_eq!(
+        ids(&to_beadline),
+        expected,
+        "a decision already in the destination is not flagged: that is not a move"
+    );
+    assert!(to_beadline
+        .iter()
+        .all(|row| row.proposed_move_to.as_deref() == Some("beadline")));
+    assert!(!ids(&to_beadline).contains(&in_beadline));
+
+    // The move is the existing verb, recorded and reversible; afterwards the personal
+    // project's report is clean.
+    commands.move_decision_to("human:alice", &stray, "beadline", Some("beadline work"))?;
+    let graph = graph_of(&ledger)?;
+    assert!(
+        scan(Some("personal:human:alice"), Some("beadline"), &graph)?
+            .data
+            .is_empty()
+    );
+    assert_eq!(
+        scan(Some("beadline"), None, &graph)?.data.len(),
+        2,
+        "the moved decision now reports under its new project"
+    );
+
+    // A project handle is checked, so a typo is a refusal and never an empty report.
+    assert!(require_registered_project(&ledger, "beadline").is_ok());
+    assert!(require_registered_project(&ledger, "personal:human:alice").is_ok());
+    let refusal = require_registered_project(&ledger, "beadlin")
+        .expect_err("an unregistered handle is refused")
+        .to_string();
+    assert!(
+        refusal.contains("hivemind project register beadlin"),
+        "{refusal}"
+    );
+
+    Ok(())
 }

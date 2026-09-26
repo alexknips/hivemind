@@ -24,6 +24,21 @@ pub struct LedgerConfig {
     pub database_url: Option<String>,
 }
 
+impl LedgerConfig {
+    /// Where a write through this config lands, in words: the tenant and either the local
+    /// ledger directory or the shared database. Never the database URL, which carries a
+    /// credential.
+    pub fn address(&self, tenant_id: &TenantId) -> String {
+        match self.database_url.as_deref() {
+            Some(url) if !url.is_empty() => format!("tenant `{tenant_id}` in the shared database"),
+            _ => format!(
+                "tenant `{tenant_id}` in the local ledger under {}",
+                self.hivemind_dir.display()
+            ),
+        }
+    }
+}
+
 /// One ledger connection for one process invocation.
 #[derive(Debug)]
 pub enum AnyLedger {

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivemind.local/schemas/v0/project.topic_declared.json",
+  "title": "project.topic_declared event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_uuid", "type", "actor_id", "source", "payload"],
+  "properties": {
+    "event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "event_uuid": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": ["string", "null"], "minLength": 1 },
+    "causation_event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "type": { "const": "project.topic_declared" },
+    "actor_id": { "type": "string", "minLength": 1 },
+    "source": { "enum": ["cli", "agent", "human", "slack", "document", "api"] },
+    "source_ref": { "type": ["string", "null"], "minLength": 1 },
+    "ts": { "type": ["string", "null"], "format": "date-time" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handle", "topic_key"],
+      "properties": {
+        "handle": { "type": "string", "minLength": 1 },
+        "topic_key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Already normalised (lowercase kebab) by the write layer. Joins the project's vocabulary; nothing removes a key."
+        }
+      }
+    }
+  }
+}

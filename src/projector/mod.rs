@@ -379,6 +379,10 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
         EventPayload::ProjectUnanchored(payload) => {
             project_project_unanchored(graph, &payload, &origin_properties)?
         }
+        EventPayload::ProjectTopicDeclared(_) => {
+            // A project's vocabulary is read from the ledger (`queries::projects`), like the
+            // rest of the registry; no graph node or edge carries it.
+        }
     }
 
     Ok(())

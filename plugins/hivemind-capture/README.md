@@ -126,6 +126,17 @@ project: personal:agent:claude (personal_fallback) — saved to your personal pr
 this folder is not attached to a project yet; run hivemind project anchor ... to attach it
 ```
 
+A session in a Gas City rig that no project in the ledger is anchored to is
+refused instead of filed under the personal project: it is writing to the wrong
+ledger, and the refusal names the rig, the ledger, and the ways out. A folder
+marker, a rig anchor, or a current project is tried first.
+
+Topic keys are declared per project. A capture under a registered project may use
+only the keys that project declared; pass `--declare-topic KEY` (each also in
+`--topic-keys`) to add a new one, and the confirmation lists what was declared.
+`hivemind project show billing` lists a project's keys. A personal project has no
+vocabulary.
+
 To attach a folder, register the project (`hivemind project register billing`)
 and commit a `.hivemind-project` file containing `billing` in the folder.
 `hivemind project anchor --kind folder` only records a fact about the project;

@@ -1337,6 +1337,11 @@ fn propose_pricing(
     project: Option<&str>,
 ) -> Result<String> {
     let actor = "human:alex";
+    // A registered project's topic vocabulary is explicit (hivemind-zywz): declare the one
+    // topic this fixture files under, once per project (declaring twice records nothing).
+    if let Some(handle) = project {
+        commands.declare_project_topic(actor, handle, "pricing")?;
+    }
     let option_id = commands.record_option(actor, "Per seat", "Charge each seat")?;
     commands.propose_decision(DecisionProposalInput {
         grounding: Grounding::NotAsked,

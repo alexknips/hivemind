@@ -363,6 +363,10 @@ fn every_write_path_event_validates_against_its_schema() {
     commands
         .register_project(actor, "contract-b", Some("Contract B"), Some("Purpose B"))
         .expect("register project b");
+    // -- project.topic_declared (hivemind-zywz): the one key the decisions below file under --
+    commands
+        .declare_project_topic(actor, "contract-a", "conformance")
+        .expect("declare project topic");
     commands
         .link_project(
             actor,
@@ -520,6 +524,7 @@ fn every_write_path_event_validates_against_its_schema() {
         EventType::ProjectUnlinked,
         EventType::ProjectAnchored,
         EventType::ProjectUnanchored,
+        EventType::ProjectTopicDeclared,
     ] {
         assert!(
             seen_types.contains(&expected),
@@ -597,6 +602,7 @@ fn schema_file_stem(event_type: EventType) -> &'static str {
         EventType::ProjectUnlinked => "project.unlinked",
         EventType::ProjectAnchored => "project.anchored",
         EventType::ProjectUnanchored => "project.unanchored",
+        EventType::ProjectTopicDeclared => "project.topic_declared",
     }
 }
 

@@ -100,6 +100,10 @@ pub enum EventType {
     ProjectAnchored,
     #[serde(rename = "project.unanchored")]
     ProjectUnanchored,
+    /// A registered project's topic vocabulary grew by one key. A project's vocabulary is
+    /// what replaying these yields; nothing ever removes a key (hivemind-zywz).
+    #[serde(rename = "project.topic_declared")]
+    ProjectTopicDeclared,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -891,6 +895,16 @@ pub struct ProjectAnchorPayload {
     pub value: String,
 }
 
+/// `project.topic_declared`: `topic_key` joined `handle`'s vocabulary. The key is already
+/// normalised (lowercase kebab, see `commands::normalize_topic_key`) when the write layer
+/// records it. Declaring is the only way a vocabulary grows; there is no retraction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectTopicDeclaredPayload {
+    pub handle: String,
+    pub topic_key: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventPayload {
     DecisionProposed(DecisionProposedPayload),
@@ -916,6 +930,7 @@ pub enum EventPayload {
     ProjectUnlinked(ProjectLinkPayload),
     ProjectAnchored(ProjectAnchorPayload),
     ProjectUnanchored(ProjectAnchorPayload),
+    ProjectTopicDeclared(ProjectTopicDeclaredPayload),
 }
 
 impl EventPayload {
@@ -944,6 +959,7 @@ impl EventPayload {
             Self::ProjectUnlinked(_) => EventType::ProjectUnlinked,
             Self::ProjectAnchored(_) => EventType::ProjectAnchored,
             Self::ProjectUnanchored(_) => EventType::ProjectUnanchored,
+            Self::ProjectTopicDeclared(_) => EventType::ProjectTopicDeclared,
         }
     }
 
@@ -972,6 +988,7 @@ impl EventPayload {
             Self::ProjectUnlinked(payload) => serde_json::to_value(payload),
             Self::ProjectAnchored(payload) => serde_json::to_value(payload),
             Self::ProjectUnanchored(payload) => serde_json::to_value(payload),
+            Self::ProjectTopicDeclared(payload) => serde_json::to_value(payload),
         }
     }
 }
@@ -1363,6 +1380,12 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty("payload.handle", &payload.handle)?;
             require_non_empty("payload.value", &payload.value)?;
             Ok(EventPayload::ProjectUnanchored(payload))
+        }
+        EventType::ProjectTopicDeclared => {
+            let payload: ProjectTopicDeclaredPayload = parse_payload(event)?;
+            require_non_empty("payload.handle", &payload.handle)?;
+            require_non_empty("payload.topic_key", &payload.topic_key)?;
+            Ok(EventPayload::ProjectTopicDeclared(payload))
         }
     }
 }

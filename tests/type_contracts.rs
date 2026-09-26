@@ -11,8 +11,8 @@ use hivemind::events::{
     HypothesisKind, HypothesisRecordedPayload, ImportanceFactors, IngestBatchClassifiedPayload,
     IngestBatchReceivedPayload, IngestTurn, NotificationAcknowledgedPayload,
     NotificationSentPayload, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind,
-    ProjectLinkPayload, ProjectRegisteredPayload, QualityDim, QualityDims, RelationAddedPayload,
-    RelationKind as EventRelationKind, RelationRemovedPayload,
+    ProjectLinkPayload, ProjectRegisteredPayload, ProjectTopicDeclaredPayload, QualityDim,
+    QualityDims, RelationAddedPayload, RelationKind as EventRelationKind, RelationRemovedPayload,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};
@@ -20,7 +20,7 @@ use hivemind::{CliError, CommandError, HivemindError, LedgerError, ProjectorErro
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const EVENT_TYPES: [EventType; 23] = [
+const EVENT_TYPES: [EventType; 24] = [
     EventType::DecisionProposed,
     EventType::DecisionRequested,
     EventType::DecisionAccepted,
@@ -44,6 +44,7 @@ const EVENT_TYPES: [EventType; 23] = [
     EventType::ProjectUnlinked,
     EventType::ProjectAnchored,
     EventType::ProjectUnanchored,
+    EventType::ProjectTopicDeclared,
 ];
 
 const EVENT_RELATION_KINDS: [EventRelationKind; 8] = [
@@ -375,6 +376,7 @@ fn event_type_name(event_type: EventType) -> &'static str {
         EventType::ProjectUnlinked => "project.unlinked",
         EventType::ProjectAnchored => "project.anchored",
         EventType::ProjectUnanchored => "project.unanchored",
+        EventType::ProjectTopicDeclared => "project.topic_declared",
     }
 }
 
@@ -403,6 +405,7 @@ fn payload_variant_type(payload: &EventPayload) -> EventType {
         EventPayload::ProjectUnlinked(_) => EventType::ProjectUnlinked,
         EventPayload::ProjectAnchored(_) => EventType::ProjectAnchored,
         EventPayload::ProjectUnanchored(_) => EventType::ProjectUnanchored,
+        EventPayload::ProjectTopicDeclared(_) => EventType::ProjectTopicDeclared,
     }
 }
 
@@ -471,6 +474,9 @@ fn typed_payload_from_value(
         }
         EventType::ProjectUnanchored => {
             EventPayload::ProjectUnanchored(serde_json::from_value(payload)?)
+        }
+        EventType::ProjectTopicDeclared => {
+            EventPayload::ProjectTopicDeclared(serde_json::from_value(payload)?)
         }
     })
 }
@@ -767,6 +773,13 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 value: "hivemind".to_owned(),
             }),
         ),
+        (
+            EventType::ProjectTopicDeclared,
+            EventPayload::ProjectTopicDeclared(ProjectTopicDeclaredPayload {
+                handle: "contract-test".to_owned(),
+                topic_key: "pricing".to_owned(),
+            }),
+        ),
     ]
 }
 
@@ -795,6 +808,7 @@ fn payload_json(payload: &EventPayload) -> Value {
         EventPayload::ProjectUnlinked(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::ProjectAnchored(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::ProjectUnanchored(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::ProjectTopicDeclared(payload) => serde_json::to_value(payload).unwrap(),
     }
 }
 

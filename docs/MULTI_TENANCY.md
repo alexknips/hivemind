@@ -416,7 +416,8 @@ ran; such a decision moves like any other.
 
 Registering, linking, and anchoring are ledger events like any other, each with
 its actor and time: `project.registered`, `project.linked`, `project.unlinked`,
-`project.anchored`, and `project.unanchored`. The registry is what replaying
+`project.anchored`, `project.unanchored`, and `project.topic_declared` (see
+[Topic vocabulary](#topic-vocabulary)). The registry is what replaying
 them yields, so "who registered Billing, who linked it under Platform, and when"
 is answered from the ledger the way a decision's provenance is. The commands
 layer refuses, before anything is appended:
@@ -443,12 +444,43 @@ project; there is no admin step.
 | `hivemind project register <handle> [--display-name N] [--purpose P]` | Register a shared project. |
 | `hivemind project link --from A --to B --kind part_of\|depends_on` and `project unlink` (same flags) | Record or retract a link. |
 | `hivemind project anchor --handle H --kind folder\|rig\|jira\|linear\|github\|channel --value V` | Record an anchor. |
+| `hivemind project declare-topic <handle> <key>...` or `--in-use` | Add topic keys to a project's vocabulary (see [Topic vocabulary](#topic-vocabulary)). |
 | `hivemind project list` / `project show <handle>` | Read the registry (paged). An unknown handle is a successful reply with `outcome=not_found`; a `personal:` address always resolves. |
 | `hivemind project decisions <handle-or-personal-address>` | The decisions in one project, oldest first, paged. On a personal address it is the review list: what is still in a personal project and not yet shared. |
 | `hivemind project use <handle>` / `--clear` | Set the current project (see below). |
 
 The registry verbs are not on MCP or REST. Only the move verb and the project
 arguments described below are.
+
+### Topic vocabulary
+
+A topic says what a decision is about (`pricing`); a project says where it belongs
+(`billing`). Left free, every capture invents its own keys and recall by topic
+becomes a lottery, so a registered project has a **topic vocabulary**: the keys
+declared for it, each declaration a `project.topic_declared` fact with its actor
+and time. The vocabulary is what replaying them yields, and `hivemind project show
+<handle>` lists it.
+
+- Keys are normalised to lowercase kebab before anything else.
+- A capture filed under a registered project may use only declared keys. A capture
+  that uses another is refused before anything is written, naming the keys, what the
+  project has, and how to declare.
+- A vocabulary grows only when someone says so: a capture's `--declare-topic` (MCP
+  `declare_topics`) for a key it uses, or `hivemind project declare-topic <handle>
+  <key>...`. The reply lists what a capture declared. A key already declared is not
+  declared twice, a new project starts empty, and nothing removes a key.
+- A project that had decisions before it had a vocabulary adopts what they use with
+  `hivemind project declare-topic <handle> --in-use`: one recorded declaration per
+  key the project's decisions now carry.
+- A personal project and a capture with no project have no vocabulary: any key is
+  accepted, and declaring one is refused.
+- A move never checks the destination's vocabulary. A decision keeps the keys it was
+  captured with, and correcting where it lives must not be refused for them.
+
+The rule is enforced by the write layer for every surface that names a project (CLI,
+stdio MCP, MCP over HTTP). The REST route and the classifier's ingest name none, so
+they file under the personal project and are unaffected. Checking a key against the
+vocabulary replays the ledger, like the other registry checks.
 
 ### Links
 
@@ -505,7 +537,12 @@ how (`project_source`):
 4. the current project, set once with `hivemind project use`
    (`current_project`), a per-machine setting kept in the CLI's `--hivemind-dir`,
    keyed by tenant and by the CLI's `--actor`, and never a ledger fact;
-5. none of these: the recorder's personal project (`personal_fallback`).
+5. none of these: the recorder's personal project (`personal_fallback`), unless
+   the session runs in a rig no project in this ledger is anchored to. That is a
+   session writing to the wrong ledger, not a folder nobody attached, so a capture
+   is refused and names the rig, the ledger, and the ways out (write to the ledger
+   that holds the rig's project, anchor the rig here, or name the project); a
+   supersede, whose project is the replaced decision's, is not.
 
 A change that touches folders of several projects is one decision for the
 nearest project they are all `part_of`, never one for each. With no project in
@@ -560,6 +597,16 @@ history (`query get_recent_activity` and `get_decisions_changed_since` return a
 `project_moved` row with the two ends, the actor, and the time). The decision's
 own project changes and its `project_source` becomes `moved`. Reversal is
 another move with the ends swapped; nothing is edited or deleted.
+
+Finding what to move is a report, not a rule: `hivemind query scan_misfiled_decisions
+--foreign-topic <key>` (MCP `scan_misfiled_decisions`) flags decisions carrying a
+topic key the caller names as foreign to where they are filed. Each row says which
+project the decision is filed under now; `--project` limits the report to decisions
+filed exactly under one project (an unregistered handle is refused, never an empty
+report), and `--move-to <project>` names where the flagged ones belong, leaving out
+decisions already there and giving each row the `hivemind move --decision <id> --to
+<project>` that puts it there. The report moves nothing; whoever confirmed the list
+runs the moves, and a second run of the scoped report is clean.
 
 ### Sub-projects stay possible
 

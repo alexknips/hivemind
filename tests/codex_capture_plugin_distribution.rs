@@ -362,6 +362,7 @@ fn claude_code_plugin_capture_and_query_scripts_write_agent_decision() -> TestRe
         // (identity.rs::stable_agent_identity, hivemind-zdsh.9) must not see them.
         .env_remove("GC_AGENT")
         .env_remove("GC_ALIAS")
+        .env_remove("GC_RIG")
         .args([
             "--title",
             "Capture Claude plugin decisions",
@@ -434,6 +435,7 @@ fn query_decisions_script_finds_decisions_captured_by_a_different_session() -> T
         .env("CLAUDE_SESSION_ID", "capturer-session")
         .env_remove("GC_AGENT")
         .env_remove("GC_ALIAS")
+        .env_remove("GC_RIG")
         .args([
             "--title",
             "Recall smoke test fixture across sessions",
@@ -493,6 +495,7 @@ fn capture_joined_query_fixture(root: &Path, hivemind_dir: &Path) -> TestResult<
         .env("CLAUDE_SESSION_ID", "join-fixture-session")
         .env_remove("GC_AGENT")
         .env_remove("GC_ALIAS")
+        .env_remove("GC_RIG")
         .args([
             "--title",
             "Recall smoke test fixture for joined free text",
@@ -648,6 +651,7 @@ fn codex_capture_defaults_actor_from_session_environment() -> TestResult<()> {
         .env_remove("CLAUDE_CODE_SESSION_ID")
         .env_remove("GC_AGENT")
         .env_remove("GC_ALIAS")
+        .env_remove("GC_RIG")
         .env("CODEX_SESSION_ID", "plugin-test-session")
         .arg("--json")
         .arg("--hivemind-dir")
@@ -706,6 +710,7 @@ fn capture_plugin_scripts_derive_codex_session_context() -> TestResult<()> {
         .env_remove("CLAUDE_CODE_SESSION_ID")
         .env_remove("GC_AGENT")
         .env_remove("GC_ALIAS")
+        .env_remove("GC_RIG")
         .args([
             "--title",
             "Derive Codex plugin session defaults",
@@ -793,6 +798,7 @@ fn capture_plugin_defaults_to_rig_ledger_from_linked_worktree() -> TestResult<()
         .env_remove("CLAUDE_CODE_SESSION_ID")
         .env_remove("GC_AGENT")
         .env_remove("GC_ALIAS")
+        .env_remove("GC_RIG")
         .args([
             "--title",
             "Capture from linked worktree to rig ledger",
@@ -924,6 +930,7 @@ fn unified_capture_script_records_evidence_with_agent_provenance() -> TestResult
         .env("CLAUDE_SESSION_ID", "evidence-test-session")
         .env_remove("GC_AGENT")
         .env_remove("GC_ALIAS")
+        .env_remove("GC_RIG")
         .args([
             "The plugin smoke test wrote a decision and queried it back",
             "--kind",
@@ -987,6 +994,7 @@ fn unified_capture_script_uses_classifier_when_kind_is_omitted() -> TestResult<(
         .env_remove("CLAUDE_CODE_SESSION_ID")
         .env_remove("GC_AGENT")
         .env_remove("GC_ALIAS")
+        .env_remove("GC_RIG")
         .arg("The test failed with error E")
         .output()?;
     require(
@@ -1138,6 +1146,7 @@ fn capture_script_forwards_grounding_flags_and_refuses_an_ungrounded_capture() -
             .env("CLAUDE_SESSION_ID", "grounding-script-session")
             .env_remove("GC_AGENT")
             .env_remove("GC_ALIAS")
+            .env_remove("GC_RIG")
             .args(base)
             .args(extra)
             .output()?)
@@ -1238,6 +1247,16 @@ fn supersede_script_works_out_the_project_from_the_folder_it_runs_in() -> TestRe
             format!(
                 "register {handle} failed: {}",
                 String::from_utf8_lossy(&registered.stderr)
+            ),
+        )?;
+        // A registered project's topic keys are declared (hivemind-zywz): declare the ones the
+        // fixture captures below use.
+        let declared = hivemind(&["project", "declare-topic", handle, "billing", "cadence"])?;
+        require(
+            declared.status.success(),
+            format!(
+                "declare topics for {handle} failed: {}",
+                String::from_utf8_lossy(&declared.stderr)
             ),
         )?;
     }

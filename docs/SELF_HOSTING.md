@@ -480,6 +480,12 @@ attach the folder as well; the CLI does not write it. Agents whose CLI or stdio
 MCP server runs with `--project-from-context` (the capture plugin does) then file
 each capture under its rig's or folder's project and say how, and a capture that
 names or finds no project falls into the actor's personal project with a notice.
+A session in a rig that no project in the ledger is anchored to is refused
+instead: it is pointed at the wrong ledger, and the refusal names the rig and the
+ledger it would have written to. Each project's topic keys are declared too
+(`hivemind project declare-topic <rig> --in-use` adopts what a rig's existing
+decisions use); a capture under a registered project may only use declared keys
+and says so with `--declare-topic` when it adds one.
 Those agents read the registry, their working directory, `GC_RIG`, and their git
 diff from the machine the CLI runs on, so they need Option A (the CLI on the
 agent's own machine, pointed at the cell's Postgres); Option B runs the CLI

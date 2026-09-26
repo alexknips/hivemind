@@ -4,7 +4,9 @@ use std::fmt::Write as _;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::commands::{DecisionMoveOutcome, DecisionPlacement, RestsOn, RestsOnKind};
+use crate::commands::{
+    DecisionMoveOutcome, DecisionPlacement, ProjectTopicDeclaration, RestsOn, RestsOnKind,
+};
 use crate::error::{CliError, CommandError};
 use crate::events::{EventId, EventType};
 use crate::ingest::{DocumentImportReport, DocumentPreparationReport};
@@ -20,8 +22,8 @@ use crate::queries::{
     DecisionsChangedSinceResults, GroundingAdded, GroundingItem, GroundingItemState, GroundingKind,
     GroundingState, HistoryChangeKind, HypothesisStatus, MatchReason, MisfiledDecisionCandidate,
     NeighborhoodView, OutcomeReason, ProjectDecisionsOutcome, ProjectDecisionsPage,
-    ProjectListResults, ProjectMove, ProjectOutcome, QueryResponse, ReadOnlyExport,
-    ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
+    ProjectListResults, ProjectMove, ProjectOutcome, ProjectTopicFact, QueryResponse,
+    ReadOnlyExport, ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
     RecentActivityResults, RecentDecisionsResults, ResolveOutcome, SituationalResults,
     SupersessionChain,
 };
@@ -534,14 +536,23 @@ pub(crate) fn render_misfiled_scan_summary(candidates: &[MisfiledDecisionCandida
     }
     let mut output = String::new();
     for candidate in candidates {
-        let _ = writeln!(
+        let _ = write!(
             output,
-            "misfiled\t{}\t{}\ttopics={}\tactors={}",
+            "misfiled\t{}\t{}\tproject={}\ttopics={}\tactors={}",
             candidate.decision_id,
             candidate.title,
+            candidate.project.as_deref().unwrap_or("-"),
             candidate.matched_topic_keys.join(","),
             candidate.actor_ids.join(",")
         );
+        if let Some(destination) = &candidate.proposed_move_to {
+            let _ = write!(
+                output,
+                "\tmove=hivemind move --decision {} --to {destination}",
+                candidate.decision_id
+            );
+        }
+        output.push('\n');
     }
     output.trim_end().to_owned()
 }
@@ -1102,6 +1113,7 @@ fn event_type_label(event_type: EventType) -> &'static str {
         EventType::ProjectUnlinked => "project.unlinked",
         EventType::ProjectAnchored => "project.anchored",
         EventType::ProjectUnanchored => "project.unanchored",
+        EventType::ProjectTopicDeclared => "project.topic_declared",
     }
 }
 
@@ -1154,6 +1166,14 @@ pub(crate) fn render_placement_line(placement: &DecisionPlacement) -> String {
     );
     if let Some(notice) = placement.notice() {
         let _ = write!(line, " — {notice}");
+    }
+    if !placement.declared_topics.is_empty() {
+        let _ = write!(
+            line,
+            "; declared topics for {}: {}",
+            placement.project,
+            placement.declared_topics.join(", ")
+        );
     }
     line
 }
@@ -1882,6 +1902,47 @@ pub(crate) fn format_project_anchor_output(
     ))
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct ProjectDeclareTopicOutput {
+    pub(crate) handle: String,
+    /// `true` when the keys came from `--in-use` (the decisions' own keys) rather than the
+    /// command line.
+    pub(crate) in_use: bool,
+    pub(crate) topics: Vec<ProjectTopicDeclaration>,
+}
+
+/// One line per key: declared now (with its event id) or already there. `--in-use` with
+/// nothing left to declare says so instead of printing nothing.
+pub(crate) fn format_project_declare_topic_output(
+    as_json: bool,
+    output: &ProjectDeclareTopicOutput,
+) -> Result<String> {
+    if as_json {
+        return format_json_value(true, output);
+    }
+    if output.topics.is_empty() {
+        return Ok(format!(
+            "every topic key in use in {} is already declared",
+            output.handle
+        ));
+    }
+    let lines: Vec<String> = output
+        .topics
+        .iter()
+        .map(|topic| match topic.event_id {
+            Some(event_id) => format!(
+                "event_id={event_id} handle={} declared_topic={}",
+                topic.handle, topic.topic_key
+            ),
+            None => format!(
+                "handle={} topic={} already_declared",
+                topic.handle, topic.topic_key
+            ),
+        })
+        .collect();
+    Ok(lines.join("\n"))
+}
+
 pub(crate) fn format_project_list_output(
     as_json: bool,
     response: &QueryResponse<ProjectListResults>,
@@ -1906,7 +1967,7 @@ pub(crate) fn render_project_list_summary(results: &ProjectListResults) -> Strin
     for project in &results.items {
         let _ = writeln!(
             output,
-            "project\t{}\t{}\tanchors={}\tpart_of={}\tdepends_on={}",
+            "project\t{}\t{}\tanchors={}\tpart_of={}\tdepends_on={}\ttopics={}",
             project.handle,
             summary_cell(project.display_name.as_deref().unwrap_or("-")),
             project.anchors.len(),
@@ -1915,6 +1976,7 @@ pub(crate) fn render_project_list_summary(results: &ProjectListResults) -> Strin
                 .as_ref()
                 .map_or("-", |fact| fact.to.as_str()),
             project.depends_on.len(),
+            project.topics.len(),
         );
     }
     output.trim_end().to_owned()
@@ -2016,7 +2078,7 @@ pub(crate) fn render_project_outcome_summary(outcome: &ProjectOutcome) -> String
     match outcome {
         ProjectOutcome::NotFound => "outcome=not_found".to_owned(),
         ProjectOutcome::Found { project } => format!(
-            "outcome=found\thandle={}\tpersonal={}\tdisplay_name={}\tanchors={}\tpart_of={}\tdepends_on={}",
+            "outcome=found\thandle={}\tpersonal={}\tdisplay_name={}\tanchors={}\tpart_of={}\tdepends_on={}\ttopics={}",
             project.handle,
             project.personal,
             summary_cell(project.display_name.as_deref().unwrap_or("-")),
@@ -2026,8 +2088,21 @@ pub(crate) fn render_project_outcome_summary(outcome: &ProjectOutcome) -> String
                 .as_ref()
                 .map_or("-", |fact| fact.to.as_str()),
             project.depends_on.len(),
+            project_topics_cell(&project.topics),
         ),
     }
+}
+
+/// A project's declared topic keys, comma-joined in key order; `-` when it has none.
+fn project_topics_cell(topics: &[ProjectTopicFact]) -> String {
+    if topics.is_empty() {
+        return "-".to_owned();
+    }
+    topics
+        .iter()
+        .map(|topic| topic.topic_key.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// A miss is data (Alex's rule, 2026-09-20): `--project` naming an unknown handle is a

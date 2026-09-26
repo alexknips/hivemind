@@ -249,6 +249,20 @@ fn register_project(hivemind_dir: &Path, handle: &str) -> TestResult<()> {
             handle.to_owned(),
         ],
     )?;
+    // A registered project's topic keys are declared (hivemind-zywz): declare the ones the
+    // capture script below files under.
+    run_cli_json(
+        hivemind_dir,
+        vec![
+            "--actor".to_owned(),
+            "human:test-registrar".to_owned(),
+            "project".to_owned(),
+            "declare-topic".to_owned(),
+            handle.to_owned(),
+            "projects".to_owned(),
+            "capture".to_owned(),
+        ],
+    )?;
     Ok(())
 }
 

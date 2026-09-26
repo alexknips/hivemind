@@ -115,6 +115,7 @@ fn event_type_as_str(event_type: EventType) -> &'static str {
         EventType::ProjectUnlinked => "project.unlinked",
         EventType::ProjectAnchored => "project.anchored",
         EventType::ProjectUnanchored => "project.unanchored",
+        EventType::ProjectTopicDeclared => "project.topic_declared",
     }
 }
 
@@ -143,6 +144,7 @@ fn parse_event_type(value: &str) -> Result<EventType> {
         "project.unlinked" => Ok(EventType::ProjectUnlinked),
         "project.anchored" => Ok(EventType::ProjectAnchored),
         "project.unanchored" => Ok(EventType::ProjectUnanchored),
+        "project.topic_declared" => Ok(EventType::ProjectTopicDeclared),
         other => Err(storage_error(format!("unknown event type in row: {other}")).into()),
     }
 }
