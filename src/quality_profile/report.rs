@@ -34,7 +34,7 @@
 //! Layer 3, with the rest of the profile. Nothing in `queries/` or `commands/` imports it; the
 //! transports import it. No model, no network, no write.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
@@ -239,13 +239,17 @@ pub fn scan_decision_quality_at(
     )?;
 
     // One profile per distinct decision on the page, however many findings name it.
-    let mut profiles: BTreeMap<String, Option<QualityProfile>> = BTreeMap::new();
+    let distinct: BTreeSet<&str> = page
+        .findings
+        .iter()
+        .map(|finding| finding.decision_id.as_str())
+        .collect();
+    let profiles = distinct
+        .into_iter()
+        .map(|id| Ok((id.to_owned(), quality_profile_of(graph, id)?)))
+        .collect::<Result<BTreeMap<String, Option<QualityProfile>>>>()?;
     let mut findings = Vec::with_capacity(page.findings.len());
     for finding in page.findings {
-        if !profiles.contains_key(&finding.decision_id) {
-            let profile = quality_profile_of(graph, &finding.decision_id)?;
-            profiles.insert(finding.decision_id.clone(), profile);
-        }
         let dimensions = profiles
             .get(&finding.decision_id)
             .and_then(Option::as_ref)
