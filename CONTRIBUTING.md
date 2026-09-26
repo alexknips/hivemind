@@ -1,8 +1,8 @@
 # Contributing to HiveMind
 
-Welcome. HiveMind is a substrate for human governance of agentic
-decision-making. Contributions are welcome from humans and from AI agents —
-both are first-class actors in the project.
+Welcome. HiveMind is memory for decisions: what was decided, which options
+lost and why, and who decided. Contributions are welcome from humans and from
+AI agents — both are first-class actors in the project.
 
 Before you start, please read:
 
