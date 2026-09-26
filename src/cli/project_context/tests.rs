@@ -103,6 +103,10 @@ impl ProjectContextSources for FakeSources {
         self.rig.clone()
     }
 
+    fn ledger_address(&self) -> String {
+        "tenant `fake` in the local ledger under /tmp/fake".to_owned()
+    }
+
     fn project_anchored_to_rig(&self, rig: &str) -> Result<Option<String>> {
         self.registry_reads.set(self.registry_reads.get() + 1);
         Ok(self.rig_anchors.get(rig).cloned())
@@ -285,6 +289,87 @@ fn a_rig_with_no_anchored_project_falls_through() {
 }
 
 #[test]
+fn a_rig_no_project_is_anchored_to_is_a_session_in_the_wrong_ledger_not_an_unattached_folder() {
+    let tree = TempTree::new();
+    let resolved = resolve(&FakeSources::at(tree.dir("no-marker")).with_rig("beadline", None));
+
+    assert_eq!(
+        resolved,
+        ResolvedProject::UnanchoredRig {
+            rig: "beadline".to_owned(),
+            ledger: "tenant `fake` in the local ledger under /tmp/fake".to_owned(),
+        }
+    );
+    assert_eq!(
+        resolved.determined(),
+        None,
+        "the write layer is handed nothing: a supersede inherits the old decision's project"
+    );
+    assert_eq!(
+        resolved.reminder(true),
+        None,
+        "a capture never gets this far"
+    );
+
+    let refusal = resolved
+        .wrong_ledger_refusal()
+        .expect("a capture from this rig is refused");
+    assert!(refusal.contains("rig `beadline`"), "{refusal}");
+    assert!(
+        refusal.contains("tenant `fake` in the local ledger under /tmp/fake"),
+        "the refusal names the ledger it would have written to: {refusal}"
+    );
+    assert!(refusal.contains("wrong ledger"), "{refusal}");
+    for way_out in [
+        "--tenant",
+        "--database-url",
+        "hivemind project anchor --handle <project> --kind rig --value beadline",
+        "--project <handle>",
+    ] {
+        assert!(refusal.contains(way_out), "missing {way_out}: {refusal}");
+    }
+}
+
+#[test]
+fn nothing_else_is_refused_as_a_wrong_ledger() {
+    let tree = TempTree::new();
+    for resolved in [
+        ResolvedProject::PersonalFallback,
+        ResolvedProject::SpansUnrelated {
+            spanned: vec!["a".to_owned(), "b".to_owned()],
+        },
+        determined("billing", ProjectSource::Rig),
+    ] {
+        assert_eq!(resolved.wrong_ledger_refusal(), None, "{resolved:?}");
+    }
+    // No rig at all is the ordinary unattached-folder case.
+    assert_eq!(
+        resolve(&FakeSources::at(tree.dir("no-marker"))),
+        ResolvedProject::PersonalFallback
+    );
+}
+
+#[test]
+fn a_marker_or_a_current_project_still_outranks_an_unanchored_rig() {
+    let tree = TempTree::new();
+    tree.marker("repo", "billing");
+
+    assert_eq!(
+        resolve(&FakeSources::at(tree.dir("repo")).with_rig("beadline", None)),
+        determined("billing", ProjectSource::FolderMarker)
+    );
+    assert_eq!(
+        resolve(
+            &FakeSources::at(tree.dir("no-marker"))
+                .with_rig("beadline", None)
+                .with_current_project("billing")
+        ),
+        determined("billing", ProjectSource::CurrentProject),
+        "the current project is a per-tenant setting, so it matches this ledger"
+    );
+}
+
+#[test]
 fn no_rig_means_no_registry_read() {
     let tree = TempTree::new();
     let sources = FakeSources::at(tree.dir("no-marker")).with_current_project("billing");
@@ -432,8 +517,16 @@ fn the_ladder_steps_down_one_rung_at_a_time() {
         determined("from-current", ProjectSource::CurrentProject)
     );
 
-    // Clear the current project, and it is the personal fallback.
+    // Clear the current project: the session is still in a rig that no project here is
+    // anchored to, which is a wrong ledger, not a folder nobody attached (hivemind-zywz).
     sources.current_project = None;
+    assert!(
+        matches!(resolve(&sources), ResolvedProject::UnanchoredRig { .. }),
+        "an unanchored rig is refused, not filed under the personal project"
+    );
+
+    // Leave the rig, and it is the personal fallback.
+    sources.rig = None;
     assert_eq!(resolve(&sources), ResolvedProject::PersonalFallback);
 }
 

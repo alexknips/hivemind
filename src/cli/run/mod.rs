@@ -41,8 +41,8 @@ use crate::queries::{
     get_decision, get_decision_brief, get_decision_neighborhood, get_decisions_added_since,
     get_decisions_changed_since, get_project, get_recent_activity, get_recent_decisions,
     get_relevant_decisions, get_situational_decisions, get_supersession_chain, list_projects,
-    misfiled_next_cursor, resolve_decision_by_description, scan_misfiled_decisions,
-    search_decisions, search_decisions_any, ActiveDecisionBlockersRequest,
+    misfiled_next_cursor, require_registered_project, resolve_decision_by_description,
+    scan_misfiled_decisions, search_decisions, search_decisions_any, ActiveDecisionBlockersRequest,
     BlockerNotificationCandidatesRequest, ChangedSinceRequest, DecisionBlockerFilters,
     DecisionLogExport, DecisionLogOutcome, DecisionLogRequest, DecisionStatus,
     DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest, HistoryFilterRequest,
@@ -74,13 +74,14 @@ use super::args::{
     EmitDecisionProposedArgs, EmitHypothesisKind, EmitRelationKind, ExportArgs, GraphBackend,
     ImportArgs, ImportCommand, ImportConnectorCommand, ImportDocumentsArgs, IngestArgs,
     IngestCommand, IngestSlackThreadArgs, MapArgs, McpArgs, MoveArgs, ProjectAnchorArgs,
-    ProjectArgs, ProjectCommand, ProjectDecisionsArgs, ProjectLinkArgs, ProjectListArgs,
-    ProjectRegisterArgs, ProjectShowArgs, ProjectSourceArg, ProjectUseArgs, QualityScanArgs,
-    QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs, QueryCommand,
-    QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs,
-    QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind, QuerySearchDecisionsArgs,
-    QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand,
-    SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs, TuiArgs,
+    ProjectArgs, ProjectCommand, ProjectDecisionsArgs, ProjectDeclareTopicArgs, ProjectLinkArgs,
+    ProjectListArgs, ProjectRegisterArgs, ProjectShowArgs, ProjectSourceArg, ProjectUseArgs,
+    QualityScanArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs,
+    QueryCommand, QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs,
+    QueryHistoryFilterArgs, QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
+    QuerySearchDecisionsArgs, QuerySituationalArgs, QuickstartArgs, ReviewArgs, ServeArgs,
+    SlackAppArgs, SlackAppCommand, SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs,
+    TuiArgs,
 };
 use super::current_project::CurrentProjectStore;
 use super::project_context::{resolve_project_in_ledger, ProjectContextEnv, ResolvedProject};
@@ -89,10 +90,10 @@ use super::render::{
     format_current_project_output, format_disagree_output, format_export_output,
     format_import_output, format_json_value, format_move_output, format_output,
     format_prepare_documents_output, format_project_anchor_output, format_project_decisions_output,
-    format_project_link_output, format_project_list_output, format_project_register_output,
-    format_project_show_output, format_query_response, format_review_output,
-    format_supersede_output, render_active_blockers_summary, render_added_since_summary,
-    render_blocker_notifications_summary, render_changed_since_summary,
+    format_project_declare_topic_output, format_project_link_output, format_project_list_output,
+    format_project_register_output, format_project_show_output, format_query_response,
+    format_review_output, format_supersede_output, render_active_blockers_summary,
+    render_added_since_summary, render_blocker_notifications_summary, render_changed_since_summary,
     render_compact_view_summary, render_decision_brief_summary, render_decision_list_summary,
     render_decision_summary, render_dot, render_misfiled_scan_summary, render_neighborhood_summary,
     render_placement_line, render_read_only_export_summary, render_recall_summary,
@@ -100,8 +101,8 @@ use super::render::{
     render_resolve_outcome_summary, render_scan_report_summary, render_score_report_summary,
     render_search_summary, render_situational_summary, render_supersession_summary,
     CaptureCommandOutput, CurrentProjectOutput, DisagreeCommandOutput, ExportReport,
-    OutputEnvelope, ProjectAnchorOutput, ProjectLinkOutput, ProjectRegisterOutput,
-    ReviewActionOutput, ReviewCommandOutput, SupersedeCommandOutput,
+    OutputEnvelope, ProjectAnchorOutput, ProjectDeclareTopicOutput, ProjectLinkOutput,
+    ProjectRegisterOutput, ReviewActionOutput, ReviewCommandOutput, SupersedeCommandOutput,
 };
 #[cfg(feature = "shared-backend-postgres")]
 use super::render::{MigrateReport, ParityCheckResult};
@@ -170,6 +171,7 @@ fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
         project: None,
         project_source: None,
         project_from_context: false,
+        declare_topics: Vec::new(),
     };
     let (decision_id, _placement) =
         propose_decision_from_option_labels(&commands, &cli.actor, &decision_args, None)?;
@@ -766,7 +768,8 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
         EmitCommand::DecisionCapture(args) => {
             let (actor_id, provenance) = capture_actor_and_provenance(&args.provenance)?;
             let commands =
-                Commands::new_with_context(&ledger, cli_command_context(cli, provenance)?);
+                Commands::new_with_context(&ledger, cli_command_context(cli, provenance)?)
+                    .declaring_topics(&args.decision.declare_topics);
             let spec = grounding::require_grounding(grounding::grounding_spec_from_args(
                 &cli.hivemind_dir,
                 &args.grounding,
@@ -822,6 +825,11 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
             );
         }
         EmitCommand::DecisionProposed(args) => {
+            let commands = Commands::new_with_context(
+                &ledger,
+                cli_command_context(cli, cli_emit_provenance(&cli.actor))?,
+            )
+            .declaring_topics(&args.declare_topics);
             let project = cli_capture_project(cli, &ledger, env, args)?;
             let (decision_id, placement) = propose_decision_from_option_labels(
                 &commands,
@@ -1283,7 +1291,8 @@ pub(crate) fn run_supersede_in_context<W: IoWrite>(
     let commands = Commands::new_with_context(
         &ledger,
         CommandContext::new(tenant_id.clone(), fluent_write_provenance(&cli.actor)),
-    );
+    )
+    .declaring_topics(&args.declare_topics);
     // A context that finds nothing leaves the project unstated, and the superseding decision
     // keeps inheriting the old decision's project rather than dropping to a personal one.
     let project = cli_supersede_project(cli, &ledger, env, args)?;
@@ -2029,23 +2038,40 @@ fn cli_project_from_flags(
     if !from_context {
         return Ok(stated.map(ResolvedProject::from));
     }
-    resolve_project_in_ledger(stated, env, ledger, &cli_tenant(cli)?, &cli.hivemind_dir).map(Some)
+    resolve_project_in_ledger(
+        stated,
+        env,
+        ledger,
+        &LedgerConfig::from_cli(cli),
+        &cli_tenant(cli)?,
+    )
+    .map(Some)
 }
 
+/// A capture's project, refused when working it out from context found a rig this ledger
+/// has no project for (`ResolvedProject::wrong_ledger_refusal`): filing it would put a
+/// decision from one place into a ledger that does not know it.
 fn cli_capture_project(
     cli: &Cli,
     ledger: &AnyLedger,
     env: &ProjectContextEnv,
     args: &EmitDecisionProposedArgs,
 ) -> Result<Option<ResolvedProject>> {
-    cli_project_from_flags(
+    let project = cli_project_from_flags(
         cli,
         ledger,
         env,
         &args.project,
         args.project_source,
         args.project_from_context,
-    )
+    )?;
+    if let Some(refusal) = project
+        .as_ref()
+        .and_then(ResolvedProject::wrong_ledger_refusal)
+    {
+        return Err(CliError::InvalidInput(refusal).into());
+    }
+    Ok(project)
 }
 
 fn cli_supersede_project(
@@ -2258,7 +2284,8 @@ fn reviewed_decision_ids_by_actor(
             | EventPayload::ProjectLinked(_)
             | EventPayload::ProjectUnlinked(_)
             | EventPayload::ProjectAnchored(_)
-            | EventPayload::ProjectUnanchored(_) => {}
+            | EventPayload::ProjectUnanchored(_)
+            | EventPayload::ProjectTopicDeclared(_) => {}
         }
     }
     Ok(reviewed)
@@ -2305,7 +2332,8 @@ impl ReviewLedgerContext {
                 | EventPayload::ProjectLinked(_)
                 | EventPayload::ProjectUnlinked(_)
                 | EventPayload::ProjectAnchored(_)
-                | EventPayload::ProjectUnanchored(_) => {}
+                | EventPayload::ProjectUnanchored(_)
+                | EventPayload::ProjectTopicDeclared(_) => {}
             }
         }
         Ok(context)
@@ -2945,9 +2973,17 @@ fn run_query_with_graph(
         QueryCommand::ScanMisfiledDecisions(args) => {
             let request = MisfiledScanRequest {
                 foreign_topic_keys: args.foreign_topic_keys.clone(),
+                project: args.project.clone(),
+                move_to: args.move_to.clone(),
                 limit: args.limit,
                 cursor: args.cursor.clone(),
             };
+            // The scan reads the graph, which has no registry: a handle is checked here, so a
+            // typo is a refusal and never "nothing misfiled".
+            let scoped_ledger = TenantScopedLedger::new(ledger, context.tenant_id.clone());
+            for handle in request.project.iter().chain(request.move_to.iter()) {
+                require_registered_project(&scoped_ledger, handle)?;
+            }
             let response = scan_misfiled_decisions(graph, &request)?;
             let skip: usize = args
                 .cursor
@@ -3767,6 +3803,7 @@ fn run_project(cli: &Cli, args: &ProjectArgs) -> Result<String> {
             run_project_link(cli, link_args, ProjectLinkAction::Unlink)
         }
         ProjectCommand::Anchor(anchor_args) => run_project_anchor(cli, anchor_args),
+        ProjectCommand::DeclareTopic(declare_args) => run_project_declare_topic(cli, declare_args),
         ProjectCommand::List(list_args) => run_project_list(cli, list_args),
         ProjectCommand::Show(show_args) => run_project_show(cli, show_args),
         ProjectCommand::Decisions(decisions_args) => run_project_decisions(cli, decisions_args),
@@ -3846,6 +3883,30 @@ fn run_project_anchor(cli: &Cli, args: &ProjectAnchorArgs) -> Result<String> {
             handle: args.handle.clone(),
             anchor_kind: anchor_kind.as_str(),
             value: args.value.clone(),
+        },
+    )
+}
+
+fn run_project_declare_topic(cli: &Cli, args: &ProjectDeclareTopicArgs) -> Result<String> {
+    let ledger = open_ledger(cli)?;
+    let commands =
+        Commands::new_with_context(&ledger, cli_command_context(cli, EventProvenance::cli())?);
+
+    let declarations = if args.in_use {
+        commands.declare_topics_in_use(&cli.actor, &args.handle)?
+    } else {
+        args.topic_keys
+            .iter()
+            .map(|topic_key| commands.declare_project_topic(&cli.actor, &args.handle, topic_key))
+            .collect::<Result<Vec<_>>>()?
+    };
+
+    format_project_declare_topic_output(
+        cli.json,
+        &ProjectDeclareTopicOutput {
+            handle: args.handle.clone(),
+            in_use: args.in_use,
+            topics: declarations,
         },
     )
 }

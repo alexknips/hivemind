@@ -5173,6 +5173,7 @@ fn project_registry_register_link_anchor_list_show_round_trip_body(
                         "handle": "auth",
                         "personal": false,
                         "anchors": [],
+                        "topics": [],
                         "depends_on": [],
                         "registered_event_origin": 3
                     },
@@ -5182,6 +5183,7 @@ fn project_registry_register_link_anchor_list_show_round_trip_body(
                         "purpose": "Per-seat and per-org pricing decisions",
                         "personal": false,
                         "anchors": [{"kind": "rig", "value": "billing"}],
+                        "topics": [],
                         "part_of": {"to": "platform", "event_origin": 4},
                         "depends_on": [{"to": "auth", "event_origin": 5}],
                         "registered_event_origin": 2
@@ -5191,6 +5193,7 @@ fn project_registry_register_link_anchor_list_show_round_trip_body(
                         "display_name": "Platform",
                         "personal": false,
                         "anchors": [],
+                        "topics": [],
                         "depends_on": [],
                         "registered_event_origin": 1
                     }
@@ -5220,6 +5223,7 @@ fn project_registry_register_link_anchor_list_show_round_trip_body(
                     "purpose": "Per-seat and per-org pricing decisions",
                     "personal": false,
                     "anchors": [{"kind": "rig", "value": "billing"}],
+                    "topics": [],
                     "part_of": {"to": "platform", "event_origin": 4},
                     "depends_on": [{"to": "auth", "event_origin": 5}],
                     "registered_event_origin": 2
@@ -5268,6 +5272,7 @@ fn project_registry_register_link_anchor_list_show_round_trip_body(
                     "handle": "personal:human:alice",
                     "personal": true,
                     "anchors": [],
+                    "topics": [],
                     "depends_on": []
                 }
             }
@@ -6826,6 +6831,19 @@ fn register_test_project(backend: &TestBackend, handle: &str) -> CliTestResult {
         backend,
         &["--actor", "human:alice", "project", "register", handle],
     )))?;
+    // A project's topic vocabulary is explicit (hivemind-zywz): declare the one topic the
+    // capture fixtures below use, so a test that is not about topics can file under it.
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "project",
+            "declare-topic",
+            handle,
+            "billing",
+        ],
+    )))?;
     Ok(())
 }
 
@@ -7838,6 +7856,10 @@ fn every_query_answer_names_its_project() -> CliTestResult {
             ("Price per seat", Some("billing")),
             ("Keep a personal scratch decision", None),
         ] {
+            if let Some(handle) = project {
+                // A registered project's topic vocabulary is explicit (hivemind-zywz).
+                commands.declare_project_topic("human:alice", handle, "pricing")?;
+            }
             let option_id =
                 commands.record_option("human:alice", "Per seat", "Charge each seat")?;
             ids.push(commands.propose_decision(DecisionProposalInput {
@@ -7998,6 +8020,19 @@ fn seed_project_first_cli(
                 handle,
                 "--display-name",
                 &format!("{}{}", handle[..1].to_uppercase(), &handle[1..]),
+            ],
+        )))?;
+        // A registered project's topic vocabulary is explicit (hivemind-zywz): declare the
+        // topic the captures below file under.
+        run(&Cli::parse_from(cli_args(
+            backend,
+            &[
+                "--actor",
+                "human:alice",
+                "project",
+                "declare-topic",
+                handle,
+                "billing",
             ],
         )))?;
     }
@@ -9393,5 +9428,441 @@ fn project_from_context_parses_on_the_capture_verbs_and_mcp() -> CliTestResult {
     ensure(
         argv(&["mcp", "--project-from-context"]).is_ok(),
         "the stdio mcp server takes --project-from-context",
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Declared topic vocabularies, the wrong-ledger refusal, and the misfiled report's move
+// (hivemind-zywz)
+// ---------------------------------------------------------------------------
+
+fn capture_error_in(
+    backend: &TestBackend,
+    env: &ProjectContextEnv,
+    title: &str,
+    extra: &[&str],
+) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    let mut rest = vec!["--json", "--actor", "human:alice"];
+    rest.extend(capture_args_for(title, extra));
+    match run_emit_text_in(backend, env, &rest) {
+        Ok((stdout, _)) => Err(format!("the capture was not refused: {stdout}").into()),
+        Err(error) => Ok(error.to_string()),
+    }
+}
+
+fn project_show_json(
+    backend: &TestBackend,
+    handle: &str,
+) -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
+    Ok(serde_json::from_str(&run(&Cli::parse_from(cli_args(
+        backend,
+        &["--json", "project", "show", handle],
+    )))?)?)
+}
+
+fn declared_topic_keys(
+    show: &serde_json::Value,
+) -> std::result::Result<Vec<String>, Box<dyn std::error::Error>> {
+    show["data"]["project"]["topics"]
+        .as_array()
+        .ok_or("project show carries topics")?
+        .iter()
+        .map(|topic| {
+            topic["topic_key"]
+                .as_str()
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| "a topic names its key".into())
+        })
+        .collect()
+}
+
+fn a_capture_says_so_when_it_declares_a_topic_body(backend: &TestBackend) -> CliTestResult {
+    register_test_project(backend, "billing")?;
+    let tree = ContextTree::new("declare-topic");
+    let env = tree.env("unattached", None, "human:alice");
+
+    // The project declared `billing`; `pricing` is new, so the capture is refused, says what
+    // the project has, and writes nothing.
+    let refusal = capture_error_in(
+        backend,
+        &env,
+        "Adopt per-seat pricing",
+        &["--project", "billing", "--topic-keys", "billing,pricing"],
+    )?;
+    ensure(
+        refusal.contains("`pricing` is not declared for project billing")
+            && refusal.contains("declared: billing")
+            && refusal.contains("--declare-topic pricing"),
+        &format!("the refusal names the key, the vocabulary and the way to declare: {refusal}"),
+    )?;
+    ensure_json_eq(
+        &project_decisions_json(backend, &["billing"])?["data"]["total_matches"],
+        serde_json::json!(0),
+        "a refused capture records nothing",
+    )?;
+
+    // Saying so declares it, and the reply lists what was declared.
+    let mut rest = vec!["--json", "--actor", "human:alice"];
+    rest.extend(capture_args_for(
+        "Adopt per-seat pricing",
+        &[
+            "--project",
+            "billing",
+            "--topic-keys",
+            "billing,pricing",
+            "--declare-topic",
+            "pricing",
+        ],
+    ));
+    let (stdout, _) = run_emit_text_in(backend, &env, &rest)?;
+    let reply: serde_json::Value = serde_json::from_str(&stdout)?;
+    ensure_json_eq(
+        &reply["declared_topics"],
+        serde_json::json!(["pricing"]),
+        "the reply lists the declared topic",
+    )?;
+    ensure_json_eq(
+        &serde_json::json!(declared_topic_keys(&project_show_json(
+            backend, "billing"
+        )?)?),
+        serde_json::json!(["billing", "pricing"]),
+        "project show lists the vocabulary",
+    )?;
+
+    // Declared once, used freely: the next capture says nothing about declaring.
+    let mut rest = vec!["--json", "--actor", "human:alice"];
+    rest.extend(capture_args_for(
+        "Bill annually",
+        &["--project", "billing", "--topic-keys", "pricing"],
+    ));
+    let (stdout, _) = run_emit_text_in(backend, &env, &rest)?;
+    let reply: serde_json::Value = serde_json::from_str(&stdout)?;
+    ensure(
+        reply.get("declared_topics").is_none(),
+        "a capture that declares nothing does not mention it",
+    )?;
+
+    // Text mode announces a declaration on the notices stream, next to the project line.
+    let mut rest = vec!["--actor", "human:alice"];
+    rest.extend(capture_args_for(
+        "Invoice in local currency",
+        &[
+            "--project",
+            "billing",
+            "--topic-keys",
+            "invoicing",
+            "--declare-topic",
+            "invoicing",
+        ],
+    ));
+    let (stdout, notices) = run_emit_text_in(backend, &env, &rest)?;
+    ensure(
+        stdout.starts_with("decision-") && !stdout.contains(char::is_whitespace),
+        "text stdout stays the bare decision id",
+    )?;
+    ensure_eq(
+        notices.as_str(),
+        "project: billing (stated); declared topics for billing: invoicing\n",
+        "text mode says the capture declared a topic",
+    )
+}
+
+#[test]
+fn a_capture_says_so_when_it_declares_a_topic() -> CliTestResult {
+    a_capture_says_so_when_it_declares_a_topic_body(&TestBackend::sqlite("declare-topic"))
+}
+
+#[test]
+fn a_capture_says_so_when_it_declares_a_topic_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("declare-topic-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    a_capture_says_so_when_it_declares_a_topic_body(&backend)
+}
+
+fn project_declare_topic_declares_and_adopts_body(backend: &TestBackend) -> CliTestResult {
+    register_test_project(backend, "pricing")?;
+    let declare = |rest: &[&str]| -> std::result::Result<String, Box<dyn std::error::Error>> {
+        let mut args = vec!["--actor", "human:alice", "project", "declare-topic"];
+        args.extend_from_slice(rest);
+        Ok(run(&Cli::parse_from(cli_args(backend, &args)))?)
+    };
+
+    // One or several keys, normalised, each on its own line.
+    let output = declare(&["pricing", "seats", "Per Seat", "audit"])?;
+    ensure_eq(
+        output.lines().count(),
+        3,
+        &format!("one line per key: {output}"),
+    )?;
+    ensure(
+        output.contains("declared_topic=per-seat"),
+        &format!("the key is recorded normalised: {output}"),
+    )?;
+    let again = declare(&["pricing", "seats"])?;
+    ensure(
+        again.contains("already_declared"),
+        &format!("a key the project has is not recorded twice: {again}"),
+    )?;
+
+    // A personal project has no vocabulary; an unregistered one says how to register.
+    let error = run(&Cli::parse_from(cli_args(
+        backend,
+        &["project", "declare-topic", "personal:human:alice", "x"],
+    )))
+    .expect_err("a personal project has no vocabulary")
+    .to_string();
+    ensure(
+        error.contains("personal project has no topic vocabulary"),
+        &error,
+    )?;
+
+    // A decision that pre-dates the vocabulary is captured with no project, moved in, and its
+    // topic adopted in one step.
+    let (decision_id, _) = run_emit_text(
+        backend,
+        &capture_args_for(
+            "Price the legacy plan per seat",
+            &["--topic-keys", "legacy"],
+        ),
+    )?;
+    let moved = move_json(backend, &["--decision", &decision_id, "--to", "pricing"])?;
+    ensure_eq(moved["to"].as_str(), Some("pricing"), "moved in")?;
+    let adopted: serde_json::Value = serde_json::from_str(&run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "--json",
+            "project",
+            "declare-topic",
+            "pricing",
+            "--in-use",
+        ],
+    )))?)?;
+    let adopted_keys: Vec<&str> = adopted["topics"]
+        .as_array()
+        .ok_or("the reply lists the declared topics")?
+        .iter()
+        .filter_map(|topic| topic["topic_key"].as_str())
+        .collect();
+    ensure_eq(
+        adopted_keys,
+        vec!["legacy"],
+        "--in-use declares the keys the project's decisions carry that it has not declared \
+         (`billing` was declared when the project was set up)",
+    )
+}
+
+#[test]
+fn project_declare_topic_declares_and_adopts() -> CliTestResult {
+    project_declare_topic_declares_and_adopts_body(&TestBackend::sqlite("declare-topic-verb"))
+}
+
+#[test]
+fn project_declare_topic_declares_and_adopts_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("declare-topic-verb-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    project_declare_topic_declares_and_adopts_body(&backend)
+}
+
+fn a_capture_from_a_rig_the_ledger_has_no_project_for_is_refused_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    register_test_project(backend, "billing")?;
+    let tree = ContextTree::new("wrong-ledger");
+    let env = tree.env("unattached", Some("beadline"), "human:alice");
+
+    // No project in this ledger is anchored to the rig: this is the wrong ledger, not a
+    // folder nobody attached, so the capture is refused instead of filed under the personal
+    // project.
+    let refusal = capture_error_in(
+        backend,
+        &env,
+        "Adopt async beadline queue",
+        &["--project-from-context"],
+    )?;
+    ensure(
+        refusal.contains("rig `beadline`")
+            && refusal.contains("wrong ledger")
+            && refusal.contains("no project in tenant `")
+            && refusal
+                .contains("hivemind project anchor --handle <project> --kind rig --value beadline"),
+        &format!("the refusal names the rig, the ledger and the way out: {refusal}"),
+    )?;
+    ensure_json_eq(
+        &project_decisions_json(backend, &["personal:agent:claude"])?["data"]["total_matches"],
+        serde_json::json!(0),
+        "nothing was filed under the personal project",
+    )?;
+
+    // Stating the project is the way out, and a rig the ledger knows needs no way out.
+    let stated = capture_json_in(
+        backend,
+        &env,
+        "Adopt async beadline queue",
+        &["--project-from-context", "--project", "billing"],
+    )?;
+    ensure_eq(stated["project"].as_str(), Some("billing"), "stated wins")?;
+    run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "project", "anchor", "--handle", "billing", "--kind", "rig", "--value", "beadline",
+        ],
+    )))?;
+    let anchored = capture_json_in(
+        backend,
+        &env,
+        "Adopt async beadline retries",
+        &["--project-from-context"],
+    )?;
+    ensure_eq(
+        anchored["project"].as_str(),
+        Some("billing"),
+        "anchored rig",
+    )?;
+    ensure_eq(
+        anchored["project_source"].as_str(),
+        Some("rig"),
+        "anchored rig source",
+    )?;
+
+    // A folder with no rig is the ordinary unattached-folder case: filed, and reminded.
+    let personal = capture_json_in(
+        backend,
+        &tree.env("unattached", None, "human:alice"),
+        "Adopt async beadline logging",
+        &["--project-from-context"],
+    )?;
+    ensure_eq(
+        personal["project_source"].as_str(),
+        Some("personal_fallback"),
+        "no rig, no refusal",
+    )
+}
+
+#[test]
+fn a_capture_from_a_rig_the_ledger_has_no_project_for_is_refused() -> CliTestResult {
+    a_capture_from_a_rig_the_ledger_has_no_project_for_is_refused_body(&TestBackend::sqlite(
+        "wrong-ledger",
+    ))
+}
+
+#[test]
+fn a_capture_from_a_rig_the_ledger_has_no_project_for_is_refused_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("wrong-ledger-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    a_capture_from_a_rig_the_ledger_has_no_project_for_is_refused_body(&backend)
+}
+
+#[test]
+fn a_supersede_from_a_rig_the_ledger_has_no_project_for_inherits_instead_of_refusing(
+) -> CliTestResult {
+    let backend = TestBackend::sqlite("wrong-ledger-supersede");
+    register_test_project(&backend, "billing")?;
+    let tree = ContextTree::new("wrong-ledger-supersede");
+    let (old, _notices) = run_emit_text(
+        &backend,
+        &capture_args_for("Use shared admin token", &["--project", "billing"]),
+    )?;
+
+    let (stdout, _notices) = run_supersede_text_in(
+        &backend,
+        &tree.env("unattached", Some("beadline"), "human:bob"),
+        &[
+            "--json",
+            "--actor",
+            "human:bob",
+            "supersede",
+            "--old",
+            old.as_str(),
+            "--title",
+            "Use per-service tokens",
+            "--rationale",
+            PROJECT_TEST_RATIONALE,
+            "--bet",
+            "--project-from-context",
+        ],
+    )?;
+    let reply: serde_json::Value = serde_json::from_str(&stdout)?;
+    ensure_eq(
+        reply["project"].as_str(),
+        Some("billing"),
+        "a supersede's project is the old decision's, in this ledger by construction",
+    )
+}
+
+#[test]
+fn the_misfiled_report_carries_the_project_and_the_move_and_nothing_is_moved() -> CliTestResult {
+    let backend = TestBackend::sqlite("misfiled-move");
+    register_test_project(&backend, "beadline")?;
+    let (stray, _notices) = run_emit_text(
+        &backend,
+        &capture_args_for(
+            "Beadline decision filed nowhere",
+            &["--topic-keys", "beadline"],
+        ),
+    )?;
+    let scan = |rest: &[&str]| -> std::result::Result<String, Box<dyn std::error::Error>> {
+        let mut args = vec!["query", "scan_misfiled_decisions", "--summary"];
+        args.extend_from_slice(rest);
+        Ok(run(&Cli::parse_from(cli_args(&backend, &args)))?)
+    };
+
+    let report = scan(&["--foreign-topic", "beadline", "--move-to", "beadline"])?;
+    ensure(
+        report.contains(&stray)
+            && report.contains("project=personal:agent:claude")
+            && report.contains(&format!(
+                "move=hivemind move --decision {stray} --to beadline"
+            )),
+        &format!("the row names the project and hands over the move: {report}"),
+    )?;
+    ensure(
+        project_decisions_json(&backend, &["beadline"])?["data"]["total_matches"]
+            == serde_json::json!(0),
+        "the report moves nothing",
+    )?;
+
+    // The scan is scoped by project, and a handle no one registered is a refusal.
+    let scoped = scan(&[
+        "--foreign-topic",
+        "beadline",
+        "--project",
+        "personal:agent:claude",
+    ])?;
+    ensure(scoped.contains(&stray), &format!("scoped report: {scoped}"))?;
+    let error = run(&Cli::parse_from(cli_args(
+        &backend,
+        &[
+            "query",
+            "scan_misfiled_decisions",
+            "--foreign-topic",
+            "beadline",
+            "--project",
+            "beadlin",
+        ],
+    )))
+    .expect_err("an unregistered project is refused, never an empty report")
+    .to_string();
+    ensure(error.contains("hivemind project register beadlin"), &error)?;
+
+    // Move it as the row said; the personal project's report is now clean.
+    move_json(&backend, &["--decision", &stray, "--to", "beadline"])?;
+    let clean = scan(&[
+        "--foreign-topic",
+        "beadline",
+        "--project",
+        "personal:agent:claude",
+    ])?;
+    ensure_eq(
+        clean.as_str(),
+        "No misfiled candidates found",
+        "nothing left to move",
     )
 }

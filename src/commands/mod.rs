@@ -63,7 +63,31 @@
 //!   transitively, on the decision being grounded) needs the graph, so it is the calling verb's
 //!   rule (`crate::grounding::premise_cycle_refusal`), applied before this function is called.
 
-use std::collections::{HashMap, HashSet};
+//! # Project topic vocabulary (hivemind-zywz)
+//!
+//! A registered project has a topic vocabulary: the keys declared for it by
+//! `project.topic_declared` events. A topic key says what a decision is about; without a
+//! vocabulary every capture invents its own and recall by topic becomes a lottery. Enforced by
+//! `propose_decision*` and `supersede`, tested in `commands/tests.rs`:
+//!
+//! - Keys are normalised (lowercase kebab, see `normalize_topic_key`) before anything else.
+//! - A capture filed under a registered project may only use keys that project declared. One
+//!   that uses another is refused before the first write, naming the keys, the declared ones
+//!   and how to declare. A new project has an empty vocabulary, so its first capture must
+//!   declare every key it uses.
+//! - A capture adds keys to the vocabulary only by saying so (`Commands::declaring_topics`).
+//!   Each becomes its own `project.topic_declared` event, by the capturing actor, recorded just
+//!   before the proposal, and the reply lists them. A key already declared is not declared
+//!   twice. Declaring a key the capture does not use is refused.
+//! - `declare_project_topic` adds one key on its own; `declare_topics_in_use` adopts every key
+//!   the project's existing decisions already carry, the one-step migration for a project that
+//!   predates its vocabulary. Nothing removes a key.
+//! - A personal project, and a capture that names no project, has no vocabulary: any key is
+//!   accepted and declaring one is refused.
+//! - A move never checks the destination's vocabulary: a decision keeps the keys it was
+//!   captured with, and correcting where it lives must never be refused for them.
+
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::{Mutex, MutexGuard};
 
@@ -88,7 +112,8 @@ use crate::events::{
     EventId, EventPayload, EventProvenance, EventType, EvidenceRecordedPayload, HypothesisKind,
     HypothesisRecordedPayload, IngestBatchClassifiedPayload, IngestBatchReceivedPayload,
     IngestTurn, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload,
-    ProjectRegisteredPayload, ProjectSource, RelationAddedPayload, RelationKind, TenantId,
+    ProjectRegisteredPayload, ProjectSource, ProjectTopicDeclaredPayload, RelationAddedPayload,
+    RelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::util::{require_non_empty, require_valid_actor_id};
@@ -135,6 +160,9 @@ pub struct DecisionProposalEventIds {
     /// about staleness is the renderer's job, not a write-time gate), but the caller needs
     /// this to build an honest reply.
     pub premise_stale: Vec<DecisionId>,
+    /// Topic keys this capture declared for its project just before the proposal
+    /// (`Commands::declaring_topics`); empty when it used only already-declared keys.
+    pub declared_topics: Vec<String>,
 }
 
 /// What a proposed decision rests on, named at the moment of capture. `Declared` requires
@@ -211,6 +239,10 @@ pub struct DecisionPlacement {
     /// The shared handle, or on personal fallback the derived `personal:<actor>` address.
     pub project: String,
     pub project_source: ProjectSource,
+    /// Topic keys this capture added to the project's vocabulary (`--declare-topic`), so a
+    /// new key is never silent. Empty when it used only keys the project already had.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub declared_topics: Vec<String>,
 }
 
 impl DecisionPlacement {
@@ -224,6 +256,7 @@ impl DecisionPlacement {
         Self {
             project: project.map_or_else(|| personal_project_handle(actor_id), ToOwned::to_owned),
             project_source: project_source.unwrap_or(ProjectSource::PersonalFallback),
+            declared_topics: Vec::new(),
         }
     }
 
@@ -247,6 +280,30 @@ pub struct DecisionMoveOutcome {
     pub to: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// What `Commands::declare_project_topic` recorded (or, for a key the project already had,
+/// did not).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProjectTopicDeclaration {
+    pub handle: String,
+    /// The normalised key, as it sits in the vocabulary.
+    pub topic_key: String,
+    /// `false` when the project already had the key: a success that recorded nothing.
+    pub newly_declared: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<EventId>,
+}
+
+impl ProjectTopicDeclaration {
+    fn recorded(handle: &str, topic_key: &str, event_id: EventId) -> Self {
+        Self {
+            handle: handle.to_owned(),
+            topic_key: topic_key.to_owned(),
+            newly_declared: true,
+            event_id: Some(event_id),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,6 +415,9 @@ pub struct Commands<'a, L: EventLedger> {
     ledger: &'a L,
     context: CommandContext,
     state: Mutex<CommandState>,
+    /// Topic keys the capture made through this handle introduces to its project's
+    /// vocabulary (hivemind-zywz). Empty unless the caller asked with `declaring_topics`.
+    declared_topics: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -419,7 +479,18 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             ledger,
             context,
             state: Mutex::new(CommandState::default()),
+            declared_topics: Vec::new(),
         }
+    }
+
+    /// The capture made through this handle introduces `topic_keys` to its project's topic
+    /// vocabulary. Without this, a capture into a registered project may only use keys the
+    /// project already declared. Every key must be one of the capture's own topic keys, and
+    /// the capture must be filed under a registered project (see `declare_project_topic`).
+    #[must_use]
+    pub fn declaring_topics(mut self, topic_keys: &[String]) -> Self {
+        self.declared_topics = topic_keys.to_vec();
+        self
     }
 
     pub fn record_evidence(&self, actor_id: &str, content: &str) -> Result<EvidenceId> {
@@ -755,6 +826,60 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         )?;
 
         self.append_event(event)
+    }
+
+    /// Add one key to a registered project's topic vocabulary (hivemind-zywz). The key is
+    /// normalised (lowercase kebab) first. Declaring a key the project already has succeeds
+    /// and records nothing. A vocabulary grows only through this and a capture's own
+    /// `declaring_topics`; nothing else adds a key and nothing removes one.
+    pub fn declare_project_topic(
+        &self,
+        actor_id: &str,
+        handle: &str,
+        topic_key: &str,
+    ) -> Result<ProjectTopicDeclaration> {
+        require_valid_actor_id(actor_id)?;
+        let topic_key = require_normalized_topic_key(topic_key)?;
+        self.require_project_with_vocabulary(handle)?;
+
+        if self.project_topic_vocabulary(handle)?.contains(&topic_key) {
+            return Ok(ProjectTopicDeclaration {
+                handle: handle.to_owned(),
+                topic_key,
+                newly_declared: false,
+                event_id: None,
+            });
+        }
+
+        let event_id = self.append_topic_declaration(actor_id, handle, &topic_key)?;
+        Ok(ProjectTopicDeclaration::recorded(
+            handle, &topic_key, event_id,
+        ))
+    }
+
+    /// Declare every topic key the decisions now in `handle` already carry, so a project
+    /// that existed before it had a vocabulary adopts what it uses in one explicit step
+    /// instead of re-declaring key by key. One `project.topic_declared` per key not yet
+    /// declared, in key order. A decision that was moved out contributes nothing; one moved
+    /// in contributes its keys. Returns what was recorded.
+    pub fn declare_topics_in_use(
+        &self,
+        actor_id: &str,
+        handle: &str,
+    ) -> Result<Vec<ProjectTopicDeclaration>> {
+        require_valid_actor_id(actor_id)?;
+        self.require_project_with_vocabulary(handle)?;
+
+        let in_use = self.topic_keys_in_project(handle)?;
+        let vocabulary = self.project_topic_vocabulary(handle)?;
+
+        in_use
+            .difference(&vocabulary)
+            .map(|topic_key| {
+                self.append_topic_declaration(actor_id, handle, topic_key)
+                    .map(|event_id| ProjectTopicDeclaration::recorded(handle, topic_key, event_id))
+            })
+            .collect()
     }
 
     /// Move a decision to a different project (approved record shape, item 3;
@@ -1094,6 +1219,14 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
+        // The stated project's vocabulary, refused here so a grounded capture leaves no
+        // orphan evidence behind; the proposal itself checks again, which also covers a
+        // supersede that inherits its project.
+        self.plan_topic_declarations(
+            input.project.as_ref().map(|project| project.handle),
+            &normalized_topic_keys,
+        )?;
+
         {
             let state = self.lock_state()?;
             for option_id in input.option_ids {
@@ -1160,7 +1293,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         let decision_id = generate_entity_id("decision");
 
         let (project, project_source) = self.resolve_stated_project(input.project)?;
-        let placement = DecisionPlacement::from_recorded(
+        let mut placement = DecisionPlacement::from_recorded(
             input.actor_id,
             project.as_deref(),
             Some(project_source),
@@ -1172,6 +1305,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             project,
             project_source,
         )?;
+        placement
+            .declared_topics
+            .clone_from(&event_ids.declared_topics);
 
         if !input.still_proposed && input.chosen_option_id.is_some() {
             let decider = input.decided_by.unwrap_or(input.actor_id);
@@ -1281,6 +1417,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
+        // Refused, like everything above, before the first write; the declarations it
+        // returns are appended just before the proposal below.
+        let declared_topics =
+            self.plan_topic_declarations(project.as_deref(), &normalized_topic_keys)?;
+
         let option_descriptions: Vec<String> = {
             let state = self.lock_state()?;
             let mut descriptions = Vec::with_capacity(input.option_ids.len());
@@ -1350,6 +1491,12 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }
         }
         let premise_stale: Vec<DecisionId> = stale_premises.into_iter().cloned().collect();
+
+        if let Some(handle) = project.as_deref() {
+            for topic_key in &declared_topics {
+                self.append_topic_declaration(input.actor_id, handle, topic_key)?;
+            }
+        }
 
         let root_event = self.event_with_uuid(
             input.actor_id,
@@ -1444,6 +1591,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             proposal_event_id: root_event_id,
             relation_event_ids,
             premise_stale,
+            declared_topics,
         })
     }
 
@@ -1727,7 +1875,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                     .unwrap_or(ProjectSource::PersonalFallback),
             ),
         };
-        let placement = DecisionPlacement::from_recorded(
+        let mut placement = DecisionPlacement::from_recorded(
             input.actor_id,
             project.as_deref(),
             Some(project_source),
@@ -1864,6 +2012,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             (Some(plan), Some(planned)) => planned.rests_on(&plan.premise_decision_ids),
             _ => Vec::new(),
         };
+        placement.declared_topics = proposal_event_ids.declared_topics;
         Ok(SupersedeOutcome {
             new_decision_id,
             proposal_event_id: proposal_event_ids.proposal_event_id,
@@ -2245,6 +2394,170 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             let has_matching_handle = payload_value_matches(event, "handle", handle);
             event.event_type == EventType::ProjectRegistered && has_matching_handle
         })
+    }
+
+    /// A topic vocabulary belongs to a registered shared project: a personal address is
+    /// derived from the actor and never registered, so it has none, and an unregistered
+    /// handle is refused with the register command like everywhere else.
+    fn require_project_with_vocabulary(&self, handle: &str) -> Result<()> {
+        if handle.starts_with(PERSONAL_PROJECT_HANDLE_PREFIX) {
+            return Err(CommandError::Validation(format!(
+                "a personal project has no topic vocabulary; topics are declared for a registered project: {handle}"
+            ))
+            .into());
+        }
+        if !self.project_exists(handle)? {
+            return Err(CommandError::Invariant(format!(
+                "project not registered: {handle} -- register it first with `hivemind project register {handle}`"
+            ))
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Every topic key declared for `handle`, in key order.
+    fn project_topic_vocabulary(&self, handle: &str) -> Result<BTreeSet<String>> {
+        let mut vocabulary = BTreeSet::new();
+        self.ledger
+            .replay_from_for_tenant(&self.context.tenant_id, 0, &mut |event| {
+                if event.event_type == EventType::ProjectTopicDeclared
+                    && payload_value_matches(event, "handle", handle)
+                {
+                    if let Some(topic_key) = payload_value_as_str(event, "topic_key") {
+                        vocabulary.insert(topic_key.to_owned());
+                    }
+                }
+                Ok(())
+            })?;
+        Ok(vocabulary)
+    }
+
+    /// Every topic key carried by the decisions now in `handle`: each decision's proposal
+    /// keys, for the decisions whose project (moves applied in ledger order) is `handle`.
+    fn topic_keys_in_project(&self, handle: &str) -> Result<BTreeSet<String>> {
+        // decision id -> (its current project, its topic keys)
+        let mut decisions: HashMap<String, (String, Vec<String>)> = HashMap::new();
+        self.ledger
+            .replay_from_for_tenant(&self.context.tenant_id, 0, &mut |event| {
+                match event.event_type {
+                    EventType::DecisionProposed => {
+                        if let Some(decision_id) = payload_value_as_str(event, "decision_id") {
+                            let project = payload_value_as_str(event, "project")
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| personal_project_handle(&event.actor_id));
+                            decisions.insert(
+                                decision_id.to_owned(),
+                                (project, payload_string_list(event, "topic_keys")),
+                            );
+                        }
+                    }
+                    EventType::DecisionMoved => {
+                        if let (Some(decision_id), Some(to)) = (
+                            payload_value_as_str(event, "decision_id"),
+                            payload_value_as_str(event, "to"),
+                        ) {
+                            if let Some((project, _)) = decisions.get_mut(decision_id) {
+                                to.clone_into(project);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })?;
+
+        Ok(decisions
+            .into_values()
+            .filter(|(project, _)| same_identifier(project, handle))
+            .flat_map(|(_, topic_keys)| topic_keys)
+            .collect())
+    }
+
+    /// The write rule for a project's topic vocabulary (hivemind-zywz), applied to a capture
+    /// filed under `project` with `topic_keys` (already normalised).
+    ///
+    /// - A personal project (or none) has no vocabulary, so any key is accepted; asking to
+    ///   declare topics there is refused.
+    /// - Under a registered project every key must already be declared, or be one this
+    ///   capture declares (`declaring_topics`), or the capture is refused naming the keys,
+    ///   the declared ones and how to declare. A declaration must name one of the
+    ///   capture's own keys.
+    /// - A handle that is not registered is left to `resolve_stated_project`, which refuses
+    ///   it with the register command.
+    ///
+    /// Returns the keys to declare before the proposal; nothing is written here.
+    fn plan_topic_declarations(
+        &self,
+        project: Option<&str>,
+        topic_keys: &[String],
+    ) -> Result<Vec<String>> {
+        let requested: BTreeSet<String> = normalize_topic_keys(&self.declared_topics)
+            .into_iter()
+            .collect();
+
+        let shared = project.filter(|handle| !handle.starts_with(PERSONAL_PROJECT_HANDLE_PREFIX));
+        let Some(handle) = shared else {
+            if requested.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Err(CommandError::Validation(
+                "declared topics need a registered project: this capture is filed under a personal project, which has no topic vocabulary -- pass a registered project handle"
+                    .to_owned(),
+            )
+            .into());
+        };
+
+        if let Some(stray) = requested
+            .iter()
+            .find(|topic_key| !topic_keys.contains(topic_key))
+        {
+            return Err(CommandError::Validation(format!(
+                "declared topic {stray} is not one of this capture's topic keys; a capture declares only the keys it uses"
+            ))
+            .into());
+        }
+
+        if !self.project_exists(handle)? {
+            return Ok(Vec::new());
+        }
+
+        let vocabulary = self.project_topic_vocabulary(handle)?;
+        let undeclared: BTreeSet<&str> = topic_keys
+            .iter()
+            .map(String::as_str)
+            .filter(|topic_key| !vocabulary.contains(*topic_key) && !requested.contains(*topic_key))
+            .collect();
+        if !undeclared.is_empty() {
+            return Err(CommandError::Validation(undeclared_topics_refusal(
+                handle,
+                &undeclared,
+                &vocabulary,
+            ))
+            .into());
+        }
+
+        Ok(requested
+            .into_iter()
+            .filter(|topic_key| !vocabulary.contains(topic_key))
+            .collect())
+    }
+
+    fn append_topic_declaration(
+        &self,
+        actor_id: &str,
+        handle: &str,
+        topic_key: &str,
+    ) -> Result<EventId> {
+        let event = self.event_with_uuid(
+            actor_id,
+            EventPayload::ProjectTopicDeclared(ProjectTopicDeclaredPayload {
+                handle: handle.to_owned(),
+                topic_key: topic_key.to_owned(),
+            }),
+            None,
+            Uuid::new_v4(),
+        )?;
+        self.append_event(event)
     }
 
     /// Registration is permanent in this slice (no `project.unregistered` event exists),
@@ -2830,6 +3143,72 @@ fn effective_topic_keys(requested: &[String], fallback: &[String]) -> Result<Vec
     } else {
         Ok(effective)
     }
+}
+
+/// `raw` normalised, refused when nothing of it survives (no letter or digit).
+fn require_normalized_topic_key(raw: &str) -> Result<String> {
+    let topic_key = normalize_topic_key(raw);
+    if topic_key.is_empty() {
+        return Err(CommandError::Validation(format!(
+            "a topic key must contain at least one letter or digit: {raw:?}"
+        ))
+        .into());
+    }
+    Ok(topic_key)
+}
+
+/// How many declared keys a refusal lists before pointing at `project show` for the rest.
+const TOPIC_REFUSAL_PREVIEW: usize = 25;
+
+/// The refusal for a capture that used topic keys its project never declared: names them, says
+/// what the project has, and gives both ways to add a key. Deterministic; it suggests nothing.
+fn undeclared_topics_refusal(
+    handle: &str,
+    undeclared: &BTreeSet<&str>,
+    vocabulary: &BTreeSet<String>,
+) -> String {
+    let (noun, verb, pronoun) = if undeclared.len() == 1 {
+        ("topic", "is", "it")
+    } else {
+        ("topics", "are", "them")
+    };
+    let named = undeclared
+        .iter()
+        .map(|topic_key| format!("`{topic_key}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let flags = undeclared
+        .iter()
+        .map(|topic_key| format!("--declare-topic {topic_key}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let keys = undeclared.iter().copied().collect::<Vec<_>>().join(" ");
+
+    let declared = if vocabulary.is_empty() {
+        "none yet".to_owned()
+    } else {
+        let mut listed = vocabulary
+            .iter()
+            .take(TOPIC_REFUSAL_PREVIEW)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if vocabulary.len() > TOPIC_REFUSAL_PREVIEW {
+            let _ = write!(
+                listed,
+                ", and {} more (`hivemind project show {handle}` lists them all)",
+                vocabulary.len() - TOPIC_REFUSAL_PREVIEW
+            );
+        }
+        listed
+    };
+
+    format!(
+        "{noun} {named} {verb} not declared for project {handle} (declared: {declared}). \
+         To add {pronoun}, say so in this capture ({flags}, or `declare_topics` over MCP) \
+         or declare {pronoun} first with `hivemind project declare-topic {handle} {keys}`; \
+         otherwise use a declared topic."
+    )
 }
 
 fn normalize_topic_keys(topic_keys: &[String]) -> Vec<String> {

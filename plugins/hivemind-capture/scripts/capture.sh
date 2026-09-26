@@ -60,6 +60,15 @@ setting); when none applies the decision is saved to your personal project and
 the confirmation says so, with how to attach the folder.
   --project HANDLE            Name the project outright. It wins over all of
                               the above. Unregistered handles are refused.
+  --declare-topic KEY[,KEY]   Add these keys from --topic-keys to the project's
+                              topic vocabulary. Under a registered project a
+                              capture may use only declared keys; the
+                              confirmation lists what was declared.
+
+A session in a Gas City rig that no project in the ledger is anchored to is
+refused instead of filed under your personal project: it is writing to the wrong
+ledger. Write to the ledger that holds the rig's project, anchor the rig, or
+name the project with --project.
 USAGE
 }
 
@@ -390,7 +399,7 @@ while [[ $# -gt 0 ]]; do
       HIVEMIND_DIR="${2:-}"
       shift 2
       ;;
-    --title|--rationale|--topic-keys|--options|--chose|--decided-by|--delegated-by|--hypotheses|--evidence|--quote|--question|--rests-on-decision|--rests-on-evidence|--evidence-source|--rests-on-assumption|--would-change-if|--check-by|--confidence|--project|--project-source)
+    --title|--rationale|--topic-keys|--options|--chose|--decided-by|--delegated-by|--hypotheses|--evidence|--quote|--question|--rests-on-decision|--rests-on-evidence|--evidence-source|--rests-on-assumption|--would-change-if|--check-by|--confidence|--project|--project-source|--declare-topic)
       FORWARDED+=("$1" "${2:-}")
       shift 2
       ;;

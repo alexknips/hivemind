@@ -349,9 +349,28 @@ never read back. Relay that reminder to the user rather than dropping it: a
 decision left in a personal project is easy to lose track of, and it can be moved
 to the right project later.
 
+A session in a Gas City rig that no project in this ledger is anchored to is
+not an unattached folder: it is writing to the wrong ledger. The capture is
+refused with the rig, the ledger and the ways out (write to the ledger that holds
+the rig's project, `hivemind project anchor --handle <project> --kind rig --value
+<rig>`, or name the project with `--project`). Nothing is written, so relay the
+refusal instead of retrying blindly.
+
 `supersede` (from the `hivemind-context` plugin) works the same way, except
 that a replacement with no project found stays in the project of the decision
 it replaces. Evidence and hypotheses carry no project.
+
+## Topic Keys Are Declared Per Project
+
+Topic keys are lowercase kebab (`Pricing Model` becomes `pricing-model`). A
+registered project has a vocabulary of declared keys, and a capture filed under it
+may use only those. Before inventing a key, look at what the project has
+(`hivemind project show <handle>` lists them as `topics=`). When you need a new key,
+say so in the capture with `--declare-topic KEY` (each declared key must also be in
+`--topic-keys`); the confirmation lists what was declared. A key you neither found
+in the vocabulary nor declared is refused with the declared keys and how to add it.
+Do not declare a key just to get past the refusal: use an existing one when it
+means the same thing. A personal project has no vocabulary, so any key works there.
 
 ## Batch Capture via Haiku Subagent (Keyless)
 

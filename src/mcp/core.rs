@@ -208,6 +208,12 @@ fn insert_placement(reply: &mut Value, placement: &DecisionPlacement) {
         if let Some(notice) = placement.notice() {
             reply.insert("project_notice".to_owned(), json!(notice));
         }
+        if !placement.declared_topics.is_empty() {
+            reply.insert(
+                "declared_topics".to_owned(),
+                json!(placement.declared_topics),
+            );
+        }
     }
 }
 
@@ -258,6 +264,9 @@ pub(crate) struct CaptureDecisionArgs {
     pub(crate) project: Option<String>,
     /// How `project` was determined; `stated` when omitted. Requires `project`.
     pub(crate) project_source: Option<ProjectSource>,
+    /// Topic keys this capture adds to its project's vocabulary; each must be one of
+    /// `topic_keys`. See `Commands::declaring_topics`.
+    pub(crate) declare_topics: Vec<String>,
 }
 
 /// Parse and require the wire grounding shared by `capture_decision`, `supersede_decision` and
@@ -394,6 +403,7 @@ impl CaptureDecisionArgs {
             question,
             project,
             project_source,
+            declare_topics: optional_string_array(args, "declare_topics")?,
         })
     }
 }
@@ -421,7 +431,8 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
             handle.tenant_id,
             EventProvenance::agent(args.actor_id.clone()),
         ),
-    );
+    )
+    .declaring_topics(&args.declare_topics);
 
     let mut option_ids: Vec<String> = Vec::with_capacity(args.options.len());
     let mut option_labels: Vec<String> = Vec::with_capacity(args.options.len());
@@ -990,6 +1001,9 @@ pub(crate) struct SupersedeDecisionArgs {
     pub(crate) project: Option<String>,
     /// How `project` was determined; `stated` when omitted. Requires `project`.
     pub(crate) project_source: Option<ProjectSource>,
+    /// Topic keys this supersession adds to its project's vocabulary; each must be one of the
+    /// keys it ends up with. See `Commands::declaring_topics`.
+    pub(crate) declare_topics: Vec<String>,
 }
 
 impl SupersedeDecisionArgs {
@@ -1012,6 +1026,7 @@ impl SupersedeDecisionArgs {
             chosen_option_label: optional_string(args, "chosen_option_label")?,
             grounding: require_wire_grounding(args, WIRE_GROUNDING_REFUSAL)?,
             expressed_confidence: optional_string(args, "expressed_confidence")?,
+            declare_topics: optional_string_array(args, "declare_topics")?,
         })
     }
 }
@@ -1056,7 +1071,8 @@ pub(crate) fn supersede_decision<P: LedgerProvider>(
             handle.tenant_id.clone(),
             EventProvenance::agent(args.actor_id.clone()),
         ),
-    );
+    )
+    .declaring_topics(&args.declare_topics);
     let outcome = commands
         .supersede(SupersedeInput {
             project: determined_project(args.project.as_deref(), args.project_source),

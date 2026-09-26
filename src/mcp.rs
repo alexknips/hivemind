@@ -31,15 +31,16 @@ use crate::commands::{CommandContext, Commands};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, ProjectSource, TenantId};
 use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool};
-use crate::ledger::{AnyLedger, LedgerConfig};
+use crate::ledger::{AnyLedger, LedgerConfig, TenantScopedLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
     context_next_cursor, get_decision, get_decision_context, get_decision_context_candidates,
     get_decision_quality_candidates, get_failure_attribution, get_recent_decisions,
-    get_relevant_decisions, misfiled_next_cursor, outcome_next_cursor, scan_misfiled_decisions,
-    search_decisions_any, DecisionContextRequest, DecisionQualityCandidatesRequest, DecisionStatus,
-    FailureAttributionRequest, MisfiledScanRequest, QueryContext, RecentDecisionFilterRequest,
-    RecentDecisionsRequest, SearchDecisionRequest,
+    get_relevant_decisions, misfiled_next_cursor, outcome_next_cursor, require_registered_project,
+    scan_misfiled_decisions, search_decisions_any, DecisionContextRequest,
+    DecisionQualityCandidatesRequest, DecisionStatus, FailureAttributionRequest,
+    MisfiledScanRequest, QueryContext, RecentDecisionFilterRequest, RecentDecisionsRequest,
+    SearchDecisionRequest,
 };
 use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
@@ -486,7 +487,8 @@ pub fn tool_definitions() -> Vec<Value> {
                     "quote": { "type": "string", "description": "Verbatim words of the decider, self-contained — not a bare reference like \"1a\" into an external numbered list. Requires `question`. A quote with no stated question is unreadable once the source conversation is gone." },
                     "question": { "type": "string", "description": "The question `quote` answers, spelled out in the capturer's own words. Requires `quote`." },
                     "project": { "type": "string", "description": "Registered project handle to file the decision under. An unknown handle is refused with the register command. Omit it and the decision is saved to the actor's personal project — the reply says so (`project_notice`). HiveMind checks the handle and never works out the project itself, so pass it whenever you know it; an HTTP-served MCP cannot see the caller's working directory. A stdio server started with `--project-from-context` works it out from its own working directory when you omit it (the `.hivemind-project` files of the folders the uncommitted change touches, else the nearest one above the working directory, then the rig, then the actor's current project; `project_source` says which), and adds `project_reminder` when the folder is not attached to any project or the change spans several: several projects are recorded for the nearest project they are all part of, or saved to the personal project when they share none." },
-                    "project_source": { "type": "string", "enum": ["stated", "folder_marker", "rig", "current_project", "job"], "description": "How `project` was determined. Defaults to `stated`. Requires `project`." }
+                    "project_source": { "type": "string", "enum": ["stated", "folder_marker", "rig", "current_project", "job"], "description": "How `project` was determined. Defaults to `stated`. Requires `project`." },
+                    "declare_topics": { "type": "array", "items": { "type": "string" }, "description": "Topic keys from `topic_keys` that this call adds to the project's topic vocabulary. A call filed under a registered project may only use topic keys that project already declared (a personal project has no vocabulary), so name a new key here; the reply lists `declared_topics`. Each must be one of this call's topic keys." }
                 }
             }
         }),
@@ -564,7 +566,8 @@ pub fn tool_definitions() -> Vec<Value> {
                     "hypothesis_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"assumption\", hypothesis_id}` grounding items." },
                     "evidence_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"evidence\", evidence_id}` grounding items." },
                     "project": { "type": "string", "description": "Registered project handle to file the superseding decision under. An unknown handle is refused with the register command. Omit it and the new decision inherits the old decision's project. HiveMind never works out the project itself; an HTTP-served MCP cannot see the caller's working directory. A stdio server started with `--project-from-context` works it out from its own working directory when you omit it, and inherits only when that finds nothing." },
-                    "project_source": { "type": "string", "enum": ["stated", "folder_marker", "rig", "current_project", "job"], "description": "How `project` was determined. Defaults to `stated`. Requires `project`." }
+                    "project_source": { "type": "string", "enum": ["stated", "folder_marker", "rig", "current_project", "job"], "description": "How `project` was determined. Defaults to `stated`. Requires `project`." },
+                    "declare_topics": { "type": "array", "items": { "type": "string" }, "description": "Topic keys from `topic_keys` that this call adds to the project's topic vocabulary. A call filed under a registered project may only use topic keys that project already declared (a personal project has no vocabulary), so name a new key here; the reply lists `declared_topics`. Each must be one of this call's topic keys." }
                 }
             }
         }),
@@ -889,7 +892,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "scan_misfiled_decisions",
-            "description": "Flag decisions carrying a caller-named \"foreign\" topic key — a decision tagged with another ledger's name most likely belongs there instead (hivemind-zdsh.14). Deterministic exact-match only, no LLM, no inference beyond topic-key membership: HiveMind does not yet know which project a ledger belongs to (hivemind-s15q A1/A3), so the caller supplies the foreign keys. Read-only report — never moves a decision (that needs hivemind-s15q C1, not built yet).",
+            "description": "Flag decisions carrying a caller-named \"foreign\" topic key — a decision tagged with another ledger's name most likely belongs there instead (hivemind-zdsh.14). Deterministic exact-match only, no LLM, no inference beyond topic-key membership: HiveMind does not decide what is foreign, so the caller supplies the foreign keys. Each candidate names the project it is filed under; `project` scopes the report to one project and `move_to` names where the flagged decisions belong. Read-only report — never moves a decision: move each confirmed one with `move_decision`, recorded and reversible.",
             "inputSchema": {
                 "type": "object",
                 "required": ["foreign_topic_keys"],
@@ -899,6 +902,14 @@ pub fn tool_definitions() -> Vec<Value> {
                         "items": { "type": "string" },
                         "minItems": 1,
                         "description": "Topic keys that indicate a decision belongs to a different ledger (e.g. another rig's name)."
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Only decisions filed exactly under this project (a registered handle or a `personal:<actor>` address). An unregistered handle is refused, never an empty report."
+                    },
+                    "move_to": {
+                        "type": "string",
+                        "description": "The registered project the flagged decisions belong in. Each candidate echoes it as `proposed_move_to`; nothing is moved by this tool — move each confirmed decision with `move_decision`. Decisions already filed there are not flagged."
                     },
                     "limit": {
                         "type": "integer",
@@ -987,6 +998,14 @@ fn tool_capture_decision(args: Value, config: &McpConfig) -> std::result::Result
         &mut core_args.project,
         &mut core_args.project_source,
     )?;
+    // A capture from a rig this ledger has no project for is refused, not filed under the
+    // personal project (hivemind-zywz). A supersede inherits its project and is not.
+    if let Some(refusal) = resolved
+        .as_ref()
+        .and_then(ResolvedProject::wrong_ledger_refusal)
+    {
+        return Err(HivemindError::Cli(CliError::InvalidInput(refusal)).into());
+    }
     let provider = StdioLedgerProvider { config };
     let mut reply = core::capture_decision(&provider, core_args)?.into_value();
     insert_project_reminder(&mut reply, resolved.as_ref());
@@ -1012,13 +1031,8 @@ fn fill_project_from_context(
     }
 
     let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
-    let resolved = resolve_project_in_ledger(
-        None,
-        env,
-        &ledger,
-        &config.tenant_id,
-        &config.ledger.hivemind_dir,
-    )?;
+    let resolved =
+        resolve_project_in_ledger(None, env, &ledger, &config.ledger, &config.tenant_id)?;
     if let Some(determined) = resolved.determined() {
         *project = Some(determined.handle.to_owned());
         *project_source = Some(determined.source);
@@ -1441,9 +1455,21 @@ fn tool_scan_misfiled_decisions(
 
     let request = MisfiledScanRequest {
         foreign_topic_keys,
+        project: optional_string(&args, "project")?,
+        move_to: optional_string(&args, "move_to")?,
         limit,
         cursor: cursor.clone(),
     };
+
+    // The scan reads the graph, which has no registry: a handle is checked here, so a typo is
+    // a refusal and never "nothing misfiled".
+    if request.project.is_some() || request.move_to.is_some() {
+        let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
+        let scoped_ledger = TenantScopedLedger::new(&ledger, config.tenant_id.clone());
+        for handle in request.project.iter().chain(request.move_to.iter()) {
+            require_registered_project(&scoped_ledger, handle)?;
+        }
+    }
 
     let graph = open_memory_graph(config)?;
     let response = scan_misfiled_decisions(&graph, &request)?;

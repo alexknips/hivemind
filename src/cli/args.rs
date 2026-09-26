@@ -206,6 +206,14 @@ pub enum ProjectCommand {
     /// Anchor a registered project to a place in the world (folder, rig,
     /// jira, linear, github, or channel).
     Anchor(ProjectAnchorArgs),
+    /// Add topic keys to a registered project's vocabulary. A capture filed under a project
+    /// may only use keys the project declared; a key is declared here, or by the capture that
+    /// first uses it (`--declare-topic`). Keys are normalised to lowercase kebab. Nothing
+    /// removes a key. `--in-use` declares every key the project's existing decisions already
+    /// carry, the one-step way for a project that predates its vocabulary to adopt what it
+    /// uses.
+    #[command(name = "declare-topic")]
+    DeclareTopic(ProjectDeclareTopicArgs),
     /// List registered (shared) projects, paged. Personal projects never
     /// appear here — resolve one directly with `project show`.
     List(ProjectListArgs),
@@ -328,6 +336,21 @@ impl ProjectAnchorKindArg {
             Self::Channel => EventProjectAnchorKind::Channel,
         }
     }
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct ProjectDeclareTopicArgs {
+    /// Registered project handle. A personal address has no vocabulary and is refused.
+    pub handle: String,
+
+    /// Topic keys to declare. A key the project already has is reported and recorded no
+    /// second time.
+    #[arg(required_unless_present = "in_use", conflicts_with = "in_use")]
+    pub topic_keys: Vec<String>,
+
+    /// Declare every topic key the decisions now in this project already carry.
+    #[arg(long = "in-use")]
+    pub in_use: bool,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -715,6 +738,13 @@ pub struct SupersedeArgs {
     /// these.
     #[arg(long = "project-from-context")]
     pub project_from_context: bool,
+
+    /// Topic keys from `--topic-keys` that this capture adds to its project's vocabulary. A
+    /// capture under a registered project may only use keys the project already declared, so
+    /// say so here for a new one; the reply lists what was declared. Each must be one of this
+    /// capture's `--topic-keys`, and the capture must be filed under a registered project.
+    #[arg(long = "declare-topic", value_delimiter = ',')]
+    pub declare_topics: Vec<String>,
 
     #[command(flatten)]
     pub grounding: GroundingArgs,
@@ -1167,6 +1197,13 @@ pub struct EmitDecisionProposedArgs {
     /// all of these.
     #[arg(long = "project-from-context")]
     pub project_from_context: bool,
+
+    /// Topic keys from `--topic-keys` that this capture adds to its project's vocabulary. A
+    /// capture under a registered project may only use keys the project already declared, so
+    /// say so here for a new one; the reply lists what was declared. Each must be one of this
+    /// capture's `--topic-keys`, and the capture must be filed under a registered project.
+    #[arg(long = "declare-topic", value_delimiter = ',')]
+    pub declare_topics: Vec<String>,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -1575,8 +1612,11 @@ pub enum QueryCommand {
     #[command(name = "scan_decision_quality")]
     ScanDecisionQuality(QueryScanDecisionQualityArgs),
     /// Flag decisions carrying a caller-named "foreign" topic key — a decision
-    /// tagged with another ledger's name most likely belongs there instead.
-    /// Read-only: report only, never moves anything (see hivemind-s15q C1).
+    /// tagged with another ledger's name most likely belongs there instead. Each row
+    /// names the project the decision is filed under; `--project` scopes the report to
+    /// one project and `--move-to` names where the flagged ones belong. Read-only:
+    /// report only, never moves anything — put a confirmed decision where it belongs
+    /// with `hivemind move --decision <id> --to <project>`.
     #[command(name = "scan_misfiled_decisions")]
     ScanMisfiledDecisions(QueryScanMisfiledDecisionsArgs),
     /// "What should I know before I touch this?" — decisions bearing on the working
@@ -2138,6 +2178,18 @@ pub struct QueryScanMisfiledDecisionsArgs {
     /// (e.g. another rig's name). At least one is required.
     #[arg(long = "foreign-topic", value_delimiter = ',')]
     pub foreign_topic_keys: Vec<String>,
+
+    /// Only decisions filed exactly under this project (a registered handle or a
+    /// `personal:<actor>` address). An unregistered handle is refused, never an empty
+    /// report. Run again after the moves and the project's report is clean.
+    #[arg(long)]
+    pub project: Option<String>,
+
+    /// The registered project the flagged decisions belong in. Each row then carries the
+    /// `hivemind move --decision <id> --to <project>` that puts it there; nothing is moved
+    /// by this report. Decisions already filed there are not flagged.
+    #[arg(long = "move-to")]
+    pub move_to: Option<String>,
 
     /// Maximum results to return (1–1000, default 25).
     #[arg(long, default_value_t = 25)]

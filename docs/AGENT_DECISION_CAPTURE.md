@@ -249,7 +249,7 @@ records how:
 | 2 | the `.hivemind-project` markers of the files the uncommitted change touches (working-tree diff plus the staged set); when none of them sits under a marker, the nearest marker walking up from the working directory | `folder_marker` |
 | 3 | the project anchored to the rig in `GC_RIG` (`hivemind project anchor --kind rig`) | `rig` |
 | 4 | the actor's current project (`hivemind project use <handle>`) | `current_project` |
-| 5 | none of these: the personal project, with a reminder | `personal_fallback` |
+| 5 | none of these: the personal project, with a reminder (a session in a rig no project here is anchored to is refused instead; see below) | `personal_fallback` |
 
 A marker is a one-line file holding one handle. A nested marker names a
 sub-project and, being nearer, wins over the outer one. A marker that cannot be
@@ -302,6 +302,74 @@ folder is two steps: register the project (`hivemind project register billing`),
 then commit a `.hivemind-project` file containing `billing` at the folder root.
 `--kind rig` is the one anchor a capture does read, for a Gas City rig.
 
+**A rig this ledger has no project for.** With `--project-from-context`, a session
+that runs in a Gas City rig (`GC_RIG`) whose rig no project in the ledger is
+anchored to is not an unattached folder: it is a capture heading for a ledger that
+does not know the place it comes from. That is refused, not filed under the
+personal project, and nothing is written. The refusal names the rig and the ledger
+(the tenant and the local directory or shared database, never a credential) and
+the three ways out:
+
+```text
+error: invalid command line input: this session runs in rig `beadline` (GC_RIG), but no project in tenant `hivemind` in the local ledger under ./hivemind is anchored to that rig, so this capture would be filed under your personal project in what looks like the wrong ledger. Write to the ledger that holds the rig's project (--tenant or HIVEMIND_TENANT, --hivemind-dir, or --database-url), anchor the rig here with `hivemind project anchor --handle <project> --kind rig --value beadline`, or name the project yourself with --project <handle>.
+```
+
+Only the personal fallback is refused: a folder marker, a rig anchor, or a current
+project still wins first (the current project is kept per tenant, so it matches
+this ledger). A session outside any rig is the ordinary unattached-folder case
+above. A supersede is never refused for this: its project is the replaced
+decision's, which is in this ledger by construction. HiveMind still never works
+the project out; the client does, and only asks the registry what is anchored.
+
+**Topic keys and the project's vocabulary.** A topic says what a decision is
+about; without a vocabulary every capture invents its own keys and recall by topic
+becomes a lottery. Keys are normalised to lowercase kebab (`Pricing Model` becomes
+`pricing-model`). A registered project has a vocabulary: the keys someone declared
+for it. A capture filed under a registered project may use only those, so a new
+key has to be declared, and the capture says so:
+
+```bash
+hivemind emit decision.capture --project billing \
+  --topic-keys pricing,seats --declare-topic seats ...
+```
+
+`--declare-topic` (MCP `declare_topics`) is on `emit decision.capture`,
+`emit decision.proposed`, and `supersede` (MCP `capture_decision` and
+`supersede_decision`). Each key must be one of the capture's own `--topic-keys`,
+and the capture must be filed under a registered project. Each declared key is its
+own recorded fact (`project.topic_declared`, by the capturing actor, just before
+the decision), and the reply lists them: `declared_topics` in `--json` and MCP
+replies, and in text mode on stderr next to the project line:
+
+```text
+project: billing (stated); declared topics for billing: seats
+```
+
+A key the project already has is not declared twice, and a capture that declares
+nothing does not mention it. A capture that uses an undeclared key and does not
+declare it is refused before anything is written, naming the keys, what the
+project has declared, and how to declare:
+
+```text
+error: validation failed: topic `seats` is not declared for project billing (declared: pricing). To add it, say so in this capture (--declare-topic seats, or `declare_topics` over MCP) or declare it first with `hivemind project declare-topic billing seats`; otherwise use a declared topic.
+```
+
+A new project has an empty vocabulary, so its first capture declares every key it
+uses. To declare keys without a capture, or to see them:
+
+```bash
+hivemind project declare-topic billing pricing seats
+hivemind project show billing          # topics=pricing,seats
+```
+
+A project that already had decisions before it had a vocabulary adopts what they
+use in one step: `hivemind project declare-topic billing --in-use` declares every
+topic key the decisions now in that project carry, each as its own recorded fact.
+Nothing removes a key. A personal project, and a capture that names no project,
+has no vocabulary: any key is accepted there, and asking to declare one is refused.
+A move never checks the destination's vocabulary, because correcting where a
+decision lives must not be refused for the keys it was captured with.
+
 **What the reply says.** Every capture reply names the project and how it was
 determined. In text mode stdout stays the decision id (followed, as before, by a
 `premise_stale:` line for each named premise that has since been superseded or
@@ -328,7 +396,9 @@ project it replaces instead of falling back to the personal project.
 caller's working directory; only the CLI and the stdio server fill it in from
 context. REST takes none: `POST /v1/decisions` records the decision in the
 actor's personal project, and its reply carries no `project` or fallback notice.
-REST supersede takes none either and inherits the replaced decision's project.
+REST supersede takes none either and inherits the replaced decision's project, so
+under a registered project its topic keys must already be declared (REST takes no
+`declare_topics`; declare them with `hivemind project declare-topic` first).
 Name the project over MCP instead. A decision recorded through REST can be moved
 afterwards. Decisions the classifier extracts from ingested transcripts are not
 `decision.proposed` events, so `hivemind move` cannot move them yet.

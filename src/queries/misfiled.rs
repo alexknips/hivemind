@@ -1,32 +1,34 @@
 //! Misfiled-decision detection: decisions whose topic keys name a different
-//! ledger/rig than the one they are stored in (hivemind-zdsh.14, findings 7+8
+//! ledger/rig than the project they are filed under (hivemind-zdsh.14, findings 7+8
 //! of the 2026-09-20..22 mayor audit — "beadline polecat decisions in the
 //! company ledger; topics MCP / MILESTONE-M6 / PROJECTS / GC invented per
-//! capture").
+//! capture"; the move half, hivemind-zywz).
 //!
 //! # What this is, and is not
 //!
 //! Deterministic and precision-biased: a decision is flagged only when one of its own
 //! (already-normalized) `topic_keys` exactly matches a caller-supplied
 //! "foreign" key — no fuzzy matching, no LLM, no inference about intent.
-//! HiveMind has no notion of "which project a ledger belongs to" yet (that
-//! is hivemind-s15q A1/A3, both LEDGER HOLD, not built), so this module does
-//! not — and cannot — decide on its own what is foreign; the caller (a human
+//! HiveMind does not decide on its own what is foreign; the caller (a human
 //! reviewer, or a script that knows the city's rig names) supplies the list.
 //!
-//! This is a report only. It never moves a decision: the actual move needs a
-//! `decision.moved` event (hivemind-s15q C1), which itself depends on A3 and
-//! is not built either. Every candidate here is `review_required` in spirit
-//! — nothing is written, nothing is inferred beyond membership — so today's
-//! output is exactly the audit trail a future move step will consume.
+//! Each candidate says which project it is filed under now. The report can be
+//! scoped to one project (`project`: only decisions filed exactly there, so a
+//! second run after the moves is clean) and can name where the flagged
+//! decisions belong (`move_to`: a registered project). It is still only a
+//! report. It never moves a decision: the move is `hivemind move --decision
+//! <id> --to <project>` (`decision.moved`, recorded and reversible), run by
+//! whoever confirmed the list, so nothing is filed or re-filed by a rule.
 use std::time::Instant;
 
 use serde::Serialize;
 
 use crate::commands::normalize_topic_key;
+use crate::ledger::EventLedger;
 use crate::projector::GraphView;
 use crate::Result;
 
+use super::projects::{get_project, ProjectOutcome};
 use super::search::{search_decisions, SearchDecisionRequest};
 use super::shared::{query_error, MAX_QUERY_RESULTS};
 use super::QueryResponse;
@@ -42,6 +44,13 @@ pub struct MisfiledDecisionCandidate {
     /// Actors on record for the decision (proposer plus any reviewers), for
     /// routing the review.
     pub actor_ids: Vec<String>,
+    /// The project the decision is filed under now (a registered handle or a
+    /// personal address), so the reviewer sees what a move would leave.
+    pub project: Option<String>,
+    /// Where the request said the flagged decisions belong (`move_to`), echoed on
+    /// every row so a row is self-contained. Absent when the request named none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposed_move_to: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -50,10 +59,31 @@ pub struct MisfiledScanRequest {
     /// Normalized the same way capture normalizes topic keys, so casing and
     /// punctuation in the caller's input never cause a missed match.
     pub foreign_topic_keys: Vec<String>,
+    /// Only decisions filed exactly under this project: a registered handle or a personal
+    /// address. No parent or dependency walk. `None` scans every project. The caller checks
+    /// a handle is registered (`require_registered_project`).
+    pub project: Option<String>,
+    /// The registered project the flagged decisions belong in. Decisions already filed there
+    /// are not flagged: a move to where they are is not a move. The caller checks the handle
+    /// is registered (`require_registered_project`).
+    pub move_to: Option<String>,
     /// Maximum number of candidates to return (capped at `MAX_QUERY_RESULTS`).
     pub limit: usize,
     /// Skip N candidates (offset-based cursor, same shape as the other bulk scans).
     pub cursor: Option<String>,
+}
+
+/// Refuse a project handle no one registered, so a typo reads as the refusal it is and never as
+/// "nothing misfiled here". A personal address always resolves. The scan itself is
+/// graph-only and cannot see the registry, so the verbs that have a ledger call this first.
+pub fn require_registered_project(ledger: &impl EventLedger, handle: &str) -> Result<()> {
+    match get_project(ledger, handle)?.data {
+        ProjectOutcome::Found { .. } => Ok(()),
+        ProjectOutcome::NotFound => Err(query_error(format!(
+            "no project called {handle}: register it first with `hivemind project register {handle}`"
+        ))
+        .into()),
+    }
 }
 
 /// Scan decisions for ones carrying a caller-named "foreign" topic key.
@@ -90,6 +120,16 @@ pub fn scan_misfiled_decisions(
         .items
         .into_iter()
         .filter_map(|item| {
+            if let Some(project) = request.project.as_deref() {
+                if item.decision.project.as_deref() != Some(project) {
+                    return None;
+                }
+            }
+            if let Some(destination) = request.move_to.as_deref() {
+                if item.decision.project.as_deref() == Some(destination) {
+                    return None;
+                }
+            }
             let matched: Vec<String> = item
                 .decision
                 .topic_keys
@@ -105,6 +145,8 @@ pub fn scan_misfiled_decisions(
                 title: item.decision.title,
                 matched_topic_keys: matched,
                 actor_ids: item.graph_context.actor_ids,
+                project: item.decision.project,
+                proposed_move_to: request.move_to.clone(),
             })
         })
         .collect();

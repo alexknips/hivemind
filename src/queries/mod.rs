@@ -73,7 +73,8 @@ pub use grounding_facts::{
 };
 pub use history::*;
 pub use misfiled::{
-    misfiled_next_cursor, scan_misfiled_decisions, MisfiledDecisionCandidate, MisfiledScanRequest,
+    misfiled_next_cursor, require_registered_project, scan_misfiled_decisions,
+    MisfiledDecisionCandidate, MisfiledScanRequest,
 };
 pub use neighborhood::{
     get_decision_neighborhood, NeighborEdge, NeighborNode, NeighborhoodRequest, NeighborhoodRoot,
@@ -88,7 +89,7 @@ pub use projects::{
     decisions_in_project, get_project, get_project_ancestries, get_project_by_anchor,
     list_projects, ProjectAncestry, ProjectAnchorView, ProjectDecisionItem,
     ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectDecisionsRequest, ProjectLinkFact,
-    ProjectListRequest, ProjectListResults, ProjectOutcome, ProjectView,
+    ProjectListRequest, ProjectListResults, ProjectOutcome, ProjectTopicFact, ProjectView,
 };
 pub use record_facts::{
     get_record_facts, EvidenceFact, HypothesisFact, OptionFact, PremiseFact, RecordFacts,

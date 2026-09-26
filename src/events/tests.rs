@@ -114,6 +114,11 @@ const FIXTURES: &[(&str, &str, EventType)] = &[
         include_str!("../../tests/fixtures/v0/project.unanchored.json"),
         EventType::ProjectUnanchored,
     ),
+    (
+        include_str!("../../schemas/v0/project.topic_declared.json"),
+        include_str!("../../tests/fixtures/v0/project.topic_declared.json"),
+        EventType::ProjectTopicDeclared,
+    ),
 ];
 
 #[test]
