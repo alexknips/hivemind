@@ -821,6 +821,7 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
                     placement: proposal.placement,
                     rests_on: resolved.label(proposal.rests_on),
                     premise_stale: proposal.premise_stale,
+                    question_id: proposal.question.map(|question| question.question_id),
                 },
             );
         }
@@ -2264,6 +2265,7 @@ fn reviewed_decision_ids_by_actor(
             | EventPayload::DecisionRequested(_)
             | EventPayload::EvidenceRecorded(_)
             | EventPayload::HypothesisRecorded(_)
+            | EventPayload::QuestionRecorded(_)
             | EventPayload::RelationAdded(_)
             | EventPayload::RelationRemoved(_)
             | EventPayload::BlockerReported(_)
@@ -2312,6 +2314,7 @@ impl ReviewLedgerContext {
                 | EventPayload::DecisionAccepted(_)
                 | EventPayload::DecisionRejected(_)
                 | EventPayload::DecisionSuperseded(_)
+                | EventPayload::QuestionRecorded(_)
                 | EventPayload::RelationAdded(_)
                 | EventPayload::RelationRemoved(_)
                 | EventPayload::BlockerReported(_)

@@ -191,6 +191,7 @@ fn graph_node_query(kind: NodeKind) -> String {
             "node.id AS id, node.label AS label, node.recorded_label AS recorded_label, node.description AS description"
         }
         NodeKind::Hypothesis => "node.id AS id, node.statement AS statement",
+        NodeKind::Question => "node.id AS id, node.text AS text",
         NodeKind::Project => "node.id AS id, node.handle AS handle, node.display_name AS display_name",
     };
     format!(

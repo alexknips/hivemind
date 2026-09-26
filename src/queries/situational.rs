@@ -25,6 +25,7 @@ use super::history::{
 use super::outcome::{get_decision_outcome_with_labels, DecisionOutcome};
 use super::project_label::ProjectLabels;
 use super::project_scope::{project_scope, MatchScope, ProjectScope, ScopeNote, ScopeRelation};
+use super::question::{newer_accepted_answers, QuestionAnswer};
 use super::shared::{
     node_rows, normalized_limit, optional_int, optional_string, optional_string_list, parse_cursor,
     query_error, relation_edges, MAX_QUERY_RESULTS,
@@ -64,6 +65,10 @@ pub struct SituationalMatch {
     /// parent, or from a dependency). Absent when the request named no project.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<MatchScope>,
+    /// Accepted decisions recorded after this one that answer the same question: the answer a
+    /// reader who matched this decision should also see. Absent when there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub newer_answers: Vec<QuestionAnswer>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -187,6 +192,11 @@ pub fn get_situational_decisions(
             .as_ref()
             .zip(candidate.relation)
             .map(|(scope, relation)| scope.match_scope(relation, &decision.project_label, &labels));
+        let newer_answers = if decision.question_id.is_some() {
+            newer_accepted_answers(graph, &candidate.decision_id)?
+        } else {
+            Vec::new()
+        };
         matches.push(SituationalMatch {
             decision,
             outcome,
@@ -194,6 +204,7 @@ pub fn get_situational_decisions(
             score: candidate.score,
             changed_since,
             scope: match_scope,
+            newer_answers,
         });
     }
 

@@ -46,12 +46,12 @@
         "quote": {
           "type": "string",
           "minLength": 1,
-          "description": "Verbatim words of the decider, self-contained. Always present together with question."
+          "description": "Verbatim words of the decider, self-contained. Requires question."
         },
         "question": {
           "type": "string",
           "minLength": 1,
-          "description": "The question quote answers, spelled out. Always present together with quote."
+          "description": "The question this decision answers, in the capturer's own words. Required when quote is present (a quote is unreadable without the question it answers); may stand alone. The write path also resolves it to a Question node (question.recorded + relation.added ANSWERS)."
         },
         "project": {
           "type": "string",

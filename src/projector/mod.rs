@@ -13,7 +13,7 @@ use crate::events::{
     EventPayload, EvidenceRecordedPayload, HypothesisRecordedPayload, IngestBatchClassifiedPayload,
     NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
     ProjectAnchorPayload, ProjectLinkKind, ProjectRegisteredPayload, ProjectSource,
-    RelationKind as EventRelationKind, TenantId,
+    QuestionRecordedPayload, RelationKind as EventRelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -58,13 +58,16 @@ pub enum NodeKind {
     Notification,
     Option,
     Hypothesis,
+    /// A question decisions answer (`ANSWERS`), shared by every decision whose question text
+    /// matches after `events::normalize_question_text`.
+    Question,
     /// Shared project. Personal projects never get a node — they're derived from the
     /// actor id at query time, never registered (see `commands::register_project`).
     Project,
 }
 
 impl NodeKind {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Decision,
         Self::DecisionRequest,
         Self::Actor,
@@ -73,6 +76,7 @@ impl NodeKind {
         Self::Notification,
         Self::Option,
         Self::Hypothesis,
+        Self::Question,
         Self::Project,
     ];
 
@@ -86,6 +90,7 @@ impl NodeKind {
             Self::Notification => "Notification",
             Self::Option => "Option",
             Self::Hypothesis => "Hypothesis",
+            Self::Question => "Question",
             Self::Project => "Project",
         }
     }
@@ -134,10 +139,12 @@ pub enum RelationKind {
     DependsOn,
     /// `from` decision follows from `to` decision — a premise in the broad sense.
     FollowsFrom,
+    /// `from` decision answers `to` question.
+    Answers,
 }
 
 impl RelationKind {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::ProposedBy,
         Self::DecisionRequestedBy,
         Self::DecisionRequestForDecision,
@@ -166,6 +173,7 @@ impl RelationKind {
         Self::PartOf,
         Self::DependsOn,
         Self::FollowsFrom,
+        Self::Answers,
     ];
 
     pub const fn table_name(self) -> &'static str {
@@ -198,6 +206,7 @@ impl RelationKind {
             Self::PartOf => "PART_OF",
             Self::DependsOn => "DEPENDS_ON",
             Self::FollowsFrom => "FOLLOWS_FROM",
+            Self::Answers => "ANSWERS",
         }
     }
 
@@ -227,6 +236,7 @@ impl RelationKind {
             Self::ParticipatedBy | Self::InitiatedBy => (NodeKind::Decision, NodeKind::Actor),
             Self::PartOf | Self::DependsOn => (NodeKind::Project, NodeKind::Project),
             Self::FollowsFrom => (NodeKind::Decision, NodeKind::Decision),
+            Self::Answers => (NodeKind::Decision, NodeKind::Question),
         }
     }
 }
@@ -304,6 +314,9 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
         }
         EventPayload::HypothesisRecorded(payload) => {
             project_hypothesis_recorded(graph, &payload, &origin_properties)?
+        }
+        EventPayload::QuestionRecorded(payload) => {
+            project_question_recorded(graph, &payload, &origin_properties)?
         }
         EventPayload::RelationAdded(payload) => {
             let kind = if payload.relation == EventRelationKind::Assumes {
@@ -582,6 +595,7 @@ fn capture_node_text(kind: NodeKind, id: &str, props: &GraphProperties) -> Strin
         NodeKind::Decision => "title",
         NodeKind::Evidence => "content",
         NodeKind::Hypothesis => "statement",
+        NodeKind::Question => "text",
         NodeKind::Blocker | NodeKind::DecisionRequest => "reason",
         NodeKind::Option => "label",
         // Actor nodes have no text property; use the ID as a scoring proxy so
@@ -778,6 +792,7 @@ fn relation_kind(kind: EventRelationKind) -> RelationKind {
         EventRelationKind::Refutes => RelationKind::Refutes,
         EventRelationKind::SameAs => RelationKind::SameAs,
         EventRelationKind::FollowsFrom => RelationKind::FollowsFrom,
+        EventRelationKind::Answers => RelationKind::Answers,
     }
 }
 
@@ -1172,6 +1187,24 @@ fn project_hypothesis_recorded(
         ],
     );
     graph.upsert_node(NodeKind::Hypothesis, &payload.hypothesis_id, &props)
+}
+
+fn project_question_recorded(
+    graph: &impl GraphView,
+    payload: &QuestionRecordedPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let props = props_extend(
+        origin_properties,
+        [
+            ("text", GraphValue::String(payload.text.clone())),
+            (
+                "normalized_text",
+                GraphValue::String(events::normalize_question_text(&payload.text)),
+            ),
+        ],
+    );
+    graph.upsert_node(NodeKind::Question, &payload.question_id, &props)
 }
 
 const fn hypothesis_kind_str(kind: events::HypothesisKind) -> &'static str {

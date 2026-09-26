@@ -12,8 +12,8 @@ use hivemind::events::{
     IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn, ModelDimension,
     ModelDimensions, NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
     ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
-    QualityDim, QualityDims, QualityLevel, RelationAddedPayload, RelationKind as EventRelationKind,
-    RelationRemovedPayload, DECISION_ASSESSED_SCHEMA_VERSION,
+    QualityDim, QualityDims, QualityLevel, QuestionRecordedPayload, RelationAddedPayload,
+    RelationKind as EventRelationKind, RelationRemovedPayload, DECISION_ASSESSED_SCHEMA_VERSION,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};
@@ -21,7 +21,7 @@ use hivemind::{CliError, CommandError, HivemindError, LedgerError, ProjectorErro
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const EVENT_TYPES: [EventType; 23] = [
+const EVENT_TYPES: [EventType; 24] = [
     EventType::DecisionProposed,
     EventType::DecisionRequested,
     EventType::DecisionAccepted,
@@ -29,6 +29,7 @@ const EVENT_TYPES: [EventType; 23] = [
     EventType::DecisionSuperseded,
     EventType::EvidenceRecorded,
     EventType::HypothesisRecorded,
+    EventType::QuestionRecorded,
     EventType::RelationAdded,
     EventType::RelationRemoved,
     EventType::BlockerReported,
@@ -47,7 +48,7 @@ const EVENT_TYPES: [EventType; 23] = [
     EventType::ProjectUnanchored,
 ];
 
-const EVENT_RELATION_KINDS: [EventRelationKind; 8] = [
+const EVENT_RELATION_KINDS: [EventRelationKind; 9] = [
     EventRelationKind::BasedOn,
     EventRelationKind::HasOption,
     EventRelationKind::Chose,
@@ -56,9 +57,10 @@ const EVENT_RELATION_KINDS: [EventRelationKind; 8] = [
     EventRelationKind::Refutes,
     EventRelationKind::SameAs,
     EventRelationKind::FollowsFrom,
+    EventRelationKind::Answers,
 ];
 
-const NODE_KINDS: [NodeKind; 9] = [
+const NODE_KINDS: [NodeKind; 10] = [
     NodeKind::Decision,
     NodeKind::DecisionRequest,
     NodeKind::Actor,
@@ -67,10 +69,11 @@ const NODE_KINDS: [NodeKind; 9] = [
     NodeKind::Notification,
     NodeKind::Option,
     NodeKind::Hypothesis,
+    NodeKind::Question,
     NodeKind::Project,
 ];
 
-const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 28] = [
+const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 29] = [
     ProjectorRelationKind::ProposedBy,
     ProjectorRelationKind::DecisionRequestedBy,
     ProjectorRelationKind::DecisionRequestForDecision,
@@ -99,6 +102,7 @@ const PROJECTOR_RELATION_KINDS: [ProjectorRelationKind; 28] = [
     ProjectorRelationKind::PartOf,
     ProjectorRelationKind::DependsOn,
     ProjectorRelationKind::FollowsFrom,
+    ProjectorRelationKind::Answers,
 ];
 
 const DECISION_STATUSES: [DecisionStatus; 5] = [
@@ -435,6 +439,7 @@ fn event_type_name(event_type: EventType) -> &'static str {
         EventType::DecisionSuperseded => "decision.superseded",
         EventType::EvidenceRecorded => "evidence.recorded",
         EventType::HypothesisRecorded => "hypothesis.recorded",
+        EventType::QuestionRecorded => "question.recorded",
         EventType::RelationAdded => "relation.added",
         EventType::RelationRemoved => "relation.removed",
         EventType::BlockerReported => "blocker.reported",
@@ -463,6 +468,7 @@ fn payload_variant_type(payload: &EventPayload) -> EventType {
         EventPayload::DecisionSuperseded(_) => EventType::DecisionSuperseded,
         EventPayload::EvidenceRecorded(_) => EventType::EvidenceRecorded,
         EventPayload::HypothesisRecorded(_) => EventType::HypothesisRecorded,
+        EventPayload::QuestionRecorded(_) => EventType::QuestionRecorded,
         EventPayload::RelationAdded(_) => EventType::RelationAdded,
         EventPayload::RelationRemoved(_) => EventType::RelationRemoved,
         EventPayload::BlockerReported(_) => EventType::BlockerReported,
@@ -509,6 +515,9 @@ fn typed_payload_from_value(
         }
         EventType::HypothesisRecorded => {
             EventPayload::HypothesisRecorded(serde_json::from_value(payload)?)
+        }
+        EventType::QuestionRecorded => {
+            EventPayload::QuestionRecorded(serde_json::from_value(payload)?)
         }
         EventType::RelationAdded => EventPayload::RelationAdded(serde_json::from_value(payload)?),
         EventType::RelationRemoved => {
@@ -629,6 +638,13 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                 kind: HypothesisKind::Assumption,
                 check_by: None,
                 would_change_if: None,
+            }),
+        ),
+        (
+            EventType::QuestionRecorded,
+            EventPayload::QuestionRecorded(QuestionRecordedPayload {
+                question_id: "question:minimal".to_owned(),
+                text: "Which storage engine should the prototype use?".to_owned(),
             }),
         ),
         (
@@ -861,6 +877,7 @@ fn payload_json(payload: &EventPayload) -> Value {
         EventPayload::DecisionSuperseded(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::EvidenceRecorded(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::HypothesisRecorded(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::QuestionRecorded(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::RelationAdded(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::RelationRemoved(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::BlockerReported(payload) => serde_json::to_value(payload).unwrap(),
@@ -956,6 +973,7 @@ fn event_relation_contract(kind: EventRelationKind) -> (&'static str, &'static s
         EventRelationKind::Refutes => ("REFUTES", "refutes"),
         EventRelationKind::SameAs => ("SAME_AS", "same_as"),
         EventRelationKind::FollowsFrom => ("FOLLOWS_FROM", "follows_from"),
+        EventRelationKind::Answers => ("ANSWERS", "answers"),
     }
 }
 
@@ -969,6 +987,7 @@ fn node_kind_contract(kind: NodeKind) -> &'static str {
         NodeKind::Notification => "Notification",
         NodeKind::Option => "Option",
         NodeKind::Hypothesis => "Hypothesis",
+        NodeKind::Question => "Question",
         NodeKind::Project => "Project",
     }
 }
@@ -1053,6 +1072,7 @@ fn projector_relation_contract(kind: ProjectorRelationKind) -> (&'static str, No
         ProjectorRelationKind::FollowsFrom => {
             ("FOLLOWS_FROM", NodeKind::Decision, NodeKind::Decision)
         }
+        ProjectorRelationKind::Answers => ("ANSWERS", NodeKind::Decision, NodeKind::Question),
     }
 }
 

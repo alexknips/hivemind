@@ -1,6 +1,6 @@
 //! Decision outcome derivation: pure graph-read signals for whether a decision held up.
 //!
-//! No LLMs. Works on any deployment (self-hosted or hosted). Three signals, each with
+//! No LLMs. Works on any deployment (self-hosted or hosted). Four signals, each with
 //! its contributing reasons attached:
 //!
 //! - `superseded`: a newer decision explicitly superseded this one. A fact, not a judgement:
@@ -10,9 +10,14 @@
 //!   premises on has been refuted (a failed bet included), or a prior decision it follows from
 //!   has been superseded or rejected.
 //! - `contested`: the decision has both accepting and rejecting actors, unresolved.
+//! - `conflicting_answer`: another accepted, non-superseded decision answers the same question
+//!   with a different chosen option (hivemind-zdsh.16). Reported on both, never resolved. It does
+//!   not flip `held_up`: neither answer has been shown wrong, and the same question can
+//!   legitimately be answered differently in different projects — it is attention, like an
+//!   overdue bet, so a reader sees the disagreement without either side being marked stale.
 //!
-//! `held_up` is true when all three are absent. An overdue bet does not flip it: it is reported
-//! as `unchecked` (attention, not staleness).
+//! `held_up` is true when superseded, stale_premises and contested are all absent. An overdue
+//! bet and a conflicting answer do not flip it: both are reported as attention, not staleness.
 //!
 //! This is the "did it hold up" view and nothing else. How well a decision was made (options
 //! weighed, what it rests on) is quality, which the seven-dimension profile reports; it is not a
@@ -28,6 +33,7 @@ use crate::Result;
 
 use super::grounding::{premise_signals, StalePremise, UncheckedBet};
 use super::project_label::ProjectLabels;
+use super::question::conflicting_answer_ids;
 use super::shared::{
     optional_int, optional_string, query_error, query_superseder, query_timer_start,
     required_string, MAX_QUERY_RESULTS,
@@ -58,6 +64,9 @@ pub enum OutcomeReason {
     PremiseRejected { decision_id: String },
     /// The decision is actively contested: at least one actor accepted it and at least one rejected it.
     Contested,
+    /// Another accepted, non-superseded decision answers the same question with a different
+    /// chosen option. Present on both decisions; the disagreement is surfaced, never resolved.
+    ConflictingAnswer { other_id: String },
 }
 
 /// Derived outcome record for a single decision.
@@ -303,6 +312,12 @@ fn derive_outcome(
     let contested = query_contested(graph, decision_id)?;
     if contested {
         reasons.push(OutcomeReason::Contested);
+    }
+
+    // --- Signal: conflicting answers to one question. Attention, not staleness: `held_up`
+    // is unaffected (see the module docs). ---
+    for other_id in conflicting_answer_ids(graph, decision_id)? {
+        reasons.push(OutcomeReason::ConflictingAnswer { other_id });
     }
 
     let held_up = !superseded && !stale_premises && !contested;

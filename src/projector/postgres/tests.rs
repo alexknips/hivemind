@@ -496,6 +496,96 @@ fn follows_from_and_hypothesis_kind_match_memory() -> Result<()> {
     })
 }
 
+// ── Questions (hivemind-zdsh.16): Question node + ANSWERS edge ─────────────────
+
+#[test]
+fn question_node_and_answers_edge_match_memory() -> Result<()> {
+    with_postgres_graph("question-parity", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = InMemoryEventLedger::new();
+        for event in [
+            make_event(
+                EventType::DecisionProposed,
+                "actor:alice",
+                json!({
+                    "decision_id": "decision:pick",
+                    "title": "Use SQLite for the prototype",
+                    "rationale": "The prototype needs an embedded store",
+                    "topic_keys": ["storage"],
+                    "option_ids": [],
+                    "chosen_option_id": null,
+                    "hypothesis_ids": [],
+                    "evidence_ids": []
+                }),
+            ),
+            make_event(
+                EventType::QuestionRecorded,
+                "actor:alice",
+                json!({
+                    "question_id": "question:storage",
+                    "text": "Which storage engine should the prototype use?"
+                }),
+            ),
+            make_event(
+                EventType::RelationAdded,
+                "actor:alice",
+                json!({
+                    "relation": "ANSWERS",
+                    "from_id": "decision:pick",
+                    "to_id": "question:storage"
+                }),
+            ),
+        ] {
+            ledger.append(event)?;
+        }
+
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        let edge_cypher = "MATCH (a:`Decision` {id: $id})-[r:`ANSWERS`]->(b:`Question`) RETURN b.id AS id, r.event_origin AS event_origin ORDER BY b.id;";
+        let params = GraphParams::from([(
+            "id".to_owned(),
+            GraphValue::String("decision:pick".to_owned()),
+        )]);
+        let memory_edges = memory.query(edge_cypher, &params)?;
+        let pg_edges = pg.query(edge_cypher, &params)?;
+        let ids = |rows: &[GraphRow]| -> Vec<GraphValue> {
+            rows.iter()
+                .filter_map(|row| row.get("id").cloned())
+                .collect()
+        };
+        if ids(&memory_edges) != ids(&pg_edges) || memory_edges.is_empty() {
+            return Err(test_error(format!(
+                "ANSWERS edge mismatch: memory={memory_edges:?} pg={pg_edges:?}"
+            )));
+        }
+
+        let node_cypher = "MATCH (node:`Question` {id: $id}) RETURN node.id AS id, node.text AS text, node.normalized_text AS normalized_text LIMIT 1;";
+        let params = GraphParams::from([(
+            "id".to_owned(),
+            GraphValue::String("question:storage".to_owned()),
+        )]);
+        let memory_rows = memory.query(node_cypher, &params)?;
+        let pg_rows = pg.query(node_cypher, &params)?;
+        let normalized = |rows: &[GraphRow]| {
+            rows.first()
+                .and_then(|row| row.get("normalized_text"))
+                .cloned()
+        };
+        if normalized(&memory_rows) != normalized(&pg_rows)
+            || normalized(&pg_rows)
+                != Some(GraphValue::String(
+                    "which storage engine should the prototype use".to_owned(),
+                ))
+        {
+            return Err(test_error(format!(
+                "Question node mismatch: memory={memory_rows:?} pg={pg_rows:?}"
+            )));
+        }
+        Ok(())
+    })
+}
+
 // ── Resolve-by-description parity (hivemind-tenv.1) ────────────────────────────
 //
 // `resolve_decision_by_description` reuses `collect_graph_search_results`'s tier system

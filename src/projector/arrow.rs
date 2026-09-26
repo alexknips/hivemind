@@ -91,6 +91,7 @@ impl RelationKind {
             Self::Supports => ArrowLabels::both("supports", "draws on"),
             Self::Refutes => ArrowLabels::both("refutes", "is refuted by"),
             Self::FollowsFrom => ArrowLabels::both("follows from", "underlies"),
+            Self::Answers => ArrowLabels::both("answers", "is answered by"),
             Self::PartOf => ArrowLabels::both("is part of", "contains"),
             Self::DependsOn => ArrowLabels::both("depends on", "is needed by"),
         }

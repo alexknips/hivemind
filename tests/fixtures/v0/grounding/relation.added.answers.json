@@ -1,0 +1,16 @@
+{
+  "event_id": 8,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe18",
+  "correlation_id": "session-1",
+  "causation_event_id": 4,
+  "type": "relation.added",
+  "actor_id": "agent-a",
+  "source": "agent",
+  "source_ref": "agent:codex:session-1",
+  "payload": {
+    "relation": "ANSWERS",
+    "from_id": "decision-keep-embedded-db",
+    "to_id": "question-storage-engine"
+  },
+  "ts": "2026-05-17T20:46:53Z"
+}

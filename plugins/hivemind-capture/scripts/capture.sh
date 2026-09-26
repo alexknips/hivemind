@@ -34,7 +34,9 @@ self-accepts unless --still-proposed is also given. --delegated-by human:NAME
 marks an agent deciding within a scope that human delegated. --quote (the
 decider's verbatim words) requires --question (the question those words
 answer, spelled out) — a quote with no stated question is unreadable once the
-source conversation is gone.
+source conversation is gone. --question also stands alone: it names the
+question the decision answers (one line, optional), and decisions whose
+question matches share one question node.
 
 Every decision capture must say what it rests on; a capture that names nothing
 is refused (exit 2) and nothing is written. Answer with at least one of:

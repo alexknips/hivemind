@@ -10,6 +10,7 @@ Usage:
             [--would-change-if "..."] [--check-by DATE] \
             [--evidence e,...] [--hypotheses h,...] \
             [--id ID] [--pick N] [--topic T]
+  ground.sh "description of the decision" --answers "the question it answers"
 
   ground.sh '#1' --rests-on-decision "..."   # resolve candidate #1 as the decision
 
@@ -17,6 +18,9 @@ Usage:
 decision rests on, after the fact: a decision it follows from, something
 observed (and where), something assumed, or a declared bet. The grounding is
 append-only and attributed to you, not to whoever captured the decision.
+--answers names the question the decision answers (one line), for a decision
+captured without one: it links to the question node whose text matches, or
+creates it, and may stand alone. A decision answers one question.
 
 Resolved by description, never by guessing an id. This is a WRITE verb: the
 ambiguity gate is strict. If the description does not resolve to exactly one
