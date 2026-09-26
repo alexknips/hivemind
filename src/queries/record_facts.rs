@@ -10,9 +10,11 @@
 //! `decision.proposed` (a bare stub, a classified capture): every field tolerates absence.
 
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 
-use crate::events::HypothesisKind;
-use crate::projector::{GraphView, NodeKind, RelationKind};
+use crate::error::QueryError;
+use crate::events::{HypothesisKind, ModelAssessment, ModelDimensions};
+use crate::projector::{GraphRow, GraphView, NodeKind, RelationKind};
 use crate::Result;
 
 use super::grounding::{
@@ -91,6 +93,18 @@ pub struct HypothesisFact {
     pub refuted_by: Vec<RefutationFact>,
 }
 
+/// A model's assessment of the decision, as the graph keeps it: the newest one recorded. It is
+/// what a model said, with the passages it quoted, not something this layer derived or checked.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ModelAssessmentFact {
+    pub model: String,
+    pub prompt_version: String,
+    /// Ledger offset of the `decision.scored` event that recorded it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_origin: Option<i64>,
+    pub dimensions: ModelDimensions,
+}
+
 /// What a decision's record states, in a fixed order (every list sorted by id).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordFacts {
@@ -110,6 +124,27 @@ pub struct RecordFacts {
     pub evidence: Vec<EvidenceFact>,
     pub premises: Vec<PremiseFact>,
     pub hypotheses: Vec<HypothesisFact>,
+    /// The newest model assessment recorded for the decision, when there is one.
+    pub model_assessment: Option<ModelAssessmentFact>,
+}
+
+/// The model assessment a decision row carries, or `None` when none was recorded. A stored
+/// assessment that cannot be read is an error, never a silent absence.
+fn model_assessment_of(row: &GraphRow, decision_id: &str) -> Result<Option<ModelAssessmentFact>> {
+    let Some(stored) = optional_string(row, "model_assessment") else {
+        return Ok(None);
+    };
+    let assessment: ModelAssessment = serde_json::from_str(&stored).map_err(|error| {
+        QueryError::Execution(format!(
+            "the stored model assessment of decision {decision_id} is unreadable: {error}"
+        ))
+    })?;
+    Ok(Some(ModelAssessmentFact {
+        model: assessment.model,
+        prompt_version: assessment.prompt_version,
+        event_origin: optional_int(row, "model_assessment_origin"),
+        dimensions: assessment.dimensions,
+    }))
 }
 
 /// The facts of one decision's record, or `None` when the decision does not exist.
@@ -235,5 +270,6 @@ pub fn get_record_facts(graph: &impl GraphView, decision_id: &str) -> Result<Opt
         evidence,
         premises,
         hypotheses,
+        model_assessment: model_assessment_of(&row, decision_id)?,
     }))
 }

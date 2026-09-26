@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::commands::{DecisionMoveOutcome, DecisionPlacement, RestsOn, RestsOnKind};
 use crate::error::{CliError, CommandError};
-use crate::events::{EventId, EventType};
+use crate::events::{EventId, EventType, ModelDimension};
 use crate::ingest::{DocumentImportReport, DocumentPreparationReport};
 use crate::projector::{
     GraphParams, GraphProperties, GraphRow, GraphValue, GraphView, NodeKind,
@@ -456,6 +456,28 @@ fn dimension_summary_line(dimension: Dimension, assessment: &Assessment) -> Stri
     }
 }
 
+/// One line for what a model said about one dimension, printed right after that dimension's
+/// floor line: its level, explanation and the passage it quotes, or why it did not assess it.
+fn model_dimension_line(dimension: Dimension, answer: &ModelDimension) -> String {
+    let name = wire_name(&dimension);
+    match answer {
+        ModelDimension::Assessed {
+            level,
+            explanation,
+            quote,
+        } => format!(
+            "model_dimension\t{name}\tlevel={}\texplanation={}\tquote={}",
+            wire_name(level),
+            summary_cell(explanation),
+            summary_cell(quote)
+        ),
+        ModelDimension::NotAssessed { reason } => format!(
+            "model_dimension\t{name}\tnot_assessed\twhy={}",
+            summary_cell(reason)
+        ),
+    }
+}
+
 pub(crate) fn render_score_report_summary(report: &Option<ScoreReport>) -> String {
     let Some(report) = report else {
         return "No decision found".to_owned();
@@ -467,8 +489,22 @@ pub(crate) fn render_score_report_summary(report: &Option<ScoreReport>) -> Strin
         "profile\t{}\tfloor_version={}",
         profile.decision_id, profile.floor_version
     );
+    if let Some(model) = &profile.model_assessment {
+        let _ = writeln!(
+            output,
+            "model_assessment\t{}\tprompt_version={}\tevent_origin={}",
+            summary_cell(&model.model),
+            summary_cell(&model.prompt_version),
+            model
+                .event_origin
+                .map_or_else(|| "-".to_owned(), |origin| origin.to_string())
+        );
+    }
     for (dimension, assessment) in profile.iter() {
         let _ = writeln!(output, "{}", dimension_summary_line(dimension, assessment));
+        if let Some(answer) = profile.model_answer(dimension) {
+            let _ = writeln!(output, "{}", model_dimension_line(dimension, answer));
+        }
     }
     for attention in &profile.attention {
         let _ = writeln!(

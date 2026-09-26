@@ -84,11 +84,12 @@ pub use grounding::{
 
 use crate::error::CommandError;
 use crate::events::{
-    CaptureItem, DecisionAcceptedPayload, DecisionMovedPayload, DecisionProposedPayload,
-    DecisionRejectedPayload, DecisionScoredPayload, DecisionSupersededPayload, Event, EventBuilder,
-    EventId, EventPayload, EventProvenance, EventType, EvidenceRecordedPayload, HypothesisKind,
-    HypothesisRecordedPayload, IngestBatchClassifiedPayload, IngestBatchReceivedPayload,
-    IngestTurn, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload,
+    CaptureItem, DecisionAcceptedPayload, DecisionAssessedPayload, DecisionMovedPayload,
+    DecisionProposedPayload, DecisionRejectedPayload, DecisionScoredPayload,
+    DecisionSupersededPayload, Event, EventBuilder, EventId, EventPayload, EventProvenance,
+    EventType, EvidenceRecordedPayload, HypothesisKind, HypothesisRecordedPayload,
+    IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn, ModelDimension,
+    ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload,
     ProjectRegisteredPayload, ProjectSource, RelationAddedPayload, RelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
@@ -1008,6 +1009,65 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         let event = self.event_with_uuid(
             actor_id,
             EventPayload::DecisionScored(payload),
+            causation_event_id,
+            Uuid::new_v4(),
+        )?;
+
+        self.append_event(event)
+    }
+
+    /// Records a model's assessment of one decision (`decision.scored`, schema version 2).
+    ///
+    /// Refuses, and appends nothing, when the payload is malformed, when the decision is not
+    /// recorded (a proposed decision or a classified capture), or when any assessed dimension
+    /// quotes a passage that does not occur verbatim in the decision's own recorded text: its
+    /// title, question, quote, rationale and option labels and descriptions for a proposal; its
+    /// title, rationale, options and chosen option for a classified capture. The check is a
+    /// plain substring test, so an assessment cannot rest on words the decision never said.
+    /// What the decision cites (evidence, assumptions, prior decisions) is not part of that text.
+    pub fn record_decision_assessed(
+        &self,
+        actor_id: &str,
+        payload: DecisionAssessedPayload,
+        causation_event_id: Option<EventId>,
+    ) -> Result<EventId> {
+        require_valid_actor_id(actor_id)?;
+        payload
+            .validate_shape()
+            .map_err(|error| CommandError::Validation(error.to_string()))?;
+
+        let Some(recorded_text) = self.decision_recorded_text(&payload.decision_id)? else {
+            return Err(CommandError::Validation(format!(
+                "decision {} is not recorded, so there is nothing to assess",
+                payload.decision_id
+            ))
+            .into());
+        };
+        let unfound = payload
+            .dimensions
+            .entries()
+            .into_iter()
+            .find_map(|(dimension, answer)| match answer {
+                ModelDimension::Assessed { quote, .. }
+                    if !recorded_text
+                        .iter()
+                        .any(|text| text.contains(quote.as_str())) =>
+                {
+                    Some((dimension, quote))
+                }
+                _ => None,
+            });
+        if let Some((dimension, quote)) = unfound {
+            return Err(CommandError::Validation(format!(
+                "the quote for {dimension} does not occur in the recorded text of decision {}: {quote:?}. Quote the decision's own words exactly (title, question, quote, rationale, option labels and descriptions); nothing was recorded",
+                payload.decision_id
+            ))
+            .into());
+        }
+
+        let event = self.event_with_uuid(
+            actor_id,
+            EventPayload::DecisionAssessed(payload),
             causation_event_id,
             Uuid::new_v4(),
         )?;
@@ -2620,6 +2680,49 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
     }
 
+    /// The text a decision recorded, one string per field, or `None` when no such decision is
+    /// recorded. A classified capture (`capture:<event>:<index>`) is read from the batch event
+    /// that produced it; anything else from its `decision.proposed` event.
+    fn decision_recorded_text(&self, decision_id: &str) -> Result<Option<Vec<String>>> {
+        if let Some((batch_event_id, index)) = classified_capture_position(decision_id) {
+            let batch = self
+                .ledger
+                .read_for_tenant(&self.context.tenant_id, batch_event_id - 1, 1)?
+                .into_iter()
+                .next()
+                .filter(|event| {
+                    event.event_id == Some(batch_event_id)
+                        && event.event_type == EventType::IngestBatchClassified
+                });
+            if let Some(text) = batch.and_then(|event| classified_capture_text(&event, index)) {
+                return Ok(Some(text));
+            }
+        }
+
+        let mut offset = 0;
+        const PAGE_SIZE: usize = 1024;
+        loop {
+            let events = self
+                .ledger
+                .read_for_tenant(&self.context.tenant_id, offset, PAGE_SIZE)?;
+            let Some(last_event_id) = events.last().and_then(|event| event.event_id) else {
+                return Ok(None);
+            };
+            if let Some(text) = events
+                .iter()
+                .filter(|event| {
+                    event.event_type == EventType::DecisionProposed
+                        && payload_value_matches(event, "decision_id", decision_id)
+                })
+                .map(proposed_decision_text)
+                .next()
+            {
+                return Ok(Some(text));
+            }
+            offset = last_event_id;
+        }
+    }
+
     fn decision_proposal_snapshot(
         &self,
         decision_id: &str,
@@ -2970,6 +3073,52 @@ fn decision_proposal_snapshot_from_event(event: &Event) -> Option<DecisionPropos
         expressed_confidence: payload_value_as_str(event, "expressed_confidence")
             .map(str::to_owned),
     })
+}
+
+/// `(batch event id, capture index)` for a classified capture's node id
+/// (`capture:<event>:<index>`), the shape `projector::project_ingest_batch_classified` gives
+/// it. `None` for any other id.
+fn classified_capture_position(decision_id: &str) -> Option<(EventId, usize)> {
+    let (batch_event_id, index) = decision_id.strip_prefix("capture:")?.split_once(':')?;
+    let batch_event_id: EventId = batch_event_id.parse().ok()?;
+    let index: usize = index.parse().ok()?;
+    (batch_event_id > 0).then_some((batch_event_id, index))
+}
+
+/// The words a classified capture recorded: its title, rationale, options and chosen option.
+/// `None` when the batch has no capture at `index` or that capture is not a decision.
+fn classified_capture_text(batch: &Event, index: usize) -> Option<Vec<String>> {
+    let capture = batch.payload.get("captures")?.as_array()?.get(index)?;
+    if capture.get("kind").and_then(|kind| kind.as_str()) != Some("decision") {
+        return None;
+    }
+    let mut text: Vec<String> = ["title", "rationale", "chosen_option"]
+        .into_iter()
+        .filter_map(|key| capture.get(key).and_then(|value| value.as_str()))
+        .map(str::to_owned)
+        .collect();
+    if let Some(options) = capture.get("options").and_then(|value| value.as_array()) {
+        text.extend(
+            options
+                .iter()
+                .filter_map(|option| option.as_str())
+                .map(str::to_owned),
+        );
+    }
+    Some(text)
+}
+
+/// The words a `decision.proposed` event recorded: its title, question, quote, rationale and
+/// each option's label and description.
+fn proposed_decision_text(event: &Event) -> Vec<String> {
+    let mut text: Vec<String> = ["title", "question", "quote", "rationale"]
+        .into_iter()
+        .filter_map(|key| payload_value_as_str(event, key))
+        .map(str::to_owned)
+        .collect();
+    text.extend(payload_string_list(event, "option_labels"));
+    text.extend(payload_string_list(event, "option_descriptions"));
+    text
 }
 
 fn payload_string_list(event: &Event, key: &str) -> Vec<String> {

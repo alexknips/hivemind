@@ -28,6 +28,14 @@
 //!
 //! [`FLOOR_VERSION`] moves whenever a rule below changes what level a record gets.
 //!
+//! # A model's assessment, beside the floors
+//! A model may also have assessed the decision (`decision.scored`, schema version 2). Its answer
+//! for each dimension is either a level with the explanation and the verbatim passage of the
+//! decision's own record it rests on, or "not assessed" with why. It is carried on the profile
+//! as [`QualityProfile::model_assessment`], with the model and prompt version, next to the
+//! floors and never in place of them: no floor rule reads it, so a floor's level is the same
+//! with or without one, and the floors still say what the record states when no model was asked.
+//!
 //! # Attention findings
 //! The profile answers how much of each dimension one decision's record supports. What deserves
 //! a look across the graph is a separate, derived list: bets past their check date, decisions
@@ -52,11 +60,11 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 
-use crate::events::HypothesisKind;
+use crate::events::{HypothesisKind, ModelDimension};
 use crate::projector::GraphView;
 use crate::queries::{
-    get_record_facts, EvidenceFact, GroundingAdded, HypothesisFact, OptionFact, PremiseFact,
-    RecordFacts,
+    get_record_facts, EvidenceFact, GroundingAdded, HypothesisFact, ModelAssessmentFact,
+    OptionFact, PremiseFact, RecordFacts,
 };
 use crate::Result;
 
@@ -124,24 +132,8 @@ impl Dimension {
 
 /// How much of a dimension the record supports. Ordinal, from published rules; not a fraction.
 /// `None` means the record states nothing toward the dimension, not that the decision was bad.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Level {
-    None,
-    Partial,
-    Solid,
-}
-
-impl Level {
-    /// The wire name (`partial`), the one serialization gives.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Partial => "partial",
-            Self::Solid => "solid",
-        }
-    }
-}
+/// The same levels describe a model's assessment (see [`ModelAssessmentFact`]).
+pub use crate::events::QualityLevel as Level;
 
 /// Which rule produced a reason, so a consumer can tell them apart without reading the text.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -276,6 +268,11 @@ pub struct QualityProfile {
     pub calibration: Assessment,
     /// Lines that deserve a look, in a fixed order; empty when nothing does.
     pub attention: Vec<Attention>,
+    /// What a model said about the seven dimensions, when one was asked: shown BESIDE the floors
+    /// above and never in place of them. Each answer that assessed a dimension quotes the
+    /// passage of the decision's own record it rests on; the floors never depend on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_assessment: Option<ModelAssessmentFact>,
 }
 
 impl QualityProfile {
@@ -296,6 +293,20 @@ impl QualityProfile {
         Dimension::ALL
             .into_iter()
             .map(|dimension| (dimension, self.assessment(dimension)))
+    }
+
+    /// What a model said about `dimension`, or `None` when no model assessed the decision.
+    pub fn model_answer(&self, dimension: Dimension) -> Option<&ModelDimension> {
+        let answers = &self.model_assessment.as_ref()?.dimensions;
+        Some(match dimension {
+            Dimension::Framing => &answers.framing,
+            Dimension::Alternatives => &answers.alternatives,
+            Dimension::Information => &answers.information,
+            Dimension::Reasoning => &answers.reasoning,
+            Dimension::ValuesTradeoffs => &answers.values_tradeoffs,
+            Dimension::BiasExposure => &answers.bias_exposure,
+            Dimension::Calibration => &answers.calibration,
+        })
     }
 }
 
@@ -326,6 +337,7 @@ pub fn profile_from_record(facts: &RecordFacts) -> QualityProfile {
         bias_exposure: bias_exposure(facts, &rests),
         calibration,
         attention,
+        model_assessment: facts.model_assessment.clone(),
     }
 }
 

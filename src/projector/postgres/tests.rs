@@ -1108,6 +1108,26 @@ fn decision_moved_and_back_keeps_capture_origin_on_postgres() -> Result<()> {
     })
 }
 
+// hivemind-qo11.8: a model's assessment (`decision.scored`, schema version 2) upserts only its own
+// properties through the JSONB merge, so scoring a decision leaves the proposal's own source,
+// source_ref, tenant, event_origin and text in place, and the newest assessment is the one kept
+// -- the same checks `projector/tests.rs` runs on `MemoryGraph`.
+#[test]
+fn model_assessment_annotates_without_rewriting_capture_origin_on_postgres() -> Result<()> {
+    with_postgres_graph("decision-assessed", |pg| {
+        for (events, assessments) in [(2, 1), (3, 2)] {
+            pg.wipe()?;
+            let ledger = crate::projector::tests::decision_assessed_fixture_ledger(events)?;
+            project_from_ledger(&ledger, pg, 0)?;
+            crate::projector::tests::assert_assessment_annotates_without_rewriting_origin(
+                pg,
+                assessments,
+            )?;
+        }
+        Ok(())
+    })
+}
+
 fn search_markers(graph: &impl GraphView) -> Result<Vec<(String, Option<String>)>> {
     let results = search_decisions(graph, &SearchDecisionRequest::default())?.data;
     let mut markers: Vec<_> = results

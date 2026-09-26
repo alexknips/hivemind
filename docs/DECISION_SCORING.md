@@ -6,8 +6,10 @@
 > returns the same page without the findings someone has acknowledged, on the stdio MCP
 > server, the HTTP MCP endpoint and the CLI. All are read on demand from what the
 > ledger states, with no model and no network. No response carries a composite number,
-> a tier or a grade. **Deferred, not built:** Composite, Confidence, Reputation,
-> Importance, and model assessments beside the floors (see [Deferred](#deferred-not-built)).
+> a tier or a grade. A model's assessment of a decision has a record, a write path and a
+> place beside the floors ([below](#a-models-assessment-beside-the-floors)); nothing
+> produces one yet. **Deferred, not built:** Composite, Confidence, Reputation, Importance,
+> and the producers of model assessments (see [Deferred](#deferred-not-built)).
 
 HiveMind records *what* was decided, by whom, with what options and evidence
 ([`ARCHITECTURE.md`](ARCHITECTURE.md)). The quality profile adds a separate, derived
@@ -42,10 +44,10 @@ compliant and trustworthy:
    queries stay pure and the profile can be replaced without touching ingest or
    queries. It reads the graph through the same read interface as everything else and
    writes nothing.
-4. **No model, no network.** The floors run self-hosted with no API key. A model
-   assessment beside a floor is deferred; when it lands it is stored as an append-only
-   annotation that supersedes the previous one by reference, never as an edit to the
-   decision.
+4. **No model, no network.** The floors run self-hosted with no API key. A model's
+   assessment stands beside a floor, stored as an append-only annotation and never as
+   an edit to the decision ([below](#a-models-assessment-beside-the-floors)); the floors
+   read nothing of it, so a profile with none is complete on floors alone.
 
 ## The seven dimensions
 
@@ -165,6 +167,85 @@ scan of the graph. The same graph
 gives the same profile, with reasons and ids in a fixed order, on the in-memory,
 Postgres and Kuzu projections.
 
+## A model's assessment, beside the floors
+
+A floor says what the record states. A model can say more, but only where it can point:
+its assessment of a decision is one `decision.scored` event of **schema version 2**, and
+every dimension it assesses quotes the passage of the decision's own text it rests on.
+It is shown beside the floor and never replaces it: no floor rule reads it, so a floor's
+level is the same with or without one.
+
+```json
+{
+  "schema_version": 2,
+  "decision_id": "decision-…",
+  "model": "claude-haiku-4-5-20251001",
+  "prompt_version": "assessment-v1",
+  "dimensions": {
+    "framing":          { "status": "assessed", "level": "solid", "explanation": "…", "quote": "Which store should hold the ledger?" },
+    "alternatives":     { "status": "assessed", "level": "partial", "explanation": "…", "quote": "A file per tenant; rejected, no cross-tenant queries" },
+    "information":      { "status": "not_assessed", "reason": "…" },
+    "reasoning":        { "status": "assessed", "level": "partial", "explanation": "…", "quote": "…" },
+    "values_tradeoffs": { "status": "assessed", "level": "partial", "explanation": "…", "quote": "…" },
+    "bias_exposure":    { "status": "not_assessed", "reason": "…" },
+    "calibration":      { "status": "not_assessed", "reason": "…" }
+  },
+  "importance": { … }
+}
+```
+
+- **All seven dimensions are present.** Each is `assessed` (a `level` of `none`, `partial`
+  or `solid`, an `explanation` and a `quote`) or `not_assessed` (a `reason`, and no
+  level). A dimension cannot be left out, and none can carry a placeholder number: a
+  model that cannot assess a dimension says so, with why. `importance` (stakes,
+  irreversibility, actionability, each with its explanation) is a separate axis, optional,
+  and not part of the profile. `supersedes_score_id` optionally names the earlier
+  `decision.scored` event a re-assessment replaces.
+- **Keyed by the decision's id**, whether it was proposed or is a classified capture
+  (`capture:<batch event>:<index>`). A decision that is recorded nowhere is refused.
+- **Every quote must occur verbatim in the decision's own recorded text.** The write path
+  (`Commands::record_decision_assessed`) checks it with a plain substring test: exact,
+  case-sensitive, no whitespace repair, no model. For a proposed decision the text is its
+  title, question, quote, rationale and each option's label and description; for a
+  classified capture its title, rationale, options and chosen option. What the decision
+  merely cites (evidence, assumptions, prior decisions) is not part of it. One quote that is
+  not found refuses the whole event, names the dimension, and appends nothing. A blank
+  quote, explanation or reason, a missing dimension and importance out of range are refused
+  the same way (and when events are validated on replay). The substring check needs the
+  ledger, so it runs on the write path only.
+- **The newest assessment of a decision is the one the graph shows.** Earlier ones stay in
+  the ledger; nothing is overwritten there. It is stored on the decision node as
+  `model_assessment` (the model, prompt version and the seven answers, as JSON) and
+  `model_assessment_origin` (the ledger offset of the event that recorded it), and touches
+  nothing else on the node: the capture's `event_origin`, `source`, `source_ref`, `tenant_id`
+  and text stay as the capture wrote them. The projection is the same on the in-memory,
+  Postgres and Kuzu backends.
+- **Where it shows.** `score_decision` adds a `model_assessment` object beside the
+  floors, present only when a model assessed the decision:
+
+  ```json
+  "model_assessment": {
+    "model": "claude-haiku-4-5-20251001",
+    "prompt_version": "assessment-v1",
+    "event_origin": 42,
+    "dimensions": { "framing": { "status": "assessed", "level": "solid", "explanation": "…", "quote": "…" }, … }
+  }
+  ```
+
+  The CLI text summary prints a `model_assessment` line and, right after each dimension's
+  floor line, a `model_dimension` line with the answer and its quote (or why it is not
+  assessed). The Markdown export's Quality profile section names the model and prompt and
+  adds one nested `model` bullet under each dimension. Scan findings and ticket bodies
+  are about floors and facts and do not carry it.
+- **Version-1 scores stay as they are.** Every `decision.scored` event written before
+  schema version 2 (no `schema_version`) keeps its shape: 0 to 1 floats per dimension,
+  keyed by a classifier capture node. The ledger is immutable, so those events keep
+  validating and replaying and keep projecting their float properties onto the capture
+  node. They are never shown in the profile: they carry no quoted basis, and the prompt
+  that wrote them asked for a 0.5 when a dimension could not be assessed. The background
+  scorer and `emit decision.scored` still write version 1 until their producers are moved
+  to version 2.
+
 ## Attention findings: what needs a look
 
 Implemented in `src/quality_profile/findings.rs`. The roll-up of the profile is not a grade. It is a list of decisions that need a
@@ -273,6 +354,7 @@ decision, whichever way it was captured:
   "bias_exposure":    { "status": "assessed", "level": "partial", "reasons": [ … ], "node_ids": [ … ] },
   "calibration":      { "status": "not_assessed", "why": "No confidence was declared at capture, …" },
   "attention": [ { "kind": "high_confidence_over_bet", "dimension": "calibration", "text": "…", "node_ids": [ … ] } ],
+  "model_assessment": { "model": "…", "prompt_version": "…", "event_origin": 42, "dimensions": { … } },
   "provenance": { "authorship": "agent_only", "review": "self_accepted", "line": "not yet reviewed by a human" }
 }
 ```
@@ -280,7 +362,8 @@ decision, whichever way it was captured:
 Every dimension is either `assessed` (an ordinal `level`, its `reasons` and the
 `node_ids` they rest on) or `not_assessed` (a `why`, and no `level` key). The text
 summary shows one line per dimension: the level, the ids and the reasons, or why it was
-not assessed.
+not assessed. `model_assessment` is present only when a model assessed the decision, and
+sits [beside the floors](#a-models-assessment-beside-the-floors) without changing them.
 
 **Provenance.** `authorship` and `review` are the decision's existing authorship and
 review shapes. `line` is `not yet reviewed by a human`, present exactly when an agent
@@ -400,8 +483,10 @@ section after Outcome and before Provenance: a line saying what the floors are (
 `floor_version`, what the record states and not whether it is sound), then the seven
 dimensions in order, each as a bullet with its level and one nested bullet per reason with
 the ids it rests on, or "not assessed" and why, and, when there are any, the attention lines
-under "Worth a second look". It is the text of `score_decision` for that decision, laid out
-for reading; nothing is added and nothing is graded.
+under "Worth a second look". When a model assessed the decision, a line names the model and
+prompt version and each dimension gains a nested `model` bullet with the answer and the passage
+it quotes. It is the text of `score_decision` for that decision, laid out for reading; nothing
+is added and nothing is graded.
 
 ```markdown
 ## Quality profile
@@ -465,17 +550,18 @@ leave room for, and as the reason there is no number in a response.
   log-scaled (`severity × reach`), Irreversibility in `[0,1]` as a discount (two-way
   doors matter less) and Actionability in `[0,1]` as a gate. Reversibility lives here,
   not in the quality dimensions.
-- **Model assessments.** A model may assess Framing and Values / Tradeoffs, which have
-  no floor beyond "a question was recorded", and may enrich the others, but only with
-  its basis quoted from the decision's own text, beside the floor and never replacing
-  it, and stored as an append-only annotation event that supersedes the previous one by
-  reference.
+- **Producers of model assessments.** The record, the quote check, the projection and
+  the display are built ([above](#a-models-assessment-beside-the-floors)); nothing writes
+  a version-2 assessment yet. A producer would assess Framing and Values / Tradeoffs,
+  which have no floor beyond "a question was recorded", and may enrich the others, each
+  with its basis quoted. The background scorer (`ANTHROPIC_API_KEY`, classified captures
+  only) and `emit decision.scored` still write the version-1 float scores.
 - **Validation.** Perturbation and ablation (degrade one dimension, confirm that
   dimension moves), dogfooding against expert agreement, and prospective prediction of
   reverts with zero outcome leakage.
 
-Open questions for that work: the annotation event schema and name, when a model
-assessment runs and how the agent is invoked, and Reputation computation at scale.
+Open questions for that work: when a model assessment runs and how the agent is invoked,
+and Reputation computation at scale.
 
 ## References
 

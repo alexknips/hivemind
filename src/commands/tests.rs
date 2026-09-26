@@ -7,8 +7,8 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::events::{
-    EventProvenance, EventSource, EventType, HypothesisKind, ProjectAnchorKind, ProjectLinkKind,
-    ProjectSource, RelationKind,
+    validate, CaptureItem, DecisionAssessedPayload, EventPayload, EventProvenance, EventSource,
+    EventType, HypothesisKind, ProjectAnchorKind, ProjectLinkKind, ProjectSource, RelationKind,
 };
 use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
@@ -5032,4 +5032,412 @@ proptest! {
             .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'));
         prop_assert!(!normalized.contains("--"));
     }
+}
+
+// ── model assessments (decision.scored, schema version 2) ─────────────────────────────────────
+
+const GATEWAY_TITLE: &str = "Route calls through one gateway";
+const GATEWAY_RATIONALE: &str = "One choke point keeps the audit trail in one place";
+const GATEWAY_QUESTION: &str = "Should every call go through a single gateway?";
+const GATEWAY_QUOTE: &str = "Yes, route everything through the gateway";
+const GATEWAY_EVIDENCE: &str = "p95 stays under 200ms at 10x load";
+
+fn assessed_answer(quote: &str) -> serde_json::Value {
+    json!({"status": "assessed", "level": "partial", "explanation": "the record says so", "quote": quote})
+}
+
+fn not_assessed_answer() -> serde_json::Value {
+    json!({"status": "not_assessed", "reason": "nothing in the record to rest it on"})
+}
+
+/// A model's seven answers: `answers` are the ones given, every other dimension is not assessed.
+fn dimensions_of(answers: &[(&str, serde_json::Value)]) -> serde_json::Value {
+    let mut dimensions = serde_json::Map::new();
+    for name in [
+        "framing",
+        "alternatives",
+        "information",
+        "reasoning",
+        "values_tradeoffs",
+        "bias_exposure",
+        "calibration",
+    ] {
+        dimensions.insert(name.to_owned(), not_assessed_answer());
+    }
+    for (name, answer) in answers {
+        dimensions.insert((*name).to_owned(), answer.clone());
+    }
+    serde_json::Value::Object(dimensions)
+}
+
+fn assessment_payload(decision_id: &str, dimensions: serde_json::Value) -> DecisionAssessedPayload {
+    serde_json::from_value(json!({
+        "schema_version": 2,
+        "decision_id": decision_id,
+        "model": "model-x",
+        "prompt_version": "assessment-v1",
+        "dimensions": dimensions,
+    }))
+    .expect("the assessment payload parses")
+}
+
+/// A proposed decision with a question, a quote, two described options and one cited evidence
+/// item, so a test can quote each place its words live (and one place they do not).
+fn proposed_gateway_decision(commands: &Commands<'_, InMemoryEventLedger>) -> String {
+    let actor = "human:alex";
+    let gateway = commands
+        .record_option(actor, "Gateway", "Route every call through one gateway")
+        .expect("option");
+    let direct = commands
+        .record_option(actor, "Direct", "Calls go straight to the service")
+        .expect("option");
+    let evidence = commands
+        .record_evidence(actor, GATEWAY_EVIDENCE)
+        .expect("evidence");
+    commands
+        .propose_decision(DecisionProposalInput {
+            project: None,
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id: actor,
+            title: GATEWAY_TITLE,
+            rationale: GATEWAY_RATIONALE,
+            topic_keys: &["gateway".to_owned()],
+            option_ids: &[gateway.clone(), direct],
+            option_labels: &["Gateway".to_owned(), "Direct".to_owned()],
+            chosen_option_id: Some(gateway.as_str()),
+            decided_by: None,
+            delegated_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[evidence],
+            quote: Some(GATEWAY_QUOTE),
+            question: Some(GATEWAY_QUESTION),
+        })
+        .expect("decision")
+}
+
+#[test]
+fn an_assessment_quoting_the_decision_in_every_place_its_words_live_is_recorded() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = proposed_gateway_decision(&commands);
+    let payload = assessment_payload(
+        &decision_id,
+        dimensions_of(&[
+            ("framing", assessed_answer(GATEWAY_QUESTION)),
+            (
+                "alternatives",
+                assessed_answer("Calls go straight to the service"),
+            ),
+            ("information", assessed_answer("Direct")),
+            ("reasoning", assessed_answer("keeps the audit trail")),
+            ("values_tradeoffs", assessed_answer(GATEWAY_QUOTE)),
+            ("bias_exposure", assessed_answer(GATEWAY_TITLE)),
+        ]),
+    );
+
+    let event_id = commands
+        .record_decision_assessed("agent:hivemind:scorer", payload.clone(), None)
+        .expect("an assessment that quotes the decision is recorded");
+
+    let events = ledger.read(0, 100).expect("read");
+    let event = events.last().expect("the assessment is the newest event");
+    assert_eq!(event.event_id, Some(event_id));
+    assert_eq!(event.event_type, EventType::DecisionScored);
+    assert_eq!(event.actor_id, "agent:hivemind:scorer");
+    assert_eq!(event.payload["schema_version"], 2);
+    assert_eq!(
+        validate(event).expect("the recorded event validates"),
+        EventPayload::DecisionAssessed(payload)
+    );
+}
+
+/// A model that could not assess anything says so: seven reasons, no quote to check.
+#[test]
+fn an_assessment_that_assesses_nothing_needs_no_quote() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = proposed_gateway_decision(&commands);
+
+    commands
+        .record_decision_assessed(
+            "agent:hivemind:scorer",
+            assessment_payload(&decision_id, dimensions_of(&[])),
+            None,
+        )
+        .expect("seven honest \"not assessed\" answers are recorded");
+}
+
+/// One bad quote refuses the whole assessment, names the dimension, and leaves the ledger
+/// exactly as it was.
+#[test]
+fn a_quote_that_is_not_in_the_decision_refuses_the_whole_assessment_and_writes_nothing() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = proposed_gateway_decision(&commands);
+    let before = ledger.latest_offset().expect("latest offset");
+    let payload = assessment_payload(
+        &decision_id,
+        dimensions_of(&[
+            ("framing", assessed_answer(GATEWAY_QUESTION)),
+            (
+                "reasoning",
+                assessed_answer("The gateway was chosen for latency"),
+            ),
+        ]),
+    );
+
+    let error = commands
+        .record_decision_assessed("agent:hivemind:scorer", payload, None)
+        .expect_err("a quote the decision never said is refused");
+
+    let message = error.to_string();
+    assert!(message.contains("the quote for reasoning"), "{message}");
+    assert!(
+        message.contains("The gateway was chosen for latency"),
+        "{message}"
+    );
+    assert!(message.contains("nothing was recorded"), "{message}");
+    assert_eq!(
+        ledger.latest_offset().expect("latest offset"),
+        before,
+        "the good framing quote was not recorded on its own"
+    );
+}
+
+/// The check is a plain substring test: exact, case-sensitive, no whitespace repair. A passage
+/// that is close is not the decision's own words.
+#[test]
+fn a_quote_must_be_verbatim() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = proposed_gateway_decision(&commands);
+    let before = ledger.latest_offset().expect("latest offset");
+
+    for close in [
+        "route calls through one gateway",
+        "One choke point  keeps the audit trail",
+        "One choke point keeps the audit trail in one place.",
+        "one choke point",
+    ] {
+        let payload = assessment_payload(
+            &decision_id,
+            dimensions_of(&[("reasoning", assessed_answer(close))]),
+        );
+        assert!(
+            commands
+                .record_decision_assessed("agent:hivemind:scorer", payload, None)
+                .is_err(),
+            "{close:?} is not verbatim"
+        );
+    }
+    assert_eq!(ledger.latest_offset().expect("latest offset"), before);
+}
+
+/// What the decision cites is not its recorded text: an assessment of Information that rests on
+/// an evidence item must quote where the decision itself says so.
+#[test]
+fn text_the_decision_only_cites_is_not_its_recorded_text() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = proposed_gateway_decision(&commands);
+    let before = ledger.latest_offset().expect("latest offset");
+
+    let error = commands
+        .record_decision_assessed(
+            "agent:hivemind:scorer",
+            assessment_payload(
+                &decision_id,
+                dimensions_of(&[("information", assessed_answer(GATEWAY_EVIDENCE))]),
+            ),
+            None,
+        )
+        .expect_err("a cited evidence item's words are not the decision's");
+
+    assert!(error.to_string().contains("the quote for information"));
+    assert_eq!(ledger.latest_offset().expect("latest offset"), before);
+}
+
+#[test]
+fn a_decision_that_is_not_recorded_cannot_be_assessed() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = proposed_gateway_decision(&commands);
+    let before = ledger.latest_offset().expect("latest offset");
+
+    // Not proposed; and a capture id that names no batch, the wrong kind, or the wrong index.
+    for missing in [
+        "decision-nobody-proposed",
+        "capture:999:0",
+        "capture:1:0",
+        "capture:x:y",
+    ] {
+        let error = commands
+            .record_decision_assessed(
+                "agent:hivemind:scorer",
+                assessment_payload(missing, dimensions_of(&[])),
+                None,
+            )
+            .expect_err("nothing to assess");
+        assert!(
+            error.to_string().contains("is not recorded"),
+            "{missing}: {error}"
+        );
+    }
+    assert!(commands
+        .record_decision_assessed(
+            "agent:hivemind:scorer",
+            assessment_payload(&decision_id, dimensions_of(&[])),
+            None,
+        )
+        .is_ok());
+    assert!(ledger.latest_offset().expect("latest offset") > before);
+}
+
+#[test]
+fn a_malformed_assessment_is_refused_before_the_ledger_is_read() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = proposed_gateway_decision(&commands);
+    let before = ledger.latest_offset().expect("latest offset");
+
+    let blank_quote = assessment_payload(
+        &decision_id,
+        dimensions_of(&[("framing", assessed_answer("   "))]),
+    );
+    let error = commands
+        .record_decision_assessed("agent:hivemind:scorer", blank_quote, None)
+        .expect_err("a blank quote proves nothing");
+    assert!(error.to_string().contains("framing.quote"), "{error}");
+
+    let mut wrong_version = assessment_payload(&decision_id, dimensions_of(&[]));
+    wrong_version.schema_version = 1;
+    assert!(commands
+        .record_decision_assessed("agent:hivemind:scorer", wrong_version, None)
+        .is_err());
+
+    // Every write names who made it: an anonymous assessment is refused.
+    assert!(commands
+        .record_decision_assessed(
+            " ",
+            assessment_payload(&decision_id, dimensions_of(&[])),
+            None,
+        )
+        .is_err());
+    assert_eq!(ledger.latest_offset().expect("latest offset"), before);
+}
+
+fn capture(kind: &str, title: &str, rationale: &str) -> CaptureItem {
+    CaptureItem {
+        kind: kind.to_owned(),
+        title: title.to_owned(),
+        rationale: rationale.to_owned(),
+        topic_keys: Vec::new(),
+        evidence_ids: Vec::new(),
+        options: Some(vec!["Postgres".to_owned(), "SQLite".to_owned()]),
+        chosen_option: Some("Postgres".to_owned()),
+        extraction_confidence: 0.9,
+        expressed_confidence: None,
+        supersedes_id: None,
+        premised_on_ids: Vec::new(),
+        supports_ids: Vec::new(),
+        refutes_ids: Vec::new(),
+        actor_id: None,
+        accepted_by: Vec::new(),
+        rejected_by: Vec::new(),
+        blocked_actor_id: None,
+        decision_id: None,
+        participants: Vec::new(),
+        session_initiator: None,
+    }
+}
+
+/// A classified capture is a decision too, named `capture:<batch event>:<index>`. Its recorded
+/// text is what the classifier extracted: title, rationale, options and chosen option.
+#[test]
+fn a_classified_capture_can_be_assessed_against_its_own_text() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    commands
+        .record_evidence(
+            "human:alex",
+            "an earlier event, so the batch is not event 1",
+        )
+        .expect("evidence");
+    let batch_event = commands
+        .record_ingest_batch_classified(
+            "agent:hivemind:classifier",
+            &["batch-1".to_owned()],
+            "claude-haiku-4-5-20251001",
+            "v1",
+            vec![
+                capture(
+                    "decision",
+                    "Use Postgres for the ledger",
+                    "It gives us one server for every tenant",
+                ),
+                capture(
+                    "evidence",
+                    "Two users asked for it",
+                    "They said so in the review",
+                ),
+            ],
+            None,
+        )
+        .expect("classified batch");
+    let node_id = format!("capture:{batch_event}:0");
+    let before = ledger.latest_offset().expect("latest offset");
+
+    for quote in [
+        "Use Postgres for the ledger",
+        "one server for every tenant",
+        "SQLite",
+    ] {
+        commands
+            .record_decision_assessed(
+                "agent:hivemind:scorer",
+                assessment_payload(
+                    &node_id,
+                    dimensions_of(&[("framing", assessed_answer(quote))]),
+                ),
+                Some(batch_event),
+            )
+            .unwrap_or_else(|error| panic!("{quote:?} is in the capture: {error}"));
+    }
+    assert!(ledger.latest_offset().expect("latest offset") > before);
+
+    // Not the capture's words; the index past the batch; and the capture that is not a decision.
+    let refused_before = ledger.latest_offset().expect("latest offset");
+    assert!(commands
+        .record_decision_assessed(
+            "agent:hivemind:scorer",
+            assessment_payload(
+                &node_id,
+                dimensions_of(&[("framing", assessed_answer("Use MySQL for the ledger"))]),
+            ),
+            None,
+        )
+        .is_err());
+    for wrong in [
+        format!("capture:{batch_event}:2"),
+        format!("capture:{batch_event}:1"),
+        "capture:1:0".to_owned(),
+    ] {
+        let error = commands
+            .record_decision_assessed(
+                "agent:hivemind:scorer",
+                assessment_payload(&wrong, dimensions_of(&[])),
+                None,
+            )
+            .expect_err("no decision to assess");
+        assert!(
+            error.to_string().contains("is not recorded"),
+            "{wrong}: {error}"
+        );
+    }
+    assert_eq!(
+        ledger.latest_offset().expect("latest offset"),
+        refused_before
+    );
 }

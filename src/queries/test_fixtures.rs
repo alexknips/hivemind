@@ -171,6 +171,33 @@ impl Scenario {
         )
     }
 
+    /// `decision.scored`, schema version 2: a model's assessment of `decision_id`. The payload is
+    /// written raw, as a replayed ledger would hold it, so the write path's quote check is not
+    /// applied here (its own tests cover it); `dimensions` is the seven answers, see
+    /// [`assessed_dimension`] and [`not_assessed_dimension`].
+    pub(crate) fn assessment(
+        &self,
+        decision_id: &str,
+        model: &str,
+        prompt_version: &str,
+        dimensions: Value,
+        timestamp: &str,
+    ) -> Result<EventId> {
+        self.push(
+            "agent:hivemind:scorer",
+            EventType::DecisionScored,
+            json!({
+                "schema_version": 2,
+                "decision_id": decision_id,
+                "model": model,
+                "prompt_version": prompt_version,
+                "dimensions": dimensions,
+            }),
+            None,
+            timestamp,
+        )
+    }
+
     /// `decision.requested` naming `decision_id`, which nobody has proposed: the graph gets a
     /// bare stub node for it, with none of a proposal's properties.
     pub(crate) fn request_naming(&self, decision_id: &str, timestamp: &str) -> Result<EventId> {
@@ -390,6 +417,47 @@ pub(crate) fn record_payload(
     payload
 }
 
+/// One assessed dimension of a model's answer, as it is written in a `decision.scored` payload.
+pub(crate) fn assessed_dimension(level: &str, explanation: &str, quote: &str) -> Value {
+    json!({"status": "assessed", "level": level, "explanation": explanation, "quote": quote})
+}
+
+/// One dimension a model did not assess, as it is written in a `decision.scored` payload.
+pub(crate) fn not_assessed_dimension(reason: &str) -> Value {
+    json!({"status": "not_assessed", "reason": reason})
+}
+
+/// A model's answer for all seven dimensions of `d:solid`: four assessed with a passage of its
+/// own record quoted, three not assessed. `tag` is worked into the explanations so two answers
+/// for the same decision can be told apart.
+pub(crate) fn solid_assessment_dimensions(tag: &str) -> Value {
+    json!({
+        "framing": assessed_dimension(
+            "solid",
+            &format!("{tag}: the question is stated"),
+            "Which store should hold the ledger?",
+        ),
+        "alternatives": assessed_dimension(
+            "partial",
+            &format!("{tag}: two alternatives are described, neither weighed"),
+            "A file per tenant; rejected, no cross-tenant queries",
+        ),
+        "information": not_assessed_dimension(&format!("{tag}: nothing in the text to rest it on")),
+        "reasoning": assessed_dimension(
+            "partial",
+            &format!("{tag}: a rationale is given"),
+            "Why d:solid was taken",
+        ),
+        "values_tradeoffs": assessed_dimension(
+            "partial",
+            &format!("{tag}: a cost is named for one alternative"),
+            "rejected, its C++ build is too slow",
+        ),
+        "bias_exposure": not_assessed_dimension(&format!("{tag}: nothing bears on it")),
+        "calibration": not_assessed_dimension(&format!("{tag}: no confidence was declared")),
+    })
+}
+
 /// Every decision `floor_scenario` records that a profile is read for, plus one id that is not in
 /// the graph.
 pub(crate) const FLOOR_SCENARIO_DECISIONS: [&str; 18] = [
@@ -435,6 +503,7 @@ pub(crate) const FLOOR_SCENARIO_DECISIONS: [&str; 18] = [
 ///   afterwards.
 /// - `d:challenged`: rests on `h:doubtful`, which `e:counter` refuted before the decision.
 ///   `d:refuted-later` rests on `h:later-doubt`, refuted only after it.
+/// - `d:solid` is also assessed twice by a model (`model-a`, then `model-b`); nothing else is.
 pub(crate) fn floor_scenario() -> Result<Scenario> {
     let s = Scenario::new();
     let crew = "agent:claude:crew";
@@ -584,6 +653,22 @@ pub(crate) fn floor_scenario() -> Result<Scenario> {
     )?;
     s.request_naming("d:stub", "2026-01-02T00:00:08Z")?;
     add_grounded_decisions(&s, crew)?;
+    // Two model assessments of `d:solid`, the second after the first: the profile shows the
+    // newest, beside floors that do not move. No other decision has one.
+    s.assessment(
+        "d:solid",
+        "model-a",
+        "assessment-v1",
+        solid_assessment_dimensions("first"),
+        "2026-02-03T00:00:00Z",
+    )?;
+    s.assessment(
+        "d:solid",
+        "model-b",
+        "assessment-v2",
+        solid_assessment_dimensions("second"),
+        "2026-02-04T00:00:00Z",
+    )?;
     Ok(s)
 }
 

@@ -357,6 +357,9 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
         EventPayload::DecisionScored(payload) => {
             project_decision_scored(graph, &payload, &origin_properties)?
         }
+        EventPayload::DecisionAssessed(payload) => {
+            project_decision_assessed(graph, &payload, event_origin, &origin_properties)?
+        }
         EventPayload::RelationRemoved(_) => {
             // GraphView has no remove_edge; retraction is recorded in the ledger only
         }
@@ -1561,6 +1564,57 @@ fn project_decision_scored(
         graph,
         NodeKind::Decision,
         &payload.capture_node_id,
+        origin_properties,
+        &props,
+    )
+}
+
+/// A model's assessment (`decision.scored`, schema version 2) is written onto the DECISION node
+/// it names, and only its own properties: `model_assessment` (the JSON of who assessed, with
+/// which prompt, and the seven answers), `model_assessment_origin` (the ledger offset of the
+/// scoring event) and, when the assessor judged them, the importance factors. The node's own
+/// `event_origin`, `source`, `source_ref` and `tenant_id` are the capture's and stay exactly as
+/// the capture wrote them: an annotation is not the event that created the node. The newest
+/// assessment recorded for a decision is the one shown; earlier ones stay in the ledger.
+fn project_decision_assessed(
+    graph: &impl GraphView,
+    payload: &events::DecisionAssessedPayload,
+    event_origin: i64,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let stored = serde_json::to_string(&payload.model_assessment()).map_err(|error| {
+        ProjectorError::Projection(format!(
+            "cannot store the model assessment of {}: {error}",
+            payload.decision_id
+        ))
+    })?;
+    let mut props = GraphProperties::from([
+        ("model_assessment".to_owned(), GraphValue::String(stored)),
+        (
+            "model_assessment_origin".to_owned(),
+            GraphValue::Int(event_origin),
+        ),
+    ]);
+    if let Some(importance) = &payload.importance {
+        props.extend([
+            (
+                "importance_stakes".to_owned(),
+                GraphValue::Float(importance.stakes),
+            ),
+            (
+                "importance_irreversibility".to_owned(),
+                GraphValue::Float(importance.irreversibility),
+            ),
+            (
+                "importance_actionability".to_owned(),
+                GraphValue::Float(importance.actionability),
+            ),
+        ]);
+    }
+    annotate_node(
+        graph,
+        NodeKind::Decision,
+        &payload.decision_id,
         origin_properties,
         &props,
     )

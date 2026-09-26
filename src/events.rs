@@ -614,7 +614,10 @@ pub struct ImportanceFactors {
     pub actionability_explanation: String,
 }
 
-/// Payload for a `decision.scored` append-only annotation event.
+/// Payload for a `decision.scored` append-only annotation event, **schema version 1**: the
+/// float scores keyed by a classifier capture node. This is the shape every event written
+/// before [`DecisionAssessedPayload`] has. The ledger is immutable, so these events keep parsing
+/// and keep projecting as they always did; a payload without `schema_version` is this shape.
 ///
 /// Scores are Layer-3: server-computed, stored separately from the decision,
 /// never an edit to it. Re-assessments append a new event with `supersedes_score_id`
@@ -634,6 +637,200 @@ pub struct DecisionScoredPayload {
     pub quality_dims: QualityDims,
     /// Importance factors (stakes × irreversibility × actionability).
     pub importance: ImportanceFactors,
+}
+
+/// How much of a dimension a record supports. Ordinal, from published rules; not a fraction.
+/// `None` means the record states nothing toward the dimension, not that the decision was bad.
+///
+/// It is wire vocabulary: the deterministic floors of the quality profile and a model's
+/// assessment ([`ModelDimension`]) both speak it.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QualityLevel {
+    None,
+    Partial,
+    Solid,
+}
+
+impl QualityLevel {
+    /// The wire name (`partial`), the one serialization gives.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Partial => "partial",
+            Self::Solid => "solid",
+        }
+    }
+}
+
+/// The `schema_version` a [`DecisionAssessedPayload`] carries. A `decision.scored` payload with
+/// no `schema_version` is the version-1 shape ([`DecisionScoredPayload`]).
+pub const DECISION_ASSESSED_SCHEMA_VERSION: u32 = 2;
+
+/// A model's answer for one dimension: assessed, with the passage it rests on quoted, or not
+/// assessed, with why. There is no third answer and never a placeholder score: a model that
+/// cannot assess a dimension says so.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ModelDimension {
+    Assessed {
+        level: QualityLevel,
+        explanation: String,
+        /// The passage of the decision's own recorded text the assessment rests on, verbatim.
+        /// The write path refuses an event whose quote does not occur in that text.
+        quote: String,
+    },
+    NotAssessed {
+        reason: String,
+    },
+}
+
+/// A model's answer for all seven dimensions. Every one is present: leaving a dimension out
+/// is not a way to say it was not assessed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelDimensions {
+    pub framing: ModelDimension,
+    pub alternatives: ModelDimension,
+    pub information: ModelDimension,
+    pub reasoning: ModelDimension,
+    pub values_tradeoffs: ModelDimension,
+    pub bias_exposure: ModelDimension,
+    pub calibration: ModelDimension,
+}
+
+impl ModelDimensions {
+    /// The seven answers with their wire names, in the order `docs/DECISION_SCORING.md` lists
+    /// the dimensions.
+    pub fn entries(&self) -> [(&'static str, &ModelDimension); 7] {
+        [
+            ("framing", &self.framing),
+            ("alternatives", &self.alternatives),
+            ("information", &self.information),
+            ("reasoning", &self.reasoning),
+            ("values_tradeoffs", &self.values_tradeoffs),
+            ("bias_exposure", &self.bias_exposure),
+            ("calibration", &self.calibration),
+        ]
+    }
+}
+
+/// Payload for a `decision.scored` append-only annotation event, **schema version 2**: a
+/// model's assessment of one decision, keyed by the decision's id (a proposed decision or a
+/// classified capture, `capture:<event>:<index>`).
+///
+/// Each of the seven dimensions is either assessed (a level, an explanation and the verbatim
+/// passage it rests on) or not assessed (and why). It is stored beside the deterministic floors
+/// of the quality profile and never replaces them. Like a version-1 score it is Layer 3,
+/// append-only and never an edit to the decision; the newest one for a decision is the one the
+/// graph shows and earlier ones stay in the ledger. `supersedes_score_id` names the earlier
+/// event a re-assessment replaces (an audit pointer, not enforced).
+///
+/// [`validate`] checks the shape. That every quote occurs in the decision's recorded text needs
+/// the ledger, so `Commands::record_decision_assessed` checks it before anything is appended.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionAssessedPayload {
+    /// Always [`DECISION_ASSESSED_SCHEMA_VERSION`].
+    pub schema_version: u32,
+    pub decision_id: String,
+    /// The model that produced the assessment.
+    pub model: String,
+    /// The version of the prompt it was given, so an assessment can be traced to its wording.
+    pub prompt_version: String,
+    /// event_uuid of a prior `decision.scored` event that this assessment supersedes, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes_score_id: Option<String>,
+    pub dimensions: ModelDimensions,
+    /// Importance factors, a separate axis from the seven dimensions. Absent when the assessor
+    /// did not judge them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub importance: Option<ImportanceFactors>,
+}
+
+/// What the graph keeps of a [`DecisionAssessedPayload`] on the decision node, as one JSON
+/// property (`model_assessment`): who assessed, with which prompt, and the seven answers.
+/// Importance is a separate axis and is stored as its own properties.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelAssessment {
+    pub model: String,
+    pub prompt_version: String,
+    pub dimensions: ModelDimensions,
+}
+
+impl DecisionAssessedPayload {
+    /// The part of this payload the graph keeps on the decision node.
+    pub fn model_assessment(&self) -> ModelAssessment {
+        ModelAssessment {
+            model: self.model.clone(),
+            prompt_version: self.prompt_version.clone(),
+            dimensions: self.dimensions.clone(),
+        }
+    }
+
+    /// The shape rules that need no ledger: the version, the names, a non-blank explanation and
+    /// quote for every assessed dimension, a non-blank reason for every one that is not, and
+    /// importance factors in range.
+    pub fn validate_shape(&self) -> std::result::Result<(), EventValidationError> {
+        if self.schema_version != DECISION_ASSESSED_SCHEMA_VERSION {
+            return Err(EventValidationError::UnsupportedSchemaVersion {
+                expected: DECISION_ASSESSED_SCHEMA_VERSION,
+                got: self.schema_version,
+            });
+        }
+        require_non_empty("payload.decision_id", &self.decision_id)?;
+        require_non_empty("payload.model", &self.model)?;
+        require_non_empty("payload.prompt_version", &self.prompt_version)?;
+        require_optional_non_empty(
+            "payload.supersedes_score_id",
+            self.supersedes_score_id.as_deref(),
+        )?;
+        for (dimension, answer) in self.dimensions.entries() {
+            match answer {
+                ModelDimension::Assessed {
+                    explanation, quote, ..
+                } => {
+                    require_dimension_text(dimension, "explanation", explanation)?;
+                    require_dimension_text(dimension, "quote", quote)?;
+                }
+                ModelDimension::NotAssessed { reason } => {
+                    require_dimension_text(dimension, "reason", reason)?;
+                }
+            }
+        }
+        if let Some(importance) = &self.importance {
+            importance.validate_shape()?;
+        }
+        Ok(())
+    }
+}
+
+impl ImportanceFactors {
+    fn validate_shape(&self) -> std::result::Result<(), EventValidationError> {
+        let unit = |value: f64| (0.0..=1.0).contains(&value);
+        if !(self.stakes.is_finite() && self.stakes >= 0.0) {
+            return Err(EventValidationError::InvalidImportance("stakes"));
+        }
+        if !unit(self.irreversibility) {
+            return Err(EventValidationError::InvalidImportance("irreversibility"));
+        }
+        if !unit(self.actionability) {
+            return Err(EventValidationError::InvalidImportance("actionability"));
+        }
+        require_non_empty(
+            "payload.importance.stakes_explanation",
+            &self.stakes_explanation,
+        )?;
+        require_non_empty(
+            "payload.importance.irreversibility_explanation",
+            &self.irreversibility_explanation,
+        )?;
+        require_non_empty(
+            "payload.importance.actionability_explanation",
+            &self.actionability_explanation,
+        )
+    }
 }
 
 /// Provenance for a derived attribute: was it explicitly stated or inferred?
@@ -914,6 +1111,8 @@ pub enum EventPayload {
     IngestBatchReceived(IngestBatchReceivedPayload),
     IngestBatchClassified(IngestBatchClassifiedPayload),
     DecisionScored(DecisionScoredPayload),
+    /// A `decision.scored` event of schema version 2 (see [`DecisionAssessedPayload`]).
+    DecisionAssessed(DecisionAssessedPayload),
     DecisionMetadataDerived(DecisionMetadataDerivedPayload),
     DecisionMoved(DecisionMovedPayload),
     ProjectRegistered(ProjectRegisteredPayload),
@@ -941,7 +1140,7 @@ impl EventPayload {
             Self::NotificationAcknowledged(_) => EventType::NotificationAcknowledged,
             Self::IngestBatchReceived(_) => EventType::IngestBatchReceived,
             Self::IngestBatchClassified(_) => EventType::IngestBatchClassified,
-            Self::DecisionScored(_) => EventType::DecisionScored,
+            Self::DecisionScored(_) | Self::DecisionAssessed(_) => EventType::DecisionScored,
             Self::DecisionMetadataDerived(_) => EventType::DecisionMetadataDerived,
             Self::DecisionMoved(_) => EventType::DecisionMoved,
             Self::ProjectRegistered(_) => EventType::ProjectRegistered,
@@ -970,6 +1169,7 @@ impl EventPayload {
             Self::IngestBatchReceived(payload) => serde_json::to_value(payload),
             Self::IngestBatchClassified(payload) => serde_json::to_value(payload),
             Self::DecisionScored(payload) => serde_json::to_value(payload),
+            Self::DecisionAssessed(payload) => serde_json::to_value(payload),
             Self::DecisionMetadataDerived(payload) => serde_json::to_value(payload),
             Self::DecisionMoved(payload) => serde_json::to_value(payload),
             Self::ProjectRegistered(payload) => serde_json::to_value(payload),
@@ -1142,6 +1342,18 @@ pub enum EventValidationError {
 
     #[error("payload.delegated_by is only valid on an agent's own acceptance: accepting actor {0:?} is not an agent (agent:<tool>:<name>)")]
     DelegationRequiresAgentAccepter(String),
+
+    #[error("payload.schema_version must be {expected}, got {got}")]
+    UnsupportedSchemaVersion { expected: u32, got: u32 },
+
+    #[error("payload.dimensions.{dimension}.{field} must not be empty")]
+    EmptyDimensionField {
+        dimension: &'static str,
+        field: &'static str,
+    },
+
+    #[error("payload.importance.{0} is out of range")]
+    InvalidImportance(&'static str),
 
     #[error("payload does not match event type {event_type:?}: {source}")]
     Payload {
@@ -1316,6 +1528,13 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty("payload.schema_version", &payload.schema_version)?;
             Ok(EventPayload::IngestBatchClassified(payload))
         }
+        // A payload with a `schema_version` is the model-assessment shape; every event written
+        // before it has none and stays the version-1 shape below.
+        EventType::DecisionScored if event.payload.get("schema_version").is_some() => {
+            let payload: DecisionAssessedPayload = parse_payload(event)?;
+            payload.validate_shape()?;
+            Ok(EventPayload::DecisionAssessed(payload))
+        }
         EventType::DecisionScored => {
             let payload: DecisionScoredPayload = parse_payload(event)?;
             require_non_empty("payload.capture_node_id", &payload.capture_node_id)?;
@@ -1408,6 +1627,18 @@ fn require_non_empty(
 ) -> std::result::Result<(), EventValidationError> {
     if value.trim().is_empty() {
         Err(EventValidationError::EmptyField(field))
+    } else {
+        Ok(())
+    }
+}
+
+fn require_dimension_text(
+    dimension: &'static str,
+    field: &'static str,
+    value: &str,
+) -> std::result::Result<(), EventValidationError> {
+    if value.trim().is_empty() {
+        Err(EventValidationError::EmptyDimensionField { dimension, field })
     } else {
         Ok(())
     }

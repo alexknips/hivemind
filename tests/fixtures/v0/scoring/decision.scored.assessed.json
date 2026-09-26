@@ -1,0 +1,63 @@
+{
+  "event_id": 5,
+  "event_uuid": "018f5d8a-04ab-7ef1-9f47-75e8521dff40",
+  "correlation_id": null,
+  "causation_event_id": 1,
+  "type": "decision.scored",
+  "actor_id": "agent:hivemind:scorer",
+  "source": "agent",
+  "source_ref": "agent:hivemind:scorer",
+  "payload": {
+    "schema_version": 2,
+    "decision_id": "dec-1",
+    "model": "claude-haiku-4-5-20251001",
+    "prompt_version": "assessment-v1",
+    "dimensions": {
+      "framing": {
+        "status": "assessed",
+        "level": "partial",
+        "explanation": "The choice is named, but the question it answers is not stated.",
+        "quote": "Use SQLite as the slice-1 ledger"
+      },
+      "alternatives": {
+        "status": "assessed",
+        "level": "solid",
+        "explanation": "A second option is recorded and described in its own words.",
+        "quote": "Requires a separate server process"
+      },
+      "information": {
+        "status": "not_assessed",
+        "reason": "The record cites no evidence in its own text, so there is no passage to rest an assessment on."
+      },
+      "reasoning": {
+        "status": "assessed",
+        "level": "solid",
+        "explanation": "The rationale ties the choice to a stated need.",
+        "quote": "Slice 1 needs an embedded, auditable event store with no server dependency."
+      },
+      "values_tradeoffs": {
+        "status": "assessed",
+        "level": "partial",
+        "explanation": "The cost of the chosen option is not weighed against the alternative.",
+        "quote": "Embedded, no server dependency"
+      },
+      "bias_exposure": {
+        "status": "not_assessed",
+        "reason": "Nothing in the record's text bears on a distortion either way."
+      },
+      "calibration": {
+        "status": "not_assessed",
+        "reason": "No confidence was declared, so there is nothing to compare with what the decision rests on."
+      }
+    },
+    "importance": {
+      "stakes": 10.0,
+      "stakes_explanation": "The ledger store touches every later component.",
+      "irreversibility": 0.4,
+      "irreversibility_explanation": "A store migration is costly but possible.",
+      "actionability": 1.0,
+      "actionability_explanation": "The decision has a clear owner and can be acted on now."
+    }
+  },
+  "ts": "2026-06-21T08:05:00Z"
+}

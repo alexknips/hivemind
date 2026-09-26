@@ -19,6 +19,19 @@ const FIXTURES: &[(&str, &str, EventType)] = &[
         include_str!("../../tests/fixtures/v0/decision.requested.json"),
         EventType::DecisionRequested,
     ),
+    // `decision.scored` has two payload versions, and both must keep validating: the float
+    // scores every earlier ledger holds (schema version 1, no `schema_version`), and a model's
+    // assessment (schema version 2).
+    (
+        include_str!("../../schemas/v0/decision.scored.json"),
+        include_str!("../../tests/fixtures/v0/decision.scored.json"),
+        EventType::DecisionScored,
+    ),
+    (
+        include_str!("../../schemas/v0/decision.scored.json"),
+        include_str!("../../tests/fixtures/v0/scoring/decision.scored.assessed.json"),
+        EventType::DecisionScored,
+    ),
     (
         include_str!("../../schemas/v0/decision.accepted.json"),
         include_str!("../../tests/fixtures/v0/decision.accepted.json"),
@@ -585,4 +598,210 @@ fn blocker_notification_events_require_source_provenance() {
         validate(&event),
         Err(EventValidationError::EmptyField("source_ref"))
     ));
+}
+
+// ── decision.scored: schema version 1 (float scores) and 2 (a model's assessment) ──────────────
+
+fn scored_v1_event() -> Event {
+    serde_json::from_str(include_str!("../../tests/fixtures/v0/decision.scored.json")).unwrap()
+}
+
+fn assessed_event() -> Event {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/scoring/decision.scored.assessed.json"
+    ))
+    .unwrap()
+}
+
+/// Every event written before schema version 2 has no `schema_version`. It stays the version-1
+/// shape: it parses as before, and re-serializing it invents nothing.
+#[test]
+fn a_decision_scored_without_a_schema_version_is_still_the_version_one_shape() {
+    let event = scored_v1_event();
+    assert!(event.payload.get("schema_version").is_none());
+
+    let payload = validate(&event).expect("a version-1 score still validates");
+
+    let EventPayload::DecisionScored(scored) = payload else {
+        panic!("a payload with no schema_version is the version-1 shape");
+    };
+    assert_eq!(scored.capture_node_id, "capture:2:0");
+    assert_eq!(scored.weight_version, "v1");
+    // Re-serializing it invents nothing: the fixture's explicit `null` reference to an earlier
+    // score is the one field the wire omits when it is absent, exactly as before.
+    let mut expected = event.payload.clone();
+    expected
+        .as_object_mut()
+        .unwrap()
+        .remove("supersedes_score_id");
+    assert_eq!(serde_json::to_value(&scored).unwrap(), expected);
+}
+
+#[test]
+fn a_decision_scored_with_a_schema_version_is_a_model_assessment() {
+    let event = assessed_event();
+
+    let payload = validate(&event).expect("an assessment validates");
+
+    assert_eq!(payload.event_type(), EventType::DecisionScored);
+    let EventPayload::DecisionAssessed(assessed) = &payload else {
+        panic!("a payload with a schema_version is a model assessment");
+    };
+    assert_eq!(assessed.schema_version, DECISION_ASSESSED_SCHEMA_VERSION);
+    assert_eq!(assessed.decision_id, "dec-1");
+    assert_eq!(assessed.model, "claude-haiku-4-5-20251001");
+    assert_eq!(assessed.prompt_version, "assessment-v1");
+    assert_eq!(assessed.supersedes_score_id, None);
+    assert_eq!(
+        assessed.dimensions.framing,
+        ModelDimension::Assessed {
+            level: QualityLevel::Partial,
+            explanation: "The choice is named, but the question it answers is not stated."
+                .to_owned(),
+            quote: "Use SQLite as the slice-1 ledger".to_owned(),
+        }
+    );
+    assert!(matches!(
+        assessed.dimensions.information,
+        ModelDimension::NotAssessed { .. }
+    ));
+    assert!(assessed.importance.is_some());
+    // The wire form is the fixture's, field for field: nothing is invented, nothing dropped.
+    assert_eq!(payload.to_value().unwrap(), event.payload);
+}
+
+/// Something with no basis is not assessed: no dimension can be left out, and a dimension cannot
+/// carry the 0.5 the version-1 prompt asked for.
+#[test]
+fn an_assessment_needs_all_seven_dimensions_each_assessed_or_not() {
+    for dimension in [
+        "framing",
+        "alternatives",
+        "information",
+        "reasoning",
+        "values_tradeoffs",
+        "bias_exposure",
+        "calibration",
+    ] {
+        let mut event = assessed_event();
+        event.payload["dimensions"]
+            .as_object_mut()
+            .unwrap()
+            .remove(dimension);
+        assert!(
+            matches!(validate(&event), Err(EventValidationError::Payload { .. })),
+            "{dimension} left out"
+        );
+    }
+
+    for wrong in [
+        // The version-1 dimension: a float and no basis.
+        json!({"score": 0.5, "explanation": "could not be assessed"}),
+        // Assessed, but neither a passage nor a level vocabulary word.
+        json!({"status": "assessed", "level": "great", "explanation": "x", "quote": "y"}),
+        json!({"status": "assessed", "level": "solid", "explanation": "x"}),
+        json!({"status": "assessed", "level": "solid", "quote": "y"}),
+        // A placeholder number smuggled onto either answer.
+        json!({"status": "assessed", "level": "solid", "explanation": "x", "quote": "y", "score": 0.5}),
+        json!({"status": "not_assessed", "reason": "x", "level": "none"}),
+        json!({"status": "not_assessed"}),
+        json!({"status": "maybe", "reason": "x"}),
+    ] {
+        let mut event = assessed_event();
+        event.payload["dimensions"]["reasoning"] = wrong.clone();
+        assert!(
+            matches!(validate(&event), Err(EventValidationError::Payload { .. })),
+            "{wrong}"
+        );
+    }
+}
+
+#[test]
+fn an_assessment_refuses_a_blank_explanation_quote_or_reason() {
+    for (dimension, field, value) in [
+        ("framing", "quote", json!("   ")),
+        ("framing", "explanation", json!("")),
+        ("information", "reason", json!("\n")),
+    ] {
+        let mut event = assessed_event();
+        event.payload["dimensions"][dimension][field] = value;
+        assert!(
+            matches!(
+                validate(&event),
+                Err(EventValidationError::EmptyDimensionField { dimension: d, field: f })
+                    if d == dimension && f == field
+            ),
+            "{dimension}.{field}"
+        );
+    }
+}
+
+#[test]
+fn an_assessment_refuses_an_unknown_version_a_blank_name_and_importance_out_of_range() {
+    let mut event = assessed_event();
+    event.payload["schema_version"] = json!(3);
+    assert!(matches!(
+        validate(&event),
+        Err(EventValidationError::UnsupportedSchemaVersion {
+            expected: 2,
+            got: 3
+        })
+    ));
+
+    for field in ["decision_id", "model", "prompt_version"] {
+        let mut event = assessed_event();
+        event.payload[field] = json!(" ");
+        assert!(
+            matches!(validate(&event), Err(EventValidationError::EmptyField(_))),
+            "{field}"
+        );
+    }
+
+    let mut event = assessed_event();
+    event.payload["supersedes_score_id"] = json!("");
+    assert!(matches!(
+        validate(&event),
+        Err(EventValidationError::EmptyField(_))
+    ));
+
+    let mut event = assessed_event();
+    event.payload["importance"]["irreversibility"] = json!(1.5);
+    assert!(matches!(
+        validate(&event),
+        Err(EventValidationError::InvalidImportance("irreversibility"))
+    ));
+
+    // An assessment may leave importance out: it is a separate axis.
+    let mut event = assessed_event();
+    event.payload.as_object_mut().unwrap().remove("importance");
+    assert!(validate(&event).is_ok());
+}
+
+/// The schema file and the Rust validation agree on the assessment shape.
+#[test]
+fn the_decision_scored_schema_rejects_what_validation_rejects() {
+    let schema: Value =
+        serde_json::from_str(include_str!("../../schemas/v0/decision.scored.json")).unwrap();
+    let validator = jsonschema::validator_for(&schema).expect("schema compiles");
+
+    let mut missing_dimension = serde_json::to_value(assessed_event()).unwrap();
+    missing_dimension["payload"]["dimensions"]
+        .as_object_mut()
+        .unwrap()
+        .remove("calibration");
+    assert!(!validator.is_valid(&missing_dimension));
+
+    let mut blank_quote = serde_json::to_value(assessed_event()).unwrap();
+    blank_quote["payload"]["dimensions"]["framing"]["quote"] = json!("  ");
+    assert!(!validator.is_valid(&blank_quote));
+
+    let mut placeholder = serde_json::to_value(assessed_event()).unwrap();
+    placeholder["payload"]["dimensions"]["reasoning"] =
+        json!({"score": 0.5, "explanation": "could not be assessed"});
+    assert!(!validator.is_valid(&placeholder));
+
+    // Neither shape may borrow the other's fields.
+    let mut mixed = serde_json::to_value(assessed_event()).unwrap();
+    mixed["payload"]["capture_node_id"] = json!("capture:2:0");
+    assert!(!validator.is_valid(&mixed));
 }

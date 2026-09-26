@@ -329,6 +329,24 @@ fn quality_profile_reads_the_same_rungs_as_the_other_backends() -> Result<()> {
 }
 
 #[test]
+fn a_model_assessment_annotates_without_rewriting_the_capture_origin() -> Result<()> {
+    for (events, assessments) in [(2, 1), (3, 2)] {
+        let temp_dir = test_graph_dir("model-assessment");
+        let graph = KuzuGraph::open(&temp_dir)?;
+        let ledger = crate::projector::tests::decision_assessed_fixture_ledger(events)?;
+        crate::projector::project_from_ledger(&ledger, &graph, 0)?;
+
+        crate::projector::tests::assert_assessment_annotates_without_rewriting_origin(
+            &graph,
+            assessments,
+        )?;
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+    Ok(())
+}
+
+#[test]
 fn a_null_property_is_stored_whatever_type_its_column_has() -> Result<()> {
     // A blocker resolved with only a reason has no resolution event id, and that column is INT64.
     let temp_dir = test_graph_dir("null-property");

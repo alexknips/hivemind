@@ -92,8 +92,8 @@ pub use projects::{
     ProjectListRequest, ProjectListResults, ProjectOutcome, ProjectView,
 };
 pub use record_facts::{
-    get_record_facts, EvidenceFact, HypothesisFact, OptionFact, PremiseFact, RecordFacts,
-    RefutationFact, SupersessionFact,
+    get_record_facts, EvidenceFact, HypothesisFact, ModelAssessmentFact, OptionFact, PremiseFact,
+    RecordFacts, RefutationFact, SupersessionFact,
 };
 pub use relevant::get_relevant_decisions;
 pub use resolve::{

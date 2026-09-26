@@ -4,15 +4,16 @@ use std::path::{Path, PathBuf};
 
 use hivemind::events::{
     self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionAcceptedPayload,
-    DecisionBlockerPriority, DecisionMetadataDerivedPayload, DecisionMovedPayload,
-    DecisionProposedPayload, DecisionRejectedPayload, DecisionRequestedPayload,
-    DecisionScoredPayload, DecisionSupersededPayload, Event, EventBuilder, EventEnvelope,
-    EventPayload, EventSource, EventType, EventValidationError, EvidenceRecordedPayload,
-    HypothesisKind, HypothesisRecordedPayload, ImportanceFactors, IngestBatchClassifiedPayload,
-    IngestBatchReceivedPayload, IngestTurn, NotificationAcknowledgedPayload,
-    NotificationSentPayload, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind,
-    ProjectLinkPayload, ProjectRegisteredPayload, QualityDim, QualityDims, RelationAddedPayload,
-    RelationKind as EventRelationKind, RelationRemovedPayload,
+    DecisionAssessedPayload, DecisionBlockerPriority, DecisionMetadataDerivedPayload,
+    DecisionMovedPayload, DecisionProposedPayload, DecisionRejectedPayload,
+    DecisionRequestedPayload, DecisionScoredPayload, DecisionSupersededPayload, Event,
+    EventBuilder, EventEnvelope, EventPayload, EventSource, EventType, EventValidationError,
+    EvidenceRecordedPayload, HypothesisKind, HypothesisRecordedPayload, ImportanceFactors,
+    IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn, ModelDimension,
+    ModelDimensions, NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
+    ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
+    QualityDim, QualityDims, QualityLevel, RelationAddedPayload, RelationKind as EventRelationKind,
+    RelationRemovedPayload, DECISION_ASSESSED_SCHEMA_VERSION,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};
@@ -172,6 +173,70 @@ fn event_builder_derives_event_type_from_payload_variant() {
 
         let validated = events::validate(&event).expect("typed event validates");
         assert_eq!(payload_variant_type(&validated), event_type);
+    }
+}
+
+/// `decision.scored` is one event type with two payload versions. A payload with no
+/// `schema_version` is the version-1 float score every earlier ledger holds; one with
+/// `schema_version: 2` is a model's assessment. Both validate under the one type and each comes
+/// back as its own variant.
+#[test]
+fn decision_scored_keeps_one_event_type_across_its_two_payload_versions() {
+    let assessed = DecisionAssessedPayload {
+        schema_version: DECISION_ASSESSED_SCHEMA_VERSION,
+        decision_id: "decision:minimal".to_owned(),
+        model: "claude-haiku-4-5-20251001".to_owned(),
+        prompt_version: "assessment-v1".to_owned(),
+        supersedes_score_id: None,
+        dimensions: ModelDimensions {
+            framing: ModelDimension::Assessed {
+                level: QualityLevel::Partial,
+                explanation: "The question is implied".to_owned(),
+                quote: "Use option A".to_owned(),
+            },
+            alternatives: not_assessed("no option is recorded"),
+            information: not_assessed("nothing cited"),
+            reasoning: not_assessed("no rationale to quote"),
+            values_tradeoffs: not_assessed("no tradeoff stated"),
+            bias_exposure: not_assessed("nothing bears on it"),
+            calibration: not_assessed("no confidence declared"),
+        },
+        importance: None,
+    };
+    let payload = EventPayload::DecisionAssessed(assessed);
+    assert_eq!(payload.event_type(), EventType::DecisionScored);
+    assert_eq!(payload_variant_type(&payload), EventType::DecisionScored);
+
+    let envelope = EventEnvelope::new(payload.clone());
+    assert_eq!(envelope.event_type(), EventType::DecisionScored);
+    let event = EventBuilder::new(
+        Uuid::parse_str("018f5d8a-03fb-7df0-8e36-64d7410cfe11").unwrap(),
+        "agent:hivemind:scorer",
+        envelope,
+    )
+    .build()
+    .expect("an assessment builds");
+    assert_eq!(event.event_type, EventType::DecisionScored);
+    assert_eq!(event.payload["schema_version"], json!(2));
+    assert_eq!(events::validate(&event).expect("validates"), payload);
+    assert_eq!(
+        typed_payload_from_value(event.event_type, event.payload.clone()).unwrap(),
+        payload
+    );
+
+    // The version-1 sample is still the other variant under the same type.
+    let (_, version_one) = typed_payload_cases()
+        .into_iter()
+        .find(|(event_type, _)| *event_type == EventType::DecisionScored)
+        .expect("a version-1 sample");
+    assert!(matches!(version_one, EventPayload::DecisionScored(_)));
+    let event = event_with_payload(EventType::DecisionScored, payload_json(&version_one));
+    assert_eq!(events::validate(&event).expect("validates"), version_one);
+}
+
+fn not_assessed(reason: &str) -> ModelDimension {
+    ModelDimension::NotAssessed {
+        reason: reason.to_owned(),
     }
 }
 
@@ -395,7 +460,9 @@ fn payload_variant_type(payload: &EventPayload) -> EventType {
         EventPayload::NotificationAcknowledged(_) => EventType::NotificationAcknowledged,
         EventPayload::IngestBatchReceived(_) => EventType::IngestBatchReceived,
         EventPayload::IngestBatchClassified(_) => EventType::IngestBatchClassified,
-        EventPayload::DecisionScored(_) => EventType::DecisionScored,
+        EventPayload::DecisionScored(_) | EventPayload::DecisionAssessed(_) => {
+            EventType::DecisionScored
+        }
         EventPayload::DecisionMetadataDerived(_) => EventType::DecisionMetadataDerived,
         EventPayload::DecisionMoved(_) => EventType::DecisionMoved,
         EventPayload::ProjectRegistered(_) => EventType::ProjectRegistered,
@@ -453,6 +520,10 @@ fn typed_payload_from_value(
         }
         EventType::IngestBatchClassified => {
             EventPayload::IngestBatchClassified(serde_json::from_value(payload)?)
+        }
+        // One event type, two payload versions: a `schema_version` marks a model assessment.
+        EventType::DecisionScored if payload.get("schema_version").is_some() => {
+            EventPayload::DecisionAssessed(serde_json::from_value(payload)?)
         }
         EventType::DecisionScored => EventPayload::DecisionScored(serde_json::from_value(payload)?),
         EventType::DecisionMetadataDerived => {
@@ -788,6 +859,7 @@ fn payload_json(payload: &EventPayload) -> Value {
         EventPayload::IngestBatchReceived(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::IngestBatchClassified(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionScored(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::DecisionAssessed(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionMetadataDerived(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionMoved(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::ProjectRegistered(payload) => serde_json::to_value(payload).unwrap(),

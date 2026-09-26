@@ -4,18 +4,102 @@
   "title": "decision.scored event",
   "type": "object",
   "additionalProperties": false,
-  "required": ["event_uuid", "type", "actor_id", "source", "payload"],
+  "required": [
+    "event_uuid",
+    "type",
+    "actor_id",
+    "source",
+    "payload"
+  ],
   "properties": {
-    "event_id": { "type": ["integer", "null"], "minimum": 1 },
-    "event_uuid": { "type": "string", "format": "uuid" },
-    "correlation_id": { "type": ["string", "null"], "minLength": 1 },
-    "causation_event_id": { "type": ["integer", "null"], "minimum": 1 },
-    "type": { "const": "decision.scored" },
-    "actor_id": { "type": "string", "minLength": 1 },
-    "source": { "enum": ["cli", "agent", "human", "slack", "document", "api"] },
-    "source_ref": { "type": ["string", "null"], "minLength": 1 },
-    "ts": { "type": ["string", "null"], "format": "date-time" },
+    "event_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "event_uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "correlation_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "causation_event_id": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "type": {
+      "const": "decision.scored"
+    },
+    "actor_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "enum": [
+        "cli",
+        "agent",
+        "human",
+        "slack",
+        "document",
+        "api"
+      ]
+    },
+    "source_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "ts": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
     "payload": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/payloadV1"
+        },
+        {
+          "$ref": "#/$defs/payloadV2"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "scoredDim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "explanation"
+      ],
+      "properties": {
+        "score": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "explanation": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "payloadV1": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -31,14 +115,20 @@
           "minLength": 1,
           "description": "The capture node ID (e.g. capture:42:0) from the classified batch"
         },
-        "scorer_model": { "type": "string", "minLength": 1 },
+        "scorer_model": {
+          "type": "string",
+          "minLength": 1
+        },
         "weight_version": {
           "type": "string",
           "minLength": 1,
           "description": "Version string for the quality dimension weights (e.g. v1); stored so composites can recompute under any weight set"
         },
         "supersedes_score_id": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1,
           "description": "event_uuid of a prior decision.scored event that this assessment supersedes"
         },
@@ -56,57 +146,250 @@
             "calibration"
           ],
           "properties": {
-            "framing":          { "$ref": "#/$defs/scoredDim" },
-            "alternatives":     { "$ref": "#/$defs/scoredDim" },
-            "information":      { "$ref": "#/$defs/scoredDim" },
-            "reasoning":        { "$ref": "#/$defs/scoredDim" },
-            "values_tradeoffs": { "$ref": "#/$defs/scoredDim" },
-            "bias_exposure":    { "$ref": "#/$defs/scoredDim" },
-            "calibration":      { "$ref": "#/$defs/scoredDim" }
+            "framing": {
+              "$ref": "#/$defs/scoredDim"
+            },
+            "alternatives": {
+              "$ref": "#/$defs/scoredDim"
+            },
+            "information": {
+              "$ref": "#/$defs/scoredDim"
+            },
+            "reasoning": {
+              "$ref": "#/$defs/scoredDim"
+            },
+            "values_tradeoffs": {
+              "$ref": "#/$defs/scoredDim"
+            },
+            "bias_exposure": {
+              "$ref": "#/$defs/scoredDim"
+            },
+            "calibration": {
+              "$ref": "#/$defs/scoredDim"
+            }
           }
         },
         "importance": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["stakes", "irreversibility", "actionability", "stakes_explanation", "irreversibility_explanation", "actionability_explanation"],
+          "required": [
+            "stakes",
+            "irreversibility",
+            "actionability",
+            "stakes_explanation",
+            "irreversibility_explanation",
+            "actionability_explanation"
+          ],
           "properties": {
             "stakes": {
               "type": "number",
               "description": "Unbounded positive magnitude; log-scaled (severity x reach)"
             },
-            "stakes_explanation": { "type": "string", "minLength": 1 },
+            "stakes_explanation": {
+              "type": "string",
+              "minLength": 1
+            },
             "irreversibility": {
               "type": "number",
               "minimum": 0.0,
               "maximum": 1.0,
               "description": "Discount for reversibility: 0=fully reversible, 1=fully irreversible"
             },
-            "irreversibility_explanation": { "type": "string", "minLength": 1 },
+            "irreversibility_explanation": {
+              "type": "string",
+              "minLength": 1
+            },
             "actionability": {
               "type": "number",
               "minimum": 0.0,
               "maximum": 1.0,
               "description": "Gate for actionability: 0=not actionable, 1=fully actionable"
             },
-            "actionability_explanation": { "type": "string", "minLength": 1 }
+            "actionability_explanation": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      },
+      "title": "decision.scored payload, schema version 1",
+      "description": "The float scores keyed by a classifier capture node. Every event written before schema version 2 has this shape (it carries no schema_version). The ledger is immutable, so these events keep validating and replaying."
+    },
+    "payloadV2": {
+      "title": "decision.scored payload, schema version 2",
+      "description": "A model's assessment of one decision, keyed by the decision's id (a proposed decision or a classified capture, capture:<event>:<index>). Each of the seven dimensions is either assessed (a level, an explanation and the verbatim passage it rests on) or not assessed (and why); never a placeholder score. Stored beside the deterministic floors of the quality profile, never replacing them.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "decision_id",
+        "model",
+        "prompt_version",
+        "dimensions"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The model that produced the assessment."
+        },
+        "prompt_version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The version of the prompt the model was given."
+        },
+        "supersedes_score_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "event_uuid of a prior decision.scored event that this assessment supersedes (an audit pointer, not enforced). The newest assessment for a decision is the one the graph shows."
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "framing",
+            "alternatives",
+            "information",
+            "reasoning",
+            "values_tradeoffs",
+            "bias_exposure",
+            "calibration"
+          ],
+          "properties": {
+            "framing": {
+              "$ref": "#/$defs/modelDimension"
+            },
+            "alternatives": {
+              "$ref": "#/$defs/modelDimension"
+            },
+            "information": {
+              "$ref": "#/$defs/modelDimension"
+            },
+            "reasoning": {
+              "$ref": "#/$defs/modelDimension"
+            },
+            "values_tradeoffs": {
+              "$ref": "#/$defs/modelDimension"
+            },
+            "bias_exposure": {
+              "$ref": "#/$defs/modelDimension"
+            },
+            "calibration": {
+              "$ref": "#/$defs/modelDimension"
+            }
+          }
+        },
+        "importance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "stakes",
+            "irreversibility",
+            "actionability",
+            "stakes_explanation",
+            "irreversibility_explanation",
+            "actionability_explanation"
+          ],
+          "properties": {
+            "stakes": {
+              "type": "number",
+              "description": "Unbounded positive magnitude; log-scaled (severity x reach)"
+            },
+            "stakes_explanation": {
+              "type": "string",
+              "minLength": 1
+            },
+            "irreversibility": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0,
+              "description": "Discount for reversibility: 0=fully reversible, 1=fully irreversible"
+            },
+            "irreversibility_explanation": {
+              "type": "string",
+              "minLength": 1
+            },
+            "actionability": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0,
+              "description": "Gate for actionability: 0=not actionable, 1=fully actionable"
+            },
+            "actionability_explanation": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         }
       }
-    }
-  },
-  "$defs": {
-    "scoredDim": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["score", "explanation"],
-      "properties": {
-        "score": {
-          "type": "number",
-          "minimum": 0.0,
-          "maximum": 1.0
+    },
+    "level": {
+      "enum": [
+        "none",
+        "partial",
+        "solid"
+      ]
+    },
+    "modelDimension": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "level",
+            "explanation",
+            "quote"
+          ],
+          "properties": {
+            "status": {
+              "const": "assessed"
+            },
+            "level": {
+              "$ref": "#/$defs/level"
+            },
+            "explanation": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "quote": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "The passage of the decision's own recorded text the assessment rests on, verbatim. The write path refuses an event whose quote does not occur in that text."
+            }
+          }
         },
-        "explanation": { "type": "string", "minLength": 1 }
-      }
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reason"
+          ],
+          "properties": {
+            "status": {
+              "const": "not_assessed"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          }
+        }
+      ]
     }
   }
 }

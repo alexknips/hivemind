@@ -5,14 +5,14 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::commands::{Commands, DecisionProposalInput, Grounding};
-use crate::events::HypothesisKind;
+use crate::events::{HypothesisKind, ModelDimension, ModelDimensions};
 use crate::ledger::InMemoryEventLedger;
 use crate::mcp::args::default_option_description;
 use crate::projector::{memory::MemoryGraph, rebuild_graph};
 use crate::queries::test_fixtures::{floor_scenario, ts, FLOOR_SCENARIO_DECISIONS};
 use crate::queries::{
-    EvidenceFact, GroundingAdded, HypothesisFact, OptionFact, PremiseFact, RecordFacts,
-    RefutationFact, SupersessionFact,
+    EvidenceFact, GroundingAdded, HypothesisFact, ModelAssessmentFact, OptionFact, PremiseFact,
+    RecordFacts, RefutationFact, SupersessionFact,
 };
 use crate::Result;
 
@@ -34,6 +34,7 @@ fn facts() -> RecordFacts {
         evidence: Vec::new(),
         premises: Vec::new(),
         hypotheses: Vec::new(),
+        model_assessment: None,
     }
 }
 
@@ -1683,7 +1684,44 @@ pub(crate) fn assert_scenario_profiles(graph: &impl GraphView) -> Result<()> {
     ];
     for (decision_id, want) in expected {
         assert_eq!(levels(decision_id)?, want, "{decision_id}");
+        // A model assessed `d:solid` and nothing else: the floors above did not move for it,
+        // and no other decision shows an assessment.
+        assert_eq!(
+            profile_of(decision_id)?.model_assessment.is_some(),
+            decision_id == "d:solid",
+            "{decision_id}"
+        );
     }
+
+    // The newest assessment of `d:solid` is the one shown, with the model, the prompt version,
+    // the ledger offset of the event that recorded it, and the passage each answer quotes.
+    let solid = profile_of("d:solid")?;
+    let model = solid
+        .model_assessment
+        .as_ref()
+        .expect("d:solid carries a model assessment");
+    assert_eq!(model.model, "model-b");
+    assert_eq!(model.prompt_version, "assessment-v2");
+    assert!(model.event_origin.is_some_and(|origin| origin > 0));
+    assert_eq!(
+        solid.model_answer(Dimension::Framing),
+        Some(&ModelDimension::Assessed {
+            level: Level::Solid,
+            explanation: "second: the question is stated".to_owned(),
+            quote: "Which store should hold the ledger?".to_owned(),
+        })
+    );
+    assert_eq!(
+        solid.model_answer(Dimension::Calibration),
+        Some(&ModelDimension::NotAssessed {
+            reason: "second: no confidence was declared".to_owned(),
+        })
+    );
+    assert_eq!(
+        profile_of("d:bare")?.model_answer(Dimension::Framing),
+        None,
+        "a decision no model assessed has no answer to show"
+    );
 
     // The explanations behind the rungs, not only the rungs.
     let placeholders = profile_of("d:placeholders")?;
@@ -1839,6 +1877,119 @@ fn the_same_graph_gives_an_identical_profile_on_every_read() -> Result<()> {
         );
     }
     Ok(())
+}
+
+// ── A model's assessment beside the floors ────────────────────────────────────
+
+/// Seven assessed answers at `level`, each quoting the rationale `facts()` records.
+fn model_dimensions(level: Level) -> ModelDimensions {
+    let answer = || ModelDimension::Assessed {
+        level,
+        explanation: "the rationale says so".to_owned(),
+        quote: "Because the numbers said so".to_owned(),
+    };
+    ModelDimensions {
+        framing: answer(),
+        alternatives: answer(),
+        information: answer(),
+        reasoning: answer(),
+        values_tradeoffs: answer(),
+        bias_exposure: answer(),
+        calibration: ModelDimension::NotAssessed {
+            reason: "no confidence was declared".to_owned(),
+        },
+    }
+}
+
+fn assessed_by_a_model(level: Level) -> RecordFacts {
+    RecordFacts {
+        model_assessment: Some(ModelAssessmentFact {
+            model: "model-x".to_owned(),
+            prompt_version: "assessment-v1".to_owned(),
+            event_origin: Some(99),
+            dimensions: model_dimensions(level),
+        }),
+        ..facts()
+    }
+}
+
+/// The floors say what the record states; a model says what it made of it. Even a model that
+/// rates every dimension `solid` moves no floor, no attention line and no floor version: the two
+/// sit side by side and a reader sees both.
+#[test]
+fn a_model_assessment_sits_beside_the_floors_and_moves_none_of_them() {
+    let without = profile_from_record(&facts());
+    for level in [Level::None, Level::Partial, Level::Solid] {
+        let with = profile_from_record(&assessed_by_a_model(level));
+        for dimension in Dimension::ALL {
+            assert_eq!(
+                with.assessment(dimension),
+                without.assessment(dimension),
+                "{dimension:?} at model level {level:?}"
+            );
+        }
+        assert_eq!(with.attention, without.attention);
+        assert_eq!(with.floor_version, without.floor_version);
+        assert_eq!(
+            with.model_answer(Dimension::Reasoning),
+            Some(&ModelDimension::Assessed {
+                level,
+                explanation: "the rationale says so".to_owned(),
+                quote: "Because the numbers said so".to_owned(),
+            })
+        );
+    }
+    assert!(without.model_assessment.is_none());
+    assert_eq!(without.model_answer(Dimension::Reasoning), None);
+}
+
+/// A dimension the model did not assess keeps that answer: it is not turned into a level, and the
+/// floor beside it is untouched.
+#[test]
+fn a_dimension_the_model_did_not_assess_stays_not_assessed() {
+    let profile = profile_from_record(&assessed_by_a_model(Level::Solid));
+
+    assert_eq!(
+        profile.model_answer(Dimension::Calibration),
+        Some(&ModelDimension::NotAssessed {
+            reason: "no confidence was declared".to_owned(),
+        })
+    );
+    assert_eq!(profile.calibration.level(), None);
+}
+
+/// On the wire the assessment is one extra object, present only when a model assessed the
+/// decision; the floors keep their fields.
+#[test]
+fn the_model_assessment_is_one_extra_field_present_only_when_one_exists() {
+    let plain = serde_json::to_value(profile_from_record(&facts())).expect("serializes");
+    assert!(plain.get("model_assessment").is_none());
+
+    let assessed = serde_json::to_value(profile_from_record(&assessed_by_a_model(Level::Partial)))
+        .expect("serializes");
+    let model = &assessed["model_assessment"];
+    assert_eq!(model["model"], "model-x");
+    assert_eq!(model["prompt_version"], "assessment-v1");
+    assert_eq!(model["event_origin"], 99);
+    assert_eq!(model["dimensions"]["framing"]["status"], "assessed");
+    assert_eq!(model["dimensions"]["framing"]["level"], "partial");
+    assert_eq!(
+        model["dimensions"]["framing"]["quote"],
+        "Because the numbers said so"
+    );
+    assert_eq!(model["dimensions"]["calibration"]["status"], "not_assessed");
+    assert_eq!(
+        model["dimensions"]["calibration"]["reason"],
+        "no confidence was declared"
+    );
+    assert!(model["dimensions"]["calibration"].get("level").is_none());
+    for dimension in Dimension::ALL {
+        assert_eq!(
+            assessed[dimension.as_str()],
+            plain[dimension.as_str()],
+            "{dimension:?}"
+        );
+    }
 }
 
 // ── Layer boundary ────────────────────────────────────────────────────────────

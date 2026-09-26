@@ -358,6 +358,41 @@ fn every_write_path_event_validates_against_its_schema() {
         )
         .expect("record decision scored");
 
+    // -- decision.scored, schema version 2: a model's assessment of the decision proposed above.
+    // The write path checks each quote against that decision's recorded text, and the real event
+    // must then validate against the same schema file as the version-1 score before it --
+    commands
+        .record_decision_assessed(
+            actor,
+            serde_json::from_value(serde_json::json!({
+                "schema_version": 2,
+                "decision_id": decision_id,
+                "model": "claude-haiku-4-5-20251001",
+                "prompt_version": "assessment-v1",
+                "dimensions": {
+                    "framing": {"status": "assessed", "level": "solid",
+                        "explanation": "The question is stated", "quote": "Which option should we use?"},
+                    "alternatives": {"status": "assessed", "level": "partial",
+                        "explanation": "A second option is named", "quote": "Option B"},
+                    "information": {"status": "not_assessed", "reason": "nothing cited in the text"},
+                    "reasoning": {"status": "assessed", "level": "partial",
+                        "explanation": "The rationale gives a reason",
+                        "quote": "Option A is the simplest fit"},
+                    "values_tradeoffs": {"status": "not_assessed", "reason": "no tradeoff stated"},
+                    "bias_exposure": {"status": "not_assessed", "reason": "nothing bears on it"},
+                    "calibration": {"status": "not_assessed", "reason": "no confidence declared"}
+                },
+                "importance": {
+                    "stakes": 1.0, "stakes_explanation": "a contract test",
+                    "irreversibility": 0.0, "irreversibility_explanation": "nothing depends on it",
+                    "actionability": 1.0, "actionability_explanation": "no action needed"
+                }
+            }))
+            .expect("assessment payload parses"),
+            None,
+        )
+        .expect("record decision assessed");
+
     // -- project.registered / linked / unlinked / anchored / unanchored --
     commands
         .register_project(actor, "contract-a", Some("Contract A"), Some("Purpose A"))
@@ -529,6 +564,14 @@ fn every_write_path_event_validates_against_its_schema() {
         );
     }
 
+    assert!(
+        events.iter().any(|event| {
+            event.event_type == EventType::DecisionScored
+                && event.payload["schema_version"] == 2
+                && event.payload["dimensions"]["framing"]["quote"].is_string()
+        }),
+        "expected a decision.scored event of schema version 2"
+    );
     assert!(
         events.iter().any(|event| {
             event.event_type == EventType::HypothesisRecorded

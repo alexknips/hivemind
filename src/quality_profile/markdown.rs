@@ -18,6 +18,8 @@ use crate::error::QueryError;
 use crate::projector::GraphView;
 use crate::Result;
 
+use crate::events::ModelDimension;
+
 use super::{quality_profile_of, Assessment, Dimension, Level, QualityProfile};
 
 /// The name a dimension goes by in `docs/DECISION_SCORING.md`.
@@ -85,16 +87,56 @@ pub fn dimension_markdown(dimension: Dimension, assessment: &Assessment) -> Stri
     }
 }
 
+/// A model's answer for one dimension as a nested bullet, to sit under that dimension's floor:
+/// its level, explanation and the passage it quotes, or that it did not assess it and why.
+fn model_answer_markdown(answer: &ModelDimension) -> String {
+    match answer {
+        ModelDimension::Assessed {
+            level,
+            explanation,
+            quote,
+        } => {
+            let mut out = format!("  - **model** — {}: ", level_word(*level));
+            push_one_line(&mut out, explanation);
+            out.push_str(" Quoted: \"");
+            push_one_line(&mut out, quote);
+            out.push('"');
+            out
+        }
+        ModelDimension::NotAssessed { reason } => {
+            let mut out = "  - **model** — not assessed: ".to_owned();
+            push_one_line(&mut out, reason);
+            out
+        }
+    }
+}
+
 /// The whole profile as Markdown with no trailing newline: what the floors state, the seven
-/// dimensions in order, and the lines that deserve a second look when there are any.
+/// dimensions in order (each with what a model said beside it, when one was asked), and the
+/// lines that deserve a second look when there are any.
 pub fn profile_markdown(profile: &QualityProfile) -> String {
     let mut out = format!(
         "Floor rules version {}: what the record states, not whether it is sound.\n",
         profile.floor_version
     );
+    if let Some(model) = &profile.model_assessment {
+        let _ = write!(
+            out,
+            "\nA model assessed this decision ({}, prompt version {}",
+            model.model, model.prompt_version
+        );
+        if let Some(origin) = model.event_origin {
+            let _ = write!(out, ", recorded at ledger offset {origin}");
+        }
+        out.push_str("). Its answers stand beside the floors and never replace them.\n");
+    }
     for (dimension, assessment) in profile.iter() {
         out.push('\n');
         out.push_str(&dimension_markdown(dimension, assessment));
+        if let Some(answer) = profile.model_answer(dimension) {
+            out.push('\n');
+            out.push_str(&model_answer_markdown(answer));
+        }
     }
     if !profile.attention.is_empty() {
         out.push_str("\n\nWorth a second look:\n");

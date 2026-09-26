@@ -63,6 +63,17 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A model's assessment of a decision can be recorded and is shown beside the quality
+  floors.** `decision.scored` gains a second payload version (`schema_version: 2`), keyed by
+  the decision's id (a proposed decision or a classified capture): all seven dimensions, each
+  either assessed (a level of `none`, `partial` or `solid`, an explanation and the verbatim
+  passage of the decision's own text it rests on) or not assessed (and why), with the model
+  and prompt version. The write path refuses, and records nothing, when a quote does not occur
+  in the decision's recorded text. `score_decision` adds `model_assessment` beside the floors
+  (only when one exists; no floor changes because of it), and the CLI summary and the Markdown
+  export show it. Existing `decision.scored` events (the float scores) are unchanged in the
+  ledger and keep replaying; the profile never shows them. Nothing produces a version-2
+  assessment yet. (hivemind-qo11.8)
 - **`get_suggestions` returns what needs a look and has not been dealt with.** A new MCP tool
   on the stdio server and the HTTP endpoint, and `hivemind query get_suggestions`: the
   attention findings of `scan_decision_quality`, less the ones that have been acknowledged

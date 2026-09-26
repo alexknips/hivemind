@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::linear::format_issue_description;
 use crate::projector::GraphView;
-use crate::queries::test_fixtures::{attention_scenario, ts, ATTENTION_NOW};
+use crate::queries::test_fixtures::{attention_scenario, floor_scenario, ts, ATTENTION_NOW};
 use crate::queries::MAX_QUERY_RESULTS;
 use crate::Result;
 
@@ -232,4 +232,66 @@ fn the_profile_and_the_tickets_read_as_markdown_on_the_scenario() -> Result<()> 
     let graph = attention_scenario()?.graph()?;
 
     assert_markdown_scenario(&graph)
+}
+
+// ── a model's assessment, beside the floors ───────────────────────────────────
+
+/// A model that assessed the decision reads beside each floor: the header says who, with which
+/// prompt and where it was recorded; each dimension's bullet gains one nested line with the
+/// answer and the passage it quotes, or that the model did not assess it and why. A decision no
+/// model assessed reads exactly as it did without the feature.
+#[test]
+fn a_model_assessment_reads_beside_each_floor_with_the_passage_it_quotes() -> Result<()> {
+    let graph = floor_scenario()?.graph()?;
+    let profile = quality_profile_of(&graph, "d:solid")?.expect("d:solid has a profile");
+
+    let text = profile_markdown(&profile);
+
+    assert!(
+        text.contains("\nA model assessed this decision (model-b, prompt version assessment-v2, recorded at ledger offset "),
+        "{text}"
+    );
+    assert!(
+        text.contains("Its answers stand beside the floors and never replace them."),
+        "{text}"
+    );
+    let block = |label: &str| -> String {
+        let start = text
+            .find(&format!("- **{label}**"))
+            .expect("the dimension has a bullet");
+        let rest = &text[start + 1..];
+        let end = rest.find("\n- **").map_or(text.len(), |at| start + 1 + at);
+        text[start..end].to_owned()
+    };
+    let framing = block("Framing");
+    assert!(framing.starts_with("- **Framing** — partial"), "{framing}");
+    assert!(
+        framing.ends_with("\n  - **model** — solid: second: the question is stated Quoted: \"Which store should hold the ledger?\""),
+        "{framing}"
+    );
+    let information = block("Information");
+    assert!(
+        information
+            .ends_with("\n  - **model** — not assessed: second: nothing in the text to rest it on"),
+        "{information}"
+    );
+    assert_grades_nothing(&text);
+
+    let bare =
+        profile_markdown(&quality_profile_of(&graph, "d:bare")?.expect("d:bare has a profile"));
+    assert!(!bare.contains("**model**"), "{bare}");
+    assert!(!bare.contains("A model assessed"), "{bare}");
+    Ok(())
+}
+
+/// The export section of a decision carries the same lines.
+#[test]
+fn the_decision_log_section_carries_the_model_assessment() -> Result<()> {
+    let graph = floor_scenario()?.graph()?;
+
+    let section = decision_log_section(&graph, "d:solid")?;
+
+    assert!(section.contains("**model** — solid:"), "{section}");
+    assert!(!decision_log_section(&graph, "d:bare")?.contains("**model**"));
+    Ok(())
 }

@@ -981,6 +981,218 @@ fn decision_moved_and_back_restores_project_and_keeps_its_capture_origin() -> Re
     Ok(())
 }
 
+/// One decision proposed by an agent, then assessed twice by a model: a different actor over a
+/// different source, and (in the second event) with importance factors. The assessor's
+/// `source`, `source_ref` and actor differ from the proposal's on purpose: a projector that spread
+/// the scoring event's origin properties onto the node would visibly rewrite the capture origin.
+/// Shared with `projector/postgres/tests.rs` and `projector/kuzu/tests.rs`.
+fn decision_assessed_fixture_events() -> Vec<Event> {
+    let proposal = event(
+        EventType::DecisionProposed,
+        "agent:claude:builder",
+        json!({
+            "decision_id": "decision:first",
+            "title": "Use per-seat pricing",
+            "rationale": "Simpler to reason about at our scale",
+            "topic_keys": ["pricing"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": [],
+            "project": "billing",
+            "project_source": "stated"
+        }),
+    );
+    let assessment = |model: &str, prompt_version: &str, with_importance: bool| {
+        let answer = |level: &str| {
+            json!({"status": "assessed", "level": level, "explanation": format!("by {model}"),
+                   "quote": "Use per-seat pricing"})
+        };
+        let mut payload = json!({
+            "schema_version": 2,
+            "decision_id": "decision:first",
+            "model": model,
+            "prompt_version": prompt_version,
+            "dimensions": {
+                "framing": answer("partial"),
+                "alternatives": {"status": "not_assessed", "reason": "no option is recorded"},
+                "information": {"status": "not_assessed", "reason": "nothing cited"},
+                "reasoning": answer("solid"),
+                "values_tradeoffs": {"status": "not_assessed", "reason": "no tradeoff stated"},
+                "bias_exposure": {"status": "not_assessed", "reason": "nothing bears on it"},
+                "calibration": {"status": "not_assessed", "reason": "no confidence declared"}
+            }
+        });
+        if with_importance {
+            payload["importance"] = json!({
+                "stakes": 10.0, "stakes_explanation": "company-wide",
+                "irreversibility": 0.25, "irreversibility_explanation": "prices can change",
+                "actionability": 1.0, "actionability_explanation": "clear owner"
+            });
+        }
+        let mut scored = event(EventType::DecisionScored, "agent:hivemind:scorer", payload);
+        scored.source = EventSource::Api;
+        scored.source_ref = Some("scorer-session".to_owned());
+        scored
+    };
+    vec![
+        proposal,
+        assessment("model-a", "prompt-1", false),
+        assessment("model-b", "prompt-2", true),
+    ]
+}
+
+/// The first `len` events of [`decision_assessed_fixture_events`]: 1 = the proposal, 2 = plus the
+/// first assessment, 3 = plus the second.
+pub(super) fn decision_assessed_fixture_ledger(len: usize) -> Result<InMemoryEventLedger> {
+    let ledger = InMemoryEventLedger::new();
+    for event in decision_assessed_fixture_events().into_iter().take(len) {
+        ledger.append(event)?;
+    }
+    Ok(ledger)
+}
+
+/// A model's assessment annotates the decision it names and rewrites nothing of the capture: the
+/// node keeps the proposal's `event_origin`, `source`, `source_ref`, `tenant_id` and text, and
+/// gains `model_assessment` (the newest one) and `model_assessment_origin` (the offset of the
+/// event that recorded it). `graph` holds [`decision_assessed_fixture_ledger`] with 2 or 3
+/// events; runs on any backend (`MemoryGraph` here, Postgres and Kuzu in their own tests).
+pub(super) fn assert_assessment_annotates_without_rewriting_origin(
+    graph: &impl GraphView,
+    assessments: usize,
+) -> Result<()> {
+    let events = decision_assessed_fixture_ledger(3)?.read(0, 10)?;
+    let offset_of = |index: usize| {
+        i64::try_from(events[index].event_id.expect("ledger assigns ids")).expect("fits i64")
+    };
+    let string = |value: &str| Some(GraphValue::String(value.to_owned()));
+    let (model, prompt_version, origin_index) = match assessments {
+        1 => ("model-a", "prompt-1", 1),
+        _ => ("model-b", "prompt-2", 2),
+    };
+
+    let rows = graph.query(
+        "MATCH (node:`Decision` {id: $id}) RETURN node.id AS id, node.event_origin AS event_origin, node.source AS source, node.source_ref AS source_ref, node.tenant_id AS tenant_id, node.title AS title, node.rationale AS rationale, node.model_assessment AS model_assessment, node.model_assessment_origin AS model_assessment_origin, node.importance_stakes AS importance_stakes ORDER BY node.id;",
+        &GraphParams::from([(
+            "id".to_owned(),
+            GraphValue::String("decision:first".to_owned()),
+        )]),
+    )?;
+    assert_eq!(rows.len(), 1, "decision:first projected exactly once");
+    let row = &rows[0];
+
+    assert_eq!(
+        row.get("event_origin").cloned(),
+        Some(GraphValue::Int(offset_of(0))),
+        "event_origin stays the proposal's ledger offset, not the assessment's"
+    );
+    assert_eq!(
+        row.get("source").cloned(),
+        string("agent"),
+        "an assessment must not credit the capture to the assessor's source"
+    );
+    assert_eq!(
+        row.get("source_ref").cloned(),
+        string("projection-test"),
+        "an assessment must not replace the proposal's source_ref"
+    );
+    assert_eq!(
+        row.get("tenant_id").cloned(),
+        string(events[0].tenant_id.as_str()),
+        "an assessment must not re-stamp the capture's tenant"
+    );
+    assert_eq!(row.get("title").cloned(), string("Use per-seat pricing"));
+    assert_eq!(
+        row.get("rationale").cloned(),
+        string("Simpler to reason about at our scale"),
+        "an assessment must not clobber properties it does not name"
+    );
+
+    let Some(GraphValue::String(stored)) = row.get("model_assessment") else {
+        return Err(crate::CommandError::Invariant(
+            "the assessed decision carries no model_assessment".to_owned(),
+        )
+        .into());
+    };
+    let stored: events::ModelAssessment = serde_json::from_str(stored).map_err(projector_error)?;
+    assert_eq!(stored.model, model, "the newest assessment is the one kept");
+    assert_eq!(stored.prompt_version, prompt_version);
+    assert_eq!(
+        stored.dimensions.reasoning,
+        events::ModelDimension::Assessed {
+            level: events::QualityLevel::Solid,
+            explanation: format!("by {model}"),
+            quote: "Use per-seat pricing".to_owned(),
+        }
+    );
+    assert_eq!(
+        row.get("model_assessment_origin").cloned(),
+        Some(GraphValue::Int(offset_of(origin_index))),
+        "the offset of the event that recorded the assessment"
+    );
+    // Only the second assessment names importance factors.
+    assert_eq!(
+        row.get("importance_stakes")
+            .cloned()
+            .filter(|value| !matches!(value, GraphValue::Null)),
+        (assessments > 1).then_some(GraphValue::Float(10.0))
+    );
+
+    let context = crate::queries::get_decision_context(graph, "decision:first")?
+        .data
+        .expect("decision context");
+    assert_eq!(context.source, "agent");
+    assert_eq!(context.source_ref.as_deref(), Some("projection-test"));
+    Ok(())
+}
+
+#[test]
+fn a_model_assessment_annotates_the_decision_without_rewriting_its_capture_origin() -> Result<()> {
+    use super::memory::MemoryGraph;
+
+    let project_prefix = |len: usize| -> Result<MemoryGraph> {
+        let graph = MemoryGraph::default();
+        project_from_ledger(&decision_assessed_fixture_ledger(len)?, &graph, 0)?;
+        Ok(graph)
+    };
+
+    // Before any assessment the node carries none.
+    let before = project_prefix(1)?;
+    assert!(crate::queries::get_record_facts(&before, "decision:first")?
+        .expect("record facts")
+        .model_assessment
+        .is_none());
+
+    assert_assessment_annotates_without_rewriting_origin(&project_prefix(2)?, 1)?;
+    // The second assessment replaces the first on the node; the first stays in the ledger.
+    assert_assessment_annotates_without_rewriting_origin(&project_prefix(3)?, 2)?;
+    Ok(())
+}
+
+#[test]
+fn a_model_assessment_of_a_decision_no_event_created_gets_a_placeholder_origin() -> Result<()> {
+    // The write path never records this, but a replayed ledger may hold it: the node named is
+    // created as a placeholder carrying the assessment's own origin, exactly as any annotation
+    // of a not-yet-recorded node is, and the assessment lands on it.
+    use super::memory::MemoryGraph;
+
+    let ledger = InMemoryEventLedger::new();
+    let mut events = decision_assessed_fixture_events();
+    let assessment = events.remove(1);
+    ledger.append(assessment)?;
+    let graph = MemoryGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let facts = crate::queries::get_record_facts(&graph, "decision:first")?
+        .expect("the named decision exists as a placeholder");
+    assert_eq!(facts.event_origin, Some(1));
+    assert_eq!(
+        facts.model_assessment.map(|assessment| assessment.model),
+        Some("model-a".to_owned())
+    );
+    Ok(())
+}
+
 #[test]
 fn decision_proposed_without_project_falls_back_to_personal_address_for_agent_actor() -> Result<()>
 {

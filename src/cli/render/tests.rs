@@ -3,7 +3,7 @@
 use crate::projector::memory::MemoryGraph;
 use crate::quality_profile::{scan_decision_quality_at, score_decision, ScanRequest};
 use crate::queries::test_fixtures::{
-    attention_scenario, project_first_fixture, ts, Scenario, ATTENTION_NOW,
+    attention_scenario, floor_scenario, project_first_fixture, ts, Scenario, ATTENTION_NOW,
 };
 use crate::queries::{
     get_compact_view, get_decision_brief_at, get_decisions_changed_since, get_recent_activity,
@@ -631,6 +631,49 @@ fn a_score_summary_has_one_line_per_dimension_with_its_reasons_and_ids() -> Resu
         lines.last().copied(),
         Some("provenance\tauthorship=agent_only\treview=unreviewed\tnot yet reviewed by a human")
     );
+    Ok(())
+}
+
+/// What a model said about a dimension is printed on the line right after that dimension's
+/// floor, with the passage it quotes; a dimension it did not assess says why, with no level.
+#[test]
+fn a_score_summary_prints_what_a_model_said_right_after_each_floor_line() -> Result<()> {
+    let graph = floor_scenario()?.graph()?;
+
+    let text = render_score_report_summary(&score_decision(&graph, "d:solid")?.data);
+
+    let lines: Vec<&str> = text.lines().collect();
+    let header = lines
+        .iter()
+        .find(|line| line.starts_with("model_assessment\t"))
+        .expect("a model assessment line");
+    assert!(
+        header
+            .starts_with("model_assessment\tmodel-b\tprompt_version=assessment-v2\tevent_origin="),
+        "{header}"
+    );
+    let after = |dimension: &str| -> (&str, &str) {
+        let at = lines
+            .iter()
+            .position(|line| line.starts_with(&format!("dimension\t{dimension}\t")))
+            .expect("a floor line for the dimension");
+        (lines[at], lines[at + 1])
+    };
+    let (floor, model) = after("framing");
+    assert!(floor.contains("\tlevel=partial\t"), "{floor}");
+    assert_eq!(
+        model,
+        "model_dimension\tframing\tlevel=solid\texplanation=second: the question is stated\tquote=Which store should hold the ledger?"
+    );
+    let (_, model) = after("information");
+    assert_eq!(
+        model,
+        "model_dimension\tinformation\tnot_assessed\twhy=second: nothing in the text to rest it on"
+    );
+
+    let bare = render_score_report_summary(&score_decision(&graph, "d:bare")?.data);
+    assert!(!bare.contains("model_assessment"), "{bare}");
+    assert!(!bare.contains("model_dimension"), "{bare}");
     Ok(())
 }
 
