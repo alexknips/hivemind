@@ -2662,6 +2662,305 @@ mod transport_parity {
     }
 
     // -----------------------------------------------------------------------
+    // The last six tools behind `mcp::core` (hivemind-imp1.1): `tools/list` names them on
+    // both transports, and until they moved a call over HTTP answered "unknown tool".
+    // -----------------------------------------------------------------------
+
+    /// Every tool `tools/list` names answers a call over HTTP, and over stdio unless its
+    /// description says it is HTTP-transport only. A call with no arguments is refused or
+    /// answered, never "unknown tool" (a JSON-RPC error, so no `result`).
+    #[tokio::test]
+    async fn every_listed_tool_dispatches_on_the_transports_that_offer_it() {
+        for tool in crate::mcp::tool_definitions() {
+            let name = tool["name"].as_str().expect("tool name"); // ubs:ignore: test-only; panicking is correct in tests
+            let http_only = tool["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("HTTP-transport only"));
+            let (stdio, http) = run(name, &format!("dispatch-{name}"), json!({})).await;
+            for (transport, result) in [("stdio", &stdio), ("http", &http)] {
+                if http_only && transport == "stdio" {
+                    continue;
+                }
+                assert!(
+                    result.is_object(), // ubs:ignore: test-only assertion
+                    "{name}: {transport} does not dispatch a tool it lists: {result:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn recent_decisions_pages_across_transports() {
+        let (stdio, http) = run_seeded(
+            "recent_decisions",
+            "recent-page",
+            &["Adopt async billing queue", "Cache reads in memory"],
+            json!({
+                "since": "1970-01-01T00:00:00Z",
+                "topic": ["parity"],
+                "status": ["proposed"],
+                "limit": 1,
+            }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let structured = &result["structuredContent"];
+            assert_eq!(structured["result_count"], json!(1), "{name}: result_count"); // ubs:ignore: test-only assertion
+            assert_eq!(structured["truncated"], json!(true), "{name}: truncated"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                structured["data"]["total_matches"],
+                json!(2),
+                "{name}: total_matches"
+            ); // ubs:ignore: test-only assertion
+            assert!(
+                structured["data"]["next_cursor"].is_string(), // ubs:ignore: test-only assertion
+                "{name}: a truncated page says where to resume: {structured:?}"
+            );
+            let items = structured["data"]["items"].as_array().expect("items array"); // ubs:ignore: test-only; panicking is correct in tests
+            assert_eq!(items.len(), 1, "{name}: items length"); // ubs:ignore: test-only assertion
+            assert_eq!(items[0]["topic_keys"], json!(["parity"]), "{name}: topic");
+            // ubs:ignore: test-only assertion
+        }
+    }
+
+    #[tokio::test]
+    async fn get_decision_context_reads_one_decision_across_transports() {
+        let ids = std::cell::RefCell::new(Vec::new());
+        let (stdio, http) = run_seeded_with_ids(
+            &["Adopt async billing queue"],
+            "get_decision_context",
+            "context-by-id",
+            |id| {
+                ids.borrow_mut().push(id.to_owned());
+                json!({ "decision_id": id })
+            },
+        )
+        .await;
+        // stdio's call is made first, so its id is first.
+        let ids = ids.into_inner();
+        for ((name, result), id) in [("stdio", &stdio), ("http", &http)].into_iter().zip(&ids) {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let data = &result["structuredContent"]["data"];
+            assert_eq!(data["decision_id"], json!(id), "{name}: decision_id"); // ubs:ignore: test-only assertion
+            assert_eq!(data["accepted_count"], json!(0), "{name}: accepted_count");
+            // ubs:ignore: test-only assertion
+        }
+
+        let (stdio, http) = run(
+            "get_decision_context",
+            "context-missing",
+            json!({ "decision_id": "decision:missing" }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: a missing decision is data"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["data"],
+                Value::Null,
+                "{name}: data"
+            ); // ubs:ignore: test-only assertion
+        }
+    }
+
+    /// The three bulk tools that page by cursor (`decision_quality_candidates`,
+    /// `decision_context_candidates`, `scan_misfiled_decisions`): a limit of one over two seeded
+    /// decisions is a truncated page whose `next_cursor` resumes after the one returned.
+    #[tokio::test]
+    async fn cursor_paged_tools_report_truncation_and_a_next_cursor_across_transports() {
+        let cases: &[(&str, &str, Value)] = &[
+            (
+                "decision_quality_candidates",
+                "quality-candidates-page",
+                json!({ "limit": 1 }),
+            ),
+            (
+                "decision_context_candidates",
+                "context-candidates-page",
+                json!({ "limit": 1 }),
+            ),
+            (
+                "scan_misfiled_decisions",
+                "misfiled-page",
+                json!({ "foreign_topic_keys": ["parity"], "limit": 1 }),
+            ),
+        ];
+        for (tool, label, arguments) in cases {
+            let (stdio, http) = run_seeded(
+                tool,
+                label,
+                &["Adopt async billing queue", "Cache reads in memory"],
+                arguments.clone(),
+            )
+            .await;
+            for (name, result) in [("stdio", &stdio), ("http", &http)] {
+                assert_eq!(result["isError"], false, "{tool}: {name}: {result:?}"); // ubs:ignore: test-only assertion
+                let structured = &result["structuredContent"];
+                assert_eq!(structured["result_count"], json!(1), "{tool}: {name}"); // ubs:ignore: test-only assertion
+                assert_eq!(structured["truncated"], json!(true), "{tool}: {name}"); // ubs:ignore: test-only assertion
+                assert_eq!(structured["next_cursor"], json!("1"), "{tool}: {name}"); // ubs:ignore: test-only assertion
+                let items = structured["data"].as_array().expect("data array"); // ubs:ignore: test-only; panicking is correct in tests
+                assert_eq!(items.len(), 1, "{tool}: {name}: data length"); // ubs:ignore: test-only assertion
+            }
+
+            // Resuming at the cursor returns the other decision and ends the walk.
+            let mut resumed = arguments.clone();
+            resumed["cursor"] = json!("1");
+            let (stdio, http) = run_seeded(
+                tool,
+                &format!("{label}-resumed"),
+                &["Adopt async billing queue", "Cache reads in memory"],
+                resumed,
+            )
+            .await;
+            for (name, result) in [("stdio", &stdio), ("http", &http)] {
+                let structured = &result["structuredContent"];
+                assert_eq!(
+                    structured["result_count"],
+                    json!(1),
+                    "{tool}: {name}: resumed"
+                ); // ubs:ignore: test-only assertion
+                assert_eq!(
+                    structured["truncated"],
+                    json!(false),
+                    "{tool}: {name}: resumed"
+                ); // ubs:ignore: test-only assertion
+                assert_eq!(
+                    structured["next_cursor"],
+                    Value::Null,
+                    "{tool}: {name}: resumed"
+                ); // ubs:ignore: test-only assertion
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn scan_misfiled_decisions_names_the_matching_topic_across_transports() {
+        let (stdio, http) = run_seeded(
+            "scan_misfiled_decisions",
+            "misfiled-match",
+            &["Adopt async billing queue"],
+            json!({ "foreign_topic_keys": ["parity", "elsewhere"] }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let data = &result["structuredContent"]["data"];
+            assert_eq!(
+                data[0]["title"], "Adopt async billing queue",
+                "{name}: title"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                data[0]["matched_topic_keys"],
+                json!(["parity"]),
+                "{name}: matched_topic_keys"
+            ); // ubs:ignore: test-only assertion
+        }
+    }
+
+    #[tokio::test]
+    async fn analyze_failure_modes_counts_the_corpus_across_transports() {
+        let (stdio, http) = run_seeded(
+            "analyze_failure_modes",
+            "failure-modes",
+            &["Adopt async billing queue", "Cache reads in memory"],
+            json!({ "min_sample_size": 1 }),
+        )
+        .await;
+        for (name, result) in [("stdio", &stdio), ("http", &http)] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            let stats = &result["structuredContent"]["data"]["corpus_stats"];
+            assert_eq!(
+                stats["total_decisions"],
+                json!(2),
+                "{name}: total_decisions"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                stats["failed_decisions"],
+                json!(0),
+                "{name}: failed_decisions"
+            ); // ubs:ignore: test-only assertion
+        }
+    }
+
+    #[tokio::test]
+    async fn the_last_six_tools_refuse_the_same_bad_arguments_on_both_transports() {
+        let cases: &[(&str, &str, Value, &str)] = &[
+            (
+                "recent_decisions",
+                "recent-no-since",
+                json!({}),
+                "missing `since`",
+            ),
+            (
+                "recent_decisions",
+                "recent-bad-status",
+                json!({ "since": "1970-01-01T00:00:00Z", "status": ["bogus"] }),
+                "unknown status `bogus`",
+            ),
+            (
+                "recent_decisions",
+                "recent-negative-limit",
+                json!({ "since": "1970-01-01T00:00:00Z", "limit": -1 }),
+                "`limit` must be a non-negative integer",
+            ),
+            (
+                "decision_quality_candidates",
+                "quality-candidates-negative-limit",
+                json!({ "limit": -1 }),
+                "`limit` must be a non-negative integer",
+            ),
+            (
+                "get_decision_context",
+                "context-no-id",
+                json!({}),
+                "missing `decision_id`",
+            ),
+            (
+                "decision_context_candidates",
+                "context-candidates-negative-limit",
+                json!({ "limit": -1 }),
+                "`limit` must be a non-negative integer",
+            ),
+            (
+                "scan_misfiled_decisions",
+                "misfiled-no-keys",
+                json!({}),
+                "missing `foreign_topic_keys`",
+            ),
+            (
+                "scan_misfiled_decisions",
+                "misfiled-keys-not-an-array",
+                json!({ "foreign_topic_keys": "parity" }),
+                "`foreign_topic_keys` must be an array of strings",
+            ),
+            (
+                "analyze_failure_modes",
+                "failure-modes-bad-sample",
+                json!({ "min_sample_size": "many" }),
+                "`min_sample_size` must be an integer",
+            ),
+        ];
+        for (tool, label, arguments, expected_message) in cases {
+            let (stdio, http) = run(tool, label, arguments.clone()).await;
+            for (name, result) in [("stdio", &stdio), ("http", &http)] {
+                assert!(
+                    result["isError"].as_bool().unwrap_or(false), // ubs:ignore: test-only assertion
+                    "{label}: {name} should error: {result:?}"
+                );
+                assert_eq!(
+                    error_text(result),
+                    *expected_message,
+                    "{label}: {name} message"
+                ); // ubs:ignore: test-only assertion
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Projects on captures (hivemind-s15q.4): the project arrives as an argument on
     // both transports; neither infers it.
     // -----------------------------------------------------------------------

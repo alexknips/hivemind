@@ -34,20 +34,18 @@ use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool
 use crate::ledger::{AnyLedger, LedgerConfig};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
-    context_next_cursor, get_decision, get_decision_context, get_decision_context_candidates,
-    get_decision_quality_candidates, get_failure_attribution, get_recent_decisions,
-    get_relevant_decisions, misfiled_next_cursor, outcome_next_cursor, scan_misfiled_decisions,
-    search_decisions_any, DecisionContextRequest, DecisionQualityCandidatesRequest, DecisionStatus,
-    FailureAttributionRequest, MisfiledScanRequest, QueryContext, RecentDecisionFilterRequest,
-    RecentDecisionsRequest, SearchDecisionRequest,
+    get_decision, get_relevant_decisions, search_decisions_any, DecisionStatus, QueryContext,
+    SearchDecisionRequest,
 };
 use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
 use core::{
-    CaptureDecisionArgs, CompactViewArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
-    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSuggestionsArgs,
-    GetSupersessionChainArgs, GroundDecisionArgs, LedgerHandle, LedgerProvider, MoveDecisionArgs,
-    RecallDecisionsArgs, ScanDecisionQualityArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
+    AnalyzeFailureModesArgs, CaptureDecisionArgs, CompactViewArgs, CoreError,
+    DecisionContextCandidatesArgs, DecisionQualityCandidatesArgs, DisagreeArgs,
+    GetDecisionContextArgs, GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs,
+    GetSituationalDecisionsArgs, GetSuggestionsArgs, GetSupersessionChainArgs, GroundDecisionArgs,
+    LedgerHandle, LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs, RecentDecisionsArgs,
+    ScanDecisionQualityArgs, ScanMisfiledDecisionsArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
 };
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -1305,27 +1303,10 @@ fn tool_summarize_decisions(
 
 fn tool_recent_decisions(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let since_timestamp = optional_datetime(&args, "since")?
-        .ok_or_else(|| RpcError::invalid_params("missing `since`"))?;
-    let statuses = optional_string_array(&args, "status")?
-        .into_iter()
-        .map(|status| parse_decision_status(&status))
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let request = RecentDecisionsRequest {
-        since_timestamp,
-        until_timestamp: optional_datetime(&args, "until")?,
-        filters: RecentDecisionFilterRequest {
-            actor_patterns: optional_string_array(&args, "actor")?,
-            sources: optional_string_array(&args, "source")?,
-            topic_keys: optional_string_array(&args, "topic")?,
-            statuses,
-        },
-        limit: optional_usize(&args, "limit")?.unwrap_or(25),
-        cursor: optional_string(&args, "cursor")?,
-    };
-    let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
-    let response = get_recent_decisions(&ledger, &request)?;
-    Ok(serde_json::to_value(QueryEnvelope::from(response))?)
+    let core_args = RecentDecisionsArgs::from_json(&args)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::recent_decisions(&provider, core_args)?;
+    Ok(output.into_value())
 }
 
 fn tool_dump_graph(_args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
@@ -1369,38 +1350,10 @@ fn tool_decision_quality_candidates(
     config: &McpConfig,
 ) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let since_event_origin = args.get("since_event_origin").and_then(Value::as_i64);
-    let limit = optional_usize(&args, "limit")?.unwrap_or(25);
-    let cursor = optional_string(&args, "cursor")?;
-    let only_with_signals = args
-        .get("only_with_signals")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-
-    let request = DecisionQualityCandidatesRequest {
-        since_event_origin,
-        limit,
-        cursor: cursor.clone(),
-        only_with_signals,
-    };
-
+    let core_args = DecisionQualityCandidatesArgs::from_json(&args)?;
     let graph = open_memory_graph(config)?;
-    let response = get_decision_quality_candidates(&graph, &request)?;
-
-    let skip: usize = cursor.as_deref().and_then(|c| c.parse().ok()).unwrap_or(0);
-    let next_cursor = if response.truncated {
-        outcome_next_cursor(skip, response.result_count)
-    } else {
-        None
-    };
-
-    Ok(json!({
-        "result_count": response.result_count,
-        "truncated": response.truncated,
-        "latency_ms": response.latency_ms,
-        "next_cursor": next_cursor,
-        "data": response.data,
-    }))
+    let output = core::decision_quality_candidates(&graph, core_args)?;
+    Ok(output.into_value())
 }
 
 fn tool_get_decision_context(
@@ -1408,15 +1361,10 @@ fn tool_get_decision_context(
     config: &McpConfig,
 ) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let decision_id = require_string(&args, "decision_id")?;
+    let core_args = GetDecisionContextArgs::from_json(&args)?;
     let graph = open_memory_graph(config)?;
-    let response = get_decision_context(&graph, &decision_id)?;
-    Ok(json!({
-        "result_count": response.result_count,
-        "truncated": response.truncated,
-        "latency_ms": response.latency_ms,
-        "data": response.data,
-    }))
+    let output = core::get_decision_context(&graph, core_args)?;
+    Ok(output.into_value())
 }
 
 fn tool_decision_context_candidates(
@@ -1424,33 +1372,10 @@ fn tool_decision_context_candidates(
     config: &McpConfig,
 ) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let since_event_origin = args.get("since_event_origin").and_then(Value::as_i64);
-    let limit = optional_usize(&args, "limit")?.unwrap_or(25);
-    let cursor = optional_string(&args, "cursor")?;
-
-    let request = DecisionContextRequest {
-        since_event_origin,
-        limit,
-        cursor: cursor.clone(),
-    };
-
+    let core_args = DecisionContextCandidatesArgs::from_json(&args)?;
     let graph = open_memory_graph(config)?;
-    let response = get_decision_context_candidates(&graph, &request)?;
-
-    let skip: usize = cursor.as_deref().and_then(|c| c.parse().ok()).unwrap_or(0);
-    let next_cursor = if response.truncated {
-        context_next_cursor(skip, response.result_count)
-    } else {
-        None
-    };
-
-    Ok(json!({
-        "result_count": response.result_count,
-        "truncated": response.truncated,
-        "latency_ms": response.latency_ms,
-        "next_cursor": next_cursor,
-        "data": response.data,
-    }))
+    let output = core::decision_context_candidates(&graph, core_args)?;
+    Ok(output.into_value())
 }
 
 fn tool_score_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
@@ -1485,33 +1410,10 @@ fn tool_scan_misfiled_decisions(
     config: &McpConfig,
 ) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let foreign_topic_keys = require_string_array(&args, "foreign_topic_keys")?;
-    let limit = optional_usize(&args, "limit")?.unwrap_or(25);
-    let cursor = optional_string(&args, "cursor")?;
-
-    let request = MisfiledScanRequest {
-        foreign_topic_keys,
-        limit,
-        cursor: cursor.clone(),
-    };
-
+    let core_args = ScanMisfiledDecisionsArgs::from_json(&args)?;
     let graph = open_memory_graph(config)?;
-    let response = scan_misfiled_decisions(&graph, &request)?;
-
-    let skip: usize = cursor.as_deref().and_then(|c| c.parse().ok()).unwrap_or(0);
-    let next_cursor = if response.truncated {
-        misfiled_next_cursor(skip, response.result_count)
-    } else {
-        None
-    };
-
-    Ok(json!({
-        "result_count": response.result_count,
-        "truncated": response.truncated,
-        "latency_ms": response.latency_ms,
-        "next_cursor": next_cursor,
-        "data": response.data,
-    }))
+    let output = core::scan_misfiled_decisions(&graph, core_args)?;
+    Ok(output.into_value())
 }
 
 fn tool_analyze_failure_modes(
@@ -1519,23 +1421,10 @@ fn tool_analyze_failure_modes(
     config: &McpConfig,
 ) -> std::result::Result<Value, RpcError> {
     let args = args.as_object().cloned().unwrap_or_default();
-    let since_event_origin = args.get("since_event_origin").and_then(Value::as_i64);
-    let min_sample_size = optional_usize(&args, "min_sample_size")?.unwrap_or(3);
-
-    let request = FailureAttributionRequest {
-        since_event_origin,
-        min_sample_size,
-    };
-
+    let core_args = AnalyzeFailureModesArgs::from_json(&args)?;
     let graph = open_memory_graph(config)?;
-    let response = get_failure_attribution(&graph, &request)?;
-
-    Ok(json!({
-        "result_count": response.result_count,
-        "truncated": response.truncated,
-        "latency_ms": response.latency_ms,
-        "data": response.data,
-    }))
+    let output = core::analyze_failure_modes(&graph, core_args)?;
+    Ok(output.into_value())
 }
 
 fn actor_id_or_default(

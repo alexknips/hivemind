@@ -23,7 +23,10 @@
 //! `recall_decisions`, `supersede_decision`, `disagree_decision`, `move_decision`,
 //! `ground_decision`,
 //! `get_decision_outcome`, `hivemind_compact_view`, `score_decision`,
-//! `scan_decision_quality`, `get_suggestions`. Later
+//! `scan_decision_quality`, `get_suggestions`, `recent_decisions`,
+//! `decision_quality_candidates`, `get_decision_context`,
+//! `decision_context_candidates`, `scan_misfiled_decisions`,
+//! `analyze_failure_modes`. Later
 //! tools follow the same shape — an `Args::from_json` parser plus a
 //! `core::<tool>` function — one pair per tool, each independently
 //! reviewable.
@@ -46,11 +49,17 @@ use crate::quality_profile::{
     self, parse_kinds, ScanRequest, SuggestionsRequest, SCAN_DEFAULT_LIMIT,
 };
 use crate::queries::{
-    derive_decision_status, get_compact_view, get_decision_brief as query_get_decision_brief,
-    get_decision_neighborhood as query_get_decision_neighborhood,
-    get_supersession_chain as query_get_supersession_chain, resolve_decision_by_description,
-    DecisionStatus, NeighborhoodRequest, QueryContext, QueryResponse, ResolveOutcome,
-    SituationalRequest,
+    context_next_cursor, derive_decision_status, get_compact_view,
+    get_decision_brief as query_get_decision_brief,
+    get_decision_context as query_get_decision_context, get_decision_context_candidates,
+    get_decision_neighborhood as query_get_decision_neighborhood, get_decision_quality_candidates,
+    get_failure_attribution, get_recent_decisions,
+    get_supersession_chain as query_get_supersession_chain, misfiled_next_cursor,
+    outcome_next_cursor, resolve_decision_by_description,
+    scan_misfiled_decisions as query_scan_misfiled_decisions, DecisionContextRequest,
+    DecisionQualityCandidatesRequest, DecisionStatus, FailureAttributionRequest,
+    MisfiledScanRequest, NeighborhoodRequest, QueryContext, QueryResponse,
+    RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome, SituationalRequest,
 };
 use crate::summarize::{RecallRequest, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT};
 
@@ -1378,10 +1387,10 @@ pub(crate) fn ground_decision<P: LedgerProvider>(
 // score_decision / scan_decision_quality
 // ---------------------------------------------------------------------------
 
-/// The success payload of a quality tool: the `QueryResponse` envelope every read tool returns.
-/// The response is built by [`crate::quality_profile::report`], the core the CLI shares, so the
-/// two transports and the CLI serialize the same value.
-fn quality_output<T: serde::Serialize>(
+/// The success payload of a read tool: the `QueryResponse` envelope every read tool returns.
+/// For the quality tools the response is built by [`crate::quality_profile::report`], the core the
+/// CLI shares, so the two transports and the CLI serialize the same value.
+fn query_output<T: serde::Serialize>(
     response: &crate::queries::QueryResponse<T>,
 ) -> Result<ToolOutput, CoreError> {
     serde_json::to_value(response)
@@ -1411,7 +1420,7 @@ pub(crate) fn score_decision(
 ) -> Result<ToolOutput, CoreError> {
     let response =
         quality_profile::score_decision(graph, &args.decision_id).map_err(CoreError::from)?;
-    quality_output(&response)
+    query_output(&response)
 }
 
 /// Parsed, validated arguments for the `scan_decision_quality` tool.
@@ -1452,7 +1461,7 @@ pub(crate) fn scan_decision_quality(
 ) -> Result<ToolOutput, CoreError> {
     let response =
         quality_profile::scan_decision_quality(graph, &args.request).map_err(CoreError::from)?;
-    quality_output(&response)
+    query_output(&response)
 }
 
 /// Parsed, validated arguments for the `get_suggestions` tool: the arguments of
@@ -1481,5 +1490,231 @@ pub(crate) fn get_suggestions(
 ) -> Result<ToolOutput, CoreError> {
     let response =
         quality_profile::get_suggestions(graph, &args.request).map_err(CoreError::from)?;
-    quality_output(&response)
+    query_output(&response)
+}
+
+// ---------------------------------------------------------------------------
+// recent_decisions / decision_quality_candidates / get_decision_context /
+// decision_context_candidates / scan_misfiled_decisions / analyze_failure_modes
+// ---------------------------------------------------------------------------
+
+/// A page of a cursor-paged read tool: the [`query_output`] envelope plus `next_cursor`, which
+/// resumes the walk when the page was `truncated` and is `null` otherwise. `next_cursor_of` is the
+/// cursor helper of the tool's own query module, so a tool keeps the cursor its query defines.
+fn paged_output<T: serde::Serialize>(
+    response: &QueryResponse<T>,
+    cursor: Option<&str>,
+    next_cursor_of: fn(usize, usize) -> Option<String>,
+) -> Result<ToolOutput, CoreError> {
+    let skip: usize = cursor.and_then(|c| c.parse().ok()).unwrap_or(0);
+    let next_cursor = if response.truncated {
+        next_cursor_of(skip, response.result_count)
+    } else {
+        None
+    };
+    Ok(ToolOutput(json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "next_cursor": next_cursor,
+        "data": response.data,
+    })))
+}
+
+/// The `since_event_origin` filter the candidate and attribution tools share. A value that is not
+/// an integer is left out, not refused: what these tools have always done on stdio.
+fn since_event_origin(args: &Map<String, Value>) -> Option<i64> {
+    args.get("since_event_origin").and_then(Value::as_i64)
+}
+
+/// Parsed, validated arguments for the `recent_decisions` tool.
+pub(crate) struct RecentDecisionsArgs {
+    pub(crate) request: RecentDecisionsRequest,
+}
+
+impl RecentDecisionsArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        let since_timestamp = optional_datetime(args, "since")?
+            .ok_or_else(|| CoreError::InvalidArgument("missing `since`".to_owned()))?;
+        let statuses = optional_string_array(args, "status")?
+            .iter()
+            .map(|status| parse_decision_status(status))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            request: RecentDecisionsRequest {
+                since_timestamp,
+                until_timestamp: optional_datetime(args, "until")?,
+                filters: RecentDecisionFilterRequest {
+                    actor_patterns: optional_string_array(args, "actor")?,
+                    sources: optional_string_array(args, "source")?,
+                    topic_keys: optional_string_array(args, "topic")?,
+                    statuses,
+                },
+                limit: optional_usize(args, "limit")?.unwrap_or(25),
+                cursor: optional_string(args, "cursor")?,
+            },
+        })
+    }
+}
+
+/// The core for the `recent_decisions` MCP tool: one bounded page of the decisions recorded since
+/// `since`. It reads the ledger's events rather than a graph, so it takes the provider and no
+/// graph.
+pub(crate) fn recent_decisions<P: LedgerProvider>(
+    provider: &P,
+    args: RecentDecisionsArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let response = get_recent_decisions(&handle.ledger, &args.request).map_err(CoreError::from)?;
+    query_output(&response)
+}
+
+/// Parsed, validated arguments for the `decision_quality_candidates` tool.
+pub(crate) struct DecisionQualityCandidatesArgs {
+    pub(crate) request: DecisionQualityCandidatesRequest,
+}
+
+impl DecisionQualityCandidatesArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            request: DecisionQualityCandidatesRequest {
+                since_event_origin: since_event_origin(args),
+                limit: optional_usize(args, "limit")?.unwrap_or(25),
+                cursor: optional_string(args, "cursor")?,
+                only_with_signals: args
+                    .get("only_with_signals")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            },
+        })
+    }
+}
+
+/// The core for the `decision_quality_candidates` MCP tool: one page of decisions with their
+/// outcome signals, `next_cursor` set when more follow.
+pub(crate) fn decision_quality_candidates(
+    graph: &impl GraphView,
+    args: DecisionQualityCandidatesArgs,
+) -> Result<ToolOutput, CoreError> {
+    let response =
+        get_decision_quality_candidates(graph, &args.request).map_err(CoreError::from)?;
+    paged_output(
+        &response,
+        args.request.cursor.as_deref(),
+        outcome_next_cursor,
+    )
+}
+
+/// Parsed, validated arguments for the `get_decision_context` tool.
+pub(crate) struct GetDecisionContextArgs {
+    pub(crate) decision_id: String,
+}
+
+impl GetDecisionContextArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            decision_id: require_string(args, "decision_id")?,
+        })
+    }
+}
+
+/// The core for the `get_decision_context` MCP tool: the authorship and review shape of one
+/// decision, or `data: null` when the decision does not exist.
+pub(crate) fn get_decision_context(
+    graph: &impl GraphView,
+    args: GetDecisionContextArgs,
+) -> Result<ToolOutput, CoreError> {
+    let response = query_get_decision_context(graph, &args.decision_id).map_err(CoreError::from)?;
+    query_output(&response)
+}
+
+/// Parsed, validated arguments for the `decision_context_candidates` tool.
+pub(crate) struct DecisionContextCandidatesArgs {
+    pub(crate) request: DecisionContextRequest,
+}
+
+impl DecisionContextCandidatesArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            request: DecisionContextRequest {
+                since_event_origin: since_event_origin(args),
+                limit: optional_usize(args, "limit")?.unwrap_or(25),
+                cursor: optional_string(args, "cursor")?,
+            },
+        })
+    }
+}
+
+/// The core for the `decision_context_candidates` MCP tool: one page of decision contexts,
+/// `next_cursor` set when more follow.
+pub(crate) fn decision_context_candidates(
+    graph: &impl GraphView,
+    args: DecisionContextCandidatesArgs,
+) -> Result<ToolOutput, CoreError> {
+    let response =
+        get_decision_context_candidates(graph, &args.request).map_err(CoreError::from)?;
+    paged_output(
+        &response,
+        args.request.cursor.as_deref(),
+        context_next_cursor,
+    )
+}
+
+/// Parsed, validated arguments for the `scan_misfiled_decisions` tool.
+pub(crate) struct ScanMisfiledDecisionsArgs {
+    pub(crate) request: MisfiledScanRequest,
+}
+
+impl ScanMisfiledDecisionsArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            request: MisfiledScanRequest {
+                foreign_topic_keys: require_string_array(args, "foreign_topic_keys")?,
+                limit: optional_usize(args, "limit")?.unwrap_or(25),
+                cursor: optional_string(args, "cursor")?,
+            },
+        })
+    }
+}
+
+/// The core for the `scan_misfiled_decisions` MCP tool: one page of decisions carrying a topic key
+/// the caller named as foreign to this ledger, `next_cursor` set when more follow. A report only:
+/// nothing is moved.
+pub(crate) fn scan_misfiled_decisions(
+    graph: &impl GraphView,
+    args: ScanMisfiledDecisionsArgs,
+) -> Result<ToolOutput, CoreError> {
+    let response = query_scan_misfiled_decisions(graph, &args.request).map_err(CoreError::from)?;
+    paged_output(
+        &response,
+        args.request.cursor.as_deref(),
+        misfiled_next_cursor,
+    )
+}
+
+/// Parsed, validated arguments for the `analyze_failure_modes` tool.
+pub(crate) struct AnalyzeFailureModesArgs {
+    pub(crate) request: FailureAttributionRequest,
+}
+
+impl AnalyzeFailureModesArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            request: FailureAttributionRequest {
+                since_event_origin: since_event_origin(args),
+                min_sample_size: optional_usize(args, "min_sample_size")?.unwrap_or(3),
+            },
+        })
+    }
+}
+
+/// The core for the `analyze_failure_modes` MCP tool: aggregate failure-rate patterns across
+/// authorship, review, source and context richness; only groups of at least `min_sample_size`
+/// decisions are listed as findings.
+pub(crate) fn analyze_failure_modes(
+    graph: &impl GraphView,
+    args: AnalyzeFailureModesArgs,
+) -> Result<ToolOutput, CoreError> {
+    let response = get_failure_attribution(graph, &args.request).map_err(CoreError::from)?;
+    query_output(&response)
 }

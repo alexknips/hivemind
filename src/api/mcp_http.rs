@@ -21,10 +21,12 @@ use crate::mcp::args::{
     require_string_array as mcp_req_str_array,
 };
 use crate::mcp::core::{
-    CaptureDecisionArgs, CompactViewArgs, CoreError, DisagreeArgs, GetDecisionNeighborhoodArgs,
-    GetDecisionOutcomeArgs, GetSituationalDecisionsArgs, GetSuggestionsArgs,
-    GetSupersessionChainArgs, GroundDecisionArgs, LedgerHandle, LedgerProvider, MoveDecisionArgs,
-    RecallDecisionsArgs, ScanDecisionQualityArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
+    AnalyzeFailureModesArgs, CaptureDecisionArgs, CompactViewArgs, CoreError,
+    DecisionContextCandidatesArgs, DecisionQualityCandidatesArgs, DisagreeArgs,
+    GetDecisionContextArgs, GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs,
+    GetSituationalDecisionsArgs, GetSuggestionsArgs, GetSupersessionChainArgs, GroundDecisionArgs,
+    LedgerHandle, LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs, RecentDecisionsArgs,
+    ScanDecisionQualityArgs, ScanMisfiledDecisionsArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
 };
 use crate::projector::memory::MemoryGraph;
 use crate::queries::{
@@ -190,15 +192,21 @@ fn mcp_tools_call_blocking(
         "ground_decision" => mcp_ground(backend, ctx, &actor_id, args),
         "get_decision" => mcp_get_decision(backend, ctx, args, cache),
         "get_decision_outcome" => mcp_get_decision_outcome(backend, ctx, args),
+        "decision_quality_candidates" => mcp_decision_quality_candidates(backend, ctx, args, cache),
+        "get_decision_context" => mcp_get_decision_context(backend, ctx, args, cache),
+        "decision_context_candidates" => mcp_decision_context_candidates(backend, ctx, args, cache),
         "get_relevant_decisions" => mcp_get_relevant_decisions(backend, ctx, args, cache),
         "get_situational_decisions" => mcp_get_situational_decisions(backend, ctx, args, cache),
         "get_supersession_chain" => mcp_get_supersession_chain(backend, ctx, args),
         "get_decision_neighborhood" => mcp_get_decision_neighborhood(backend, ctx, args),
         "recall_decisions" => mcp_recall_decisions(backend, ctx, args, cache),
         "search_decisions" => mcp_search_decisions(backend, ctx, args, cache),
+        "recent_decisions" => mcp_recent_decisions(backend, ctx, args),
         "score_decision" => mcp_score_decision(backend, ctx, args, cache),
         "scan_decision_quality" => mcp_scan_decision_quality(backend, ctx, args, cache),
         "get_suggestions" => mcp_get_suggestions(backend, ctx, args, cache),
+        "scan_misfiled_decisions" => mcp_scan_misfiled_decisions(backend, ctx, args, cache),
+        "analyze_failure_modes" => mcp_analyze_failure_modes(backend, ctx, args, cache),
         "dump_graph" => mcp_dump_graph(backend, ctx, cache),
         "hivemind_compact_view" => mcp_compact_view(backend, ctx, args),
         "summarize_decisions" => mcp_summarize(backend, ctx, args, cache),
@@ -618,6 +626,80 @@ fn mcp_get_suggestions(
     let core_args = GetSuggestionsArgs::from_json(&args)?;
     let graph = mcp_open_graph(backend, ctx, cache)?;
     let output = crate::mcp::core::get_suggestions(&*graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn mcp_recent_decisions(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+) -> McpToolResult {
+    let core_args = RecentDecisionsArgs::from_json(&args)?;
+    let provider = HttpLedgerProvider {
+        backend,
+        tenant_id: &ctx.tenant_id,
+    };
+    let output = crate::mcp::core::recent_decisions(&provider, core_args)?;
+    Ok(output.into_value())
+}
+
+fn mcp_decision_quality_candidates(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
+) -> McpToolResult {
+    let core_args = DecisionQualityCandidatesArgs::from_json(&args)?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let output = crate::mcp::core::decision_quality_candidates(&*graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn mcp_get_decision_context(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
+) -> McpToolResult {
+    let core_args = GetDecisionContextArgs::from_json(&args)?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let output = crate::mcp::core::get_decision_context(&*graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn mcp_decision_context_candidates(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
+) -> McpToolResult {
+    let core_args = DecisionContextCandidatesArgs::from_json(&args)?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let output = crate::mcp::core::decision_context_candidates(&*graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn mcp_scan_misfiled_decisions(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
+) -> McpToolResult {
+    let core_args = ScanMisfiledDecisionsArgs::from_json(&args)?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let output = crate::mcp::core::scan_misfiled_decisions(&*graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn mcp_analyze_failure_modes(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    args: serde_json::Map<String, serde_json::Value>,
+    cache: &Arc<GraphCache>,
+) -> McpToolResult {
+    let core_args = AnalyzeFailureModesArgs::from_json(&args)?;
+    let graph = mcp_open_graph(backend, ctx, cache)?;
+    let output = crate::mcp::core::analyze_failure_modes(&*graph, core_args)?;
     Ok(output.into_value())
 }
 

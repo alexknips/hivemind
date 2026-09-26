@@ -57,6 +57,13 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Six tools that `POST /mcp` listed now run there.** `recent_decisions`,
+  `decision_quality_candidates`, `get_decision_context`, `decision_context_candidates`,
+  `scan_misfiled_decisions` and `analyze_failure_modes` were in the HTTP endpoint's `tools/list`
+  but answered a call with an `unknown tool` error; only the stdio server ran them. They now
+  run through the same core as the stdio server, so a call takes the same arguments, is refused
+  with the same messages and returns the same response on both. Nothing changes on stdio.
+  (hivemind-imp1.1)
 - **"Why did we pick / choose / go with X?" answers in one step.** The verbs people ask about a
   decision with (pick, choose, decide, "go with", "settle on", "opt for", with their past and
   `-s` forms) and the adverbs they put in a why-question (still, again, ever, even, really,
