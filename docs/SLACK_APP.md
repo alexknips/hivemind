@@ -20,6 +20,7 @@ per event.
 |---|---|
 | `POST /v1/slack/events` | Events API: `url_verification` handshake, `app_mention` / `message.channels` / `reaction_added` |
 | `POST /v1/slack/commands` | Slash commands (`/hivemind ...`), routed to the same `handle_slack_command` the CLI uses |
+| `POST /v1/slack/interactivity` | The "Capture this thread as a decision" message shortcut and its capture modal |
 | `GET  /v1/slack/oauth/callback` | OAuth code exchange + workspace install, so a workspace installs without touching a terminal |
 
 These routes authenticate every request via **Slack's own request
@@ -32,18 +33,27 @@ bearer-token / WorkOS-JWT path the rest of `/v1/*` uses. Configure:
   installed via OAuth.
 - `HIVEMIND_SLACK_CLIENT_ID` / `HIVEMIND_SLACK_CLIENT_SECRET` — required only
   for the OAuth callback's code exchange.
+- `HIVEMIND_SLACK_API_BASE_URL` — optional; the root of the Slack Web API the
+  server calls back into (`https://slack.com/api` when unset). Only needed to
+  point those outbound calls somewhere else, such as a stand-in in tests.
 
-Set the manifest's Request URL / Event Subscriptions URL / OAuth Redirect URL
-to `https://<your-host>/v1/slack/commands` (interactivity — see below),
+Set the manifest's slash-command URL, Interactivity Request URL, Event
+Subscriptions URL and OAuth Redirect URL to
+`https://<your-host>/v1/slack/commands`,
+`https://<your-host>/v1/slack/interactivity`,
 `https://<your-host>/v1/slack/events`, and
 `https://<your-host>/v1/slack/oauth/callback` respectively:
 
 ```bash
 cargo run -- --json slack-app manifest \
   --request-url https://your-host/v1/slack/commands \
+  --interactivity-url https://your-host/v1/slack/interactivity \
   --event-url https://your-host/v1/slack/events \
   --redirect-url https://your-host/v1/slack/oauth/callback
 ```
+
+`--interactivity-url` and `--event-url` default to `--request-url`, which is
+what the local-first flow below wants: one tunnel URL for everything.
 
 ### Multi-tenant
 
@@ -65,17 +75,72 @@ signing secret, and every ledger operation after that is pinned to
 
 ### Ack-fast, drain-async
 
-`POST /v1/slack/events` never writes to the ledger inline — it enqueues onto
-the same `SlackAppStore` capture queue the CLI's `slack-app enqueue-capture`
-uses, and returns within Slack's 3-second ack window. A background task
-(started once, from `hivemind serve`) polls the queue and drains it into
-each capture's own tenant ledger every 15 seconds.
+Neither `POST /v1/slack/events` nor `POST /v1/slack/interactivity` writes to
+the ledger inline — they enqueue onto the same `SlackAppStore` capture queue
+the CLI's `slack-app enqueue-capture` uses, and answer within Slack's
+3-second ack window. A background task (started once, from `hivemind serve`)
+polls the queue and drains it into each capture's own tenant ledger every 15
+seconds.
 
 `app_mention` and `message.channels` events are auto-captured only when the
 message text carries the same `Decision:`/`Rationale:`/`Options:` markers
 `hivemind ingest slack-thread` already parses (see "Capture Queue" below) —
 no LLM inference happens on the ingest path, per AGENTS.md's three-layer
 separation. A message without those markers is acknowledged and ignored.
+
+### Capturing from a message: the shortcut
+
+The **Capture this thread as a decision** message shortcut (the `⋯` menu on
+any message) opens a modal for the message it was invoked on:
+
+| Input | Required | Notes |
+|---|---|---|
+| Decision | yes | the decision's title |
+| Rationale | yes | why this, over the alternatives |
+| Options considered | yes | comma- or `|`-separated |
+| Chosen option | no | must match one of the options (case-insensitively); empty leaves the decision `proposed` |
+| Topics | no | comma- or `|`-separated; defaults to `slack` |
+
+Submitting queues a capture attributed to the Slack user who submitted (mapped
+through the install's `actor_mappings` when one exists). The selected
+message — its author, timestamp and text — becomes the decision's evidence.
+Input the capture cannot accept (a missing rationale, a chosen option that is
+not among the options) keeps the modal open with a message next to the
+offending field; nothing is dropped silently. A message longer than a Slack
+modal can carry (about 2.5k characters) is cut with an explicit
+`[truncated: ...]` marker in the evidence, never silently.
+
+Both halves need the Slack Web API: opening the modal calls `views.open` with
+the shortcut's `trigger_id` (good for about three seconds) and the install's
+bot token. If Slack rejects that call, the endpoint answers `500`, so Slack
+tells the user the shortcut failed instead of showing nothing.
+
+`block_actions`, `view_closed` and any shortcut this app does not define are
+acknowledged and ignored — the capture modal has no interactive components.
+
+### Capturing with a reaction
+
+Adding the install's `reaction_emoji` (default `:hivemind:`) to a message
+captures it, when the message carries the `Decision:`/`Rationale:`/`Options:`
+markers. The Events API payload for a reaction has no message text, so the
+server fetches the message with `conversations.history` and the install's bot
+token, then queues it exactly like a marker-bearing mention. Two things to
+know:
+
+- **Attribution.** The capture is attributed to the user who *reacted* — the
+  actor who took the action. The message's own author and timestamp are kept
+  in the decision's evidence, so who wrote the words is not lost.
+- **One decision per thread.** Every Slack surface (mention, reaction,
+  shortcut) shares the idempotency key `slack://<team>/<channel>/<thread_ts>`.
+  A thread that already has a captured decision is not captured a second time;
+  the later capture drains as `already_imported`.
+
+Every way a reaction can end without a capture is acknowledged to Slack and
+logged by the server (target `hivemind::api::slack`): a message with no
+markers, a message posted by an app, a Slack error (`not_in_channel`,
+`missing_scope`, a rate limit — the call is never retried), or a Slack timeout.
+A `5xx` is deliberately not returned for these, because Slack retries failed
+deliveries and disables subscriptions that keep failing.
 
 ### Backend support
 
@@ -88,17 +153,19 @@ here.
 
 ### Known gaps in this slice
 
-- **`reaction_added` does not complete a capture.** The signature is
-  verified and a matching reaction (against the install's configured
-  `reaction_emoji`) is logged, but the Events API reaction payload carries
-  no message text — completing it needs an outbound Slack Web API call
-  (`conversations.history` or similar) this slice does not add.
-- **`POST /v1/slack/interactivity` is not implemented.** Block actions and
-  view submissions — the "Capture this thread as a decision" message
-  shortcut and its modal — need a separate outbound `views.open` call and
-  are out of scope here; see the follow-up bead this slice's bead names.
-  `/hivemind capture` over the commands route above returns a plain text
-  reply pointing at the CLI instead of silently claiming a modal will open.
+- **A reaction on a thread reply captures nothing.** `conversations.history`
+  lists top-level messages only, and a reaction event carries no `thread_ts`
+  to look a reply up by, so the reacted-to message cannot be fetched. Use the
+  message shortcut on the reply instead — it is given the message directly.
+- **A reaction failing is visible only in the server log**, not to the person
+  who reacted. There is no reply telling them a message lacked markers or that
+  Slack refused the fetch.
+- **`/hivemind capture` opens no modal.** A slash command names no message to
+  attach a capture to, so it replies with text pointing at the message
+  shortcut, the reaction, and `hivemind emit decision.capture`.
+- **The shortcut captures the selected message**, not the whole thread: the
+  evidence is that one message (author, timestamp, text), keyed to the
+  thread it sits in.
 - **OAuth state/CSRF** is required to be present and non-empty but is not
   tracked as a single-use nonce (no persistence subsystem for it exists
   yet); callers that need stronger CSRF protection should layer their own

@@ -828,6 +828,11 @@ pub struct SlackManifestArgs {
     #[arg(long = "event-url")]
     pub event_url: Option<String>,
 
+    /// Where Slack posts the message shortcut and its modal (defaults to
+    /// `--request-url`).
+    #[arg(long = "interactivity-url")]
+    pub interactivity_url: Option<String>,
+
     #[arg(long = "redirect-url")]
     pub redirect_url: Option<String>,
 }

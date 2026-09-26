@@ -23,6 +23,8 @@ fn slack_app_installs_queues_captures_and_queries_with_citations() -> TestResult
             "https://local.example/slack/interactions".to_owned(),
             "--event-url".to_owned(),
             "https://local.example/slack/events".to_owned(),
+            "--interactivity-url".to_owned(),
+            "https://local.example/slack/interactivity".to_owned(),
             "--redirect-url".to_owned(),
             "https://local.example/slack/oauth".to_owned(),
         ],
@@ -30,6 +32,14 @@ fn slack_app_installs_queues_captures_and_queries_with_citations() -> TestResult
     assert_eq!(
         manifest["features"]["slash_commands"][0]["command"],
         "/hivemind"
+    );
+    assert_eq!(
+        manifest["features"]["slash_commands"][0]["url"],
+        "https://local.example/slack/interactions"
+    );
+    assert_eq!(
+        manifest["settings"]["interactivity"]["request_url"],
+        "https://local.example/slack/interactivity"
     );
     assert_eq!(
         manifest["settings"]["event_subscriptions"]["bot_events"],

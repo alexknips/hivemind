@@ -20,6 +20,8 @@ use crate::util::require_non_empty;
 use crate::Result;
 
 pub const DEFAULT_SLACK_MENTION: &str = "@hivemind";
+/// The topic a Slack capture gets when its author names none.
+pub(crate) const DEFAULT_SLACK_TOPIC: &str = "slack";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SlackThreadFixture {
@@ -91,10 +93,13 @@ pub fn extract_slack_decision_draft(
 }
 
 pub fn slack_thread_source_ref(thread: &SlackThreadFixture) -> String {
-    format!(
-        "slack://{}/{}/{}",
-        thread.team_id, thread.channel_id, thread.thread_ts
-    )
+    slack_source_ref(&thread.team_id, &thread.channel_id, &thread.thread_ts)
+}
+
+/// The idempotency key every Slack capture surface shares: one decision per
+/// thread, whichever surface (mention, reaction, message shortcut) captured it.
+pub fn slack_source_ref(team_id: &str, channel_id: &str, thread_ts: &str) -> String {
+    format!("slack://{team_id}/{channel_id}/{thread_ts}")
 }
 
 fn validate_thread(thread: &SlackThreadFixture) -> Result<()> {
@@ -167,7 +172,7 @@ pub(crate) fn parse_decision_markers(thread: &SlackThreadFixture) -> Result<Slac
         .into());
     }
     if topic_keys.is_empty() {
-        topic_keys.push("slack".to_owned());
+        topic_keys.push(DEFAULT_SLACK_TOPIC.to_owned());
     }
 
     let actor_user_id = actor_user_id.ok_or_else(|| {
@@ -193,7 +198,9 @@ fn marker_value<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
-fn split_marker_list(value: &str) -> Vec<String> {
+/// `pub(crate)`: the Slack capture modal splits its comma-separated inputs
+/// with the same rule the `Options:` / `Topics:` markers use.
+pub(crate) fn split_marker_list(value: &str) -> Vec<String> {
     value
         .split([',', '|'])
         .map(str::trim)

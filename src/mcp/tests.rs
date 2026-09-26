@@ -1064,6 +1064,7 @@ mod transport_parity {
             slack_client_id: None,
             slack_client_secret: None,
             slack_signing_secret: None,
+            slack_api_base_url: None,
         };
         crate::api::create_router(&config)
     }
