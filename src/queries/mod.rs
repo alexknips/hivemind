@@ -10,6 +10,7 @@ mod decision;
 mod decision_log;
 mod follows_from;
 mod grounding;
+mod grounding_facts;
 mod history;
 mod inhouse_scorer;
 mod misfiled;
@@ -67,6 +68,9 @@ pub use grounding::{
     dependents_count, grounding_of, grounding_of_at, grounding_state_of, rests_on_clause,
     Grounding, GroundingAdded, GroundingItem, GroundingItemState, GroundingKind, GroundingState,
     UncheckedBet,
+};
+pub use grounding_facts::{
+    get_decision_times, get_grounding_facts, GroundingFacts, HypothesisRecord, GROUNDING_FACT_READS,
 };
 pub use history::*;
 pub use inhouse_scorer::{

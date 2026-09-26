@@ -27,6 +27,12 @@
 //! assumptions or bets with anchored lookups: no scan, no model, no network, no write.
 //!
 //! [`FLOOR_VERSION`] moves whenever a rule below changes what level a record gets.
+//!
+//! # Attention findings
+//! The profile answers how much of each dimension one decision's record supports. What deserves
+//! a look across the graph is a separate, derived list: bets past their check date, decisions
+//! whose premise changed, evidence nobody has re-checked. That is [`findings`], and it is the
+//! roll-up in place of a grade.
 
 use std::collections::BTreeSet;
 
@@ -39,6 +45,13 @@ use crate::queries::{
     RecordFacts,
 };
 use crate::Result;
+
+pub mod findings;
+
+pub use findings::{
+    attention_findings, attention_findings_at, AttentionConfig, AttentionFinding, AttentionPage,
+    AttentionRequest, FindingKind, DEFAULT_EVIDENCE_WINDOW_DAYS,
+};
 
 /// The version of the floor rules in this module.
 ///

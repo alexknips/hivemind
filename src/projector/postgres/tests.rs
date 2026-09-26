@@ -2191,3 +2191,30 @@ fn quality_profile_matches_memory() -> Result<()> {
         crate::quality_profile::tests::assert_scenario_profiles(pg)
     })
 }
+
+// ── attention findings parity (hivemind-qo11.4) ─────────────────────────────────
+//
+// The findings read the grounding relations in bulk (`relation_edges`, `node_rows`) and date a
+// superseder with an anchored lookup. The scenario puts every kind on both sides of its rule, so
+// agreeing with the in-memory graph is not agreeing on emptiness: the bulk facts are compared
+// field for field, and the same list, paging and per-kind assertions run on Postgres.
+
+#[test]
+fn attention_findings_match_memory() -> Result<()> {
+    use crate::queries::test_fixtures::attention_scenario;
+
+    with_postgres_graph("attention-findings-parity", |pg| {
+        let scenario = attention_scenario()?;
+        let memory = scenario.graph()?;
+        project_from_ledger(scenario.ledger(), pg, 0)?;
+
+        let memory_facts = format!("{:?}", crate::queries::get_grounding_facts(&memory)?);
+        let pg_facts = format!("{:?}", crate::queries::get_grounding_facts(pg)?);
+        if memory_facts != pg_facts {
+            return Err(test_error(format!(
+                "get_grounding_facts mismatch: memory={memory_facts} pg={pg_facts}"
+            )));
+        }
+        crate::quality_profile::findings::tests::assert_attention_scenario(pg)
+    })
+}

@@ -68,7 +68,8 @@ pub struct Decider {
 /// the whole graph. A decision no edge names is `proposed` with no decider.
 #[derive(Debug, Default)]
 pub struct DecisionStandings {
-    superseded: BTreeSet<String>,
+    /// Each superseded decision with the decisions that superseded it, sorted by id.
+    superseded_by: BTreeMap<String, Vec<String>>,
     accepted_by: BTreeMap<String, Vec<String>>,
     rejected: BTreeSet<String>,
 }
@@ -77,8 +78,13 @@ impl DecisionStandings {
     pub fn load(graph: &impl GraphView) -> Result<Self> {
         let mut standings = Self::default();
         // `SUPERSEDES` runs newer decision -> older decision, so the target is the superseded one.
-        for (_, superseded) in relation_edges(graph, RelationKind::Supersedes)? {
-            standings.superseded.insert(superseded);
+        // Edges arrive sorted by (newer, older), so each decision's superseders are sorted by id.
+        // The same supersession asserted twice is one.
+        for (newer, superseded) in relation_edges(graph, RelationKind::Supersedes)? {
+            let superseders = standings.superseded_by.entry(superseded).or_default();
+            if superseders.last() != Some(&newer) {
+                superseders.push(newer);
+            }
         }
         // Edges arrive sorted by (decision, actor), so each decision's actors are sorted by id.
         for (decision_id, actor_id) in relation_edges(graph, RelationKind::AcceptedBy)? {
@@ -97,10 +103,19 @@ impl DecisionStandings {
     /// The status [`derive_decision_status`] gives this decision.
     pub fn status_of(&self, decision_id: &str) -> DecisionStatus {
         status_from_positions(
-            self.superseded.contains(decision_id),
+            self.superseded_by.contains_key(decision_id),
             self.accepted_by.contains_key(decision_id),
             self.rejected.contains(decision_id),
         )
+    }
+
+    /// The decisions that superseded this one, sorted by id; empty when nobody has. More than one
+    /// means concurrent supersessions, which both stand.
+    pub fn superseders_of(&self, decision_id: &str) -> &[String] {
+        self.superseded_by
+            .get(decision_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// Who accepted this decision, sorted by actor id; empty when nobody has.
@@ -117,31 +132,38 @@ impl DecisionStandings {
     }
 }
 
+/// The one hypothesis status rule: evidence that refutes it beats evidence that supports it, and
+/// with neither it is open. Shared by [`derive_hypothesis_status`] (one hypothesis) and the bulk
+/// grounding read so the two cannot drift.
+pub(super) fn hypothesis_status_from_evidence(refuted: bool, supported: bool) -> HypothesisStatus {
+    if refuted {
+        HypothesisStatus::Refuted
+    } else if supported {
+        HypothesisStatus::Supported
+    } else {
+        HypothesisStatus::Open
+    }
+}
+
 pub fn derive_hypothesis_status(
     graph: &impl GraphView,
     hypothesis_id: &str,
 ) -> Result<HypothesisStatus> {
-    let refuted_count = relation_count(
+    let refuted = relation_count(
         graph,
         RelationKind::Refutes,
         Direction::Incoming,
         NodeKind::Hypothesis,
         hypothesis_id,
-    )?;
-    if refuted_count > 0 {
-        return Ok(HypothesisStatus::Refuted);
-    }
-
-    let supported_count = relation_count(
-        graph,
-        RelationKind::Supports,
-        Direction::Incoming,
-        NodeKind::Hypothesis,
-        hypothesis_id,
-    )?;
-    if supported_count > 0 {
-        Ok(HypothesisStatus::Supported)
-    } else {
-        Ok(HypothesisStatus::Open)
-    }
+    )? > 0;
+    // Only a hypothesis nothing refutes needs the second read.
+    let supported = !refuted
+        && relation_count(
+            graph,
+            RelationKind::Supports,
+            Direction::Incoming,
+            NodeKind::Hypothesis,
+            hypothesis_id,
+        )? > 0;
+    Ok(hypothesis_status_from_evidence(refuted, supported))
 }

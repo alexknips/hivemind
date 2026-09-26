@@ -528,6 +528,21 @@ fn row_for(graph: &KuzuGraph, cypher: &str, id: &str) -> Result<GraphRow> {
     }
 }
 
+#[test]
+fn attention_findings_read_the_same_lists_as_the_other_backends() -> Result<()> {
+    use crate::queries::test_fixtures::attention_scenario;
+
+    let temp_dir = test_graph_dir("attention-findings");
+    let graph = KuzuGraph::open(&temp_dir)?;
+    let scenario = attention_scenario()?;
+    crate::projector::project_from_ledger(scenario.ledger(), &graph, 0)?;
+
+    crate::quality_profile::findings::tests::assert_attention_scenario(&graph)?;
+
+    let _ = fs::remove_dir_all(temp_dir);
+    Ok(())
+}
+
 fn test_graph_dir(name: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

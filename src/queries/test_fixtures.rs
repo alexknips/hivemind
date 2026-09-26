@@ -11,7 +11,10 @@ use crate::commands::{
 };
 use crate::events::{Event, EventId, EventSource, EventType, ProjectLinkKind};
 use crate::ledger::{EventLedger, InMemoryEventLedger};
-use crate::projector::{memory::MemoryGraph, rebuild_graph};
+use crate::projector::{
+    memory::MemoryGraph, rebuild_graph, GraphParams, GraphProperties, GraphRow, GraphView,
+    NodeKind, RelationKind,
+};
 use crate::Result;
 
 /// A small ledger builder for tests about what decisions rest on: each call appends one event
@@ -312,6 +315,51 @@ impl Scenario {
             timestamp,
         )
         .map(|_| ())
+    }
+}
+
+/// A graph that counts the reads made through it, for tests of what a read costs.
+pub(crate) struct CountingGraph<'a, G: GraphView> {
+    inner: &'a G,
+    queries: Cell<usize>,
+}
+
+impl<'a, G: GraphView> CountingGraph<'a, G> {
+    pub(crate) fn new(inner: &'a G) -> Self {
+        Self {
+            inner,
+            queries: Cell::new(0),
+        }
+    }
+
+    /// How many `query` calls have gone through so far.
+    pub(crate) fn queries(&self) -> usize {
+        self.queries.get()
+    }
+}
+
+impl<G: GraphView> GraphView for CountingGraph<'_, G> {
+    fn upsert_node(&self, kind: NodeKind, id: &str, properties: &GraphProperties) -> Result<()> {
+        self.inner.upsert_node(kind, id, properties)
+    }
+
+    fn upsert_edge(
+        &self,
+        kind: RelationKind,
+        from_id: &str,
+        to_id: &str,
+        properties: &GraphProperties,
+    ) -> Result<()> {
+        self.inner.upsert_edge(kind, from_id, to_id, properties)
+    }
+
+    fn query(&self, cypher: &str, params: &GraphParams) -> Result<Vec<GraphRow>> {
+        self.queries.set(self.queries.get() + 1);
+        self.inner.query(cypher, params)
+    }
+
+    fn wipe(&self) -> Result<()> {
+        self.inner.wipe()
     }
 }
 
@@ -731,6 +779,530 @@ fn add_grounded_decisions(s: &Scenario, crew: &str) -> Result<()> {
         None,
         "2026-03-08T00:00:01Z",
     )
+}
+
+/// The clock `attention_scenario` is read at; its evidence window (90 days) reaches back to
+/// 2026-06-28T00:00:00Z.
+pub(crate) const ATTENTION_NOW: &str = "2026-09-26T00:00:00Z";
+
+/// Decisions that need a look, and their look-alikes that do not, for the attention findings.
+/// Read at `ATTENTION_NOW`. Every decision is proposed by `agent:claude:crew`.
+///
+/// Bets (`h:bet-*`, check dates in `h:*` names): `d:bet-overdue` (through its chosen option) and
+/// `d:bet-overdue-direct` (directly) share an overdue bet; `d:bet-future`, `d:bet-undated` and
+/// `d:bet-held` (supported) are not overdue; `d:bet-failed` rests on a refuted bet;
+/// `d:bet-dead` (superseded) and `d:bet-refused` (rejected) rest on the overdue bet too but no
+/// longer stand. `d:assumption-refuted` rests on an assumption refuted twice (the earlier
+/// refutation has the later id); `d:assumption-open` on one nothing refutes.
+///
+/// Premises: `d:p-old` was superseded by `d:p-new`; `d:p-double` by `d:p-double-a` (2026-08-10)
+/// and `d:p-double-b` (2026-08-05, the earlier); `d:p-rejected` was rejected; `d:p-contested` was
+/// accepted and rejected; `d:p-standing` stands. `d:f-superseded`, `d:f-concurrent`,
+/// `d:f-rejected` and `d:f-both` (superseded and rejected premise) follow from them and are
+/// flagged; `d:f-contested` and `d:f-standing` are not; `d:f-dead` (superseded) and
+/// `d:f-refused` (rejected) follow from `d:p-old` but no longer stand. `d:cycle-a` and
+/// `d:cycle-b` follow from each other and `d:cycle-a` also from `d:p-old`; `d:cycle-self`
+/// follows from itself.
+///
+/// Evidence (recorded dates in `e:*`): `d:ev-stale` cites only `e:old`; `d:ev-stale-two` cites
+/// `e:very-old` and `e:old`; `d:ev-fresh` a recent item; `d:ev-mixed` an old and a recent one;
+/// `d:ev-rechecked-later` an old one at capture and a recent one linked afterwards;
+/// `d:ev-just-over` an item one second past the window and `d:ev-boundary` one exactly at it;
+/// `d:ev-rejected` cites `e:old` but was rejected; `d:ev-none` cites nothing.
+pub(crate) fn attention_scenario() -> Result<Scenario> {
+    let s = Scenario::new();
+    let crew = "agent:claude:crew";
+    let alex = "human:alex";
+
+    // Bets and assumptions.
+    s.hypothesis(
+        "h:bet-overdue",
+        "Load stays flat",
+        "bet",
+        Some("2026-09-01T00:00:00Z"),
+        "2026-01-01T00:00:00Z",
+    )?;
+    s.hypothesis(
+        "h:bet-future",
+        "Vendor ships in Q4",
+        "bet",
+        Some("2026-12-01T00:00:00Z"),
+        "2026-01-01T00:00:01Z",
+    )?;
+    s.hypothesis(
+        "h:bet-undated",
+        "Nobody else builds it",
+        "bet",
+        None,
+        "2026-01-01T00:00:02Z",
+    )?;
+    s.hypothesis(
+        "h:bet-held",
+        "The cache holds",
+        "bet",
+        Some("2026-08-01T00:00:00Z"),
+        "2026-01-01T00:00:03Z",
+    )?;
+    s.hypothesis(
+        "h:bet-failed",
+        "Latency stays low",
+        "bet",
+        Some("2026-08-01T00:00:00Z"),
+        "2026-01-01T00:00:04Z",
+    )?;
+    s.hypothesis(
+        "h:assumption-refuted",
+        "Users log in daily",
+        "assumption",
+        None,
+        "2026-01-01T00:00:05Z",
+    )?;
+    s.hypothesis(
+        "h:assumption-open",
+        "The API is stable",
+        "assumption",
+        None,
+        "2026-01-01T00:00:06Z",
+    )?;
+
+    // Evidence: what checks the bets, and what the decisions cite.
+    s.evidence(
+        "e:support",
+        "The cache held under load",
+        Some("load test"),
+        "2026-08-20T00:00:00Z",
+    )?;
+    s.evidence(
+        "e:refute-bet",
+        "p95 doubled",
+        Some("dashboard"),
+        "2026-08-15T00:00:00Z",
+    )?;
+    s.evidence(
+        "e:refute-a2",
+        "Half of users log in weekly",
+        Some("analytics"),
+        "2026-06-01T00:00:00Z",
+    )?;
+    s.evidence(
+        "e:refute-a1",
+        "Most users log in monthly",
+        Some("analytics"),
+        "2026-07-01T00:00:00Z",
+    )?;
+    s.evidence(
+        "e:very-old",
+        "Benchmark from January",
+        Some("bench run"),
+        "2026-01-01T00:00:00Z",
+    )?;
+    s.evidence(
+        "e:old",
+        "Benchmark from March",
+        Some("bench run"),
+        "2026-03-01T00:00:00Z",
+    )?;
+    s.evidence(
+        "e:just-over",
+        "Just outside the window",
+        None,
+        "2026-06-27T23:59:59Z",
+    )?;
+    s.evidence(
+        "e:boundary",
+        "Exactly at the window",
+        None,
+        "2026-06-28T00:00:00Z",
+    )?;
+    s.evidence(
+        "e:fresh",
+        "Measured last week",
+        Some("dashboard"),
+        "2026-09-10T00:00:00Z",
+    )?;
+    s.evidence(
+        "e:newer",
+        "Measured this month",
+        Some("dashboard"),
+        "2026-09-15T00:00:00Z",
+    )?;
+    s.relation(
+        "SUPPORTS",
+        "e:support",
+        "h:bet-held",
+        alex,
+        None,
+        "2026-08-20T00:00:01Z",
+    )?;
+    s.relation(
+        "REFUTES",
+        "e:refute-bet",
+        "h:bet-failed",
+        alex,
+        None,
+        "2026-08-15T00:00:01Z",
+    )?;
+    s.relation(
+        "REFUTES",
+        "e:refute-a2",
+        "h:assumption-refuted",
+        alex,
+        None,
+        "2026-06-01T00:00:01Z",
+    )?;
+    s.relation(
+        "REFUTES",
+        "e:refute-a1",
+        "h:assumption-refuted",
+        alex,
+        None,
+        "2026-07-01T00:00:01Z",
+    )?;
+
+    // Decisions resting on bets and assumptions. A chosen option carries them at capture; without
+    // one they hang off the decision.
+    s.decision_with(
+        "d:bet-overdue",
+        "Size the fleet for flat load",
+        crew,
+        "2026-02-01T00:00:00Z",
+        true,
+        &[],
+        &["h:bet-overdue"],
+        None,
+    )?;
+    s.decision_with(
+        "d:bet-overdue-direct",
+        "Skip autoscaling",
+        crew,
+        "2026-02-01T00:00:01Z",
+        false,
+        &[],
+        &["h:bet-overdue"],
+        None,
+    )?;
+    s.decision_with(
+        "d:bet-future",
+        "Wait for the vendor",
+        crew,
+        "2026-02-01T00:00:02Z",
+        true,
+        &[],
+        &["h:bet-future"],
+        None,
+    )?;
+    s.decision_with(
+        "d:bet-undated",
+        "Build it ourselves",
+        crew,
+        "2026-02-01T00:00:03Z",
+        true,
+        &[],
+        &["h:bet-undated"],
+        None,
+    )?;
+    s.decision_with(
+        "d:bet-held",
+        "Cache the catalogue",
+        crew,
+        "2026-02-01T00:00:04Z",
+        true,
+        &[],
+        &["h:bet-held"],
+        None,
+    )?;
+    s.decision_with(
+        "d:bet-failed",
+        "Serve from one region",
+        crew,
+        "2026-02-01T00:00:05Z",
+        true,
+        &[],
+        &["h:bet-failed"],
+        None,
+    )?;
+    s.decision_with(
+        "d:assumption-refuted",
+        "Poll once a day",
+        crew,
+        "2026-02-01T00:00:06Z",
+        true,
+        &[],
+        &["h:assumption-refuted"],
+        None,
+    )?;
+    s.decision_with(
+        "d:assumption-open",
+        "Pin the API version",
+        crew,
+        "2026-02-01T00:00:07Z",
+        true,
+        &[],
+        &["h:assumption-open"],
+        None,
+    )?;
+    s.decision_with(
+        "d:bet-dead",
+        "Old fleet sizing",
+        crew,
+        "2026-02-01T00:00:08Z",
+        true,
+        &[],
+        &["h:bet-overdue"],
+        None,
+    )?;
+    s.decision(
+        "d:bet-replacement",
+        "New fleet sizing",
+        crew,
+        "2026-03-01T00:00:00Z",
+    )?;
+    s.supersede(
+        "d:bet-dead",
+        "d:bet-replacement",
+        crew,
+        "2026-03-01T00:00:01Z",
+    )?;
+    s.decision_with(
+        "d:bet-refused",
+        "Fleet sizing nobody wanted",
+        crew,
+        "2026-02-01T00:00:09Z",
+        true,
+        &[],
+        &["h:bet-overdue"],
+        None,
+    )?;
+    s.reject("d:bet-refused", alex, "2026-03-02T00:00:00Z")?;
+
+    // Premises and the decisions that follow from them.
+    s.decision("d:p-old", "Use the old queue", crew, "2026-02-01T00:00:10Z")?;
+    s.decision("d:p-new", "Use the new queue", crew, "2026-08-01T00:00:00Z")?;
+    s.supersede("d:p-old", "d:p-new", crew, "2026-08-01T00:00:01Z")?;
+    s.decision("d:p-double", "Use one region", crew, "2026-02-01T00:00:11Z")?;
+    s.decision(
+        "d:p-double-a",
+        "Use two regions",
+        crew,
+        "2026-08-10T00:00:00Z",
+    )?;
+    s.decision(
+        "d:p-double-b",
+        "Use three regions",
+        crew,
+        "2026-08-05T00:00:00Z",
+    )?;
+    s.supersede("d:p-double", "d:p-double-a", crew, "2026-08-10T00:00:01Z")?;
+    s.supersede("d:p-double", "d:p-double-b", crew, "2026-08-10T00:00:02Z")?;
+    s.decision(
+        "d:p-rejected",
+        "Adopt the vendor SDK",
+        crew,
+        "2026-02-01T00:00:12Z",
+    )?;
+    s.reject("d:p-rejected", alex, "2026-03-03T00:00:00Z")?;
+    s.decision(
+        "d:p-contested",
+        "Adopt the open SDK",
+        crew,
+        "2026-02-01T00:00:13Z",
+    )?;
+    s.accept("d:p-contested", "human:alice", "2026-03-04T00:00:00Z")?;
+    s.reject("d:p-contested", "human:bob", "2026-03-04T00:00:01Z")?;
+    s.decision(
+        "d:p-standing",
+        "Adopt the platform SDK",
+        crew,
+        "2026-02-01T00:00:14Z",
+    )?;
+    s.accept("d:p-standing", alex, "2026-03-05T00:00:00Z")?;
+
+    let follow =
+        |decision_id: &str, title: &str, timestamp: &str, premises: &[&str]| -> Result<()> {
+            let proposal = s.decision(decision_id, title, crew, timestamp)?;
+            for premise in premises {
+                s.relation(
+                    "FOLLOWS_FROM",
+                    decision_id,
+                    premise,
+                    crew,
+                    Some(proposal),
+                    timestamp,
+                )?;
+            }
+            Ok(())
+        };
+    follow(
+        "d:f-superseded",
+        "Batch jobs on the old queue",
+        "2026-04-01T00:00:00Z",
+        &["d:p-old"],
+    )?;
+    follow(
+        "d:f-concurrent",
+        "Pin the region count",
+        "2026-04-01T00:00:01Z",
+        &["d:p-double"],
+    )?;
+    follow(
+        "d:f-rejected",
+        "Wrap the vendor SDK",
+        "2026-04-01T00:00:02Z",
+        &["d:p-rejected"],
+    )?;
+    follow(
+        "d:f-both",
+        "Vendor SDK on the old queue",
+        "2026-04-01T00:00:03Z",
+        &["d:p-old", "d:p-rejected"],
+    )?;
+    follow(
+        "d:f-contested",
+        "Document the open SDK",
+        "2026-04-01T00:00:04Z",
+        &["d:p-contested"],
+    )?;
+    follow(
+        "d:f-standing",
+        "Document the platform SDK",
+        "2026-04-01T00:00:05Z",
+        &["d:p-standing"],
+    )?;
+    follow(
+        "d:f-dead",
+        "Old batch jobs",
+        "2026-04-01T00:00:06Z",
+        &["d:p-old"],
+    )?;
+    s.decision(
+        "d:f-replacement",
+        "New batch jobs",
+        crew,
+        "2026-05-01T00:00:00Z",
+    )?;
+    s.supersede("d:f-dead", "d:f-replacement", crew, "2026-05-01T00:00:01Z")?;
+    follow(
+        "d:f-refused",
+        "Refused batch jobs",
+        "2026-04-01T00:00:07Z",
+        &["d:p-old"],
+    )?;
+    s.reject("d:f-refused", alex, "2026-05-02T00:00:00Z")?;
+    // A cycle needs both decisions to exist before the links that close it.
+    s.decision("d:cycle-a", "Cycle A", crew, "2026-04-01T00:00:08Z")?;
+    s.decision("d:cycle-b", "Cycle B", crew, "2026-04-01T00:00:09Z")?;
+    s.decision(
+        "d:cycle-self",
+        "Cycle on itself",
+        crew,
+        "2026-04-01T00:00:10Z",
+    )?;
+    for (from, to) in [
+        ("d:cycle-a", "d:cycle-b"),
+        ("d:cycle-a", "d:p-old"),
+        ("d:cycle-b", "d:cycle-a"),
+        ("d:cycle-self", "d:cycle-self"),
+    ] {
+        s.relation("FOLLOWS_FROM", from, to, crew, None, "2026-04-01T00:00:11Z")?;
+    }
+
+    // Decisions citing evidence.
+    s.decision_with(
+        "d:ev-stale",
+        "Trust the March benchmark",
+        crew,
+        "2026-04-02T00:00:00Z",
+        false,
+        &["e:old"],
+        &[],
+        None,
+    )?;
+    s.decision_with(
+        "d:ev-stale-two",
+        "Trust both benchmarks",
+        crew,
+        "2026-04-02T00:00:01Z",
+        false,
+        &["e:very-old", "e:old"],
+        &[],
+        None,
+    )?;
+    s.decision_with(
+        "d:ev-fresh",
+        "Trust the dashboard",
+        crew,
+        "2026-09-11T00:00:00Z",
+        false,
+        &["e:fresh"],
+        &[],
+        None,
+    )?;
+    s.decision_with(
+        "d:ev-mixed",
+        "Trust the old and the new",
+        crew,
+        "2026-09-16T00:00:00Z",
+        false,
+        &["e:very-old", "e:newer"],
+        &[],
+        None,
+    )?;
+    s.decision_with(
+        "d:ev-rechecked-later",
+        "Trust the January benchmark",
+        crew,
+        "2026-04-02T00:00:02Z",
+        false,
+        &["e:very-old"],
+        &[],
+        None,
+    )?;
+    s.relation(
+        "BASED_ON",
+        "d:ev-rechecked-later",
+        "e:newer",
+        alex,
+        None,
+        "2026-09-15T00:00:01Z",
+    )?;
+    s.decision_with(
+        "d:ev-just-over",
+        "Trust the June note",
+        crew,
+        "2026-06-29T00:00:00Z",
+        false,
+        &["e:just-over"],
+        &[],
+        None,
+    )?;
+    s.decision_with(
+        "d:ev-boundary",
+        "Trust the other June note",
+        crew,
+        "2026-06-29T00:00:01Z",
+        false,
+        &["e:boundary"],
+        &[],
+        None,
+    )?;
+    s.decision_with(
+        "d:ev-rejected",
+        "Trust a benchmark nobody wanted",
+        crew,
+        "2026-04-02T00:00:03Z",
+        false,
+        &["e:old"],
+        &[],
+        None,
+    )?;
+    s.reject("d:ev-rejected", alex, "2026-05-03T00:00:00Z")?;
+    s.decision(
+        "d:ev-none",
+        "Decided without evidence",
+        crew,
+        "2026-04-02T00:00:04Z",
+    )?;
+    Ok(s)
 }
 
 /// The projects and decisions behind the project-first "what should I know" answer

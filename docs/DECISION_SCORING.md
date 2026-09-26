@@ -183,6 +183,77 @@ scan of the graph. The same graph
 gives the same profile, with reasons and ids in a fixed order, on the in-memory,
 Postgres and Kuzu projections.
 
+### Attention findings: what needs a look
+
+> **Status.** Implemented in `src/quality_profile/findings.rs` as a library
+> function, next to the profile. No tool, verb or export shows the findings yet.
+
+The roll-up of the profile is not a grade. It is a list of decisions that need a
+look now, each with the reason in words and the nodes it rests on. A finding is
+derived from what the graph already states; nothing is scored, ranked or
+inferred, and the list works self-hosted with no model and no network. The order
+is by decision id so that a page can be resumed; a consumer that wants a priority
+applies its own.
+
+| Kind | The decision is flagged when | Basis time (`basis_at`) |
+| --- | --- | --- |
+| `bet_past_check_date` | it rests on a declared bet whose check date has passed and nothing supports or refutes it | the check date |
+| `premise_superseded` | a decision it follows from was superseded | when the earliest superseding decision was made |
+| `premise_rejected` | a decision it follows from was rejected and nobody accepted it | none: the graph does not record when a decision was rejected |
+| `assumption_refuted` | an assumption it rests on was refuted | when the earliest refuting evidence was recorded |
+| `bet_failed` | a bet it rests on was refuted | when the earliest refuting evidence was recorded |
+| `evidence_not_rechecked` | the newest evidence linked to it was recorded more than the window ago | when that evidence was recorded |
+
+The first kind is the list of bets past their check date, the four in the middle
+are the list of decisions whose premise changed, the last is the list of evidence
+not re-checked. A request can ask for any subset of the six.
+
+**Evidence not re-checked.** The window is 90 days by default (one quarter) and is
+configurable (`AttentionConfig::evidence_window_days`). "Re-checked" means newer
+evidence is linked to the decision, whether it was attached at capture or
+afterwards; the graph has no notion of one observation re-checking another, so
+the finding is about the decision's newest evidence, not about each item. Evidence
+recorded exactly one window ago is not yet old; one second earlier is. A decision
+with no evidence, or none whose record states a time, is never flagged here: its
+Information floor already says it rests on nothing. "High-leverage premises not
+re-examined" needs the re-examine state and is built with `hivemind-ottw`, not here.
+
+**Standing decisions, one hop.** Only a decision that has not been superseded or
+rejected is flagged: a decision that was replaced needs no look. A decision is
+flagged for its own premises only. Carrying a change on to the decisions that rest
+on the flagged one is the re-examine walk (`hivemind-ottw`). A contested premise
+is a disagreement and is shown as such, not flagged as a change. A decision
+superseded by more than one decision names the earliest as the basis, and the
+first refutation is the basis of a refuted assumption or bet. A finding names the
+decision that needs the look, the premise, hypothesis or evidence it is about and,
+where a time is taken from another node (the superseding decision, the refuting
+evidence), that node too: `node_ids` is sorted, distinct and always includes the
+decision.
+
+**Stable ids.** `finding_id` is `finding-` and the first 16 bytes (32 hex digits)
+of the SHA-256 of the kind, the node ids and the basis time (written as UTC with
+nanoseconds; a missing time is `-`), so a consumer can dedupe across scans. The
+same graph gives the same ids on every run, on the in-memory, Postgres and Kuzu
+projections, and an id does not depend on the clock. It changes when the basis
+does: newer evidence is linked to the decision, another decision supersedes the
+premise earlier, a bet is replaced by one with another check date.
+
+**Paging and cost.** A page holds at most `limit` findings (default 50, never more
+than 1000). When more follow, `truncated` is true and `next_cursor` resumes after
+the last finding returned. The cursor is a position in the order, not an offset:
+findings that appear or vanish between two pages never make a consumer skip or
+repeat one that stood throughout. Findings are never dropped silently, and no
+request returns the whole graph.
+
+A page issues 12 bulk reads (`GROUNDING_FACT_READS`: who superseded, accepted or
+rejected which decision; the `FOLLOWS_FROM`, `BASED_ON`, `PREMISED_ON_DIRECT`,
+`PREMISED_ON` and `CHOSE` links; the hypothesis and evidence rows; what refutes or
+supports a hypothesis), however many decisions there are, plus one anchored read
+for each distinct superseding decision on the page, at most `limit` more. The
+rows those reads return grow with the grounding links, hypotheses and evidence,
+not with decisions times a per-decision cost. Nothing walks the premise graph, so
+a `FOLLOWS_FROM` cycle cannot loop and costs nothing extra.
+
 ### Axis 2 — Importance (unbounded magnitude)
 
 Importance is a **magnitude, not a probability or percentage.** It is explicitly
