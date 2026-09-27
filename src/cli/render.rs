@@ -457,7 +457,8 @@ fn dimension_summary_line(dimension: Dimension, assessment: &Assessment) -> Stri
 }
 
 /// One line for what a model said about one dimension, printed right after that dimension's
-/// floor line: its level, explanation and the passage it quotes, or why it did not assess it.
+/// floor line: its level, explanation and the passage it quotes (a `none` answer may give no
+/// quote, and then the line carries no `quote` cell), or why it did not assess it.
 fn model_dimension_line(dimension: Dimension, answer: &ModelDimension) -> String {
     let name = wire_name(&dimension);
     match answer {
@@ -465,12 +466,17 @@ fn model_dimension_line(dimension: Dimension, answer: &ModelDimension) -> String
             level,
             explanation,
             quote,
-        } => format!(
-            "model_dimension\t{name}\tlevel={}\texplanation={}\tquote={}",
-            wire_name(level),
-            summary_cell(explanation),
-            summary_cell(quote)
-        ),
+        } => {
+            let mut line = format!(
+                "model_dimension\t{name}\tlevel={}\texplanation={}",
+                wire_name(level),
+                summary_cell(explanation)
+            );
+            if let Some(quote) = quote {
+                let _ = write!(line, "\tquote={}", summary_cell(quote));
+            }
+            line
+        }
         ModelDimension::NotAssessed { reason } => format!(
             "model_dimension\t{name}\tnot_assessed\twhy={}",
             summary_cell(reason)

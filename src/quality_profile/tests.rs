@@ -1708,7 +1708,16 @@ pub(crate) fn assert_scenario_profiles(graph: &impl GraphView) -> Result<()> {
         Some(&ModelDimension::Assessed {
             level: Level::Solid,
             explanation: "second: the question is stated".to_owned(),
-            quote: "Which store should hold the ledger?".to_owned(),
+            quote: Some("Which store should hold the ledger?".to_owned()),
+        })
+    );
+    // A none answer that left its quote out comes back without one.
+    assert_eq!(
+        solid.model_answer(Dimension::BiasExposure),
+        Some(&ModelDimension::Assessed {
+            level: Level::None,
+            explanation: "second: nothing in the record bears on a distortion".to_owned(),
+            quote: None,
         })
     );
     assert_eq!(
@@ -1886,7 +1895,7 @@ fn model_dimensions(level: Level) -> ModelDimensions {
     let answer = || ModelDimension::Assessed {
         level,
         explanation: "the rationale says so".to_owned(),
-        quote: "Because the numbers said so".to_owned(),
+        quote: Some("Because the numbers said so".to_owned()),
     };
     ModelDimensions {
         framing: answer(),
@@ -1935,7 +1944,7 @@ fn a_model_assessment_sits_beside_the_floors_and_moves_none_of_them() {
             Some(&ModelDimension::Assessed {
                 level,
                 explanation: "the rationale says so".to_owned(),
-                quote: "Because the numbers said so".to_owned(),
+                quote: Some("Because the numbers said so".to_owned()),
             })
         );
     }

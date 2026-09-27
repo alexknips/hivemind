@@ -1018,13 +1018,15 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
     /// Records a model's assessment of one decision (`decision.scored`, schema version 2).
     ///
-    /// Refuses, and appends nothing, when the payload is malformed, when the decision is not
-    /// recorded (a proposed decision or a classified capture), or when any assessed dimension
-    /// quotes a passage that does not occur verbatim in the decision's own recorded text: its
-    /// title, question, quote, rationale and option labels and descriptions for a proposal; its
-    /// title, rationale, options and chosen option for a classified capture. The check is a
-    /// plain substring test, so an assessment cannot rest on words the decision never said.
-    /// What the decision cites (evidence, assumptions, prior decisions) is not part of that text.
+    /// Refuses, and appends nothing, when the payload is malformed (which includes a `partial`
+    /// or `solid` answer with no quote), when the decision is not recorded (a proposed decision
+    /// or a classified capture), or when any quote given does not occur verbatim in the
+    /// decision's own recorded text: its title, question, quote, rationale and option labels
+    /// and descriptions for a proposal; its title, rationale, options and chosen option for a
+    /// classified capture. The check is a plain substring test on every quote that is present
+    /// (a `none` answer may give none), so an assessment cannot rest on words the decision never
+    /// said. What the decision cites (evidence, assumptions, prior decisions) is not part of
+    /// that text.
     pub fn record_decision_assessed(
         &self,
         actor_id: &str,
@@ -1048,10 +1050,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .entries()
             .into_iter()
             .find_map(|(dimension, answer)| match answer {
-                ModelDimension::Assessed { quote, .. }
-                    if !recorded_text
-                        .iter()
-                        .any(|text| text.contains(quote.as_str())) =>
+                ModelDimension::Assessed {
+                    quote: Some(quote), ..
+                } if !recorded_text
+                    .iter()
+                    .any(|text| text.contains(quote.as_str())) =>
                 {
                     Some((dimension, quote))
                 }

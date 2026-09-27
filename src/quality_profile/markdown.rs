@@ -88,7 +88,8 @@ pub fn dimension_markdown(dimension: Dimension, assessment: &Assessment) -> Stri
 }
 
 /// A model's answer for one dimension as a nested bullet, to sit under that dimension's floor:
-/// its level, explanation and the passage it quotes, or that it did not assess it and why.
+/// its level, explanation and the passage it quotes (a `none` answer may give no quote, and
+/// then the bullet ends with the explanation), or that it did not assess it and why.
 fn model_answer_markdown(answer: &ModelDimension) -> String {
     match answer {
         ModelDimension::Assessed {
@@ -98,9 +99,11 @@ fn model_answer_markdown(answer: &ModelDimension) -> String {
         } => {
             let mut out = format!("  - **model** — {}: ", level_word(*level));
             push_one_line(&mut out, explanation);
-            out.push_str(" Quoted: \"");
-            push_one_line(&mut out, quote);
-            out.push('"');
+            if let Some(quote) = quote {
+                out.push_str(" Quoted: \"");
+                push_one_line(&mut out, quote);
+                out.push('"');
+            }
             out
         }
         ModelDimension::NotAssessed { reason } => {

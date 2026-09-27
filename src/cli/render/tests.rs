@@ -670,6 +670,12 @@ fn a_score_summary_prints_what_a_model_said_right_after_each_floor_line() -> Res
         model,
         "model_dimension\tinformation\tnot_assessed\twhy=second: nothing in the text to rest it on"
     );
+    // A none answer that gave no quote prints no quote cell: nothing is invented.
+    let (_, model) = after("bias_exposure");
+    assert_eq!(
+        model,
+        "model_dimension\tbias_exposure\tlevel=none\texplanation=second: nothing in the record bears on a distortion"
+    );
 
     let bare = render_score_report_summary(&score_decision(&graph, "d:bare")?.data);
     assert!(!bare.contains("model_assessment"), "{bare}");

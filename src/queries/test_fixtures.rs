@@ -422,14 +422,20 @@ pub(crate) fn assessed_dimension(level: &str, explanation: &str, quote: &str) ->
     json!({"status": "assessed", "level": level, "explanation": explanation, "quote": quote})
 }
 
+/// A `none` answer that leaves its quote out (an absence cannot be quoted), as it is written in
+/// a `decision.scored` payload.
+pub(crate) fn none_dimension_without_quote(explanation: &str) -> Value {
+    json!({"status": "assessed", "level": "none", "explanation": explanation})
+}
+
 /// One dimension a model did not assess, as it is written in a `decision.scored` payload.
 pub(crate) fn not_assessed_dimension(reason: &str) -> Value {
     json!({"status": "not_assessed", "reason": reason})
 }
 
 /// A model's answer for all seven dimensions of `d:solid`: four assessed with a passage of its
-/// own record quoted, three not assessed. `tag` is worked into the explanations so two answers
-/// for the same decision can be told apart.
+/// own record quoted, one assessed `none` with no quote, two not assessed. `tag` is worked into
+/// the explanations so two answers for the same decision can be told apart.
 pub(crate) fn solid_assessment_dimensions(tag: &str) -> Value {
     json!({
         "framing": assessed_dimension(
@@ -453,7 +459,9 @@ pub(crate) fn solid_assessment_dimensions(tag: &str) -> Value {
             &format!("{tag}: a cost is named for one alternative"),
             "rejected, its C++ build is too slow",
         ),
-        "bias_exposure": not_assessed_dimension(&format!("{tag}: nothing bears on it")),
+        "bias_exposure": none_dimension_without_quote(
+            &format!("{tag}: nothing in the record bears on a distortion"),
+        ),
         "calibration": not_assessed_dimension(&format!("{tag}: no confidence was declared")),
     })
 }

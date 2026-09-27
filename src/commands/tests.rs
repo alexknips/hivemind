@@ -5046,6 +5046,11 @@ fn assessed_answer(quote: &str) -> serde_json::Value {
     json!({"status": "assessed", "level": "partial", "explanation": "the record says so", "quote": quote})
 }
 
+/// An assessed answer at `level` with no quote at all.
+fn unquoted_answer(level: &str) -> serde_json::Value {
+    json!({"status": "assessed", "level": level, "explanation": "the record lacks it"})
+}
+
 fn not_assessed_answer() -> serde_json::Value {
     json!({"status": "not_assessed", "reason": "nothing in the record to rest it on"})
 }
@@ -5167,6 +5172,87 @@ fn an_assessment_that_assesses_nothing_needs_no_quote() {
             None,
         )
         .expect("seven honest \"not assessed\" answers are recorded");
+}
+
+/// A `none` answer is usually about something the record lacks, and an absence cannot be
+/// quoted: it may leave its quote out and is recorded as given. A `partial` or `solid` answer
+/// without a quote is refused with nothing written. A quote that is given is checked whatever
+/// the level, so a `none` answer that quotes words the decision never said is still refused.
+#[test]
+fn a_none_answer_needs_no_quote_but_partial_and_solid_do() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = proposed_gateway_decision(&commands);
+    let before = ledger.latest_offset().expect("latest offset");
+
+    for level in ["partial", "solid"] {
+        let error = commands
+            .record_decision_assessed(
+                "agent:hivemind:scorer",
+                assessment_payload(
+                    &decision_id,
+                    dimensions_of(&[
+                        ("framing", assessed_answer(GATEWAY_QUESTION)),
+                        ("information", unquoted_answer(level)),
+                    ]),
+                ),
+                None,
+            )
+            .expect_err("a partial or solid answer must quote the passage it rests on");
+        let message = error.to_string();
+        assert!(message.contains("information.quote"), "{level}: {message}");
+        assert!(message.contains(level), "{level}: {message}");
+    }
+    let error = commands
+        .record_decision_assessed(
+            "agent:hivemind:scorer",
+            assessment_payload(
+                &decision_id,
+                dimensions_of(&[(
+                    "information",
+                    json!({"status": "assessed", "level": "none",
+                        "explanation": "the record lacks it",
+                        "quote": "measured at 10x load"}),
+                )]),
+            ),
+            None,
+        )
+        .expect_err("a quote that is given is checked at every level");
+    assert!(
+        error.to_string().contains("the quote for information"),
+        "{error}"
+    );
+    assert_eq!(
+        ledger.latest_offset().expect("latest offset"),
+        before,
+        "nothing was written for any refused assessment"
+    );
+
+    let payload = assessment_payload(
+        &decision_id,
+        dimensions_of(&[
+            ("framing", assessed_answer(GATEWAY_QUESTION)),
+            ("information", unquoted_answer("none")),
+        ]),
+    );
+    let event_id = commands
+        .record_decision_assessed("agent:hivemind:scorer", payload.clone(), None)
+        .expect("a none answer with no quote is recorded");
+
+    let events = ledger.read(0, 100).expect("read");
+    let event = events.last().expect("the assessment is the newest event");
+    assert_eq!(event.event_id, Some(event_id));
+    assert!(
+        event.payload["dimensions"]["information"]
+            .get("quote")
+            .is_none(),
+        "no quote is invented on the wire: {}",
+        event.payload
+    );
+    assert_eq!(
+        validate(event).expect("the recorded event validates"),
+        EventPayload::DecisionAssessed(payload)
+    );
 }
 
 /// One bad quote refuses the whole assessment, names the dimension, and leaves the ledger

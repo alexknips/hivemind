@@ -192,9 +192,14 @@ fn decision_scored_keeps_one_event_type_across_its_two_payload_versions() {
             framing: ModelDimension::Assessed {
                 level: QualityLevel::Partial,
                 explanation: "The question is implied".to_owned(),
-                quote: "Use option A".to_owned(),
+                quote: Some("Use option A".to_owned()),
             },
-            alternatives: not_assessed("no option is recorded"),
+            // A none answer may leave its quote out: an absence cannot be quoted.
+            alternatives: ModelDimension::Assessed {
+                level: QualityLevel::None,
+                explanation: "No option is recorded".to_owned(),
+                quote: None,
+            },
             information: not_assessed("nothing cited"),
             reasoning: not_assessed("no rationale to quote"),
             values_tradeoffs: not_assessed("no tradeoff stated"),
@@ -218,6 +223,12 @@ fn decision_scored_keeps_one_event_type_across_its_two_payload_versions() {
     .expect("an assessment builds");
     assert_eq!(event.event_type, EventType::DecisionScored);
     assert_eq!(event.payload["schema_version"], json!(2));
+    assert!(
+        event.payload["dimensions"]["alternatives"]
+            .get("quote")
+            .is_none(),
+        "an absent quote is absent on the wire, not null"
+    );
     assert_eq!(events::validate(&event).expect("validates"), payload);
     assert_eq!(
         typed_payload_from_value(event.event_type, event.payload.clone()).unwrap(),

@@ -379,7 +379,9 @@ fn every_write_path_event_validates_against_its_schema() {
                         "explanation": "The rationale gives a reason",
                         "quote": "Option A is the simplest fit"},
                     "values_tradeoffs": {"status": "not_assessed", "reason": "no tradeoff stated"},
-                    "bias_exposure": {"status": "not_assessed", "reason": "nothing bears on it"},
+                    // A none answer with no quote: an absence cannot be quoted.
+                    "bias_exposure": {"status": "assessed", "level": "none",
+                        "explanation": "Nothing in the record bears on a distortion"},
                     "calibration": {"status": "not_assessed", "reason": "no confidence declared"}
                 },
                 "importance": {
@@ -569,8 +571,12 @@ fn every_write_path_event_validates_against_its_schema() {
             event.event_type == EventType::DecisionScored
                 && event.payload["schema_version"] == 2
                 && event.payload["dimensions"]["framing"]["quote"].is_string()
+                && event.payload["dimensions"]["bias_exposure"]["level"] == "none"
+                && event.payload["dimensions"]["bias_exposure"]
+                    .get("quote")
+                    .is_none()
         }),
-        "expected a decision.scored event of schema version 2"
+        "expected a decision.scored event of schema version 2 whose none answer has no quote"
     );
     assert!(
         events.iter().any(|event| {

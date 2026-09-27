@@ -269,8 +269,9 @@ pub struct QualityProfile {
     /// Lines that deserve a look, in a fixed order; empty when nothing does.
     pub attention: Vec<Attention>,
     /// What a model said about the seven dimensions, when one was asked: shown BESIDE the floors
-    /// above and never in place of them. Each answer that assessed a dimension quotes the
-    /// passage of the decision's own record it rests on; the floors never depend on it.
+    /// above and never in place of them. Each answer that assessed a dimension at `partial` or
+    /// `solid` quotes the passage of the decision's own record it rests on (a `none` answer may
+    /// not, since an absence cannot be quoted); the floors never depend on it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_assessment: Option<ModelAssessmentFact>,
 }

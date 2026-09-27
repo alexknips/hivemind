@@ -171,9 +171,10 @@ Postgres and Kuzu projections.
 
 A floor says what the record states. A model can say more, but only where it can point:
 its assessment of a decision is one `decision.scored` event of **schema version 2**, and
-every dimension it assesses quotes the passage of the decision's own text it rests on.
-It is shown beside the floor and never replaces it: no floor rule reads it, so a floor's
-level is the same with or without one.
+every dimension it rates `partial` or `solid` quotes the passage of the decision's own
+text it rests on (a `none` answer may, but need not: an absence cannot be quoted). It is
+shown beside the floor and never replaces it: no floor rule reads it, so a floor's level
+is the same with or without one.
 
 ```json
 {
@@ -187,7 +188,7 @@ level is the same with or without one.
     "information":      { "status": "not_assessed", "reason": "…" },
     "reasoning":        { "status": "assessed", "level": "partial", "explanation": "…", "quote": "…" },
     "values_tradeoffs": { "status": "assessed", "level": "partial", "explanation": "…", "quote": "…" },
-    "bias_exposure":    { "status": "not_assessed", "reason": "…" },
+    "bias_exposure":    { "status": "assessed", "level": "none", "explanation": "Nothing in the record bears on a distortion" },
     "calibration":      { "status": "not_assessed", "reason": "…" }
   },
   "importance": { … }
@@ -201,18 +202,26 @@ level is the same with or without one.
   irreversibility, actionability, each with its explanation) is a separate axis, optional,
   and not part of the profile. `supersedes_score_id` optionally names the earlier
   `decision.scored` event a re-assessment replaces.
+- **A `partial` or `solid` answer must quote; a `none` answer may leave the quote out.**
+  A `none` judgement is usually about something the record lacks, and an absence cannot
+  be quoted; forcing a quote would invite a tangential one that passes the check but
+  grounds nothing. So at level `none` the `explanation` is still required and says what
+  is missing, and the `quote` is optional (left out, or `null`; it is absent from what the
+  ledger stores). A `partial` or `solid` answer with no quote is refused. A quote that is
+  given is held to the same rules at every level: non-blank and verbatim.
 - **Keyed by the decision's id**, whether it was proposed or is a classified capture
   (`capture:<batch event>:<index>`). A decision that is recorded nowhere is refused.
-- **Every quote must occur verbatim in the decision's own recorded text.** The write path
-  (`Commands::record_decision_assessed`) checks it with a plain substring test: exact,
-  case-sensitive, no whitespace repair, no model. For a proposed decision the text is its
-  title, question, quote, rationale and each option's label and description; for a
+- **Every quote given must occur verbatim in the decision's own recorded text.** The
+  write path (`Commands::record_decision_assessed`) checks it with a plain substring test:
+  exact, case-sensitive, no whitespace repair, no model. For a proposed decision the text
+  is its title, question, quote, rationale and each option's label and description; for a
   classified capture its title, rationale, options and chosen option. What the decision
   merely cites (evidence, assumptions, prior decisions) is not part of it. One quote that is
   not found refuses the whole event, names the dimension, and appends nothing. A blank
-  quote, explanation or reason, a missing dimension and importance out of range are refused
-  the same way (and when events are validated on replay). The substring check needs the
-  ledger, so it runs on the write path only.
+  quote, explanation or reason, a `partial` or `solid` answer without a quote, a missing
+  dimension and importance out of range are refused the same way (and when events are
+  validated on replay). The substring check needs the ledger, so it runs on the write path
+  only.
 - **The newest assessment of a decision is the one the graph shows.** Earlier ones stay in
   the ledger; nothing is overwritten there. It is stored on the decision node as
   `model_assessment` (the model, prompt version and the seven answers, as JSON) and
@@ -233,10 +242,11 @@ level is the same with or without one.
   ```
 
   The CLI text summary prints a `model_assessment` line and, right after each dimension's
-  floor line, a `model_dimension` line with the answer and its quote (or why it is not
-  assessed). The Markdown export's Quality profile section names the model and prompt and
-  adds one nested `model` bullet under each dimension. Scan findings and ticket bodies
-  are about floors and facts and do not carry it.
+  floor line, a `model_dimension` line with the answer and its quote when one was given
+  (or why it is not assessed). The Markdown export's Quality profile section names the
+  model and prompt and adds one nested `model` bullet under each dimension. Neither
+  invents a quote for a `none` answer that gave none. Scan findings and ticket bodies are
+  about floors and facts and do not carry it.
 - **Version-1 scores stay as they are.** Every `decision.scored` event written before
   schema version 2 (no `schema_version`) keeps its shape: 0 to 1 floats per dimension,
   keyed by a classifier capture node. The ledger is immutable, so those events keep

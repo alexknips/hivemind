@@ -275,6 +275,15 @@ fn a_model_assessment_reads_beside_each_floor_with_the_passage_it_quotes() -> Re
             .ends_with("\n  - **model** — not assessed: second: nothing in the text to rest it on"),
         "{information}"
     );
+    // A none answer that gave no quote ends with its explanation: no "Quoted:" is invented.
+    let bias = block("Bias exposure");
+    assert!(
+        bias.ends_with(
+            "\n  - **model** — none: second: nothing in the record bears on a distortion"
+        ),
+        "{bias}"
+    );
+    assert!(!bias.contains("Quoted:"), "{bias}");
     assert_grades_nothing(&text);
 
     let bare =

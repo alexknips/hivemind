@@ -1122,7 +1122,7 @@ pub(super) fn assert_assessment_annotates_without_rewriting_origin(
         events::ModelDimension::Assessed {
             level: events::QualityLevel::Solid,
             explanation: format!("by {model}"),
-            quote: "Use per-seat pricing".to_owned(),
+            quote: Some("Use per-seat pricing".to_owned()),
         }
     );
     assert_eq!(

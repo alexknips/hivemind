@@ -32,6 +32,14 @@ const FIXTURES: &[(&str, &str, EventType)] = &[
         include_str!("../../tests/fixtures/v0/scoring/decision.scored.assessed.json"),
         EventType::DecisionScored,
     ),
+    // An assessment whose `none` answer leaves its quote out (an absence cannot be quoted).
+    (
+        include_str!("../../schemas/v0/decision.scored.json"),
+        include_str!(
+            "../../tests/fixtures/v0/scoring/decision.scored.assessed.none_without_quote.json"
+        ),
+        EventType::DecisionScored,
+    ),
     (
         include_str!("../../schemas/v0/decision.accepted.json"),
         include_str!("../../tests/fixtures/v0/decision.accepted.json"),
@@ -613,6 +621,32 @@ fn assessed_event() -> Event {
     .unwrap()
 }
 
+/// The fixture whose Information answer is `none` with no quote.
+fn assessed_none_without_quote_event() -> Event {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/scoring/decision.scored.assessed.none_without_quote.json"
+    ))
+    .unwrap()
+}
+
+/// The assessment fixture as the JSON it is written in, for checks against the schema file. A
+/// fixture re-serialized through [`Event`] carries `tenant_id`, which the event schemas do not
+/// list, so the schema would refuse it whatever its payload said.
+fn assessed_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/scoring/decision.scored.assessed.json"
+    ))
+    .unwrap()
+}
+
+/// [`assessed_fixture`] for the fixture whose Information answer is `none` with no quote.
+fn assessed_none_without_quote_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/scoring/decision.scored.assessed.none_without_quote.json"
+    ))
+    .unwrap()
+}
+
 /// Every event written before schema version 2 has no `schema_version`. It stays the version-1
 /// shape: it parses as before, and re-serializing it invents nothing.
 #[test]
@@ -658,7 +692,7 @@ fn a_decision_scored_with_a_schema_version_is_a_model_assessment() {
             level: QualityLevel::Partial,
             explanation: "The choice is named, but the question it answers is not stated."
                 .to_owned(),
-            quote: "Use SQLite as the slice-1 ledger".to_owned(),
+            quote: Some("Use SQLite as the slice-1 ledger".to_owned()),
         }
     );
     assert!(matches!(
@@ -697,10 +731,10 @@ fn an_assessment_needs_all_seven_dimensions_each_assessed_or_not() {
     for wrong in [
         // The version-1 dimension: a float and no basis.
         json!({"score": 0.5, "explanation": "could not be assessed"}),
-        // Assessed, but neither a passage nor a level vocabulary word.
+        // Assessed, but not a level vocabulary word; assessed with no explanation.
         json!({"status": "assessed", "level": "great", "explanation": "x", "quote": "y"}),
-        json!({"status": "assessed", "level": "solid", "explanation": "x"}),
         json!({"status": "assessed", "level": "solid", "quote": "y"}),
+        json!({"status": "assessed", "level": "none", "quote": "y"}),
         // A placeholder number smuggled onto either answer.
         json!({"status": "assessed", "level": "solid", "explanation": "x", "quote": "y", "score": 0.5}),
         json!({"status": "not_assessed", "reason": "x", "level": "none"}),
@@ -714,6 +748,91 @@ fn an_assessment_needs_all_seven_dimensions_each_assessed_or_not() {
             "{wrong}"
         );
     }
+}
+
+/// A `partial` or `solid` answer must quote the passage it rests on. A `none` answer is usually
+/// about something the record lacks, and an absence cannot be quoted, so it may leave the quote
+/// out (absent or null); its explanation is still required, and a quote it does give must not
+/// be blank. Nothing is invented on the wire: an absent quote stays absent.
+#[test]
+fn a_quote_is_required_at_partial_and_solid_and_optional_at_none() {
+    for level in ["partial", "solid"] {
+        let mut event = assessed_event();
+        event.payload["dimensions"]["reasoning"] =
+            json!({"status": "assessed", "level": level, "explanation": "x"});
+        assert!(
+            matches!(
+                validate(&event),
+                Err(EventValidationError::QuoteRequired { dimension: "reasoning", level: got })
+                    if got == level
+            ),
+            "{level} without a quote"
+        );
+        let mut event = assessed_event();
+        event.payload["dimensions"]["reasoning"] =
+            json!({"status": "assessed", "level": level, "explanation": "x", "quote": null});
+        assert!(
+            matches!(
+                validate(&event),
+                Err(EventValidationError::QuoteRequired { dimension: "reasoning", level: got })
+                    if got == level
+            ),
+            "{level} with a null quote"
+        );
+    }
+
+    let event = assessed_none_without_quote_event();
+    let payload = validate(&event).expect("a none answer with no quote validates");
+    let EventPayload::DecisionAssessed(assessed) = &payload else {
+        panic!("a payload with a schema_version is a model assessment");
+    };
+    assert_eq!(
+        assessed.dimensions.information,
+        ModelDimension::Assessed {
+            level: QualityLevel::None,
+            explanation: "The record names no evidence in its own text: there is nothing to quote for an absence.".to_owned(),
+            quote: None,
+        }
+    );
+    assert_eq!(payload.to_value().unwrap(), event.payload);
+
+    let mut event = assessed_event();
+    event.payload["dimensions"]["reasoning"] =
+        json!({"status": "assessed", "level": "none", "explanation": "x", "quote": null});
+    let payload = validate(&event).expect("a none answer with a null quote validates");
+    let EventPayload::DecisionAssessed(assessed) = &payload else {
+        panic!("a payload with a schema_version is a model assessment");
+    };
+    assert!(matches!(
+        assessed.dimensions.reasoning,
+        ModelDimension::Assessed { quote: None, .. }
+    ));
+    assert!(payload.to_value().unwrap()["dimensions"]["reasoning"]
+        .get("quote")
+        .is_none());
+
+    // A none answer may still quote; what it quotes must not be blank.
+    let mut event = assessed_event();
+    event.payload["dimensions"]["reasoning"] =
+        json!({"status": "assessed", "level": "none", "explanation": "x", "quote": "y"});
+    assert!(validate(&event).is_ok());
+    let mut event = assessed_event();
+    event.payload["dimensions"]["reasoning"] =
+        json!({"status": "assessed", "level": "none", "explanation": "x", "quote": " "});
+    assert!(matches!(
+        validate(&event),
+        Err(EventValidationError::EmptyDimensionField {
+            dimension: "reasoning",
+            field: "quote"
+        })
+    ));
+    let mut event = assessed_event();
+    event.payload["dimensions"]["reasoning"] =
+        json!({"status": "assessed", "level": "none", "quote": "y"});
+    assert!(matches!(
+        validate(&event),
+        Err(EventValidationError::Payload { .. })
+    ));
 }
 
 #[test]
@@ -784,24 +903,56 @@ fn the_decision_scored_schema_rejects_what_validation_rejects() {
         serde_json::from_str(include_str!("../../schemas/v0/decision.scored.json")).unwrap();
     let validator = jsonschema::validator_for(&schema).expect("schema compiles");
 
-    let mut missing_dimension = serde_json::to_value(assessed_event()).unwrap();
+    let mut missing_dimension = assessed_fixture();
     missing_dimension["payload"]["dimensions"]
         .as_object_mut()
         .unwrap()
         .remove("calibration");
     assert!(!validator.is_valid(&missing_dimension));
 
-    let mut blank_quote = serde_json::to_value(assessed_event()).unwrap();
+    let mut blank_quote = assessed_fixture();
     blank_quote["payload"]["dimensions"]["framing"]["quote"] = json!("  ");
     assert!(!validator.is_valid(&blank_quote));
 
-    let mut placeholder = serde_json::to_value(assessed_event()).unwrap();
+    // The quote rule: required at partial and solid, optional at none, never blank when given.
+    let none_without_quote = assessed_none_without_quote_fixture();
+    assert!(validator.is_valid(&none_without_quote));
+    for level in ["partial", "solid"] {
+        let mut without_quote = assessed_fixture();
+        without_quote["payload"]["dimensions"]["reasoning"] =
+            json!({"status": "assessed", "level": level, "explanation": "x"});
+        assert!(
+            !validator.is_valid(&without_quote),
+            "{level} without a quote"
+        );
+        let mut null_quote = assessed_fixture();
+        null_quote["payload"]["dimensions"]["reasoning"] =
+            json!({"status": "assessed", "level": level, "explanation": "x", "quote": null});
+        assert!(
+            !validator.is_valid(&null_quote),
+            "{level} with a null quote"
+        );
+    }
+    let mut none_null_quote = assessed_fixture();
+    none_null_quote["payload"]["dimensions"]["reasoning"] =
+        json!({"status": "assessed", "level": "none", "explanation": "x", "quote": null});
+    assert!(validator.is_valid(&none_null_quote));
+    let mut none_blank_quote = assessed_fixture();
+    none_blank_quote["payload"]["dimensions"]["reasoning"] =
+        json!({"status": "assessed", "level": "none", "explanation": "x", "quote": " "});
+    assert!(!validator.is_valid(&none_blank_quote));
+    let mut none_without_explanation = assessed_fixture();
+    none_without_explanation["payload"]["dimensions"]["reasoning"] =
+        json!({"status": "assessed", "level": "none"});
+    assert!(!validator.is_valid(&none_without_explanation));
+
+    let mut placeholder = assessed_fixture();
     placeholder["payload"]["dimensions"]["reasoning"] =
         json!({"score": 0.5, "explanation": "could not be assessed"});
     assert!(!validator.is_valid(&placeholder));
 
     // Neither shape may borrow the other's fields.
-    let mut mixed = serde_json::to_value(assessed_event()).unwrap();
+    let mut mixed = assessed_fixture();
     mixed["payload"]["capture_node_id"] = json!("capture:2:0");
     assert!(!validator.is_valid(&mixed));
 }

@@ -677,8 +677,13 @@ pub enum ModelDimension {
         level: QualityLevel,
         explanation: String,
         /// The passage of the decision's own recorded text the assessment rests on, verbatim.
-        /// The write path refuses an event whose quote does not occur in that text.
-        quote: String,
+        /// Required at level `partial` or `solid`; optional at level `none`, since a `none`
+        /// judgement is usually about something the record lacks and an absence cannot be
+        /// quoted (the explanation still says what is missing). When it is given it must be
+        /// non-blank, and the write path refuses an event whose quote does not occur in the
+        /// decision's text. Left out of the wire form when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quote: Option<String>,
     },
     NotAssessed {
         reason: String,
@@ -719,15 +724,17 @@ impl ModelDimensions {
 /// model's assessment of one decision, keyed by the decision's id (a proposed decision or a
 /// classified capture, `capture:<event>:<index>`).
 ///
-/// Each of the seven dimensions is either assessed (a level, an explanation and the verbatim
-/// passage it rests on) or not assessed (and why). It is stored beside the deterministic floors
-/// of the quality profile and never replaces them. Like a version-1 score it is Layer 3,
-/// append-only and never an edit to the decision; the newest one for a decision is the one the
-/// graph shows and earlier ones stay in the ledger. `supersedes_score_id` names the earlier
-/// event a re-assessment replaces (an audit pointer, not enforced).
+/// Each of the seven dimensions is either assessed (a level, an explanation and, at `partial`
+/// or `solid`, the verbatim passage it rests on; a `none` answer may quote one) or not assessed
+/// (and why). It is stored beside the deterministic floors of the quality profile and never
+/// replaces them. Like a version-1 score it is Layer 3, append-only and never an edit to the
+/// decision; the newest one for a decision is the one the graph shows and earlier ones stay in
+/// the ledger. `supersedes_score_id` names the earlier event a re-assessment replaces (an audit
+/// pointer, not enforced).
 ///
-/// [`validate`] checks the shape. That every quote occurs in the decision's recorded text needs
-/// the ledger, so `Commands::record_decision_assessed` checks it before anything is appended.
+/// [`validate`] checks the shape. That every quote given occurs in the decision's recorded text
+/// needs the ledger, so `Commands::record_decision_assessed` checks it before anything is
+/// appended.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionAssessedPayload {
@@ -769,9 +776,11 @@ impl DecisionAssessedPayload {
         }
     }
 
-    /// The shape rules that need no ledger: the version, the names, a non-blank explanation and
-    /// quote for every assessed dimension, a non-blank reason for every one that is not, and
-    /// importance factors in range.
+    /// The shape rules that need no ledger: the version, the names, a non-blank explanation for
+    /// every assessed dimension and a non-blank quote for every one at level `partial` or
+    /// `solid` (a `none` answer may leave its quote out; one it gives must be non-blank too), a
+    /// non-blank reason for every dimension that is not assessed, and importance factors in
+    /// range.
     pub fn validate_shape(&self) -> std::result::Result<(), EventValidationError> {
         if self.schema_version != DECISION_ASSESSED_SCHEMA_VERSION {
             return Err(EventValidationError::UnsupportedSchemaVersion {
@@ -789,10 +798,21 @@ impl DecisionAssessedPayload {
         for (dimension, answer) in self.dimensions.entries() {
             match answer {
                 ModelDimension::Assessed {
-                    explanation, quote, ..
+                    level,
+                    explanation,
+                    quote,
                 } => {
                     require_dimension_text(dimension, "explanation", explanation)?;
-                    require_dimension_text(dimension, "quote", quote)?;
+                    match quote {
+                        Some(quote) => require_dimension_text(dimension, "quote", quote)?,
+                        None if *level == QualityLevel::None => {}
+                        None => {
+                            return Err(EventValidationError::QuoteRequired {
+                                dimension,
+                                level: level.as_str(),
+                            });
+                        }
+                    }
                 }
                 ModelDimension::NotAssessed { reason } => {
                     require_dimension_text(dimension, "reason", reason)?;
@@ -1350,6 +1370,12 @@ pub enum EventValidationError {
     EmptyDimensionField {
         dimension: &'static str,
         field: &'static str,
+    },
+
+    #[error("payload.dimensions.{dimension}.quote is required at level {level}: a partial or solid assessment must quote the passage of the decision's own text it rests on (only a none answer may leave the quote out)")]
+    QuoteRequired {
+        dimension: &'static str,
+        level: &'static str,
     },
 
     #[error("payload.importance.{0} is out of range")]

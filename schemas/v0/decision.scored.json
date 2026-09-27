@@ -217,7 +217,7 @@
     },
     "payloadV2": {
       "title": "decision.scored payload, schema version 2",
-      "description": "A model's assessment of one decision, keyed by the decision's id (a proposed decision or a classified capture, capture:<event>:<index>). Each of the seven dimensions is either assessed (a level, an explanation and the verbatim passage it rests on) or not assessed (and why); never a placeholder score. Stored beside the deterministic floors of the quality profile, never replacing them.",
+      "description": "A model's assessment of one decision, keyed by the decision's id (a proposed decision or a classified capture, capture:<event>:<index>). Each of the seven dimensions is either assessed (a level, an explanation and, at level partial or solid, the verbatim passage it rests on; a none answer may leave the quote out) or not assessed (and why); never a placeholder score. Stored beside the deterministic floors of the quality profile, never replacing them.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -348,8 +348,7 @@
           "required": [
             "status",
             "level",
-            "explanation",
-            "quote"
+            "explanation"
           ],
           "properties": {
             "status": {
@@ -364,10 +363,33 @@
               "pattern": "\\S"
             },
             "quote": {
-              "type": "string",
+              "type": [
+                "string",
+                "null"
+              ],
               "minLength": 1,
               "pattern": "\\S",
-              "description": "The passage of the decision's own recorded text the assessment rests on, verbatim. The write path refuses an event whose quote does not occur in that text."
+              "description": "The passage of the decision's own recorded text the assessment rests on, verbatim. Required at level partial or solid; optional at level none (a none judgement is usually about something the record lacks, and an absence cannot be quoted), and left out of the wire form when absent. The write path refuses an event whose quote does not occur in that text."
+            }
+          },
+          "if": {
+            "properties": {
+              "level": {
+                "enum": [
+                  "partial",
+                  "solid"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "quote"
+            ],
+            "properties": {
+              "quote": {
+                "type": "string"
+              }
             }
           }
         },
