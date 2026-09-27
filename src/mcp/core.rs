@@ -882,9 +882,7 @@ impl DisagreeArgs {
 /// `graph` is supplied by the caller, same caching split as
 /// [`get_situational_decisions`]. Unlike that tool, the ledger here must be
 /// [`AnyLedger`] specifically rather than any `P::Ledger: EventLedger`:
-/// `recall_decisions` calls `search_decisions_any` internally, which
-/// dispatches on the concrete backend (SQLite FTS5 vs Postgres portable
-/// search) and so needs the concrete enum, not just the trait.
+/// `summarize::recall_decisions` takes the concrete enum, not just the trait.
 pub(crate) fn recall_decisions<P>(
     provider: &P,
     graph: &impl GraphView,

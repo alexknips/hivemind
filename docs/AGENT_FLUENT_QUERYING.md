@@ -134,8 +134,21 @@ description is still `NotFound`.
 words ("what did we decide about projects" searches for `projects`) before it
 searches (the same list, decision verbs and framing adverbs included), reports
 them as `ignored_words`, and treats a question made only of question words as no
-text filter, so `--topic` alone decides. It does not stem: FTS matches whole
-tokens.
+text filter, so `--topic` alone decides.
+
+It then matches the way the resolver does, with a lower bar for close matches.
+A word also matches a field word with the same stem (`moving` finds `moves`;
+whole-word equality, as above). A decision matching every word comes first; then,
+fewest missing words first (then rank tier, then decision id), a decision that
+lacks some of the words is still returned when it matches at least half of them.
+Each such close match carries `missing_terms` (`missing=` in `--summary`, and a
+`Close matches` line in the digest naming what each one lacks), so a partial
+answer never reads as a complete one. The bar is half, not the resolver's "more
+than half, at least two", because `recall` only reads and labels what it returns:
+"what did we decide about sign-in and pricing" finds the decision about either
+word after the one about both. A question that no decision shares half its words
+with is still an empty answer, and `search` is unchanged: every word, as a
+literal substring.
 
 ### 1.2 Recency, for free
 
@@ -238,10 +251,10 @@ specific: it runs unmodified against the SQLite-projected `MemoryGraph` and
 against `PostgresGraphView` (`src/projector/postgres/tests.rs` asserts
 parity between the two for the resolver and its callers). This is what
 "backend-agnostic" means here — one code path, no `#[cfg]`, no backend match
-arm, for every fluent verb except `recall`/`search`.
+arm, for every fluent verb except `search`.
 
-`recall`/`search` are the one place backend choice is visible, and only at
-the ranking layer: `search_decisions_any` (`src/queries/search.rs:275`)
+`search` is the one place backend choice is visible, and only at
+the ranking layer: `search_decisions_any` (`src/queries/search.rs`)
 dispatches SQLite to FTS5 (`search_decisions_fts_with_context`, backed by
 the `decision_search_fts` virtual table) and Postgres to a portable
 in-memory term matcher (`search_decisions_with_ledger`) reusing the same
@@ -249,10 +262,15 @@ in-memory term matcher (`search_decisions_with_ledger`) reusing the same
 no FTS5 equivalent available. Both paths converged on one ordinal ranking
 scheme and return identical order for identical fixtures (see
 `docs/SEARCH_DESIGN.md`'s Ordering Guarantees), so a caller holding only an
-`AnyLedger` — the CLI, stdio MCP, and the HTTP `/v1/decisions/search` and
-`/v1/decisions/recall` routes — never needs to know which backend it is on;
-`recall`'s digest and citation list are identical either way, only the
-matching mechanism underneath differs.
+`AnyLedger` — the CLI, stdio MCP, and the HTTP `/v1/decisions/search` route —
+never needs to know which backend it is on.
+
+`recall` does not dispatch: FTS5 matches whole tokens, every one of them, which
+is the strictness a question has to get past, so `recall_decisions` calls
+`search_decisions_fluent` (`src/queries/search.rs`) on both backends. It is the
+same in-memory matcher and tiering as `search_decisions_with_ledger`, with the
+resolver's stemmed terms and close matches. Its digest and citation list, and its
+order, are identical on either backend by construction.
 
 ---
 

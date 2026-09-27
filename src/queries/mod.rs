@@ -100,7 +100,7 @@ pub use resolve::{
     resolve_decision_by_description, resolve_decision_by_id, ResolveOutcome, ResolvedCandidate,
 };
 pub use search::{
-    search_decisions, search_decisions_any, search_decisions_fts,
+    search_decisions, search_decisions_any, search_decisions_fluent, search_decisions_fts,
     search_decisions_fts_with_context, search_decisions_with_ledger, DecisionSearchResult,
     DecisionSearchResults, SearchDecisionFilters, SearchDecisionRequest, SearchGraphContext,
     SearchMatchedNode, SearchSnippet,

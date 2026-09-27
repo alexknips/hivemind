@@ -411,6 +411,10 @@ pub(crate) fn render_recall_summary(response: &crate::summarize::RecallResponse)
         if let Some(scope) = &item.scope {
             let _ = write!(output, "\tscope={}", summary_cell(&scope.label));
         }
+        // A close match says which words of the question it lacks.
+        if !item.missing_terms.is_empty() {
+            let _ = write!(output, "\tmissing={}", item.missing_terms.join(","));
+        }
         output.push('\n');
     }
     output.trim_end().to_owned()

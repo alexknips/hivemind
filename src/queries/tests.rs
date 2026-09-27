@@ -18,6 +18,7 @@ use crate::Result;
 
 use super::neighborhood::neighborhood_structure;
 use super::terms::{content_query, resolver_terms, stem};
+use super::test_fixtures::Scenario;
 use super::*;
 
 #[derive(Debug, Default)]
@@ -1164,6 +1165,203 @@ fn search_decisions_paginates_in_deterministic_order() -> Result<()> {
     assert!(!second.truncated);
     assert_eq!(second.data.items[0].decision.id, "d2");
     assert_eq!(second.data.next_cursor, None);
+    Ok(())
+}
+
+/// One decision per `(id, title, rationale)`, filed by a human with no options or evidence.
+fn titled_decisions(decisions: &[(&str, &str, &str)]) -> Result<Scenario> {
+    let scenario = Scenario::new();
+    for (id, title, rationale) in decisions {
+        scenario.proposal(
+            "human:alice",
+            "2026-01-01T00:00:00Z",
+            json!({
+                "decision_id": id,
+                "title": title,
+                "rationale": rationale,
+                "topic_keys": ["fluent"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        )?;
+    }
+    Ok(scenario)
+}
+
+/// `(decision id, missing terms)` for each item of a fluent search, in the order returned.
+type FluentItems = Vec<(String, Vec<String>)>;
+
+fn fluent_answer(
+    scenario: &Scenario,
+    query: &str,
+    limit: usize,
+) -> Result<(FluentItems, DecisionSearchResults)> {
+    let graph = scenario.graph()?;
+    let response = search_decisions_fluent(
+        &QueryContext::local(),
+        scenario.ledger(),
+        &graph,
+        &SearchDecisionRequest {
+            query: Some(query.to_owned()),
+            limit,
+            ..SearchDecisionRequest::default()
+        },
+    )?;
+    let items = response
+        .data
+        .items
+        .iter()
+        .map(|item| (item.decision.id.clone(), item.missing_terms.clone()))
+        .collect();
+    Ok((items, response.data))
+}
+
+fn sign_in_and_pricing() -> Result<Scenario> {
+    titled_decisions(&[
+        (
+            "d:signin",
+            "Sign-in keeps WorkOS unless a token is stored",
+            "An unreadable login metadata falls back to the token card.",
+        ),
+        (
+            "d:pricing",
+            "Pricing is chosen after the trial",
+            "Testers answer a real price more honestly than a hypothetical one.",
+        ),
+        (
+            "d:both",
+            "Sign-in and pricing share one account page",
+            "One account covers the login and the plan.",
+        ),
+        (
+            "d:unrelated",
+            "Use Postgres for the hosted cell",
+            "The cell needs shared storage.",
+        ),
+    ])
+}
+
+#[test]
+fn fluent_search_returns_full_matches_first_then_close_matches_naming_what_they_lack() -> Result<()>
+{
+    let (items, data) = fluent_answer(&sign_in_and_pricing()?, "sign-in pricing", 10)?;
+
+    assert_eq!(
+        items,
+        vec![
+            ("d:both".to_owned(), vec![]),
+            ("d:pricing".to_owned(), vec!["sign-in".to_owned()]),
+            ("d:signin".to_owned(), vec!["pricing".to_owned()]),
+        ],
+        "the decision about both first, then each one about either, saying what it lacks"
+    );
+    assert_eq!(data.total_matches, 3);
+    Ok(())
+}
+
+#[test]
+fn fluent_search_matches_inflected_words_the_literal_search_misses() -> Result<()> {
+    let scenario = titled_decisions(&[(
+        "d:demo",
+        "Demo cell storage moves to shared Postgres",
+        "One database for every cell.",
+    )])?;
+    let graph = scenario.graph()?;
+    let literal = search_decisions_with_ledger(
+        &QueryContext::local(),
+        scenario.ledger(),
+        &graph,
+        &SearchDecisionRequest {
+            query: Some("moving storages".to_owned()),
+            ..SearchDecisionRequest::default()
+        },
+    )?;
+    assert_eq!(literal.result_count, 0, "search stays literal");
+
+    let (items, _) = fluent_answer(&scenario, "moving storages", 10)?;
+    assert_eq!(items, vec![("d:demo".to_owned(), vec![])]);
+    Ok(())
+}
+
+#[test]
+fn literal_search_still_requires_every_term_and_never_reports_missing_terms() -> Result<()> {
+    let scenario = sign_in_and_pricing()?;
+    let graph = scenario.graph()?;
+    let literal = search_decisions_with_ledger(
+        &QueryContext::local(),
+        scenario.ledger(),
+        &graph,
+        &SearchDecisionRequest {
+            query: Some("sign-in pricing".to_owned()),
+            ..SearchDecisionRequest::default()
+        },
+    )?;
+    let ids: Vec<&str> = literal
+        .data
+        .items
+        .iter()
+        .map(|item| item.decision.id.as_str())
+        .collect();
+    assert_eq!(ids, vec!["d:both"]);
+    assert!(literal.data.items[0].missing_terms.is_empty());
+    Ok(())
+}
+
+#[test]
+fn fluent_search_needs_at_least_half_the_terms() -> Result<()> {
+    let scenario = titled_decisions(&[
+        (
+            "d:upgrades",
+            "Kafka cluster upgrades",
+            "Rolling, one broker at a time.",
+        ),
+        ("d:retention", "Kafka retention", "Seven days is enough."),
+        ("d:window", "Cluster window", "Saturday night."),
+    ])?;
+
+    let (items, _) = fluent_answer(&scenario, "kafka cluster upgrade window", 10)?;
+
+    assert_eq!(
+        items,
+        vec![
+            ("d:upgrades".to_owned(), vec!["window".to_owned()]),
+            (
+                "d:window".to_owned(),
+                vec!["kafka".to_owned(), "upgrade".to_owned()]
+            ),
+        ],
+        "three of four terms, then exactly half; one of four (d:retention) is not close enough"
+    );
+    Ok(())
+}
+
+#[test]
+fn fluent_search_paginates_across_full_and_close_matches() -> Result<()> {
+    let scenario = sign_in_and_pricing()?;
+    let graph = scenario.graph()?;
+    let mut request = SearchDecisionRequest {
+        query: Some("sign-in pricing".to_owned()),
+        limit: 2,
+        ..SearchDecisionRequest::default()
+    };
+    let first =
+        search_decisions_fluent(&QueryContext::local(), scenario.ledger(), &graph, &request)?;
+    assert!(
+        first.truncated,
+        "a third match is left, so the answer says so"
+    );
+    assert_eq!(first.data.next_cursor.as_deref(), Some("2"));
+    assert_eq!(first.data.items.len(), 2);
+
+    request.cursor = first.data.next_cursor;
+    let second =
+        search_decisions_fluent(&QueryContext::local(), scenario.ledger(), &graph, &request)?;
+    assert!(!second.truncated);
+    assert_eq!(second.data.items.len(), 1);
+    assert_eq!(second.data.items[0].decision.id, "d:signin");
+    assert_eq!(second.data.items[0].missing_terms, vec!["pricing"]);
     Ok(())
 }
 

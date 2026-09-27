@@ -81,7 +81,9 @@ hivemind --hivemind-dir "$HIVEMIND_DIR" query recall "<free-text description of 
 or, if the `hivemind-context` plugin is installed, its fluent
 `/hivemind-context:recall "<free text>"` verb. A hit that already covers this
 ground means: don't capture it again — extend it with new evidence, accept or
-reject it, or supersede it, using the existing decision id.
+reject it, or supersede it, using the existing decision id. A hit that lists
+`missing_terms` (`missing=` in `--summary`) matched only some of your words:
+read it before treating it as covering the ground.
 
 ## What Does This Rest On?
 

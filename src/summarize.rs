@@ -19,8 +19,8 @@ use crate::ledger::AnyLedger;
 use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::queries::{
     content_query, get_decision, get_supersession_chain, search_decisions_any,
-    DecisionSearchResult, DecisionStatus, DecisionView, GroundingState, QueryContext,
-    QueryResponse, ScopeNote, SearchDecisionRequest,
+    search_decisions_fluent, DecisionSearchResult, DecisionStatus, DecisionView, GroundingState,
+    QueryContext, QueryResponse, ScopeNote, SearchDecisionRequest,
 };
 use crate::Result;
 
@@ -383,10 +383,11 @@ pub struct RecallResponse {
 }
 
 /// Search for relevant decisions and return them ranked alongside a concise text
-/// digest. The rank comes from FTS scoring (Layer 2) and is ordinal — it is NOT
-/// a confidence score. The digest is deterministic template rendering (Layer 3)
-/// with no invented content; every contributing decision ID is listed in
-/// `digest.cited_decision_ids`.
+/// digest. The rank comes from the Layer-2 match tier and is ordinal — it is NOT
+/// a confidence score: decisions matching every word come first, then those matching at
+/// least half of them, fewest missing first, each close match naming what it lacks. The
+/// digest is deterministic template rendering (Layer 3) with no invented content; every
+/// contributing decision ID is listed in `digest.cited_decision_ids`.
 pub fn recall_decisions(
     context: &QueryContext,
     ledger: &AnyLedger,
@@ -398,7 +399,9 @@ pub fn recall_decisions(
     let limit = request.limit.clamp(1, RECALL_MAX_LIMIT);
 
     // Recall is asked as a question ("what did we decide about projects"); the question words
-    // are not in any decision, so left in they would filter every decision out.
+    // are not in any decision, so left in they would filter every decision out. What is left is
+    // searched fluently: a word matches its inflections, and a decision matching at least half
+    // the words is returned after the ones matching all of them, labelled with what it lacks.
     let asked = request
         .q
         .as_deref()
@@ -417,7 +420,7 @@ pub fn recall_decisions(
         cursor: request.cursor.clone(),
         project: request.project.clone(),
     };
-    let search_response = search_decisions_any(context, ledger, graph, &search_req)?;
+    let search_response = search_decisions_fluent(context, ledger, graph, &search_req)?;
     let truncated = search_response.truncated;
     let search_data = search_response.data;
 
@@ -427,7 +430,7 @@ pub fn recall_decisions(
         .map(|item| item.decision.id.clone()) // ubs:ignore: clone necessary — building owned Vec from borrowed slice
         .collect();
 
-    let digest = if decision_ids.is_empty() {
+    let mut digest = if decision_ids.is_empty() {
         DecisionSummary {
             summary: "No decisions found matching the query.".to_owned(),
             cited_decision_ids: vec![],
@@ -442,6 +445,26 @@ pub fn recall_decisions(
         let summarize_req = SummarizeRequest { decision_ids, mode };
         summarize_decisions(graph, &summarize_req)?.data
     };
+    // A close match reads like a full one in the digest, so it says which words each one lacks.
+    let close: Vec<String> = search_data
+        .items
+        .iter()
+        .filter(|item| !item.missing_terms.is_empty())
+        .map(|item| {
+            format!(
+                "{} lacks {}",
+                item.decision.id,
+                item.missing_terms.join(", ")
+            )
+        })
+        .collect();
+    if !close.is_empty() {
+        let _ = write!(
+            digest.summary,
+            "\n\nClose matches (each lacks some of the words asked): {}.",
+            close.join("; ")
+        );
+    }
 
     Ok(QueryResponse {
         result_count: search_data.items.len(),

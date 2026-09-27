@@ -1225,23 +1225,18 @@ fn get_decision_neighborhood_matches_memory() -> Result<()> {
 
 // ── recall_decisions parity (hivemind-ot72.3) ───────────────────────────────────
 //
-// `recall_decisions` only accepts `&AnyLedger` (search_decisions_any dispatches on
-// it), so this test — unlike the house pattern above — drives two real ledgers
-// instead of one shared `InMemoryEventLedger`: a temp `SqliteEventLedger` behind
-// `AnyLedger::Sqlite` (search_decisions_any routes this to FTS,
-// search_decisions_fts_with_context) and a `PostgresEventLedger` behind
-// `AnyLedger::Postgres` (routed to the backend-agnostic in-memory matcher,
-// search_decisions_with_ledger). Both are seeded with the same fixture events, so
-// only the returned decision-id *set* is compared: FTS and the portable matcher
-// use different scoring internals and are not required to agree on order (that's
-// tests/search_ranking_parity.rs's job).
+// `recall_decisions` only accepts `&AnyLedger`, so this test — unlike the house pattern
+// above — drives two real ledgers instead of one shared `InMemoryEventLedger`: a temp
+// `SqliteEventLedger` behind `AnyLedger::Sqlite` and a `PostgresEventLedger` behind
+// `AnyLedger::Postgres`. Recall matches with the same backend-agnostic in-memory matcher on
+// both (search_decisions_fluent), so the returned decision-id set must agree.
 #[test]
 fn recall_decisions_returns_same_decision_set() -> Result<()> {
     assert_recall_parity("recall-parity", None)
 }
 
 // The documented question form: "what did we decide about X" drops the question words before
-// searching, on SQLite (FTS) and Postgres (portable matcher) alike (hivemind-5gwg).
+// searching, on SQLite and Postgres alike (hivemind-5gwg).
 #[test]
 fn recall_question_form_returns_same_decision_set() -> Result<()> {
     assert_recall_parity(
@@ -1297,7 +1292,7 @@ fn assert_recall_parity(prefix: &str, question: Option<&str>) -> Result<()> {
 
     if sqlite_ids != postgres_ids {
         return Err(test_error(format!(
-            "recall_decisions decision-id set mismatch: sqlite(FTS)={sqlite_ids:?} postgres(portable)={postgres_ids:?}"
+            "recall_decisions decision-id set mismatch: sqlite={sqlite_ids:?} postgres={postgres_ids:?}"
         )));
     }
     if sqlite_ids.is_empty() {
@@ -1308,9 +1303,9 @@ fn assert_recall_parity(prefix: &str, question: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-// Recall asked from a project (hivemind-s15q.7): the SQLite FTS path and the Postgres portable
-// matcher both filter on the decision's project and group own, then the parent's, then a
-// dependency's -- the same decisions in the same order, with the same labels and scope note.
+// Recall asked from a project (hivemind-s15q.7): SQLite and Postgres both filter on the
+// decision's project and group own, then the parent's, then a dependency's -- the same
+// decisions in the same order, with the same labels and scope note.
 #[test]
 fn project_first_recall_matches_between_backends() -> Result<()> {
     let fixture = crate::queries::test_fixtures::project_first_fixture()?;

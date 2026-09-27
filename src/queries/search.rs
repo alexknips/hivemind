@@ -97,6 +97,11 @@ pub struct DecisionSearchResult {
     pub decision: DecisionView,
     pub rank: u8,
     pub matched_fields: Vec<String>,
+    /// Terms of the question this decision does not contain. Empty for a full match; non-empty
+    /// only for the close matches `recall` returns after the full ones, so a partial answer is
+    /// never presented as a complete one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub missing_terms: Vec<String>,
     pub snippets: Vec<SearchSnippet>,
     pub graph_context: SearchGraphContext,
     /// How this decision reached a project-scoped answer (own project, inherited from the
@@ -224,9 +229,50 @@ pub fn search_decisions_with_ledger(
     graph: &impl GraphView,
     request: &SearchDecisionRequest,
 ) -> Result<QueryResponse<DecisionSearchResults>> {
+    search_with_ledger(context, ledger, graph, request, Matching::Literal)
+}
+
+/// Search for what a question asks about (the `recall` path): the request's text is already
+/// stripped of question words, and a term matches a field word with the same stem as well as a
+/// substring. A decision matching every term comes first; then, fewest missing terms first, the
+/// ones matching at least half of them, each carrying `missing_terms` so a partial answer is
+/// never presented as a complete one. Filters, project scope, ordering ties and pagination are
+/// those of `search_decisions_with_ledger`.
+///
+/// One in-memory path for every backend: SQLite's FTS5 only matches whole tokens (every term,
+/// exactly as written), which is the strictness this exists to relax.
+pub fn search_decisions_fluent(
+    context: &QueryContext,
+    ledger: &impl EventLedger,
+    graph: &impl GraphView,
+    request: &SearchDecisionRequest,
+) -> Result<QueryResponse<DecisionSearchResults>> {
+    search_with_ledger(context, ledger, graph, request, Matching::Fluent)
+}
+
+/// How a search request's free text is matched against a decision.
+#[derive(Clone, Copy)]
+enum Matching {
+    /// Every term as a substring (`search`).
+    Literal,
+    /// Stemmed terms, close matches after the full ones (`recall`).
+    Fluent,
+}
+
+fn search_with_ledger(
+    context: &QueryContext,
+    ledger: &impl EventLedger,
+    graph: &impl GraphView,
+    request: &SearchDecisionRequest,
+    matching: Matching,
+) -> Result<QueryResponse<DecisionSearchResults>> {
     let started = Instant::now();
     let query = normalized_query(request.query.as_deref());
     let terms = query_terms(query.as_deref());
+    let search_terms = match matching {
+        Matching::Literal => SearchTerms::literal(&terms),
+        Matching::Fluent => SearchTerms::fluent(&terms),
+    };
     let topic_keys = normalized_filter_values(&request.topic_keys);
     let statuses = normalized_statuses(&request.statuses);
     let actor_ids = normalized_filter_values(&request.actor_ids);
@@ -252,7 +298,7 @@ pub fn search_decisions_with_ledger(
     let mut scored = collect_graph_search_results(
         graph,
         query.as_deref(),
-        &SearchTerms::literal(&terms),
+        &search_terms,
         &topic_keys,
         &statuses,
         &actor_ids,
@@ -485,11 +531,24 @@ fn narrow_to_scope(
     Ok(scope.note(&labels))
 }
 
-/// Own project first, then the parent's, then a dependency's, each in (rank, id) order. An
-/// unscoped document has no relation, so an unscoped request keeps the plain (rank, id) order.
+/// Own project first, then the parent's, then a dependency's; within each, the decisions that
+/// lack the fewest of the question's terms, then (rank, id) order. An unscoped document has no
+/// relation and a literal match lacks nothing, so an unscoped `search` keeps the plain (rank, id)
+/// order.
 fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
     scored.sort_by(|left, right| {
-        (left.relation, left.rank, &left.id).cmp(&(right.relation, right.rank, &right.id))
+        (
+            left.relation,
+            left.result.missing_terms.len(),
+            left.rank,
+            &left.id,
+        )
+            .cmp(&(
+                right.relation,
+                right.result.missing_terms.len(),
+                right.rank,
+                &right.id,
+            ))
     });
 }
 
@@ -744,7 +803,6 @@ struct ScoredDecisionSearchResult {
     /// How the decision's project relates to the asked project; `None` for an unscoped request.
     relation: Option<ScopeRelation>,
     rank: u8,
-    missing_terms: Vec<String>,
     id: String,
     event_origin: i64,
     result: DecisionSearchResult,
@@ -967,7 +1025,6 @@ fn collect_graph_search_results(
         scored.push(ScoredDecisionSearchResult {
             relation: None,
             rank: match_info.rank,
-            missing_terms: match_info.missing_terms,
             id,
             event_origin,
             fields,
@@ -975,6 +1032,7 @@ fn collect_graph_search_results(
                 decision,
                 rank: match_info.rank,
                 matched_fields: match_info.matched_fields,
+                missing_terms: match_info.missing_terms,
                 snippets: match_info.snippets,
                 graph_context: SearchGraphContext {
                     actor_ids: actor_ids_for_decision,
@@ -1034,7 +1092,7 @@ pub(crate) fn collect_resolver_candidates(
             rank: scored.rank,
             event_origin: scored.event_origin,
             matched_fields: scored.result.matched_fields,
-            missing_terms: scored.missing_terms,
+            missing_terms: scored.result.missing_terms,
         })
         .collect())
 }
@@ -1070,7 +1128,7 @@ impl SearchField {
 #[derive(Clone, Debug)]
 struct SearchMatchInfo {
     rank: u8,
-    /// Query terms no field matched; non-empty only for a `partial` match.
+    /// Query terms no field matched; non-empty only for a close match.
     missing_terms: Vec<String>,
     matched_fields: Vec<String>,
     snippets: Vec<SearchSnippet>,
@@ -1096,14 +1154,41 @@ fn add_node_search_fields(
     }
 }
 
-/// The terms a query must find, and how. Every term must match some field (AND) unless `partial`.
-/// `literal` terms match as a substring. Resolve-by-description terms (`resolver`) also match a
-/// field word with the same stem ("move" finds "moves" and "moved"), and when no decision
-/// matches every term, a decision matching most of them is returned with the terms it lacks.
+/// When a decision that lacks some of a query's terms is still returned, and with how few.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloseMatch {
+    /// Every term must match: `search`, which keeps literal matching.
+    Never,
+    /// More than half of the terms, and at least two. A resolver's close candidates feed the
+    /// fluent follow-up verbs that can write (`disagree`, `supersede`), so one shared word is
+    /// never enough.
+    Majority,
+    /// At least half of the terms. `recall` only reads and labels every item with what it lacks,
+    /// so a question naming two things ("sign-in and pricing") still finds a decision about
+    /// either, after the ones about both.
+    Half,
+}
+
+impl CloseMatch {
+    /// Whether a decision matching `matched` of `total` terms (`matched < total`) is returned.
+    fn accepts(self, matched: usize, total: usize) -> bool {
+        match self {
+            Self::Never => false,
+            Self::Majority => matched >= 2 && matched * 2 > total,
+            Self::Half => matched >= 1 && matched * 2 >= total,
+        }
+    }
+}
+
+/// The terms a query must find, and how. Every term must match some field (AND) unless `close`
+/// admits a decision that lacks some. `literal` terms match as a substring. Fluent terms
+/// (`resolver`, `fluent`) also match a field word with the same stem ("move" finds "moves" and
+/// "moved"), and when no decision matches every term, a decision matching most of them is
+/// returned with the terms it lacks.
 struct SearchTerms<'a> {
     terms: &'a [String],
     stemmed: bool,
-    partial: bool,
+    close: CloseMatch,
 }
 
 impl<'a> SearchTerms<'a> {
@@ -1111,7 +1196,7 @@ impl<'a> SearchTerms<'a> {
         Self {
             terms,
             stemmed: false,
-            partial: false,
+            close: CloseMatch::Never,
         }
     }
 
@@ -1119,7 +1204,15 @@ impl<'a> SearchTerms<'a> {
         Self {
             terms,
             stemmed: true,
-            partial: true,
+            close: CloseMatch::Majority,
+        }
+    }
+
+    fn fluent(terms: &'a [String]) -> Self {
+        Self {
+            terms,
+            stemmed: true,
+            close: CloseMatch::Half,
         }
     }
 }
@@ -1192,12 +1285,12 @@ fn evaluate_search_match(
         .filter(|term| !matched_terms.contains(*term))
         .cloned()
         .collect();
-    if !missing_terms.is_empty() {
-        // A close match must carry more than half of the terms, and at least two.
-        let matched = terms.len() - missing_terms.len();
-        if !search_terms.partial || matched < 2 || matched * 2 <= terms.len() {
-            return None;
-        }
+    if !missing_terms.is_empty()
+        && !search_terms
+            .close
+            .accepts(terms.len() - missing_terms.len(), terms.len())
+    {
+        return None;
     }
 
     Some(SearchMatchInfo {

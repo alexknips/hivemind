@@ -88,6 +88,18 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`recall` answers a plain question in the asker's own words.** It said "No decisions found"
+  to questions like "how does the decision page get the brief it shows?" because every word
+  that was not a question word had to appear in a decision exactly as written (`shows`, not
+  `show`), while `why` found the same decision. `recall` now matches like `why` (a word also
+  matches its inflections) and keeps a decision that matches at least half of the words, after
+  the ones that match them all, fewest missing words first. Each such close match carries
+  `missing_terms` (`ranked.items[].missing_terms`; `missing=` in `--summary`; a `Close matches`
+  line in the digest) so a partial match never reads as a full one. "What did we decide about
+  sign-in and pricing" now finds the sign-in decision and the pricing decision. A question
+  that no decision shares half its words with is still an empty answer, and `search` still
+  needs every word. The stdio server, the HTTP endpoint and the CLI share the change.
+  (hivemind-j1q3)
 - **A replacement of a moved decision is filed where the decision was moved, not in the
   replacer's personal project.** `hivemind supersede`, `supersede_decision`, the REST supersede
   and the `review` supersede inherit the old decision's project when none is named, but read it

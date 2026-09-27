@@ -2846,6 +2846,154 @@ fn recall_answers_its_own_documented_question_form() -> CliTestResult {
 }
 
 #[test]
+fn recall_finds_a_decision_from_a_plain_question_that_shares_most_of_its_words() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("query-recall-plain-question");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let emit = |title: &str, rationale: &str| -> Result<String, Box<dyn std::error::Error>> {
+        Ok(run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "human:alice",
+            "--hivemind-dir",
+            dir,
+            "emit",
+            "decision.proposed",
+            "--title",
+            title,
+            "--rationale",
+            rationale,
+            "--topic-keys",
+            "recall",
+            "--options",
+            "Adopt this,Leave it open",
+            "--chose",
+            "Adopt this",
+        ]))?)
+    };
+    let brief = emit(
+        "Decision page reads each decision's brief from the verify endpoint",
+        "The page shows the question, quote and chosen option, which the graph does not carry.",
+    )?;
+    let quickstart = emit(
+        "Keep emit decision.proposed as the CLI quickstart's first capture in the site docs",
+        "The grounded form ignores the global actor flag, so the example would be recorded as an agent.",
+    )?;
+    let checklist = emit(
+        "Keep the for-Alex checklist in legal/README.md, not inside the privacy and terms drafts",
+        "The two drafts must be publishable as-is, so internal notes live in a sibling README.",
+    )?;
+    let login = emit(
+        "UI token sign-in: an unreadable login metadata keeps WorkOS unless a token is stored",
+        "A failed read of the oauth-protected-resource metadata falls back to the token card.",
+    )?;
+    let pricing = emit(
+        "Pricing is chosen after the trial",
+        "Testers answer a real price more honestly than a hypothetical one.",
+    )?;
+    // Decisions that share a few common words with the questions but are about something else.
+    emit(
+        "Listing order after the proof: plugin first, then the registry",
+        "The plugin goes first, then the registry, then the community lists; docs follow.",
+    )?;
+    emit(
+        "The public demo reads its snapshot at runtime",
+        "The page fetches static files from the snapshot folder.",
+    )?;
+
+    let recall = |question: &str| -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        Ok(serde_json::from_str(&run(&Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            dir,
+            "query",
+            "recall",
+            question,
+        ]))?)?)
+    };
+    let top_three = |answer: &serde_json::Value| -> Vec<String> {
+        answer["data"]["ranked"]["items"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .take(3)
+                    .filter_map(|item| item["decision"]["id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    // The words are the asker's own, not the record's: "shows", "happens", "cannot".
+    for (question, target) in [
+        ("how does the decision page get the brief it shows?", &brief),
+        (
+            "which command did we pick for the first capture in the quickstart docs?",
+            &quickstart,
+        ),
+        (
+            "where did we put the checklist for Alex about the privacy policy and terms?",
+            &checklist,
+        ),
+        (
+            "what happens at login when the oauth metadata cannot be read?",
+            &login,
+        ),
+    ] {
+        let answer = recall(question)?;
+        let top = top_three(&answer);
+        ensure(
+            top.contains(target),
+            &format!("`{question}` should return its decision in the top 3, got {top:?}"),
+        )?;
+    }
+
+    // A word the decision never uses is named on that decision, in JSON and in the summary.
+    let answer = recall("which command did we pick for the first capture in the quickstart docs?")?;
+    ensure_json_eq(
+        &answer["data"]["ranked"]["items"][0]["missing_terms"],
+        serde_json::json!(["command"]),
+        "the close match says which word of the question it lacks",
+    )?;
+    let summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "--summary",
+        "recall",
+        "which command did we pick for the first capture in the quickstart docs?",
+    ]))?;
+    ensure(
+        summary.contains("\tmissing=command"),
+        &format!("the summary marks the close match, got: {summary}"),
+    )?;
+    ensure(
+        summary.contains("Close matches (each lacks some of the words asked)")
+            && summary.contains(&format!("{quickstart} lacks command")),
+        &format!("the digest says its matches are close, got: {summary}"),
+    )?;
+
+    // Two things asked about at once find a decision about either.
+    let both = recall("what did we decide about sign-in and pricing")?;
+    let found = top_three(&both);
+    ensure(
+        found.contains(&login) && found.contains(&pricing),
+        &format!("sign-in and pricing should find both decisions, got {found:?}"),
+    )?;
+
+    // A question no decision shares half its words with is still an empty answer.
+    let none = recall("what did we decide about the kubernetes autoscaler quota")?;
+    ensure_json_eq(
+        &none["result_count"],
+        serde_json::json!(0),
+        "nothing recorded about kubernetes",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn digest_cli_returns_decisions_in_window() {
     let hivemind_dir = unique_test_dir("digest");
     let decision_id = run(&Cli::parse_from([
