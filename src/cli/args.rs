@@ -85,8 +85,31 @@ impl LedgerConfig {
 pub enum Command {
     /// Capture and query a first decision on an isolated temporary ledger.
     Quickstart(QuickstartArgs),
+    /// Append one named ledger event: capture a decision, accept, reject or supersede one, record
+    /// evidence, an assumption, a bet or an option, or relate two existing nodes.
+    ///
+    /// The low-level write path. `emit decision.capture` is the everyday capture; the other
+    /// events are the single steps that `disagree`, `supersede`, `ground` and `review` compose.
     Emit(Box<EmitArgs>),
+    /// Record that you disagree with a decision, found by describing it, and why. Your rejection
+    /// is kept beside everyone else's position, never overwriting it: a decision one actor
+    /// accepted and another rejected reads `contested`.
+    ///
+    /// Writes a `decision.rejected` event with `--reason` from `--actor`. A description that
+    /// matches more than one decision lists the candidates and writes nothing; pick one with
+    /// --pick N, or name the decision with --decision.
     Disagree(DisagreeArgs),
+    /// Replace a decision with a new one, found by describing it: the replacement is captured
+    /// with its own title, rationale and options, and the old decision is marked superseded by
+    /// it.
+    ///
+    /// Like every capture, the replacement says what it rests on: a decision it follows from
+    /// (`--rests-on-decision`), something observed and where (`--rests-on-evidence` with
+    /// `--evidence-source`), something assumed (`--rests-on-assumption`), or, when there is
+    /// nothing yet, a declared bet (`--bet`); an existing node's id also counts (`--evidence`,
+    /// `--hypotheses`). One that names nothing is refused and nothing is written. A description
+    /// that matches more than one decision lists the candidates and writes nothing; pick one with
+    /// --pick N, or name the decision with --old.
     Supersede(SupersedeArgs),
     /// Move a decision to another project, found by describing it. A description that
     /// matches more than one decision lists the candidates and writes nothing; pick one with
@@ -100,13 +123,41 @@ pub enum Command {
     /// the same ambiguity gate as `supersede`; nothing is written when the description is
     /// ambiguous, a premise cannot be pinned to one decision, or a premise would close a loop.
     Ground(GroundArgs),
+    /// Go through recent decisions one at a time in the terminal and accept, disagree with or
+    /// supersede each: a guided review of what agents (or anyone) decided lately.
+    ///
+    /// Candidates come from the same deterministic path as `query recent`. Each verdict is
+    /// written as an ordinary accept, reject or supersede event from `--actor`, so reviewed
+    /// state is derived from the ledger, never stored separately; `--unreviewed-only` skips
+    /// decisions someone already ruled on.
     Review(ReviewArgs),
+    /// Bring decisions in from documents: local Markdown or text notes with `Decision:` blocks
+    /// (or prose, through an extractor), prepared PDF/OCR text, or the version history of a
+    /// Google Doc, Confluence page or git-tracked file.
+    ///
+    /// Imported decisions land as proposed, not accepted, and flow into `hivemind review
+    /// --unreviewed-only`. Re-importing identical input is a no-op; conflicts with existing
+    /// decisions are reported unless `--on-conflict` says how to resolve them.
     Import(ImportArgs),
     /// Run deterministic read queries. JSON is the default; pass --summary for compact text.
     Query(Box<QueryArgs>),
+    /// Print the whole projected decision graph as Graphviz DOT: decisions, actors, options,
+    /// evidence and hypotheses with the edges between them, ready for `dot -Tsvg`.
     Dump(DumpArgs),
+    /// Browse the decision graph in an interactive terminal UI: search decisions, read why each
+    /// exists, and write a decision's neighborhood out as DOT (`--dot-output`).
+    ///
+    /// Needs a terminal (`--json` is refused) and a build with the `tui` feature.
     Tui(TuiArgs),
+    /// Turn an exported Slack thread into a proposed decision: reads the thread from `--file`
+    /// and records the decision its messages spell out. Nothing is summarized or inferred.
+    ///
+    /// The thread must mention the bot (`--mention`, default @hivemind). A thread already
+    /// ingested returns the existing decision id. The live Slack integration is `slack-app`.
     Ingest(IngestArgs),
+    /// Run the Slack integration's pieces by hand: print the app manifest, build the OAuth
+    /// install URL, store a workspace install, queue and drain thread captures, and answer
+    /// `/hivemind` slash commands.
     #[command(name = "slack-app")]
     SlackApp(SlackAppArgs),
     /// Run an MCP (Model Context Protocol) stdio server that exposes
@@ -419,8 +470,8 @@ pub struct QualityScanArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct ExportArgs {
-    /// Export format. `markdown` is the only supported value today.
-    #[arg(long, value_enum)]
+    /// Export format. `markdown` is the only one today and the default, so this can be left off.
+    #[arg(long, value_enum, default_value_t = ExportFormat::Markdown)]
     pub format: ExportFormat,
 
     /// Directory to write the export into. Created if missing. The export
@@ -803,6 +854,8 @@ pub struct IngestArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum IngestCommand {
+    /// Propose the decision spelled out in a Slack thread export (`--file`); the thread must
+    /// mention the bot (`--mention`). A thread already ingested returns the existing decision id.
     #[command(name = "slack-thread")]
     SlackThread(IngestSlackThreadArgs),
 }
@@ -824,13 +877,23 @@ pub struct SlackAppArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum SlackAppCommand {
+    /// Print the Slack app manifest for the given interactions, events and OAuth redirect URLs.
     Manifest(SlackManifestArgs),
+    /// Build the Slack OAuth install URL for a client id, redirect URI and state.
     #[command(name = "oauth-url")]
     OauthUrl(SlackOauthUrlArgs),
+    /// Store a workspace installation (team, bot token, signing secret, capture emoji, actor
+    /// map) under the hivemind directory.
     Install(SlackInstallArgs),
+    /// Queue a decision capture from a Slack message, thread shortcut or reaction, for `drain`
+    /// to write.
     #[command(name = "enqueue-capture")]
     EnqueueCapture(SlackEnqueueCaptureArgs),
+    /// Write queued Slack captures to the ledger; failed items stay queued with their attempt
+    /// count and last error.
     Drain(SlackDrainArgs),
+    /// Answer a `/hivemind` slash command (`capture`, `query <topic>`, `show <id>`) for a team
+    /// and user, printing the Slack response.
     Command(SlackCommandArgs),
 }
 
@@ -976,24 +1039,51 @@ pub struct EmitArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum EmitCommand {
+    /// Capture a decision in one call: title, rationale, options and the one chosen, what it
+    /// rests on, and provenance (who decided, their quote and the question it answers). The
+    /// everyday write; accepted right away when `--chose` is given.
+    ///
+    /// "What does this decision rest on?" is asked at every capture. Name at least one of: a
+    /// decision we already made (`--rests-on-decision`), something observed and where
+    /// (`--rests-on-evidence` with `--evidence-source`), something we assume
+    /// (`--rests-on-assumption`), or, when there is nothing yet, a declared bet (`--bet`). An id
+    /// of a node that already exists also counts (`--evidence`, `--hypotheses`). A capture that
+    /// names none is refused and nothing is written. The decider's own words are not a
+    /// grounding: they go in `--quote`.
     #[command(name = "decision.capture")]
     DecisionCapture(Box<EmitDecisionCaptureArgs>),
+    /// Propose a decision: title, rationale, topic keys, options and optionally the one chosen
+    /// (which accepts it right away unless `--still-proposed`), plus who decided and their quote.
     #[command(name = "decision.proposed")]
     DecisionProposed(EmitDecisionProposedArgs),
+    /// Accept a decision by id, as `--actor`.
     #[command(name = "decision.accepted")]
     DecisionAccepted(EmitDecisionIdArgs),
+    /// Reject a decision by id, as `--actor`; beside another actor's acceptance it reads
+    /// `contested`. `disagree` does this by description and with a reason.
     #[command(name = "decision.rejected")]
     DecisionRejected(EmitDecisionIdArgs),
+    /// Mark decision `--old` as replaced by decision `--new`, both already recorded. `supersede`
+    /// proposes the replacement and links it in one step.
     #[command(name = "decision.superseded")]
     DecisionSuperseded(EmitDecisionSupersededArgs),
+    /// Record something observed as its own evidence node (`--content`), to attach to decisions
+    /// with `relation.attach_evidence`.
     #[command(name = "evidence.recorded")]
     EvidenceRecorded(EmitEvidenceRecordedArgs),
+    /// Record an assumption (default) or a declared bet (`--kind bet`) as its own node; decisions
+    /// can be premised on it and it can later be refuted.
     #[command(name = "hypothesis.recorded")]
     HypothesisRecorded(EmitHypothesisRecordedArgs),
+    /// Record a standalone option node (`--label`, `--description`). `decision.proposed
+    /// --options` records a decision's options directly.
     #[command(name = "option.recorded")]
     OptionRecorded(EmitOptionRecordedArgs),
+    /// Add a typed edge between two existing nodes (`--from`, `--to`): supports, refutes, based
+    /// on, or follows from.
     #[command(name = "relation.added")]
     RelationAdded(EmitRelationAddedArgs),
+    /// Attach an existing evidence node (`--evidence-id`) to a decision (`--decision-id`).
     #[command(name = "relation.attach_evidence")]
     AttachEvidence(EmitAttachEvidenceArgs),
     #[command(name = "ingest.batch_classified")]
@@ -1020,13 +1110,18 @@ pub struct EmitDecisionCaptureArgs {
     pub grounding: GroundingArgs,
 }
 
-/// "What does this decision rest on?" — asked at every capture. Name at least one of:
-/// a decision we already made (`--rests-on-decision`), something observed and where
-/// (`--rests-on-evidence` with `--evidence-source`), something we assume
-/// (`--rests-on-assumption`), or, when there is nothing yet, a declared bet (`--bet`). An id
-/// of a node that already exists also counts (`--evidence`, `--hypotheses`). A capture that
-/// names none is refused and nothing is written. The decider's own words are not a grounding:
-/// they go in `--quote`.
+// "What does this decision rest on?" — asked at every capture. Name at least one of:
+// a decision we already made (`--rests-on-decision`), something observed and where
+// (`--rests-on-evidence` with `--evidence-source`), something we assume
+// (`--rests-on-assumption`), or, when there is nothing yet, a declared bet (`--bet`). An id
+// of a node that already exists also counts (`--evidence`, `--hypotheses`). A capture that
+// names none is refused and nothing is written. The decider's own words are not a grounding:
+// they go in `--quote`.
+//
+// Deliberately not a doc comment: clap takes a flattened struct's doc comment as the `about`
+// of every command that has none of its own, which once made `supersede --help` open with the
+// grounding question instead of saying it replaces a decision. Each command that flattens
+// these flags (`emit decision.capture`, `supersede`, `ground`) carries its own description.
 #[derive(Debug, Clone, Args)]
 pub struct GroundingArgs {
     /// A decision this one follows from, named the way you would describe it, as `#N` from the
@@ -1356,10 +1451,18 @@ pub struct ImportArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum ImportCommand {
+    /// Import decisions from local Markdown or text files or directories: `Decision:` blocks
+    /// are parsed deterministically, prose goes through `--extractor-command`. Conflicts with
+    /// existing decisions are reported unless `--on-conflict` resolves them.
     #[command(name = "documents", alias = "document")]
     Documents(ImportDocumentsArgs),
+    /// Turn PDFs, text or OCR output into reviewable text files with source and page references
+    /// (`--output-dir`), writing no ledger events; import the result with `import documents`.
     #[command(name = "prepare-documents", alias = "prepare-document")]
     PrepareDocuments(PrepareDocumentsArgs),
+    /// Import a document's version history from a connected source (Google Docs, Confluence, or
+    /// a git-tracked file) as decision and supersession chains, and manage same-as links between
+    /// imported decisions.
     #[command(name = "connector")]
     Connector(ImportConnectorArgs),
 }
@@ -1443,12 +1546,17 @@ pub struct ImportConnectorArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum ImportConnectorCommand {
+    /// Import the document at `--url` (or path), walking up to `--max-versions` of its history.
     #[command(name = "run")]
     Run(ImportConnectorRunArgs),
+    /// List pairs of decisions from an import run (`--since-run`) that look like the same
+    /// decision and await a human's confirmation.
     #[command(name = "same-as-candidates")]
     SameAsCandidates(ImportConnectorSameAsCandidatesArgs),
+    /// Confirm that two imported decisions (`--left`, `--right`) are the same decision.
     #[command(name = "confirm-same-as")]
     ConfirmSameAs(ImportConnectorConfirmSameAsArgs),
+    /// Retract a same-as confirmation between two decisions (`--left`, `--right`).
     #[command(name = "retract-same-as")]
     RetractSameAs(ImportConnectorRetractSameAsArgs),
 }
@@ -1543,11 +1651,17 @@ pub struct QueryArgs {
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum QueryCommand {
+    /// One decision by `--id`, in full: title, status, rationale, topic keys, who proposed and
+    /// accepted it, its options and the chosen one, evidence, hypotheses, supersession and event
+    /// origins. Null when absent. To find a decision by describing it use `why` or `verify`.
     #[command(name = "get_decision")]
     GetDecision(QueryDecisionArgs),
+    /// The decisions tagged with a topic key (`--topic`), optionally only those in one
+    /// `--status`. Exact key match, not text search.
     #[command(name = "get_relevant_decisions")]
     GetRelevantDecisions(QueryRelevantDecisionsArgs),
-    /// Friendlier alias: `chain`.
+    /// The chain of replacements a decision sits in, oldest first: what it superseded and what
+    /// superseded it. Friendlier alias: `chain`.
     #[command(name = "get_supersession_chain", alias = "chain")]
     GetSupersessionChain(QueryFluentDecisionArgs),
     /// "Why was this decided?" — the decision's title, rationale, chosen and rejected options,
@@ -1556,32 +1670,61 @@ pub enum QueryCommand {
     /// question as well as --id. Friendlier alias: `why`.
     #[command(name = "get_decision_neighborhood", alias = "why")]
     GetDecisionNeighborhood(QueryDecisionNeighborhoodArgs),
-    /// Layer-3 compact view: signal/noise filter over a decision's subgraph.
+    /// A bounded summary of one decision for an agent to read: the decision, its supersession,
+    /// any contest, hypotheses, evidence, premises and grounding, with provenance stripped.
     #[command(name = "compact-view")]
     GetCompactView(QueryFluentDecisionArgs),
     /// "Did this decision hold up?" — leads with the decision, rationale, rejected options,
     /// who decided, and whether it still holds. Friendlier alias: `verify`.
     #[command(name = "get_decision_outcome", alias = "verify")]
     GetDecisionOutcome(QueryFluentDecisionArgs),
+    /// Find decisions whose text contains every word of `--q` (literal substrings, no
+    /// fuzziness), narrowed by topic, status, actor, source and date; paginated with --cursor.
+    /// For a question in your own words use `recall`.
     #[command(name = "search")]
     Search(QuerySearchDecisionsArgs),
+    /// Same as `search`, under the full name the MCP tool and the HTTP API use.
     #[command(name = "search_decisions")]
     SearchDecisions(QuerySearchDecisionsArgs),
-    /// Layer-3 recall: search + summarize in one call. Answers "what was decided about X?".
+    /// "What was decided about X?" — ask in your own words and get the matching decisions,
+    /// ranked, with a short digest of them: decisions matching every word first, then close
+    /// matches with the words they miss; a word also matches its inflections. Search plus
+    /// summary in one call.
     #[command(name = "recall")]
     Recall(QueryRecallArgs),
+    /// The open blockers: who is waiting on which decision, why, with what priority and who
+    /// owns the call; narrowed by decision, topic, owner, blocked actor or priority. Read
+    /// straight from reported blocker events, nothing ranked or inferred.
     #[command(name = "get_active_decision_blockers")]
     GetActiveDecisionBlockers(QueryActiveDecisionBlockersArgs),
+    /// Which open blockers now warrant telling a human, under a notification policy
+    /// (`--policy-version`) evaluated at `--now`: recipient, channel, the threshold rule that
+    /// fired and a dedupe key. An internal scheduler surface.
     #[command(name = "get_blocker_notification_candidates")]
     GetBlockerNotificationCandidates(QueryBlockerNotificationCandidatesArgs),
+    /// The decisions proposed in a time window (`--since 7d`, a date or a timestamp; `--until`),
+    /// narrowed by actor pattern, topic, status and source. Alias: `recent`.
     #[command(name = "recent_decisions", alias = "recent")]
     RecentDecisions(QueryRecentDecisionsArgs),
+    /// The ledger's latest events as a timeline, newest first: each capture, acceptance,
+    /// rejection, supersession, evidence, hypothesis or move with its actor, source, timestamp
+    /// and the decisions it touched. Paginated.
     #[command(name = "get_recent_activity")]
     GetRecentActivity(QueryRecentActivityArgs),
+    /// What changed in a ledger window, oldest first: new decisions, status changes, new
+    /// evidence, refuted assumptions, supersessions and moves, each citing its event. Bounded by
+    /// ledger offset or timestamp so the same diff can be replayed exactly.
     #[command(name = "get_decisions_changed_since")]
     GetDecisionsChangedSince(QueryChangedSinceArgs),
+    /// "What is new since last week?" — the decisions created in a window (`--since 7d`, a date,
+    /// an offset or a timestamp) plus existing decisions that gained a status, evidence,
+    /// hypotheses, options or a supersession there, optionally only from given import runs.
     #[command(name = "get_decisions_added_since")]
     GetDecisionsAddedSince(QueryAddedSinceArgs),
+    /// A shareable read-only export of `get_recent_activity` or `get_decisions_changed_since`
+    /// (`--query`) as JSON or Markdown, carrying the query parameters, ledger range, generation
+    /// time and a citation map, with truncation stated. `hivemind export` (without `query`)
+    /// writes the whole decision log as files instead.
     #[command(name = "export_read_only_summary")]
     ExportReadOnlySummary(QueryExportReadOnlySummaryArgs),
     /// The quality profile of one decision: seven dimensions, each with its level and reasons

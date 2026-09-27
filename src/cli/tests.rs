@@ -298,6 +298,75 @@ fn query_help_documents_json_default_and_summary_mode(
     Ok(())
 }
 
+/// Quality bar H18: a user never has to ask what a command is for. Walks the whole command tree
+/// (`hivemind --help`, `hivemind query --help`, `emit`, `import`, ...) so a new subcommand
+/// without a doc comment fails here rather than in the after-deploy product check
+/// (hivemind-pdeh).
+#[test]
+fn every_command_says_what_it_does() -> CliTestResult {
+    fn collect_undescribed(command: &clap::Command, path: &str, missing: &mut Vec<String>) {
+        for subcommand in command.get_subcommands() {
+            if subcommand.get_name() == "help" {
+                continue;
+            }
+            let name = format!("{path} {}", subcommand.get_name());
+            let about = subcommand
+                .get_about()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            if about.trim().is_empty() {
+                missing.push(name.clone());
+            }
+            collect_undescribed(subcommand, &name, missing);
+        }
+    }
+
+    let mut missing = Vec::new();
+    collect_undescribed(&Cli::command(), "hivemind", &mut missing);
+    ensure(
+        missing.is_empty(),
+        &format!("commands without a description: {missing:?}"),
+    )
+}
+
+/// `supersede`, `emit decision.capture` and `ground` share the grounding flags. Their shared
+/// comment must never become a command's description: `supersede --help` once opened with
+/// "What does this decision rest on?" instead of saying it replaces a decision (hivemind-pdeh).
+#[test]
+fn supersede_and_capture_help_open_with_what_they_do() -> CliTestResult {
+    let command = Cli::command();
+    let about_of = |command: &clap::Command, path: &[&str]| -> CliTestResult {
+        let mut current = command.clone();
+        for name in path {
+            current = current
+                .find_subcommand(name)
+                .cloned()
+                .ok_or_else(|| format!("subcommand {} exists", path.join(" ")))?;
+        }
+        let about = current
+            .get_about()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let expected = match path.last().copied() {
+            Some("supersede") => "Replace a decision with a new one",
+            Some("decision.capture") => "Capture a decision in one call",
+            Some("ground") => "Say what an existing decision rests on",
+            _ => "",
+        };
+        ensure(
+            about.starts_with(expected),
+            &format!(
+                "{} should open with {expected:?}, got: {about}",
+                path.join(" ")
+            ),
+        )
+    };
+
+    about_of(&command, &["supersede"])?;
+    about_of(&command, &["emit", "decision.capture"])?;
+    about_of(&command, &["ground"])
+}
+
 #[test]
 fn parses_review_command_with_actor_window_and_unreviewed_filter() -> CliTestResult {
     let cli = Cli::parse_from([
