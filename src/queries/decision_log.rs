@@ -899,7 +899,11 @@ fn render_options_section(entry: &DecisionEntry) -> String {
     let mut out = String::new();
     let mut first = true;
     if let Some(chosen) = &entry.chosen_option {
-        let _ = write!(out, "- **{}** (chosen)", chosen.label);
+        let _ = write!(out, "- **{}** (chosen", chosen.label);
+        if let Some(recorded) = &chosen.recorded_as {
+            let _ = write!(out, "; recorded as: {recorded}");
+        }
+        out.push(')');
         first = false;
     }
     for option in &entry.rejected_options {
@@ -907,6 +911,9 @@ fn render_options_section(entry: &DecisionEntry) -> String {
             out.push('\n');
         }
         let _ = write!(out, "- {}", option.label);
+        if let Some(recorded) = &option.recorded_as {
+            let _ = write!(out, " (recorded as: {recorded})");
+        }
         first = false;
     }
     out

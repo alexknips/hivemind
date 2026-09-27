@@ -309,16 +309,8 @@ fn dispatch_query(
     // ── context.rs's get_decision_context and brief.rs's get_decision_brief query shapes ──
     // Not covered by the handlers above; see hivemind-ookw.
 
-    // brief.rs's resolve_option_label: single Option node lookup by id, returning its label
-    // (or Null if the node has no `label` property — the row still exists as long as the
-    // Option node itself exists, matching memory.rs's `graph_property_or_default`).
-    if cypher.contains("RETURN o.label AS label") {
-        return query_node_property(client, tenant_id, params, NodeKind::Option, "label");
-    }
-
-    // neighborhood.rs's node labels: single-node text lookups by id, same Null-when-absent
-    // contract as the option label above (decision.rs's `get_hypothesis_statement` and
-    // `get_evidence_content`).
+    // neighborhood.rs's node labels: single-node text lookups by id, Null when the node has no
+    // such property (decision.rs's `get_hypothesis_statement` and `get_evidence_content`).
     if cypher.contains("RETURN h.statement AS statement") {
         return query_node_property(client, tenant_id, params, NodeKind::Hypothesis, "statement");
     }

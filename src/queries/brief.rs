@@ -14,7 +14,7 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::projector::{GraphParams, GraphValue, GraphView, NodeKind};
+use crate::projector::{GraphView, NodeKind};
 use crate::Result;
 
 use super::context::{get_decision_context, ReviewShape};
@@ -29,7 +29,13 @@ use super::QueryResponse;
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct OptionLabel {
     pub option_id: String,
+    /// What a person reads: the recorded label, turned into words when it was recorded as a slug
+    /// or a lettered code (`name-a-upheld` reads `Upheld`).
     pub label: String,
+    /// What the capture recorded, when that reads differently from `label`. The ledger is
+    /// immutable and `label` is a reading of it, so a reader is told what the record says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recorded_as: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -206,17 +212,19 @@ pub(crate) fn get_decision_brief_with_labels(
 }
 
 pub(super) fn resolve_option_label(graph: &impl GraphView, option_id: &str) -> Result<OptionLabel> {
-    let rows = graph.query(
-        "MATCH (o:`Option` {id: $id}) RETURN o.label AS label LIMIT 1;",
-        &GraphParams::from([("id".to_owned(), GraphValue::String(option_id.to_owned()))]),
-    )?;
-    let label = rows
-        .first()
+    let row = node_row(graph, NodeKind::Option, option_id)?;
+    let label = row
+        .as_ref()
         .and_then(|row| optional_string(row, "label"))
         .unwrap_or_else(|| option_id.to_owned());
+    let recorded_as = row
+        .as_ref()
+        .and_then(|row| optional_string(row, "recorded_label"))
+        .filter(|recorded| *recorded != label);
     Ok(OptionLabel {
         option_id: option_id.to_owned(),
         label,
+        recorded_as,
     })
 }
 

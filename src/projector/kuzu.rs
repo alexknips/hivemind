@@ -35,7 +35,7 @@ const NODE_DDL: &[(NodeKind, &str)] = &[
     ),
     (
         NodeKind::Option,
-        "CREATE NODE TABLE IF NOT EXISTS `Option` (id STRING, label STRING, description STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Option` (id STRING, label STRING, recorded_label STRING, description STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Hypothesis,

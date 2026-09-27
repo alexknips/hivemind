@@ -1222,3 +1222,66 @@ fn a_profile_section_that_fails_fails_the_export() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn the_options_section_shows_what_was_recorded_beside_the_words_it_reads_as() -> Result<()> {
+    // hivemind-hk5z: the export reads `name-a-upheld` as `Upheld` and still says what the record
+    // holds; an option that was words to begin with carries no note.
+    let (ledger, graph) = graph_and_ledger([
+        event(
+            1,
+            EventType::DecisionProposed,
+            "human:alice",
+            json!({
+                "decision_id": "decision-name",
+                "title": "Name the product",
+                "rationale": "The name has to hold up",
+                "topic_keys": ["brand"],
+                "option_ids": ["opt-1", "opt-2", "opt-3"],
+                "option_labels": ["name-a-upheld", "name-b-standing", "name-c-decisis"],
+                "chosen_option_id": "opt-1",
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-02T00:00:00Z",
+        ),
+        event(
+            2,
+            EventType::DecisionProposed,
+            "human:alice",
+            json!({
+                "decision_id": "decision-words",
+                "title": "Pick the capture path",
+                "rationale": "Direct capture needs no setup",
+                "topic_keys": ["capture"],
+                "option_ids": ["opt-4", "opt-5"],
+                "option_labels": ["Direct CLI", "MCP server"],
+                "chosen_option_id": "opt-4",
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            "2026-01-03T00:00:00Z",
+        ),
+    ])?;
+
+    let export = exported(&graph, &ledger, &DecisionLogRequest::default())?;
+
+    let recorded = decision_file(&export, "Name the product");
+    for expected in [
+        "- **Upheld** (chosen; recorded as: name-a-upheld)",
+        "- Standing (recorded as: name-b-standing)",
+        "- Decisis (recorded as: name-c-decisis)",
+    ] {
+        assert!(
+            recorded.contains(expected),
+            "missing {expected:?} in:\n{recorded}"
+        );
+    }
+    let plain = decision_file(&export, "Pick the capture path");
+    assert!(
+        plain.contains("- **Direct CLI** (chosen)\n- MCP server"),
+        "{plain}"
+    );
+    assert!(!plain.contains("recorded as"), "{plain}");
+    Ok(())
+}

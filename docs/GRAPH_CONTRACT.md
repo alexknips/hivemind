@@ -75,7 +75,10 @@ a reader needs without reconstructing them from edges:
     rejecters are the `REJECTED_BY` edges.
 - **`nodes[]` with `kind: "Option"`** carry `title`: the option's own label, else its id, so an
   option always has something to show. `label` stays as it was (absent when no label was ever
-  recorded).
+  recorded). A label recorded as a slug or a lettered code (`name-a-upheld`) is read as words
+  (`Upheld`) when the ledger is replayed; the node then also carries `recorded_as`, the text the
+  capture recorded, so a page that shows the words can show what the record says beside them. It
+  is absent when the label reads as it was recorded.
 
 Both are pure reads: three bulk edge scans (`SUPERSEDES`, `ACCEPTED_BY`, `REJECTED_BY`), no
 per-decision queries and no inference.

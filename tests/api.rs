@@ -2102,6 +2102,73 @@ async fn graph_option_nodes_carry_a_title() {
 }
 
 #[tokio::test]
+async fn graph_option_nodes_carry_what_was_recorded_when_it_reads_differently() {
+    let dir = test_ledger_dir();
+    let (status, captured) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            serde_json::json!({
+                "grounding": [{"kind": "bet"}],
+                "title": "Name the product",
+                "rationale": "Graph recorded-option fixture: enough words to pass validation",
+                "topic_keys": ["graph-standing"],
+                "options": [{ "label": "name-a-upheld" }, { "label": "name-b-standing" }],
+                "chosen_option_label": "name-a-upheld"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "capture: {captured}");
+
+    let (status, words) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            serde_json::json!({
+                "grounding": [{"kind": "bet"}],
+                "title": "Pick the capture path",
+                "rationale": "Graph recorded-option fixture: enough words to pass validation",
+                "topic_keys": ["graph-standing"],
+                "options": [{ "label": "Direct CLI" }, { "label": "MCP server" }],
+                "chosen_option_label": "Direct CLI"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "capture: {words}");
+
+    let (status, graph) = call(app(dir), get_req("/v1/graph")).await;
+    assert_eq!(status, StatusCode::OK, "GET /v1/graph: {graph}");
+
+    // (title, recorded_as) per Option node: the slug options read as words and say what was
+    // recorded; options that were words say nothing more.
+    let mut options: Vec<(String, Option<String>)> = graph["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["kind"] == "Option")
+        .map(|n| {
+            (
+                n["title"].as_str().unwrap().to_owned(),
+                n["recorded_as"].as_str().map(str::to_owned),
+            )
+        })
+        .collect();
+    options.sort();
+    assert_eq!(
+        options,
+        [
+            ("Direct CLI".to_owned(), None),
+            ("MCP server".to_owned(), None),
+            ("Standing".to_owned(), Some("name-b-standing".to_owned())),
+            ("Upheld".to_owned(), Some("name-a-upheld".to_owned())),
+        ],
+        "{graph}"
+    );
+}
+
+#[tokio::test]
 async fn graph_option_recorded_without_a_label_is_titled_by_its_id() {
     use hivemind::events::{Event, EventSource, EventType, TenantId};
     use hivemind::ledger::{EventLedger, SqliteEventLedger};

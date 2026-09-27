@@ -1787,6 +1787,78 @@ fn query_chain_and_why_aliases_resolve_by_description() -> CliTestResult {
 }
 
 #[test]
+fn query_why_shows_the_recorded_option_text_beside_the_words_it_reads_as() -> CliTestResult {
+    // hivemind-hk5z: a slug-shaped option reads as words, and `why` still says what was recorded.
+    let hivemind_dir = unique_test_dir("query-why-recorded-option-text");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "The new product name",
+        "--rationale",
+        "The name has to hold up against the alternatives we weighed",
+        "--topic-keys",
+        "brand",
+        "--options",
+        "name-a-upheld,name-b-standing",
+        "--chose",
+        "name-a-upheld",
+    ]))?;
+
+    let summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "why",
+        "the new product name",
+        "--summary",
+    ]))?;
+    for expected in [
+        "chose: Upheld (recorded as: name-a-upheld)",
+        "rejected: Standing (recorded as: name-b-standing)",
+    ] {
+        ensure(
+            summary.contains(expected),
+            &format!("why --summary should contain {expected:?}, got:\n{summary}"),
+        )?;
+    }
+
+    let json = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "why",
+        "the new product name",
+    ]))?;
+    let json: serde_json::Value = serde_json::from_str(&json)?;
+    ensure_json_eq(
+        &json["data"]["root"]["chosen_option"]["label"],
+        serde_json::json!("Upheld"),
+        "the chosen option reads as words",
+    )?;
+    ensure_json_eq(
+        &json["data"]["root"]["chosen_option"]["recorded_as"],
+        serde_json::json!("name-a-upheld"),
+        "the chosen option says what was recorded",
+    )?;
+    ensure_json_eq(
+        &json["data"]["root"]["rejected_options"][0]["recorded_as"],
+        serde_json::json!("name-b-standing"),
+        "a rejected option says what was recorded",
+    )?;
+    Ok(())
+}
+
+#[test]
 fn query_why_answers_a_natural_question_with_the_why() -> CliTestResult {
     let hivemind_dir = unique_test_dir("query-why-natural-question");
     let dir = hivemind_dir.to_str().expect("utf-8 temp path");

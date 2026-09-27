@@ -142,7 +142,8 @@ shell keeps it as one value. `--chose` repeats one of those labels exactly.
 
 - No slugs (`cap-at-30`, `direct-cli`) and no codes (`cap30`, `q1-a-...`,
   `option-a`). `why` and `verify` print the label as written, and a reader
-  should not have to decode it.
+  should not have to decode it. A slug that slips through is read as words and
+  shown with what was recorded beside it (`Upheld (recorded as: name-a-upheld)`).
 - The choice is a fact on the record: `--chose` alone says which option won.
   Never put the winning letter, "chosen", or "recommended" inside a label.
 - One label per real alternative. No bucket such as "other options", and no

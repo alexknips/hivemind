@@ -1257,6 +1257,15 @@ fn projected_option_labels(
     option_ids: &[&str],
     labels: Option<&[&str]>,
 ) -> Result<Vec<GraphValue>> {
+    projected_option_property(option_ids, labels, "label")
+}
+
+/// `projected_option_labels` for any Option-node property (`label`, `recorded_label`).
+fn projected_option_property(
+    option_ids: &[&str],
+    labels: Option<&[&str]>,
+    property: &str,
+) -> Result<Vec<GraphValue>> {
     let ledger = InMemoryEventLedger::new();
     let mut payload = json!({
         "decision_id": "decision:labels",
@@ -1282,7 +1291,7 @@ fn projected_option_labels(
         .map(|id| {
             nodes
                 .get(&(NodeKind::Option, (*id).to_owned()))
-                .and_then(|properties| properties.get("label"))
+                .and_then(|properties| properties.get(property))
                 .cloned()
                 .unwrap_or(GraphValue::Null)
         })
@@ -1393,7 +1402,7 @@ fn legacy_ids_with_answer_letters_project_as_the_words_after_the_letter() -> Res
         )?,
         strings(&[
             "Claude code plugin first",
-            "Mcp registry first",
+            "MCP registry first",
             "Community lists first"
         ])
     );
@@ -1413,7 +1422,79 @@ fn legacy_ids_with_a_uuid_cut_off_in_the_label_drop_the_fragments() -> Result<()
             ],
             None,
         )?,
-        strings(&["Memory for decisions", "Decision governance", "Adr tooling"])
+        strings(&["Memory for decisions", "Decision governance", "ADR tooling"])
+    );
+    Ok(())
+}
+
+#[test]
+fn acronyms_in_a_slug_keep_their_capitals() -> Result<()> {
+    // hivemind-hk5z: a slug only carries acronyms in lowercase; the words read as people write them.
+    assert_eq!(
+        projected_option_labels(
+            &["option:1", "option:2", "option:3"],
+            Some(&["direct-cli", "mcp-server", "rest-api-over-http"]),
+        )?,
+        strings(&["Direct CLI", "MCP server", "Rest API over HTTP"])
+    );
+    assert_eq!(
+        projected_option_labels(
+            &["option:1", "option:2", "option:3", "option:4", "option:5"],
+            Some(&["ci-gate", "json-lines", "sql-store", "ui-first", "adr-url"]),
+        )?,
+        strings(&["CI gate", "JSON lines", "SQL store", "UI first", "ADR URL"])
+    );
+    // Whole words only: `cliff` and `guided` merely contain letters an acronym uses.
+    assert_eq!(
+        projected_option_labels(
+            &["option:1", "option:2"],
+            Some(&["cliff-edge", "guided-tour"]),
+        )?,
+        strings(&["Cliff edge", "Guided tour"])
+    );
+    // A lettered set keeps them too, after the stem and the letter are dropped.
+    assert_eq!(
+        projected_option_labels(
+            &["option:1", "option:2"],
+            Some(&["channel-a-cli-first", "channel-b-mcp-registry-first"]),
+        )?,
+        strings(&["CLI first", "MCP registry first"])
+    );
+    Ok(())
+}
+
+#[test]
+fn the_recorded_option_text_stays_in_the_graph_beside_the_readable_label() -> Result<()> {
+    // hivemind-hk5z: the label is a reading of the ledger; the ledger's own text is not lost
+    // to it. Every reader that shows the reading can also show what was recorded.
+    let ids = ["option:1", "option:2", "option:3"];
+    let labels = Some(&["name-a-upheld", "name-b-standing", "name-c-decisis"][..]);
+    assert_eq!(
+        projected_option_labels(&ids, labels)?,
+        strings(&["Upheld", "Standing", "Decisis"])
+    );
+    assert_eq!(
+        projected_option_property(&ids, labels, "recorded_label")?,
+        strings(&["name-a-upheld", "name-b-standing", "name-c-decisis"])
+    );
+    // A label that was already words is recorded as itself.
+    assert_eq!(
+        projected_option_property(
+            &["option:1", "option:2"],
+            Some(&["Direct CLI", "sqlite"]),
+            "recorded_label"
+        )?,
+        strings(&["Direct CLI", "sqlite"])
+    );
+    // An event from before `option_labels` recorded no label text, only the option id: the
+    // words read from the id are a derivation with nothing recorded beside them.
+    assert_eq!(
+        projected_option_property(
+            &["option-batch-delete-7430e283-3854-44c1-aa6e-2232e2349027"],
+            None,
+            "recorded_label"
+        )?,
+        vec![GraphValue::Null]
     );
     Ok(())
 }

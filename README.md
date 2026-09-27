@@ -276,6 +276,8 @@ hivemind --hivemind-dir ./hivemind/ emit decision.capture \
 
 Options are short human labels (`"Direct CLI"`), never slugs or letter codes:
 `why` and `verify` print them as written, and `--chose` alone says which one won.
+A slug that slips through still reads as words, with what was recorded beside it
+(`chose: Upheld (recorded as: name-a-upheld)`).
 
 Every capture says what it rests on (a decision we already made, something
 observed, something assumed, or a declared `--bet`); one that names nothing is

@@ -711,3 +711,39 @@ fn a_scan_summary_with_no_findings_says_so() {
         "No decision needs a look"
     );
 }
+
+#[test]
+fn brief_shows_the_recorded_option_text_beside_the_words_it_reads_as() -> Result<()> {
+    // hivemind-hk5z: `chose: Upheld (recorded as: name-a-upheld)`, so the reading of a
+    // slug-shaped label never hides what the record says.
+    let scenario = Scenario::new();
+    scenario.proposal(
+        "human:alex",
+        "2026-01-01T00:00:00Z",
+        serde_json::json!({
+            "decision_id": "d:name",
+            "title": "Name the product",
+            "rationale": "The name has to hold up",
+            "topic_keys": ["brand"],
+            "option_ids": ["opt:1", "opt:2", "opt:3"],
+            "option_labels": ["name-a-upheld", "name-b-standing", "name-c-decisis"],
+            "chosen_option_id": "opt:1",
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    )?;
+
+    let text = brief_text(&scenario.graph()?, "d:name")?;
+
+    assert!(
+        text.contains("  chose: Upheld (recorded as: name-a-upheld)\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "  rejected: Standing (recorded as: name-b-standing), Decisis (recorded as: name-c-decisis) (shares"
+        ),
+        "{text}"
+    );
+    Ok(())
+}

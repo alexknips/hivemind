@@ -39,9 +39,31 @@ pub(super) fn readable_option_labels(found: &[Option<FoundLabel>]) -> Vec<Option
             if words.is_empty() {
                 return Some(label.text.clone());
             }
-            Some(capitalize(&words.join(" ")))
+            Some(words_to_label(words))
         })
         .collect()
+}
+
+/// Words a slug only carries in lowercase but that are written in capitals wherever they appear:
+/// `mcp-registry-first` reads `MCP registry first`, `direct-cli` reads `Direct CLI`.
+const ACRONYMS: [&str; 10] = [
+    "mcp", "cli", "api", "adr", "ui", "url", "http", "json", "sql", "ci",
+];
+
+/// The words as one label: acronyms in capitals, the first letter capitalised, the rest as recorded.
+fn words_to_label(words: &[&str]) -> String {
+    let mut label = String::new();
+    for (index, word) in words.iter().enumerate() {
+        if index > 0 {
+            label.push(' ');
+        }
+        if ACRONYMS.contains(word) {
+            label.extend(word.chars().map(|c| c.to_ascii_uppercase()));
+        } else {
+            label.push_str(word);
+        }
+    }
+    capitalize(&label)
 }
 
 /// Lowercase letters and digits joined by `-` or `_`, no spaces, at least one joint and one

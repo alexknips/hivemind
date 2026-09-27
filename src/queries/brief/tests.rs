@@ -303,3 +303,124 @@ fn brief_names_an_overdue_bet_as_unchecked_without_saying_the_decision_is_stale(
     );
     Ok(())
 }
+
+fn option_labelled_decision(decision_id: &str, labels: &[&str]) -> Event {
+    let option_ids: Vec<String> = (1..=labels.len()).map(|n| format!("opt:{n}")).collect();
+    event(
+        1,
+        EventType::DecisionProposed,
+        "human:alice",
+        json!({
+            "decision_id": decision_id,
+            "title": "Name the product",
+            "rationale": "The name has to hold up",
+            "topic_keys": ["brand"],
+            "option_ids": option_ids,
+            "option_labels": labels,
+            "chosen_option_id": "opt:1",
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    )
+}
+
+#[test]
+fn brief_keeps_the_recorded_option_text_beside_the_words_it_reads_as() -> Result<()> {
+    // hivemind-hk5z: `name-a-upheld` reads `Upheld`, and the brief still says what was recorded,
+    // so the reading never hides the record.
+    let graph = graph_from_events([option_labelled_decision(
+        "d:name",
+        &["name-a-upheld", "name-b-standing", "name-c-decisis"],
+    )])?;
+
+    let brief = get_decision_brief(&graph, "d:name")?
+        .data
+        .expect("decision exists");
+
+    assert_eq!(
+        brief.chosen_option,
+        Some(OptionLabel {
+            option_id: "opt:1".to_owned(),
+            label: "Upheld".to_owned(),
+            recorded_as: Some("name-a-upheld".to_owned()),
+        })
+    );
+    assert_eq!(
+        brief.rejected_options,
+        vec![
+            OptionLabel {
+                option_id: "opt:2".to_owned(),
+                label: "Standing".to_owned(),
+                recorded_as: Some("name-b-standing".to_owned()),
+            },
+            OptionLabel {
+                option_id: "opt:3".to_owned(),
+                label: "Decisis".to_owned(),
+                recorded_as: Some("name-c-decisis".to_owned()),
+            },
+        ]
+    );
+    let json = serde_json::to_value(&brief).expect("brief serializes");
+    assert_eq!(json["chosen_option"]["recorded_as"], "name-a-upheld");
+    assert_eq!(json["rejected_options"][1]["recorded_as"], "name-c-decisis");
+    Ok(())
+}
+
+#[test]
+fn brief_says_nothing_about_a_record_that_reads_as_recorded() -> Result<()> {
+    // Labels that were words to begin with have nothing to add: no `recorded_as`, not even a
+    // key in the JSON.
+    let graph = graph_from_events([option_labelled_decision(
+        "d:words",
+        &["Direct CLI", "sqlite"],
+    )])?;
+    let brief = get_decision_brief(&graph, "d:words")?
+        .data
+        .expect("decision exists");
+    assert_eq!(brief.chosen_option.as_ref().unwrap().label, "Direct CLI");
+    assert_eq!(brief.chosen_option.as_ref().unwrap().recorded_as, None);
+    assert_eq!(brief.rejected_options[0].recorded_as, None);
+    let json = serde_json::to_value(&brief).expect("brief serializes");
+    assert!(json["chosen_option"].get("recorded_as").is_none(), "{json}");
+    assert!(
+        json["rejected_options"][0].get("recorded_as").is_none(),
+        "{json}"
+    );
+
+    // An event from before option labels recorded only ids: the words come from the id, and
+    // there is no recorded label text to put beside them.
+    let graph = graph_from_events([event(
+        1,
+        EventType::DecisionProposed,
+        "human:alice",
+        json!({
+            "decision_id": "d:legacy",
+            "title": "Pick a channel",
+            "rationale": "Recorded before options had labels",
+            "topic_keys": ["brand"],
+            "option_ids": [
+                "option-channel-a-claude-code-plugin-first-cd4a4ee9-d211-41a8-8a99-df2009d1a2b3",
+                "option-channel-b-mcp-registry-first-18637b40-c454-4123-a0b3-758566d7f3c4"
+            ],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    )])?;
+    let brief = get_decision_brief(&graph, "d:legacy")?
+        .data
+        .expect("decision exists");
+    let labels: Vec<(&str, Option<&str>)> = brief
+        .rejected_options
+        .iter()
+        .map(|option| (option.label.as_str(), option.recorded_as.as_deref()))
+        .collect();
+    assert_eq!(
+        labels,
+        vec![
+            ("Claude code plugin first", None),
+            ("MCP registry first", None)
+        ]
+    );
+    Ok(())
+}

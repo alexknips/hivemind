@@ -467,7 +467,7 @@ pub struct DecisionBrief {
     pub status: DecisionStatus,               // proposed/accepted/contested/superseded
 }
 
-pub struct OptionLabel { pub option_id: String, pub label: String }
+pub struct OptionLabel { pub option_id: String, pub label: String, pub recorded_as: Option<String> } // recorded_as: what the capture recorded, when `label` reads it differently (slug -> words); absent otherwise
 pub struct DecidedBy { pub proposer_id: Option<String>, pub decider_ids: Vec<String>, pub source: String, pub source_ref: Option<String>, pub delegated_by: Option<String>, pub review: ReviewShape }
 pub struct StillHolds { pub held_up: bool, pub reasons: Vec<OutcomeReason>, pub unchecked: Vec<UncheckedBet> }
 ```

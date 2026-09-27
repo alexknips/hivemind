@@ -589,19 +589,29 @@ fn write_decision_brief(output: &mut String, brief: &DecisionBrief) {
         let _ = writeln!(output, "  answers: {}", summary_cell(question));
         let _ = writeln!(output, "  quote: \"{}\"", summary_cell(quote));
     }
+    // An option reads as its label; when the capture recorded it as something else (a slug, a
+    // lettered code) the record's own text follows, so the reading never hides the record.
     if let Some(chosen) = &brief.chosen_option {
-        let _ = writeln!(output, "  chose: {}", summary_cell(&chosen.label));
+        let _ = write!(output, "  chose: {}", summary_cell(&chosen.label));
+        if let Some(recorded) = &chosen.recorded_as {
+            let _ = write!(output, " (recorded as: {})", summary_cell(recorded));
+        }
+        output.push('\n');
     }
     if !brief.rejected_options.is_empty() {
-        let labels: Vec<&str> = brief
-            .rejected_options
-            .iter()
-            .map(|option| option.label.as_str())
-            .collect();
+        let mut rejected = String::new();
+        for (index, option) in brief.rejected_options.iter().enumerate() {
+            if index > 0 {
+                rejected.push_str(", ");
+            }
+            rejected.push_str(&option.label);
+            if let Some(recorded) = &option.recorded_as {
+                let _ = write!(rejected, " (recorded as: {recorded})");
+            }
+        }
         let _ = writeln!(
             output,
-            "  rejected: {} (shares the rationale above — no distinct per-option reason is recorded)",
-            labels.join(", ")
+            "  rejected: {rejected} (shares the rationale above — no distinct per-option reason is recorded)"
         );
     }
     write_decided_by(output, &brief.decided_by);

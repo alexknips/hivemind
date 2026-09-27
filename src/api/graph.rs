@@ -31,6 +31,10 @@ struct GraphNode {
     /// On an Option: its own label, else its id, so an option always has something to show.
     #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
+    /// On an Option: what the capture recorded, when that reads differently from its label
+    /// (`name-a-upheld` for `Upheld`). The ledger is immutable and the label is a reading of it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recorded_as: Option<String>,
 }
 
 /// A directed edge in the decision graph: an arrow from the newer node to the older node.
@@ -128,11 +132,16 @@ fn graph_blocking(
             // Same fallback every other reader of an option uses (`resolve_option_label`).
             let title = matches!(kind, NodeKind::Option)
                 .then(|| label.clone().unwrap_or_else(|| id.clone())); // ubs:ignore: one owned title per option node
+            let recorded_as = matches!(kind, NodeKind::Option)
+                .then(|| string_field("recorded_label"))
+                .flatten()
+                .filter(|recorded| Some(recorded) != label.as_ref());
             nodes.push(GraphNode {
                 id: [kind_name, ":", &id].concat(),
                 kind: kind_name.into(),
                 label,
                 title,
+                recorded_as,
             });
         }
     }
@@ -178,7 +187,9 @@ fn graph_node_query(kind: NodeKind) -> String {
         NodeKind::Blocker => "node.id AS id, node.reason AS reason",
         NodeKind::Evidence => "node.id AS id, node.content AS content",
         NodeKind::Notification => "node.id AS id",
-        NodeKind::Option => "node.id AS id, node.label AS label, node.description AS description",
+        NodeKind::Option => {
+            "node.id AS id, node.label AS label, node.recorded_label AS recorded_label, node.description AS description"
+        }
         NodeKind::Hypothesis => "node.id AS id, node.statement AS statement",
         NodeKind::Project => "node.id AS id, node.handle AS handle, node.display_name AS display_name",
     };

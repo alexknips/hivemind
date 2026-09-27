@@ -977,11 +977,18 @@ fn project_decision_proposed(
         };
         readable.map_or(GraphValue::Null, GraphValue::String)
     };
+    // The text the capture recorded for the option, kept beside the readable `label` so a reader
+    // can show both: the ledger is immutable and the label is a reading of it (hivemind-hk5z).
+    // Null for an event from before `option_labels`, whose only record of the option is its id.
+    let recorded_label = |option_id: &str| -> GraphValue {
+        option_label(option_id).map_or(GraphValue::Null, GraphValue::String)
+    };
 
     for option_id in &payload.option_ids {
         // ubs:ignore: per-option props copy; each Option node needs a fresh map with a distinct "label" entry
         let mut option_properties = origin_properties.clone();
         option_properties.insert("label".to_owned(), label_or_derived(option_id)); // ubs:ignore: per-option label key; alloc differs per iteration — unavoidable with BTreeMap<String,…> properties map
+        option_properties.insert("recorded_label".to_owned(), recorded_label(option_id)); // ubs:ignore: per-option recorded-label key; alloc differs per iteration — unavoidable with BTreeMap<String,…> properties map
         option_properties.insert(
             "description".to_owned(),
             option_description(option_id).map_or(GraphValue::Null, GraphValue::String),
@@ -999,6 +1006,10 @@ fn project_decision_proposed(
         // ubs:ignore: per-option props copy; the chosen option needs its own map with a distinct "label" entry, mirroring the options loop above
         let mut option_properties = origin_properties.clone();
         option_properties.insert("label".to_owned(), label_or_derived(chosen_option_id));
+        option_properties.insert(
+            "recorded_label".to_owned(),
+            recorded_label(chosen_option_id),
+        );
         option_properties.insert(
             "description".to_owned(),
             option_description(chosen_option_id).map_or(GraphValue::Null, GraphValue::String),

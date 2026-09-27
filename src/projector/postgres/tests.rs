@@ -792,7 +792,7 @@ fn get_failure_attribution_matches_memory() -> Result<()> {
 // ── get_decision_brief parity (hivemind-ookw) ───────────────────────────────────
 //
 // Composes get_decision + get_decision_context + get_decision_outcome + resolve_option_label
-// (the "MATCH (o:`Option` {id: $id}) RETURN o.label AS label" shape) — exercises all four
+// (an anchored `Option` node row, the shape `node_row` issues) — exercises all four
 // dispatch_query gaps this bead closes in one call, including chosen/rejected option labels.
 
 #[test]
@@ -811,6 +811,115 @@ fn get_decision_brief_matches_memory() -> Result<()> {
                     "get_decision_brief mismatch for {decision_id}: memory={memory_result:?} pg={pg_result:?}"
                 )));
             }
+        }
+        Ok(())
+    })
+}
+
+// ── Recorded option text parity (hivemind-hk5z) ─────────────────────────────────
+//
+// `recorded_label` rides on the Option node beside the readable `label`. It must land and read
+// back through the Postgres JSONB merge as it does in memory: the brief behind `why` and `verify`
+// carries `recorded_as`, the export's options section prints it, and a label that was already
+// words carries none.
+
+fn recorded_option_text_ledger() -> Result<InMemoryEventLedger> {
+    let ledger = InMemoryEventLedger::new();
+    for (decision_id, title, option_labels) in [
+        (
+            "decision:slugs",
+            "Name the product",
+            ["name-a-upheld", "name-b-standing"],
+        ),
+        (
+            "decision:words",
+            "Pick the capture path",
+            ["Direct CLI", "MCP server"],
+        ),
+    ] {
+        ledger.append(make_event(
+            EventType::DecisionProposed,
+            "human:alice",
+            json!({
+                "decision_id": decision_id,
+                "title": title,
+                "rationale": "A stated reason for the option-text parity test",
+                "topic_keys": ["brand"],
+                "option_ids": [format!("{decision_id}:1"), format!("{decision_id}:2")],
+                "option_labels": option_labels,
+                "chosen_option_id": format!("{decision_id}:1"),
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        ))?;
+    }
+    Ok(ledger)
+}
+
+#[test]
+fn recorded_option_text_reads_match_memory() -> Result<()> {
+    with_postgres_graph("recorded-option-text", |pg| {
+        let memory = MemoryGraph::default();
+        let ledger = recorded_option_text_ledger()?;
+        project_from_ledger(&ledger, &memory, 0)?;
+        project_from_ledger(&ledger, pg, 0)?;
+
+        for decision_id in ["decision:slugs", "decision:words"] {
+            let memory_brief = get_decision_brief(&memory, decision_id)?.data;
+            let pg_brief = get_decision_brief(pg, decision_id)?.data;
+            if memory_brief != pg_brief {
+                return Err(test_error(format!(
+                    "get_decision_brief mismatch for {decision_id}: memory={memory_brief:?} pg={pg_brief:?}"
+                )));
+            }
+        }
+
+        // Not vacuous: the slug decision reads as words and says what was recorded, and the
+        // words decision says nothing more.
+        let slugs = get_decision_brief(pg, "decision:slugs")?
+            .data
+            .expect("decision exists");
+        let chosen = slugs.chosen_option.expect("chosen option");
+        if chosen.label != "Upheld" || chosen.recorded_as.as_deref() != Some("name-a-upheld") {
+            return Err(test_error(format!("slug option on Postgres: {chosen:?}")));
+        }
+        let rejected = &slugs.rejected_options[0];
+        if rejected.label != "Standing"
+            || rejected.recorded_as.as_deref() != Some("name-b-standing")
+        {
+            return Err(test_error(format!(
+                "rejected slug option on Postgres: {rejected:?}"
+            )));
+        }
+        let words = get_decision_brief(pg, "decision:words")?
+            .data
+            .expect("decision exists");
+        if words
+            .chosen_option
+            .expect("chosen option")
+            .recorded_as
+            .is_some()
+        {
+            return Err(test_error(
+                "an option recorded as words carries no recorded_as",
+            ));
+        }
+
+        let request = DecisionLogRequest::default();
+        let (DecisionLogOutcome::Exported(memory_export), DecisionLogOutcome::Exported(pg_export)) = (
+            export_decision_log(&memory, &ledger, &request, None)?,
+            export_decision_log(pg, &ledger, &request, None)?,
+        ) else {
+            return Err(test_error("export did not produce files"));
+        };
+        if memory_export.files != pg_export.files {
+            return Err(test_error("the export differs between memory and Postgres"));
+        }
+        let exported_text: String = pg_export.files.values().cloned().collect();
+        if !exported_text.contains("(chosen; recorded as: name-a-upheld)") {
+            return Err(test_error(
+                "the export does not say what the slug option recorded",
+            ));
         }
         Ok(())
     })

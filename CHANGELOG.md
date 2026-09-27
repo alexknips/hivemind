@@ -108,15 +108,21 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   `rejected: name-b-standing, name-c-decisis`, with the answer letter inside the label, and
   options from before labels existed read as the raw id or the id's slug. Options are now shown
   as `Upheld`, `Standing` and `Decisis`: a label that is a slug (lowercase words joined by `-` or
-  `_`) is turned into words, and when every option of a decision is lettered `a`, `b`, `c`... the
-  shared stem and the letter are dropped. A label that is already words (`Direct CLI`, `sqlite`)
-  is shown as recorded, and an option whose only record is an id with no words in it stays as
-  that id. The ledger is unchanged: the words are derived each time it is replayed, so existing
-  ledgers read this way with no migration step. The capture skill, its slash commands, the
-  README, the CLI `--options` help and the MCP `capture_decision` schema now teach short human
-  labels (`--options "Direct CLI,MCP server" --chose "Direct CLI"`) instead of `--options
-  direct-cli,mcp`, and `hivemind quickstart` records `Local ledger` and `Spreadsheet`. New
-  captures that still use slugs are not refused; they read as words. (hivemind-hk5z)
+  `_`) is turned into words, acronyms keep their capitals (`direct-cli` reads `Direct CLI`; MCP,
+  CLI, API, ADR, UI, URL, HTTP, JSON, SQL and CI), and when every option of a decision is lettered
+  `a`, `b`, `c`... the shared stem and the letter are dropped. A label that is already words
+  (`Direct CLI`, `sqlite`) is shown as recorded, and an option whose only record is an id with no
+  words in it stays as that id. The words are a reading of the record, and the record stays in
+  view: the Option node keeps the recorded text as `recorded_label`, and where it reads
+  differently `why` prints `chose: Upheld (recorded as: name-a-upheld)`, `why --json` and the
+  brief carry `recorded_as` on each option, the decision-log export writes `recorded as:` beside
+  the option, and `GET /v1/graph` Option nodes carry `recorded_as` for a page to show. The ledger
+  is unchanged: the words are derived each time it is replayed, so existing ledgers read this way
+  with no migration step. The capture skill, its slash commands, the README, the CLI `--options`
+  help and the MCP `capture_decision` schema now teach short human labels (`--options "Direct
+  CLI,MCP server" --chose "Direct CLI"`) instead of `--options direct-cli,mcp`, and `hivemind
+  quickstart` records `Local ledger` and `Spreadsheet`. New captures that still use slugs are not
+  refused; they read as words. (hivemind-hk5z)
 - **A capture refused for its project leaves nothing behind.** `decision.capture` and
   `capture_decision` checked the stated project (registered, no reserved `personal:` prefix, a
   source a caller may claim) only after they had recorded the evidence, assumptions and bet named
