@@ -580,6 +580,81 @@ fn history_lines_say_where_a_moved_decision_went_and_when_and_leave_other_lines_
     Ok(())
 }
 
+#[test]
+fn history_change_kind_label_names_a_title_change() {
+    assert_eq!(
+        change_kind_label(HistoryChangeKind::TitleChanged),
+        "title_changed"
+    );
+}
+
+#[test]
+fn history_lines_say_what_a_retitled_decision_became_and_when_and_leave_other_lines_alone(
+) -> Result<()> {
+    // hivemind-ydmp: the history entry for a retitle carries from, to, actor and time; the
+    // finished "retitled from A to B by X on <date>" sentence ships with the verb. Mirrors the
+    // equivalent decision.moved test.
+    let scenario = Scenario::new();
+    scenario.decision(
+        "d:pricing",
+        "A decision with a very long paragraph title that predates the cap",
+        "human:alice",
+        "2026-01-01T00:00:00Z",
+    )?;
+    scenario.retitled(
+        "d:pricing",
+        "A decision with a very long paragraph title that predates the cap",
+        "A short name",
+        "human:alex",
+        "2026-01-02T03:04:05Z",
+    )?;
+
+    let activity = get_recent_activity(scenario.ledger(), &RecentActivityRequest::default())?.data;
+    let activity_text = render_recent_activity_summary(&activity);
+    let mut activity_lines = activity_text.lines();
+    let retitled_line = activity_lines
+        .next()
+        .expect("the retitle is the newest row");
+    assert!(
+        retitled_line.contains("\ttitle_changed\tdecision.retitled\tactor=human:alex\t"),
+        "{retitled_line}"
+    );
+    assert!(
+        retitled_line.ends_with(
+            "\tretitled=A decision with a very long paragraph title that predates the cap->A \
+short name\tat=2026-01-02T03:04:05+00:00"
+        ),
+        "{retitled_line}"
+    );
+    let proposal_line = activity_lines.next().expect("the proposal row");
+    assert!(
+        !proposal_line.contains("retitled="),
+        "only a retitle line carries the retitle: {proposal_line}"
+    );
+
+    let changed = get_decisions_changed_since(
+        scenario.ledger(),
+        &ChangedSinceRequest {
+            since_offset: Some(0),
+            limit: 10,
+            ..ChangedSinceRequest::default()
+        },
+    )?
+    .data;
+    let changed_text = render_changed_since_summary(&changed);
+    assert!(
+        changed_text.lines().any(|line| {
+            line.contains("\ttitle_changed\t")
+            && line.ends_with(
+                "\tretitled=A decision with a very long paragraph title that predates the cap->A \
+short name\tat=2026-01-02T03:04:05+00:00"
+            )
+        }),
+        "{changed_text}"
+    );
+    Ok(())
+}
+
 // ── score_decision / scan_decision_quality summaries (hivemind-qo11.5) ───────────────────────
 
 #[test]

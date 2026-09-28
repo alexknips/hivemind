@@ -423,6 +423,50 @@ fn every_write_path_event_validates_against_its_schema() {
         .move_decision(actor, &moved_decision_id, "contract-b", "contract-a", None)
         .expect("move decision back (reversal, no reason)");
 
+    // -- decision.retitled (hivemind-ydmp), with a reason -- and its reversal --
+    let retitled_option = commands
+        .record_option(actor, "Retitled option", "n/a")
+        .expect("record retitled option");
+    let retitled_decision_id = commands
+        .propose_decision(DecisionProposalInput {
+            project: Some(DeterminedProject::stated("contract-a")),
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id: actor,
+            title: "A decision that gets retitled",
+            rationale: "This decision exists so the test can exercise decision.retitled.",
+            topic_keys: &["conformance".to_owned()],
+            option_ids: &[retitled_option],
+            option_labels: &["Retitled option".to_owned()],
+            chosen_option_id: None,
+            decided_by: None,
+            delegated_by: None,
+            still_proposed: true,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect("propose decision to retitle");
+    commands
+        .retitle_decision(
+            actor,
+            &retitled_decision_id,
+            "A decision that gets retitled",
+            "A shorter name",
+            Some("contract test exercising decision.retitled"),
+        )
+        .expect("retitle decision");
+    commands
+        .retitle_decision(
+            actor,
+            &retitled_decision_id,
+            "A shorter name",
+            "A decision that gets retitled",
+            None,
+        )
+        .expect("retitle decision back (reversal, no reason)");
+
     // -- grounding (hivemind-gwhr.1): a bet hypothesis with kind/check_by/would_change_if, a
     // decision that follows from a premise at capture (relation.added FOLLOWS_FROM with
     // causation), later grounding without causation, and a standalone FOLLOWS_FROM link --
@@ -521,6 +565,7 @@ fn every_write_path_event_validates_against_its_schema() {
         EventType::IngestBatchClassified,
         EventType::DecisionScored,
         EventType::DecisionMoved,
+        EventType::DecisionRetitled,
         EventType::ProjectRegistered,
         EventType::ProjectLinked,
         EventType::ProjectUnlinked,
@@ -618,6 +663,7 @@ fn schema_file_stem(event_type: EventType) -> &'static str {
         EventType::DecisionScored => "decision.scored",
         EventType::DecisionMetadataDerived => "decision.metadata_derived",
         EventType::DecisionMoved => "decision.moved",
+        EventType::DecisionRetitled => "decision.retitled",
         EventType::ProjectRegistered => "project.registered",
         EventType::ProjectLinked => "project.linked",
         EventType::ProjectUnlinked => "project.unlinked",

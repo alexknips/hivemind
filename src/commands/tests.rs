@@ -3418,6 +3418,288 @@ fn move_decision_to_keeps_every_rule_of_move_decision() {
         .expect("the actor's own personal project is allowed");
 }
 
+/// Proposes a decision with the given title and no stated project (retitle tests don't care
+/// about project placement), returning its id.
+fn propose_decision_with_title(
+    commands: &Commands<'_, InMemoryEventLedger>,
+    title: &str,
+) -> String {
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option");
+    commands
+        .propose_decision(DecisionProposalInput {
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            project: None,
+            actor_id: "actor:alice",
+            title,
+            rationale: "This rationale is long enough to pass the minimum checks.",
+            topic_keys: &["Core".to_owned()],
+            option_ids: &[option_id],
+            option_labels: &["A".to_owned()],
+            chosen_option_id: None,
+            decided_by: None,
+            delegated_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect("propose succeeds")
+}
+
+#[test]
+fn retitle_decision_appends_event_and_is_reversible() {
+    // hivemind-ydmp: decision.retitled {decision_id, from, to, reason?}, and a reversal is
+    // another recorded retitle -- nothing is deleted or rewritten.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = propose_decision_with_title(&commands, "Original title");
+
+    let retitle_event_id = commands
+        .retitle_decision(
+            "actor:alice",
+            &decision_id,
+            "Original title",
+            "Shorter title",
+            Some("the original ran long"),
+        )
+        .expect("retitle succeeds");
+
+    let events = ledger.read(0, 10).expect("read succeeds");
+    let retitled = events
+        .iter()
+        .find(|event| event.event_id == Some(retitle_event_id))
+        .expect("retitle event present");
+    assert_eq!(retitled.event_type, EventType::DecisionRetitled);
+    assert_eq!(retitled.actor_id, "actor:alice");
+    assert_eq!(
+        retitled.payload.get("decision_id").and_then(|v| v.as_str()),
+        Some(decision_id.as_str())
+    );
+    assert_eq!(
+        retitled.payload.get("from").and_then(|v| v.as_str()),
+        Some("Original title")
+    );
+    assert_eq!(
+        retitled.payload.get("to").and_then(|v| v.as_str()),
+        Some("Shorter title")
+    );
+    assert_eq!(
+        retitled.payload.get("reason").and_then(|v| v.as_str()),
+        Some("the original ran long")
+    );
+
+    // Reversal: retitling it back is just another recorded retitle, not a rewrite.
+    commands
+        .retitle_decision(
+            "actor:alice",
+            &decision_id,
+            "Shorter title",
+            "Original title",
+            None,
+        )
+        .expect("reversal succeeds");
+    let events = ledger.read(0, 10).expect("read succeeds");
+    let retitles: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == EventType::DecisionRetitled)
+        .collect();
+    assert_eq!(
+        retitles.len(),
+        2,
+        "both retitles are recorded, none rewritten"
+    );
+}
+
+#[test]
+fn retitle_decision_rejects_stale_from() {
+    // `from` must equal the decision's *current* title -- a caller naming a title the
+    // decision no longer has is refused rather than silently retitling again.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = propose_decision_with_title(&commands, "Original title");
+    commands
+        .retitle_decision(
+            "actor:alice",
+            &decision_id,
+            "Original title",
+            "Middle title",
+            None,
+        )
+        .expect("first retitle succeeds");
+
+    let error = commands
+        .retitle_decision(
+            "actor:alice",
+            &decision_id,
+            "Original title",
+            "Final title",
+            None,
+        )
+        .expect_err("stale from is refused");
+    let message = error.to_string();
+    assert!(message.contains("Middle title"), "message was: {message}");
+
+    let retitles = ledger
+        .read(0, 10)
+        .expect("read succeeds")
+        .into_iter()
+        .filter(|event| event.event_type == EventType::DecisionRetitled)
+        .count();
+    assert_eq!(retitles, 1, "the rejected retitle must not append");
+}
+
+#[test]
+fn retitle_decision_rejects_matching_from_and_to() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = propose_decision_with_title(&commands, "Original title");
+
+    assert!(commands
+        .retitle_decision(
+            "actor:alice",
+            &decision_id,
+            "Original title",
+            "Original title",
+            None
+        )
+        .is_err());
+}
+
+#[test]
+fn retitle_decision_rejects_a_to_that_fails_validate_title() {
+    // `to` must pass the same cap/one-sentence/no-list rules `decision.proposed` enforces;
+    // `from` is never validated -- retiring an over-cap title predating the cap is the point.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = propose_decision_with_title(&commands, "Original title");
+
+    let over_cap: String = "x".repeat(MAX_TITLE_LEN + 1);
+    let error = commands
+        .retitle_decision(
+            "actor:alice",
+            &decision_id,
+            "Original title",
+            &over_cap,
+            None,
+        )
+        .expect_err("a to over the cap must be rejected");
+    assert!(
+        error.to_string().contains(&MAX_TITLE_LEN.to_string()),
+        "error must name the rule (the 120-char cap): {error}"
+    );
+
+    let retitles = ledger
+        .read(0, 10)
+        .expect("read succeeds")
+        .into_iter()
+        .filter(|event| event.event_type == EventType::DecisionRetitled)
+        .count();
+    assert_eq!(retitles, 0, "the rejected retitle must not append");
+}
+
+#[test]
+fn retitle_decision_rejects_missing_decision() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    assert!(commands
+        .retitle_decision(
+            "actor:alice",
+            "decision-does-not-exist",
+            "Original title",
+            "New title",
+            None
+        )
+        .is_err());
+}
+
+#[test]
+fn retitle_decision_to_reads_the_current_title_and_reports_both_ends() {
+    // The caller names only the new title; `from` is whatever the ledger resolves now, so a
+    // second retitle needs no bookkeeping and reversal is just another `to`.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = propose_decision_with_title(&commands, "Original title");
+
+    let first = commands
+        .retitle_decision_to(
+            "actor:alice",
+            &decision_id,
+            "Shorter title",
+            Some("belongs there"),
+        )
+        .expect("retitle succeeds");
+    assert_eq!(first.decision_id, decision_id);
+    assert_eq!(first.from, "Original title");
+    assert_eq!(first.to, "Shorter title");
+    assert_eq!(first.reason.as_deref(), Some("belongs there"));
+
+    let back = commands
+        .retitle_decision_to("actor:alice", &decision_id, "Original title", None)
+        .expect("reversal succeeds");
+    assert_eq!(
+        back.from, "Shorter title",
+        "from follows the earlier retitle"
+    );
+    assert_eq!(back.to, "Original title");
+    assert_eq!(back.reason, None);
+    assert!(back.event_id > first.event_id);
+
+    let retitles = ledger
+        .read(0, 20)
+        .expect("read succeeds")
+        .into_iter()
+        .filter(|event| event.event_type == EventType::DecisionRetitled)
+        .count();
+    assert_eq!(retitles, 2, "both retitles are recorded, none rewritten");
+}
+
+#[test]
+fn retitle_decision_to_says_when_the_decision_is_already_titled_that() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = propose_decision_with_title(&commands, "Original title");
+
+    let error = commands
+        .retitle_decision_to("actor:alice", &decision_id, "Original title", None)
+        .expect_err("a retitle to the same title is refused");
+    let message = error.to_string();
+    assert!(message.contains("already titled"), "message was: {message}");
+    let retitles = ledger
+        .read(0, 20)
+        .expect("read succeeds")
+        .into_iter()
+        .filter(|event| event.event_type == EventType::DecisionRetitled)
+        .count();
+    assert_eq!(retitles, 0, "the refused retitle must not append");
+}
+
+#[test]
+fn retitle_decision_to_keeps_every_rule_of_retitle_decision() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let decision_id = propose_decision_with_title(&commands, "Original title");
+
+    let over_cap: String = "x".repeat(MAX_TITLE_LEN + 1);
+    let invalid = commands
+        .retitle_decision_to("actor:alice", &decision_id, &over_cap, None)
+        .expect_err("an over-cap to is refused");
+    assert!(invalid.to_string().contains(&MAX_TITLE_LEN.to_string()));
+
+    let missing = commands
+        .retitle_decision_to("actor:alice", "decision-does-not-exist", "New title", None)
+        .expect_err("a missing decision is refused");
+    assert!(missing.to_string().contains("decision does not exist"));
+
+    commands
+        .retitle_decision_to("actor:alice", &decision_id, "New title", None)
+        .expect("a valid retitle succeeds");
+}
+
 #[test]
 fn propose_decision_normalizes_topic_keys() {
     let ledger = InMemoryEventLedger::new();

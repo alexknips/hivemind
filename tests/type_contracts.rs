@@ -6,11 +6,12 @@ use hivemind::events::{
     self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionAcceptedPayload,
     DecisionAssessedPayload, DecisionBlockerPriority, DecisionMetadataDerivedPayload,
     DecisionMovedPayload, DecisionProposedPayload, DecisionRejectedPayload,
-    DecisionRequestedPayload, DecisionScoredPayload, DecisionSupersededPayload, Event,
-    EventBuilder, EventEnvelope, EventPayload, EventSource, EventType, EventValidationError,
-    EvidenceRecordedPayload, HypothesisKind, HypothesisRecordedPayload, ImportanceFactors,
-    IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn, ModelDimension,
-    ModelDimensions, NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
+    DecisionRequestedPayload, DecisionRetitledPayload, DecisionScoredPayload,
+    DecisionSupersededPayload, Event, EventBuilder, EventEnvelope, EventPayload, EventSource,
+    EventType, EventValidationError, EvidenceRecordedPayload, HypothesisKind,
+    HypothesisRecordedPayload, ImportanceFactors, IngestBatchClassifiedPayload,
+    IngestBatchReceivedPayload, IngestTurn, ModelDimension, ModelDimensions,
+    NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
     ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
     QualityDim, QualityDims, QualityLevel, QuestionAskedPayload, QuestionRecordedPayload,
     RelationAddedPayload, RelationKind as EventRelationKind, RelationRemovedPayload,
@@ -43,6 +44,7 @@ const EVENT_TYPES: [EventType; 25] = [
     EventType::DecisionScored,
     EventType::DecisionMetadataDerived,
     EventType::DecisionMoved,
+    EventType::DecisionRetitled,
     EventType::ProjectRegistered,
     EventType::ProjectLinked,
     EventType::ProjectUnlinked,
@@ -457,6 +459,7 @@ fn event_type_name(event_type: EventType) -> &'static str {
         EventType::DecisionScored => "decision.scored",
         EventType::DecisionMetadataDerived => "decision.metadata_derived",
         EventType::DecisionMoved => "decision.moved",
+        EventType::DecisionRetitled => "decision.retitled",
         EventType::ProjectRegistered => "project.registered",
         EventType::ProjectLinked => "project.linked",
         EventType::ProjectUnlinked => "project.unlinked",
@@ -489,6 +492,7 @@ fn payload_variant_type(payload: &EventPayload) -> EventType {
         }
         EventPayload::DecisionMetadataDerived(_) => EventType::DecisionMetadataDerived,
         EventPayload::DecisionMoved(_) => EventType::DecisionMoved,
+        EventPayload::DecisionRetitled(_) => EventType::DecisionRetitled,
         EventPayload::ProjectRegistered(_) => EventType::ProjectRegistered,
         EventPayload::ProjectLinked(_) => EventType::ProjectLinked,
         EventPayload::ProjectUnlinked(_) => EventType::ProjectUnlinked,
@@ -558,6 +562,9 @@ fn typed_payload_from_value(
             EventPayload::DecisionMetadataDerived(serde_json::from_value(payload)?)
         }
         EventType::DecisionMoved => EventPayload::DecisionMoved(serde_json::from_value(payload)?),
+        EventType::DecisionRetitled => {
+            EventPayload::DecisionRetitled(serde_json::from_value(payload)?)
+        }
         EventType::ProjectRegistered => {
             EventPayload::ProjectRegistered(serde_json::from_value(payload)?)
         }
@@ -841,6 +848,15 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
             }),
         ),
         (
+            EventType::DecisionRetitled,
+            EventPayload::DecisionRetitled(DecisionRetitledPayload {
+                decision_id: "decision:minimal".to_owned(),
+                from: "Contract test title".to_owned(),
+                to: "Contract test title, renamed".to_owned(),
+                reason: Some("Contract tests need one valid retitle payload".to_owned()),
+            }),
+        ),
+        (
             EventType::ProjectRegistered,
             EventPayload::ProjectRegistered(ProjectRegisteredPayload {
                 handle: "contract-test".to_owned(),
@@ -906,6 +922,7 @@ fn payload_json(payload: &EventPayload) -> Value {
         EventPayload::DecisionAssessed(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionMetadataDerived(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionMoved(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::DecisionRetitled(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::ProjectRegistered(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::ProjectLinked(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::ProjectUnlinked(payload) => serde_json::to_value(payload).unwrap(),
@@ -948,6 +965,10 @@ fn shape_compatible(left: EventType, right: EventType) -> bool {
             // ProjectAnchorPayload shape for the same reason.
             | (EventType::ProjectAnchored, EventType::ProjectUnanchored)
             | (EventType::ProjectUnanchored, EventType::ProjectAnchored)
+            // decision.moved and decision.retitled share the identical
+            // decision_id/from/to/reason shape (hivemind-ydmp).
+            | (EventType::DecisionMoved, EventType::DecisionRetitled)
+            | (EventType::DecisionRetitled, EventType::DecisionMoved)
     )
 }
 

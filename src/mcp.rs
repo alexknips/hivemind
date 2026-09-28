@@ -45,8 +45,8 @@ use core::{
     GetDecisionContextArgs, GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs,
     GetSituationalDecisionsArgs, GetSuggestionsArgs, GetSupersessionChainArgs, GroundDecisionArgs,
     LedgerHandle, LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs, RecentDecisionsArgs,
-    RequestDecisionArgs, ScanDecisionQualityArgs, ScanMisfiledDecisionsArgs, ScoreDecisionArgs,
-    SupersedeDecisionArgs,
+    RequestDecisionArgs, RetitleDecisionArgs, ScanDecisionQualityArgs, ScanMisfiledDecisionsArgs,
+    ScoreDecisionArgs, SupersedeDecisionArgs,
 };
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -343,6 +343,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "disagree_decision" => tool_disagree_decision(arguments, config),
         "supersede_decision" => tool_supersede_decision(arguments, config),
         "move_decision" => tool_move_decision(arguments, config),
+        "retitle_decision" => tool_retitle_decision(arguments, config),
         "ground_decision" => tool_ground_decision(arguments, config),
         "request_decision" => tool_request_decision(arguments, config),
         "get_decision" => tool_get_decision(arguments, config),
@@ -584,6 +585,22 @@ pub fn tool_definitions() -> Vec<Value> {
                     "topic": { "type": "string", "description": "Narrows description resolution to decisions carrying this topic key." },
                     "to": { "type": "string", "description": "Project to move the decision to: a registered handle, or the acting actor's own personal address. Where the decision is now is read from the ledger, never passed." },
                     "reason": { "type": "string", "description": "Why the decision belongs in `to`; kept with the move and shown in the decision's history." }
+                }
+            }
+        }),
+        json!({
+            "name": "retitle_decision",
+            "description": "Rename a decision, recorded with who, when, from, to and why. Reversible: retitling it back is another recorded retitle; nothing is deleted or rewritten — the old title stays readable as `former_title` on the node and in the untouched decision.proposed event. Resolves by decision_id or a free-text description — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error, and no event is appended; re-call with decision_id from that list. The same shape is returned when no decision contains every word but some contain most of them: each such close candidate lists the words it lacks in `missing_terms`, and none is picked for you. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}`, and no event is appended. On success the reply is `{decision_id, event_id, from, to, reason?}`, where `from` is the decision's title before this call, read from the ledger. `to` must pass the same title rules decision capture enforces (a short name, one sentence, no numbered list); a decision already titled `to` is refused. Wraps `hivemind retitle`.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["to"],
+                "properties": {
+                    "actor_id": { "type": "string", "description": "Retitling actor. Defaults to `agent:<tool>:<name>` when omitted." },
+                    "decision_id": { "type": "string", "description": "The decision to retitle. Provide this or `description`, not both." },
+                    "description": { "type": "string", "description": "Free-text description to resolve to a decision when the id is not known." },
+                    "topic": { "type": "string", "description": "Narrows description resolution to decisions carrying this topic key." },
+                    "to": { "type": "string", "description": "The new title: a short name, not a paragraph. What it is now is read from the ledger, never passed." },
+                    "reason": { "type": "string", "description": "Why the decision was renamed; kept with the retitle and shown in the decision's history." }
                 }
             }
         }),
@@ -1173,6 +1190,15 @@ fn tool_move_decision(args: Value, config: &McpConfig) -> std::result::Result<Va
     let core_args = MoveDecisionArgs::from_json(&args, actor_id)?;
     let provider = StdioLedgerProvider { config };
     let output = core::move_decision(&provider, core_args)?;
+    Ok(output.into_value())
+}
+
+fn tool_retitle_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let actor_id = mcp_actor_id(&args, config)?;
+    let core_args = RetitleDecisionArgs::from_json(&args, actor_id)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::retitle_decision(&provider, core_args)?;
     Ok(output.into_value())
 }
 

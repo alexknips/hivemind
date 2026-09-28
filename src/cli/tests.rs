@@ -9170,6 +9170,174 @@ fn move_refusals_and_misses_write_nothing_postgres() -> CliTestResult {
     move_refusals_and_misses_write_nothing_body(&backend)
 }
 
+fn retitle_json(
+    backend: &TestBackend,
+    rest: &[&str],
+) -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let mut args = vec!["--actor", "human:alice", "--json", "retitle"];
+    args.extend_from_slice(rest);
+    Ok(serde_json::from_str(&run(&Cli::parse_from(cli_args(
+        backend, &args,
+    )))?)?)
+}
+
+fn decision_title(
+    backend: &TestBackend,
+    decision_id: &str,
+) -> std::result::Result<String, Box<dyn std::error::Error>> {
+    let view: serde_json::Value = serde_json::from_str(&run(&Cli::parse_from(cli_args(
+        backend,
+        &["--json", "query", "get_decision", "--id", decision_id],
+    )))?)?;
+    Ok(json_at(&view, "/data/title")?
+        .as_str()
+        .ok_or("get_decision carries a title")?
+        .to_owned())
+}
+
+fn retitle_by_description_records_the_retitle_and_reverses_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    let decision_id =
+        capture_for_project_list(backend, "human:alice", "Adopt async billing queue", None)?;
+
+    let retitled = retitle_json(
+        backend,
+        &[
+            "async billing queue",
+            "--to",
+            "Use async billing",
+            "--reason",
+            "the old title was a paragraph",
+        ],
+    )?;
+    ensure_json_eq(
+        &without_event_id(retitled)?,
+        serde_json::json!({
+            "decision_id": decision_id,
+            "from": "Adopt async billing queue",
+            "to": "Use async billing",
+            "reason": "the old title was a paragraph"
+        }),
+        "retitle golden (by description)",
+    )?;
+    ensure_eq(
+        decision_title(backend, &decision_id)?,
+        "Use async billing".to_owned(),
+        "the decision now carries the new title",
+    )?;
+
+    // Reversal is another retitle by id, in text mode; `from` is read, so it follows the first.
+    let text = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "human:alice",
+            "retitle",
+            "--decision",
+            &decision_id,
+            "--to",
+            "Adopt async billing queue",
+        ],
+    )))?;
+    ensure(
+        text.starts_with("event_id=")
+            && text.ends_with(&format!(
+                " decision_id={decision_id} from=Use async billing to=Adopt async billing queue"
+            )),
+        &format!("text reply names the decision and both ends: {text}"),
+    )?;
+    ensure_eq(
+        decision_title(backend, &decision_id)?,
+        "Adopt async billing queue".to_owned(),
+        "retitling it back restores the original title",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn retitle_by_description_records_the_retitle_and_reverses() -> CliTestResult {
+    retitle_by_description_records_the_retitle_and_reverses_body(&TestBackend::sqlite(
+        "retitle-by-desc",
+    ))
+}
+
+#[test]
+fn retitle_by_description_records_the_retitle_and_reverses_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("retitle-by-desc-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    retitle_by_description_records_the_retitle_and_reverses_body(&backend)
+}
+
+fn retitle_refusals_and_misses_write_nothing_body(backend: &TestBackend) -> CliTestResult {
+    let decision_id =
+        capture_for_project_list(backend, "human:alice", "Adopt async billing queue", None)?;
+
+    // A description that matches nothing is a success envelope, not an error.
+    let missing = retitle_json(backend, &["no such decision zzz", "--to", "New title"])?;
+    ensure_json_eq(
+        &missing["data"]["outcome"],
+        serde_json::json!("not_found"),
+        "a miss is data",
+    )?;
+
+    let over_cap = "x".repeat(121);
+    for (rest, expected) in [
+        (
+            vec![
+                "--decision",
+                decision_id.as_str(),
+                "--to",
+                over_cap.as_str(),
+            ],
+            "must be at most",
+        ),
+        (
+            vec![
+                "--decision",
+                decision_id.as_str(),
+                "--to",
+                "Adopt async billing queue",
+            ],
+            "already titled",
+        ),
+    ] {
+        let mut args = vec!["--actor", "human:alice", "retitle"];
+        args.extend(rest);
+        let error = run(&Cli::parse_from(cli_args(backend, &args)))
+            .err()
+            .ok_or("a refused retitle is an error")?
+            .to_string();
+        ensure(
+            error.contains(expected),
+            &format!("expected `{expected}` in: {error}"),
+        )?;
+    }
+
+    ensure_eq(
+        decision_title(backend, &decision_id)?,
+        "Adopt async billing queue".to_owned(),
+        "nothing was retitled: the decision still carries the title it was captured with",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn retitle_refusals_and_misses_write_nothing() -> CliTestResult {
+    retitle_refusals_and_misses_write_nothing_body(&TestBackend::sqlite("retitle-refused"))
+}
+
+#[test]
+fn retitle_refusals_and_misses_write_nothing_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("retitle-refused-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    retitle_refusals_and_misses_write_nothing_body(&backend)
+}
+
 /// hivemind-9lzi: a replacement of a decision that was moved is filed where the decision is
 /// now, with or without `--project-from-context` finding nothing in the folder it runs from.
 fn supersede_of_a_moved_decision_is_filed_where_it_was_moved_body(

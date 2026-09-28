@@ -19,7 +19,7 @@ const GRAPH_DB_NAME: &str = "graph.kuzu";
 const NODE_DDL: &[(NodeKind, &str)] = &[
     (
         NodeKind::Decision,
-        "CREATE NODE TABLE IF NOT EXISTS `Decision` (id STRING, title STRING, rationale STRING, topic_keys STRING[], expressed_confidence STRING, project STRING, project_source STRING, occurred_at STRING, slug STRING, quote STRING, question STRING, delegated_by STRING, score_framing DOUBLE, score_alternatives DOUBLE, score_information DOUBLE, score_reasoning DOUBLE, score_values_tradeoffs DOUBLE, score_bias_exposure DOUBLE, score_calibration DOUBLE, score_weight_version STRING, importance_stakes DOUBLE, importance_irreversibility DOUBLE, importance_actionability DOUBLE, model_assessment STRING, model_assessment_origin INT64, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Decision` (id STRING, title STRING, former_title STRING, rationale STRING, topic_keys STRING[], expressed_confidence STRING, project STRING, project_source STRING, occurred_at STRING, slug STRING, quote STRING, question STRING, delegated_by STRING, score_framing DOUBLE, score_alternatives DOUBLE, score_information DOUBLE, score_reasoning DOUBLE, score_values_tradeoffs DOUBLE, score_bias_exposure DOUBLE, score_calibration DOUBLE, score_weight_version STRING, importance_stakes DOUBLE, importance_irreversibility DOUBLE, importance_actionability DOUBLE, model_assessment STRING, model_assessment_origin INT64, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::DecisionRequest,

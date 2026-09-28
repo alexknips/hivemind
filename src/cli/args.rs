@@ -116,6 +116,11 @@ pub enum Command {
     /// --pick N. One that matches nothing is a successful `not_found` answer. Recorded with
     /// who, when, from, to and why; reversed by moving it back.
     Move(MoveArgs),
+    /// Rename a decision, found by describing it. A description that matches more than one
+    /// decision lists the candidates and writes nothing; pick one with --pick N. The old title
+    /// is kept on the node (`former_title`) and in the untouched `decision.proposed` event;
+    /// nothing is lost. Recorded with who, when, from, to and why; reversed by retitling it back.
+    Retitle(RetitleArgs),
     /// Say what an existing decision rests on, after the fact: a decision it follows from,
     /// something observed, something assumed, or a declared bet. Append-only and attributed to
     /// whoever runs it (--actor), so older decisions stop reading "nothing declared" without
@@ -709,6 +714,33 @@ pub struct MoveArgs {
     pub to: String,
 
     /// Why it belongs there; kept with the move.
+    #[arg(long)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct RetitleArgs {
+    /// Free-text description to resolve to the decision being retitled (fluent alternative to
+    /// --decision). A bare `#N` refers to candidate N from the previous ambiguous resolver output.
+    pub description: Option<String>,
+
+    #[arg(long = "decision")]
+    pub decision_id: Option<String>,
+
+    /// Select candidate N when a description resolves ambiguously.
+    #[arg(long = "pick")]
+    pub pick: Option<usize>,
+
+    /// Narrow resolution to decisions carrying this topic key.
+    #[arg(long = "topic")]
+    pub topic: Option<String>,
+
+    /// The new title: a short name, not a paragraph. What it is now is read from the ledger,
+    /// never typed.
+    #[arg(long = "to")]
+    pub to: String,
+
+    /// Why it was renamed; kept with the retitle.
     #[arg(long)]
     pub reason: Option<String>,
 }

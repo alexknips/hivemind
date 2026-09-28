@@ -9,11 +9,12 @@ use crate::commands::{normalize_topic_key, personal_project_handle};
 use crate::error::ProjectorError;
 use crate::events::{
     self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionMovedPayload,
-    DecisionProposedPayload, DecisionRequestedPayload, DecisionScoredPayload, Event, EventId,
-    EventPayload, EvidenceRecordedPayload, HypothesisRecordedPayload, IngestBatchClassifiedPayload,
-    NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
-    ProjectAnchorPayload, ProjectLinkKind, ProjectRegisteredPayload, ProjectSource,
-    QuestionAskedPayload, QuestionRecordedPayload, RelationKind as EventRelationKind, TenantId,
+    DecisionProposedPayload, DecisionRequestedPayload, DecisionRetitledPayload,
+    DecisionScoredPayload, Event, EventId, EventPayload, EvidenceRecordedPayload,
+    HypothesisRecordedPayload, IngestBatchClassifiedPayload, NotificationAcknowledgedPayload,
+    NotificationSentPayload, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind,
+    ProjectRegisteredPayload, ProjectSource, QuestionAskedPayload, QuestionRecordedPayload,
+    RelationKind as EventRelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -400,6 +401,9 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
         }
         EventPayload::DecisionMoved(payload) => {
             project_decision_moved(graph, &payload)?;
+        }
+        EventPayload::DecisionRetitled(payload) => {
+            project_decision_retitled(graph, &payload)?;
         }
         EventPayload::ProjectRegistered(payload) => {
             project_project_registered(graph, &payload, &origin_properties)?
@@ -1854,6 +1858,30 @@ fn project_decision_moved(graph: &impl GraphView, payload: &DecisionMovedPayload
             (
                 "project_source".to_owned(),
                 GraphValue::String(ProjectSource::Moved.as_str().to_owned()),
+            ),
+        ]),
+    )
+}
+
+/// `decision.retitled` upserts `title` and `former_title` on the existing Decision node
+/// (mirrors `project_decision_moved`'s footprint exactly; hivemind-ydmp) — never the event's
+/// origin properties, so the node keeps the proposal's own `event_origin` / `source` /
+/// `source_ref` / `tenant_id`. `former_title` records the title this retitle replaced, for
+/// at-a-glance auditability directly on the node; the untouched `decision.proposed` event
+/// (and any earlier `decision.retitled`) remains the permanent record regardless.
+/// `upsert_node` merges by key, so project, rationale, options and the rest are untouched.
+fn project_decision_retitled(
+    graph: &impl GraphView,
+    payload: &DecisionRetitledPayload,
+) -> Result<()> {
+    graph.upsert_node(
+        NodeKind::Decision,
+        &payload.decision_id,
+        &GraphProperties::from([
+            ("title".to_owned(), GraphValue::String(payload.to.clone())),
+            (
+                "former_title".to_owned(),
+                GraphValue::String(payload.from.clone()),
             ),
         ]),
     )

@@ -13,8 +13,8 @@ use crate::commands::personal_project_handle;
 use crate::error::QueryError;
 use crate::events::{
     self, DecisionAcceptedPayload, DecisionMovedPayload, DecisionProposedPayload,
-    DecisionRejectedPayload, DecisionSupersededPayload, Event, EventId, EventPayload, EventSource,
-    EventType, RelationAddedPayload, RelationKind as EventRelationKind,
+    DecisionRejectedPayload, DecisionRetitledPayload, DecisionSupersededPayload, Event, EventId,
+    EventPayload, EventSource, EventType, RelationAddedPayload, RelationKind as EventRelationKind,
 };
 use crate::ledger::EventLedger;
 use crate::projector::NodeKind;
@@ -124,6 +124,11 @@ pub enum HistoryChangeKind {
     /// always distinguishable in history without inspecting the raw event
     /// (approved record shape, item 3; hivemind-s15q.10).
     ProjectMoved,
+    /// A decision's title changed (`decision.retitled`). Its own kind, not folded into
+    /// `ContextChange`, so a retitle is never dropped by compaction and is always
+    /// distinguishable in history without inspecting the raw event (mirrors
+    /// `ProjectMoved`'s treatment; hivemind-ydmp).
+    TitleChanged,
     ContextChange,
 }
 
@@ -148,6 +153,17 @@ pub struct AffectedNode {
 /// (approved record shape, item 3; hivemind-s15q.10). `None` on every other kind of change.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProjectMove {
+    pub from: String,
+    pub to: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Where a `decision.retitled` took a decision's title. Carried on the history row of a
+/// [`HistoryChangeKind::TitleChanged`] change next to the row's own `actor_id` and `ts`
+/// (mirrors [`ProjectMove`] exactly; hivemind-ydmp). `None` on every other kind of change.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct TitleChange {
     pub from: String,
     pub to: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -186,6 +202,8 @@ pub struct ActivityRow {
     pub affected_nodes: Vec<AffectedNode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_move: Option<ProjectMove>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_change: Option<TitleChange>,
     pub citation_id: String,
 }
 
@@ -273,6 +291,8 @@ pub struct DecisionChangeRow {
     pub affected_nodes: Vec<AffectedNode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_move: Option<ProjectMove>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_change: Option<TitleChange>,
     pub citation_id: String,
 }
 
@@ -341,6 +361,8 @@ pub struct DecisionChange {
     pub affected_nodes: Vec<AffectedNode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_move: Option<ProjectMove>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_change: Option<TitleChange>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -525,9 +547,16 @@ pub fn get_recent_decisions(
                 (None, Some(handle)) => handle,
                 (None, None) => personal_project_handle(&event.actor_id),
             };
+            // The same rule the projector applies to `title`: the latest `decision.retitled`
+            // wins over the proposal's own title (hivemind-ydmp) — without this override,
+            // `query recent` / `recent_decisions` stay stale forever after a retitle even
+            // though recall/why/digest/search read straight off the projected node.
+            let title = entry
+                .and_then(|entry| entry.retitled_to.clone())
+                .unwrap_or(payload.title);
             items.push(RecentDecisionEntry {
                 decision_id,
-                title: payload.title,
+                title,
                 rationale: payload.rationale,
                 quote: payload.quote,
                 question: payload.question,
@@ -743,6 +772,7 @@ pub fn get_decisions_added_since(
                 provenance,
                 affected_nodes,
                 project_move: project_move_for_payload(&payload),
+                title_change: title_change_for_payload(&payload),
             });
         }
 
@@ -1360,6 +1390,9 @@ struct DecisionIndexEntry {
     hypothesis_ids: BTreeSet<String>,
     /// Where the latest `decision.moved` took the decision; absent when it never moved.
     moved_to: Option<String>,
+    /// The title the latest `decision.retitled` gave the decision; absent when it was never
+    /// retitled (same pattern as `moved_to`; hivemind-ydmp).
+    retitled_to: Option<String>,
 }
 
 impl DecisionIndex {
@@ -1503,6 +1536,13 @@ impl DecisionIndex {
                         .or_default()
                         .moved_to = Some(payload.to);
                 }
+                EventPayload::DecisionRetitled(payload) => {
+                    index
+                        .decisions
+                        .entry(payload.decision_id)
+                        .or_default()
+                        .retitled_to = Some(payload.to);
+                }
             }
         }
         Ok(index)
@@ -1602,6 +1642,7 @@ fn activity_row(event: &Event, index: &DecisionIndex) -> Result<ActivityRow> {
         decision_ids,
         affected_nodes,
         project_move: project_move_for_payload(&payload),
+        title_change: title_change_for_payload(&payload),
         citation_id: citation.citation_id,
     })
 }
@@ -1626,6 +1667,7 @@ fn decision_change_row(event: &Event, index: &DecisionIndex) -> Result<DecisionC
         decision_ids,
         affected_nodes,
         project_move: project_move_for_payload(&payload),
+        title_change: title_change_for_payload(&payload),
         citation_id: citation.citation_id,
     })
 }
@@ -1673,6 +1715,19 @@ fn project_move_for_payload(payload: &EventPayload) -> Option<ProjectMove> {
     }
 }
 
+fn title_change_for_payload(payload: &EventPayload) -> Option<TitleChange> {
+    match payload {
+        EventPayload::DecisionRetitled(DecisionRetitledPayload {
+            from, to, reason, ..
+        }) => Some(TitleChange {
+            from: from.clone(),
+            to: to.clone(),
+            reason: reason.clone(),
+        }),
+        _ => None,
+    }
+}
+
 fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
     match payload {
         EventPayload::DecisionProposed(_) => HistoryChangeKind::NewDecision,
@@ -1681,6 +1736,7 @@ fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
         }
         EventPayload::DecisionSuperseded(_) => HistoryChangeKind::Supersession,
         EventPayload::DecisionMoved(_) => HistoryChangeKind::ProjectMoved,
+        EventPayload::DecisionRetitled(_) => HistoryChangeKind::TitleChanged,
         EventPayload::EvidenceRecorded(_) => HistoryChangeKind::NewEvidence,
         EventPayload::RelationAdded(payload) => match payload.relation {
             EventRelationKind::BasedOn | EventRelationKind::Supports => {
@@ -1739,6 +1795,9 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
             ids.insert(new_decision_id.clone());
         }
         EventPayload::DecisionMoved(DecisionMovedPayload { decision_id, .. }) => {
+            ids.insert(decision_id.clone());
+        }
+        EventPayload::DecisionRetitled(DecisionRetitledPayload { decision_id, .. }) => {
             ids.insert(decision_id.clone());
         }
         EventPayload::DecisionRequested(payload) => {
@@ -1847,6 +1906,9 @@ fn affected_nodes_for_event(event: &Event, payload: &EventPayload) -> Vec<Affect
             nodes.insert(affected_node(&payload.new_decision_id, NodeKind::Decision));
         }
         EventPayload::DecisionMoved(payload) => {
+            nodes.insert(affected_node(&payload.decision_id, NodeKind::Decision));
+        }
+        EventPayload::DecisionRetitled(payload) => {
             nodes.insert(affected_node(&payload.decision_id, NodeKind::Decision));
         }
         EventPayload::EvidenceRecorded(payload) => {

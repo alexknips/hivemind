@@ -101,6 +101,11 @@ pub enum EventType {
     /// (approved record shape, item 3; hivemind-s15q.10).
     #[serde(rename = "decision.moved")]
     DecisionMoved,
+    /// A decision's title changed after capture. Recorded and reversible: a reversal is
+    /// another `decision.retitled` with `from`/`to` swapped, never a rewrite of this one
+    /// (same shape as `decision.moved`; hivemind-ydmp).
+    #[serde(rename = "decision.retitled")]
+    DecisionRetitled,
     #[serde(rename = "project.registered")]
     ProjectRegistered,
     #[serde(rename = "project.linked")]
@@ -1134,6 +1139,21 @@ pub struct DecisionMovedPayload {
     pub reason: Option<String>,
 }
 
+/// `decision.retitled` (hivemind-ydmp). `from` is the current title at retitle time and is
+/// never validated here — it may legitimately be over the title cap, since retiring those
+/// pre-cap titles is the whole point. `to` must pass `validate_title` — enforced by
+/// `commands::retitle_decision`, not here. Reversal is another `DecisionRetitledPayload`
+/// with `from`/`to` swapped; nothing here is ever edited in place.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionRetitledPayload {
+    pub decision_id: String,
+    pub from: String,
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectRegisteredPayload {
@@ -1188,6 +1208,7 @@ pub enum EventPayload {
     DecisionAssessed(DecisionAssessedPayload),
     DecisionMetadataDerived(DecisionMetadataDerivedPayload),
     DecisionMoved(DecisionMovedPayload),
+    DecisionRetitled(DecisionRetitledPayload),
     ProjectRegistered(ProjectRegisteredPayload),
     ProjectLinked(ProjectLinkPayload),
     ProjectUnlinked(ProjectLinkPayload),
@@ -1218,6 +1239,7 @@ impl EventPayload {
             Self::DecisionScored(_) | Self::DecisionAssessed(_) => EventType::DecisionScored,
             Self::DecisionMetadataDerived(_) => EventType::DecisionMetadataDerived,
             Self::DecisionMoved(_) => EventType::DecisionMoved,
+            Self::DecisionRetitled(_) => EventType::DecisionRetitled,
             Self::ProjectRegistered(_) => EventType::ProjectRegistered,
             Self::ProjectLinked(_) => EventType::ProjectLinked,
             Self::ProjectUnlinked(_) => EventType::ProjectUnlinked,
@@ -1249,6 +1271,7 @@ impl EventPayload {
             Self::DecisionAssessed(payload) => serde_json::to_value(payload),
             Self::DecisionMetadataDerived(payload) => serde_json::to_value(payload),
             Self::DecisionMoved(payload) => serde_json::to_value(payload),
+            Self::DecisionRetitled(payload) => serde_json::to_value(payload),
             Self::ProjectRegistered(payload) => serde_json::to_value(payload),
             Self::ProjectLinked(payload) => serde_json::to_value(payload),
             Self::ProjectUnlinked(payload) => serde_json::to_value(payload),
@@ -1657,6 +1680,14 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             require_non_empty("payload.to", &payload.to)?;
             require_optional_non_empty("payload.reason", payload.reason.as_deref())?;
             Ok(EventPayload::DecisionMoved(payload))
+        }
+        EventType::DecisionRetitled => {
+            let payload: DecisionRetitledPayload = parse_payload(event)?;
+            require_non_empty("payload.decision_id", &payload.decision_id)?;
+            require_non_empty("payload.from", &payload.from)?;
+            require_non_empty("payload.to", &payload.to)?;
+            require_optional_non_empty("payload.reason", payload.reason.as_deref())?;
+            Ok(EventPayload::DecisionRetitled(payload))
         }
         EventType::ProjectRegistered => {
             let payload: ProjectRegisteredPayload = parse_payload(event)?;

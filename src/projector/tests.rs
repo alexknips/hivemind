@@ -978,7 +978,7 @@ pub(super) fn decision_moved_fixture_ledger(len: usize) -> Result<InMemoryEventL
 /// `node.id AS id` lookup with every stored property).
 fn decision_row(graph: &impl GraphView, decision_id: &str) -> Result<GraphRow> {
     let rows = graph.query(
-        "MATCH (node:`Decision` {id: $id}) RETURN node.id AS id, node.project AS project, node.project_source AS project_source, node.event_origin AS event_origin, node.tenant_id AS tenant_id, node.title AS title, node.rationale AS rationale ORDER BY node.id;",
+        "MATCH (node:`Decision` {id: $id}) RETURN node.id AS id, node.project AS project, node.project_source AS project_source, node.event_origin AS event_origin, node.tenant_id AS tenant_id, node.title AS title, node.former_title AS former_title, node.rationale AS rationale ORDER BY node.id;",
         &GraphParams::from([(
             "id".to_owned(),
             GraphValue::String(decision_id.to_owned()),
@@ -1096,6 +1096,177 @@ fn decision_moved_and_back_restores_project_and_keeps_its_capture_origin() -> Re
     let second = decision_row(&project_prefix(4)?, "decision:second")?;
     assert_eq!(second.get("project").cloned(), string("billing"));
     assert_eq!(second.get("project_source").cloned(), string("stated"));
+    Ok(())
+}
+
+/// Two decisions proposed by an agent, then the first retitled by a *different* actor over a
+/// *different* source, then retitled back (hivemind-ydmp). The retitler's source/source_ref
+/// differ from the proposal's on purpose: a projector that spread the retitle event's origin
+/// properties onto the node would visibly rewrite the capture origin. Mirrors
+/// `decision_moved_fixture_events` exactly. Shared with `projector/postgres/tests.rs`.
+fn decision_retitled_fixture_events() -> Vec<Event> {
+    let proposal = |decision_id: &str| {
+        event(
+            EventType::DecisionProposed,
+            "agent:claude:builder",
+            json!({
+                "decision_id": decision_id,
+                "title": "A decision with a very long paragraph title that predates the cap",
+                "rationale": "Simpler to reason about at our scale",
+                "topic_keys": ["pricing"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": [],
+                "project": "billing",
+                "project_source": "stated"
+            }),
+        )
+    };
+    let retitler_retitle = |from: &str, to: &str| {
+        let mut retitled = event(
+            EventType::DecisionRetitled,
+            "human:bob",
+            json!({ "decision_id": "decision:first", "from": from, "to": to }),
+        );
+        retitled.source = EventSource::Human;
+        retitled.source_ref = Some("retitler-session".to_owned());
+        retitled
+    };
+    vec![
+        proposal("decision:first"),
+        proposal("decision:second"),
+        retitler_retitle(
+            "A decision with a very long paragraph title that predates the cap",
+            "A short name",
+        ),
+        retitler_retitle(
+            "A short name",
+            "A decision with a very long paragraph title that predates the cap",
+        ),
+    ]
+}
+
+/// The first `len` events of [`decision_retitled_fixture_events`]: 2 = both proposals, 3 = plus
+/// the retitle, 4 = plus the retitle back.
+pub(super) fn decision_retitled_fixture_ledger(len: usize) -> Result<InMemoryEventLedger> {
+    let ledger = InMemoryEventLedger::new();
+    for event in decision_retitled_fixture_events().into_iter().take(len) {
+        ledger.append(event)?;
+    }
+    Ok(ledger)
+}
+
+/// Mayor's "nothing is deleted or rewritten" conformance ruling (hivemind-s15q.10) applies to
+/// retitle too: it changes the decision's current name, not who captured it, so once
+/// `decision:first` has been retitled (and retitled back) its `title`/`former_title` are the
+/// retitle's while its rationale, source, source_ref, event_origin and tenant are still the
+/// proposal's, and it keeps its place in an event_origin-ordered listing. `graph` holds
+/// [`decision_retitled_fixture_ledger`] with 3 or 4 events; runs on any backend (`MemoryGraph`
+/// here, Postgres in its own tests).
+pub(super) fn assert_retitle_keeps_capture_origin(
+    graph: &impl GraphView,
+    expected_title: &str,
+    expected_former_title: &str,
+) -> Result<()> {
+    use crate::queries::{
+        get_decision_context, get_decision_context_candidates, DecisionContextRequest,
+    };
+
+    let proposals = decision_retitled_fixture_ledger(2)?.read(0, 10)?;
+    let offset_of = |index: usize| {
+        i64::try_from(proposals[index].event_id.expect("ledger assigns ids")).expect("fits i64")
+    };
+    let (first_offset, second_offset) = (offset_of(0), offset_of(1));
+    let string = |value: &str| Some(GraphValue::String(value.to_owned()));
+
+    let row = decision_row(graph, "decision:first")?;
+    assert_eq!(row.get("title").cloned(), string(expected_title));
+    assert_eq!(
+        row.get("former_title").cloned(),
+        string(expected_former_title),
+        "a retitle stamps former_title with the title it replaced, even a retitle back"
+    );
+    assert_eq!(
+        row.get("rationale").cloned(),
+        string("Simpler to reason about at our scale"),
+        "a retitle must not clobber properties it doesn't name"
+    );
+    assert_eq!(
+        row.get("event_origin").cloned(),
+        Some(GraphValue::Int(first_offset)),
+        "event_origin stays the proposal's ledger offset, not the retitle's"
+    );
+    assert_eq!(
+        row.get("tenant_id").cloned(),
+        string(decision_retitled_fixture_events()[0].tenant_id.as_str()),
+        "a retitle must not re-stamp the capture's tenant"
+    );
+
+    let context = get_decision_context(graph, "decision:first")?
+        .data
+        .expect("decision context");
+    assert_eq!(
+        context.source, "agent",
+        "a retitle must not credit the capture to the retitler's source"
+    );
+    assert_eq!(
+        context.source_ref.as_deref(),
+        Some("projection-test"),
+        "a retitle must not replace the proposal's source_ref with the retitler's"
+    );
+
+    // The retitled decision keeps its place in an event_origin-ordered listing, and an old
+    // retitled decision is not "new" to a since-filter that starts at the second proposal.
+    let listed = |since_event_origin| -> Result<Vec<String>> {
+        Ok(get_decision_context_candidates(
+            graph,
+            &DecisionContextRequest {
+                since_event_origin,
+                limit: 10,
+                ..Default::default()
+            },
+        )?
+        .data
+        .into_iter()
+        .map(|context| context.decision_id)
+        .collect())
+    };
+    assert_eq!(listed(None)?, ["decision:first", "decision:second"]);
+    assert_eq!(listed(Some(second_offset))?, ["decision:second"]);
+    Ok(())
+}
+
+#[test]
+fn decision_retitled_and_back_restores_title_and_keeps_its_capture_origin() -> Result<()> {
+    // hivemind-ydmp, mirroring decision_moved_and_back_restores_project_and_keeps_its_capture_origin.
+    use super::memory::MemoryGraph;
+
+    let long_title = "A decision with a very long paragraph title that predates the cap";
+    let short_title = "A short name";
+
+    let project_prefix = |len: usize| -> Result<MemoryGraph> {
+        let graph = MemoryGraph::default();
+        project_from_ledger(&decision_retitled_fixture_ledger(len)?, &graph, 0)?;
+        Ok(graph)
+    };
+    let string = |value: &str| Some(GraphValue::String(value.to_owned()));
+
+    // Before any retitle: the proposal's own title, no former_title yet.
+    let before_retitle = decision_row(&project_prefix(2)?, "decision:first")?;
+    assert_eq!(before_retitle.get("title").cloned(), string(long_title));
+    assert_eq!(before_retitle.get("former_title").cloned(), None);
+
+    // After the retitle: the new (short) title, former_title records what it replaced.
+    assert_retitle_keeps_capture_origin(&project_prefix(3)?, short_title, long_title)?;
+
+    // After the retitle back: the original is restored (a fact, not an undo).
+    assert_retitle_keeps_capture_origin(&project_prefix(4)?, long_title, short_title)?;
+
+    // Retitling one decision leaves the other alone.
+    let second = decision_row(&project_prefix(4)?, "decision:second")?;
+    assert_eq!(second.get("title").cloned(), string(long_title));
+    assert_eq!(second.get("former_title").cloned(), None);
     Ok(())
 }
 

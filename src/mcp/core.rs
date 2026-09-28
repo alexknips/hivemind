@@ -1309,6 +1309,83 @@ pub(crate) fn move_decision<P: LedgerProvider>(
 }
 
 // ---------------------------------------------------------------------------
+// retitle_decision
+// ---------------------------------------------------------------------------
+
+/// Parsed, validated arguments for the `retitle_decision` tool. The decision is selected like
+/// `move_decision`'s: `decision_id` bypasses resolution, otherwise `description` (+ optional
+/// `topic`) resolves via [`resolve_target`]. `to` is required whichever way the target resolves;
+/// the decision's current title is read from the ledger, never passed.
+pub(crate) struct RetitleDecisionArgs {
+    pub(crate) actor_id: String,
+    pub(crate) decision_id: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) topic: Option<String>,
+    pub(crate) to: String,
+    pub(crate) reason: Option<String>,
+}
+
+impl RetitleDecisionArgs {
+    pub(crate) fn from_json(
+        args: &Map<String, Value>,
+        actor_id: String,
+    ) -> Result<Self, CoreError> {
+        Ok(Self {
+            actor_id,
+            decision_id: optional_string(args, "decision_id")?,
+            description: optional_string(args, "description")?,
+            topic: optional_string(args, "topic")?,
+            to: require_string(args, "to")?.trim().to_owned(),
+            reason: optional_string(args, "reason")?,
+        })
+    }
+}
+
+/// The migrated core for the `retitle_decision` MCP tool: one implementation consumed by both
+/// transports. Resolves its target via [`resolve_target`] first; on `Ambiguous` or `NotFound`
+/// the resolver's envelope is returned as-is and no event is appended — the same write gate
+/// `move_decision` and `disagree_decision` apply, so a retitle never acts on a guess. The reply
+/// is [`crate::commands::DecisionRetitleOutcome`], the shape `hivemind retitle --json` prints.
+pub(crate) fn retitle_decision<P: LedgerProvider>(
+    provider: &P,
+    args: RetitleDecisionArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let target = resolve_target(
+        &handle,
+        args.decision_id.as_deref(),
+        args.description.as_deref(),
+        args.topic.as_deref(),
+        "decision_id",
+    )?;
+    let decision_id = match target {
+        ResolvedTarget::Id(id) => id,
+        ResolvedTarget::Ambiguous(output) => return Ok(output),
+        ResolvedTarget::NotFound(output) => return Ok(output),
+    };
+
+    let commands = Commands::new_with_context(
+        &handle.ledger,
+        CommandContext::new(
+            handle.tenant_id.clone(),
+            EventProvenance::agent(args.actor_id.clone()),
+        ),
+    );
+    let outcome = commands
+        .retitle_decision_to(
+            &args.actor_id,
+            &decision_id,
+            &args.to,
+            args.reason.as_deref(),
+        )
+        .map_err(CoreError::from)?;
+
+    serde_json::to_value(outcome)
+        .map(ToolOutput)
+        .map_err(|error| CoreError::Internal(error.to_string()))
+}
+
+// ---------------------------------------------------------------------------
 // get_supersession_chain (the CLI's `chain`)
 // ---------------------------------------------------------------------------
 

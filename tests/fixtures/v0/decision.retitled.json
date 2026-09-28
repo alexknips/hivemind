@@ -1,0 +1,17 @@
+{
+  "event_id": 23,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe23",
+  "correlation_id": "session-1",
+  "causation_event_id": null,
+  "type": "decision.retitled",
+  "actor_id": "human:alex",
+  "source": "human",
+  "source_ref": "human:alex",
+  "payload": {
+    "decision_id": "decision-1",
+    "from": "The paid shape (hosted plan or one Pro plan) is chosen after the comparison and the first testers' feedback; the waitlist price question replaces the interviews",
+    "to": "Paid shape chosen after tester feedback",
+    "reason": "titles are a name, not a paragraph -- the pre-cap title stays readable as former_title"
+  },
+  "ts": "2026-09-21T20:46:45Z"
+}

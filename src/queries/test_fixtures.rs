@@ -295,6 +295,26 @@ impl Scenario {
         .map(|_| ())
     }
 
+    /// `decision.retitled`: the decision's title changes from `from` to `to` (mirrors `moved`
+    /// exactly; hivemind-ydmp).
+    pub(crate) fn retitled(
+        &self,
+        decision_id: &str,
+        from: &str,
+        to: &str,
+        actor_id: &str,
+        timestamp: &str,
+    ) -> Result<()> {
+        self.push(
+            actor_id,
+            EventType::DecisionRetitled,
+            json!({"decision_id": decision_id, "from": from, "to": to}),
+            None,
+            timestamp,
+        )
+        .map(|_| ())
+    }
+
     pub(crate) fn reject(&self, decision_id: &str, actor_id: &str, timestamp: &str) -> Result<()> {
         self.push(
             actor_id,

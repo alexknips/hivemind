@@ -1218,6 +1218,31 @@ fn decision_moved_and_back_keeps_capture_origin_on_postgres() -> Result<()> {
     })
 }
 
+// hivemind-ydmp: `decision.retitled` upserts only `title` / `former_title` through the JSONB
+// merge, so a retitle (and a retitle back) leaves the proposal's own source, source_ref, tenant
+// and event_origin in place and the decision keeps its place in an event_origin-ordered listing
+// -- the same checks `projector/tests.rs` runs on `MemoryGraph`.
+#[test]
+fn decision_retitled_and_back_keeps_capture_origin_on_postgres() -> Result<()> {
+    with_postgres_graph("decision-retitled", |pg| {
+        let long_title = "A decision with a very long paragraph title that predates the cap";
+        let short_title = "A short name";
+        for (events, expected_title, expected_former_title) in
+            [(3, short_title, long_title), (4, long_title, short_title)]
+        {
+            pg.wipe()?;
+            let ledger = crate::projector::tests::decision_retitled_fixture_ledger(events)?;
+            project_from_ledger(&ledger, pg, 0)?;
+            crate::projector::tests::assert_retitle_keeps_capture_origin(
+                pg,
+                expected_title,
+                expected_former_title,
+            )?;
+        }
+        Ok(())
+    })
+}
+
 // hivemind-qo11.8: a model's assessment (`decision.scored`, schema version 2) upserts only its own
 // properties through the JSONB merge, so scoring a decision leaves the proposal's own source,
 // source_ref, tenant, event_origin and text in place, and the newest assessment is the one kept

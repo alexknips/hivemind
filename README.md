@@ -387,6 +387,7 @@ Cursor uses the same shape under `mcp.servers`. The server exposes these tools:
 | `disagree_decision` | write | `disagree` |
 | `supersede_decision` | write | `supersede` |
 | `move_decision` | write | `move` |
+| `retitle_decision` | write | `retitle` |
 | `ground_decision` | write | `ground` |
 | `get_decision` | read | `query get_decision` |
 | `get_relevant_decisions` | read | `query get_relevant_decisions` |

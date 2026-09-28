@@ -134,12 +134,12 @@ pub use question::{
 use crate::error::CommandError;
 use crate::events::{
     CaptureItem, DecisionAcceptedPayload, DecisionAssessedPayload, DecisionMovedPayload,
-    DecisionProposedPayload, DecisionRejectedPayload, DecisionSupersededPayload, Event,
-    EventBuilder, EventId, EventPayload, EventProvenance, EventType, EvidenceRecordedPayload,
-    HypothesisKind, HypothesisRecordedPayload, IngestBatchClassifiedPayload,
-    IngestBatchReceivedPayload, IngestTurn, ModelDimension, ProjectAnchorKind,
-    ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
-    ProjectSource, RelationAddedPayload, RelationKind, TenantId,
+    DecisionProposedPayload, DecisionRejectedPayload, DecisionRetitledPayload,
+    DecisionSupersededPayload, Event, EventBuilder, EventId, EventPayload, EventProvenance,
+    EventType, EvidenceRecordedPayload, HypothesisKind, HypothesisRecordedPayload,
+    IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn, ModelDimension,
+    ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload,
+    ProjectRegisteredPayload, ProjectSource, RelationAddedPayload, RelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::util::{require_non_empty, require_valid_actor_id};
@@ -298,6 +298,21 @@ pub struct DecisionMoveOutcome {
     /// The project the decision left: the address it resolved to when this move was recorded.
     pub from: String,
     /// The project it is in now.
+    pub to: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The recorded result of retitling a decision: the `decision.retitled` event and both ends
+/// of the retitle. The one shape every surface (CLI `--json`, both MCP transports) serializes,
+/// so they can't drift (mirrors `DecisionMoveOutcome`; hivemind-ydmp).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DecisionRetitleOutcome {
+    pub decision_id: DecisionId,
+    pub event_id: EventId,
+    /// The title the decision had before this retitle.
+    pub from: String,
+    /// The title it has now.
     pub to: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -972,6 +987,112 @@ impl<'a, L: EventLedger> Commands<'a, L> {
 
         let event_id = self.move_decision(actor_id, decision_id, &from, to, reason)?;
         Ok(DecisionMoveOutcome {
+            decision_id: decision_id.to_owned(),
+            event_id,
+            from,
+            to: to.to_owned(),
+            reason: reason.map(ToOwned::to_owned),
+        })
+    }
+
+    /// Retitle a decision (hivemind-ydmp). Rules, all enforced here:
+    ///
+    /// - the decision exists;
+    /// - `from` equals the decision's current title (its `decision.proposed` title, with
+    ///   every later `decision.retitled` applied in ledger order) — optimistic concurrency in
+    ///   spirit: a caller that names a stale `from` is refused rather than silently retitling
+    ///   out from under a title that has already changed;
+    /// - `from != to`;
+    /// - `to` passes `validate_title` — the same cap/one-sentence/no-list rules
+    ///   `decision.proposed` enforces. `from` is never validated: retiring an over-cap title
+    ///   recorded before the cap existed is the whole point of this command.
+    ///
+    /// Reversal is calling this again with `from`/`to` swapped — another recorded fact, never
+    /// a rewrite or deletion of this one (forgetting responsibly, AGENTS.md section 1).
+    pub fn retitle_decision(
+        &self,
+        actor_id: &str,
+        decision_id: &str,
+        from: &str,
+        to: &str,
+        reason: Option<&str>,
+    ) -> Result<EventId> {
+        require_valid_actor_id(actor_id)?;
+        require_non_empty("decision_id", decision_id)?;
+        require_non_empty("from", from)?;
+        require_non_empty("to", to)?;
+        require_optional_non_empty("reason", reason)?;
+
+        if !self.decision_exists(decision_id)? {
+            return Err(
+                CommandError::Invariant(format!("decision does not exist: {decision_id}")).into(),
+            );
+        }
+
+        if same_identifier(from, to) {
+            return Err(CommandError::Validation("from and to must differ".to_owned()).into());
+        }
+
+        validate_title("to", to)?;
+
+        let current_title = self.current_decision_title(decision_id)?.ok_or_else(|| {
+            CommandError::Invariant(format!("decision has no recorded title: {decision_id}"))
+        })?;
+        if !same_identifier(from, &current_title) {
+            return Err(CommandError::Invariant(format!(
+                "from does not match the decision's current title: expected {current_title}, got {from}"
+            ))
+            .into());
+        }
+
+        let event = self.event_with_uuid(
+            actor_id,
+            EventPayload::DecisionRetitled(DecisionRetitledPayload {
+                decision_id: decision_id.to_owned(),
+                from: from.to_owned(),
+                to: to.to_owned(),
+                reason: reason.map(ToOwned::to_owned),
+            }),
+            None,
+            Uuid::new_v4(),
+        )?;
+
+        self.append_event(event)
+    }
+
+    /// `retitle_decision` for a caller that names only the new title, the way a person or
+    /// agent does ("retitle 6356a947 to ..."): `from` is the decision's current title as the
+    /// ledger resolves it now, never typed. Every rule `retitle_decision` enforces still
+    /// applies; a decision already titled `to` is refused with that said plainly rather than
+    /// as "from and to must differ".
+    pub fn retitle_decision_to(
+        &self,
+        actor_id: &str,
+        decision_id: &str,
+        to: &str,
+        reason: Option<&str>,
+    ) -> Result<DecisionRetitleOutcome> {
+        require_valid_actor_id(actor_id)?;
+        require_non_empty("decision_id", decision_id)?;
+        require_non_empty("to", to)?;
+
+        if !self.decision_exists(decision_id)? {
+            return Err(
+                CommandError::Invariant(format!("decision does not exist: {decision_id}")).into(),
+            );
+        }
+        let from = self.current_decision_title(decision_id)?.ok_or_else(|| {
+            CommandError::Invariant(format!("decision has no recorded title: {decision_id}"))
+        })?;
+        if same_identifier(&from, to) {
+            return Err(CommandError::Validation(format!(
+                "decision {decision_id} is already titled {to}"
+            ))
+            .into());
+        }
+
+        let event_id = self.retitle_decision(actor_id, decision_id, &from, to, reason)?;
+        Ok(DecisionRetitleOutcome {
             decision_id: decision_id.to_owned(),
             event_id,
             from,
@@ -2628,6 +2749,38 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                             (current.as_mut(), payload_value_as_str(event, "to"))
                         {
                             filing.project = Some(to.to_owned());
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })?;
+
+        Ok(current)
+    }
+
+    /// The title `decision_id` currently shows, as the ledger resolves it: its
+    /// `decision.proposed` title, with every later `decision.retitled` for this decision
+    /// applied in ledger order (last retitle wins — same pattern as
+    /// `current_decision_project`/`decision.moved`). `None` only when no `decision.proposed`
+    /// for `decision_id` has been seen; callers check `decision_exists` first, so this is a
+    /// defensive fallback, not an expected path.
+    fn current_decision_title(&self, decision_id: &str) -> Result<Option<String>> {
+        let mut current: Option<String> = None;
+
+        self.ledger
+            .replay_from_for_tenant(&self.context.tenant_id, 0, &mut |event| {
+                match event.event_type {
+                    EventType::DecisionProposed => {
+                        if payload_value_matches(event, "decision_id", decision_id) {
+                            current = payload_value_as_str(event, "title").map(str::to_owned);
+                        }
+                    }
+                    EventType::DecisionRetitled
+                        if payload_value_matches(event, "decision_id", decision_id) =>
+                    {
+                        if let Some(to) = payload_value_as_str(event, "to") {
+                            current = Some(to.to_owned());
                         }
                     }
                     _ => {}

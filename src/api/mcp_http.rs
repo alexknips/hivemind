@@ -26,8 +26,8 @@ use crate::mcp::core::{
     GetDecisionContextArgs, GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs,
     GetSituationalDecisionsArgs, GetSuggestionsArgs, GetSupersessionChainArgs, GroundDecisionArgs,
     LedgerHandle, LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs, RecentDecisionsArgs,
-    RequestDecisionArgs, ScanDecisionQualityArgs, ScanMisfiledDecisionsArgs, ScoreDecisionArgs,
-    SupersedeDecisionArgs,
+    RequestDecisionArgs, RetitleDecisionArgs, ScanDecisionQualityArgs, ScanMisfiledDecisionsArgs,
+    ScoreDecisionArgs, SupersedeDecisionArgs,
 };
 use crate::projector::memory::MemoryGraph;
 use crate::queries::{
@@ -190,6 +190,7 @@ fn mcp_tools_call_blocking(
         "disagree_decision" => mcp_disagree(backend, ctx, &actor_id, args),
         "supersede_decision" => mcp_supersede(backend, ctx, &actor_id, args),
         "move_decision" => mcp_move(backend, ctx, &actor_id, args),
+        "retitle_decision" => mcp_retitle(backend, ctx, &actor_id, args),
         "ground_decision" => mcp_ground(backend, ctx, &actor_id, args),
         "request_decision" => mcp_request_decision(backend, ctx, &actor_id, args),
         "get_decision" => mcp_get_decision(backend, ctx, args, cache),
@@ -426,6 +427,21 @@ fn mcp_move(
         tenant_id: &ctx.tenant_id,
     };
     let output = crate::mcp::core::move_decision(&provider, core_args)?;
+    Ok(output.into_value())
+}
+
+fn mcp_retitle(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    actor_id: &str,
+    args: serde_json::Map<String, serde_json::Value>,
+) -> McpToolResult {
+    let core_args = RetitleDecisionArgs::from_json(&args, actor_id.to_owned())?;
+    let provider = HttpLedgerProvider {
+        backend,
+        tenant_id: &ctx.tenant_id,
+    };
+    let output = crate::mcp::core::retitle_decision(&provider, core_args)?;
     Ok(output.into_value())
 }
 

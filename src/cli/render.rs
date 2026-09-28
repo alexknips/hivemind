@@ -4,7 +4,9 @@ use std::fmt::Write as _;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::commands::{DecisionMoveOutcome, DecisionPlacement, RestsOn, RestsOnKind};
+use crate::commands::{
+    DecisionMoveOutcome, DecisionPlacement, DecisionRetitleOutcome, RestsOn, RestsOnKind,
+};
 use crate::error::{CliError, CommandError};
 use crate::events::{EventId, EventType, ModelDimension};
 use crate::ingest::{DocumentImportReport, DocumentPreparationReport};
@@ -23,7 +25,7 @@ use crate::queries::{
     ProjectListResults, ProjectMove, ProjectOutcome, QueryResponse, QuestionAnswer, ReadOnlyExport,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
     RecentActivityResults, RecentDecisionsResults, ResolveOutcome, SituationalResults,
-    SupersessionChain, WaitingRequestsResults,
+    SupersessionChain, TitleChange, WaitingRequestsResults,
 };
 use crate::{HivemindError, Result};
 
@@ -130,7 +132,11 @@ pub(crate) fn render_recent_activity_summary(results: &RecentActivityResults) ->
             item.source.as_str(),
             item.decision_ids.join(","),
             item.citation_id,
-            project_move_suffix(item.project_move.as_ref(), item.ts)
+            format_args!(
+                "{}{}",
+                project_move_suffix(item.project_move.as_ref(), item.ts),
+                title_change_suffix(item.title_change.as_ref(), item.ts)
+            )
         );
     }
     output.trim_end().to_owned()
@@ -153,7 +159,11 @@ pub(crate) fn render_changed_since_summary(results: &DecisionsChangedSinceResult
             item.source.as_str(),
             item.decision_ids.join(","),
             item.citation_id,
-            project_move_suffix(item.project_move.as_ref(), item.ts)
+            format_args!(
+                "{}{}",
+                project_move_suffix(item.project_move.as_ref(), item.ts),
+                title_change_suffix(item.title_change.as_ref(), item.ts)
+            )
         );
     }
     output.trim_end().to_owned()
@@ -169,6 +179,19 @@ fn project_move_suffix(project_move: Option<&ProjectMove>, ts: Option<DateTime<U
     format!(
         "\tmoved={}->{}\tat={moved_at}",
         project_move.from, project_move.to
+    )
+}
+
+/// The tail of a `title_changed` history line: what the title became and when (mirrors
+/// `project_move_suffix` exactly; hivemind-ydmp). Empty for every other kind of change.
+fn title_change_suffix(title_change: Option<&TitleChange>, ts: Option<DateTime<Utc>>) -> String {
+    let Some(title_change) = title_change else {
+        return String::new();
+    };
+    let retitled_at = ts.map_or_else(|| "unknown".to_owned(), |ts| ts.to_rfc3339());
+    format!(
+        "\tretitled={}->{}\tat={retitled_at}",
+        title_change.from, title_change.to
     )
 }
 
@@ -1225,6 +1248,7 @@ fn event_type_label(event_type: EventType) -> &'static str {
         EventType::DecisionScored => "decision.scored",
         EventType::DecisionMetadataDerived => "decision.metadata_derived",
         EventType::DecisionMoved => "decision.moved",
+        EventType::DecisionRetitled => "decision.retitled",
         EventType::ProjectRegistered => "project.registered",
         EventType::ProjectLinked => "project.linked",
         EventType::ProjectUnlinked => "project.unlinked",
@@ -1241,6 +1265,7 @@ fn change_kind_label(kind: HistoryChangeKind) -> &'static str {
         HistoryChangeKind::StalePremise => "stale_premise",
         HistoryChangeKind::Supersession => "supersession",
         HistoryChangeKind::ProjectMoved => "project_moved",
+        HistoryChangeKind::TitleChanged => "title_changed",
         HistoryChangeKind::ContextChange => "context_change",
     }
 }
@@ -1303,6 +1328,20 @@ pub(crate) fn format_disagree_output(
 }
 
 pub(crate) fn format_move_output(as_json: bool, output: &DecisionMoveOutcome) -> Result<String> {
+    if as_json {
+        return format_json_value(true, output);
+    }
+
+    Ok(format!(
+        "event_id={} decision_id={} from={} to={}",
+        output.event_id, output.decision_id, output.from, output.to
+    ))
+}
+
+pub(crate) fn format_retitle_output(
+    as_json: bool,
+    output: &DecisionRetitleOutcome,
+) -> Result<String> {
     if as_json {
         return format_json_value(true, output);
     }

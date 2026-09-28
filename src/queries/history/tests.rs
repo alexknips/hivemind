@@ -878,6 +878,221 @@ fn a_move_serializes_from_and_to_on_the_row_and_other_rows_omit_the_field() -> R
     Ok(())
 }
 
+/// A decision proposed with a long title, retitled to a short one by Alex (with a reason) and
+/// retitled back by Bea (without one): the two retitles are separate facts by separate actors
+/// at separate times. Mirrors `moved_and_moved_back_ledger` exactly (hivemind-ydmp).
+fn retitled_and_retitled_back_ledger() -> Result<InMemoryEventLedger> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        1,
+        EventType::DecisionProposed,
+        "human:alice",
+        json!({
+            "decision_id": "decision-a",
+            "title": "A decision with a very long paragraph title that predates the cap",
+            "rationale": "Simpler to reason about at our scale",
+            "topic_keys": ["pricing"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": [],
+            "project": "billing",
+            "project_source": "stated"
+        }),
+    ))?;
+    ledger.append(event(
+        2,
+        EventType::DecisionRetitled,
+        "human:alex",
+        json!({
+            "decision_id": "decision-a",
+            "from": "A decision with a very long paragraph title that predates the cap",
+            "to": "A short name",
+            "reason": "titles are a name, not a paragraph"
+        }),
+    ))?;
+    ledger.append(event(
+        3,
+        EventType::DecisionRetitled,
+        "human:bea",
+        json!({
+            "decision_id": "decision-a",
+            "from": "A short name",
+            "to": "A decision with a very long paragraph title that predates the cap"
+        }),
+    ))?;
+    Ok(ledger)
+}
+
+fn expected_title_changes() -> [(EventId, &'static str, DateTime<Utc>, TitleChange); 2] {
+    [
+        (
+            2,
+            "human:alex",
+            ts(2),
+            TitleChange {
+                from: "A decision with a very long paragraph title that predates the cap"
+                    .to_owned(),
+                to: "A short name".to_owned(),
+                reason: Some("titles are a name, not a paragraph".to_owned()),
+            },
+        ),
+        (
+            3,
+            "human:bea",
+            ts(3),
+            TitleChange {
+                from: "A short name".to_owned(),
+                to: "A decision with a very long paragraph title that predates the cap".to_owned(),
+                reason: None,
+            },
+        ),
+    ]
+}
+
+#[test]
+fn changed_since_reports_a_retitle_and_its_reversal_with_from_to_actor_and_time() -> Result<()> {
+    // hivemind-ydmp: `decision.retitled` keeps every retitle readable in history -- its own
+    // kind, not folded into `ContextChange`, never dropped -- and the row itself says from, to,
+    // who and when. A retitle back is another row. Mirrors the equivalent `decision.moved` test.
+    let ledger = retitled_and_retitled_back_ledger()?;
+
+    let rows = changed_since_start(&ledger)?;
+    let retitles: Vec<_> = rows
+        .iter()
+        .filter(|row| row.change_kind == HistoryChangeKind::TitleChanged)
+        .collect();
+    assert_eq!(retitles.len(), 2, "both retitles are reported: {rows:?}");
+    for (row, (origin, actor, at, expected)) in retitles.iter().zip(expected_title_changes()) {
+        assert_eq!(row.event_origin, origin);
+        assert_eq!(row.event_type, EventType::DecisionRetitled);
+        assert_eq!(row.actor_id, actor);
+        assert_eq!(row.ts, Some(at));
+        assert_eq!(row.title_change.as_ref(), Some(&expected));
+        assert_eq!(row.decision_ids, vec!["decision-a".to_owned()]);
+        assert!(row
+            .affected_nodes
+            .iter()
+            .any(|node| node.id == "decision-a" && node.kind == NodeKind::Decision));
+    }
+    assert_eq!(
+        rows.iter().filter(|row| row.title_change.is_some()).count(),
+        2,
+        "only a retitle carries title_change"
+    );
+    Ok(())
+}
+
+#[test]
+fn recent_activity_reports_a_retitle_and_its_reversal_with_from_to_actor_and_time() -> Result<()> {
+    let ledger = retitled_and_retitled_back_ledger()?;
+
+    let activity = get_recent_activity(&ledger, &RecentActivityRequest::default())?.data;
+    // Newest first: the retitle back, then the retitle, then the proposal (no title_change).
+    let retitles: Vec<_> = activity
+        .items
+        .iter()
+        .filter(|row| row.change_kind == HistoryChangeKind::TitleChanged)
+        .collect();
+    assert_eq!(
+        retitles.len(),
+        2,
+        "both retitles are reported: {activity:?}"
+    );
+    for (row, (origin, actor, at, expected)) in retitles.iter().rev().zip(expected_title_changes())
+    {
+        assert_eq!(row.event_origin, origin);
+        assert_eq!(row.actor_id, actor);
+        assert_eq!(row.ts, Some(at));
+        assert_eq!(row.title_change.as_ref(), Some(&expected));
+    }
+    assert_eq!(
+        activity
+            .items
+            .last()
+            .and_then(|row| row.title_change.as_ref()),
+        None,
+        "the proposal row is not a retitle"
+    );
+    Ok(())
+}
+
+#[test]
+fn added_since_lists_each_retitle_in_the_decisions_changes_with_from_and_to() -> Result<()> {
+    let ledger = retitled_and_retitled_back_ledger()?;
+
+    let response = get_decisions_added_since(
+        &ledger,
+        &DecisionsAddedSinceRequest {
+            since_offset: Some(0),
+            limit: 50,
+            ..DecisionsAddedSinceRequest::default()
+        },
+    )?;
+
+    let added = &response.data.added_decisions;
+    assert_eq!(added.len(), 1);
+    let retitles: Vec<_> = added[0]
+        .changes_in_window
+        .iter()
+        .filter(|change| change.change_kind == HistoryChangeKind::TitleChanged)
+        .collect();
+    assert_eq!(retitles.len(), 2);
+    for (change, (origin, actor, at, expected)) in retitles.iter().zip(expected_title_changes()) {
+        assert_eq!(change.provenance.event_origin, origin);
+        assert_eq!(change.provenance.actor_id, actor);
+        assert_eq!(change.provenance.ts, Some(at));
+        assert_eq!(change.title_change.as_ref(), Some(&expected));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_retitle_serializes_from_and_to_on_the_row_and_other_rows_omit_the_field() -> Result<()> {
+    // The CLI, MCP and HTTP surfaces all emit these row structs as JSON.
+    let ledger = retitled_and_retitled_back_ledger()?;
+
+    let rows = changed_since_start(&ledger)?;
+    let json_rows: Vec<Value> = rows
+        .iter()
+        .map(|row| serde_json::to_value(row).expect("row serializes"))
+        .collect();
+    let retitled: Vec<_> = json_rows
+        .iter()
+        .filter(|row| row["change_kind"] == "title_changed")
+        .collect();
+    assert_eq!(retitled.len(), 2);
+    assert_eq!(
+        retitled[0]["title_change"],
+        json!({
+            "from": "A decision with a very long paragraph title that predates the cap",
+            "to": "A short name",
+            "reason": "titles are a name, not a paragraph"
+        })
+    );
+    assert_eq!(
+        retitled[1]["title_change"],
+        json!({
+            "from": "A short name",
+            "to": "A decision with a very long paragraph title that predates the cap"
+        }),
+        "a retitle without a reason omits the key"
+    );
+    assert_eq!(retitled[0]["actor_id"], "human:alex");
+    assert_eq!(retitled[1]["actor_id"], "human:bea");
+    assert!(retitled[0]["ts"].is_string(), "the row carries the time");
+    for row in json_rows
+        .iter()
+        .filter(|row| row["change_kind"] != "title_changed")
+    {
+        assert!(
+            row.get("title_change").is_none(),
+            "only a retitle carries title_change: {row}"
+        );
+    }
+    Ok(())
+}
+
 // ── a premise going stale is never silent on the decisions that rest on it (hivemind-gwhr.3) ──
 
 use crate::queries::test_fixtures::Scenario;

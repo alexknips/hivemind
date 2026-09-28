@@ -63,6 +63,7 @@ fn tools_list_includes_all_eighteen_tools() {
         "disagree_decision",
         "supersede_decision",
         "move_decision",
+        "retitle_decision",
         "ground_decision",
         "request_decision",
         "get_decision",
@@ -4194,6 +4195,290 @@ mod transport_parity {
             assert!(
                 moved_payloads(dir).is_empty(),
                 "{name}: a refused move writes nothing"
+            ); // ubs:ignore: test-only assertion
+            messages.push((name, seen));
+        }
+
+        assert_eq!(
+            messages[0].1, messages[1].1,
+            "both transports refuse with the same words"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // retitle_decision (hivemind-ydmp): same resolve-by-description write gate as
+    // move/disagree/supersede, same envelope on both transports.
+    // -----------------------------------------------------------------------
+
+    /// `decision.retitled` payloads under `dir`, oldest first.
+    fn retitled_payloads(dir: &std::path::Path) -> Vec<Value> {
+        let ledger = SqliteEventLedger::open(dir).expect("ledger opens"); // ubs:ignore: test-only; panicking is correct in tests
+        ledger
+            .read(0, 1000)
+            .expect("read ledger") // ubs:ignore: test-only; panicking is correct in tests
+            .into_iter()
+            .filter(|event| event.event_type == crate::events::EventType::DecisionRetitled)
+            .map(|event| event.payload)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn retitle_decision_by_id_records_from_and_to_and_reverses_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs("retitle-by-id", &[]);
+
+        for (name, dir, http) in [("stdio", &stdio_dir, false), ("http", &http_dir, true)] {
+            let call = |tool: &'static str, args: Value| async move {
+                if http {
+                    http_call(dir, tool, args).await
+                } else {
+                    stdio_call(dir, tool, args)
+                }
+            };
+            let decision_id =
+                captured_id(&call("capture_decision", capture_args("Per-seat pricing")).await);
+
+            let retitled = call(
+                "retitle_decision",
+                json!({
+                    "decision_id": decision_id,
+                    "to": "Pricing model",
+                    "reason": "the original ran long",
+                }),
+            )
+            .await;
+            assert_eq!(retitled["result"]["isError"], false, "{name}: {retitled:?}"); // ubs:ignore: test-only assertion
+            let reply = &retitled["result"]["structuredContent"];
+            assert_eq!(reply["decision_id"], json!(decision_id), "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                reply["from"], "Per-seat pricing",
+                "{name}: from is read, not passed"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(reply["to"], "Pricing model", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(reply["reason"], "the original ran long", "{name}"); // ubs:ignore: test-only assertion
+            assert!(reply["event_id"].is_u64(), "{name}: {reply:?}"); // ubs:ignore: test-only assertion
+
+            // Reversal is another recorded retitle, and `from` follows the first one.
+            let back = call(
+                "retitle_decision",
+                json!({ "decision_id": decision_id, "to": "Per-seat pricing" }),
+            )
+            .await;
+            let reply = &back["result"]["structuredContent"];
+            assert_eq!(reply["from"], "Pricing model", "{name}: reversal from"); // ubs:ignore: test-only assertion
+            assert_eq!(reply["to"], "Per-seat pricing", "{name}: reversal to"); // ubs:ignore: test-only assertion
+            assert!(reply.get("reason").is_none(), "{name}: no reason given"); // ubs:ignore: test-only assertion
+
+            let retitles = retitled_payloads(dir);
+            assert_eq!(retitles.len(), 2, "{name}: both retitles recorded"); // ubs:ignore: test-only assertion
+            assert_eq!(retitles[0]["from"], "Per-seat pricing", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(retitles[0]["to"], "Pricing model", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(retitles[1]["from"], "Pricing model", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(retitles[1]["to"], "Per-seat pricing", "{name}"); // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn retitle_decision_resolves_a_unique_description_and_writes_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs("retitle-unique-desc", &[]);
+
+        for (name, dir, http) in [("stdio", &stdio_dir, false), ("http", &http_dir, true)] {
+            let call = |tool: &'static str, args: Value| async move {
+                if http {
+                    http_call(dir, tool, args).await
+                } else {
+                    stdio_call(dir, tool, args)
+                }
+            };
+            let decision_id = captured_id(
+                &call(
+                    "capture_decision",
+                    capture_args("Adopt async billing queue"),
+                )
+                .await,
+            );
+
+            let retitled = call(
+                "retitle_decision",
+                json!({ "description": "adopt async billing queue", "to": "Async billing queue" }),
+            )
+            .await;
+            assert_eq!(retitled["result"]["isError"], false, "{name}: {retitled:?}"); // ubs:ignore: test-only assertion
+            let reply = &retitled["result"]["structuredContent"];
+            assert_eq!(
+                reply["decision_id"],
+                json!(decision_id),
+                "{name}: the description resolved to the captured decision"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(reply["from"], "Adopt async billing queue", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(reply["to"], "Async billing queue", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                retitled_payloads(dir).len(),
+                1,
+                "{name}: one retitle recorded"
+            );
+            // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn retitle_decision_ambiguous_description_returns_candidates_and_writes_nothing_across_transports(
+    ) {
+        let (stdio_dir, http_dir) = project_dirs("retitle-ambiguous", &[]);
+
+        for (name, dir, http) in [("stdio", &stdio_dir, false), ("http", &http_dir, true)] {
+            let call = |tool: &'static str, args: Value| async move {
+                if http {
+                    http_call(dir, tool, args).await
+                } else {
+                    stdio_call(dir, tool, args)
+                }
+            };
+            for title in [
+                "Adopt async queue for billing",
+                "Adopt async queue for notifications",
+            ] {
+                call("capture_decision", capture_args(title)).await;
+            }
+            let offset_before = ledger_offset(dir);
+
+            let reply = call(
+                "retitle_decision",
+                json!({ "description": "adopt async queue", "to": "Async queue" }),
+            )
+            .await;
+            let result = &reply["result"];
+            assert_eq!(
+                result["isError"], false,
+                "{name}: ambiguous is not an error"
+            ); // ubs:ignore: test-only assertion
+            let structured = &result["structuredContent"];
+            assert_eq!(structured["data"]["outcome"], "ambiguous", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                structured["data"]["candidates"].as_array().map(Vec::len),
+                Some(2),
+                "{name}: candidate count"
+            );
+            assert_eq!(
+                ledger_offset(dir),
+                offset_before,
+                "{name}: an ambiguous retitle writes nothing"
+            ); // ubs:ignore: test-only assertion
+            assert!(retitled_payloads(dir).is_empty(), "{name}"); // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn retitle_decision_not_found_description_is_a_success_envelope_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs("retitle-not-found", &[]);
+
+        for (name, dir, http) in [("stdio", &stdio_dir, false), ("http", &http_dir, true)] {
+            let call = |tool: &'static str, args: Value| async move {
+                if http {
+                    http_call(dir, tool, args).await
+                } else {
+                    stdio_call(dir, tool, args)
+                }
+            };
+            call(
+                "capture_decision",
+                capture_args("Adopt async billing queue"),
+            )
+            .await;
+            let offset_before = ledger_offset(dir);
+
+            let reply = call(
+                "retitle_decision",
+                json!({ "description": "totally unrelated widget factory zzz", "to": "New title" }),
+            )
+            .await;
+            let result = &reply["result"];
+            assert_eq!(
+                result["isError"], false,
+                "{name}: not-found is not an error: {result:?}"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["data"]["outcome"],
+                "not_found", // ubs:ignore: test-only assertion
+                "{name}: outcome"
+            );
+            assert_eq!(
+                ledger_offset(dir),
+                offset_before,
+                "{name}: a not-found retitle writes nothing"
+            ); // ubs:ignore: test-only assertion
+        }
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    #[tokio::test]
+    async fn retitle_decision_refusals_write_nothing_and_read_alike_across_transports() {
+        let (stdio_dir, http_dir) = project_dirs("retitle-refused", &[]);
+        let mut messages: Vec<(&str, Vec<String>)> = Vec::new();
+        let over_cap = "x".repeat(crate::commands::MAX_TITLE_LEN + 1);
+
+        for (name, dir, http) in [("stdio", &stdio_dir, false), ("http", &http_dir, true)] {
+            let call = |tool: &'static str, args: Value| async move {
+                if http {
+                    http_call(dir, tool, args).await
+                } else {
+                    stdio_call(dir, tool, args)
+                }
+            };
+            let decision_id =
+                captured_id(&call("capture_decision", capture_args("Per-seat pricing")).await);
+
+            let mut seen = Vec::new();
+            for (label, args, expected) in [
+                (
+                    "over cap",
+                    json!({ "decision_id": decision_id, "to": over_cap }),
+                    "must be at most",
+                ),
+                (
+                    "already titled",
+                    json!({ "decision_id": decision_id, "to": "Per-seat pricing" }),
+                    "already titled",
+                ),
+                (
+                    "no new title",
+                    json!({ "decision_id": decision_id }),
+                    "missing `to`",
+                ),
+                (
+                    "no target",
+                    json!({ "to": "Some new title" }),
+                    "one of `decision_id` or `description` is required",
+                ),
+            ] {
+                let reply = call("retitle_decision", args).await;
+                let result = &reply["result"];
+                assert_eq!(result["isError"], true, "{name}/{label}: {result:?}"); // ubs:ignore: test-only assertion
+                assert!(
+                    error_text(result).contains(expected),
+                    "{name}/{label}: {:?}",
+                    error_text(result)
+                ); // ubs:ignore: test-only assertion
+                   // Decision ids are generated per ledger; the words around them must match.
+                seen.push(error_text(result).replace(&decision_id, "<decision>"));
+            }
+            assert!(
+                retitled_payloads(dir).is_empty(),
+                "{name}: a refused retitle writes nothing"
             ); // ubs:ignore: test-only assertion
             messages.push((name, seen));
         }
