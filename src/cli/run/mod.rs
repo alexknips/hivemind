@@ -3668,14 +3668,8 @@ fn run_quality_scan(cli: &Cli, args: &QualityScanArgs) -> Result<String> {
 
     for scanned in &scan.data.findings {
         let finding = &scanned.finding;
-        // Look up the decision title for a friendlier ticket subject.
-        let title_lookup = get_decision(&graph, &finding.decision_id)
-            .ok()
-            .and_then(|r| r.data)
-            .map(|d| d.title);
-
         let kind = finding.kind.as_str();
-        let issue_title = format_issue_title(scanned, title_lookup.as_deref());
+        let issue_title = format_issue_title(scanned);
         let issue_body = format_issue_description(scanned, base_url);
 
         if args.dry_run {

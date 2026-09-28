@@ -327,6 +327,15 @@ where a time is taken from another node (the superseding decision, the refuting
 evidence), that node too: `node_ids` is sorted, distinct and always includes the
 decision.
 
+**Named in words, not just ids.** `reason` reads as a sentence a stranger can act on
+without a lookup: the flagged decision's own title is on `decision_title`, and every
+other node the reason names is worded too -- a prior decision by its title, an
+assumption or bet by its statement, an evidence item by its content -- clipped to 200
+characters and falling back to the id only when the record states no title,
+statement or content. The ids (`decision_id`, `node_ids`) stay in the finding as
+handles for a follow-up call (`score_decision`, `get_decision`), never as the only
+way to say what the finding is about.
+
 **Stable ids.** `finding_id` is `finding-` and the first 16 bytes (32 hex digits)
 of the SHA-256 of the kind, the node ids and the basis time (written as UTC with
 nanoseconds; a missing time is `-`), so a consumer can dedupe across scans. The
@@ -350,14 +359,19 @@ another finding that was not left out follows.
 A page issues 12 bulk reads (`GROUNDING_FACT_READS`: who superseded, accepted or
 rejected which decision; the `FOLLOWS_FROM`, `BASED_ON`, `PREMISED_ON_DIRECT`,
 `PREMISED_ON` and `CHOSE` links; the hypothesis and evidence rows; what refutes or
-supports a hypothesis), however many decisions there are, plus one anchored read
-for each distinct superseding decision on the page, at most `limit` more. When
-findings are left out, the same anchored read is made for each one stepped over on
-the way to a full page: the extra cost grows with the findings left out that sort
-before the end of the page, and stops there. The rows those reads return grow with
-the grounding links, hypotheses and evidence, not with decisions times a per-decision
-cost. Nothing walks the premise graph, so a `FOLLOWS_FROM` cycle cannot loop and
-costs nothing extra.
+supports a hypothesis), however many decisions there are, plus the anchored reads
+that word each finding: one per distinct decision the finding names (the decision
+itself, and -- for `premise_superseded` and `premise_rejected` -- the premise),
+which gives its title and, for a decision that superseded a premise, also states
+when in the same read; and one per distinct hypothesis or evidence item the finding
+names. That is a small, fixed multiple of `limit` more (at most three per finding:
+the decision, its subject and its basis), never a scan. When findings are left out,
+the same anchored reads are made for each one stepped over on the way to a full
+page: the extra cost grows with the findings left out that sort before the end of
+the page, and stops there. The rows those reads return grow with the grounding
+links, hypotheses and evidence, not with decisions times a per-decision cost.
+Nothing walks the premise graph, so a `FOLLOWS_FROM` cycle cannot loop and costs
+nothing extra.
 
 ## What the tools return
 
@@ -424,9 +438,10 @@ reasons:
       "finding_id": "finding-…",
       "kind": "bet_past_check_date",
       "decision_id": "decision-…",
+      "decision_title": "Size the fleet for flat load",
       "basis_at": "2026-09-01T00:00:00Z",
       "node_ids": ["decision-…", "hypothesis-…"],
-      "reason": "the bet hypothesis-… was to be checked by …; nothing has been recorded for or against it",
+      "reason": "the bet 'Load stays flat' was to be checked by 2026-09-01; nothing has been recorded for or against it",
       "dimensions": [
         { "dimension": "information", "status": "assessed", "level": "partial", "reasons": [ … ], "node_ids": [ … ] },
         { "dimension": "calibration", "status": "not_assessed", "why": "…" }
@@ -502,9 +517,10 @@ default 10) and files one Linear ticket for each, or prints them with `--dry-run
 A ticket is titled `[HiveMind] <kind>: <decision title>` (the decision id when it has no
 title). Its body, in Markdown, has:
 
-- the decision id, the kind of finding and the `finding_id`, and a link to the decision when
-  `--hivemind-base-url` is set;
-- **Why it needs a look**: the finding's reason in words;
+- the decision's title and id, the kind of finding and the `finding_id`, and a link to the
+  decision when `--hivemind-base-url` is set;
+- **Why it needs a look**: the finding's reason in words, naming every node it names by its
+  own title, statement or content, not by a bare id;
 - **Node IDs**: every node the finding rests on;
 - **Dimensions it bears on**: the dimensions in the table under `scan_decision_quality`, one
   bullet each with its level and, beneath it, each reason with the ids it rests on, or "not

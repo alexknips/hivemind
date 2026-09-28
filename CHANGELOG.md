@@ -166,6 +166,24 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **An attention finding names every decision, premise, bet, assumption and evidence item it
+  is about in words, not by a bare id.** `scan_decision_quality`, `get_suggestions` and
+  `hivemind quality-scan` named findings only by id: `reason` read "the decision it follows
+  from, decision-9455…, was superseded by decision-72e8…", and a finding carried no title at
+  all (`finding_id`, `decision_id`, `kind`, `basis_at`, `node_ids`, `reason` were the whole
+  shape), so a reader had to look each id up before knowing what the finding was about. Every
+  finding now carries `decision_title` (the flagged decision's own title, falling back to its
+  id when the record has none), and `reason` quotes the title, statement or content of every
+  other node it names — a prior decision by its title, a bet or assumption by its statement, an
+  evidence item by its content, clipped to 200 characters — instead of the raw id: "the decision
+  it follows from, 'Use the old queue', was superseded by 'Use the new queue' on 2026-08-01".
+  The ids (`decision_id`, `node_ids`) stay in the finding as handles for a follow-up call, never
+  as the only way to say what the finding is about. The stdio server, the HTTP endpoint and the
+  CLI carry the change identically. A `quality-scan` ticket body now opens with the decision's
+  title, not only its id, so it reads without looking anything up; `linear::format_issue_title`
+  drops its now-redundant `decision_title: Option<&str>` argument and reads the finding's own.
+  Small fix alongside: `evidence_not_rechecked`'s reason read "more than 1 days ago" for a
+  one-day window; it now reads "more than 1 day ago". (hivemind-uag0)
 - **`recall` answers a plain question in the asker's own words.** It said "No decisions found"
   to questions like "how does the decision page get the brief it shows?" because every word
   that was not a question word had to appear in a decision exactly as written (`shows`, not

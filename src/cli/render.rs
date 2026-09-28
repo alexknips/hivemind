@@ -574,10 +574,11 @@ pub(crate) fn render_scan_report_summary(report: &ScanReport) -> String {
         );
         let _ = writeln!(
             output,
-            "finding\t{}\t{}\t{}\tbasis_at={basis}\tids={}\t{}",
+            "finding\t{}\t{}\t{}\t{}\tbasis_at={basis}\tids={}\t{}",
             finding.finding_id,
             finding.kind.as_str(),
             finding.decision_id,
+            summary_cell(&finding.decision_title),
             finding.node_ids.join(","),
             summary_cell(&finding.reason)
         );

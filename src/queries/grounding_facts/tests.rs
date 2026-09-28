@@ -252,7 +252,7 @@ fn the_facts_cost_a_fixed_number_of_reads_however_large_the_graph() -> Result<()
 }
 
 #[test]
-fn decision_times_are_anchored_reads_and_skip_what_states_no_time() -> Result<()> {
+fn decision_anchors_are_anchored_reads_and_state_what_the_record_has() -> Result<()> {
     let scenario = Scenario::new();
     scenario.decision("d:1", "One", "agent:tester", "2026-01-01T00:00:00Z")?;
     scenario.decision("d:2", "Two", "agent:tester", "2026-02-02T00:00:00Z")?;
@@ -260,11 +260,33 @@ fn decision_times_are_anchored_reads_and_skip_what_states_no_time() -> Result<()
     let graph = scenario.graph()?;
     let counting = CountingGraph::new(&graph);
 
-    let times = get_decision_times(&counting, ["d:1", "d:2", "d:2", "d:stub", "d:missing"])?;
+    let anchors = get_decision_anchors(&counting, ["d:1", "d:2", "d:2", "d:stub", "d:missing"])?;
 
-    assert_eq!(times.len(), 2);
-    assert_eq!(times.get("d:1"), Some(&ts("2026-01-01T00:00:00Z")));
-    assert_eq!(times.get("d:2"), Some(&ts("2026-02-02T00:00:00Z")));
+    assert_eq!(anchors.len(), 3);
+    assert_eq!(
+        anchors.get("d:1"),
+        Some(&DecisionAnchor {
+            title: Some("One".to_owned()),
+            occurred_at: Some(ts("2026-01-01T00:00:00Z")),
+        })
+    );
+    assert_eq!(
+        anchors.get("d:2"),
+        Some(&DecisionAnchor {
+            title: Some("Two".to_owned()),
+            occurred_at: Some(ts("2026-02-02T00:00:00Z")),
+        })
+    );
+    // A bare stub named by a request but never proposed: present (the row exists), but states
+    // neither a title nor a time.
+    assert_eq!(
+        anchors.get("d:stub"),
+        Some(&DecisionAnchor {
+            title: None,
+            occurred_at: None,
+        })
+    );
+    assert_eq!(anchors.get("d:missing"), None);
     // One lookup per distinct id, never a scan.
     assert_eq!(counting.queries(), 4);
     Ok(())

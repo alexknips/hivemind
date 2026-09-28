@@ -61,7 +61,9 @@ pub use context::{
     context_next_cursor, get_decision_context, get_decision_context_candidates, AuthorshipShape,
     DecisionContext, DecisionContextRequest, ReviewShape,
 };
-pub use decision::{get_decision, get_hypothesis_statement, DecisionView, HypothesisContext};
+pub use decision::{
+    get_decision, get_evidence_content, get_hypothesis_statement, DecisionView, HypothesisContext,
+};
 pub use decision_log::{
     export_decision_log, DecisionLogExport, DecisionLogOutcome, DecisionLogRequest, ProfileSection,
 };
@@ -72,7 +74,8 @@ pub use grounding::{
     UncheckedBet,
 };
 pub use grounding_facts::{
-    get_decision_times, get_grounding_facts, GroundingFacts, HypothesisRecord, GROUNDING_FACT_READS,
+    get_decision_anchors, get_grounding_facts, DecisionAnchor, GroundingFacts, HypothesisRecord,
+    GROUNDING_FACT_READS,
 };
 pub use history::*;
 pub use misfiled::{

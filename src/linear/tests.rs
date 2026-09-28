@@ -11,9 +11,10 @@ fn finding(kind: FindingKind, dimensions: Vec<DimensionLine>) -> ScanFinding {
             finding_id: "finding-0123456789abcdef".to_owned(),
             kind,
             decision_id: "d-001".to_owned(),
+            decision_title: "d-001".to_owned(),
             basis_at: None,
             node_ids: vec!["d-001".to_owned(), "h-001".to_owned()],
-            reason: "the bet h-001 was to be checked by 2026-01-01".to_owned(),
+            reason: "the bet 'Latency stays low' was to be checked by 2026-01-01".to_owned(),
         },
         dimensions,
     }
@@ -44,23 +45,25 @@ fn information_and_calibration() -> Vec<DimensionLine> {
 
 #[test]
 fn format_title_with_title() {
-    let scanned = finding(FindingKind::PremiseSuperseded, Vec::new());
-    let t = format_issue_title(&scanned, Some("Deploy to prod"));
+    let mut scanned = finding(FindingKind::PremiseSuperseded, Vec::new());
+    scanned.finding.decision_title = "Deploy to prod".to_owned();
+    let t = format_issue_title(&scanned);
     assert_eq!(t, "[HiveMind] premise_superseded: Deploy to prod");
 }
 
 #[test]
-fn format_title_without_title() {
-    let scanned = finding(FindingKind::PremiseSuperseded, Vec::new());
-    let t = format_issue_title(&scanned, None);
-    assert_eq!(t, "[HiveMind] premise_superseded: decision d-001");
+fn format_title_falls_back_to_the_id_when_the_decision_has_no_title() {
+    let mut scanned = finding(FindingKind::PremiseSuperseded, Vec::new());
+    scanned.finding.decision_title = scanned.finding.decision_id.clone();
+    let t = format_issue_title(&scanned);
+    assert_eq!(t, "[HiveMind] premise_superseded: d-001");
 }
 
 #[test]
 fn format_title_truncates_long_titles() {
-    let scanned = finding(FindingKind::PremiseSuperseded, Vec::new());
-    let long = "A".repeat(100);
-    let t = format_issue_title(&scanned, Some(&long));
+    let mut scanned = finding(FindingKind::PremiseSuperseded, Vec::new());
+    scanned.finding.decision_title = "A".repeat(100);
+    let t = format_issue_title(&scanned);
     assert!(t.len() <= 140);
     assert!(t.contains('…'));
 }
@@ -72,12 +75,13 @@ fn format_description_contains_required_fields() {
     assert_eq!(
         desc,
         "## Decision needs a look\n\n\
+         **Decision:** d-001  \n\
          **Decision ID:** `d-001`  \n\
          **Finding:** bet_past_check_date  \n\
          **Finding ID:** `finding-0123456789abcdef`\n\n\
          **Link:** https://hivemind.example.com/decisions/d-001\n\n\
          ### Why it needs a look\n\n\
-         the bet h-001 was to be checked by 2026-01-01\n\n\
+         the bet 'Latency stays low' was to be checked by 2026-01-01\n\n\
          ### Node IDs\n\n\
          - `d-001`\n\
          - `h-001`\n\n\

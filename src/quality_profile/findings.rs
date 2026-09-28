@@ -3,6 +3,13 @@
 //! and lists the nodes it rests on. There is no score, no tier and no ranking; the order is by id
 //! so that a page can be resumed, and a consumer that wants a priority applies its own.
 //!
+//! Every decision, premise, bet, assumption or evidence item a finding mentions is named in its
+//! own words in [`AttentionFinding::reason`] -- a title, a statement or its content -- never by a
+//! bare id a reader has to look up first. The flagged decision's own title is carried again on
+//! [`AttentionFinding::decision_title`]. The ids ([`AttentionFinding::decision_id`],
+//! [`AttentionFinding::node_ids`]) stay in the finding too, as handles for a follow-up call, not
+//! as the only way to say what the finding is about.
+//!
 //! # The findings
 //! Six kinds, in the three lists the quality profile rolls up into. Each needs the decision to
 //! *stand* (not superseded and not rejected: a decision that has been replaced needs no look) and
@@ -44,9 +51,13 @@
 //! `truncated` is true only when another finding that was not left out follows.
 //!
 //! A page issues [`GROUNDING_FACT_READS`](crate::queries::GROUNDING_FACT_READS) bulk reads
-//! however many decisions there are, plus one anchored read per distinct superseding decision on
-//! the page (to state when it was made), so at most `limit` more. When findings are left out, the
-//! same anchored read is made for each one stepped over on the way to a full page: the extra cost
+//! however many decisions there are, plus the anchored reads that word each finding: one per
+//! distinct decision the finding names (the decision itself, and -- for `premise_superseded` and
+//! `premise_rejected` -- the premise), which gives its title and, for a decision that superseded
+//! a premise, also states when in the same read; and one per distinct hypothesis or evidence item
+//! the finding names (a bet's or assumption's statement, an evidence item's content). That is a
+//! small, fixed multiple of `limit` more, never a scan. When findings are left out, the same
+//! anchored reads are made for each one stepped over on the way to a full page: the extra cost
 //! grows with the findings left out that sort before the end of the page, and stops there. The
 //! rows those bulk reads return grow with the grounding links, hypotheses and evidence, not with
 //! decisions times a per-decision cost. Nothing walks the premise graph: a premise link is read
@@ -68,10 +79,15 @@ use crate::error::QueryError;
 use crate::events::HypothesisKind;
 use crate::projector::GraphView;
 use crate::queries::{
-    get_decision_times, get_grounding_facts, DecisionStatus, GroundingFacts, HypothesisRecord,
-    HypothesisStatus, MAX_QUERY_RESULTS,
+    get_decision_anchors, get_evidence_content, get_grounding_facts, get_hypothesis_statement,
+    DecisionAnchor, DecisionStatus, GroundingFacts, HypothesisRecord, HypothesisStatus,
+    MAX_QUERY_RESULTS,
 };
 use crate::Result;
+
+/// A label (title, statement or evidence content) longer than this many characters is clipped and
+/// ends in `…`, so a `reason` sentence stays a sentence even when the node behind it is not.
+const LABEL_MAX_CHARS: usize = 200;
 
 /// How long evidence may go without a newer item before it is flagged, when nobody says
 /// otherwise: one quarter.
@@ -165,6 +181,8 @@ pub struct AttentionFinding {
     pub kind: FindingKind,
     /// The decision that needs a look.
     pub decision_id: String,
+    /// The decision's own title, in words; falls back to `decision_id` when its record has none.
+    pub decision_title: String,
     /// The moment the finding rests on (see the table in the module docs); absent when the graph
     /// does not record one.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -245,10 +263,11 @@ pub fn attention_findings_at(
 /// The first `limit` findings of `rest` that are not `excluded`, in order, and the cursor that
 /// resumes after the last of them when another finding follows.
 ///
-/// A candidate is worded, and so given its id, only when it is reached; the superseding decisions
-/// it needs dated are read then, one anchored read per distinct id however many candidates share
-/// it. With nothing excluded that is the page and no more: the candidate after it is known to be
-/// a finding without being worded, so a page costs at most `limit` anchored reads. With findings
+/// A candidate is worded, and so given its id, only when it is reached; the decisions, hypotheses
+/// and evidence items it needs labelled (and, for a superseding decision, dated) are read then,
+/// one anchored read per distinct id however many candidates share it. With nothing excluded that
+/// is the page and no more: the candidate after it is known to be a finding without being worded,
+/// so a page costs at most a small, fixed multiple of `limit` anchored reads. With findings
 /// excluded, what a page costs grows with the excluded findings it has to step over.
 fn take_page(
     graph: &impl GraphView,
@@ -257,8 +276,12 @@ fn take_page(
     excluded: &BTreeSet<String>,
     config: &AttentionConfig,
 ) -> Result<(Vec<AttentionFinding>, Option<String>)> {
-    let mut times: BTreeMap<String, DateTime<Utc>> = BTreeMap::new();
-    let mut dated: BTreeSet<&str> = BTreeSet::new();
+    let mut anchors: BTreeMap<String, DecisionAnchor> = BTreeMap::new();
+    let mut anchored: BTreeSet<&str> = BTreeSet::new();
+    let mut hypothesis_labels: BTreeMap<String, String> = BTreeMap::new();
+    let mut labeled_hypotheses: BTreeSet<&str> = BTreeSet::new();
+    let mut evidence_labels: BTreeMap<String, String> = BTreeMap::new();
+    let mut labeled_evidence: BTreeSet<&str> = BTreeSet::new();
     let mut findings = Vec::with_capacity(limit.min(rest.len()));
     let mut last: Option<&Candidate<'_>> = None;
 
@@ -266,12 +289,31 @@ fn take_page(
         if findings.len() == limit && excluded.is_empty() {
             return Ok((findings, last.map(cursor_of).transpose()?));
         }
-        let undated: Vec<&str> = candidate
-            .other_superseders()
-            .filter(|by_id| dated.insert(*by_id))
+
+        let unanchored: Vec<&str> = candidate
+            .decisions_to_anchor()
+            .filter(|id| anchored.insert(*id))
             .collect();
-        times.extend(get_decision_times(graph, undated)?);
-        let finding = candidate.to_finding(&times, config);
+        anchors.extend(get_decision_anchors(graph, unanchored)?);
+
+        if let Some(hypothesis_id) = candidate
+            .hypothesis_to_label()
+            .filter(|id| labeled_hypotheses.insert(*id))
+        {
+            if let Some(statement) = get_hypothesis_statement(graph, hypothesis_id)? {
+                hypothesis_labels.insert(hypothesis_id.to_owned(), statement);
+            }
+        }
+        for evidence_id in candidate
+            .evidence_to_label()
+            .filter(|id| labeled_evidence.insert(*id))
+        {
+            if let Some(content) = get_evidence_content(graph, evidence_id)? {
+                evidence_labels.insert(evidence_id.to_owned(), content);
+            }
+        }
+
+        let finding = candidate.to_finding(&anchors, &hypothesis_labels, &evidence_labels, config);
         if excluded.contains(&finding.finding_id) {
             continue;
         }
@@ -327,6 +369,41 @@ impl<'a> Candidate<'a> {
     /// The order findings come in, and what a cursor is a position in. Unique per finding.
     fn key(&self) -> (&'a str, FindingKind, &'a str) {
         (self.decision_id, self.kind, self.subject_id)
+    }
+
+    /// The decisions this finding needs a [`DecisionAnchor`] for: the decision that needs a look
+    /// itself (always, for [`AttentionFinding::decision_title`]), its subject when the subject is
+    /// a decision, and its superseders (to find the earliest and date it).
+    fn decisions_to_anchor(&self) -> impl Iterator<Item = &'a str> + '_ {
+        let subject_is_decision = matches!(
+            self.kind,
+            FindingKind::PremiseSuperseded | FindingKind::PremiseRejected
+        );
+        std::iter::once(self.decision_id)
+            .chain(subject_is_decision.then_some(self.subject_id))
+            .chain(self.other_superseders())
+    }
+
+    /// The hypothesis this finding needs a statement for, when its subject is one.
+    fn hypothesis_to_label(&self) -> Option<&'a str> {
+        matches!(
+            self.kind,
+            FindingKind::BetPastCheckDate | FindingKind::AssumptionRefuted | FindingKind::BetFailed
+        )
+        .then_some(self.subject_id)
+    }
+
+    /// The evidence this finding needs content for: its subject when the subject is an evidence
+    /// item, and its basis (what refuted it) when the kind names one.
+    fn evidence_to_label(&self) -> impl Iterator<Item = &'a str> + '_ {
+        let subject_is_evidence = self.kind == FindingKind::EvidenceNotRechecked;
+        let basis_is_evidence = matches!(
+            self.kind,
+            FindingKind::AssumptionRefuted | FindingKind::BetFailed
+        );
+        std::iter::once(self.subject_id)
+            .filter(move |_| subject_is_evidence)
+            .chain(self.basis_node.filter(move |_| basis_is_evidence))
     }
 }
 
@@ -480,7 +557,9 @@ fn stale_evidence<'a>(
 impl Candidate<'_> {
     fn to_finding(
         &self,
-        times: &BTreeMap<String, DateTime<Utc>>,
+        anchors: &BTreeMap<String, DecisionAnchor>,
+        hypothesis_labels: &BTreeMap<String, String>,
+        evidence_labels: &BTreeMap<String, String>,
         config: &AttentionConfig,
     ) -> AttentionFinding {
         let mut basis_node = self.basis_node;
@@ -491,7 +570,7 @@ impl Candidate<'_> {
             let earliest = self
                 .other_superseders()
                 .map(|by_id| {
-                    let at = times.get(by_id).copied();
+                    let at = anchors.get(by_id).and_then(|anchor| anchor.occurred_at);
                     (at.unwrap_or(DateTime::<Utc>::MAX_UTC), by_id, at)
                 })
                 .min();
@@ -509,41 +588,112 @@ impl Candidate<'_> {
             .map(str::to_owned)
             .collect();
 
+        let decision_title = decision_label(anchors, self.decision_id);
+        let subject = self.subject_label(anchors, hypothesis_labels, evidence_labels);
+        let by = basis_node
+            .map(|by_id| self.basis_label(by_id, anchors, evidence_labels))
+            .unwrap_or_else(|| subject.clone());
+
         let on = basis_at.map_or_else(String::new, |at| format!(" on {}", date(at)));
-        let subject = self.subject_id;
-        let by = basis_node.unwrap_or(subject);
         let reason = match self.kind {
             FindingKind::BetPastCheckDate => format!(
-                "the bet {subject} was to be checked by {}; nothing has been recorded for or against it",
+                "the bet '{subject}' was to be checked by {}; nothing has been recorded for or against it",
                 basis_at.map_or_else(|| "its check date".to_owned(), date),
             ),
             FindingKind::PremiseSuperseded => format!(
-                "the decision it follows from, {subject}, was superseded by {by}{on}"
+                "the decision it follows from, '{subject}', was superseded by '{by}'{on}"
             ),
             FindingKind::PremiseRejected => {
-                format!("the decision it follows from, {subject}, was rejected")
+                format!("the decision it follows from, '{subject}', was rejected")
             }
             FindingKind::AssumptionRefuted => {
-                format!("the assumption it rests on, {subject}, was refuted by {by}{on}")
+                format!("the assumption it rests on, '{subject}', was refuted by '{by}'{on}")
             }
             FindingKind::BetFailed => {
-                format!("the bet it rests on, {subject}, failed: refuted by {by}{on}")
+                format!("the bet it rests on, '{subject}', failed: refuted by '{by}'{on}")
             }
-            FindingKind::EvidenceNotRechecked => format!(
-                "the newest evidence it rests on, {subject}, was recorded{on}, more than {} days ago",
-                config.evidence_window_days,
-            ),
+            FindingKind::EvidenceNotRechecked => {
+                let days = config.evidence_window_days;
+                let plural = if days == 1 { "" } else { "s" };
+                format!(
+                    "the newest evidence it rests on, '{subject}', was recorded{on}, more than {days} day{plural} ago"
+                )
+            }
         };
 
         AttentionFinding {
             finding_id: finding_id(self.kind, &node_ids, basis_at),
             kind: self.kind,
             decision_id: self.decision_id.to_owned(),
+            decision_title,
             basis_at,
             node_ids,
             reason,
         }
     }
+
+    /// What the subject reads as in words: a decision's title, a hypothesis's statement or an
+    /// evidence item's content, whichever kind the subject is; falls back to its id when its
+    /// record has none.
+    fn subject_label(
+        &self,
+        anchors: &BTreeMap<String, DecisionAnchor>,
+        hypothesis_labels: &BTreeMap<String, String>,
+        evidence_labels: &BTreeMap<String, String>,
+    ) -> String {
+        match self.kind {
+            FindingKind::PremiseSuperseded | FindingKind::PremiseRejected => {
+                decision_label(anchors, self.subject_id)
+            }
+            FindingKind::BetPastCheckDate
+            | FindingKind::AssumptionRefuted
+            | FindingKind::BetFailed => label(
+                hypothesis_labels.get(self.subject_id).map(String::as_str),
+                self.subject_id,
+            ),
+            FindingKind::EvidenceNotRechecked => label(
+                evidence_labels.get(self.subject_id).map(String::as_str),
+                self.subject_id,
+            ),
+        }
+    }
+
+    /// What `by_id` reads as in words: a superseding decision's title, or the refuting evidence
+    /// item's content.
+    fn basis_label(
+        &self,
+        by_id: &str,
+        anchors: &BTreeMap<String, DecisionAnchor>,
+        evidence_labels: &BTreeMap<String, String>,
+    ) -> String {
+        match self.kind {
+            FindingKind::PremiseSuperseded => decision_label(anchors, by_id),
+            _ => label(evidence_labels.get(by_id).map(String::as_str), by_id),
+        }
+    }
+}
+
+fn decision_label(anchors: &BTreeMap<String, DecisionAnchor>, decision_id: &str) -> String {
+    label(
+        anchors
+            .get(decision_id)
+            .and_then(|anchor| anchor.title.as_deref()),
+        decision_id,
+    )
+}
+
+/// A node's label in words, clipped to [`LABEL_MAX_CHARS`]; falls back to its id when `text` is
+/// `None` (the record has no title, statement or content, or was never read).
+fn label(text: Option<&str>, id: &str) -> String {
+    let Some(text) = text else {
+        return id.to_owned();
+    };
+    if text.chars().count() <= LABEL_MAX_CHARS {
+        return text.to_owned();
+    }
+    let mut clipped: String = text.chars().take(LABEL_MAX_CHARS - 1).collect();
+    clipped.push('…');
+    clipped
 }
 
 fn date(at: DateTime<Utc>) -> String {

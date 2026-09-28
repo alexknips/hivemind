@@ -240,7 +240,7 @@ pub(super) fn get_decision_title(
     Ok(rows.first().and_then(|row| optional_string(row, "title")))
 }
 
-pub(super) fn get_evidence_content(
+pub fn get_evidence_content(
     graph: &impl GraphView,
     evidence_id: &str,
 ) -> crate::Result<Option<String>> {

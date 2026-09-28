@@ -187,24 +187,17 @@ mutation IssueCreate($teamId: String!, $title: String!, $description: String) {
 // Issue formatting helpers (public for tests and CLI)
 // ---------------------------------------------------------------------------
 
-/// Format an attention finding as a Linear issue title: the kind of finding and the decision.
-/// Kept short (≤ 140 chars) because Linear truncates long titles.
-pub fn format_issue_title(scanned: &ScanFinding, decision_title: Option<&str>) -> String {
+/// Format an attention finding as a Linear issue title: the kind of finding and the decision's
+/// own title. Kept short (≤ 140 chars) because Linear truncates long titles.
+pub fn format_issue_title(scanned: &ScanFinding) -> String {
     let kind = scanned.finding.kind.as_str();
-    match decision_title.filter(|t| !t.is_empty()) {
-        Some(title) => {
-            let truncated = if title.chars().count() > 80 {
-                format!("{}…", title.chars().take(79).collect::<String>())
-            } else {
-                title.to_owned()
-            };
-            format!("[HiveMind] {kind}: {truncated}")
-        }
-        None => format!(
-            "[HiveMind] {kind}: decision {}",
-            scanned.finding.decision_id
-        ),
-    }
+    let title = &scanned.finding.decision_title;
+    let truncated = if title.chars().count() > 80 {
+        format!("{}…", title.chars().take(79).collect::<String>())
+    } else {
+        title.clone()
+    };
+    format!("[HiveMind] {kind}: {truncated}")
 }
 
 /// Format an attention finding as a Linear issue description (Markdown): the decision and the
@@ -217,7 +210,8 @@ pub fn format_issue_description(scanned: &ScanFinding, hivemind_base_url: Option
 
     let _ = write!(
         out,
-        "## Decision needs a look\n\n**Decision ID:** `{}`  \n**Finding:** {}  \n**Finding ID:** `{}`\n\n",
+        "## Decision needs a look\n\n**Decision:** {}  \n**Decision ID:** `{}`  \n**Finding:** {}  \n**Finding ID:** `{}`\n\n",
+        finding.decision_title,
         finding.decision_id,
         finding.kind.as_str(),
         finding.finding_id,

@@ -422,7 +422,7 @@ fn a_superseder_that_states_no_time_gives_a_finding_with_no_basis_time() -> Resu
     );
     assert_eq!(
         findings[0].reason,
-        "the decision it follows from, d:premise, was superseded by d:stub-new"
+        "the decision it follows from, 'Use the old queue', was superseded by 'd:stub-new'"
     );
     Ok(())
 }
@@ -1015,27 +1015,49 @@ fn each_finding_says_in_words_what_changed_or_lapsed() -> Result<()> {
 
     assert_eq!(
         reason_of("d:bet-overdue", FindingKind::BetPastCheckDate),
-        "the bet h:bet-overdue was to be checked by 2026-09-01; nothing has been recorded for or against it"
+        "the bet 'Load stays flat' was to be checked by 2026-09-01; nothing has been recorded for or against it"
     );
     assert_eq!(
         reason_of("d:f-superseded", FindingKind::PremiseSuperseded),
-        "the decision it follows from, d:p-old, was superseded by d:p-new on 2026-08-01"
+        "the decision it follows from, 'Use the old queue', was superseded by 'Use the new queue' on 2026-08-01"
     );
     assert_eq!(
         reason_of("d:f-rejected", FindingKind::PremiseRejected),
-        "the decision it follows from, d:p-rejected, was rejected"
+        "the decision it follows from, 'Adopt the vendor SDK', was rejected"
     );
     assert_eq!(
         reason_of("d:assumption-refuted", FindingKind::AssumptionRefuted),
-        "the assumption it rests on, h:assumption-refuted, was refuted by e:refute-a2 on 2026-06-01"
+        "the assumption it rests on, 'Users log in daily', was refuted by 'Half of users log in weekly' on 2026-06-01"
     );
     assert_eq!(
         reason_of("d:bet-failed", FindingKind::BetFailed),
-        "the bet it rests on, h:bet-failed, failed: refuted by e:refute-bet on 2026-08-15"
+        "the bet it rests on, 'Latency stays low', failed: refuted by 'p95 doubled' on 2026-08-15"
     );
     assert_eq!(
         reason_of("d:ev-stale", FindingKind::EvidenceNotRechecked),
-        "the newest evidence it rests on, e:old, was recorded on 2026-03-01, more than 90 days ago"
+        "the newest evidence it rests on, 'Benchmark from March', was recorded on 2026-03-01, more than 90 days ago"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_one_day_window_reads_day_not_days() -> Result<()> {
+    let graph = attention_scenario()?.graph()?;
+
+    let page = attention_findings_at(
+        &graph,
+        &request(&[FindingKind::EvidenceNotRechecked], 1),
+        &AttentionConfig {
+            evidence_window_days: 1,
+        },
+        now(),
+    )?;
+
+    assert_eq!(page.findings.len(), 1);
+    assert!(
+        page.findings[0].reason.ends_with("more than 1 day ago"),
+        "{}",
+        page.findings[0].reason
     );
     Ok(())
 }
@@ -1175,20 +1197,22 @@ fn a_page_costs_a_fixed_number_of_bulk_reads_however_many_decisions_there_are() 
         Ok(counting.queries())
     };
 
-    // Bets and stale evidence need no anchored read: the same twelve reads for 50 decisions and
-    // for 800.
+    // Bets and stale evidence each cost two anchored reads per finding -- the decision's own
+    // anchor (for its title) and the bet's statement or the evidence's content -- and every id in
+    // `bulk_scenario` is distinct, so it is the same reads for 50 decisions and for 800.
     for kinds in [
         &[FindingKind::BetPastCheckDate][..],
         &[FindingKind::EvidenceNotRechecked][..],
     ] {
-        assert_eq!(reads(50, kinds, 5)?, GROUNDING_FACT_READS);
-        assert_eq!(reads(800, kinds, 5)?, GROUNDING_FACT_READS);
+        assert_eq!(reads(50, kinds, 5)?, GROUNDING_FACT_READS + 10);
+        assert_eq!(reads(800, kinds, 5)?, GROUNDING_FACT_READS + 10);
     }
     Ok(())
 }
 
 #[test]
-fn a_page_of_superseded_premises_adds_one_anchored_read_per_distinct_superseder() -> Result<()> {
+fn a_page_of_superseded_premises_adds_three_anchored_reads_per_finding_when_every_id_is_distinct(
+) -> Result<()> {
     let graph = bulk_scenario(800)?.graph()?;
     let counting = CountingGraph::new(&graph);
 
@@ -1201,8 +1225,10 @@ fn a_page_of_superseded_premises_adds_one_anchored_read_per_distinct_superseder(
 
     assert_eq!(page.findings.len(), 25);
     assert!(page.truncated);
-    // Each dependent has its own premise and superseder here, so 25 findings are 25 lookups.
-    assert_eq!(counting.queries(), GROUNDING_FACT_READS + 25);
+    // Each dependent has its own premise and superseder here, all three distinct decisions, so
+    // 25 findings are 25 * 3 = 75 anchored reads (the decision itself, its premise and the
+    // premise's superseder).
+    assert_eq!(counting.queries(), GROUNDING_FACT_READS + 25 * 3);
     Ok(())
 }
 
@@ -1230,7 +1256,9 @@ fn a_large_graph_pages_through_every_finding_once_within_the_stated_cost() -> Re
             now(),
         )?;
         assert!(page.findings.len() <= limit);
-        assert!(counting.queries() <= GROUNDING_FACT_READS + limit);
+        // At most three anchored reads per finding (the decision, its subject and its basis, when
+        // all three are distinct decisions -- the `premise_superseded` worst case here).
+        assert!(counting.queries() <= GROUNDING_FACT_READS + limit * 3);
         seen.extend(page.findings);
         pages += 1;
         match page.next_cursor {
@@ -1395,7 +1423,7 @@ fn a_finding_whose_basis_changed_is_not_left_out_by_its_old_id() -> Result<()> {
 }
 
 #[test]
-fn stepping_over_findings_that_are_left_out_costs_one_anchored_read_each() -> Result<()> {
+fn stepping_over_findings_that_are_left_out_costs_the_same_anchored_reads_each() -> Result<()> {
     let graph = bulk_scenario(800)?.graph()?;
     let config = AttentionConfig::default();
     let kinds = [FindingKind::PremiseSuperseded];
@@ -1412,8 +1440,9 @@ fn stepping_over_findings_that_are_left_out_costs_one_anchored_read_each() -> Re
 
     assert_eq!(page.findings, first.findings[10..35]);
     assert!(page.truncated);
-    // Each dependent has its own premise and superseder here: the ten stepped over, the 25 on the
-    // page and the one after it, which is how the page is known to be cut short.
-    assert_eq!(counting.queries(), GROUNDING_FACT_READS + 10 + 25 + 1);
+    // Each dependent has its own premise and superseder here, all three distinct decisions: the
+    // ten stepped over, the 25 on the page and the one after it (which is how the page is known
+    // to be cut short) each cost three anchored reads.
+    assert_eq!(counting.queries(), GROUNDING_FACT_READS + (10 + 25 + 1) * 3);
     Ok(())
 }

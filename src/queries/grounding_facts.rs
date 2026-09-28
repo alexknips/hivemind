@@ -21,7 +21,7 @@ use crate::projector::{GraphView, NodeKind, RelationKind};
 use crate::Result;
 
 use super::grounding::hypothesis_facts_from_row;
-use super::shared::{node_row, node_rows, optional_datetime, relation_edges};
+use super::shared::{node_row, node_rows, optional_datetime, optional_string, relation_edges};
 use super::status::{hypothesis_status_from_evidence, DecisionStandings, HypothesisStatus};
 
 /// Bulk reads [`get_grounding_facts`] issues, whatever the size of the graph: three for who
@@ -120,30 +120,46 @@ pub fn get_grounding_facts(graph: &impl GraphView) -> Result<GroundingFacts> {
     })
 }
 
-/// When each of these decisions was made, as its own record states it; a decision that is not in
-/// the graph, or whose record states no time, is absent. Anchored lookups: one per id, never a
-/// scan.
-pub fn get_decision_times<'a>(
-    graph: &impl GraphView,
-    decision_ids: impl IntoIterator<Item = &'a str>,
-) -> Result<BTreeMap<String, DateTime<Utc>>> {
-    let distinct: BTreeSet<&str> = decision_ids.into_iter().collect();
-    let times = distinct
-        .into_iter()
-        .map(|decision_id| decision_time(graph, decision_id))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(times.into_iter().flatten().collect())
+/// What a decision's own record states, read anchored: its title (for naming it in words) and
+/// when it was made (for basis-time ordering). Either may be absent on its own -- a bare stub
+/// node named by a request but never proposed states neither -- but the anchor itself is present
+/// whenever the decision is.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecisionAnchor {
+    pub title: Option<String>,
+    pub occurred_at: Option<DateTime<Utc>>,
 }
 
-fn decision_time(
+/// The title and occurred-at of each of these decisions, as their own record states them; a
+/// decision that is not in the graph is absent. Anchored lookups: one row read per id, never a
+/// scan -- the same read gives both fields, so wording a finding in the decision's own words costs
+/// no more than dating it already did.
+pub fn get_decision_anchors<'a>(
+    graph: &impl GraphView,
+    decision_ids: impl IntoIterator<Item = &'a str>,
+) -> Result<BTreeMap<String, DecisionAnchor>> {
+    let distinct: BTreeSet<&str> = decision_ids.into_iter().collect();
+    let anchors = distinct
+        .into_iter()
+        .map(|decision_id| decision_anchor(graph, decision_id))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(anchors.into_iter().flatten().collect())
+}
+
+fn decision_anchor(
     graph: &impl GraphView,
     decision_id: &str,
-) -> Result<Option<(String, DateTime<Utc>)>> {
+) -> Result<Option<(String, DecisionAnchor)>> {
     let Some(row) = node_row(graph, NodeKind::Decision, decision_id)? else {
         return Ok(None);
     };
-    Ok(optional_datetime(&row, "occurred_at")?
-        .map(|occurred_at| (decision_id.to_owned(), occurred_at)))
+    Ok(Some((
+        decision_id.to_owned(),
+        DecisionAnchor {
+            title: optional_string(&row, "title"),
+            occurred_at: optional_datetime(&row, "occurred_at")?,
+        },
+    )))
 }
 
 /// Every `(from, to)` pair of one relation, sorted and distinct. The same pair asserted by more
