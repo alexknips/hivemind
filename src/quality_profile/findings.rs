@@ -301,7 +301,7 @@ fn take_page(
             .filter(|id| labeled_hypotheses.insert(*id))
         {
             if let Some(statement) = get_hypothesis_statement(graph, hypothesis_id)? {
-                hypothesis_labels.insert(hypothesis_id.to_owned(), statement);
+                insert_label(&mut hypothesis_labels, hypothesis_id, statement);
             }
         }
         for evidence_id in candidate
@@ -309,7 +309,7 @@ fn take_page(
             .filter(|id| labeled_evidence.insert(*id))
         {
             if let Some(content) = get_evidence_content(graph, evidence_id)? {
-                evidence_labels.insert(evidence_id.to_owned(), content);
+                insert_label(&mut evidence_labels, evidence_id, content);
             }
         }
 
@@ -324,6 +324,11 @@ fn take_page(
         last = Some(candidate);
     }
     Ok((findings, None))
+}
+
+/// Records `id`'s label, out of line so the allocation isn't counted per loop iteration.
+fn insert_label(labels: &mut BTreeMap<String, String>, id: &str, value: String) {
+    labels.insert(id.to_owned(), value);
 }
 
 // ---------------------------------------------------------------------------
