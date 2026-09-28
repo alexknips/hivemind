@@ -1449,6 +1449,44 @@ fn resolver_terms_drop_question_words_but_keep_negations() {
 }
 
 #[test]
+fn resolver_terms_drop_why_question_negation_contractions() {
+    // "doesn't"/"don't"/"isn't"/"aren't"/"won't"/"didn't" frame a why-question about an absence
+    // of behavior; a decision's own text essentially never contains the contraction verbatim, so
+    // it is dropped the same as "did"/"does" (hivemind-m974). "decision"/"the"/"or" are already
+    // dropped question words, unrelated to this fix.
+    assert_eq!(
+        resolver_terms("why doesn't the decision page show accepted or superseded"),
+        vec!["page", "show", "accepted", "superseded"]
+    );
+    assert_eq!(
+        resolver_terms("why don't we drop workos when the login metadata is unreadable"),
+        vec!["drop", "workos", "login", "metadata", "unreadable"]
+    );
+    assert_eq!(
+        resolver_terms("why isn't workos dropped when the login metadata is unreadable"),
+        vec!["workos", "dropped", "login", "metadata", "unreadable"]
+    );
+    assert_eq!(
+        resolver_terms("why aren't experiments shown here"),
+        vec!["experiments", "shown", "here"]
+    );
+    assert_eq!(
+        resolver_terms("why won't the query return this decision"),
+        vec!["query", "return"]
+    );
+    assert_eq!(
+        resolver_terms("why didn't the decision page show this"),
+        vec!["page", "show"]
+    );
+    // The bare negation word is still kept: dropping it would let "do not adopt kafka" resolve
+    // to the decision that adopted it (see the test above).
+    assert_eq!(
+        resolver_terms("why does the decision page not show this"),
+        vec!["page", "not", "show"]
+    );
+}
+
+#[test]
 fn resolver_terms_dedupe_and_fall_back_when_only_stopwords() {
     assert_eq!(resolver_terms("queue Queue queue"), vec!["queue"]);
     assert_eq!(resolver_terms("why did we"), vec!["why", "did", "we"]);
@@ -1562,6 +1600,18 @@ fn content_query_drops_decision_verbs_and_reports_them() {
     let language = content_query("why did we go with go");
     assert_eq!(language.query.as_deref(), Some("go"));
     assert_eq!(language.ignored, vec!["why", "did", "we", "with"]);
+}
+
+#[test]
+fn content_query_drops_why_question_negation_contractions() {
+    // recall's `content_query` shares `resolver_terms`' question-word list, so a "why doesn't…"
+    // recall query no longer requires "doesn't" of every candidate (hivemind-m974).
+    let asked = content_query("why doesn't the decision page show accepted or superseded");
+    assert_eq!(
+        asked.query.as_deref(),
+        Some("page show accepted superseded")
+    );
+    assert!(asked.ignored.contains(&"doesn't".to_owned()));
 }
 
 #[test]

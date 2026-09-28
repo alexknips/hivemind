@@ -71,13 +71,21 @@ pub fn overlap_score(query_terms: &[String], candidate_terms: &[String]) -> f64 
 
 /// Question, function and decision-frame words that carry no identifying signal in a natural
 /// question ("why did we decide to move the demo cell to shared Postgres", "why did we pick
-/// shadcn", "why is the demo still on the site"): the verbs people use to ask about a decision
-/// (pick, choose, decide) and the adverbs they put in a why-question (still, again, ever, ...).
-/// Fixed and literal: `-s` and past forms are listed, nothing is stemmed, no synonyms. They are
-/// dropped from the question only, never from a decision's text, so a decision titled "Pick the
-/// cheapest vendor" still matches on "pick". Deliberately omits negations (`not`, `no`, `never`,
-/// `without`): dropping them would let "do not adopt Kafka" resolve to the decision that adopted
-/// it.
+/// shadcn", "why is the demo still on the site", "why doesn't the decision page show..."): the
+/// verbs people use to ask about a decision (pick, choose, decide) and the adverbs they put in a
+/// why-question (still, again, ever, ...), plus the negated-auxiliary contractions a why-question
+/// asks with (doesn't, don't, isn't, aren't, won't, didn't). Fixed and literal: `-s` and past
+/// forms are listed, nothing is stemmed, no synonyms. They are dropped from the question only,
+/// never from a decision's text, so a decision titled "Pick the cheapest vendor" still matches on
+/// "pick".
+///
+/// Deliberately omits the bare negation words (`not`, `no`, `never`, `without`): dropping them
+/// would let "do not adopt Kafka" resolve to the decision that adopted it. A why-question's
+/// contraction is different: "why doesn't the decision page show X" asks about an absence of
+/// behavior, not the decision's own polarity the way "do not adopt Kafka" does, and a decision's
+/// text essentially never contains the contraction verbatim — kept as a required term, it just
+/// sinks the right answer behind every close candidate tied on missing the same unmatchable word
+/// (hivemind-m974).
 const QUESTION_STOPWORDS: &[&str] = &[
     "a",
     "about",
@@ -87,6 +95,7 @@ const QUESTION_STOPWORDS: &[&str] = &[
     "and",
     "anymore",
     "are",
+    "aren't",
     "as",
     "at",
     "be",
@@ -106,8 +115,11 @@ const QUESTION_STOPWORDS: &[&str] = &[
     "decision",
     "decisions",
     "did",
+    "didn't",
     "do",
     "does",
+    "doesn't",
+    "don't",
     "even",
     "ever",
     "for",
@@ -121,6 +133,7 @@ const QUESTION_STOPWORDS: &[&str] = &[
     "in",
     "into",
     "is",
+    "isn't",
     "it",
     "its",
     "me",
@@ -161,6 +174,7 @@ const QUESTION_STOPWORDS: &[&str] = &[
     "why",
     "will",
     "with",
+    "won't",
     "would",
     "you",
     "your",

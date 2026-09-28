@@ -102,9 +102,15 @@ No new matching logic, no configuration knobs, no learned weights.
 its keywords: "why did we move the demo cell to shared Postgres" finds
 "Demo cell storage moves to shared Postgres backend…".
 `resolver_terms` (`src/queries/terms.rs`) trims punctuation and drops question
-and function words (why, did, we, the, to, …) but keeps negations (not, no,
-never, without), so "do not adopt Kafka" cannot resolve to the decision that
-adopted it. The verbs people ask about a decision with (pick, choose, decide,
+and function words (why, did, we, the, to, …) but keeps bare negations (not,
+no, never, without), so "do not adopt Kafka" cannot resolve to the decision
+that adopted it. Negated-auxiliary contractions (doesn't, don't, isn't,
+aren't, won't, didn't) are dropped, not kept: a why-question asks with them
+("why doesn't the decision page show X") to name an absence of behavior, not
+the decision's own polarity, and a decision's text essentially never contains
+the contraction verbatim — kept as a required term it only sank the right
+answer behind every close candidate tied on missing the same unmatchable word
+(hivemind-m974). The verbs people ask about a decision with (pick, choose, decide,
 and "go with", "settle on", "opt for", each with its past and `-s` forms) and
 the adverbs they put in a why-question (still, again, ever, even, really,
 actually, now, anymore, currently) are question words too, so "why did we pick

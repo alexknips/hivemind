@@ -3058,6 +3058,58 @@ fn recall_finds_a_decision_from_a_plain_question_that_shares_most_of_its_words()
         "nothing recorded about kubernetes",
     )?;
 
+    // "why doesn't…"/"don't…"/"isn't…" question negation is grammar, not decision content: the
+    // contraction must not count as a word the decision has to contain (hivemind-m974).
+    let missing_terms_for = |answer: &serde_json::Value, id: &str| -> Vec<String> {
+        answer["data"]["ranked"]["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|item| item["decision"]["id"].as_str() == Some(id))
+            .and_then(|item| item["missing_terms"].as_array())
+            .map(|missing| {
+                missing
+                    .iter()
+                    .filter_map(|term| term.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let doesnt =
+        recall("why doesn't sign-in show a token card when the login metadata is unreadable")?;
+    let doesnt_top = top_three(&doesnt);
+    ensure(
+        doesnt_top.contains(&login),
+        &format!("`why doesn't...` should find the login decision, got {doesnt_top:?}"),
+    )?;
+    ensure(
+        !missing_terms_for(&doesnt, &login).contains(&"doesn't".to_owned()),
+        "a why-question's contraction is never reported as a word the decision lacks",
+    )?;
+
+    let dont = recall("why don't we drop workos when the login metadata is unreadable")?;
+    let dont_top = top_three(&dont);
+    ensure(
+        dont_top.contains(&login),
+        &format!("`why don't...` should find the login decision, got {dont_top:?}"),
+    )?;
+    ensure(
+        !missing_terms_for(&dont, &login).contains(&"don't".to_owned()),
+        "`why don't...` never reports `don't` as a word the decision lacks",
+    )?;
+
+    let isnt = recall("why isn't workos dropped when the login metadata is unreadable")?;
+    let isnt_top = top_three(&isnt);
+    ensure(
+        isnt_top.contains(&login),
+        &format!("`why isn't...` should find the login decision, got {isnt_top:?}"),
+    )?;
+    ensure(
+        !missing_terms_for(&isnt, &login).contains(&"isn't".to_owned()),
+        "`why isn't...` never reports `isn't` as a word the decision lacks",
+    )?;
+
     let _ = std::fs::remove_dir_all(&hivemind_dir);
     Ok(())
 }
