@@ -6256,10 +6256,11 @@ fn emit_decision_scored_plugin_path_round_trip() {
     use crate::events::EventType;
     use crate::ledger::SqliteEventLedger;
 
-    // This test covers the keyless plugin-edge scoring path (hivemind-wi3u):
-    // the plugin submits a batch via `emit ingest.batch_classified`, then
-    // spawns a Haiku subagent to score the decision capture and submits the
-    // result via `emit decision.scored` — no server API key needed, and no
+    // This test covers the keyless plugin-edge scoring path (hivemind-wi3u,
+    // moved to schema version 2 by hivemind-qo11.9): the plugin submits a
+    // batch via `emit ingest.batch_classified`, then spawns a Haiku subagent
+    // to assess the decision capture and submits the result via
+    // `emit decision.scored` — no server API key needed, and no
     // caller-constructed `capture:{event_id}:{idx}` node id.
 
     let hivemind_dir = unique_test_dir("emit-decision-scored-plugin");
@@ -6315,27 +6316,25 @@ fn emit_decision_scored_plugin_path_round_trip() {
         .expect("batch_id in output")
         .to_owned();
 
-    // Scores JSON as a Haiku subagent would return, with one score
-    // deliberately out of range to exercise server-side clamping.
+    // Scores JSON as a Haiku subagent would return: each dimension assessed with a
+    // verbatim quote from the capture's own text, or not_assessed.
     let scores_file = unique_test_dir("emit-decision-scored-scores");
     let scores_path = scores_file.with_extension("json");
     let scores_json = serde_json::json!({
-        "quality_dims": {
-            "framing": {"score": 0.8, "explanation": "Framed against a stated concurrency requirement."},
-            "alternatives": {"score": 0.7, "explanation": "sqlite and postgres both named and compared."},
-            "information": {"score": 1.5, "explanation": "Out-of-range on purpose to exercise clamping."},
-            "reasoning": {"score": 0.75, "explanation": "Chosen option follows from the stated requirement."},
-            "values_tradeoffs": {"score": 0.5, "explanation": "Operational cost not explicitly weighed."},
-            "bias_exposure": {"score": 0.8, "explanation": "No evidence of anchoring."},
-            "calibration": {"score": 0.5, "explanation": "No expressed confidence to check against."}
-        },
-        "importance": {
-            "stakes": 8.0,
-            "stakes_explanation": "Affects the shared ledger used by every tenant.",
-            "irreversibility": 0.6,
-            "irreversibility_explanation": "Migrating engines later is possible but costly.",
-            "actionability": 1.0,
-            "actionability_explanation": "Directly determines what gets built next."
+        "dimensions": {
+            "framing": {"status": "assessed", "level": "partial",
+                "explanation": "The storage-engine question is named but not spelled out as a question.",
+                "quote": "Use Postgres for the shared event ledger"},
+            "alternatives": {"status": "assessed", "level": "partial",
+                "explanation": "sqlite and postgres were both named.", "quote": "sqlite"},
+            "information": {"status": "not_assessed", "reason": "No evidence or measured load data is cited."},
+            "reasoning": {"status": "assessed", "level": "partial",
+                "explanation": "The chosen option follows from the stated concurrency requirement.",
+                "quote": "Concurrent multi-tenant writes are a day-one requirement; SQLite's single-writer model would bottleneck immediately"},
+            "values_tradeoffs": {"status": "not_assessed", "reason": "Operational cost is not weighed in the text."},
+            "bias_exposure": {"status": "assessed", "level": "none",
+                "explanation": "Nothing in the record bears on a distortion."},
+            "calibration": {"status": "not_assessed", "reason": "No expressed confidence is stated."}
         }
     });
     std::fs::write(&scores_path, scores_json.to_string()).expect("write scores file");
@@ -6357,8 +6356,10 @@ fn emit_decision_scored_plugin_path_round_trip() {
         "claude",
         "--agent-session",
         "plugin-session-score",
-        "--scorer-model",
+        "--model",
         "claude-haiku-4-5-20251001",
+        "--prompt-version",
+        "plugin-assessment-v1",
     ]))
     .expect("edge decision.scored submit succeeds");
     let score_output: serde_json::Value =
@@ -6385,26 +6386,38 @@ fn emit_decision_scored_plugin_path_round_trip() {
     assert_eq!(
         scored_event
             .payload
-            .get("capture_node_id")
+            .get("schema_version")
+            .and_then(|v| v.as_u64()),
+        Some(2)
+    );
+    assert_eq!(
+        scored_event
+            .payload
+            .get("decision_id")
             .and_then(|v| v.as_str()),
         Some(format!("capture:{classified_event_id}:0").as_str()),
-        "capture_node_id derived from batch-id + capture-index, not caller-supplied"
+        "decision_id derived from batch-id + capture-index, not caller-supplied"
+    );
+    assert_eq!(
+        scored_event
+            .payload
+            .get("prompt_version")
+            .and_then(|v| v.as_str()),
+        Some("plugin-assessment-v1")
     );
     assert_eq!(
         scored_event.causation_event_id,
         Some(classified_event_id),
         "decision.scored is causally linked to the batch it scores"
     );
-    // The out-of-range information score was clamped to 1.0, same as the
-    // server-side scorer worker's own validation.
     assert_eq!(
         scored_event
             .payload
-            .get("quality_dims")
-            .and_then(|v| v.get("information"))
-            .and_then(|v| v.get("score"))
-            .and_then(|v| v.as_f64()),
-        Some(1.0)
+            .get("dimensions")
+            .and_then(|v| v.get("framing"))
+            .and_then(|v| v.get("quote"))
+            .and_then(|v| v.as_str()),
+        Some("Use Postgres for the shared event ledger")
     );
 
     let _ = std::fs::remove_file(&captures_path);
@@ -6470,22 +6483,14 @@ fn emit_decision_scored_rejects_non_decision_capture() {
     let scores_file = unique_test_dir("emit-decision-scored-non-decision-scores");
     let scores_path = scores_file.with_extension("json");
     let scores_json = serde_json::json!({
-        "quality_dims": {
-            "framing": {"score": 0.5, "explanation": "n/a"},
-            "alternatives": {"score": 0.5, "explanation": "n/a"},
-            "information": {"score": 0.5, "explanation": "n/a"},
-            "reasoning": {"score": 0.5, "explanation": "n/a"},
-            "values_tradeoffs": {"score": 0.5, "explanation": "n/a"},
-            "bias_exposure": {"score": 0.5, "explanation": "n/a"},
-            "calibration": {"score": 0.5, "explanation": "n/a"}
-        },
-        "importance": {
-            "stakes": 1.0,
-            "stakes_explanation": "n/a",
-            "irreversibility": 0.5,
-            "irreversibility_explanation": "n/a",
-            "actionability": 0.5,
-            "actionability_explanation": "n/a"
+        "dimensions": {
+            "framing": {"status": "not_assessed", "reason": "n/a"},
+            "alternatives": {"status": "not_assessed", "reason": "n/a"},
+            "information": {"status": "not_assessed", "reason": "n/a"},
+            "reasoning": {"status": "not_assessed", "reason": "n/a"},
+            "values_tradeoffs": {"status": "not_assessed", "reason": "n/a"},
+            "bias_exposure": {"status": "not_assessed", "reason": "n/a"},
+            "calibration": {"status": "not_assessed", "reason": "n/a"}
         }
     });
     std::fs::write(&scores_path, scores_json.to_string()).expect("write scores file");
@@ -6503,6 +6508,8 @@ fn emit_decision_scored_rejects_non_decision_capture() {
         "0",
         "--scores",
         scores_path.to_str().expect("utf-8 scores path"),
+        "--prompt-version",
+        "test-v1",
     ]))
     .expect_err("scoring a non-decision capture must fail");
     assert!(
@@ -6511,6 +6518,167 @@ fn emit_decision_scored_rejects_non_decision_capture() {
     );
 
     let _ = std::fs::remove_file(&captures_path);
+    let _ = std::fs::remove_file(&scores_path);
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn emit_decision_scored_targets_a_directly_proposed_decision_by_id() {
+    use crate::events::EventType;
+    use crate::ledger::SqliteEventLedger;
+
+    // hivemind-qo11.9: the keyless path can also assess a decision that was
+    // captured directly (never extracted by a classifier), named by its own
+    // decision_id rather than a batch-id/capture-index pair.
+    let hivemind_dir = unique_test_dir("emit-decision-scored-direct");
+
+    let decision_output = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "agent-1",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Use Postgres for the shared event ledger",
+        "--rationale",
+        "Concurrent multi-tenant writes are a day-one requirement",
+        "--topic-keys",
+        "storage",
+        "--options",
+        "sqlite,postgres",
+        "--chose",
+        "postgres",
+    ]))
+    .expect("emit decision.proposed succeeds");
+    let decision_id = decision_output.trim().to_owned();
+    assert!(decision_id.starts_with("decision-"));
+
+    let scores_file = unique_test_dir("emit-decision-scored-direct-scores");
+    let scores_path = scores_file.with_extension("json");
+    let scores_json = serde_json::json!({
+        "dimensions": {
+            "framing": {"status": "assessed", "level": "partial",
+                "explanation": "The storage-engine choice is named but not phrased as a question.",
+                "quote": "Use Postgres for the shared event ledger"},
+            "alternatives": {"status": "assessed", "level": "partial",
+                "explanation": "postgres is named among the options.", "quote": "postgres"},
+            "information": {"status": "not_assessed", "reason": "No evidence is cited."},
+            "reasoning": {"status": "assessed", "level": "partial",
+                "explanation": "The rationale states the driving requirement.",
+                "quote": "Concurrent multi-tenant writes are a day-one requirement"},
+            "values_tradeoffs": {"status": "not_assessed", "reason": "No tradeoff is weighed in the text."},
+            "bias_exposure": {"status": "assessed", "level": "none",
+                "explanation": "Nothing in the record bears on a distortion."},
+            "calibration": {"status": "not_assessed", "reason": "No expressed confidence is stated."}
+        }
+    });
+    std::fs::write(&scores_path, scores_json.to_string()).expect("write scores file");
+
+    let score_output = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.scored",
+        "--decision-id",
+        &decision_id,
+        "--scores",
+        scores_path.to_str().expect("utf-8 scores path"),
+        "--agent-tool",
+        "claude",
+        "--agent-session",
+        "plugin-session-direct",
+        "--model",
+        "claude-haiku-4-5-20251001",
+        "--prompt-version",
+        "plugin-assessment-v1",
+    ]))
+    .expect("edge decision.scored submit succeeds against a direct decision");
+    let score_output: serde_json::Value =
+        serde_json::from_str(&score_output).expect("valid json output");
+    assert_eq!(
+        score_output.get("kind").and_then(|v| v.as_str()),
+        Some("event_id")
+    );
+
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let events = ledger.read(0, 50).expect("events read");
+    let scored_event = events
+        .iter()
+        .find(|e| e.event_type == EventType::DecisionScored)
+        .expect("DecisionScored event written");
+    assert_eq!(
+        scored_event
+            .payload
+            .get("decision_id")
+            .and_then(|v| v.as_str()),
+        Some(decision_id.as_str())
+    );
+    assert_eq!(
+        scored_event.causation_event_id, None,
+        "a directly targeted decision has no batch to link causation to"
+    );
+
+    let _ = std::fs::remove_file(&scores_path);
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
+#[test]
+fn emit_decision_scored_requires_exactly_one_target() {
+    let hivemind_dir = unique_test_dir("emit-decision-scored-no-target");
+    let scores_file = unique_test_dir("emit-decision-scored-no-target-scores");
+    let scores_path = scores_file.with_extension("json");
+    std::fs::write(
+        &scores_path,
+        serde_json::json!({"dimensions": {}}).to_string(),
+    )
+    .expect("write scores file");
+
+    let err = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.scored",
+        "--scores",
+        scores_path.to_str().expect("utf-8 scores path"),
+        "--prompt-version",
+        "test-v1",
+    ]))
+    .expect_err("neither --decision-id nor --batch-id/--capture-index given");
+    assert!(
+        err.to_string().contains("exactly one of --decision-id"),
+        "error should explain the mutually exclusive targeting rule: {err}"
+    );
+
+    let err = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        hivemind_dir.to_str().expect("utf-8 temp path"),
+        "emit",
+        "decision.scored",
+        "--decision-id",
+        "decision-whatever",
+        "--batch-id",
+        "batch-whatever",
+        "--capture-index",
+        "0",
+        "--scores",
+        scores_path.to_str().expect("utf-8 scores path"),
+        "--prompt-version",
+        "test-v1",
+    ]))
+    .expect_err("both --decision-id and --batch-id/--capture-index given");
+    assert!(
+        err.to_string().contains("exactly one of --decision-id"),
+        "error should explain the mutually exclusive targeting rule: {err}"
+    );
+
     let _ = std::fs::remove_file(&scores_path);
     let _ = std::fs::remove_dir_all(&hivemind_dir);
 }

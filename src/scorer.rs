@@ -1,12 +1,13 @@
-//! Layer-3 background scorer: reads ingest.batch_classified events and
-//! annotates decision captures with decision.scored events via Haiku 4.5.
-//!
-//! Two-axis model per docs/DECISION_SCORING.md:
-//!   Quality [0,1] — 7 dimensions, weighted composite, score stored per-dim
-//!   Importance (unbounded) — Stakes × Irreversibility × Actionability
+//! Layer-3 background scorer: assesses decisions — both classifier-extracted captures
+//! (`ingest.batch_classified`) and directly captured/proposed decisions — with a model's
+//! judgment of the seven quality dimensions (docs/DECISION_SCORING.md). Each assessment is a
+//! `decision.scored` event of schema version 2 (`DecisionAssessedPayload`): every dimension is
+//! either assessed (a level, an explanation and, at `partial` or `solid`, a verbatim quote from
+//! the decision's own recorded text) or not assessed, with why. Never a placeholder.
 //!
 //! The worker is entirely optional: if ANTHROPIC_API_KEY is absent it exits
-//! immediately and the rest of the system stays fully correct without it.
+//! immediately and the rest of the system — including the quality profile's
+//! deterministic floors — stays fully correct without it.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -18,137 +19,142 @@ use tracing::{debug, info, warn};
 
 use crate::commands::{CommandContext, Commands};
 use crate::events::{
-    DecisionScoredPayload, EventId, EventProvenance, EventType, ImportanceFactors, QualityDim,
-    QualityDims, TenantId,
+    DecisionAssessedPayload, EventId, EventProvenance, EventType, ImportanceFactors,
+    ModelDimensions, TenantId, DECISION_ASSESSED_SCHEMA_VERSION,
 };
 use crate::ledger::{EventLedger, SqliteEventLedger};
 
 const SCORER_MODEL: &str = "claude-haiku-4-5-20251001";
 const SCORER_MODEL_ENV: &str = "HIVEMIND_SCORER_MODEL";
-const WEIGHT_VERSION: &str = "v1";
+const ASSESSOR_PROMPT_VERSION: &str = "assessment-v1";
 const ACTOR_ID: &str = "agent:hivemind:scorer";
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
 const API_TIMEOUT: Duration = Duration::from_secs(15);
-const MAX_TOKENS: u32 = 2000;
+const MAX_TOKENS: u32 = 3000;
 
-const SCORER_PROMPT: &str = r#"You are the HiveMind decision scorer.
+const ASSESSOR_PROMPT: &str = r#"You are the HiveMind decision quality assessor.
 
-HiveMind stores organizational decision memory. Your job is to score a captured
-decision on two independent axes, assessed EX ANTE — only from what was knowable
-at decision time. Never penalise or reward a decision for its outcomes.
+HiveMind records organizational decisions. Assess one decision's seven quality
+dimensions, EX ANTE — only from what was knowable at decision time. Never judge
+a dimension by how the decision turned out.
 
-AXIS 1 — Quality [0.0,1.0]: How well-made was the decision?
-Score each of the 7 dimensions from 0.0 (absent/poor) to 1.0 (excellent):
-  framing        — Was the right problem/question framed?
-  alternatives   — Were genuine alternatives generated and considered?
-  information    — Was relevant information gathered and used?
-  reasoning      — Is the inference from information to choice sound?
+The seven dimensions:
+  framing          — Was the right problem/question framed?
+  alternatives     — Were genuine alternatives generated and considered?
+  information      — Was relevant information gathered and used?
+  reasoning        — Is the inference from information to choice sound?
   values_tradeoffs — Were values and tradeoffs made explicit and weighed?
-  bias_exposure  — Exposure to cognitive distortions (anchoring, confirmation,
-                   sunk-cost, framing, motivated reasoning). 1.0=low bias.
-  calibration    — Does expressed confidence match the evidence? 1.0=well-calibrated.
+  bias_exposure    — Exposure to cognitive distortions (anchoring, confirmation,
+                     sunk-cost, framing, motivated reasoning), other than
+                     confidence miscalibration.
+  calibration      — Does expressed confidence match the evidence?
 
-AXIS 2 — Importance (unbounded magnitude):
-  stakes         — Unbounded positive float, log-scaled. Small decisions: ~1.
-                   Department-level: ~10. Company-level: ~100. Industry-level: ~1000.
-                   Computed as severity × reach.
-  irreversibility — [0.0,1.0]. 0=fully reversible (two-way door), 1=irreversible.
-  actionability  — [0.0,1.0]. 0=not actionable (pure observation), 1=fully actionable.
+Framing and values_tradeoffs have no mechanical floor beyond "a question was
+recorded" — assess both. Enrich any of the other five only where the decision's
+own text gives you real grounds; leave the rest not_assessed.
 
-For each score, give a short (1-2 sentence) explanation grounded in the decision text.
-If a dimension cannot be assessed from the available text, score it 0.5 and explain why.
+Answer each dimension one of two ways, never a placeholder:
+  {"status": "assessed", "level": "none"|"partial"|"solid", "explanation": "...", "quote": "..."}
+  {"status": "not_assessed", "reason": "..."}
 
-Return only JSON matching the schema. Be honest and calibrated."#;
+`level` is ordinal (solid > partial > none), never a number. `explanation` is
+always required. `quote` is REQUIRED at level "partial" or "solid": copy a
+passage VERBATIM from a single one of the decision's own recorded fields below
+— never combine two fields, paraphrase, or invent one, and never include the
+field's label. `quote` is optional at level "none" (an absence usually cannot
+be quoted). A `not_assessed` answer's `reason` says what is missing — the
+honest answer, never a guess dressed up as a score.
 
-fn scorer_schema() -> serde_json::Value {
-    let dim_obj = serde_json::json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["score", "explanation"],
-        "properties": {
-            "score": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
-            "explanation": { "type": "string", "minLength": 1 }
-        }
-    });
+The decision's recorded text follows, one field per labeled line. Quote only
+from within a single field's value, not its label.
+
+Return only JSON matching the schema."#;
+
+fn dimension_answer_schema() -> serde_json::Value {
+    serde_json::json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["status", "level", "explanation"],
+                "properties": {
+                    "status": { "const": "assessed" },
+                    "level": { "type": "string", "enum": ["none", "partial", "solid"] },
+                    "explanation": { "type": "string", "minLength": 1 },
+                    "quote": {
+                        "oneOf": [
+                            { "type": "string", "minLength": 1 },
+                            { "type": "null" }
+                        ]
+                    }
+                }
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["status", "reason"],
+                "properties": {
+                    "status": { "const": "not_assessed" },
+                    "reason": { "type": "string", "minLength": 1 }
+                }
+            }
+        ]
+    })
+}
+
+fn assessment_schema() -> serde_json::Value {
+    let dim = dimension_answer_schema();
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["quality_dims", "importance"],
+        "required": ["dimensions"],
         "properties": {
-            "quality_dims": {
+            "dimensions": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["framing","alternatives","information","reasoning","values_tradeoffs","bias_exposure","calibration"],
+                "required": [
+                    "framing", "alternatives", "information", "reasoning",
+                    "values_tradeoffs", "bias_exposure", "calibration"
+                ],
                 "properties": {
-                    "framing":          dim_obj.clone(),
-                    "alternatives":     dim_obj.clone(),
-                    "information":      dim_obj.clone(),
-                    "reasoning":        dim_obj.clone(),
-                    "values_tradeoffs": dim_obj.clone(),
-                    "bias_exposure":    dim_obj.clone(),
-                    "calibration":      dim_obj.clone()
-                }
-            },
-            "importance": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["stakes","stakes_explanation","irreversibility","irreversibility_explanation","actionability","actionability_explanation"],
-                "properties": {
-                    "stakes":                    { "type": "number" },
-                    "stakes_explanation":         { "type": "string", "minLength": 1 },
-                    "irreversibility":           { "type": "number", "minimum": 0.0, "maximum": 1.0 },
-                    "irreversibility_explanation":{ "type": "string", "minLength": 1 },
-                    "actionability":             { "type": "number", "minimum": 0.0, "maximum": 1.0 },
-                    "actionability_explanation":  { "type": "string", "minLength": 1 }
+                    "framing": dim.clone(),
+                    "alternatives": dim.clone(),
+                    "information": dim.clone(),
+                    "reasoning": dim.clone(),
+                    "values_tradeoffs": dim.clone(),
+                    "bias_exposure": dim.clone(),
+                    "calibration": dim.clone()
                 }
             }
         }
     })
 }
 
-/// Raw scorer output before validation/clamping. Deserialized both from the
-/// server's Haiku call (`call_scorer`) and from a plugin/edge-submitted
-/// scores file (`emit decision.scored`) — the same schema, two producers.
+/// Raw structured output from a model's assessment call, before it becomes a
+/// `DecisionAssessedPayload`. Deserialized both from the server's Haiku call
+/// (`call_assessor`) and from a plugin/edge-submitted scores file (`emit decision.scored`) —
+/// the same schema, two producers, going through the same [`build_assessed_payload`] and the
+/// same write-path validator (`Commands::record_decision_assessed`).
 #[derive(Debug, Deserialize)]
-pub(crate) struct ScorerOutput {
-    quality_dims: RawQualityDims,
-    importance: RawImportance,
+pub(crate) struct AssessmentOutput {
+    pub(crate) dimensions: ModelDimensions,
+    /// A separate axis from the seven dimensions (docs/DECISION_SCORING.md). Optional, not
+    /// elicited by the server's own prompt (`ASSESSOR_PROMPT` asks for `dimensions` only), but
+    /// a keyless caller may supply it.
+    #[serde(default)]
+    pub(crate) importance: Option<ImportanceFactors>,
 }
 
-#[derive(Debug, Deserialize)]
-struct RawDim {
-    score: f64,
-    explanation: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawQualityDims {
-    framing: RawDim,
-    alternatives: RawDim,
-    information: RawDim,
-    reasoning: RawDim,
-    values_tradeoffs: RawDim,
-    bias_exposure: RawDim,
-    calibration: RawDim,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawImportance {
-    stakes: f64,
-    stakes_explanation: String,
-    irreversibility: f64,
-    irreversibility_explanation: String,
-    actionability: f64,
-    actionability_explanation: String,
-}
-
-/// Information about a decision capture that needs scoring.
-struct CaptureToScore {
-    /// The canonical capture node ID: `capture:{event_id}:{idx}`
-    node_id: String,
-    /// Batch classified event ID (for causation linkage).
-    event_id: u64,
-    /// Text description to send to the model.
+/// A decision, however it was captured, that has no version-2 `decision.scored` (model
+/// assessment) event yet.
+struct PendingAssessment {
+    /// The decision's id: either a classifier capture node (`capture:{event}:{idx}`) or a
+    /// proposed decision's own id.
+    decision_id: String,
+    /// The event that established this decision, for causal linkage on the resulting
+    /// `decision.scored` event.
+    causation_event_id: EventId,
+    /// Text description sent to the model.
     decision_text: String,
 }
 
@@ -171,43 +177,43 @@ async fn run_scorer_loop(hivemind_dir: Arc<PathBuf>, tenant_id: TenantId, api_ke
     };
 
     loop {
-        score_pending_captures(&client, &hivemind_dir, &tenant_id, &api_key).await;
+        assess_pending_decisions(&client, &hivemind_dir, &tenant_id, &api_key).await;
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
 
-async fn score_pending_captures(
+async fn assess_pending_decisions(
     client: &reqwest::Client,
     hivemind_dir: &PathBuf,
     tenant_id: &TenantId,
     api_key: &str,
 ) {
-    let captures = match find_unscored_decisions(hivemind_dir, tenant_id) {
-        Ok(c) => c,
+    let pending = match find_unscored_decisions(hivemind_dir, tenant_id) {
+        Ok(p) => p,
         Err(e) => {
             warn!(target: "hivemind::scorer", "ledger scan failed: {e}");
             return;
         }
     };
 
-    for capture in captures {
-        debug!(target: "hivemind::scorer", node_id = %capture.node_id, "scoring decision capture");
+    for decision in pending {
+        debug!(target: "hivemind::scorer", decision_id = %decision.decision_id, "assessing decision");
 
-        match call_scorer(client, api_key, &capture.decision_text).await {
+        match call_assessor(client, api_key, &decision.decision_text).await {
             Ok((output, model)) => {
-                if let Err(e) = write_score(
+                if let Err(e) = write_assessment(
                     hivemind_dir,
                     tenant_id,
-                    &capture.node_id,
+                    &decision.decision_id,
                     &model,
                     output,
-                    Some(capture.event_id),
+                    Some(decision.causation_event_id),
                 ) {
-                    warn!(target: "hivemind::scorer", node_id = %capture.node_id, "write failed: {e}");
+                    warn!(target: "hivemind::scorer", decision_id = %decision.decision_id, "write failed: {e}");
                 }
             }
             Err(e) => {
-                warn!(target: "hivemind::scorer", node_id = %capture.node_id, "api call failed: {e}");
+                warn!(target: "hivemind::scorer", decision_id = %decision.decision_id, "api call failed: {e}");
             }
         }
     }
@@ -216,13 +222,14 @@ async fn score_pending_captures(
 fn find_unscored_decisions(
     hivemind_dir: &PathBuf,
     tenant_id: &TenantId,
-) -> crate::Result<Vec<CaptureToScore>> {
+) -> crate::Result<Vec<PendingAssessment>> {
     let ledger = SqliteEventLedger::open(hivemind_dir)?;
     let mut offset = 0u64;
     const PAGE: usize = 256;
 
-    let mut pending: Vec<CaptureToScore> = Vec::new();
-    let mut scored_node_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut pending: Vec<PendingAssessment> = Vec::new();
+    let mut assessed_decision_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     loop {
         let events = ledger.read_for_tenant(tenant_id, offset, PAGE)?;
@@ -241,25 +248,42 @@ fn find_unscored_decisions(
                                 let kind =
                                     capture.get("kind").and_then(|v| v.as_str()).unwrap_or("");
                                 if kind == "decision" {
-                                    let node_id = format!("capture:{event_id}:{idx}"); // ubs:ignore: per-capture owned key moved into CaptureToScore.node_id
-                                    let text = render_decision_text(capture);
-                                    pending.push(CaptureToScore {
-                                        node_id,
-                                        event_id,
-                                        decision_text: text,
+                                    let decision_id = format!("capture:{event_id}:{idx}"); // ubs:ignore: per-capture owned key moved into PendingAssessment.decision_id
+                                    pending.push(PendingAssessment {
+                                        decision_id,
+                                        causation_event_id: event_id,
+                                        decision_text: render_decision_text(capture),
                                     });
                                 }
                             }
                         }
                     }
                 }
+                EventType::DecisionProposed => {
+                    if let (Some(event_id), Some(decision_id)) = (
+                        event.event_id,
+                        event.payload.get("decision_id").and_then(|v| v.as_str()),
+                    ) {
+                        pending.push(PendingAssessment {
+                            decision_id: decision_id.to_owned(), // ubs:ignore: owned id moved into PendingAssessment.decision_id
+                            causation_event_id: event_id,
+                            decision_text: render_proposed_decision_text(&event.payload),
+                        });
+                    }
+                }
                 EventType::DecisionScored => {
-                    if let Some(node_id) = event
+                    let is_v2 = event
                         .payload
-                        .get("capture_node_id")
-                        .and_then(|v| v.as_str())
-                    {
-                        scored_node_ids.insert(node_id.to_owned()); // ubs:ignore: borrows from event.payload &str; owned copy needed for HashSet<String>
+                        .get("schema_version")
+                        .and_then(serde_json::Value::as_u64)
+                        == Some(u64::from(DECISION_ASSESSED_SCHEMA_VERSION));
+                    if is_v2 {
+                        if let Some(decision_id) =
+                            event.payload.get("decision_id").and_then(|v| v.as_str())
+                        {
+                            assessed_decision_ids.insert(decision_id.to_owned());
+                            // ubs:ignore: borrows from event.payload &str; owned copy needed for HashSet<String>
+                        }
                     }
                 }
                 _ => {}
@@ -275,13 +299,13 @@ fn find_unscored_decisions(
 
     let unscored: Vec<_> = pending
         .into_iter()
-        .filter(|c| !scored_node_ids.contains(&c.node_id))
+        .filter(|c| !assessed_decision_ids.contains(&c.decision_id))
         .collect();
 
     Ok(unscored)
 }
 
-/// Build a compact text description of a decision capture for the scoring prompt.
+/// Build a compact text description of a decision capture for the assessment prompt.
 fn render_decision_text(capture: &serde_json::Value) -> String {
     let mut out = String::new();
 
@@ -313,6 +337,48 @@ fn render_decision_text(capture: &serde_json::Value) -> String {
     out
 }
 
+/// Build a compact text description of a directly captured (proposed) decision for the
+/// assessment prompt: title, question, quote, rationale and each option's label and
+/// description — the same fields `Commands::record_decision_assessed` checks a quote against
+/// for a proposed decision.
+fn render_proposed_decision_text(payload: &serde_json::Value) -> String {
+    let mut out = String::new();
+
+    if let Some(title) = payload.get("title").and_then(|v| v.as_str()) {
+        let _ = writeln!(out, "Title: {title}");
+    }
+    if let Some(question) = payload.get("question").and_then(|v| v.as_str()) {
+        let _ = writeln!(out, "Question: {question}");
+    }
+    if let Some(quote) = payload.get("quote").and_then(|v| v.as_str()) {
+        let _ = writeln!(out, "Quote: {quote}");
+    }
+    if let Some(rationale) = payload.get("rationale").and_then(|v| v.as_str()) {
+        let _ = writeln!(out, "Rationale: {rationale}");
+    }
+
+    let labels: &[serde_json::Value] = payload
+        .get("option_labels")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let descriptions: &[serde_json::Value] = payload
+        .get("option_descriptions")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    for (idx, label) in labels.iter().filter_map(|v| v.as_str()).enumerate() {
+        let _ = writeln!(out, "Option: {label}");
+        if let Some(description) = descriptions.get(idx).and_then(|v| v.as_str()) {
+            if !description.is_empty() {
+                let _ = writeln!(out, "Option description: {description}");
+            }
+        }
+    }
+
+    out
+}
+
 /// Resolve the scorer model id given an already-read `HIVEMIND_SCORER_MODEL`
 /// value: the override if present, otherwise the pinned default.
 fn resolve_scorer_model(env_override: Option<String>) -> String {
@@ -327,103 +393,45 @@ fn effective_scorer_model() -> String {
     resolve_scorer_model(crate::identity::env_value(SCORER_MODEL_ENV))
 }
 
-async fn call_scorer(
+async fn call_assessor(
     client: &reqwest::Client,
     api_key: &str,
     decision_text: &str,
-) -> Result<(ScorerOutput, String), crate::anthropic::BoxError> {
+) -> Result<(AssessmentOutput, String), crate::anthropic::BoxError> {
     let model = effective_scorer_model();
-    let user_content = format!("{SCORER_PROMPT}\n\n---DECISION---\n{decision_text}");
+    let user_content = format!("{ASSESSOR_PROMPT}\n\n---DECISION---\n{decision_text}");
     let output = crate::anthropic::call_json_schema(
         client,
         api_key,
         &model,
         MAX_TOKENS,
         user_content,
-        scorer_schema(),
+        assessment_schema(),
     )
     .await?;
     Ok((output, model))
 }
 
-fn clamp01(v: f64, field: &str) -> crate::Result<f64> {
-    if v.is_nan() {
-        return Err(crate::CommandError::Validation(format!("scorer: {field} is NaN")).into());
-    }
-    Ok(v.clamp(0.0, 1.0))
-}
-
-fn validate_stakes(v: f64) -> crate::Result<f64> {
-    if v.is_nan() || v < 0.0 {
-        return Err(
-            crate::CommandError::Validation(format!("scorer: stakes is invalid ({v})")).into(),
-        );
-    }
-    Ok(v)
-}
-
-/// Validate and clamp raw scorer output into a `DecisionScoredPayload` for a
-/// given capture node. Shared by the background worker (`write_score`) and
-/// the keyless CLI path (`emit decision.scored`) so both enforce the same
-/// invariants — a plugin/edge Haiku call is not trusted any more than the
-/// server's own call.
-pub(crate) fn build_scored_payload(
-    capture_node_id: &str,
+/// Build a `DecisionAssessedPayload` (schema version 2) from a model's raw structured output.
+/// Shared by the background worker (`write_assessment`) and the keyless CLI path
+/// (`emit decision.scored`) so both write the same shape through the same validator
+/// (`Commands::record_decision_assessed`) — a plugin/edge Haiku call is not trusted any more
+/// than the server's own call.
+pub(crate) fn build_assessed_payload(
+    decision_id: &str,
     model: &str,
-    weight_version: &str,
-    output: ScorerOutput,
-) -> crate::Result<DecisionScoredPayload> {
-    let quality_dims = QualityDims {
-        framing: QualityDim {
-            score: clamp01(output.quality_dims.framing.score, "framing")?,
-            explanation: output.quality_dims.framing.explanation,
-        },
-        alternatives: QualityDim {
-            score: clamp01(output.quality_dims.alternatives.score, "alternatives")?,
-            explanation: output.quality_dims.alternatives.explanation,
-        },
-        information: QualityDim {
-            score: clamp01(output.quality_dims.information.score, "information")?,
-            explanation: output.quality_dims.information.explanation,
-        },
-        reasoning: QualityDim {
-            score: clamp01(output.quality_dims.reasoning.score, "reasoning")?,
-            explanation: output.quality_dims.reasoning.explanation,
-        },
-        values_tradeoffs: QualityDim {
-            score: clamp01(
-                output.quality_dims.values_tradeoffs.score,
-                "values_tradeoffs",
-            )?,
-            explanation: output.quality_dims.values_tradeoffs.explanation,
-        },
-        bias_exposure: QualityDim {
-            score: clamp01(output.quality_dims.bias_exposure.score, "bias_exposure")?,
-            explanation: output.quality_dims.bias_exposure.explanation,
-        },
-        calibration: QualityDim {
-            score: clamp01(output.quality_dims.calibration.score, "calibration")?,
-            explanation: output.quality_dims.calibration.explanation,
-        },
-    };
-
-    let importance = ImportanceFactors {
-        stakes: validate_stakes(output.importance.stakes)?,
-        stakes_explanation: output.importance.stakes_explanation,
-        irreversibility: clamp01(output.importance.irreversibility, "irreversibility")?,
-        irreversibility_explanation: output.importance.irreversibility_explanation,
-        actionability: clamp01(output.importance.actionability, "actionability")?,
-        actionability_explanation: output.importance.actionability_explanation,
-    };
-
-    Ok(DecisionScoredPayload {
-        capture_node_id: capture_node_id.to_owned(),
-        scorer_model: model.to_owned(),
-        weight_version: weight_version.to_owned(),
+    prompt_version: &str,
+    output: AssessmentOutput,
+) -> DecisionAssessedPayload {
+    DecisionAssessedPayload {
+        schema_version: DECISION_ASSESSED_SCHEMA_VERSION,
+        decision_id: decision_id.to_owned(),
+        model: model.to_owned(),
+        prompt_version: prompt_version.to_owned(),
         supersedes_score_id: None,
-        quality_dims,
-        importance,
-    })
+        dimensions: output.dimensions,
+        importance: output.importance,
+    }
 }
 
 /// Resolve the canonical `capture:{event_id}:{idx}` node id for a decision
@@ -502,22 +510,22 @@ pub(crate) fn resolve_capture_node_id<L: EventLedger>(
     .into())
 }
 
-fn write_score(
+fn write_assessment(
     hivemind_dir: &PathBuf,
     tenant_id: &TenantId,
-    capture_node_id: &str,
+    decision_id: &str,
     model: &str,
-    output: ScorerOutput,
+    output: AssessmentOutput,
     causation_event_id: Option<u64>,
 ) -> crate::Result<()> {
-    let payload = build_scored_payload(capture_node_id, model, WEIGHT_VERSION, output)?;
+    let payload = build_assessed_payload(decision_id, model, ASSESSOR_PROMPT_VERSION, output);
 
     let ledger = SqliteEventLedger::open(hivemind_dir)?;
     let commands = Commands::new_with_context(
         &ledger,
         CommandContext::new(tenant_id.clone(), EventProvenance::agent(ACTOR_ID)),
     );
-    commands.record_decision_scored(ACTOR_ID, payload, causation_event_id)?;
+    commands.record_decision_assessed(ACTOR_ID, payload, causation_event_id)?;
     Ok(())
 }
 

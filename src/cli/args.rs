@@ -1377,43 +1377,58 @@ pub struct EmitIngestBatchClassifiedArgs {
     pub provenance: EmitCaptureProvenanceArgs,
 }
 
-/// Submit a pre-scored decision quality/importance assessment from a
+/// Submit a model's assessment of one decision (schema version 2) from a
 /// plugin/edge session.
 ///
 /// The scores JSON must match the schema produced by src/scorer.rs's
-/// SCORER_PROMPT (quality_dims + importance) — the same contract the
-/// server-side scorer's Haiku call produces. This path writes
-/// DecisionScored directly — no ANTHROPIC_API_KEY needed. The target
-/// capture node is resolved from a prior `ingest.batch_classified` batch
-/// via `--batch-id` + `--capture-index`, so callers never construct the
-/// `capture:{event_id}:{idx}` node-id format themselves — only the server
-/// knows that shape.
+/// ASSESSOR_PROMPT: `{"dimensions": {...}}`, each of the seven dimensions
+/// either `{"status": "assessed", "level": ..., "explanation": ..., "quote": ...}`
+/// (quote required at level `partial`/`solid`, optional at `none`) or
+/// `{"status": "not_assessed", "reason": ...}` — the same contract the
+/// server-side scorer's Haiku call produces, going through the same
+/// `Commands::record_decision_assessed` write-path validator (no
+/// ANTHROPIC_API_KEY needed). An event whose payload is malformed, whose
+/// target decision is not recorded, or whose quote does not occur verbatim
+/// in that decision's own recorded text is refused, and nothing is written.
+///
+/// Exactly one of two ways to name the target decision is required:
+/// `--decision-id` for a decision proposed directly (`emit decision.proposed`
+/// or `emit decision.capture`), or `--batch-id` + `--capture-index` for a
+/// decision extracted by a classifier (`emit ingest.batch_classified`) — the
+/// pair is resolved to the canonical `capture:{event_id}:{idx}` node
+/// internally, so callers never construct that id format themselves.
 #[derive(Debug, Clone, Args)]
 pub struct EmitDecisionScoredArgs {
+    /// Id of a decision proposed directly (not extracted by a classifier).
+    /// Mutually exclusive with `--batch-id`/`--capture-index`.
+    #[arg(long = "decision-id")]
+    pub decision_id: Option<String>,
+
     /// batch_id returned by a prior `emit ingest.batch_classified` call.
+    /// Requires `--capture-index`; mutually exclusive with `--decision-id`.
     #[arg(long = "batch-id")]
-    pub batch_id: String,
+    pub batch_id: Option<String>,
 
     /// Index of the decision capture within that batch's captures array
     /// (0-based, matching its position in the JSON array submitted to
-    /// ingest.batch_classified).
+    /// ingest.batch_classified). Requires `--batch-id`.
     #[arg(long = "capture-index")]
-    pub capture_index: usize,
+    pub capture_index: Option<usize>,
 
-    /// Path to a JSON file with `{"quality_dims": {...}, "importance": {...}}`
-    /// matching the SCORER_PROMPT schema in src/scorer.rs.
+    /// Path to a JSON file with `{"dimensions": {...}}` (optionally
+    /// `"importance": {...}`) matching the ASSESSOR_PROMPT schema in
+    /// src/scorer.rs.
     #[arg(long = "scores")]
     pub scores_file: PathBuf,
 
-    /// Scorer model name (e.g. "claude-haiku-4-5-20251001"). Records which
-    /// model the plugin ran in-session.
-    #[arg(long = "scorer-model", default_value = "claude-haiku-4-5-20251001")]
-    pub scorer_model: String,
+    /// The model that produced the assessment (e.g. "claude-haiku-4-5-20251001").
+    #[arg(long = "model", default_value = "claude-haiku-4-5-20251001")]
+    pub model: String,
 
-    /// Quality-dimension weight version tag (e.g. "v1") so composites can
-    /// recompute if weights change later.
-    #[arg(long = "weight-version", default_value = "v1")]
-    pub weight_version: String,
+    /// The version of the prompt the model was given, so an assessment can be
+    /// traced to its wording.
+    #[arg(long = "prompt-version")]
+    pub prompt_version: String,
 
     #[command(flatten)]
     pub provenance: EmitCaptureProvenanceArgs,

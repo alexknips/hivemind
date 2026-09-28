@@ -939,28 +939,43 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
             let commands =
                 Commands::new_with_context(&ledger, cli_command_context(cli, provenance)?);
             let tenant_id = cli_tenant(cli)?;
-            let (capture_node_id, causation_event_id) = crate::scorer::resolve_capture_node_id(
-                &ledger,
-                &tenant_id,
+            let (decision_id, causation_event_id) = match (
+                &args.decision_id,
                 &args.batch_id,
                 args.capture_index,
-            )?;
+            ) {
+                (Some(decision_id), None, None) => (decision_id.clone(), None),
+                (None, Some(batch_id), Some(capture_index)) => {
+                    let (capture_node_id, batch_event_id) = crate::scorer::resolve_capture_node_id(
+                        &ledger,
+                        &tenant_id,
+                        batch_id,
+                        capture_index,
+                    )?;
+                    (capture_node_id, Some(batch_event_id))
+                }
+                _ => return Err(CliError::InvalidInput(
+                    "exactly one of --decision-id or (--batch-id and --capture-index) is required"
+                        .to_owned(),
+                )
+                .into()),
+            };
             let json_text = std::fs::read_to_string(&args.scores_file).map_err(|e| {
                 CliError::InvalidInput(format!(
                     "cannot read scores file {:?}: {e}",
                     args.scores_file
                 ))
             })?;
-            let scores: crate::scorer::ScorerOutput = serde_json::from_str(&json_text)
+            let output: crate::scorer::AssessmentOutput = serde_json::from_str(&json_text)
                 .map_err(|e| CliError::InvalidInput(format!("scores JSON parse error: {e}")))?;
-            let payload = crate::scorer::build_scored_payload(
-                &capture_node_id,
-                &args.scorer_model,
-                &args.weight_version,
-                scores,
-            )?;
+            let payload = crate::scorer::build_assessed_payload(
+                &decision_id,
+                &args.model,
+                &args.prompt_version,
+                output,
+            );
             let event_id =
-                commands.record_decision_scored(&actor_id, payload, Some(causation_event_id))?;
+                commands.record_decision_assessed(&actor_id, payload, causation_event_id)?;
             OutputEnvelope::new("emit", "event_id", event_id.to_string())
         }
     };

@@ -6,10 +6,11 @@
 > returns the same page without the findings someone has acknowledged, on the stdio MCP
 > server, the HTTP MCP endpoint and the CLI. All are read on demand from what the
 > ledger states, with no model and no network. No response carries a composite number,
-> a tier or a grade. A model's assessment of a decision has a record, a write path and a
-> place beside the floors ([below](#a-models-assessment-beside-the-floors)); nothing
-> produces one yet. **Deferred, not built:** Composite, Confidence, Reputation, Importance,
-> and the producers of model assessments (see [Deferred](#deferred-not-built)).
+> a tier or a grade. A model's assessment of a decision has a record, a write path, a
+> place beside the floors ([below](#a-models-assessment-beside-the-floors)), and two
+> optional producers ([below](#producers-of-a-model-assessment)): the background scorer
+> (`ANTHROPIC_API_KEY`) and the keyless `emit decision.scored` path. **Deferred, not
+> built:** Composite, Confidence, Reputation, Importance (see [Deferred](#deferred-not-built)).
 
 HiveMind records *what* was decided, by whom, with what options and evidence
 ([`ARCHITECTURE.md`](ARCHITECTURE.md)). The quality profile adds a separate, derived
@@ -252,9 +253,35 @@ is the same with or without one.
   keyed by a classifier capture node. The ledger is immutable, so those events keep
   validating and replaying and keep projecting their float properties onto the capture
   node. They are never shown in the profile: they carry no quoted basis, and the prompt
-  that wrote them asked for a 0.5 when a dimension could not be assessed. The background
-  scorer and `emit decision.scored` still write version 1 until their producers are moved
-  to version 2.
+  that wrote them asked for a 0.5 when a dimension could not be assessed. Nothing writes
+  that shape any more (below): both producers write schema version 2 only.
+
+## Producers of a model assessment
+
+Two producers write a version-2 assessment, both optional and both going through the
+same write path (`Commands::record_decision_assessed`), so a plugin/edge call is
+checked exactly as strictly as the server's own:
+
+- **The background scorer** (`src/scorer.rs`). Runs only with `ANTHROPIC_API_KEY` set;
+  absent, it logs once and never starts, and the rest of the system — including every
+  floor — stays fully correct without it. Every 30 seconds it scans the ledger for
+  decisions with no version-2 assessment yet: both classifier-extracted captures
+  (`ingest.batch_classified`) and decisions captured directly (`decision.proposed`, which
+  underlies `decision.capture` too). For each it sends the decision's own recorded text to
+  a model (`claude-haiku-4-5-20251001` by default, `HIVEMIND_SCORER_MODEL` to override)
+  with a prompt that asks it to assess Framing and Values / Tradeoffs — the two dimensions
+  with no floor beyond "a question was recorded" — and to enrich any of the other five only
+  where it has real grounds, leaving the rest `not_assessed`. A malformed or unfound-quote
+  answer is refused by the write path and logged; the decision stays unassessed and is
+  retried on the next pass.
+- **The keyless `emit decision.scored` CLI path.** Lets a plugin or edge session (no
+  server-held key) submit an assessment it produced itself — typically by spawning its own
+  Haiku subagent with the same prompt, off the server's metered key. The scores file is
+  `{"dimensions": {...}}` in the wire shape [above](#a-models-assessment-beside-the-floors)
+  (optionally `"importance"` too), and the target decision is named either by
+  `--decision-id` (a decision proposed or captured directly) or by `--batch-id` +
+  `--capture-index` (a classifier-extracted capture, resolved to its `capture:<event>:<index>`
+  node internally — a caller never constructs that id itself).
 
 ## Attention findings: what needs a look
 
@@ -560,18 +587,11 @@ leave room for, and as the reason there is no number in a response.
   log-scaled (`severity × reach`), Irreversibility in `[0,1]` as a discount (two-way
   doors matter less) and Actionability in `[0,1]` as a gate. Reversibility lives here,
   not in the quality dimensions.
-- **Producers of model assessments.** The record, the quote check, the projection and
-  the display are built ([above](#a-models-assessment-beside-the-floors)); nothing writes
-  a version-2 assessment yet. A producer would assess Framing and Values / Tradeoffs,
-  which have no floor beyond "a question was recorded", and may enrich the others, each
-  with its basis quoted. The background scorer (`ANTHROPIC_API_KEY`, classified captures
-  only) and `emit decision.scored` still write the version-1 float scores.
 - **Validation.** Perturbation and ablation (degrade one dimension, confirm that
   dimension moves), dogfooding against expert agreement, and prospective prediction of
   reverts with zero outcome leakage.
 
-Open questions for that work: when a model assessment runs and how the agent is invoked,
-and Reputation computation at scale.
+Open questions for that work: Reputation computation at scale.
 
 ## References
 

@@ -81,11 +81,11 @@ Three legs:
   using the classifier prompt extracted verbatim from SKILL.md. Asserts the
   resulting `ingest.batch_classified` batch lands in a scratch ledger with
   schema parity to `src/classifier.rs`'s `CaptureItem` contract.
-- **LEG 2 (quality-score enrichment)** — scores the decision capture LEG 1
-  just submitted via the plugin's "Batch Score via Haiku Subagent (Keyless)"
-  workflow, using the scorer prompt extracted verbatim from SKILL.md. Asserts
-  the resulting `decision.scored` event lands with schema parity to
-  `src/scorer.rs` (hivemind-wi3u).
+- **LEG 2 (quality-score enrichment)** — assesses the decision capture LEG 1
+  just submitted via the plugin's "Assess via Haiku Subagent (Keyless)"
+  workflow, using the assessor prompt extracted verbatim from SKILL.md.
+  Asserts the resulting `decision.scored` event (schema version 2) lands with
+  schema parity to `src/scorer.rs` (hivemind-wi3u, hivemind-qo11.9).
 - **LEG 3 (fidelity smoke)** — runs `fidelity-eval` (no `--ceiling`) against
   the 2-case smoke corpus. `fidelity-eval` auto-selects its keyless
   `claude-cli` backend (hivemind-265w) when `ANTHROPIC_API_KEY` is unset and

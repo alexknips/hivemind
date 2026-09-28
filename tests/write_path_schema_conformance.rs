@@ -29,8 +29,7 @@ use hivemind::commands::{
 };
 use hivemind::connector;
 use hivemind::events::{
-    CaptureItem, DecisionScoredPayload, EventType, ImportanceFactors, IngestTurn,
-    ProjectAnchorKind, ProjectLinkKind, QualityDim, QualityDims, TenantId,
+    CaptureItem, EventType, IngestTurn, ProjectAnchorKind, ProjectLinkKind, TenantId,
 };
 use hivemind::ledger::{EventLedger, InMemoryEventLedger};
 use serde_json::Value;
@@ -306,61 +305,12 @@ fn every_write_path_event_validates_against_its_schema() {
         )
         .expect("record ingest batch classified");
 
-    // -- decision.scored --
-    commands
-        .record_decision_scored(
-            actor,
-            DecisionScoredPayload {
-                capture_node_id: "capture:contract-test:0".to_owned(),
-                scorer_model: "claude-haiku-4-5-20251001".to_owned(),
-                weight_version: "v1".to_owned(),
-                supersedes_score_id: None,
-                quality_dims: QualityDims {
-                    framing: QualityDim {
-                        score: 0.8,
-                        explanation: "Problem framed clearly".to_owned(),
-                    },
-                    alternatives: QualityDim {
-                        score: 0.7,
-                        explanation: "Two options considered".to_owned(),
-                    },
-                    information: QualityDim {
-                        score: 0.6,
-                        explanation: "Limited evidence referenced".to_owned(),
-                    },
-                    reasoning: QualityDim {
-                        score: 0.9,
-                        explanation: "Logic is sound".to_owned(),
-                    },
-                    values_tradeoffs: QualityDim {
-                        score: 0.5,
-                        explanation: "Tradeoffs implicit".to_owned(),
-                    },
-                    bias_exposure: QualityDim {
-                        score: 0.8,
-                        explanation: "No obvious bias".to_owned(),
-                    },
-                    calibration: QualityDim {
-                        score: 0.7,
-                        explanation: "Confidence matches evidence".to_owned(),
-                    },
-                },
-                importance: ImportanceFactors {
-                    stakes: 10.0,
-                    stakes_explanation: "Department-level API choice".to_owned(),
-                    irreversibility: 0.6,
-                    irreversibility_explanation: "Migration possible but costly".to_owned(),
-                    actionability: 1.0,
-                    actionability_explanation: "Decision has a clear owner".to_owned(),
-                },
-            },
-            None,
-        )
-        .expect("record decision scored");
-
     // -- decision.scored, schema version 2: a model's assessment of the decision proposed above.
-    // The write path checks each quote against that decision's recorded text, and the real event
-    // must then validate against the same schema file as the version-1 score before it --
+    // This is the only production write path for decision.scored now (hivemind-qo11.9 retired
+    // the version-1 write path); version-1 events already in a ledger still replay (see
+    // type_contracts.rs), but nothing new produces that shape. The write path checks each quote
+    // against the decision's recorded text, and the real event must validate against the same
+    // schema file version-1 events did.
     commands
         .record_decision_assessed(
             actor,

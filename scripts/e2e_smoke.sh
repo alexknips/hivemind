@@ -1035,9 +1035,9 @@ $EDGE_TRANSCRIPT"
     fi
   fi
 
-  # LEG 2: quality-score enrichment via the same edge shape, scoring the
-  # decision capture LEG 1 just submitted, through the plugin's "Batch Score
-  # via Haiku Subagent (Keyless)" workflow (SKILL.md). The scorer prompt is
+  # LEG 2: quality-score enrichment via the same edge shape, assessing the
+  # decision capture LEG 1 just submitted, through the plugin's "Assess via
+  # Haiku Subagent (Keyless)" workflow (SKILL.md). The assessor prompt is
   # extracted verbatim from SKILL.md (single source of truth) rather than
   # duplicated here — same pattern as LEG 1's classifier prompt extraction.
   if [[ -z "${EDGE_BATCH_ID:-}" ]]; then
@@ -1048,7 +1048,7 @@ $EDGE_TRANSCRIPT"
       fail "LLM quality-score enrichment (edge) — no decision-kind capture in LEG 1's batch to score"
     else
       EDGE_SCORE_PROMPT_TEMPLATE=$(awk '
-        /You are the HiveMind decision scorer\.$/ { capture=1 }
+        /You are the HiveMind decision quality assessor\.$/ { capture=1 }
         /^   ---DECISION---$/ { exit }
         capture { print }
       ' "$EDGE_SKILL_FILE" | sed 's/^   //')
@@ -1104,7 +1104,7 @@ $EDGE_DECISION_TEXT"
 
           # Strip a markdown code fence if the model added one despite instructions.
           edge_score_json=$(echo "$edge_score_result" | jq -r '.result' | sed -e '/^```/d')
-          if ! echo "$edge_score_json" | jq -e 'has("quality_dims") and has("importance")' > /dev/null 2>&1; then
+          if ! echo "$edge_score_json" | jq -e 'has("dimensions")' > /dev/null 2>&1; then
             edge_score_outcome="schema_fail"
             return
           fi
@@ -1118,7 +1118,8 @@ $EDGE_DECISION_TEXT"
             --scores "$EDGE_SCORES_FILE" \
             --agent-tool claude \
             --agent-session "$EDGE_SESSION" \
-            --scorer-model claude-haiku-4-5-20251001 2>&1) || true
+            --model claude-haiku-4-5-20251001 \
+            --prompt-version e2e-smoke-v1 2>&1) || true
           if echo "$edge_score_emit" | jq -e '.kind == "event_id"' > /dev/null 2>&1; then
             edge_score_outcome="ok"
           else

@@ -76,6 +76,22 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   export show it. Existing `decision.scored` events (the float scores) are unchanged in the
   ledger and keep replaying; the profile never shows them. Nothing produces a version-2
   assessment yet. (hivemind-qo11.8)
+- **Two producers now write a model's assessment; the version-1 write path is retired.** The
+  background scorer (`src/scorer.rs`, `ANTHROPIC_API_KEY`) and the keyless `emit decision.scored`
+  path write `decision.scored` schema version 2 exclusively, through the same
+  `Commands::record_decision_assessed` validator. The scorer now also assesses decisions
+  captured directly (`decision.proposed`/`decision.capture`), not only classifier-extracted
+  captures, and no longer double-assesses a decision that already has a version-2 event. Its
+  prompt asks the model to assess Framing and Values / Tradeoffs — the two dimensions with no
+  floor beyond "a question was recorded" — and to enrich the other five only where it has real
+  grounds, leaving the rest `not_assessed`; there is no 0.5 placeholder. `emit decision.scored`
+  takes the scores file `{"dimensions": {...}}` (the same shape) and names its target by
+  `--decision-id` (a decision captured directly) or `--batch-id`/`--capture-index` (a classifier
+  capture); `--scorer-model`/`--weight-version` are gone, replaced by `--model` and the required
+  `--prompt-version`. Nothing changes when `ANTHROPIC_API_KEY` is absent: the worker does not
+  start, and the profile stays complete on floors alone. Version-1 `decision.scored` events
+  already in a ledger keep validating, replaying and projecting unchanged; nothing new writes
+  that shape. (hivemind-qo11.9)
 - **`get_suggestions` returns what needs a look and has not been dealt with.** A new MCP tool
   on the stdio server and the HTTP endpoint, and `hivemind query get_suggestions`: the
   attention findings of `scan_decision_quality`, less the ones that have been acknowledged
