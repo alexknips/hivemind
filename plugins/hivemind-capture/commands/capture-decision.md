@@ -33,6 +33,11 @@ immediately (or accepts from `--decided-by <actor-id>` when someone else
 decided). Pass `--still-proposed` instead to float a leaning that still
 awaits someone else's decision.
 
+Write `--title` as one plain sentence a stranger understands, and keep
+`--rationale` readable without the tracker. A tracker or ticket id (a bead,
+Jira, or GitHub issue) goes in `--evidence-source` or a linked reference —
+never in the title, and not as the rationale's subject.
+
 When you decided within a scope a human explicitly delegated to you, add
 `--delegated-by <human:name>` so the record shows the delegation rather than an
 agent deciding alone. It requires `--chose` and an agent actor.

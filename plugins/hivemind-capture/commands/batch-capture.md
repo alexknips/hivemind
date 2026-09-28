@@ -30,6 +30,11 @@ objects. Most batches should return [].
 Capture a decision only when the text shows a chosen path among plausible
 alternatives and gives or implies a reason.
 
+Write "title" as one plain sentence a stranger understands, and keep
+"rationale" readable without the tracker. If a tracker or ticket id (a bead,
+Jira, GitHub issue) appears in the source text, leave it out of the title and
+rationale — it is not part of the captured content.
+
 Each capture object must have exactly these fields:
 {
   "kind": "decision" | "evidence" | "hypothesis" | "blocker" | "decision-request" | "notification",

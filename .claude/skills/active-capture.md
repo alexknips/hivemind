@@ -46,6 +46,11 @@ dependencies.
 A `decision` call carries its structured fields and the answer to "what does
 this rest on?" (next section). The other kinds take the statement alone.
 
+Write the title as one plain sentence a stranger understands, and keep the
+rationale readable without the tracker. A tracker or ticket id (a bead, Jira,
+or GitHub issue) goes in the capture's source reference or as linked
+evidence — never in the title, and not as the rationale's subject.
+
 Examples:
 
 ```text

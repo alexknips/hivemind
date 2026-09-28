@@ -75,8 +75,11 @@ A batch with no session (`session_id` empty in the list output) submits alone.
 
 Each CaptureItem JSON object must include:
 - `kind`: "decision" | "evidence" | "hypothesis" | "blocker" | "decision-request" | "notification"
-- `title`: concise title (required)
-- `rationale`: the why, in the words of the text (required)
+- `title`: one plain sentence a stranger understands (required). If a tracker
+  or ticket id (a bead, Jira, GitHub issue) appears in the source text, leave
+  it out of the title — it is not part of the captured content.
+- `rationale`: the why, in the words of the text, readable without the
+  tracker (required)
 - `topic_keys`: array of topic strings (required, may be empty array)
 - `evidence_ids`: array of existing evidence IDs referenced (required, usually empty array)
 - `options`: array of option strings or null

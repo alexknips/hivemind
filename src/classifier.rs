@@ -63,6 +63,11 @@ borderline, omit it.
 Keep titles short. Use 1 to 5 lowercase topic keys. Confidence is your
 self-estimate for offline tuning, not authoritative truth.
 
+Write `title` as one plain sentence a stranger understands, and keep
+`rationale` readable without the tracker. If a tracker or ticket id (a bead,
+Jira, GitHub issue) appears in the source text, leave it out of the title and
+rationale — it is not part of the captured content.
+
 RELATIONAL FIELDS — populate only from explicit text, never infer:
 
 CROSS-REFERENCE RULE (applies to evidence_ids, premised_on_ids, supersedes_id,

@@ -96,6 +96,17 @@ since been superseded or rejected is recorded and reported as `premise_stale`, s
 a replacement decision names what overturned the old one, not the decision it
 replaces.
 
+### Titles and rationale are for outside readers
+
+A title is one plain sentence a stranger understands; the rationale is
+readable without the tracker. A tracker or ticket id (a bead, Jira, or GitHub
+issue) goes in `--evidence-source` or as linked evidence — never in the
+title, and not as the rationale's subject. The `hivemind-capture` skill, the
+capture commands, the active-capture skill, and the Codex bundle all teach
+this the same way, and the classifier prompt (`src/classifier.rs`,
+[`CAPTURE_CLASSIFIER.md`](CAPTURE_CLASSIFIER.md)) carries the same rule for
+extracted captures.
+
 ### Grounding a decision after the fact
 
 A decision captured without saying what it rests on reads `nothing declared`.

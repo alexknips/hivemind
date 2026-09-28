@@ -428,6 +428,11 @@ someone grounds them (the `hivemind-context` plugin's `ground` verb).
    Capture a decision only when the text shows a chosen path among plausible
    alternatives and gives or implies a reason.
 
+   Write `title` as one plain sentence a stranger understands, and keep
+   `rationale` readable without the tracker. If a tracker or ticket id (a
+   bead, Jira, GitHub issue) appears in the source text, leave it out of the
+   title and rationale — it is not part of the captured content.
+
    Each capture object must have exactly these fields:
    {
      "kind": "decision" | "evidence" | "hypothesis" | "blocker" | "decision-request" | "notification",
@@ -683,6 +688,10 @@ the keyless plugin path and its own Haiku call. Do not invent a
   discussed it" or "seems best" as the only why.
 - Write each option as a short human label (see "Options are short human
   labels"), never a slug or a letter code.
+- Write the title as one plain sentence a stranger understands, and keep the
+  rationale readable without the tracker. A tracker or ticket id (a bead,
+  Jira, or GitHub issue) goes in the capture's source reference or as linked
+  evidence — never in the title, and not as the rationale's subject.
 - Include all meaningful options in `--options`, and set `--chose` only when a
   selected option exists. `--chose` means the decision was already made — it
   self-accepts immediately (or accepts from `--decided-by` when someone else

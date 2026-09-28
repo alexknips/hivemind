@@ -28,6 +28,11 @@ such as the human who asked for this capture, actually decided). Pass
 `--still-proposed` instead to float a leaning that still awaits someone
 else's decision.
 
+Write `--title` as one plain sentence a stranger understands, and keep
+`--rationale` readable without the tracker. A tracker or ticket id (a bead,
+Jira, or GitHub issue) goes in `--evidence-source` or a linked reference —
+never in the title, and not as the rationale's subject.
+
 Every decision must say what it rests on, so answer "what does this rest on?"
 before writing, with one or more of:
 

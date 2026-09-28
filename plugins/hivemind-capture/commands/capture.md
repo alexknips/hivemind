@@ -52,6 +52,11 @@ grounding, an ambiguous premise, no match), add the grounding and re-run: never
 drop the capture. For an ambiguous premise, re-run with `--rests-on-decision
 '#N'` in place of the description.
 
+Write `--title` as one plain sentence a stranger understands, and keep
+`--rationale` readable without the tracker. A tracker or ticket id (a bead,
+Jira, or GitHub issue) goes in `--evidence-source` or a linked reference —
+never in the title, and not as the rationale's subject.
+
 Options are short human labels (`"Direct CLI"`, `"Cap at 30 seconds"`), never
 slugs (`direct-cli`) or letter codes (`q1-a-...`); `why` and `verify` print them
 as written. `--chose "Label"` repeats one of them exactly and means the decision
