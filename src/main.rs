@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use tracing::info;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -10,7 +12,14 @@ fn main() {
 
     match cli::run(&cli_args) {
         Ok(output) => {
-            println!("{output}");
+            // print!/println! panic on write failure; a reader that closes the
+            // pipe early (e.g. `| head`) must not crash hivemind (hivemind-t75k).
+            if let Err(error) = writeln!(std::io::stdout(), "{output}") {
+                if error.kind() != std::io::ErrorKind::BrokenPipe {
+                    eprintln!("hivemind: failed to write output: {error}");
+                    std::process::exit(1);
+                }
+            }
         }
         Err(error) => {
             eprintln!("{}", cli::format_error(cli_args.json, &error));
