@@ -1,0 +1,17 @@
+{
+  "team_id": "T123",
+  "channel_id": "C456",
+  "thread_ts": "1700200000.000000",
+  "messages": [
+    {
+      "user_id": "U444",
+      "ts": "1700200000.000000",
+      "text": "@hivemind\nDecision: Store the ledger in Postgres\nRationale: One shared backend serves every host without file syncing\nTopics: storage\nOptions: Postgres, SQLite\nAnyone object?"
+    },
+    {
+      "user_id": "U555",
+      "ts": "1700203600.000000",
+      "text": "Chosen: Postgres"
+    }
+  ]
+}

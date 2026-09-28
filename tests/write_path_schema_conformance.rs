@@ -270,6 +270,7 @@ fn every_write_path_event_validates_against_its_schema() {
                 role: "user".to_owned(),
                 text: "Should we use REST?".to_owned(),
                 truncated: false,
+                ts: None,
             }],
         )
         .expect("record ingest batch");

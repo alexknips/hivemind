@@ -33,7 +33,12 @@
               "turn_id": { "type": "string" },
               "role": { "type": "string", "minLength": 1 },
               "text": { "type": "string" },
-              "truncated": { "type": "boolean" }
+              "truncated": { "type": "boolean" },
+              "ts": {
+                "type": "string",
+                "format": "date-time",
+                "description": "This turn's own time in the source transcript. Omitted means the caller supplied none; every batch received before this field existed also omits it."
+              }
             }
           }
         }

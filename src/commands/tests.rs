@@ -8,7 +8,8 @@ use uuid::Uuid;
 
 use crate::events::{
     validate, CaptureItem, DecisionAssessedPayload, EventPayload, EventProvenance, EventSource,
-    EventType, HypothesisKind, ProjectAnchorKind, ProjectLinkKind, ProjectSource, RelationKind,
+    EventType, HypothesisKind, IngestTurn, ProjectAnchorKind, ProjectLinkKind, ProjectSource,
+    RelationKind,
 };
 use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
@@ -40,6 +41,93 @@ fn record_evidence_appends_evidence_recorded_event() {
             .and_then(|value| value.as_str()),
         Some(evidence_id.as_str())
     );
+}
+
+/// Bead hivemind-bbnw.6, "transcript": Claude Code and Codex transcripts carry a timestamp
+/// per turn. `record_ingest_batch` must preserve it on the ledger event rather than silently
+/// dropping it — the write path's honest half of "the classifier never fabricates a
+/// first-raised time": there is nothing left to fabricate once the source time survives.
+#[test]
+fn record_ingest_batch_preserves_each_turns_own_source_timestamp() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let turn_one_ts = "2026-06-16T06:58:10Z".parse().expect("literal parses");
+    let turn_two_ts = "2026-06-16T06:58:42Z".parse().expect("literal parses");
+
+    commands
+        .record_ingest_batch(
+            "agent:test",
+            "batch-abc",
+            "claude-code",
+            "session-1",
+            vec![
+                IngestTurn {
+                    turn_id: "t1".to_owned(),
+                    role: "user".to_owned(),
+                    text: "Should we use Postgres or SQLite?".to_owned(),
+                    truncated: false,
+                    ts: Some(turn_one_ts),
+                },
+                IngestTurn {
+                    turn_id: "t2".to_owned(),
+                    role: "assistant".to_owned(),
+                    text: "SQLite: no server process for the local prototype.".to_owned(),
+                    truncated: false,
+                    ts: Some(turn_two_ts),
+                },
+            ],
+        )
+        .expect("record batch succeeds");
+
+    let events = ledger.read(0, 10).expect("read succeeds");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, EventType::IngestBatchReceived);
+    let turns = events[0]
+        .payload
+        .get("turns")
+        .and_then(|value| value.as_array())
+        .expect("turns present");
+    assert_eq!(
+        turns[0].get("ts").and_then(|value| value.as_str()),
+        Some("2026-06-16T06:58:10Z")
+    );
+    assert_eq!(
+        turns[1].get("ts").and_then(|value| value.as_str()),
+        Some("2026-06-16T06:58:42Z")
+    );
+}
+
+/// A turn with no `ts` (every batch submitted before this field existed, or a caller with no
+/// source time to give) keeps that honestly absent — never defaulted to the batch's own
+/// received time, which would misrepresent import time as source time.
+#[test]
+fn record_ingest_batch_leaves_ts_absent_when_the_caller_supplies_none() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    commands
+        .record_ingest_batch(
+            "agent:test",
+            "batch-abc",
+            "claude-code",
+            "session-1",
+            vec![IngestTurn {
+                turn_id: "t1".to_owned(),
+                role: "user".to_owned(),
+                text: "Should we use Postgres or SQLite?".to_owned(),
+                truncated: false,
+                ts: None,
+            }],
+        )
+        .expect("record batch succeeds");
+
+    let events = ledger.read(0, 10).expect("read succeeds");
+    let turns = events[0]
+        .payload
+        .get("turns")
+        .and_then(|value| value.as_array())
+        .expect("turns present");
+    assert!(turns[0].get("ts").is_none_or(|value| value.is_null()));
 }
 
 #[test]

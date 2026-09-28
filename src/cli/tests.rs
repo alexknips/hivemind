@@ -5606,6 +5606,7 @@ fn classify_queue_list_and_submit_round_trip() {
                 role: "user".to_owned(),
                 text: "Should we use Postgres or SQLite?".to_owned(),
                 truncated: false,
+                ts: None,
             }],
         )
         .expect("record batch");

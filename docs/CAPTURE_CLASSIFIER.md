@@ -83,7 +83,8 @@ Recommended batch envelope:
       "turn_id": "...",
       "role": "user|assistant|system|tool-summary",
       "text": "...",
-      "truncated": false
+      "truncated": false,
+      "ts": "2026-06-16T06:58:10Z"
     }
   ]
 }
@@ -96,6 +97,14 @@ finishes a turn. The user's next turn must not wait for this classifier.
 Truncation must be explicit. If a turn is shortened before classification, set
 `truncated: true` and include a clear marker in the text. Do not silently trim a
 batch and present it as complete.
+
+`ts` is optional and is this turn's own time in the source transcript —
+Claude Code and Codex JSONL logs carry one per turn — not when the batch was
+submitted or classified. `record_ingest_batch` preserves it verbatim on the
+`ingest.batch_received` event; omit it and it stays absent, never defaulted to
+submission time. Classification does not consume it yet: a derived decision
+does not take its turn's own time, and no `question.asked` is written from a
+decision-request turn.
 
 ## Batching Parameters
 

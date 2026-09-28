@@ -5,12 +5,14 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::commands::{Commands, DecisionProposalEventUuids, DecisionProposalInput, Grounding};
+use crate::commands::{
+    CommandContext, Commands, DecisionProposalEventUuids, DecisionProposalInput, Grounding,
+};
 use crate::error::{CliError, CommandError};
 use crate::events::{
     self, Event, EventPayload, EventProvenance, EventSource, EventType, HypothesisKind,
@@ -48,6 +50,99 @@ pub struct SlackDecisionDraft {
     pub option_labels: Vec<String>,
     pub chosen_option_label: Option<String>,
     pub thread_context: String,
+    /// The explicit ask the thread's root message holds, when it holds one (see
+    /// [`SlackAsk`]). `None` means nobody visibly asked: no `question.asked` is written and the
+    /// timeline reads "asked at: not recorded".
+    pub ask: Option<SlackAsk>,
+    /// Time of the message that actually carries this draft's content: the `Chosen:`/`Chose:`
+    /// message when the thread has decided, else the `Decision:` message. Recorded as the
+    /// `ts` of every event this import writes (bar the ask's own), in place of import time.
+    pub event_ts: DateTime<Utc>,
+}
+
+/// A question a Slack thread's root message explicitly asks, which a later message answers with
+/// a decision (hivemind-bbnw.6). Written as one `question.asked` event at the root's own time,
+/// and the decision is linked to it exactly as `capture --answers` links one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlackAsk {
+    /// Who asked: the root message's author, not the decision's.
+    pub actor_id: String,
+    /// The question as posted (or, for a `Question:`/`Ask:`/`Decision needed:` marker, the words
+    /// after the marker).
+    pub text: String,
+    /// The root message's own time.
+    pub ts: DateTime<Utc>,
+}
+
+/// Root-message markers that state an ask outright, like the `Decision:`/`Chosen:` markers.
+const ASK_MARKERS: [&str; 3] = ["Question", "Ask", "Decision needed"];
+
+/// The question a root message asks, by a deterministic test only: an `ASK_MARKERS` line's
+/// value, else the whole message when it ends in `?`. No classifier guess — anything else
+/// (including a message that states a decision, or that merely mentions a topic) is not an ask.
+fn root_question_text(root_text: &str) -> Option<String> {
+    let text = root_text.trim();
+    let marked = text.lines().find_map(|line| {
+        ASK_MARKERS
+            .iter()
+            .find_map(|marker| marker_value(line.trim(), marker))
+    });
+    let question = match marked {
+        Some(value) => value,
+        None if text.ends_with('?') => text,
+        None => return None,
+    };
+    // A "?" on its own names nothing: `Commands::plan_ask` refuses it, so it is no ask.
+    (!events::normalize_question_text(question).is_empty()).then(|| question.to_owned())
+}
+
+/// The ask a thread holds, if any: its root message, when that is a *different* message from
+/// the one that carries the decision (a message that simply decides had nobody asking first)
+/// and [`root_question_text`] recognises it as a question. A root missing from `messages`
+/// (a partial thread) cannot be tested, so it is no ask.
+fn slack_thread_ask(
+    thread: &SlackThreadFixture,
+    decision_message_ts: &str,
+) -> Result<Option<SlackAsk>> {
+    if thread.thread_ts == decision_message_ts {
+        return Ok(None);
+    }
+    let Some(root) = thread
+        .messages
+        .iter()
+        .find(|message| message.ts == thread.thread_ts)
+    else {
+        return Ok(None);
+    };
+    let Some(text) = root_question_text(&root.text) else {
+        return Ok(None);
+    };
+    Ok(Some(SlackAsk {
+        actor_id: format!("slack:{}:{}", thread.team_id, root.user_id),
+        text,
+        ts: parse_slack_ts(&root.ts)?,
+    }))
+}
+
+/// Parses a Slack message `ts` (`"<unix-seconds>.<fraction>"`) into a UTC instant — Slack's
+/// own record of when a message was posted, used in place of import time. `pub(crate)`:
+/// reused by the live Slack app capture path ([`crate::slack_app::capture_to_draft`]), which
+/// builds a [`SlackDecisionDraft`] from a queued capture's own `message_ts` rather than a
+/// thread fixture.
+pub(crate) fn parse_slack_ts(ts: &str) -> Result<DateTime<Utc>> {
+    let invalid = || -> crate::error::HivemindError {
+        CommandError::Validation(format!("invalid slack timestamp: '{ts}'")).into()
+    };
+    let (secs_part, frac_part) = ts.split_once('.').unwrap_or((ts, ""));
+    let secs: i64 = secs_part.parse().map_err(|_| invalid())?;
+    let mut frac_digits = frac_part.to_owned();
+    if frac_digits.len() > 9 {
+        frac_digits.truncate(9);
+    } else {
+        frac_digits.push_str(&"0".repeat(9 - frac_digits.len()));
+    }
+    let nanos: u32 = frac_digits.parse().map_err(|_| invalid())?;
+    DateTime::<Utc>::from_timestamp(secs, nanos).ok_or_else(invalid)
 }
 
 pub fn parse_slack_thread_fixture(input: &str) -> Result<SlackThreadFixture> {
@@ -77,6 +172,8 @@ pub fn extract_slack_decision_draft(
 
     let markers = parse_decision_markers(thread)?;
     let source_ref = slack_thread_source_ref(thread);
+    let ask = slack_thread_ask(thread, &markers.title_ts)?;
+    let event_ts = parse_slack_ts(markers.decided_ts.as_deref().unwrap_or(&markers.title_ts))?;
 
     Ok(SlackDecisionDraft {
         actor_id: markers.actor_id,
@@ -87,6 +184,8 @@ pub fn extract_slack_decision_draft(
         option_labels: markers.option_labels,
         chosen_option_label: markers.chosen_option_label,
         thread_context: render_thread_context(thread, &source_ref),
+        ask,
+        event_ts,
     })
 }
 
@@ -126,21 +225,30 @@ pub(crate) struct SlackDecisionMarkers {
     pub(crate) topic_keys: Vec<String>,
     pub(crate) option_labels: Vec<String>,
     pub(crate) chosen_option_label: Option<String>,
+    /// `ts` of the message that carried the `Decision:` marker — the proposal moment, in
+    /// Slack's own record, not import time.
+    pub(crate) title_ts: String,
+    /// `ts` of the message that carried the `Chosen:`/`Chose:` marker, when present — the
+    /// decided moment. `None` means the thread proposes but has not chosen yet.
+    pub(crate) decided_ts: Option<String>,
 }
 
 pub(crate) fn parse_decision_markers(thread: &SlackThreadFixture) -> Result<SlackDecisionMarkers> {
     let mut actor_user_id = None;
     let mut title = None;
+    let mut title_ts = None;
     let mut rationale = None;
     let mut topic_keys = Vec::new();
     let mut option_labels = Vec::new();
     let mut chosen_option_label = None;
+    let mut decided_ts = None;
 
     for message in &thread.messages {
         for line in message.text.lines() {
             let line = line.trim();
             if let Some(value) = marker_value(line, "Decision") {
                 title = Some(value.to_owned());
+                title_ts = Some(message.ts.as_str());
                 actor_user_id.get_or_insert_with(|| message.user_id.clone());
             } else if let Some(value) = marker_value(line, "Rationale") {
                 rationale = Some(value.to_owned());
@@ -154,6 +262,7 @@ pub(crate) fn parse_decision_markers(thread: &SlackThreadFixture) -> Result<Slac
                 marker_value(line, "Chosen").or_else(|| marker_value(line, "Chose"))
             {
                 chosen_option_label = Some(value.to_owned());
+                decided_ts = Some(message.ts.as_str());
             }
         }
     }
@@ -174,6 +283,9 @@ pub(crate) fn parse_decision_markers(thread: &SlackThreadFixture) -> Result<Slac
         CommandError::Validation("Decision marker must identify an author".to_owned())
     })?;
     let actor_id = format!("slack:{}:{}", thread.team_id, actor_user_id);
+    // Set in the same branch as `title` on every iteration, so this is always populated
+    // whenever `title` (required above) is.
+    let title_ts = required_marker(title_ts.map(str::to_owned), "Decision")?;
 
     Ok(SlackDecisionMarkers {
         actor_id,
@@ -182,6 +294,8 @@ pub(crate) fn parse_decision_markers(thread: &SlackThreadFixture) -> Result<Slac
         topic_keys,
         option_labels,
         chosen_option_label,
+        title_ts,
+        decided_ts: decided_ts.map(str::to_owned),
     })
 }
 
@@ -255,8 +369,37 @@ pub fn import_slack_thread<L: EventLedger>(
         return Ok(SlackIngestOutcome::AlreadyImported { decision_id });
     }
 
-    let commands =
-        Commands::new_with_provenance(ledger, EventProvenance::slack(draft.source_ref.clone()));
+    // Refused before the first write, so a bad marker never leaves an ask (or evidence) behind.
+    if draft
+        .chosen_option_label
+        .as_ref()
+        .is_some_and(|chosen| !draft.option_labels.contains(chosen))
+    {
+        return Err(CommandError::Validation(
+            "Chosen marker must match one of the Options entries".to_owned(),
+        )
+        .into());
+    }
+
+    // The ask goes first, at the root message's own time and attributed to the root's author, so
+    // the ledger reads ask then answer. Only a thread whose root explicitly asks holds one
+    // (`slack_thread_ask`); the decision then answers it through `question` below, the way
+    // `capture --answers` does.
+    if let Some(ask) = &draft.ask {
+        let ask_commands = Commands::new_with_context(
+            ledger,
+            CommandContext::local(EventProvenance::slack(draft.source_ref.clone()))
+                .with_event_ts(Some(ask.ts)),
+        );
+        let plan = ask_commands.plan_ask(&ask.text)?;
+        ask_commands.record_ask(&ask.actor_id, &plan)?;
+    }
+
+    let commands = Commands::new_with_context(
+        ledger,
+        CommandContext::local(EventProvenance::slack(draft.source_ref.clone()))
+            .with_event_ts(Some(draft.event_ts)),
+    );
 
     let evidence_id = commands.record_evidence(&draft.actor_id, &draft.thread_context)?;
 
@@ -278,13 +421,6 @@ pub fn import_slack_thread<L: EventLedger>(
         option_ids.push(option_id);
     }
 
-    if draft.chosen_option_label.is_some() && chosen_option_id.is_none() {
-        return Err(CommandError::Validation(
-            "Chosen marker must match one of the Options entries".to_owned(),
-        )
-        .into());
-    }
-
     let decision_id = commands.propose_decision(DecisionProposalInput {
         grounding: Grounding::NotAsked,
         expressed_confidence: None,
@@ -304,7 +440,7 @@ pub fn import_slack_thread<L: EventLedger>(
         hypothesis_ids: &[],
         evidence_ids: std::slice::from_ref(&evidence_id),
         quote: None,
-        question: None,
+        question: draft.ask.as_ref().map(|ask| ask.text.as_str()),
     })?;
 
     Ok(SlackIngestOutcome::Imported {
@@ -795,6 +931,11 @@ struct DocumentDecisionDraft {
     snippet: String,
     prepared_source_ref: Option<DocumentPreparedSourceRef>,
     extractor_explanation: Option<String>,
+    /// The source's own decided time, from an explicit `ts:`/`decided:`/`decided-at:` marker
+    /// (a git commit's authored time, a tracker ticket's resolved time, an ADR's revision
+    /// date). `None` means the block named none; `import_document_file` then falls back to
+    /// the file's own modification time ("decided date at best"), never import time.
+    decided_at: Option<DateTime<Utc>>,
 }
 
 struct DocumentImportContext<'a> {
@@ -803,6 +944,11 @@ struct DocumentImportContext<'a> {
     namespace: &'a str,
     importer_actor_id: &'a str,
     import_run_id: &'a str,
+    /// The file's own last-modified time, read once per file — the fallback "decided date at
+    /// best" when a block names no explicit `ts:` marker. `None` when the filesystem cannot
+    /// report one; the write path then keeps today's "now" behavior rather than fabricate a
+    /// source time.
+    file_modified_at: Option<DateTime<Utc>>,
 }
 
 struct ConflictBlockOutcome<'a> {
@@ -937,12 +1083,18 @@ pub fn import_prose_file_candidates<L: EventLedger>(
     }
 
     let namespace = document_namespace(&source.canonical_path);
+    // No filesystem re-read at candidate-materialization time (the source text was already
+    // extracted by the caller), so there is no file modification time to fall back on here —
+    // only an explicit `ts:` marker in the reviewed block would supply one, and this LLM
+    // candidate path does not parse marker text at all (it builds the draft from already
+    // structured `ProseImportCandidate` fields).
     let context = DocumentImportContext {
         canonical_path: &source.canonical_path,
         source_hash: &source.sha256,
         namespace: &namespace,
         importer_actor_id,
         import_run_id,
+        file_modified_at: None,
     };
 
     let mut block_reports = Vec::with_capacity(candidates.len());
@@ -964,6 +1116,7 @@ pub fn import_prose_file_candidates<L: EventLedger>(
             snippet: candidate.source_snippet,
             prepared_source_ref: None,
             extractor_explanation: Some(candidate.explanation),
+            decided_at: None,
         };
         let block_report = import_document_decision_block(
             ledger,
@@ -1457,12 +1610,20 @@ fn import_document_file<L: EventLedger>(
     }
 
     let namespace = document_namespace(&canonical_path);
+    // "A decided date at best (revision time, commit time)" for a document with no explicit
+    // `ts:` marker: the file's own last-modified time, read once per file. `None` (rare —
+    // an unreadable filesystem timestamp) keeps today's "now" behavior rather than guess.
+    let file_modified_at = fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .map(DateTime::<Utc>::from);
     let context = DocumentImportContext {
         canonical_path: &canonical_path,
         source_hash: &source_hash,
         namespace: &namespace,
         importer_actor_id: request.importer_actor_id.trim(),
         import_run_id,
+        file_modified_at,
     };
     let mut block_reports = Vec::with_capacity(raw_blocks.len());
     for raw_block in raw_blocks {
@@ -1623,8 +1784,14 @@ fn import_document_decision_block<L: EventLedger>(
         context.import_run_id,
         None,
     )?;
-    let event_ids =
-        write_document_decision_events(ledger, draft, &identities, actor_id, &source_ref)?;
+    let event_ids = write_document_decision_events(
+        ledger,
+        draft,
+        &identities,
+        actor_id,
+        &source_ref,
+        draft.decided_at.or(context.file_modified_at),
+    )?;
 
     Ok(DocumentBlockImportReport {
         block_id: draft.block_id.clone(),
@@ -1678,9 +1845,13 @@ fn write_document_decision_events<L: EventLedger>(
     identities: &DocumentImportIdentities,
     actor_id: &str,
     source_ref: &str,
+    event_ts: Option<DateTime<Utc>>,
 ) -> Result<Vec<u64>> {
-    let commands =
-        Commands::new_with_provenance(ledger, EventProvenance::document(source_ref.to_owned()));
+    let commands = Commands::new_with_context(
+        ledger,
+        CommandContext::local(EventProvenance::document(source_ref.to_owned()))
+            .with_event_ts(event_ts),
+    );
     let mut event_ids = Vec::new();
 
     for (evidence_id, evidence, event_uuid) in identities
@@ -1908,8 +2079,14 @@ fn apply_conflict_supersede<L: EventLedger>(
         .original_actor_id
         .as_deref()
         .unwrap_or(context.importer_actor_id);
-    let event_ids =
-        write_document_decision_events(ledger, draft, &identities, actor_id, &source_ref)?;
+    let event_ids = write_document_decision_events(
+        ledger,
+        draft,
+        &identities,
+        actor_id,
+        &source_ref,
+        draft.decided_at.or(context.file_modified_at),
+    )?;
     setup.conflict.resolved_decision_id = Some(resolved_decision_id);
     conflict_block_report(
         draft,
@@ -2996,6 +3173,9 @@ fn scan_decision_block_markers(raw: &RawDocumentDecisionBlock) -> Result<ParsedD
                 "title" => fields.title = non_empty_value(value, "title")?,
                 "status" => fields.status = non_empty_value(value, "status")?,
                 "actor" | "actor-id" => fields.actor_id = non_empty_value(value, "actor")?,
+                "ts" | "decided" | "decided-at" => {
+                    fields.decided_at = non_empty_value(value, "ts")?;
+                }
                 "topic" | "topics" | "topic-keys" => {
                     fields.topic_keys = split_document_marker_list(value);
                 }
@@ -3077,6 +3257,17 @@ fn assemble_decision_draft(
     if fields.topic_keys.is_empty() {
         fields.topic_keys.push("document".to_owned());
     }
+    let decided_at = fields
+        .decided_at
+        .map(|raw_ts| -> Result<DateTime<Utc>> {
+            DateTime::parse_from_rfc3339(&raw_ts)
+                .map(|ts| ts.with_timezone(&Utc))
+                .map_err(|error| {
+                    CommandError::Validation(format!("ts must be an RFC3339 timestamp: {error}"))
+                        .into()
+                })
+        })
+        .transpose()?;
     Ok(DocumentDecisionDraft {
         block_id,
         title,
@@ -3093,6 +3284,7 @@ fn assemble_decision_draft(
         snippet: compact_snippet(&raw.text),
         prepared_source_ref: raw.prepared_source_ref.clone(),
         extractor_explanation: None,
+        decided_at,
     })
 }
 
@@ -3107,6 +3299,10 @@ struct ParsedDecisionFields {
     title: Option<String>,
     status: Option<String>,
     actor_id: Option<String>,
+    /// Raw `ts:`/`decided:`/`decided-at:` marker value, an RFC3339 timestamp naming when the
+    /// source decided this — never the import time. Parsed and validated by
+    /// `assemble_decision_draft`.
+    decided_at: Option<String>,
     topic_keys: Vec<String>,
     rationale_lines: Vec<String>,
     option_labels: Vec<String>,

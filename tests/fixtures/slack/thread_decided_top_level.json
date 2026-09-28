@@ -1,0 +1,12 @@
+{
+  "team_id": "T123",
+  "channel_id": "C456",
+  "thread_ts": "1700100000.000000",
+  "messages": [
+    {
+      "user_id": "U333",
+      "ts": "1700100000.000000",
+      "text": "@hivemind\nDecision: Adopt weekly dependency updates\nRationale: Small weekly bumps stay reviewable where quarterly ones do not\nTopics: dependencies\nOptions: Weekly, Quarterly\nChosen: Weekly"
+    }
+  ]
+}

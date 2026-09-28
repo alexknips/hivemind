@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::error::{CliError, CommandError};
 use crate::events::EventType;
-use crate::ingest::{import_slack_thread, SlackDecisionDraft, SlackIngestOutcome};
+use crate::ingest::{import_slack_thread, parse_slack_ts, SlackDecisionDraft, SlackIngestOutcome};
 use crate::ledger::EventLedger;
 use crate::projector::{GraphView, RelationKind};
 use crate::queries::{
@@ -510,7 +510,7 @@ pub fn process_capture<L: EventLedger>(
     validate_capture(capture)?;
     let install = store.installation(&capture.team_id)?;
     validate_reaction_trigger(&install, capture)?;
-    let draft = capture_to_draft(&install, capture);
+    let draft = capture_to_draft(&install, capture)?;
     import_slack_thread(ledger, &draft)
 }
 
@@ -704,9 +704,15 @@ fn input_block(block_id: &str, label: &str, element_type: &str) -> Value {
 fn capture_to_draft(
     install: &SlackWorkspaceInstall,
     capture: &SlackCaptureRequest,
-) -> SlackDecisionDraft {
+) -> Result<SlackDecisionDraft> {
     let actor_id = slack_actor_id(install, &capture.user_id);
-    SlackDecisionDraft {
+    // `message_ts` is the capture itself (modal submission, mention or reaction): the decided
+    // moment, and the ts of every event written. A live capture carries only its own message's
+    // text, never the thread root's, so it cannot show that anyone explicitly asked first: no
+    // ask is written (`ask: None`), and the timeline reads "asked at: not recorded". Only the
+    // thread importer, which sees the root's text, records one.
+    let event_ts = parse_slack_ts(&capture.message_ts)?;
+    Ok(SlackDecisionDraft {
         actor_id,
         source_ref: capture.permalink.clone(),
         title: capture.title.clone(),
@@ -715,7 +721,9 @@ fn capture_to_draft(
         option_labels: capture.option_labels.clone(),
         chosen_option_label: capture.chosen_option_label.clone(),
         thread_context: render_capture_evidence(capture),
-    }
+        ask: None,
+        event_ts,
+    })
 }
 
 fn render_capture_evidence(capture: &SlackCaptureRequest) -> String {

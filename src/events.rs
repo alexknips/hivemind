@@ -493,6 +493,13 @@ pub struct IngestTurn {
     pub role: String,
     pub text: String,
     pub truncated: bool,
+    /// This turn's own time in the source transcript (Claude Code and Codex JSONL logs carry
+    /// one per turn), not when hivemind received or classified the batch. `#[serde(default)]`
+    /// so a caller that does not supply one — and every batch received before this field
+    /// existed — still parses; classification then has no per-turn source time to prefer over
+    /// the batch's own received/classified time, never a fabricated one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ts: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

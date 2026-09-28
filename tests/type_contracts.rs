@@ -749,6 +749,7 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                     role: "user".to_owned(),
                     text: "Should we use REST?".to_owned(),
                     truncated: false,
+                    ts: None,
                 }],
             }),
         ),

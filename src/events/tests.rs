@@ -106,6 +106,18 @@ const FIXTURES: &[(&str, &str, EventType)] = &[
         EventType::RelationRemoved,
     ),
     (
+        include_str!("../../schemas/v0/ingest.batch_received.json"),
+        include_str!("../../tests/fixtures/v0/ingest.batch_received.json"),
+        EventType::IngestBatchReceived,
+    ),
+    (
+        include_str!("../../schemas/v0/ingest.batch_received.json"),
+        include_str!(
+            "../../tests/fixtures/v0/transcript/ingest.batch_received.timestamped_turns.json"
+        ),
+        EventType::IngestBatchReceived,
+    ),
+    (
         include_str!("../../schemas/v0/blocker.reported.json"),
         include_str!("../../tests/fixtures/v0/blocker.reported.json"),
         EventType::BlockerReported,

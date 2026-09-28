@@ -127,6 +127,27 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   projected (ledger order, so replay is deterministic); nothing projected afterwards touches
   it, so a retitle or any other annotation leaves a decision's link unchanged. Additive: no
   existing key changes, no new event. Documented in `docs/GRAPH_CONTRACT.md`. (hivemind-nidp)
+- **Importers keep the source's own time instead of import time, and record an explicit ask as
+  `question.asked`.** Every `Commands`-driven write can carry an explicit event `ts`
+  (`CommandContext::event_ts`) in place of wall-clock "now". The Slack thread importer stamps
+  the events it writes with the deciding message's own time (the `Chosen:`/`Chose:` message,
+  else the `Decision:` message), and the local document importer honors an optional
+  `ts:`/`decided:`/`decided-at:` block marker, falling back to the file's last-modified time when
+  the block names none. That fallback is "last modified", not "decided": a git checkout or a copy
+  resets it. The same block parser reads a `Decision:` block pasted from a git commit trailer or
+  a tracker/beads ticket body, so a `ts:` in that block carries the commit's or ticket's own
+  time; none of these is a separate importer. An ask has one home, the `question.asked` event
+  from `hivemind ask`: the Slack thread importer writes one, at the root message's own time and
+  by the root's author, only when the root is a different message from the one carrying the
+  decision **and** is recognisably a question by a deterministic test (it ends in `?`, or
+  carries a `Question:`, `Ask:` or `Decision needed:` marker); the decision then answers it, as
+  `capture --answers` does. A decision posted top-level, a root that states the decision and a
+  root that does not visibly ask get their own time and no ask, so the timeline reads "asked at:
+  not recorded" rather than a guess. Live Slack app captures see only their own message, so they
+  write no ask; documents never do. `ingest.batch_received` turns can carry an optional `ts`
+  (Claude Code and Codex JSONL logs already have one); classification does not consume it yet.
+  `docs/TEXT_IMPORT_AND_DIFF_SEMANTICS.md`, `docs/SLACK_APP.md` and
+  `docs/CAPTURE_CLASSIFIER.md` describe the rule per source. (hivemind-bbnw.6)
 - **A model's assessment of a decision can be recorded and is shown beside the quality
   floors.** `decision.scored` gains a second payload version (`schema_version: 2`), keyed by
   the decision's id (a proposed decision or a classified capture): all seven dimensions, each

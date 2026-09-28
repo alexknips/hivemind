@@ -99,7 +99,11 @@
 //!   question can be asked more than once, each its own outstanding request. This is the one
 //!   difference from answering — a decision answers one question and a repeat is a no-op, but an
 //!   ask is not an answer and carries no such invariant.
-//! - `asked_at` is the event's own `ts`; nothing here ever back-dates it.
+//! - `asked_at` is the event's own `ts`; nothing here ever back-dates it. An importer whose
+//!   source holds an explicit ask (a Slack thread whose root is a question, hivemind-bbnw.6)
+//!   writes it through this same path, with `CommandContext::event_ts` set to the ask's own
+//!   source time: that is the source's time, not a guess, and it is the only place an ask time
+//!   lives (`decision.proposed` carries none).
 //! - No ask is written when nobody asked: `plan_ask` / `record_ask` are the only path that writes
 //!   `question.asked`, so a decision captured with `--question` (with no `hivemind ask` first)
 //!   never fabricates one.
@@ -504,6 +508,13 @@ pub struct Commands<'a, L: EventLedger> {
 pub struct CommandContext {
     pub tenant_id: TenantId,
     pub provenance: EventProvenance,
+    /// Overrides the `ts` every event this context's `Commands` writes carries, in place of
+    /// wall-clock "now" at append time. `None` (every live capture call site) keeps
+    /// `Utc::now()`. `Some` is for an importer replaying a decision that was already made
+    /// elsewhere, at the source's own time — a Slack thread's chosen-option message, a
+    /// document's `ts:` marker or file revision time — never a guess, and never used for a
+    /// decision an actor is making right now.
+    pub event_ts: Option<DateTime<Utc>>,
 }
 
 impl CommandContext {
@@ -511,11 +522,18 @@ impl CommandContext {
         Self {
             tenant_id,
             provenance,
+            event_ts: None,
         }
     }
 
     pub fn local(provenance: EventProvenance) -> Self {
         Self::new(TenantId::local(), provenance)
+    }
+
+    /// See `event_ts`.
+    pub fn with_event_ts(mut self, event_ts: Option<DateTime<Utc>>) -> Self {
+        self.event_ts = event_ts;
+        self
     }
 }
 
@@ -2613,7 +2631,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .tenant_id(self.context.tenant_id.clone())
             .provenance(self.context.provenance.clone())
             .causation_event_id(causation_event_id)
-            .timestamp(Some(Utc::now()))
+            .timestamp(Some(self.context.event_ts.unwrap_or_else(Utc::now)))
             .build()
             .map_err(|error| {
                 CommandError::Invariant(format!("failed to build typed event envelope: {error}"))

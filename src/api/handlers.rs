@@ -8,6 +8,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::{CommandContext, Commands, DecisionProposalInput, Grounding, SupersedeInput};
@@ -135,6 +136,10 @@ struct IngestTurnRequest {
     text: String,
     #[serde(default)]
     truncated: bool,
+    /// This turn's own time in the source transcript, when the caller has one (see
+    /// `IngestTurn::ts`). Omitted keeps today's behavior: no per-turn source time.
+    #[serde(default)]
+    ts: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1213,6 +1218,7 @@ fn ingest_batch_blocking(
             role: t.role,
             text: t.text,
             truncated: t.truncated,
+            ts: t.ts,
         })
         .collect();
 

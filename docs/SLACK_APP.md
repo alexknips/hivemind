@@ -167,6 +167,33 @@ For reaction-triggered capture, set `--surface reaction --reaction-emoji
 hivemind`. The queue drain rejects reaction events whose emoji does not match
 the workspace install's configured trigger.
 
+`--message-ts` is Slack's own record of when this happened, not enqueue or
+drain time. It is the capture message itself (the modal submission, the
+`@hivemind` mention, or the reaction) and is recorded as the `ts` on every
+event the capture writes (the proposal, its evidence, its options), in place of
+drain time. The same holds for a
+batch-imported thread fixture (`hivemind ingest slack-thread`): the message
+carrying the `Chosen:`/`Chose:` marker (or, absent one, the `Decision:`
+marker) supplies the event `ts`.
+
+An ask is recorded only when the thread shows one. `hivemind ingest
+slack-thread` writes a `question.asked` event, at the root message's own time
+and attributed to the root's author, when both hold:
+
+- the root is a different message from the one carrying the `Decision:`
+  marker (a message that simply decides had nobody asking first), and
+- the root is recognisably a question by a deterministic test: its text ends
+  in `?`, or it carries a `Question:`, `Ask:` or `Decision needed:` marker
+  line (the words after the marker are then the question).
+
+The decision is then linked to that question the way `capture --answers`
+links one. There is no classifier guess: a top-level decision, a thread whose
+root states the decision, and a root that neither ends in `?` nor carries a
+marker all write no ask, and the timeline reads "asked at: not recorded". The
+live capture surfaces above (`slack-app enqueue-capture`, the Events API front
+door) carry only the captured message's own text, never the thread root's, so
+they cannot show an ask and write none.
+
 Drain the queue after HiveMind is available:
 
 ```bash

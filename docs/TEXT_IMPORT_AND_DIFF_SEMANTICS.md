@@ -31,6 +31,7 @@ Decision:
   title: Use SQLite for the local prototype
   status: accepted
   actor: alice
+  ts: 2026-05-17T20:40:43Z
   topic_keys: storage,local
   rationale: Keeps onboarding under five minutes.
   options:
@@ -50,6 +51,27 @@ Decision:
 actor. If the source does not identify an original actor, the importer records
 the importer as the event actor and marks the imported decision as provisional
 in import metadata.
+
+### Source time (`ts:`)
+
+`ts:` (aliases `decided:`, `decided-at:`) is an optional RFC3339 timestamp
+naming when the source decided this — a git commit's authored time, a tracker
+ticket's resolved time, an ADR's revision date. When present, every event this
+block produces (the proposal, its evidence, its options) carries it as the
+event's own `ts`, in place of the moment `import documents` happened to run.
+When absent, the importer falls back to the file's own last-modified time,
+never to import time and never a guessed value. That fallback is the file's
+revision time, not a decision date: a git checkout or a copy of the file resets
+it, so read it as "last modified", not "decided". Put an explicit `ts:` in any
+block whose real decision date matters.
+
+Documents carry a time only, never an ask: nothing in a document records when
+the decision was first asked for (unlike a Slack thread's root message), so an
+imported decision gets no `question.asked` and its timeline reads "asked at:
+not recorded". This applies uniformly regardless of what produced the text: an
+ADR, a Google Doc export, OCR'd text, a git commit trailer pasted into a block,
+or a tracker/beads ticket body pasted into a block — none of these are separate
+importers; they are all `Decision:` blocks read by the same parser.
 
 ## Provenance
 
