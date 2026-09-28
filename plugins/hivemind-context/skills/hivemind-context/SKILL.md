@@ -94,8 +94,14 @@ what it wants to ask.
     --title "the new decision" \
     --rationale "why the new direction" \
     --topic-keys same,topics --options "The new direction,Keep the old direction" \
-    --chose "The new direction"
+    --chose "The new direction" \
+    --rests-on-assumption "what you're assuming the new direction gets right"
   ```
+
+  Like `hivemind-capture`, `supersede` refuses to write a decision that names
+  nothing it rests on — the replacement needs one of `--rests-on-decision`,
+  `--rests-on-evidence` (with `--evidence-source`), `--rests-on-assumption`,
+  or `--bet`, same as above.
 
 - **Say what it rests on** — a decision captured without saying reads
   `nothing declared`. If you know what it rests on, add it after the fact.
