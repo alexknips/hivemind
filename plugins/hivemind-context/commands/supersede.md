@@ -22,8 +22,12 @@ from your actor right away. Add `--still-proposed` to keep an open
 recommendation at `proposed`. The confirmation shows `new_status=`.
 
 The replacement's project is worked out from the working folder (or named with
-`--project <handle>`); with none found it stays in the old decision's project.
-The confirmation shows `project=` and `project_source=`.
+`--project <handle>`); with none found it inherits the project the old decision
+is filed in now (after a move, the project it was moved to). A decision filed
+in a personal project is replaced into your own personal project instead —
+personal projects belong to one actor — and the confirmation says so.
+The confirmation shows `project=` and `project_source=` (`inherited` for the
+first case, `personal_fallback` for the personal-project exception).
 
 If the description does not resolve to exactly one decision, the CLI
 returns the candidate list and performs **no write**. Show the candidates
