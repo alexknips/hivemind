@@ -55,7 +55,10 @@ fn run_cli(dir: &Path, actor: &str, json: bool, args: &[&str]) -> hivemind::Resu
 
 fn ask(dir: &Path, text: &str) -> TestResult<Value> {
     Ok(serde_json::from_str(&run_cli(
-        dir, ASKER, true, &["ask", text],
+        dir,
+        ASKER,
+        true,
+        &["ask", text],
     )?)?)
 }
 

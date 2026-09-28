@@ -44,9 +44,8 @@ use crate::queries::{
     get_decision, get_decision_brief, get_decision_neighborhood, get_decisions_added_since,
     get_decisions_changed_since, get_project, get_recent_activity, get_recent_decisions,
     get_relevant_decisions, get_situational_decisions, get_supersession_chain,
-    get_waiting_requests, list_projects,
-    misfiled_next_cursor, resolve_decision_by_description, scan_misfiled_decisions,
-    search_decisions, search_decisions_any, ActiveDecisionBlockersRequest,
+    get_waiting_requests, list_projects, misfiled_next_cursor, resolve_decision_by_description,
+    scan_misfiled_decisions, search_decisions, search_decisions_any, ActiveDecisionBlockersRequest,
     BlockerNotificationCandidatesRequest, ChangedSinceRequest, DecisionBlockerFilters,
     DecisionLogExport, DecisionLogOutcome, DecisionLogRequest, DecisionStatus,
     DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest, HistoryFilterRequest,
@@ -104,10 +103,9 @@ use super::render::{
     render_recent_activity_summary, render_recent_decisions_summary,
     render_resolve_outcome_summary, render_scan_report_summary, render_score_report_summary,
     render_search_summary, render_situational_summary, render_supersession_summary,
-    render_waiting_requests_summary,
-    CaptureCommandOutput, CurrentProjectOutput, DisagreeCommandOutput, ExportReport,
-    OutputEnvelope, ProjectAnchorOutput, ProjectLinkOutput, ProjectRegisterOutput,
-    ReviewActionOutput, ReviewCommandOutput, SupersedeCommandOutput,
+    render_waiting_requests_summary, CaptureCommandOutput, CurrentProjectOutput,
+    DisagreeCommandOutput, ExportReport, OutputEnvelope, ProjectAnchorOutput, ProjectLinkOutput,
+    ProjectRegisterOutput, ReviewActionOutput, ReviewCommandOutput, SupersedeCommandOutput,
 };
 #[cfg(feature = "shared-backend-postgres")]
 use super::render::{MigrateReport, ParityCheckResult};

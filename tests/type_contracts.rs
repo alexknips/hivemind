@@ -13,8 +13,8 @@ use hivemind::events::{
     ModelDimensions, NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
     ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
     QualityDim, QualityDims, QualityLevel, QuestionAskedPayload, QuestionRecordedPayload,
-    RelationAddedPayload,
-    RelationKind as EventRelationKind, RelationRemovedPayload, DECISION_ASSESSED_SCHEMA_VERSION,
+    RelationAddedPayload, RelationKind as EventRelationKind, RelationRemovedPayload,
+    DECISION_ASSESSED_SCHEMA_VERSION,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};

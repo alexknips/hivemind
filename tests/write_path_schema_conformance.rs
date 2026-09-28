@@ -496,9 +496,7 @@ fn every_write_path_event_validates_against_its_schema() {
     let ask_plan = commands
         .plan_ask("What should the next contract test cover?")
         .expect("plan ask");
-    commands
-        .record_ask(actor, &ask_plan)
-        .expect("record ask");
+    commands.record_ask(actor, &ask_plan).expect("record ask");
 
     // -- validate every emitted event against its schemas/v0 file --
     let events = ledger.read(0, 1000).expect("read events");
