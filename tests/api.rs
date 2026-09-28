@@ -1890,6 +1890,62 @@ async fn graph_returns_shape_after_decision() {
     }
 }
 
+#[tokio::test]
+async fn graph_decisions_carry_a_decided_at_timestamp() {
+    use hivemind::events::{Event, EventSource, EventType, TenantId};
+    use hivemind::ledger::{EventLedger, SqliteEventLedger};
+
+    let dir = test_ledger_dir();
+    let ts = chrono::DateTime::parse_from_rfc3339("2026-01-15T10:30:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    SqliteEventLedger::open(&dir)
+        .unwrap()
+        .append(Event {
+            tenant_id: TenantId::local(),
+            event_id: None,
+            event_uuid: uuid::Uuid::new_v4(),
+            correlation_id: None,
+            causation_event_id: None,
+            event_type: EventType::DecisionProposed,
+            actor_id: "human:alex.knips@gmail.com".to_owned(),
+            source: EventSource::Cli,
+            source_ref: None,
+            payload: serde_json::json!({
+                "decision_id": "decision:dated",
+                "title": "Has a known decided_at",
+                "rationale": "Fixture for decided_at on GET /v1/graph",
+                "topic_keys": ["graph-decided-at"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+            ts: Some(ts),
+        })
+        .unwrap();
+
+    let (status, graph) = call(app(dir), get_req("/v1/graph")).await;
+    assert_eq!(status, StatusCode::OK, "GET /v1/graph: {graph}"); // ubs:ignore
+
+    let expected = serde_json::Value::String(ts.to_rfc3339());
+
+    let decision = graph_decision(&graph, "decision:dated");
+    assert_eq!(decision["decided_at"], expected, "{decision}"); // ubs:ignore
+    assert!(
+        decision.get("occurred_at").is_none(),
+        "decisions[] should carry decided_at only, not the internal occurred_at name: {decision}"
+    ); // ubs:ignore
+
+    let node = graph["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == "Decision:decision:dated")
+        .expect("decision node");
+    assert_eq!(node["decided_at"], expected, "{node}"); // ubs:ignore
+}
+
 /// The `decisions` entry of a `GET /v1/graph` body for this decision id.
 fn graph_decision<'a>(graph: &'a Value, decision_id: &str) -> &'a Value {
     graph["decisions"]

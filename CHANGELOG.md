@@ -63,6 +63,12 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`GET /v1/graph` says when each decision was made.** Every `decisions[]` entry and every
+  `nodes[]` entry of `kind: "Decision"` now carries `decided_at`, the `decision.proposed`
+  capture event's timestamp in ISO-8601 UTC (`null` only for an event predating the ledger's
+  timestamp backfill), so a whole-graph view can show a decision's date without a second
+  lookup. Additive: no existing key changes. Documented in `docs/GRAPH_CONTRACT.md`.
+  (hivemind-zbd0)
 - **A model's assessment of a decision can be recorded and is shown beside the quality
   floors.** `decision.scored` gains a second payload version (`schema_version: 2`), keyed by
   the decision's id (a proposed decision or a classified capture): all seven dimensions, each

@@ -62,7 +62,7 @@ The response is `{decisions, nodes, edges}`; the edges are the arrows above. Two
 a reader needs without reconstructing them from edges:
 
 - **`decisions[]`**: one entry per Decision node, its stored row (`id`, `title`, `rationale`,
-  `topic_keys`) plus two derived fields.
+  `topic_keys`) plus three derived fields.
   - `status`: `proposed`, `accepted`, `rejected`, `contested` or `superseded`, the word every
     other reader of a decision uses. Any incoming `SUPERSEDES` makes it `superseded`; else
     `ACCEPTED_BY` and `REJECTED_BY` together make it `contested`; else accepted only is
@@ -73,6 +73,11 @@ a reader needs without reconstructing them from edges:
     accepts. Distinct from the proposer (`PROPOSED_BY`, whoever recorded it) and the
     participants (`PARTICIPATED_BY`). On a contested decision these are the acceptors; the
     rejecters are the `REJECTED_BY` edges.
+  - `decided_at`: the `decision.proposed` capture event's timestamp, ISO-8601 UTC (the same
+    value the query layer calls `occurred_at`, e.g. `DecisionBrief`). `null` only for a
+    decision from an event predating the ledger's timestamp backfill.
+- **`nodes[]` with `kind: "Decision"`** carry `decided_at` the same way, so a whole-graph view
+  can show when each decision was made without a second lookup into `decisions[]`.
 - **`nodes[]` with `kind: "Option"`** carry `title`: the option's own label, else its id, so an
   option always has something to show. `label` stays as it was (absent when no label was ever
   recorded). A label recorded as a slug or a lettered code (`name-a-upheld`) is read as words

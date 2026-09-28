@@ -35,6 +35,10 @@ struct GraphNode {
     /// (`name-a-upheld` for `Upheld`). The ledger is immutable and the label is a reading of it.
     #[serde(skip_serializing_if = "Option::is_none")]
     recorded_as: Option<String>,
+    /// On a Decision: when the capture event recorded it, ISO-8601 UTC. `None` only for a
+    /// decision from an event predating the ledger's `ts` backfill.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decided_at: Option<String>,
 }
 
 /// A directed edge in the decision graph: an arrow from the newer node to the older node.
@@ -54,8 +58,9 @@ struct GraphEdge {
 
 /// Full decision graph for a tenant, in the shape expected by the SPA. Each entry of
 /// `decisions` is the decision's stored row plus its derived `status` (`proposed`, `accepted`,
-/// `rejected`, `contested` or `superseded`) and `deciders` (the `ACCEPTED_BY` actors, each with
-/// a `kind` of `human`, `agent` or `unknown`; empty until someone accepts).
+/// `rejected`, `contested` or `superseded`), `deciders` (the `ACCEPTED_BY` actors, each with
+/// a `kind` of `human`, `agent` or `unknown`; empty until someone accepts) and `decided_at`
+/// (the capture event's timestamp, ISO-8601 UTC).
 #[derive(Debug, serde::Serialize)]
 struct GraphData {
     decisions: Vec<serde_json::Value>,
@@ -114,6 +119,11 @@ fn graph_blocking(
                 .or_else(|| string_field("content"))
                 .or_else(|| string_field("display_name"))
                 .or_else(|| string_field("handle"));
+            // The capture event's timestamp (`occurred_at` on the projected node) read
+            // under the response's `decided_at` name (docs/GRAPH_CONTRACT.md).
+            let decided_at = matches!(kind, NodeKind::Decision)
+                .then(|| string_field("occurred_at"))
+                .flatten();
             if matches!(kind, NodeKind::Decision) {
                 let mut obj: serde_json::Map<String, serde_json::Value> = row
                     .iter()
@@ -126,6 +136,15 @@ fn graph_blocking(
                 obj.insert(
                     "deciders".into(),
                     serde_json::to_value(standings.deciders_of(&id)).map_err(graph_err)?,
+                );
+                // Raw column selected only to compute `decided_at` below; drop it so the
+                // response carries one timestamp field, not two names for the same value.
+                obj.remove("occurred_at");
+                obj.insert(
+                    "decided_at".into(),
+                    decided_at
+                        .clone()
+                        .map_or(serde_json::Value::Null, serde_json::Value::String),
                 );
                 decisions.push(serde_json::Value::Object(obj));
             }
@@ -142,6 +161,7 @@ fn graph_blocking(
                 label,
                 title,
                 recorded_as,
+                decided_at,
             });
         }
     }
@@ -178,7 +198,7 @@ fn row_string(row: &GraphRow, key: &str) -> Option<String> {
 fn graph_node_query(kind: NodeKind) -> String {
     let projection = match kind {
         NodeKind::Decision => {
-            "node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys"
+            "node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys, node.occurred_at AS occurred_at"
         }
         NodeKind::DecisionRequest => {
             "node.id AS id, node.topic_keys AS topic_keys, node.reason AS reason"
