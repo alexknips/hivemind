@@ -753,8 +753,8 @@ required `grounding` array (at least one item), one item per answer:
   "title": "Cap retry delay at 30 seconds",
   "rationale": "An uncapped exponential delay stalled clients for minutes after a short outage",
   "topic_keys": ["retries"],
-  "options": [{ "label": "cap30" }, { "label": "uncapped" }],
-  "chosen_option_label": "cap30",
+  "options": [{ "label": "Cap at 30 seconds" }, { "label": "Uncapped" }],
+  "chosen_option_label": "Cap at 30 seconds",
   "grounding": [
     { "kind": "decision", "description": "exponential backoff for retries" },
     { "kind": "evidence", "content": "Uncapped backoff reached 8 minutes in the June incident", "source": "https://example.test/incidents/june" },
