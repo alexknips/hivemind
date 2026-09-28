@@ -26,7 +26,7 @@
 //! `scan_decision_quality`, `get_suggestions`, `recent_decisions`,
 //! `decision_quality_candidates`, `get_decision_context`,
 //! `decision_context_candidates`, `scan_misfiled_decisions`,
-//! `analyze_failure_modes`. Later
+//! `analyze_failure_modes`, `request_decision`. Later
 //! tools follow the same shape — an `Args::from_json` parser plus a
 //! `core::<tool>` function — one pair per tool, each independently
 //! reviewable.
@@ -266,6 +266,12 @@ pub(crate) struct CaptureDecisionArgs {
     /// The question this decision answers. Required by `quote`; otherwise optional. Resolved to
     /// a `Question` node. See `question` on `DecisionProposalInput`.
     pub(crate) question: Option<String>,
+    /// The id of an existing `request_decision` request this decision answers: resolves to that
+    /// request's question and links this decision to it, exactly as `question` would, without
+    /// repeating the words. Refused when the request does not exist, or together with
+    /// `question`. Distinct from `ground_decision`'s `answers`, which takes the question's own
+    /// text, not a request id.
+    pub(crate) answers: Option<String>,
     /// Registered project handle to file the decision under. See [`project_args`].
     pub(crate) project: Option<String>,
     /// How `project` was determined; `stated` when omitted. Requires `project`.
@@ -385,11 +391,17 @@ impl CaptureDecisionArgs {
 
         let quote = optional_string(args, "quote")?;
         let question = optional_string(args, "question")?;
+        let answers = optional_string(args, "answers")?;
         let (project, project_source) = project_args(args)?;
 
         if quote.is_some() && question.is_none() {
             return Err(CoreError::InvalidArgument(
                 "quote requires question — a verbatim answer needs the question it answers spelled out, not a bare reference like '1a' into an external list".to_owned(),
+            ));
+        }
+        if answers.is_some() && question.is_some() {
+            return Err(CoreError::InvalidArgument(
+                "answers and question are mutually exclusive: the request already names its question".to_owned(),
             ));
         }
 
@@ -410,6 +422,7 @@ impl CaptureDecisionArgs {
             expressed_confidence,
             quote,
             question,
+            answers,
             project,
             project_source,
         })
@@ -464,6 +477,10 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
         ));
     }
 
+    let question = commands
+        .resolve_answers_request(args.answers.as_deref(), args.question.as_deref())
+        .map_err(CoreError::from)?;
+
     let proposal = commands
         .propose_grounded_decision(
             DecisionProposalInput {
@@ -484,7 +501,7 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
                 delegated_by: args.delegated_by.as_deref(),
                 still_proposed: args.still_proposed,
                 quote: args.quote.as_deref(),
-                question: args.question.as_deref(),
+                question: question.as_deref(),
             },
             &resolved.plan,
         )
@@ -505,6 +522,54 @@ pub(crate) fn capture_decision<P: LedgerProvider>(
     }
     insert_placement(&mut reply, &proposal.placement);
     Ok(ToolOutput(reply))
+}
+
+// ---------------------------------------------------------------------------
+// request_decision
+// ---------------------------------------------------------------------------
+
+/// Parsed, validated arguments for the `request_decision` tool (hivemind-bbnw.4).
+pub(crate) struct RequestDecisionArgs {
+    pub(crate) actor_id: String,
+    pub(crate) text: String,
+}
+
+impl RequestDecisionArgs {
+    pub(crate) fn from_json(
+        args: &Map<String, Value>,
+        actor_id: String,
+    ) -> Result<Self, CoreError> {
+        let text = require_string(args, "text")?;
+        Ok(Self { actor_id, text })
+    }
+}
+
+/// The migrated core for the `request_decision` MCP tool: records an explicit ask, before any
+/// decision answers it. Resolved and created exactly like `capture_decision`'s `question` (a
+/// match on the normalized text is reused, otherwise a `Question` node is created), plus a
+/// `question.asked` event recording who asked and when — never suppressed as a duplicate, so
+/// asking the same question again is a second, independent request (hivemind-bbnw.4).
+pub(crate) fn request_decision<P: LedgerProvider>(
+    provider: &P,
+    args: RequestDecisionArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let commands = Commands::new_with_context(
+        &handle.ledger,
+        CommandContext::new(
+            handle.tenant_id,
+            EventProvenance::agent(args.actor_id.clone()),
+        ),
+    );
+    let plan = commands.plan_ask(&args.text).map_err(CoreError::from)?;
+    let recorded = commands
+        .record_ask(&args.actor_id, &plan)
+        .map_err(CoreError::from)?;
+    Ok(ToolOutput(json!({
+        "request_id": recorded.request_id,
+        "question_id": recorded.question_id,
+        "reused": recorded.reused,
+    })))
 }
 
 // ---------------------------------------------------------------------------

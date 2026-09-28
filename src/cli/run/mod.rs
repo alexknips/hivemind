@@ -1,3 +1,4 @@
+mod ask;
 mod ground;
 mod grounding;
 
@@ -42,7 +43,8 @@ use crate::queries::{
     get_active_decision_blockers, get_blocker_notification_candidates, get_compact_view,
     get_decision, get_decision_brief, get_decision_neighborhood, get_decisions_added_since,
     get_decisions_changed_since, get_project, get_recent_activity, get_recent_decisions,
-    get_relevant_decisions, get_situational_decisions, get_supersession_chain, list_projects,
+    get_relevant_decisions, get_situational_decisions, get_supersession_chain,
+    get_waiting_requests, list_projects,
     misfiled_next_cursor, resolve_decision_by_description, scan_misfiled_decisions,
     search_decisions, search_decisions_any, ActiveDecisionBlockersRequest,
     BlockerNotificationCandidatesRequest, ChangedSinceRequest, DecisionBlockerFilters,
@@ -52,7 +54,7 @@ use crate::queries::{
     ProjectOutcome, QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest,
     RecentActivityRequest, RecentDecisionEntry, RecentDecisionFilterRequest,
     RecentDecisionsRequest, ResolveOutcome, ResolvedCandidate, SearchDecisionRequest,
-    SituationalRequest,
+    SituationalRequest, WaitingRequestsRequest,
 };
 use crate::slack_app::{
     handle_slack_command, slack_app_manifest, slack_oauth_install_url, SlackAppStore,
@@ -102,6 +104,7 @@ use super::render::{
     render_recent_activity_summary, render_recent_decisions_summary,
     render_resolve_outcome_summary, render_scan_report_summary, render_score_report_summary,
     render_search_summary, render_situational_summary, render_supersession_summary,
+    render_waiting_requests_summary,
     CaptureCommandOutput, CurrentProjectOutput, DisagreeCommandOutput, ExportReport,
     OutputEnvelope, ProjectAnchorOutput, ProjectLinkOutput, ProjectRegisterOutput,
     ReviewActionOutput, ReviewCommandOutput, SupersedeCommandOutput,
@@ -119,6 +122,7 @@ pub fn run(cli: &Cli) -> Result<String> {
         Command::Supersede(args) => run_supersede(cli, args),
         Command::Move(args) => run_move(cli, args),
         Command::Ground(args) => ground::run_ground(cli, args),
+        Command::Ask(args) => ask::run_ask(cli, args),
         Command::Review(args) => run_review(cli, args),
         Command::Import(import) => run_import(cli, import),
         Command::Query(query) => run_query(cli, query),
@@ -785,6 +789,10 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
             let (option_ids, chosen_option_id) =
                 record_cli_options(&commands, &actor_id, &args.decision)?;
             let project = cli_capture_project(cli, &ledger, env, &args.decision)?;
+            let question = commands.resolve_answers_request(
+                args.answers_request_id.as_deref(),
+                args.decision.question.as_deref(),
+            )?;
             let proposal = commands.propose_grounded_decision(
                 DecisionProposalInput {
                     actor_id: &actor_id,
@@ -801,7 +809,7 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
                     hypothesis_ids: &[],
                     evidence_ids: &[],
                     quote: args.decision.quote.as_deref(),
-                    question: args.decision.question.as_deref(),
+                    question: question.as_deref(),
                     grounding: Grounding::NotAsked,
                     expressed_confidence: args.grounding.confidence.as_deref(),
                     project: determined_project(&project),
@@ -2192,6 +2200,7 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
         | QueryCommand::SearchDecisions(_)
         | QueryCommand::Recall(_)
         | QueryCommand::GetActiveDecisionBlockers(_)
+        | QueryCommand::GetWaitingRequests(_)
         | QueryCommand::GetBlockerNotificationCandidates(_)
         | QueryCommand::ScoreDecision(_)
         | QueryCommand::ScanDecisionQuality(_)
@@ -2266,6 +2275,7 @@ fn reviewed_decision_ids_by_actor(
             | EventPayload::EvidenceRecorded(_)
             | EventPayload::HypothesisRecorded(_)
             | EventPayload::QuestionRecorded(_)
+            | EventPayload::QuestionAsked(_)
             | EventPayload::RelationAdded(_)
             | EventPayload::RelationRemoved(_)
             | EventPayload::BlockerReported(_)
@@ -2315,6 +2325,7 @@ impl ReviewLedgerContext {
                 | EventPayload::DecisionRejected(_)
                 | EventPayload::DecisionSuperseded(_)
                 | EventPayload::QuestionRecorded(_)
+                | EventPayload::QuestionAsked(_)
                 | EventPayload::RelationAdded(_)
                 | EventPayload::RelationRemoved(_)
                 | EventPayload::BlockerReported(_)
@@ -2941,6 +2952,19 @@ fn run_query_with_graph(
                 query.summary,
                 &response,
                 render_active_blockers_summary,
+                response.data.next_cursor.as_deref(),
+            )?
+        }
+        QueryCommand::GetWaitingRequests(args) => {
+            let request = WaitingRequestsRequest {
+                limit: args.limit,
+                cursor: args.cursor.clone(),
+            };
+            let response = get_waiting_requests(graph, &request)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_waiting_requests_summary,
                 response.data.next_cursor.as_deref(),
             )?
         }

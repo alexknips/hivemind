@@ -13,7 +13,7 @@ use crate::events::{
     EventPayload, EvidenceRecordedPayload, HypothesisRecordedPayload, IngestBatchClassifiedPayload,
     NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
     ProjectAnchorPayload, ProjectLinkKind, ProjectRegisteredPayload, ProjectSource,
-    QuestionRecordedPayload, RelationKind as EventRelationKind, TenantId,
+    QuestionAskedPayload, QuestionRecordedPayload, RelationKind as EventRelationKind, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -64,10 +64,14 @@ pub enum NodeKind {
     /// Shared project. Personal projects never get a node — they're derived from the
     /// actor id at query time, never registered (see `commands::register_project`).
     Project,
+    /// An explicit ask: one `question.asked` event, pointing at the `Question` it names
+    /// (`ASK_FOR`) and the actor who asked (`ASKED_BY`). Distinct from `Question` itself — a
+    /// question can be asked more than once, or never asked at all (hivemind-bbnw.4).
+    Ask,
 }
 
 impl NodeKind {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Decision,
         Self::DecisionRequest,
         Self::Actor,
@@ -78,6 +82,7 @@ impl NodeKind {
         Self::Hypothesis,
         Self::Question,
         Self::Project,
+        Self::Ask,
     ];
 
     pub const fn table_name(self) -> &'static str {
@@ -92,6 +97,7 @@ impl NodeKind {
             Self::Hypothesis => "Hypothesis",
             Self::Question => "Question",
             Self::Project => "Project",
+            Self::Ask => "Ask",
         }
     }
 }
@@ -141,10 +147,14 @@ pub enum RelationKind {
     FollowsFrom,
     /// `from` decision answers `to` question.
     Answers,
+    /// `from` ask names `to` question (hivemind-bbnw.4).
+    AskFor,
+    /// `from` ask was made by `to` actor.
+    AskedBy,
 }
 
 impl RelationKind {
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 31] = [
         Self::ProposedBy,
         Self::DecisionRequestedBy,
         Self::DecisionRequestForDecision,
@@ -174,6 +184,8 @@ impl RelationKind {
         Self::DependsOn,
         Self::FollowsFrom,
         Self::Answers,
+        Self::AskFor,
+        Self::AskedBy,
     ];
 
     pub const fn table_name(self) -> &'static str {
@@ -207,6 +219,8 @@ impl RelationKind {
             Self::DependsOn => "DEPENDS_ON",
             Self::FollowsFrom => "FOLLOWS_FROM",
             Self::Answers => "ANSWERS",
+            Self::AskFor => "ASK_FOR",
+            Self::AskedBy => "ASKED_BY",
         }
     }
 
@@ -237,6 +251,8 @@ impl RelationKind {
             Self::PartOf | Self::DependsOn => (NodeKind::Project, NodeKind::Project),
             Self::FollowsFrom => (NodeKind::Decision, NodeKind::Decision),
             Self::Answers => (NodeKind::Decision, NodeKind::Question),
+            Self::AskFor => (NodeKind::Ask, NodeKind::Question),
+            Self::AskedBy => (NodeKind::Ask, NodeKind::Actor),
         }
     }
 }
@@ -317,6 +333,9 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
         }
         EventPayload::QuestionRecorded(payload) => {
             project_question_recorded(graph, &payload, &origin_properties)?
+        }
+        EventPayload::QuestionAsked(payload) => {
+            project_question_asked(graph, event, &payload, &origin_properties)?
         }
         EventPayload::RelationAdded(payload) => {
             let kind = if payload.relation == EventRelationKind::Assumes {
@@ -601,9 +620,9 @@ fn capture_node_text(kind: NodeKind, id: &str, props: &GraphProperties) -> Strin
         // Actor nodes have no text property; use the ID as a scoring proxy so
         // gold_as_captures() IDs (e.g. "mia") match the produced Actor node ID.
         NodeKind::Actor => return id.to_owned(),
-        // No capture kind ever produces a Project node (see `project_capture`'s match);
+        // No capture kind ever produces a Project or Ask node (see `project_capture`'s match);
         // this arm exists only for exhaustiveness.
-        NodeKind::Notification | NodeKind::Project => return String::new(),
+        NodeKind::Notification | NodeKind::Project | NodeKind::Ask => return String::new(),
     };
     match props.get(key) {
         Some(GraphValue::String(s)) => s.clone(),
@@ -1205,6 +1224,52 @@ fn project_question_recorded(
         ],
     );
     graph.upsert_node(NodeKind::Question, &payload.question_id, &props)
+}
+
+/// An `Ask` node, id'd by the ask event's own uuid (the "request id" `capture --answers`
+/// resolves) — the same convention `project_decision_requested` uses for `DecisionRequest`
+/// (hivemind-bbnw.4). The write path always ensures `Question` exists before this event is
+/// appended (in the same call, or an earlier one), so `AskFor` never reverses in practice; it
+/// still gets a real reversed label because its target is not an `Actor` (see
+/// `docs/GRAPH_CONTRACT.md`).
+fn project_question_asked(
+    graph: &impl GraphView,
+    event: &Event,
+    payload: &QuestionAskedPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let ask_id = event.event_uuid.to_string();
+    let props = props_extend(
+        origin_properties,
+        [
+            (
+                "question_id",
+                GraphValue::String(payload.question_id.clone()),
+            ),
+            ("text", GraphValue::String(payload.text.clone())),
+            ("asked_at", event_timestamp(event)),
+        ],
+    );
+    graph.upsert_node(NodeKind::Ask, &ask_id, &props)?;
+    ensure_node_reference(
+        graph,
+        NodeKind::Question,
+        &payload.question_id,
+        origin_properties,
+    )?;
+    graph.upsert_edge(
+        RelationKind::AskFor,
+        &ask_id,
+        &payload.question_id,
+        origin_properties,
+    )?;
+    graph.upsert_edge(
+        RelationKind::AskedBy,
+        &ask_id,
+        &event.actor_id,
+        origin_properties,
+    )?;
+    Ok(())
 }
 
 const fn hypothesis_kind_str(kind: events::HypothesisKind) -> &'static str {

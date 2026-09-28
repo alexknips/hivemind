@@ -96,6 +96,11 @@ const FIXTURES: &[(&str, &str, EventType)] = &[
         EventType::QuestionRecorded,
     ),
     (
+        include_str!("../../schemas/v0/question.asked.json"),
+        include_str!("../../tests/fixtures/v0/question.asked.json"),
+        EventType::QuestionAsked,
+    ),
+    (
         include_str!("../../schemas/v0/relation.removed.json"),
         include_str!("../../tests/fixtures/v0/grounding/relation.removed.follows_from.json"),
         EventType::RelationRemoved,

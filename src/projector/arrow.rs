@@ -94,6 +94,8 @@ impl RelationKind {
             Self::Answers => ArrowLabels::both("answers", "is answered by"),
             Self::PartOf => ArrowLabels::both("is part of", "contains"),
             Self::DependsOn => ArrowLabels::both("depends on", "is needed by"),
+            Self::AskFor => ArrowLabels::both("asks", "is asked by"),
+            Self::AskedBy => ArrowLabels::anchored("asked by"),
         }
     }
 }

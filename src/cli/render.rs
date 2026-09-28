@@ -23,7 +23,7 @@ use crate::queries::{
     ProjectListResults, ProjectMove, ProjectOutcome, QueryResponse, QuestionAnswer, ReadOnlyExport,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
     RecentActivityResults, RecentDecisionsResults, ResolveOutcome, SituationalResults,
-    SupersessionChain,
+    SupersessionChain, WaitingRequestsResults,
 };
 use crate::{HivemindError, Result};
 
@@ -688,8 +688,11 @@ fn write_decision_brief(output: &mut String, brief: &DecisionBrief) {
         );
     }
     write_decided_by(output, &brief.decided_by);
+    if let Some(asked_at) = brief.asked_at {
+        let _ = writeln!(output, "  asked_at: {}", asked_at.to_rfc3339());
+    }
     if let Some(occurred_at) = brief.occurred_at {
-        let _ = writeln!(output, "  when: {}", occurred_at.to_rfc3339());
+        let _ = writeln!(output, "  answered_at: {}", occurred_at.to_rfc3339());
     }
     write_rests_on(output, brief);
     if brief.still_holds.held_up {
@@ -1103,6 +1106,27 @@ pub(crate) fn render_active_blockers_summary(results: &DecisionBlockerResults) -
     output.trim_end().to_owned()
 }
 
+/// The `get_waiting_requests` reply: open asks with no answering decision yet, oldest first
+/// (hivemind-bbnw.4).
+pub(crate) fn render_waiting_requests_summary(results: &WaitingRequestsResults) -> String {
+    if results.items.is_empty() {
+        return "No waiting requests found".to_owned();
+    }
+
+    let mut output = String::new();
+    for item in &results.items {
+        let _ = writeln!(
+            output,
+            "request\t{}\tasked_at={}\trequested_by={}\t{}",
+            item.request_id,
+            item.asked_at.to_rfc3339(),
+            item.requested_by.as_deref().unwrap_or(""),
+            summary_cell(&item.text)
+        );
+    }
+    output.trim_end().to_owned()
+}
+
 pub(crate) fn render_blocker_notifications_summary(
     candidates: &BlockerNotificationCandidates,
 ) -> String {
@@ -1188,6 +1212,7 @@ fn event_type_label(event_type: EventType) -> &'static str {
         EventType::EvidenceRecorded => "evidence.recorded",
         EventType::HypothesisRecorded => "hypothesis.recorded",
         EventType::QuestionRecorded => "question.recorded",
+        EventType::QuestionAsked => "question.asked",
         EventType::RelationAdded => "relation.added",
         EventType::RelationRemoved => "relation.removed",
         EventType::BlockerReported => "blocker.reported",
@@ -1393,6 +1418,23 @@ pub(crate) fn format_ground_output(as_json: bool, output: &GroundCommandOutput) 
         );
     }
     Ok(rendered)
+}
+
+/// `ask`'s reply: the request recorded and the question it names (hivemind-bbnw.4).
+pub(crate) fn format_ask_output(as_json: bool, output: &AskCommandOutput) -> Result<String> {
+    if as_json {
+        return format_json_value(true, output);
+    }
+
+    let how = if output.reused {
+        "existing question"
+    } else {
+        "new question"
+    };
+    Ok(format!(
+        "asked \"{}\" ({how} {}): request {}, attributed to {}",
+        output.text, output.question_id, output.request_id, output.actor_id
+    ))
 }
 
 pub(crate) fn format_review_output(as_json: bool, output: &ReviewCommandOutput) -> Result<String> {
@@ -1688,6 +1730,7 @@ fn node_dump_query(kind: NodeKind) -> String {
         NodeKind::Project => {
             "node.id AS id, node.handle AS handle, node.display_name AS display_name, node.purpose AS purpose, node.anchors AS anchors"
         }
+        NodeKind::Ask => "node.id AS id, node.question_id AS question_id, node.text AS text, node.asked_at AS asked_at",
     };
     format!(
         "MATCH (node:`{}`) RETURN {projection} ORDER BY node.id;",
@@ -1749,6 +1792,11 @@ fn node_properties_from_row(kind: NodeKind, row: &GraphRow) -> GraphProperties {
             insert_if_present(&mut properties, row, "purpose");
             insert_if_present(&mut properties, row, "anchors");
         }
+        NodeKind::Ask => {
+            insert_if_present(&mut properties, row, "question_id");
+            insert_if_present(&mut properties, row, "text");
+            insert_if_present(&mut properties, row, "asked_at");
+        }
     }
     properties
 }
@@ -1782,6 +1830,7 @@ fn node_color(kind: NodeKind) -> &'static str {
         NodeKind::Hypothesis => "#f5cba7",
         NodeKind::Question => "#d4e6f1",
         NodeKind::Project => "#aed6f1",
+        NodeKind::Ask => "#a9dfbf",
     }
 }
 
@@ -1945,6 +1994,18 @@ pub(crate) struct GroundCommandOutput {
     /// The question the decision now answers, when `--answers` named one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) answers: Option<GroundAnswerOutput>,
+}
+
+/// The `ask` reply: the request recorded and the question it names (hivemind-bbnw.4).
+#[derive(Debug, Serialize)]
+pub(crate) struct AskCommandOutput {
+    pub(crate) request_id: String,
+    pub(crate) question_id: String,
+    pub(crate) text: String,
+    /// Who the ask is attributed to.
+    pub(crate) actor_id: String,
+    /// True when an earlier ask or capture already recorded this question's node.
+    pub(crate) reused: bool,
 }
 
 #[derive(Debug, Serialize)]

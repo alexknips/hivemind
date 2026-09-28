@@ -32,7 +32,7 @@ every kind on projected data, and the table below is checked against the code ro
   edge.
 - **Actors are identities, not records.** An actor has no place on the time axis and counts
   as older than every record, so an edge to an actor always points at the actor. This is
-  why 13 of the 29 kinds never reverse.
+  why 14 of the 31 kinds never reverse.
 - **No inverse kinds.** The server has no "superseded by" relation. To ask what supersedes
   a decision, read `SUPERSEDES` edges *into* it; to ask what it supersedes, read them *out
   of* it. A reversed label appears only when the stored direction cannot point backward in
@@ -125,9 +125,11 @@ stored; the reversed label when the stored target was recorded after the stored 
 | `DEPENDS_ON` | Project → Project | depends on | is needed by |
 | `FOLLOWS_FROM` | Decision → Decision | follows from | underlies |
 | `ANSWERS` | Decision → Question | answers | is answered by |
+| `ASK_FOR` | Ask → Question | asks | is asked by |
+| `ASKED_BY` | Ask → Actor | asked by | never |
 
 Why these reverse. Most edges are written by the event that creates their source, so the
-target already exists and the arrow runs as stored. The 16 kinds with a reversed label can
+target already exists and the arrow runs as stored. The 17 kinds with a reversed label can
 also be written later, by `relation.added`, `decision.superseded` or `project.linked`, or
 name a placeholder that a later event fills in:
 
@@ -145,6 +147,10 @@ name a placeholder that a later event fills in:
   `question.recorded` after the proposal it is caused by, so the first answer to a question
   is older than its question; a later answer to the same question is newer, and its arrow
   runs as stored.
+- An ask names a question: `ASK_FOR`. `hivemind ask` always ensures the `Question` node
+  exists before the `Ask` node that names it (in the same call when the question is new), so
+  in practice this arrow never reverses; it carries a real reversed label anyway because its
+  target is not an `Actor`.
 
 ## Forward references
 

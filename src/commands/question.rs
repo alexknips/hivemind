@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 use crate::error::CommandError;
 use crate::events::{
-    normalize_question_text, Event, EventId, EventPayload, EventType, QuestionRecordedPayload,
-    RelationKind,
+    normalize_question_text, Event, EventId, EventPayload, EventType, QuestionAskedPayload,
+    QuestionRecordedPayload, RelationKind,
 };
 use crate::ledger::EventLedger;
 use crate::util::{require_non_empty, require_valid_actor_id};
@@ -53,6 +53,40 @@ impl QuestionAnswerPlan {
     pub fn already_linked(&self) -> bool {
         self.already_linked
     }
+}
+
+/// A question asked before any decision answers it, resolved and possibly-created exactly like
+/// `question_answer_plan` — but standing alone, with no decision yet (hivemind-bbnw.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskPlan {
+    question_id: QuestionId,
+    text: String,
+    /// The words to record when no `Question` node matches yet; `None` when one does.
+    new_question_text: Option<String>,
+}
+
+impl AskPlan {
+    pub fn question_id(&self) -> &str {
+        &self.question_id
+    }
+}
+
+/// The result of recording a planned ask (hivemind-bbnw.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AskRecorded {
+    pub request_id: String,
+    pub question_id: QuestionId,
+    /// True when an earlier ask or capture already recorded this question's node.
+    pub reused: bool,
+}
+
+/// What an existing request names: the question it points at and the words it was asked in.
+/// `find_ask` reads this from the ledger to resolve `capture --answers <request id>` without
+/// repeating the words (hivemind-bbnw.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskedRequest {
+    pub question_id: QuestionId,
+    pub text: String,
 }
 
 /// The words of a question must contain at least one word once trailing punctuation is dropped:
@@ -230,6 +264,111 @@ impl<L: EventLedger> Commands<'_, L> {
             }
             payload_value_as_str(event, "question_id").map(str::to_owned)
         })
+    }
+
+    /// Resolve `text` to the question an ask names (existing or new), refusing empty words.
+    /// Writes nothing. Unlike `question_answer_plan`, there is no decision yet — an ask stands
+    /// alone until a capture or `ground --answers` links a decision to it (hivemind-bbnw.4).
+    pub fn plan_ask(&self, text: &str) -> Result<AskPlan> {
+        require_question_text(text)?;
+        let normalized = normalize_question_text(text);
+        let existing = self.find_question(&normalized)?;
+        let (question_id, new_question_text) = match existing {
+            Some(question_id) => (question_id, None),
+            None => (
+                question_id_for(self.context.tenant_id.as_str(), &normalized),
+                Some(text.trim().to_owned()),
+            ),
+        };
+        Ok(AskPlan {
+            question_id,
+            text: text.trim().to_owned(),
+            new_question_text,
+        })
+    }
+
+    /// Record a planned ask, attributed to `actor_id`: `question.recorded` when the node is new,
+    /// then `question.asked`. Unlike an answer, an ask is never suppressed as a duplicate — a
+    /// question can be asked more than once, each its own outstanding request.
+    pub fn record_ask(&self, actor_id: &str, plan: &AskPlan) -> Result<AskRecorded> {
+        require_valid_actor_id(actor_id)?;
+        let ask_uuid = Uuid::new_v4();
+        if let Some(text) = &plan.new_question_text {
+            let event = self.event_with_uuid(
+                actor_id,
+                EventPayload::QuestionRecorded(QuestionRecordedPayload {
+                    question_id: plan.question_id.clone(),
+                    text: text.clone(),
+                }),
+                None,
+                Uuid::new_v5(&ask_uuid, b"question.recorded"),
+            )?;
+            self.append_event(event)?;
+        }
+        let ask_event = self.event_with_uuid(
+            actor_id,
+            EventPayload::QuestionAsked(QuestionAskedPayload {
+                question_id: plan.question_id.clone(),
+                text: plan.text.clone(),
+            }),
+            None,
+            ask_uuid,
+        )?;
+        self.append_event(ask_event)?;
+        Ok(AskRecorded {
+            request_id: ask_uuid.to_string(),
+            question_id: plan.question_id.clone(),
+            reused: plan.new_question_text.is_none(),
+        })
+    }
+
+    /// The question `request_id` (a `question.asked` event's uuid) names, if any. Used by
+    /// `capture --answers <request id>` to resolve a request to its question without repeating
+    /// the words; `None` when no such request exists (hivemind-bbnw.4).
+    pub fn find_ask(&self, request_id: &str) -> Result<Option<AskedRequest>> {
+        let Ok(request_uuid) = request_id.parse::<Uuid>() else {
+            return Ok(None);
+        };
+        self.find_in_events(|event| {
+            if event.event_type != EventType::QuestionAsked || event.event_uuid != request_uuid {
+                return None;
+            }
+            Some(AskedRequest {
+                question_id: payload_value_as_str(event, "question_id")?.to_owned(),
+                text: payload_value_as_str(event, "text")?.to_owned(),
+            })
+        })
+    }
+
+    /// Resolve `capture --answers <request id>` (or its MCP equivalent) to the question text
+    /// `--question` would have taken, refusing when both are given or the request does not
+    /// exist. Returns `question` unchanged when no request id was given. There is no requirement
+    /// that the request still be unanswered — re-answering a question is the contested flow this
+    /// module already supports, not a new invariant (hivemind-bbnw.4).
+    pub fn resolve_answers_request(
+        &self,
+        request_id: Option<&str>,
+        question: Option<&str>,
+    ) -> Result<Option<String>> {
+        let Some(request_id) = request_id else {
+            return Ok(question.map(str::to_owned));
+        };
+        if question.is_some() {
+            return Err(CommandError::Validation(
+                "--answers <request id> and --question are mutually exclusive: the request \
+                 already names its question"
+                    .to_owned(),
+            )
+            .into());
+        }
+        let request_id = request_id.trim();
+        require_non_empty("answers", request_id)?;
+        let asked = self.find_ask(request_id)?.ok_or_else(|| {
+            CommandError::Validation(format!(
+                "no request with id {request_id}: nothing to answer"
+            ))
+        })?;
+        Ok(Some(asked.text))
     }
 
     /// The questions `decision_id` is linked to with `ANSWERS`, in ledger order.

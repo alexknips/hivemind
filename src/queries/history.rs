@@ -1482,6 +1482,7 @@ impl DecisionIndex {
                 | EventPayload::EvidenceRecorded(_)
                 | EventPayload::HypothesisRecorded(_)
                 | EventPayload::QuestionRecorded(_)
+                | EventPayload::QuestionAsked(_)
                 | EventPayload::BlockerResolved(_)
                 | EventPayload::NotificationSent(_)
                 | EventPayload::NotificationAcknowledged(_)
@@ -1701,6 +1702,7 @@ fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
         EventPayload::RelationRemoved(_)
         | EventPayload::HypothesisRecorded(_)
         | EventPayload::QuestionRecorded(_)
+        | EventPayload::QuestionAsked(_)
         | EventPayload::DecisionRequested(_)
         | EventPayload::BlockerReported(_)
         | EventPayload::BlockerResolved(_)
@@ -1779,6 +1781,7 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
         EventPayload::EvidenceRecorded(_)
         | EventPayload::HypothesisRecorded(_)
         | EventPayload::QuestionRecorded(_)
+        | EventPayload::QuestionAsked(_)
         | EventPayload::BlockerResolved(_)
         | EventPayload::NotificationSent(_)
         | EventPayload::NotificationAcknowledged(_)
@@ -1853,6 +1856,10 @@ fn affected_nodes_for_event(event: &Event, payload: &EventPayload) -> Vec<Affect
             nodes.insert(affected_node(&payload.hypothesis_id, NodeKind::Hypothesis));
         }
         EventPayload::QuestionRecorded(payload) => {
+            nodes.insert(affected_node(&payload.question_id, NodeKind::Question));
+        }
+        EventPayload::QuestionAsked(payload) => {
+            nodes.insert(affected_node(&event.event_uuid.to_string(), NodeKind::Ask));
             nodes.insert(affected_node(&payload.question_id, NodeKind::Question));
         }
         EventPayload::RelationAdded(payload) => {

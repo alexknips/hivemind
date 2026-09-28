@@ -483,3 +483,126 @@ fn ground_and_answer_resolves_the_question_before_the_first_write() {
         "the refused question leaves no orphan assumption behind"
     );
 }
+
+#[test]
+fn record_ask_writes_question_recorded_then_question_asked() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let plan = commands.plan_ask(QUESTION).expect("plan ask");
+    let recorded = commands.record_ask(PROPOSER, &plan).expect("record ask");
+
+    let all = events(&ledger);
+    let question_recorded = of_type(&all, EventType::QuestionRecorded);
+    assert_eq!(question_recorded.len(), 1);
+    assert_eq!(
+        payload_str(question_recorded[0], "question_id"),
+        recorded.question_id
+    );
+    let asked = of_type(&all, EventType::QuestionAsked);
+    assert_eq!(asked.len(), 1);
+    assert_eq!(payload_str(asked[0], "question_id"), recorded.question_id);
+    assert_eq!(payload_str(asked[0], "text"), QUESTION);
+    assert_eq!(asked[0].event_uuid.to_string(), recorded.request_id);
+    assert!(!recorded.reused, "a new question is not reused");
+}
+
+#[test]
+fn asking_the_same_question_twice_reuses_the_node_but_writes_two_asks() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    let first_plan = commands.plan_ask(QUESTION).expect("plan first ask");
+    let first = commands
+        .record_ask(PROPOSER, &first_plan)
+        .expect("record first ask");
+    let second_plan = commands
+        .plan_ask("  which storage engine   should the PROTOTYPE use ")
+        .expect("plan second ask");
+    let second = commands
+        .record_ask(GROUNDER, &second_plan)
+        .expect("record second ask");
+
+    assert_eq!(
+        first.question_id, second.question_id,
+        "same normalized text shares one node"
+    );
+    assert_ne!(
+        first.request_id, second.request_id,
+        "each ask is its own request"
+    );
+    assert!(
+        second.reused,
+        "the second ask reuses the existing question node"
+    );
+
+    let all = events(&ledger);
+    assert_eq!(
+        of_type(&all, EventType::QuestionRecorded).len(),
+        1,
+        "question.recorded is not repeated"
+    );
+    assert_eq!(
+        of_type(&all, EventType::QuestionAsked).len(),
+        2,
+        "each ask writes its own question.asked"
+    );
+}
+
+#[test]
+fn find_ask_resolves_a_recorded_request_and_none_for_an_unknown_one() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let plan = commands.plan_ask(QUESTION).expect("plan ask");
+    let recorded = commands.record_ask(PROPOSER, &plan).expect("record ask");
+
+    let found = commands
+        .find_ask(&recorded.request_id)
+        .expect("find ask")
+        .expect("the request exists");
+    assert_eq!(found.question_id, recorded.question_id);
+    assert_eq!(found.text, QUESTION);
+
+    let missing = commands
+        .find_ask("018f5d8a-03fb-7df0-8e36-64d7410cfe07")
+        .expect("find ask does not error on an unknown id");
+    assert!(missing.is_none());
+
+    let not_a_uuid = commands
+        .find_ask("not-a-uuid")
+        .expect("find ask does not error on a malformed id");
+    assert!(not_a_uuid.is_none());
+}
+
+#[test]
+fn resolve_answers_request_resolves_a_request_to_its_question_text() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let plan = commands.plan_ask(QUESTION).expect("plan ask");
+    let recorded = commands.record_ask(PROPOSER, &plan).expect("record ask");
+
+    let resolved = commands
+        .resolve_answers_request(Some(&recorded.request_id), None)
+        .expect("resolve answers request");
+    assert_eq!(resolved.as_deref(), Some(QUESTION));
+
+    // No request id: question passes through unchanged.
+    let passthrough = commands
+        .resolve_answers_request(None, Some("some other question"))
+        .expect("resolve with no request id");
+    assert_eq!(passthrough.as_deref(), Some("some other question"));
+
+    // Both given: refused.
+    let conflict = commands
+        .resolve_answers_request(Some(&recorded.request_id), Some("some other question"))
+        .expect_err("answers and question together are refused")
+        .to_string();
+    assert!(conflict.contains("mutually exclusive"), "{conflict}");
+
+    // Unknown request id: refused.
+    let unknown = commands
+        .resolve_answers_request(Some("018f5d8a-03fb-7df0-8e36-64d7410cfe07"), None)
+        .expect_err("an unknown request id is refused")
+        .to_string();
+    assert!(unknown.contains("no request with id"), "{unknown}");
+}

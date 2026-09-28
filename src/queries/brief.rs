@@ -22,7 +22,7 @@ use super::decision::get_decision_with_labels;
 use super::grounding::{grounding_of_at, GroundingItem, GroundingState, UncheckedBet};
 use super::outcome::{get_decision_outcome_with_labels, OutcomeReason};
 use super::project_label::ProjectLabels;
-use super::question::{other_answers, QuestionAnswer};
+use super::question::{earliest_ask, other_answers, QuestionAnswer};
 use super::shared::{node_row, optional_datetime, optional_string, query_error, query_timer_start};
 use super::status::DecisionStatus;
 use super::QueryResponse;
@@ -101,6 +101,11 @@ pub struct DecisionBrief {
     /// Display-only; `event_origin` stays canonical for resolver ranking (SEARCH_DESIGN.md).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub occurred_at: Option<DateTime<Utc>>,
+    /// When this decision's question was first explicitly asked (`hivemind ask` /
+    /// `request_decision`), if ever — `occurred_at` is when it was answered. `None` when the
+    /// question was only ever named via `--question`, never asked first (hivemind-bbnw.4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asked_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chosen_option: Option<OptionLabel>,
     pub rejected_options: Vec<OptionLabel>,
@@ -168,10 +173,12 @@ pub(crate) fn get_decision_brief_with_labels(
         .ok_or_else(|| query_error("decision exists but has no outcome"))?;
     let (occurred_at, expressed_confidence) = decision_capture_facts(graph, decision_id)?;
     let grounding = grounding_of_at(graph, decision_id, now)?;
-    let other_answers = if decision.question_id.is_some() {
-        other_answers(graph, decision_id)?
-    } else {
-        Vec::new()
+    let (other_answers, asked_at) = match &decision.question_id {
+        Some(question_id) => (
+            other_answers(graph, decision_id)?,
+            earliest_ask(graph, question_id)?,
+        ),
+        None => (Vec::new(), None),
     };
 
     let chosen_option = match &decision.chosen_option_id {
@@ -197,6 +204,7 @@ pub(crate) fn get_decision_brief_with_labels(
         question_id: decision.question_id,
         other_answers,
         occurred_at,
+        asked_at,
         chosen_option,
         rejected_options,
         decided_by: DecidedBy {

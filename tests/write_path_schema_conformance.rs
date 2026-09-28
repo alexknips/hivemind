@@ -492,6 +492,14 @@ fn every_write_path_event_validates_against_its_schema() {
         )
         .expect("answer question later");
 
+    // -- question.asked: an explicit ask, before any decision answers it (hivemind-bbnw.4) --
+    let ask_plan = commands
+        .plan_ask("What should the next contract test cover?")
+        .expect("plan ask");
+    commands
+        .record_ask(actor, &ask_plan)
+        .expect("record ask");
+
     // -- validate every emitted event against its schemas/v0 file --
     let events = ledger.read(0, 1000).expect("read events");
     assert!(
@@ -508,6 +516,7 @@ fn every_write_path_event_validates_against_its_schema() {
         EventType::EvidenceRecorded,
         EventType::HypothesisRecorded,
         EventType::QuestionRecorded,
+        EventType::QuestionAsked,
         EventType::RelationAdded,
         EventType::RelationRemoved,
         EventType::IngestBatchReceived,
@@ -599,6 +608,7 @@ fn schema_file_stem(event_type: EventType) -> &'static str {
         EventType::EvidenceRecorded => "evidence.recorded",
         EventType::HypothesisRecorded => "hypothesis.recorded",
         EventType::QuestionRecorded => "question.recorded",
+        EventType::QuestionAsked => "question.asked",
         EventType::RelationAdded => "relation.added",
         EventType::RelationRemoved => "relation.removed",
         EventType::BlockerReported => "blocker.reported",

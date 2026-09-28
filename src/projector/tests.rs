@@ -3548,6 +3548,12 @@ fn natural_order_scenario() -> Result<InMemoryEventLedger> {
             "actor:alice",
             json!({"relation": "ANSWERS", "from_id": "decision:1", "to_id": "question:1"}),
         ),
+        // ASK_FOR / ASKED_BY: an ask naming a question already recorded above.
+        event(
+            EventType::QuestionAsked,
+            "human:dana",
+            json!({"question_id": "question:1", "text": "Which graph store should slice 1 use?"}),
+        ),
         event(
             EventType::DecisionRequested,
             "agent:release-bot",
@@ -4081,6 +4087,12 @@ fn late_attachment_scenario() -> Result<InMemoryEventLedger> {
                 "required_owner_id": "human:release-owner"
             }),
         ),
+        // ASK_FOR: an ask names a question nobody has recorded yet.
+        event(
+            EventType::QuestionAsked,
+            "human:dana",
+            json!({"question_id": "question:ask-late", "text": "Which arrow runs which way for an ask?"}),
+        ),
         // NOTIFICATION_FOR_BLOCKER: a notification names a blocker that is reported later.
         event(
             EventType::NotificationSent,
@@ -4200,6 +4212,12 @@ fn late_attachment_scenario() -> Result<InMemoryEventLedger> {
             EventType::RelationAdded,
             "actor:alice",
             json!({"relation": "ANSWERS", "from_id": "decision:old", "to_id": "question:late"}),
+        ),
+        // Fills in the placeholder Question the early ASK_FOR above named.
+        event(
+            EventType::QuestionRecorded,
+            "actor:alice",
+            json!({"question_id": "question:ask-late", "text": "Which arrow runs which way for an ask?"}),
         ),
         event(
             EventType::ProjectLinked,

@@ -57,6 +57,10 @@ const NODE_DDL: &[(NodeKind, &str)] = &[
         NodeKind::Project,
         "CREATE NODE TABLE IF NOT EXISTS `Project` (id STRING, handle STRING, display_name STRING, purpose STRING, anchors STRING[], tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
+    (
+        NodeKind::Ask,
+        "CREATE NODE TABLE IF NOT EXISTS `Ask` (id STRING, question_id STRING, text STRING, asked_at STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+    ),
 ];
 
 const RELATION_DDL: &[(RelationKind, &str)] = &[
@@ -175,6 +179,14 @@ const RELATION_DDL: &[(RelationKind, &str)] = &[
     (
         RelationKind::Answers,
         "CREATE REL TABLE IF NOT EXISTS `ANSWERS` (FROM `Decision` TO `Question`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::AskFor,
+        "CREATE REL TABLE IF NOT EXISTS `ASK_FOR` (FROM `Ask` TO `Question`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
+    ),
+    (
+        RelationKind::AskedBy,
+        "CREATE REL TABLE IF NOT EXISTS `ASKED_BY` (FROM `Ask` TO `Actor`, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING);",
     ),
 ];
 

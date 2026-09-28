@@ -45,7 +45,8 @@ use core::{
     GetDecisionContextArgs, GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs,
     GetSituationalDecisionsArgs, GetSuggestionsArgs, GetSupersessionChainArgs, GroundDecisionArgs,
     LedgerHandle, LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs, RecentDecisionsArgs,
-    ScanDecisionQualityArgs, ScanMisfiledDecisionsArgs, ScoreDecisionArgs, SupersedeDecisionArgs,
+    RequestDecisionArgs, ScanDecisionQualityArgs, ScanMisfiledDecisionsArgs, ScoreDecisionArgs,
+    SupersedeDecisionArgs,
 };
 
 /// MCP protocol revision this server speaks. Aligns with the modelcontextprotocol.io
@@ -343,6 +344,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "supersede_decision" => tool_supersede_decision(arguments, config),
         "move_decision" => tool_move_decision(arguments, config),
         "ground_decision" => tool_ground_decision(arguments, config),
+        "request_decision" => tool_request_decision(arguments, config),
         "get_decision" => tool_get_decision(arguments, config),
         "get_decision_outcome" => tool_get_decision_outcome(arguments, config),
         "decision_quality_candidates" => tool_decision_quality_candidates(arguments, config),
@@ -484,6 +486,7 @@ pub fn tool_definitions() -> Vec<Value> {
                     "evidence_ids": { "type": "array", "items": { "type": "string" }, "description": "Deprecated alias: ids listed here count as `{kind:\"evidence\", evidence_id}` grounding items." },
                     "quote": { "type": "string", "description": "Verbatim words of the decider, self-contained — not a bare reference like \"1a\" into an external numbered list. Requires `question`. A quote with no stated question is unreadable once the source conversation is gone." },
                     "question": { "type": "string", "description": "The question this decision answers, in the capturer's own words: one line. Required when `quote` is given; otherwise optional. Two captures whose question is the same after lowercasing, collapsing spaces and dropping trailing punctuation share one question node, so a decision that answers the same question again, or one that answers it differently, is findable. The reply's `question_id` names the node." },
+                    "answers": { "type": "string", "description": "The id of an existing `request_decision` request this decision answers (its `request_id`): resolves to that request's question and links this decision to it, exactly as `question` would, without repeating the words. Refused when the request does not exist, or together with `question`. Distinct from `ground_decision`'s `answers`, which takes the question's own text, not a request id." },
                     "project": { "type": "string", "description": "Registered project handle to file the decision under. An unknown handle is refused with the register command. Omit it and the decision is saved to the actor's personal project — the reply says so (`project_notice`). HiveMind checks the handle and never works out the project itself, so pass it whenever you know it; an HTTP-served MCP cannot see the caller's working directory. A stdio server started with `--project-from-context` works it out from its own working directory when you omit it (the `.hivemind-project` files of the folders the uncommitted change touches, else the nearest one above the working directory, then the rig, then the actor's current project; `project_source` says which), and adds `project_reminder` when the folder is not attached to any project or the change spans several: several projects are recorded for the nearest project they are all part of, or saved to the personal project when they share none." },
                     "project_source": { "type": "string", "enum": ["stated", "folder_marker", "rig", "current_project", "job"], "description": "How `project` was determined. Defaults to `stated`. Requires `project`." }
                 }
@@ -596,6 +599,18 @@ pub fn tool_definitions() -> Vec<Value> {
                     "topic": { "type": "string", "description": "Optional topic_key filter narrowing the `description` match." },
                     "answers": { "type": "string", "description": "The question this decision answers, for a decision captured without saying: links it to the question node whose text matches (lowercase, spaces collapsed, trailing punctuation dropped), creating the node if none does. Attributed to `actor_id`, so a reader sees it was added later. A decision answers one question: naming a different one than it already answers is refused. May stand alone; then `grounding` is optional." },
                     "grounding": ground_grounding_property()
+                }
+            }
+        }),
+        json!({
+            "name": "request_decision",
+            "description": "Record that you are explicitly asking a question, before any decision answers it: writes a request an unanswered call is 'waiting' on. Defaults actor_id to agent:<tool>:<name> and writes source=agent. Resolved to a `Question` node by the same exact-match rule `capture_decision`'s `question` uses: a match on the normalized text is reused, otherwise the node is created. Unlike answering, asking is never suppressed as a duplicate — the same question can be asked more than once, each its own request. The reply's `request_id` is what `capture_decision`'s `answers` (or `hivemind capture --answers`) takes to link a later decision to this request without repeating the words.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["text"],
+                "properties": {
+                    "actor_id": { "type": "string", "description": "Asking actor. Defaults to `agent:<tool>:<name>` when omitted." },
+                    "text": { "type": "string", "description": "The question, in the asker's own words: one line. Two asks whose text is the same after lowercasing, collapsing spaces and dropping trailing punctuation share one question node." }
                 }
             }
         }),
@@ -1031,6 +1046,15 @@ fn tool_capture_decision(args: Value, config: &McpConfig) -> std::result::Result
     let provider = StdioLedgerProvider { config };
     let mut reply = core::capture_decision(&provider, core_args)?.into_value();
     insert_project_reminder(&mut reply, resolved.as_ref());
+    Ok(reply)
+}
+
+fn tool_request_decision(args: Value, config: &McpConfig) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let actor_id = actor_id_or_default(&args, config)?;
+    let core_args = RequestDecisionArgs::from_json(&args, actor_id)?;
+    let provider = StdioLedgerProvider { config };
+    let reply = core::request_decision(&provider, core_args)?.into_value();
     Ok(reply)
 }
 

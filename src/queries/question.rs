@@ -7,6 +7,7 @@
 //! instead of invisible. Pure graph reads: exact match only, no ranking, no model, and nothing
 //! is ever resolved for the reader (AGENTS.md §6: disagreement is preserved, never collapsed).
 
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::events::normalize_question_text;
@@ -15,8 +16,8 @@ use crate::Result;
 
 use super::brief::resolve_option_label;
 use super::shared::{
-    neighbor_ids, neighbor_pairs, node_row, node_rows, optional_int, optional_string,
-    query_timer_start, Direction,
+    neighbor_ids, neighbor_pairs, node_row, node_rows, optional_datetime, optional_int,
+    optional_string, query_timer_start, Direction,
 };
 use super::status::{derive_decision_status, DecisionStatus};
 use super::QueryResponse;
@@ -135,6 +136,29 @@ pub(super) fn question_text(
             .and_then(|row| optional_string(&row, "text"))),
         (own_text, _) => Ok(own_text),
     }
+}
+
+/// The earliest explicit ask for the question `question_id`, if any — the `asked_at` a reader of
+/// an answered decision is shown alongside its own `occurred_at` (hivemind-bbnw.4). A question
+/// with no `Ask` node (every decision that has ever named it did so via `--question`, never
+/// `hivemind ask`) has no ask time; `None` says so rather than guessing.
+pub(super) fn earliest_ask(
+    graph: &impl GraphView,
+    question_id: &str,
+) -> Result<Option<DateTime<Utc>>> {
+    let mut earliest: Option<DateTime<Utc>> = None;
+    for (_, row) in node_rows(graph, NodeKind::Ask)? {
+        if optional_string(&row, "question_id").as_deref() != Some(question_id) {
+            continue;
+        }
+        if let Some(asked_at) = optional_datetime(&row, "asked_at")? {
+            earliest = Some(match earliest {
+                Some(current) if current <= asked_at => current,
+                _ => asked_at,
+            });
+        }
+    }
+    Ok(earliest)
 }
 
 /// The other decisions that answer the question `decision_id` answers, in event order. Empty

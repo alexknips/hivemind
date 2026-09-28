@@ -28,6 +28,7 @@ mod situational;
 mod status;
 mod supersession;
 mod terms;
+mod waiting;
 
 use serde::Serialize;
 
@@ -118,6 +119,9 @@ pub use status::{
 pub use supersession::{get_supersession_chain, SupersessionChain};
 pub use terms::{
     content_query, overlap_score, overlapping_terms, path_terms, text_terms, ContentQuery,
+};
+pub use waiting::{
+    get_waiting_requests, WaitingRequestView, WaitingRequestsRequest, WaitingRequestsResults,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

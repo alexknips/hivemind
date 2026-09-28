@@ -63,6 +63,35 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`hivemind ask` records that you are explicitly asking a question, before any decision
+  answers it.** `hivemind ask "<question text>"` and MCP `request_decision` write a new
+  `question.asked` event (envelope `ts`/`actor_id`/`source_ref` are the ask's time, asker and
+  where — never back-dated), resolving the question exactly like a capture's `--question`: a
+  match on the normalized text (lowercase, spaces collapsed, trailing punctuation dropped) is
+  reused, otherwise `question.recorded` creates the node. Unlike answering, asking is never
+  suppressed as a duplicate: the same question can be asked more than once, each its own
+  outstanding request (new `Ask` node, `ASK_FOR`/`ASKED_BY` relations — see
+  `docs/GRAPH_CONTRACT.md`). `emit decision.capture --answers <request id>` (MCP
+  `capture_decision` with `answers`) resolves an existing request to its question and links the
+  decision to it exactly as `--question <text>` would, without repeating the words; refused
+  when the request does not exist, or together with `--question`. Distinct from `ground
+  --answers`, which takes the question's own text, not a request id. `hivemind query
+  get_waiting_requests` lists open requests (no answering decision yet) oldest first: request
+  id, question, asked_at, who asked. `hivemind why` (`DecisionBrief`, the graph query layer,
+  and the MCP/HTTP `get_decision_neighborhood` it feeds) on an answered decision now also
+  carries `asked_at` (the earliest explicit ask for its question, when there was one) beside the
+  existing `occurred_at` (the decision's own timestamp — unchanged, still the JSON field name);
+  the CLI text summary labels the two lines `asked_at:` and `answered_at:` (was `when:`).
+  `verify` is unaffected — asked/answered times are a `why` feature.
+  Deliberately out of scope for this pass, left for a follow-up: `--project` on `ask` (the
+  underlying `Question` node has never been project-scoped, matching hivemind-zdsh.16), an MCP
+  tool for the waiting list (the CLI query is the only required surface), and the full
+  waiting/contested/changed attention lists with per-decision timelines (hivemind-bbnw.7). This
+  reuses none of `decision.requested`/`DecisionRequest`/`NodeKind::DecisionRequest`: that
+  existing, unused scaffolding belongs to a different, still-undecided design
+  (`docs/HUMAN_DECISION_BLOCKER_NOTIFICATIONS.md`) with its own required fields (`priority`,
+  `authority_class`, `client_request_id`) that do not fit an explicit ask; overloading it would
+  have conflated two concepts under one event type. (hivemind-bbnw.4)
 - **`GET /v1/graph` says when each decision was made.** Every `decisions[]` entry and every
   `nodes[]` entry of `kind: "Decision"` now carries `decided_at`, the `decision.proposed`
   capture event's timestamp in ISO-8601 UTC (`null` only for an event predating the ledger's

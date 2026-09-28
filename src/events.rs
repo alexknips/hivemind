@@ -69,6 +69,13 @@ pub enum EventType {
     /// the same question are findable deterministically (hivemind-zdsh.16).
     #[serde(rename = "question.recorded")]
     QuestionRecorded,
+    /// An explicit ask: someone named a question before any decision answered it. Distinct from
+    /// `question.recorded`, which a capture or `ground --answers` also writes implicitly whenever
+    /// it names a question nobody has recorded yet — `question.asked` only ever comes from
+    /// `hivemind ask` / MCP `request_decision`, so a `Question` node can exist with no explicit
+    /// ask, and a question can be asked more than once (hivemind-bbnw.4).
+    #[serde(rename = "question.asked")]
+    QuestionAsked,
     #[serde(rename = "relation.added")]
     RelationAdded,
     #[serde(rename = "relation.removed")]
@@ -407,6 +414,18 @@ pub struct HypothesisRecordedPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuestionRecordedPayload {
+    pub question_id: String,
+    pub text: String,
+}
+
+/// An explicit ask, naming the question it targets (hivemind-bbnw.4). `text` is carried
+/// alongside `question_id` (rather than requiring a join) for the same reason
+/// `QuestionRecordedPayload` carries it: every event is self-sufficient for its own concern.
+/// `asked_at` is the event's own `ts`, never a caller-supplied field — an ask is never
+/// back-dated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionAskedPayload {
     pub question_id: String,
     pub text: String,
 }
@@ -1155,6 +1174,7 @@ pub enum EventPayload {
     EvidenceRecorded(EvidenceRecordedPayload),
     HypothesisRecorded(HypothesisRecordedPayload),
     QuestionRecorded(QuestionRecordedPayload),
+    QuestionAsked(QuestionAskedPayload),
     RelationAdded(RelationAddedPayload),
     RelationRemoved(RelationRemovedPayload),
     BlockerReported(BlockerReportedPayload),
@@ -1186,6 +1206,7 @@ impl EventPayload {
             Self::EvidenceRecorded(_) => EventType::EvidenceRecorded,
             Self::HypothesisRecorded(_) => EventType::HypothesisRecorded,
             Self::QuestionRecorded(_) => EventType::QuestionRecorded,
+            Self::QuestionAsked(_) => EventType::QuestionAsked,
             Self::RelationAdded(_) => EventType::RelationAdded,
             Self::RelationRemoved(_) => EventType::RelationRemoved,
             Self::BlockerReported(_) => EventType::BlockerReported,
@@ -1215,6 +1236,7 @@ impl EventPayload {
             Self::EvidenceRecorded(payload) => serde_json::to_value(payload),
             Self::HypothesisRecorded(payload) => serde_json::to_value(payload),
             Self::QuestionRecorded(payload) => serde_json::to_value(payload),
+            Self::QuestionAsked(payload) => serde_json::to_value(payload),
             Self::RelationAdded(payload) => serde_json::to_value(payload),
             Self::RelationRemoved(payload) => serde_json::to_value(payload),
             Self::BlockerReported(payload) => serde_json::to_value(payload),
@@ -1518,6 +1540,15 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
                 return Err(EventValidationError::EmptyField("payload.text"));
             }
             Ok(EventPayload::QuestionRecorded(payload))
+        }
+        EventType::QuestionAsked => {
+            let payload: QuestionAskedPayload = parse_payload(event)?;
+            require_non_empty("payload.question_id", &payload.question_id)?;
+            require_non_empty("payload.text", &payload.text)?;
+            if normalize_question_text(&payload.text).is_empty() {
+                return Err(EventValidationError::EmptyField("payload.text"));
+            }
+            Ok(EventPayload::QuestionAsked(payload))
         }
         EventType::RelationAdded => {
             let payload: RelationAddedPayload = parse_payload(event)?;

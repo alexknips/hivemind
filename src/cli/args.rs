@@ -123,6 +123,13 @@ pub enum Command {
     /// the same ambiguity gate as `supersede`; nothing is written when the description is
     /// ambiguous, a premise cannot be pinned to one decision, or a premise would close a loop.
     Ground(GroundArgs),
+    /// Record that you are explicitly asking a question, before any decision answers it: writes
+    /// a request that is "waiting" until a decision (`emit decision.capture --answers`) links to
+    /// it. Resolved and created exactly like a capture's `--question`: a match on the normalized
+    /// text is reused, otherwise `question.recorded` creates it. Unlike answering, asking is
+    /// never suppressed as a duplicate — the same question can be asked more than once, each its
+    /// own outstanding request.
+    Ask(AskArgs),
     /// Go through recent decisions one at a time in the terminal and accept, disagree with or
     /// supersede each: a guided review of what agents (or anyone) decided lately.
     ///
@@ -825,6 +832,13 @@ pub struct GroundArgs {
     pub grounding: GroundingArgs,
 }
 
+/// `hivemind ask <question text>` (hivemind-bbnw.4).
+#[derive(Debug, Clone, Args)]
+pub struct AskArgs {
+    /// The question, in your own words: one line.
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct ReviewArgs {
     /// Glob pattern for decision actor ids to review, for example agent:*.
@@ -1115,6 +1129,14 @@ pub struct EmitDecisionCaptureArgs {
 
     #[command(flatten)]
     pub grounding: GroundingArgs,
+
+    /// The id of an existing `hivemind ask` request this decision answers: resolves to that
+    /// request's question and links this decision to it, exactly as `--question <text>` would,
+    /// without repeating the words. Refused when the request does not exist, or together with
+    /// `--question`. Distinct from `ground --answers`, which takes the question's own text, not
+    /// a request id.
+    #[arg(long = "answers", conflicts_with = "question")]
+    pub answers_request_id: Option<String>,
 }
 
 // "What does this decision rest on?" — asked at every capture. Name at least one of:
@@ -1722,6 +1744,11 @@ pub enum QueryCommand {
     /// straight from reported blocker events, nothing ranked or inferred.
     #[command(name = "get_active_decision_blockers")]
     GetActiveDecisionBlockers(QueryActiveDecisionBlockersArgs),
+    /// Open requests with no answering decision yet, oldest first: what was asked, when, by
+    /// whom, and the request id `capture --answers` takes. Read straight from `question.asked`
+    /// events and `ANSWERS` edges, nothing ranked or inferred (hivemind-bbnw.4).
+    #[command(name = "get_waiting_requests")]
+    GetWaitingRequests(QueryWaitingRequestsArgs),
     /// Which open blockers now warrant telling a human, under a notification policy
     /// (`--policy-version`) evaluated at `--now`: recipient, channel, the threshold rule that
     /// fired and a dedupe key. An internal scheduler surface.
@@ -1903,6 +1930,16 @@ pub struct QueryRecallArgs {
     /// handle is refused. Without it the whole tenant is searched.
     #[arg(long = "project")]
     pub project: Option<String>,
+}
+
+/// `hivemind query get_waiting_requests` (hivemind-bbnw.4).
+#[derive(Debug, Clone, Args)]
+pub struct QueryWaitingRequestsArgs {
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]
