@@ -39,6 +39,11 @@ struct GraphNode {
     /// decision from an event predating the ledger's `ts` backfill.
     #[serde(skip_serializing_if = "Option::is_none")]
     decided_at: Option<String>,
+    /// On a Decision: its stable link segment (`/decisions/<slug>`), assigned once at
+    /// proposal and unchanged by anything projected afterwards (docs/GRAPH_CONTRACT.md).
+    /// `None` only for a decision from an event predating this field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slug: Option<String>,
 }
 
 /// A directed edge in the decision graph: an arrow from the newer node to the older node.
@@ -124,6 +129,9 @@ fn graph_blocking(
             let decided_at = matches!(kind, NodeKind::Decision)
                 .then(|| string_field("occurred_at"))
                 .flatten();
+            let slug = matches!(kind, NodeKind::Decision)
+                .then(|| string_field("slug"))
+                .flatten();
             if matches!(kind, NodeKind::Decision) {
                 let mut obj: serde_json::Map<String, serde_json::Value> = row
                     .iter()
@@ -162,6 +170,7 @@ fn graph_blocking(
                 title,
                 recorded_as,
                 decided_at,
+                slug,
             });
         }
     }
@@ -198,7 +207,7 @@ fn row_string(row: &GraphRow, key: &str) -> Option<String> {
 fn graph_node_query(kind: NodeKind) -> String {
     let projection = match kind {
         NodeKind::Decision => {
-            "node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys, node.occurred_at AS occurred_at"
+            "node.id AS id, node.title AS title, node.rationale AS rationale, node.topic_keys AS topic_keys, node.occurred_at AS occurred_at, node.slug AS slug"
         }
         NodeKind::DecisionRequest => {
             "node.id AS id, node.topic_keys AS topic_keys, node.reason AS reason"

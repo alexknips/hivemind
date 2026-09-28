@@ -1,11 +1,11 @@
 //! Projector trait and graph types: replays ledger events into a live in-memory graph view.
 
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::Serialize;
 
-use crate::commands::personal_project_handle;
+use crate::commands::{normalize_topic_key, personal_project_handle};
 use crate::error::ProjectorError;
 use crate::events::{
     self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionMovedPayload,
@@ -871,6 +871,106 @@ fn grounding_edge_properties(
     properties
 }
 
+/// A decision's link segment is capped shorter than `normalize_topic_key`'s own 64-character
+/// budget (`commands::MAX_TOPIC_KEY_LEN`) — a URL slug and a topic key aren't the same length
+/// budget to keep coupled, and 60 matches the id-tail suffix room `assign_decision_slug` needs.
+const MAX_DECISION_SLUG_LEN: usize = 60;
+
+/// Below this many characters of a colliding decision's id, a suffix is still too likely to
+/// collide with another short suffix to be worth trying (`assign_decision_slug` grows from here).
+const MIN_DECISION_SLUG_SUFFIX_LEN: usize = 4;
+
+/// A decision's link segment, kebab-cased from its title and capped at
+/// [`MAX_DECISION_SLUG_LEN`] characters — `queries::decision_log::capped_slug` does the same
+/// for export filenames, independently, since a URL slug and a filename don't share a length
+/// budget. Never empty: a title with no alphanumeric character (all punctuation, all emoji)
+/// falls back to the literal `"decision"`, matching the id-tail suffix's job of telling
+/// same-titled decisions apart when this happens for more than one of them.
+fn capped_decision_slug(title: &str) -> String {
+    let mut slug = normalize_topic_key(title);
+    if slug.len() > MAX_DECISION_SLUG_LEN {
+        slug.truncate(MAX_DECISION_SLUG_LEN);
+        while slug.ends_with('-') {
+            slug.pop();
+        }
+    }
+    if slug.is_empty() {
+        slug.push_str("decision");
+    }
+    slug
+}
+
+/// The part of a decision id usable as a slug collision-breaker: lowercase alphanumeric
+/// characters only, the `decision-` prefix dropped when present. Mirrors
+/// `queries::decision_log::short_id`, but keeps the whole tail instead of capping it at 8 —
+/// `assign_decision_slug` grows into only as much of it as a collision actually needs.
+fn decision_id_tail(decision_id: &str) -> String {
+    decision_id
+        .strip_prefix("decision-")
+        .unwrap_or(decision_id)
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// Every slug already claimed by a currently-projected Decision node. Reuses the existing "all
+/// nodes of a kind" query shape (see `current_project_anchors`) rather than adding a new query
+/// pattern to every `GraphView` backend: memory/Postgres already return every stored property
+/// for that shape regardless of the requested columns, and Kuzu (real Cypher) returns exactly
+/// the two columns named here.
+fn existing_decision_slugs(graph: &impl GraphView) -> Result<BTreeSet<String>> {
+    let rows = graph.query(
+        "MATCH (node:`Decision`) RETURN node.id AS id, node.slug AS slug ORDER BY node.id;",
+        &GraphParams::new(),
+    )?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| match row.get("slug") {
+            Some(GraphValue::String(slug)) => Some(slug.clone()),
+            _ => None,
+        })
+        .collect())
+}
+
+/// Assigns this decision's stable link segment: the bare title-slug for whichever decision
+/// claims it first, a growing id-tail suffix for every later collision on the same base. Called
+/// only from `project_decision_proposed`, so it runs exactly once per decision, in ledger order
+/// (ledger offset is this system's notion of time — docs/GRAPH_CONTRACT.md), which makes "first"
+/// deterministic on replay too: the same ledger always assigns the same slugs in the same order.
+/// No other projector function writes this property, so a later retitle or annotation — whatever
+/// event does that next — leaves a decision's slug, and therefore its link, unchanged
+/// (hivemind-nidp).
+fn assign_decision_slug(
+    graph: &impl GraphView,
+    decision_id: &str,
+    title: &str,
+) -> Result<GraphValue> {
+    let base = capped_decision_slug(title);
+    let taken = existing_decision_slugs(graph)?;
+    if !taken.contains(&base) {
+        return Ok(GraphValue::String(base));
+    }
+    let tail = decision_id_tail(decision_id);
+    for len in MIN_DECISION_SLUG_SUFFIX_LEN..=tail.len() {
+        let candidate = format!("{base}-{}", &tail[..len]);
+        if !taken.contains(&candidate) {
+            return Ok(GraphValue::String(candidate));
+        }
+    }
+    // Even the full id tail collides (a pathological, practically-impossible case since ids are
+    // globally unique): fall back to a counter, same last resort the UI's own slug algorithm
+    // used before this became the server's job.
+    let mut suffix = 2u32;
+    loop {
+        let candidate = format!("{base}-{tail}-{suffix}");
+        if !taken.contains(&candidate) {
+            return Ok(GraphValue::String(candidate));
+        }
+        suffix += 1;
+    }
+}
+
 fn project_decision_proposed(
     graph: &impl GraphView,
     actor_id: &str,
@@ -905,11 +1005,14 @@ fn project_decision_proposed(
         occurred_at.clone(), // ubs:ignore: the timestamp is also stored on the decision node below
         proposal_event_origin,
     );
+    // Assigned once, here, at first projection — see `assign_decision_slug`.
+    let slug = assign_decision_slug(graph, &payload.decision_id, &payload.title)?;
     let decision_properties = props_extend(
         origin_properties,
         [
             ("title", GraphValue::String(payload.title.clone())),
             ("rationale", GraphValue::String(payload.rationale.clone())),
+            ("slug", slug),
             (
                 "topic_keys",
                 GraphValue::StringList(payload.topic_keys.clone()),

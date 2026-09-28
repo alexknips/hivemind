@@ -98,6 +98,13 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   timestamp backfill), so a whole-graph view can show a decision's date without a second
   lookup. Additive: no existing key changes. Documented in `docs/GRAPH_CONTRACT.md`.
   (hivemind-zbd0)
+- **A decision's link no longer moves.** Every `decisions[]` entry, every `nodes[]` entry of
+  `kind: "Decision"`, and the decision brief (`GET /v1/decisions/verify`) now carry `slug`: the
+  decision's title, kebab-cased, with a growing id-tail suffix for a later decision whose title
+  slugs to the same thing. The server assigns it once, when `decision.proposed` is first
+  projected (ledger order, so replay is deterministic); nothing projected afterwards touches
+  it, so a retitle or any other annotation leaves a decision's link unchanged. Additive: no
+  existing key changes, no new event. Documented in `docs/GRAPH_CONTRACT.md`. (hivemind-nidp)
 - **A model's assessment of a decision can be recorded and is shown beside the quality
   floors.** `decision.scored` gains a second payload version (`schema_version: 2`), keyed by
   the decision's id (a proposed decision or a classified capture): all seven dimensions, each

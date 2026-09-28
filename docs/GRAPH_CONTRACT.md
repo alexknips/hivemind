@@ -76,8 +76,15 @@ a reader needs without reconstructing them from edges:
   - `decided_at`: the `decision.proposed` capture event's timestamp, ISO-8601 UTC (the same
     value the query layer calls `occurred_at`, e.g. `DecisionBrief`). `null` only for a
     decision from an event predating the ledger's timestamp backfill.
-- **`nodes[]` with `kind: "Decision"`** carry `decided_at` the same way, so a whole-graph view
-  can show when each decision was made without a second lookup into `decisions[]`.
+  - `slug`: the decision's stable link segment (`/decisions/<slug>`) — its title, kebab-cased,
+    with a growing id-tail suffix (`-a1b2`, then longer) for a later decision whose title
+    slugs to the same thing. Assigned once, when `decision.proposed` is first projected
+    (ledger order, so replay always assigns the same slugs); nothing projected after that
+    touches it, so a retitle (or any other annotation) does not move a decision's link. `null`
+    only for a decision from an event predating this field.
+- **`nodes[]` with `kind: "Decision"`** carry `decided_at` and `slug` the same way, so a
+  whole-graph view can show when each decision was made, and link to it, without a second
+  lookup into `decisions[]`.
 - **`nodes[]` with `kind: "Option"`** carry `title`: the option's own label, else its id, so an
   option always has something to show. `label` stays as it was (absent when no label was ever
   recorded). A label recorded as a slug or a lettered code (`name-a-upheld`) is read as words

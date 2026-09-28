@@ -902,6 +902,26 @@ fn get_decision_brief_matches_memory() -> Result<()> {
                 )));
             }
         }
+
+        // Not vacuous (hivemind-nidp): the struct-equality checks above pass trivially if
+        // `slug` were `None` on both sides, so assert the actual, non-null values on Postgres.
+        let slug_of = |decision_id: &str| -> Result<Option<String>> {
+            Ok(get_decision_brief(pg, decision_id)?
+                .data
+                .and_then(|b| b.slug))
+        };
+        if slug_of("decision:1")?.as_deref() != Some("use-kuzu-for-slice-1") {
+            return Err(test_error(format!(
+                "decision:1 slug on Postgres: {:?}",
+                slug_of("decision:1")?
+            )));
+        }
+        if slug_of("decision:2")?.as_deref() != Some("use-kuzu-with-conservative-cypher") {
+            return Err(test_error(format!(
+                "decision:2 slug on Postgres: {:?}",
+                slug_of("decision:2")?
+            )));
+        }
         Ok(())
     })
 }

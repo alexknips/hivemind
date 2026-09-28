@@ -77,6 +77,11 @@ pub struct StillHolds {
 pub struct DecisionBrief {
     pub decision_id: String,
     pub title: String,
+    /// Stable link segment (`/decisions/<slug>`), assigned once at proposal and unchanged by
+    /// a later retitle (`GET /v1/graph`, hivemind-nidp). `None` only for a decision from an
+    /// event predating this field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
     /// Address of the project the decision is filed under (see `DecisionView::project`).
     pub project: Option<String>,
     /// What a person calls that project (see `DecisionView::project_label`).
@@ -171,7 +176,7 @@ pub(crate) fn get_decision_brief_with_labels(
     let outcome = get_decision_outcome_with_labels(graph, decision_id, now, labels)?
         .data
         .ok_or_else(|| query_error("decision exists but has no outcome"))?;
-    let (occurred_at, expressed_confidence) = decision_capture_facts(graph, decision_id)?;
+    let (occurred_at, expressed_confidence, slug) = decision_capture_facts(graph, decision_id)?;
     let grounding = grounding_of_at(graph, decision_id, now)?;
     let (other_answers, asked_at) = match &decision.question_id {
         Some(question_id) => (
@@ -196,6 +201,7 @@ pub(crate) fn get_decision_brief_with_labels(
     let brief = DecisionBrief {
         decision_id: decision.id,
         title: decision.title,
+        slug,
         project: decision.project,
         project_label: decision.project_label,
         rationale: decision.rationale,
@@ -253,17 +259,19 @@ pub(super) fn resolve_option_label(graph: &impl GraphView, option_id: &str) -> R
     })
 }
 
-/// When the decision was captured (display-only) and the confidence its decider expressed then.
-fn decision_capture_facts(
-    graph: &impl GraphView,
-    decision_id: &str,
-) -> Result<(Option<DateTime<Utc>>, Option<String>)> {
+/// `occurred_at`, `expressed_confidence`, `slug` -- see `decision_capture_facts`.
+type CaptureFacts = (Option<DateTime<Utc>>, Option<String>, Option<String>);
+
+/// When the decision was captured (display-only), the confidence its decider expressed then,
+/// and its stable link segment (`slug`, hivemind-nidp).
+fn decision_capture_facts(graph: &impl GraphView, decision_id: &str) -> Result<CaptureFacts> {
     match node_row(graph, NodeKind::Decision, decision_id)? {
         Some(row) => Ok((
             optional_datetime(&row, "occurred_at")?,
             optional_string(&row, "expressed_confidence"),
+            optional_string(&row, "slug"),
         )),
-        None => Ok((None, None)),
+        None => Ok((None, None, None)),
     }
 }
 

@@ -1061,6 +1061,10 @@ async fn verify_resolves_by_id_and_by_description() {
     .await;
     assert_eq!(status, StatusCode::OK, "verify by id: {body}"); // ubs:ignore
     assert_eq!(body["data"]["decision_id"], decision_id); // ubs:ignore
+    assert_eq!(
+        body["data"]["slug"], "verify-route-test-unique-brief-target",
+        "the decision brief carries the same stable slug GET /v1/graph does: {body}"
+    ); // ubs:ignore
     assert!(
         body["data"]["still_holds"]["held_up"].as_bool().is_some(),
         "{body}"
@@ -1945,6 +1949,50 @@ async fn graph_decisions_carry_a_decided_at_timestamp() {
         .find(|n| n["id"] == "Decision:decision:dated")
         .expect("decision node");
     assert_eq!(node["decided_at"], expected, "{node}"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn graph_decisions_with_the_same_title_get_different_slugs() {
+    let dir = test_ledger_dir();
+
+    // Same title, twice: the second must not silently take over the first's link.
+    let first = capture_for_graph(&dir, "Graph slug collision test", None, None).await;
+    let second = capture_for_graph(&dir, "Graph slug collision test", None, None).await;
+
+    let (status, graph) = call(app(dir), get_req("/v1/graph")).await;
+    assert_eq!(status, StatusCode::OK, "GET /v1/graph: {graph}"); // ubs:ignore
+
+    let first_slug = graph_decision(&graph, &first)["slug"]
+        .as_str()
+        .expect("first decision has a slug")
+        .to_owned();
+    let second_slug = graph_decision(&graph, &second)["slug"]
+        .as_str()
+        .expect("second decision has a slug")
+        .to_owned();
+
+    assert_eq!(first_slug, "graph-slug-collision-test"); // ubs:ignore
+    assert_ne!(
+        first_slug, second_slug,
+        "two decisions with the same title must not share a link: {graph}"
+    ); // ubs:ignore
+    assert!(
+        second_slug.starts_with(&format!("{first_slug}-")),
+        "the later decision's slug is a suffixed variant of the first: {second_slug}"
+    ); // ubs:ignore
+
+    // `nodes[]` carries the same slugs as `decisions[]` (docs/GRAPH_CONTRACT.md).
+    let node_slug = |decision_id: &str| -> Option<String> {
+        graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == format!("Decision:{decision_id}"))
+            .and_then(|n| n["slug"].as_str())
+            .map(str::to_owned)
+    };
+    assert_eq!(node_slug(&first), Some(first_slug)); // ubs:ignore
+    assert_eq!(node_slug(&second), Some(second_slug)); // ubs:ignore
 }
 
 /// The `decisions` entry of a `GET /v1/graph` body for this decision id.

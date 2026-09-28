@@ -805,6 +805,124 @@ fn decision_proposed_with_inherited_source_stores_it_as_recorded() -> Result<()>
     Ok(())
 }
 
+/// A Decision node's `slug`, or `None` if it has none (not projected, or from an event
+/// predating this field).
+fn decision_slug(graph: &impl GraphView, decision_id: &str) -> Result<Option<GraphValue>> {
+    let rows = graph.query(
+        "MATCH (node:`Decision` {id: $id}) RETURN node.id AS id, node.slug AS slug ORDER BY node.id;",
+        &GraphParams::from([(
+            "id".to_owned(),
+            GraphValue::String(decision_id.to_owned()),
+        )]),
+    )?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .and_then(|row| row.get("slug").cloned()))
+}
+
+#[test]
+fn decision_proposed_stores_a_slug_kebab_cased_from_the_title() -> Result<()> {
+    use super::memory::MemoryGraph;
+
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:slug-solo",
+            "title": "Use per-seat pricing",
+            "rationale": "Simpler to reason about at our scale",
+            "topic_keys": ["pricing"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+
+    let graph = MemoryGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    assert_eq!(
+        decision_slug(&graph, "decision:slug-solo")?,
+        Some(GraphValue::String("use-per-seat-pricing".to_owned())),
+        "the only decision with this title claims the bare slug"
+    );
+    Ok(())
+}
+
+#[test]
+fn decision_proposed_with_a_colliding_title_gets_a_suffixed_slug() -> Result<()> {
+    use super::memory::MemoryGraph;
+
+    let ledger = InMemoryEventLedger::new();
+    let propose = |decision_id: &str| {
+        event(
+            EventType::DecisionProposed,
+            "actor:alice",
+            json!({
+                "decision_id": decision_id,
+                "title": "Duplicate Title",
+                "rationale": "Two decisions that happen to share a title",
+                "topic_keys": ["pricing"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        )
+    };
+    // Ledger order decides who claims the bare slug -- oldest wins.
+    ledger.append(propose("decision:collision-first"))?;
+    ledger.append(propose("decision:collision-second"))?;
+
+    let graph = MemoryGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    assert_eq!(
+        decision_slug(&graph, "decision:collision-first")?,
+        Some(GraphValue::String("duplicate-title".to_owned())),
+        "the first decision with this title claims the bare slug"
+    );
+    assert_eq!(
+        decision_slug(&graph, "decision:collision-second")?,
+        // decision_id_tail("decision:collision-second") = "decisioncollisionsecond"; the
+        // minimum 4-character suffix ("deci") is not itself taken, so it's used immediately.
+        Some(GraphValue::String("duplicate-title-deci".to_owned())),
+        "a later decision with the same title gets an id-tail suffix, not the same link"
+    );
+    Ok(())
+}
+
+/// A `decision.scored` assessment annotates the node (see
+/// `assert_assessment_annotates_without_rewriting_origin`) without naming `slug`; replaying
+/// through it must not change the slug `decision.proposed` already assigned -- the concrete case
+/// `assign_decision_slug`'s doc comment promises: nothing projected after the proposal touches
+/// this property, so neither would a future retitle (hivemind-nidp).
+#[test]
+fn a_model_assessment_does_not_change_the_decisions_slug() -> Result<()> {
+    use super::memory::MemoryGraph;
+
+    let slug_after = |len: usize| -> Result<Option<GraphValue>> {
+        let graph = MemoryGraph::default();
+        project_from_ledger(&decision_assessed_fixture_ledger(len)?, &graph, 0)?;
+        decision_slug(&graph, "decision:first")
+    };
+
+    let before = slug_after(1)?.expect("slug assigned at proposal");
+    assert_eq!(
+        before,
+        GraphValue::String("use-per-seat-pricing".to_owned())
+    );
+    assert_eq!(
+        slug_after(2)?,
+        Some(before),
+        "a decision.scored annotation must not change the slug decision.proposed assigned"
+    );
+    Ok(())
+}
+
 /// Two decisions proposed by an agent, then the first moved billing -> pricing by a *different*
 /// actor over a *different* source, then moved back. The mover's source/source_ref differ from
 /// the proposal's on purpose: a projector that spread the move event's origin properties onto
