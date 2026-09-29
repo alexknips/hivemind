@@ -101,9 +101,16 @@ any message) opens a modal for the message it was invoked on:
 | Chosen option | no | must match one of the options (case-insensitively); empty leaves the decision `proposed` |
 | Topics | no | comma- or `|`-separated; defaults to `slack` |
 
-Submitting queues a capture attributed to the Slack user who submitted (mapped
-through the install's `actor_mappings` when one exists). The selected
-message — its author, timestamp and text — becomes the decision's evidence.
+Submitting queues a capture with two roles, each mapped through the install's
+`actor_mappings` when one exists: the Slack user who submitted the modal is the
+**recorder** (every event the capture writes is theirs), and the **author of
+the message the shortcut was invoked on** is the **decider** — a chosen option
+is accepted as theirs, so the submitter is never recorded as having decided
+something someone else said. When Slack names no author (a message an app
+posted) there is no one else to name, so the submitter decides. With no chosen
+option nobody has decided yet, and the decision stays `proposed` under the
+submitter. The selected message — its author, timestamp and text — becomes the
+decision's evidence.
 Input the capture cannot accept (a missing rationale, a chosen option that is
 not among the options) keeps the modal open with a message next to the
 offending field; nothing is dropped silently. A message longer than a Slack
@@ -127,9 +134,14 @@ server fetches the message with `conversations.history` and the install's bot
 token, then queues it exactly like a marker-bearing mention. Two things to
 know:
 
-- **Attribution.** The capture is attributed to the user who *reacted* — the
-  actor who took the action. The message's own author and timestamp are kept
-  in the decision's evidence, so who wrote the words is not lost.
+- **Attribution.** The message's author is the **decider** and the user who
+  *reacted* is the **recorder**. The markers are the author's own words, so a
+  chosen option (`Chosen:`) is accepted as the author's; the reactor wrote the
+  capture into the ledger but is never recorded as having accepted words they
+  did not write. A message with no `Chosen:` marker stays `proposed` under the
+  reactor. The author and timestamp are also kept in the decision's evidence.
+  A `@hivemind` mention or a plain channel message with the markers has one
+  person acting as both.
 - **One decision per thread.** Every Slack surface (mention, reaction,
   shortcut) shares the idempotency key `slack://<team>/<channel>/<thread_ts>`.
   A thread that already has a captured decision is not captured a second time;

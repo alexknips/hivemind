@@ -8,8 +8,9 @@
 //!   capture modal with `views.open`, carrying the message's coordinates and
 //!   text in the view's `private_metadata`.
 //! - `view_submission` (the modal was submitted): turns the inputs into a
-//!   capture and enqueues it onto the same queue the events route feeds,
-//!   attributed to the Slack user who submitted. Input the capture cannot
+//!   capture and enqueues it onto the same queue the events route feeds. The
+//!   Slack user who submitted is the recorder; the author of the shortcut's
+//!   message is the decider. Input the capture cannot
 //!   accept is answered with `response_action: "errors"`, which keeps the
 //!   modal open with the message beside the offending field — nothing is
 //!   dropped silently.
@@ -172,6 +173,7 @@ async fn open_capture_modal(
     } = action;
     let author = message.user.as_deref().unwrap_or(UNKNOWN_AUTHOR);
     let context = SlackCaptureModalContext {
+        author_user_id: message.user.clone(),
         channel_id: channel.id,
         thread_ts: message
             .thread_ts

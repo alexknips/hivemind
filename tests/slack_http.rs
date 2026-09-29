@@ -342,6 +342,13 @@ async fn app_mention_marker_capture_enqueues_and_drains_into_the_ledger() {
         .find(|event| event.event_type == hivemind::events::EventType::DecisionProposed)
         .expect("decision proposed event exists");
     assert_eq!(proposal.actor_id, format!("slack:{team_id}:U1"));
+    // The mentioning user wrote the markers, so they are recorder and decider at once.
+    let acceptors: Vec<&str> = events
+        .iter()
+        .filter(|event| event.event_type == hivemind::events::EventType::DecisionAccepted)
+        .map(|event| event.actor_id.as_str())
+        .collect();
+    assert_eq!(acceptors, vec![proposal.actor_id.as_str()]);
 }
 
 #[tokio::test]
@@ -573,9 +580,18 @@ fn queued_captures(hivemind_dir: &Path) -> Vec<Value> {
         .collect()
 }
 
+/// What one drained capture wrote into the ledger.
+struct DrainedDecision {
+    /// Actor of the `decision.proposed` event: who recorded the capture.
+    recorder: String,
+    /// Actors of every `decision.accepted` event: who decided it.
+    accepted_by: Vec<String>,
+    source_ref: Option<String>,
+}
+
 /// Drains the workspace's queue through the CLI's tenant-scoped path and
-/// returns `(actor_id, source_ref)` of the one decision it wrote.
-fn drain_one_decision(hivemind_dir: &Path, team_id: &str) -> (String, Option<String>) {
+/// returns who recorded and who accepted the one decision it wrote.
+fn drain_one_decision(hivemind_dir: &Path, team_id: &str) -> DrainedDecision {
     let drain = run_cli_json(
         hivemind_dir,
         vec![
@@ -598,7 +614,15 @@ fn drain_one_decision(hivemind_dir: &Path, team_id: &str) -> (String, Option<Str
         .iter()
         .find(|event| event.event_type == hivemind::events::EventType::DecisionProposed)
         .expect("decision proposed event exists");
-    (proposal.actor_id.clone(), proposal.source_ref.clone())
+    DrainedDecision {
+        recorder: proposal.actor_id.clone(),
+        accepted_by: events
+            .iter()
+            .filter(|event| event.event_type == hivemind::events::EventType::DecisionAccepted)
+            .map(|event| event.actor_id.clone())
+            .collect(),
+        source_ref: proposal.source_ref.clone(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -669,10 +693,23 @@ async fn open_modal_and_take_private_metadata(
     team_id: &str,
     signing_secret: &str,
 ) -> String {
-    let req = signed_interactivity_request(
+    open_modal_for_payload(
+        router,
+        mock,
         signing_secret,
         &message_action_payload(team_id, "hivemind_capture_thread"),
-    );
+    )
+    .await
+}
+
+/// [`open_modal_and_take_private_metadata`] for a caller-shaped shortcut payload.
+async fn open_modal_for_payload(
+    router: &axum::Router,
+    mock: &MockSlack,
+    signing_secret: &str,
+    payload: &Value,
+) -> String {
+    let req = signed_interactivity_request(signing_secret, payload);
     let (status, bytes) = call(router.clone(), req).await;
     assert_eq!(status, StatusCode::OK);
     assert!(bytes.is_empty(), "an empty 200 acknowledges the shortcut");
@@ -715,13 +752,17 @@ async fn message_shortcut_opens_the_capture_modal_with_the_messages_context() {
         context["thread_ts"], "1715970800.000100",
         "a message in a thread captures the thread"
     );
+    assert_eq!(
+        context["author_user_id"], "U-AUTHOR",
+        "the message's author rides along, to be recorded as the decider"
+    );
     let evidence = context["evidence"].as_str().expect("evidence");
     assert!(evidence.contains("U-AUTHOR"), "keeps who wrote it");
     assert!(evidence.contains("we should move to Postgres"));
 }
 
 #[tokio::test]
-async fn submitting_the_capture_modal_queues_a_capture_that_drains_into_the_ledger() {
+async fn submitting_the_capture_modal_records_under_the_submitter_and_decides_as_the_author() {
     let dir = test_ledger_dir();
     let (team_id, signing_secret) = ("T-SUBMIT", "submit-secret");
     install_workspace(&dir, team_id, signing_secret);
@@ -754,7 +795,11 @@ async fn submitting_the_capture_modal_queues_a_capture_that_drains_into_the_ledg
     assert_eq!(queued.len(), 1);
     let capture = &queued[0]["capture"];
     assert_eq!(capture["surface"], "message_action");
-    assert_eq!(capture["user_id"], "U-SUBMITTER");
+    assert_eq!(capture["user_id"], "U-SUBMITTER", "the submitter records");
+    assert_eq!(
+        capture["decided_by_user_id"], "U-AUTHOR",
+        "the shortcut message's author decided"
+    );
     assert_eq!(capture["title"], "Move to Postgres");
     assert_eq!(capture["chosen_option_label"], "postgres");
     assert_eq!(
@@ -762,12 +807,62 @@ async fn submitting_the_capture_modal_queues_a_capture_that_drains_into_the_ledg
         "slack://T-SUBMIT/C1/1715970800.000100"
     );
 
-    let (actor_id, source_ref) = drain_one_decision(&dir, team_id);
-    assert_eq!(actor_id, "slack:T-SUBMIT:U-SUBMITTER");
+    let drained = drain_one_decision(&dir, team_id);
+    assert_eq!(drained.recorder, "slack:T-SUBMIT:U-SUBMITTER");
     assert_eq!(
-        source_ref.as_deref(),
+        drained.accepted_by,
+        vec!["slack:T-SUBMIT:U-AUTHOR"],
+        "the submitter recorded the decision but did not accept it"
+    );
+    assert_eq!(
+        drained.source_ref.as_deref(),
         Some("slack://T-SUBMIT/C1/1715970800.000100")
     );
+}
+
+#[tokio::test]
+async fn a_shortcut_on_an_app_message_names_no_other_decider_so_the_submitter_decides() {
+    let dir = test_ledger_dir();
+    let (team_id, signing_secret) = ("T-APPMSG", "appmsg-secret");
+    install_workspace(&dir, team_id, signing_secret);
+    let mock = mock_slack(vec![("/views.open", StatusCode::OK, ok_reply())]).await;
+    let router = app_with_slack_api(dir.clone(), &mock);
+    // Slack omits `user` on a message an app posted.
+    let mut shortcut = message_action_payload(team_id, "hivemind_capture_thread");
+    shortcut["message"]
+        .as_object_mut()
+        .expect("message is an object")
+        .remove("user");
+    let private_metadata = open_modal_for_payload(&router, &mock, signing_secret, &shortcut).await;
+
+    let submission = view_submission_payload(
+        team_id,
+        "U-SUBMITTER",
+        &private_metadata,
+        &[
+            ("title", "Move to Postgres"),
+            ("rationale", "Concurrent writers need it"),
+            ("options", "sqlite, postgres"),
+            ("chosen", "postgres"),
+        ],
+    );
+    let (status, _) = call(
+        router,
+        signed_interactivity_request(signing_secret, &submission),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let queued = queued_captures(&dir);
+    assert_eq!(queued.len(), 1);
+    assert!(
+        queued[0]["capture"]["decided_by_user_id"].is_null(),
+        "an app is nobody who decided: {}",
+        queued[0]["capture"]
+    );
+    let drained = drain_one_decision(&dir, team_id);
+    assert_eq!(drained.recorder, "slack:T-APPMSG:U-SUBMITTER");
+    assert_eq!(drained.accepted_by, vec!["slack:T-APPMSG:U-SUBMITTER"]);
 }
 
 #[tokio::test]
@@ -975,7 +1070,8 @@ fn history_reply(messages: &Value) -> Value {
 const DECISION_TEXT: &str = "Decision: Adopt Postgres\nRationale: Concurrent writers need it\nOptions: sqlite,postgres\nChosen: postgres";
 
 #[tokio::test]
-async fn reaction_added_fetches_the_message_and_captures_it_under_the_reactor() {
+async fn reaction_added_fetches_the_message_and_records_it_under_the_reactor_decided_by_the_author()
+{
     let dir = test_ledger_dir();
     let (team_id, signing_secret) = ("T-REACT", "react-secret");
     install_workspace_with_bot_token(&dir, team_id, signing_secret, "xoxb-react-token");
@@ -1031,7 +1127,11 @@ async fn reaction_added_fetches_the_message_and_captures_it_under_the_reactor() 
     let capture = &queued[0]["capture"];
     assert_eq!(capture["surface"], "reaction");
     assert_eq!(capture["reaction_emoji"], "hivemind");
-    assert_eq!(capture["user_id"], "U-REACTOR");
+    assert_eq!(capture["user_id"], "U-REACTOR", "the reactor records");
+    assert_eq!(
+        capture["decided_by_user_id"], "U-AUTHOR",
+        "the message's author decided"
+    );
     assert_eq!(capture["title"], "Adopt Postgres");
     assert_eq!(capture["permalink"], "slack://T-REACT/C1/1715970800.000100");
     let evidence = capture["thread_text"].as_str().expect("evidence text");
@@ -1040,10 +1140,15 @@ async fn reaction_added_fetches_the_message_and_captures_it_under_the_reactor() 
         "the message's author survives in the evidence: {evidence}"
     );
 
-    let (actor_id, source_ref) = drain_one_decision(&dir, team_id);
-    assert_eq!(actor_id, "slack:T-REACT:U-REACTOR");
+    let drained = drain_one_decision(&dir, team_id);
+    assert_eq!(drained.recorder, "slack:T-REACT:U-REACTOR");
     assert_eq!(
-        source_ref.as_deref(),
+        drained.accepted_by,
+        vec!["slack:T-REACT:U-AUTHOR"],
+        "the reactor recorded the decision but did not accept words they did not write"
+    );
+    assert_eq!(
+        drained.source_ref.as_deref(),
         Some("slack://T-REACT/C1/1715970800.000100")
     );
 }

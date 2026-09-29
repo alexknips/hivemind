@@ -695,6 +695,7 @@ fn run_slack_app(cli: &Cli, args: &SlackAppArgs) -> Result<String> {
             let event = store.enqueue_capture(SlackCaptureRequest {
                 team_id: args.team_id.clone(),
                 user_id: args.user_id.clone(),
+                decided_by_user_id: None,
                 channel_id: args.channel_id.clone(),
                 message_ts: args.message_ts.clone(),
                 thread_ts: args

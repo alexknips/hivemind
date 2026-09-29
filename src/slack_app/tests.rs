@@ -176,6 +176,7 @@ fn modal_context() -> SlackCaptureModalContext {
         channel_id: "C456".to_owned(),
         message_ts: "1715970801.000200".to_owned(),
         thread_ts: "1715970800.000100".to_owned(),
+        author_user_id: Some("U777".to_owned()),
         evidence: message_evidence("1715970801.000200", "U777", "  we should use Postgres  "),
     }
 }
@@ -310,7 +311,12 @@ fn modal_submission_becomes_a_message_action_capture() {
         capture_from_modal_submission("T123", "U999", &view).expect("valid submission captures");
 
     assert_eq!(capture.team_id, "T123");
-    assert_eq!(capture.user_id, "U999", "the submitter is the actor");
+    assert_eq!(capture.user_id, "U999", "the submitter is the recorder");
+    assert_eq!(
+        capture.decided_by_user_id.as_deref(),
+        Some("U777"),
+        "the shortcut message's author is the decider, not the submitter"
+    );
     assert_eq!(capture.surface, SlackCaptureSurface::MessageAction);
     assert_eq!(capture.reaction_emoji, None);
     assert_eq!(capture.channel_id, "C456");
@@ -394,8 +400,8 @@ fn modal_submission_that_is_not_ours_or_lost_its_metadata_is_malformed() {
     ));
 }
 
-#[test]
-fn modal_capture_is_accepted_by_the_queue_and_written_under_the_submitter() {
+/// A scratch store with one installed workspace, `T123`, mapping `actor_mappings`.
+fn installed_store(actor_mappings: BTreeMap<String, String>) -> (PathBuf, SlackAppStore) {
     let scratch = std::env::temp_dir().join(format!("hivemind-slack-app-{}", Uuid::new_v4()));
     let store = SlackAppStore::new(&scratch);
     store
@@ -406,35 +412,236 @@ fn modal_capture_is_accepted_by_the_queue_and_written_under_the_submitter() {
             signing_secret: generated_test_secret("signing"),
             hivemind_url: "http://127.0.0.1:8787".to_owned(),
             reaction_emoji: "hivemind".to_owned(),
-            actor_mappings: BTreeMap::new(),
+            actor_mappings,
         })
         .expect("install succeeds");
-    let view = submitted_view(
-        &modal_metadata(&modal_context()),
-        &[
-            ("title", "Use Postgres"),
-            ("rationale", "Concurrent writers need it"),
-            ("options", "SQLite, Postgres"),
-            ("chosen", "Postgres"),
-        ],
-    );
-    let capture = capture_from_modal_submission("T123", "U999", &view).expect("captures");
+    (scratch, store)
+}
 
-    store.enqueue_capture(capture).expect("queue accepts it");
+/// The actors of the events a drained capture wrote: the recorder's (`evidence`, `proposed`)
+/// and, when the decision was decided, whoever accepted it.
+struct CaptureActors {
+    evidence: String,
+    proposed: String,
+    accepted: Vec<String>,
+}
 
+fn drain_capture_actors(store: &SlackAppStore) -> CaptureActors {
     let ledger = InMemoryEventLedger::default();
     let report = store.drain_queue(&ledger).expect("drain succeeds");
     assert_eq!(report.processed_count, 1);
     let events = ledger.read(0, 100).expect("events read");
-    let proposal = events
-        .iter()
-        .find(|event| event.event_type == EventType::DecisionProposed)
-        .expect("proposal exists");
-    assert_eq!(proposal.actor_id, "slack:T123:U999");
+    let actor_of = |event_type: EventType| {
+        events
+            .iter()
+            .find(|event| event.event_type == event_type)
+            .map(|event| event.actor_id.clone())
+            .expect("the capture wrote this event")
+    };
+    CaptureActors {
+        evidence: actor_of(EventType::EvidenceRecorded),
+        proposed: actor_of(EventType::DecisionProposed),
+        accepted: events
+            .iter()
+            .filter(|event| event.event_type == EventType::DecisionAccepted)
+            .map(|event| event.actor_id.clone())
+            .collect(),
+    }
+}
+
+fn modal_capture(context: &SlackCaptureModalContext, chosen: Option<&str>) -> SlackCaptureRequest {
+    let mut inputs = vec![
+        ("title", "Use Postgres"),
+        ("rationale", "Concurrent writers need it"),
+        ("options", "SQLite, Postgres"),
+    ];
+    inputs.extend(chosen.map(|chosen| ("chosen", chosen)));
+    let view = submitted_view(&modal_metadata(context), &inputs);
+    capture_from_modal_submission("T123", "U999", &view).expect("captures")
+}
+
+#[test]
+fn modal_capture_is_recorded_by_the_submitter_and_decided_by_the_message_author() {
+    let (scratch, store) = installed_store(BTreeMap::new());
+    store
+        .enqueue_capture(modal_capture(&modal_context(), Some("Postgres")))
+        .expect("queue accepts it");
+
+    let actors = drain_capture_actors(&store);
+
+    assert_eq!(actors.evidence, "slack:T123:U999", "the submitter records");
+    assert_eq!(actors.proposed, "slack:T123:U999", "the submitter records");
     assert_eq!(
-        proposal.source_ref.as_deref(),
-        Some("slack://T123/C456/1715970800.000100")
+        actors.accepted,
+        vec!["slack:T123:U777"],
+        "the author of the shortcut's message decided; the submitter did not accept it"
     );
+
+    let _ = fs::remove_dir_all(scratch);
+}
+
+#[test]
+fn modal_capture_by_the_message_author_is_recorded_and_decided_by_them() {
+    let (scratch, store) = installed_store(BTreeMap::new());
+    let context = SlackCaptureModalContext {
+        author_user_id: Some("U999".to_owned()),
+        ..modal_context()
+    };
+    store
+        .enqueue_capture(modal_capture(&context, Some("Postgres")))
+        .expect("queue accepts it");
+
+    let actors = drain_capture_actors(&store);
+
+    assert_eq!(actors.proposed, "slack:T123:U999");
+    assert_eq!(actors.accepted, vec!["slack:T123:U999"]);
+
+    let _ = fs::remove_dir_all(scratch);
+}
+
+#[test]
+fn modal_capture_of_an_app_message_has_no_other_decider_so_the_submitter_decides() {
+    let (scratch, store) = installed_store(BTreeMap::new());
+    let context = SlackCaptureModalContext {
+        author_user_id: None,
+        ..modal_context()
+    };
+    let capture = modal_capture(&context, Some("Postgres"));
+    assert_eq!(capture.decided_by_user_id, None);
+    store.enqueue_capture(capture).expect("queue accepts it");
+
+    let actors = drain_capture_actors(&store);
+
+    assert_eq!(actors.proposed, "slack:T123:U999");
+    assert_eq!(actors.accepted, vec!["slack:T123:U999"]);
+
+    let _ = fs::remove_dir_all(scratch);
+}
+
+#[test]
+fn modal_capture_with_no_chosen_option_records_a_proposal_nobody_has_accepted() {
+    let (scratch, store) = installed_store(BTreeMap::new());
+    store
+        .enqueue_capture(modal_capture(&modal_context(), None))
+        .expect("queue accepts it");
+
+    let actors = drain_capture_actors(&store);
+
+    assert_eq!(actors.proposed, "slack:T123:U999");
+    assert!(
+        actors.accepted.is_empty(),
+        "nothing was chosen, so nobody decided: {:?}",
+        actors.accepted
+    );
+
+    let _ = fs::remove_dir_all(scratch);
+}
+
+#[test]
+fn reaction_capture_is_recorded_by_the_reactor_and_decided_by_the_author() {
+    let (scratch, store) = installed_store(BTreeMap::new());
+    store
+        .enqueue_capture(SlackCaptureRequest {
+            user_id: "U111".to_owned(),
+            decided_by_user_id: Some("U222".to_owned()),
+            surface: SlackCaptureSurface::Reaction,
+            reaction_emoji: Some("hivemind".to_owned()),
+            ..capture()
+        })
+        .expect("queue accepts it");
+
+    let actors = drain_capture_actors(&store);
+
+    assert_eq!(actors.evidence, "slack:T123:U111", "the reactor records");
+    assert_eq!(actors.proposed, "slack:T123:U111", "the reactor records");
+    assert_eq!(
+        actors.accepted,
+        vec!["slack:T123:U222"],
+        "the message's author decided; the reactor did not accept it"
+    );
+
+    let _ = fs::remove_dir_all(scratch);
+}
+
+#[test]
+fn reaction_by_the_author_of_the_message_records_and_decides_as_one_actor() {
+    let (scratch, store) = installed_store(BTreeMap::new());
+    store
+        .enqueue_capture(SlackCaptureRequest {
+            user_id: "U111".to_owned(),
+            decided_by_user_id: Some("U111".to_owned()),
+            surface: SlackCaptureSurface::Reaction,
+            reaction_emoji: Some("hivemind".to_owned()),
+            ..capture()
+        })
+        .expect("queue accepts it");
+
+    let actors = drain_capture_actors(&store);
+
+    assert_eq!(actors.proposed, "slack:T123:U111");
+    assert_eq!(actors.accepted, vec!["slack:T123:U111"]);
+
+    let _ = fs::remove_dir_all(scratch);
+}
+
+#[test]
+fn reaction_capture_of_an_unchosen_decision_names_no_decider() {
+    let (scratch, store) = installed_store(BTreeMap::new());
+    store
+        .enqueue_capture(SlackCaptureRequest {
+            user_id: "U111".to_owned(),
+            decided_by_user_id: Some("U222".to_owned()),
+            chosen_option_label: None,
+            surface: SlackCaptureSurface::Reaction,
+            reaction_emoji: Some("hivemind".to_owned()),
+            ..capture()
+        })
+        .expect("a decider with nothing chosen is not an error");
+
+    let actors = drain_capture_actors(&store);
+
+    assert_eq!(actors.proposed, "slack:T123:U111");
+    assert!(actors.accepted.is_empty(), "{:?}", actors.accepted);
+
+    let _ = fs::remove_dir_all(scratch);
+}
+
+#[test]
+fn recorder_and_decider_are_each_mapped_through_the_installs_actor_mappings() {
+    let (scratch, store) = installed_store(BTreeMap::from([
+        ("U111".to_owned(), "human:reactor".to_owned()),
+        ("U222".to_owned(), "human:author".to_owned()),
+    ]));
+    store
+        .enqueue_capture(SlackCaptureRequest {
+            user_id: "U111".to_owned(),
+            decided_by_user_id: Some("U222".to_owned()),
+            surface: SlackCaptureSurface::Reaction,
+            reaction_emoji: Some("hivemind".to_owned()),
+            ..capture()
+        })
+        .expect("queue accepts it");
+
+    let actors = drain_capture_actors(&store);
+
+    assert_eq!(actors.proposed, "human:reactor");
+    assert_eq!(actors.accepted, vec!["human:author"]);
+
+    let _ = fs::remove_dir_all(scratch);
+}
+
+#[test]
+fn a_blank_decider_is_refused_by_the_queue() {
+    let (scratch, store) = installed_store(BTreeMap::new());
+
+    let error = store
+        .enqueue_capture(SlackCaptureRequest {
+            decided_by_user_id: Some("  ".to_owned()),
+            ..capture()
+        })
+        .expect_err("a blank decider names nobody");
+
+    assert!(error.to_string().contains("decided_by_user_id"), "{error}");
 
     let _ = fs::remove_dir_all(scratch);
 }
@@ -473,6 +680,7 @@ fn capture() -> SlackCaptureRequest {
     SlackCaptureRequest {
         team_id: "T123".to_owned(),
         user_id: "U111".to_owned(),
+        decided_by_user_id: None,
         channel_id: "C456".to_owned(),
         message_ts: "1715970800.000100".to_owned(),
         thread_ts: "1715970800.000100".to_owned(),

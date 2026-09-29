@@ -42,6 +42,11 @@ pub struct SlackCaptureModalContext {
     pub channel_id: String,
     pub message_ts: String,
     pub thread_ts: String,
+    /// The Slack user who wrote the shortcut's message; `None` when Slack names no user
+    /// (a message posted by an app). The submission records them as the decider and the
+    /// person who submitted the modal as the recorder.
+    #[serde(default)]
+    pub author_user_id: Option<String>,
     /// The shortcut message rendered by [`message_evidence`].
     pub evidence: String,
 }
@@ -188,6 +193,7 @@ fn encode_with_evidence(context: &SlackCaptureModalContext, evidence: &str) -> R
         channel_id: context.channel_id.clone(),
         message_ts: context.message_ts.clone(),
         thread_ts: context.thread_ts.clone(),
+        author_user_id: context.author_user_id.clone(),
         evidence: evidence.to_owned(),
     };
     serde_json::to_string(&carried).map_err(|error| {
@@ -195,9 +201,12 @@ fn encode_with_evidence(context: &SlackCaptureModalContext, evidence: &str) -> R
     })
 }
 
-/// Turns the `view` of a `view_submission` into a capture, attributed to the
-/// Slack user who submitted it. `team_id` is the workspace whose signature
-/// was verified — never anything read from the modal itself.
+/// Turns the `view` of a `view_submission` into a capture. The Slack user who
+/// submitted it is the recorder; the author of the message the shortcut was
+/// invoked on (carried in `private_metadata`) is the decider, so a chosen
+/// option is accepted as theirs, not the submitter's. `team_id` is the
+/// workspace whose signature was verified — never anything read from the
+/// modal itself.
 pub fn capture_from_modal_submission(
     team_id: &str,
     user_id: &str,
@@ -259,6 +268,7 @@ pub fn capture_from_modal_submission(
     Ok(SlackCaptureRequest {
         team_id: team_id.to_owned(),
         user_id: user_id.to_owned(),
+        decided_by_user_id: context.author_user_id,
         permalink: slack_source_ref(team_id, &context.channel_id, &context.thread_ts),
         channel_id: context.channel_id,
         message_ts: context.message_ts,

@@ -44,7 +44,13 @@ pub struct SlackMessageFixture {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlackDecisionDraft {
+    /// The recorder: who wrote every event this import makes (evidence, options, proposal).
     pub actor_id: String,
+    /// The actor who made the decision, when that is someone other than the recorder
+    /// (`actor_id`): a reaction capture records the reactor, but the decider is the author of
+    /// the message that carries the decision. `None` means the recorder decided, so a chosen
+    /// option is self-accepted from `actor_id`. Only meaningful with `chosen_option_label`.
+    pub decided_by: Option<String>,
     pub source_ref: String,
     pub title: String,
     pub rationale: String,
@@ -179,6 +185,7 @@ pub fn extract_slack_decision_draft(
 
     Ok(SlackDecisionDraft {
         actor_id: markers.actor_id,
+        decided_by: None,
         source_ref: source_ref.clone(),
         title: markers.title,
         rationale: markers.rationale,
@@ -439,10 +446,13 @@ pub fn import_slack_thread<L: EventLedger>(
         option_ids: &option_ids,
         option_labels: &draft.option_labels,
         chosen_option_id: chosen_option_id.as_deref(),
-        decided_by: None,
+        // Nothing chosen means nobody has decided yet, and a decider without a choice is refused.
+        decided_by: chosen_option_id.as_ref().and(draft.decided_by.as_deref()),
         delegated_by: None,
         // A Slack decision with a chosen option is already decided (the modal choice IS the
-        // decision) — self-accept from draft.actor_id, per hivemind-zdsh.8's default.
+        // decision), so it is accepted straight away, per hivemind-zdsh.8's default: from
+        // `draft.decided_by` when a capture names the decider apart from the recorder, else
+        // self-accepted from `draft.actor_id`.
         still_proposed: false,
         hypothesis_ids: &[],
         evidence_ids: std::slice::from_ref(&evidence_id),

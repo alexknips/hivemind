@@ -452,9 +452,11 @@ async fn complete_reaction_capture(
     }
 }
 
-/// The capture is attributed to the user who *reacted* — the actor who took
-/// the action — while the message's own author and timestamp are kept in the
-/// evidence text ([`message_evidence`]), so who wrote the words is not lost.
+/// The message's author decided: the markers are their own words, so they are
+/// the decider (`decided_by_user_id`). The user who *reacted* only recorded it
+/// (`user_id`) and is never recorded as having accepted words they did not
+/// write. The author and timestamp also stay in the evidence text
+/// ([`message_evidence`]).
 fn enqueue_reaction_capture(
     store: &SlackAppStore,
     reaction: &ReactionCapture,
@@ -500,6 +502,7 @@ fn enqueue_reaction_capture(
         .enqueue_capture(SlackCaptureRequest {
             team_id: install.team_id.clone(),
             user_id: reaction.reactor.clone(),
+            decided_by_user_id: Some(author.to_owned()),
             channel_id: reaction.channel.clone(),
             message_ts: message.ts.clone(),
             thread_ts: fixture.thread_ts.clone(),
@@ -559,6 +562,8 @@ fn enqueue_marker_capture(
     let capture = SlackCaptureRequest {
         team_id: install.team_id.clone(),
         user_id: user.clone(),
+        // The mentioning user wrote the markers themselves: recorder and decider are one.
+        decided_by_user_id: None,
         channel_id: channel.clone(),
         message_ts: ts.clone(),
         thread_ts: fixture.thread_ts.clone(),

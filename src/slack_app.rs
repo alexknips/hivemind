@@ -344,7 +344,15 @@ pub enum SlackCaptureSurface {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlackCaptureRequest {
     pub team_id: String,
+    /// The recorder: the Slack user whose action queued this capture (who wrote it, who
+    /// reacted, who submitted the modal). Every event the capture writes is theirs.
     pub user_id: String,
+    /// The Slack user who made the decision, when that is not the recorder: the author of a
+    /// message that was captured by someone else's reaction or shortcut. `None` means the
+    /// recorder decided (their own message, or a modal they worded with no other author to
+    /// name). Only takes effect together with `chosen_option_label`.
+    #[serde(default)]
+    pub decided_by_user_id: Option<String>,
     pub channel_id: String,
     pub message_ts: String,
     pub thread_ts: String,
@@ -712,6 +720,10 @@ fn capture_to_draft(
     let event_ts = parse_slack_ts(&capture.message_ts)?;
     Ok(SlackDecisionDraft {
         actor_id,
+        decided_by: capture
+            .decided_by_user_id
+            .as_deref()
+            .map(|user_id| slack_actor_id(install, user_id)),
         source_ref: capture.permalink.clone(),
         title: capture.title.clone(),
         rationale: capture.rationale.clone(),
@@ -844,6 +856,9 @@ fn validate_install(install: &SlackWorkspaceInstall) -> Result<()> {
 fn validate_capture(capture: &SlackCaptureRequest) -> Result<()> {
     non_empty("team_id", &capture.team_id)?;
     non_empty("user_id", &capture.user_id)?;
+    if let Some(decided_by) = capture.decided_by_user_id.as_deref() {
+        non_empty("decided_by_user_id", decided_by)?;
+    }
     non_empty("channel_id", &capture.channel_id)?;
     non_empty("message_ts", &capture.message_ts)?;
     non_empty("thread_ts", &capture.thread_ts)?;
