@@ -51,7 +51,7 @@ fn tools_list_includes_all_eighteen_tools() {
     );
     assert_eq!(responses.len(), 1); // ubs:ignore: test-only; index guaranteed by test setup
     let tools = responses[0]["result"]["tools"].as_array().expect("array"); // ubs:ignore: test-only; panicking is correct in tests
-    assert_eq!(tools.len(), 31, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
+    assert_eq!(tools.len(), 34, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("string name")) // ubs:ignore: test-only; panicking is correct in tests
@@ -66,6 +66,9 @@ fn tools_list_includes_all_eighteen_tools() {
         "retitle_decision",
         "ground_decision",
         "request_decision",
+        "get_waiting_requests",
+        "get_contested_decisions",
+        "get_changed_decisions",
         "get_decision",
         "get_decision_outcome",
         "decision_quality_candidates",
@@ -5456,5 +5459,145 @@ mod transport_parity {
 
         let _ = std::fs::remove_dir_all(&stdio_dir);
         let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
+    /// The three attention lists and the decision timeline (hivemind-bbnw.7) answer alike over
+    /// stdio and over HTTP: one unanswered ask waits, a disagreement is contested, `why` carries the
+    /// dated story, and the window of the changed list is echoed.
+    #[tokio::test]
+    async fn attention_lists_and_the_timeline_answer_alike_across_transports() {
+        let stdio_dir = unique_dir("parity-stdio-attention");
+        let http_dir = unique_dir("parity-http-attention");
+        let answered = "Which storage engine should the prototype use?";
+        let waiting = "When should the prototype ship?";
+
+        let mut request_ids = Vec::new();
+        for question in [answered, waiting] {
+            let arguments = json!({ "text": question });
+            let stdio = stdio_call(&stdio_dir, "request_decision", arguments.clone());
+            let http = http_call(&http_dir, "request_decision", arguments).await;
+            request_ids.push([stdio, http].map(|response| {
+                response["result"]["structuredContent"]["request_id"]
+                    .as_str() // ubs:ignore: test-only; chain continues to expect
+                    .expect("request id") // ubs:ignore: test-only; panicking is correct in tests
+                    .to_owned()
+            }));
+        }
+
+        let capture = |request_id: &str| {
+            json!({
+                "grounding": [{"kind": "bet"}],
+                "title": "Use SQLite for the prototype",
+                "rationale": "The prototype is single-writer and needs no server",
+                "topic_keys": ["storage"],
+                "options": [{"label": "sqlite"}, {"label": "postgres"}],
+                "chosen_option_label": "sqlite",
+                "answers": request_id,
+            })
+        };
+        let stdio_capture = stdio_call(&stdio_dir, "capture_decision", capture(&request_ids[0][0]));
+        let http_capture =
+            http_call(&http_dir, "capture_decision", capture(&request_ids[0][1])).await;
+        let decision_ids = [stdio_capture, http_capture].map(|response| {
+            response["result"]["structuredContent"]["decision_id"]
+                .as_str() // ubs:ignore: test-only; chain continues to expect
+                .expect("decision id") // ubs:ignore: test-only; panicking is correct in tests
+                .to_owned()
+        });
+        let disagree = |decision_id: &str| {
+            json!({
+                "decision_id": decision_id,
+                "actor_id": "human:dana",
+                "reason": "It does not cope with concurrent writers",
+            })
+        };
+        stdio_call(&stdio_dir, "disagree_decision", disagree(&decision_ids[0]));
+        http_call(&http_dir, "disagree_decision", disagree(&decision_ids[1])).await;
+
+        let window = json!({ "since": "1970-01-01T00:00:00Z" });
+        let stdio = [
+            stdio_call(&stdio_dir, "get_waiting_requests", json!({})),
+            stdio_call(&stdio_dir, "get_contested_decisions", json!({})),
+            stdio_call(&stdio_dir, "get_changed_decisions", window.clone()),
+            stdio_call(
+                &stdio_dir,
+                "get_decision_neighborhood",
+                json!({ "decision_id": decision_ids[0] }),
+            ),
+            stdio_call(
+                &stdio_dir,
+                "get_changed_decisions",
+                json!({ "since": "not-a-time" }),
+            ),
+        ];
+        let http = [
+            http_call(&http_dir, "get_waiting_requests", json!({})).await,
+            http_call(&http_dir, "get_contested_decisions", json!({})).await,
+            http_call(&http_dir, "get_changed_decisions", window).await,
+            http_call(
+                &http_dir,
+                "get_decision_neighborhood",
+                json!({ "decision_id": decision_ids[1] }),
+            )
+            .await,
+            http_call(
+                &http_dir,
+                "get_changed_decisions",
+                json!({ "since": "not-a-time" }),
+            )
+            .await,
+        ];
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+
+        for (name, results, decision_id) in [
+            ("stdio", &stdio, &decision_ids[0]),
+            ("http", &http, &decision_ids[1]),
+        ] {
+            let data = |index: usize| &results[index]["result"]["structuredContent"]["data"];
+
+            let items = data(0)["items"].as_array().expect("waiting items"); // ubs:ignore: test-only; panicking is correct in tests
+            assert_eq!(items.len(), 1, "{name}: only the unanswered ask waits"); // ubs:ignore: test-only assertion
+            assert_eq!(items[0]["text"], waiting, "{name}"); // ubs:ignore: test-only assertion
+
+            let items = data(1)["items"].as_array().expect("contested items"); // ubs:ignore: test-only; panicking is correct in tests
+            assert_eq!(items.len(), 1, "{name}: {items:?}"); // ubs:ignore: test-only assertion
+            assert_eq!(items[0]["decision_id"], *decision_id, "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(items[0]["contest"]["kind"], "disagreement", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                items[0]["contest"]["accepted_by"].as_array().map(Vec::len), // ubs:ignore: test-only assertion
+                Some(1),
+                "{name}"
+            );
+            assert_eq!(
+                items[0]["contest"]["rejected_by"].as_array().map(Vec::len), // ubs:ignore: test-only assertion
+                Some(1),
+                "{name}"
+            );
+
+            assert_eq!(
+                data(2)["since"],
+                "1970-01-01T00:00:00Z",
+                "{name}: the window is echoed"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(data(2)["items"].as_array().map(Vec::len), Some(0), "{name}"); // ubs:ignore: test-only assertion
+
+            let kinds: Vec<&str> = data(3)["timeline"]["entries"]
+                .as_array()
+                .expect("timeline entries") // ubs:ignore: test-only; panicking is correct in tests
+                .iter()
+                .filter_map(|entry| entry["kind"].as_str())
+                .collect();
+            assert_eq!(
+                kinds,
+                ["asked", "recorded", "accepted", "rejected"],
+                "{name}"
+            ); // ubs:ignore: test-only assertion
+
+            assert_eq!(
+                results[4]["result"]["isError"], true,
+                "{name}: a bad `since` is refused"
+            ); // ubs:ignore: test-only assertion
+        }
     }
 }

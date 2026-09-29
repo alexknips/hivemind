@@ -85,6 +85,31 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Attention lists and a per-decision timeline: what is waiting, contested or changed, and
+  when each thing happened.** Three lists say what needs a person without anyone going looking,
+  each paged with `limit`/`cursor` and saying when it is `truncated`: **waiting**
+  (`get_waiting_requests`, now also an MCP tool and `GET /v1/attention/waiting`) lists open asks
+  with no answering decision, oldest first, with `asked_at` and who asked; **contested**
+  (`hivemind query get_contested_decisions`, MCP `get_contested_decisions`,
+  `GET /v1/attention/contested`) lists decisions accepted and rejected by different actors
+  (naming both sides) and accepted decisions whose answers to one question choose differently
+  (each naming the other), oldest first, each with `asked_at` and `decided_at`; **changed** (`hivemind query get_changed_decisions`,
+  MCP `get_changed_decisions`, `GET /v1/attention/changed`) lists decisions superseded,
+  retitled, moved or left without a premise in a window (`--since`, default the last 7 days,
+  echoed in the reply), most recently changed first, each with `asked_at`, `decided_at` and its
+  dated changes cited by ledger event. `hivemind why`, MCP `get_decision_neighborhood` and `GET /v1/decisions/why` gain
+  `data.timeline` (and `GET /v1/decisions/{id}/timeline` reads it alone): the decision's dated
+  story, oldest first in ledger order, asked, recorded, accepted or rejected, superseded,
+  retitled, moved, and the moment a premise it rested on stopped standing (a refuted hypothesis,
+  a superseded or rejected decision it follows from, written only for decisions that already
+  rested on it then), with `asked_at`, `decided_at` and, when someone asked first,
+  `asked_to_decided_seconds`; `why --summary` prints it as a `timeline:` block. Speed is the
+  waiting list plus that one duration per decision: no averages, no per-person figures, no
+  grading; a decision nobody asked about has no ask time. An ask records who asked, not whom, so
+  the waiting list cannot say who is being waited on. No ledger event changes and nothing needs
+  migrating; `docs/ATTENTION_LISTS.md` holds the rules. Library callers: `DecisionStandings`
+  also reads who rejected a decision (`rejecters_of`); `NeighborhoodView` gains an optional
+  `timeline` that only a caller holding the ledger fills. (hivemind-bbnw.7)
 - **`hivemind ask` records that you are explicitly asking a question, before any decision
   answers it.** `hivemind ask "<question text>"` and MCP `request_decision` write a new
   `question.asked` event (envelope `ts`/`actor_id`/`source_ref` are the ask's time, asker and

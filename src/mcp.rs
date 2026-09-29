@@ -42,8 +42,9 @@ use crate::Result;
 use core::{
     AnalyzeFailureModesArgs, CaptureDecisionArgs, CompactViewArgs, CoreError,
     DecisionContextCandidatesArgs, DecisionQualityCandidatesArgs, DisagreeArgs,
-    GetDecisionContextArgs, GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs,
-    GetSituationalDecisionsArgs, GetSuggestionsArgs, GetSupersessionChainArgs, GroundDecisionArgs,
+    GetChangedDecisionsArgs, GetContestedDecisionsArgs, GetDecisionContextArgs,
+    GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs, GetSituationalDecisionsArgs,
+    GetSuggestionsArgs, GetSupersessionChainArgs, GetWaitingRequestsArgs, GroundDecisionArgs,
     LedgerHandle, LedgerProvider, MoveDecisionArgs, RecallDecisionsArgs, RecentDecisionsArgs,
     RequestDecisionArgs, RetitleDecisionArgs, ScanDecisionQualityArgs, ScanMisfiledDecisionsArgs,
     ScoreDecisionArgs, SupersedeDecisionArgs,
@@ -346,6 +347,9 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "retitle_decision" => tool_retitle_decision(arguments, config),
         "ground_decision" => tool_ground_decision(arguments, config),
         "request_decision" => tool_request_decision(arguments, config),
+        "get_waiting_requests" => tool_get_waiting_requests(arguments, config),
+        "get_contested_decisions" => tool_get_contested_decisions(arguments, config),
+        "get_changed_decisions" => tool_get_changed_decisions(arguments, config),
         "get_decision" => tool_get_decision(arguments, config),
         "get_decision_outcome" => tool_get_decision_outcome(arguments, config),
         "decision_quality_candidates" => tool_decision_quality_candidates(arguments, config),
@@ -634,6 +638,41 @@ pub fn tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "get_waiting_requests",
+            "description": "Open requests: what was explicitly asked (`request_decision`, `hivemind ask`) and no decision has answered yet, oldest first. Each item carries the `request_id` `capture_decision`'s `answers` takes, the question, `asked_at` (the ask's own time, never a guess) and who asked (`requested_by`). Nothing is ranked or inferred; a request leaves the list when a decision answers its question. Equivalent to `hivemind query get_waiting_requests`. `data.truncated` / `data.next_cursor` continue a long list.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                    "cursor": { "type": "string", "description": "The `data.next_cursor` of the previous page." }
+                }
+            }
+        }),
+        json!({
+            "name": "get_contested_decisions",
+            "description": "Decisions in contest, oldest first: where actors disagree, so nobody has to go looking. `contest.kind` is `disagreement` (at least one actor accepted the decision and one rejected it, and nobody superseded it: `accepted_by` and `rejected_by` name the sides) or `conflicting_answers` (the decision is accepted and current, and another accepted, current decision answers the same question with a different chosen option: `conflicts_with` lists them). Each item also has `asked_at` (when its question was first explicitly asked, if ever) and `decided_at` (when it was recorded). Nothing is ranked, picked or resolved for you; a supersession takes a decision off the list. Equivalent to `hivemind query get_contested_decisions`. `data.truncated` / `data.next_cursor` continue a long list.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                    "cursor": { "type": "string", "description": "The `data.next_cursor` of the previous page." }
+                }
+            }
+        }),
+        json!({
+            "name": "get_changed_decisions",
+            "description": "Decisions revised or superseded recently, most recently changed first. Each item has `asked_at` and `decided_at` and lists its `changes` inside the window, oldest first, each cited by ledger event (`event_origin`, `citation_id`) with its time and actor: `superseded` (by which decision), `retitled` (from, to), `moved` (from, to), or a premise that stopped standing (`premise_refuted` with the refuting evidence, `premise_superseded`, `premise_rejected`). A premise's change reaches only the decisions that already rested on it at that moment. Facts only, no verdict on whether the change was good, and nothing per person. The window is `since` (default: the last 7 days) to `until`, echoed in `data.since` / `data.until`; an event with no timestamp is always listed, undated. Equivalent to `hivemind query get_changed_decisions`. `data.total_matches` counts every decision that changed in the window; `data.next_cursor` continues.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "since": { "type": "string", "description": "RFC3339 start of the window. Defaults to seven days before now." },
+                    "until": { "type": "string", "description": "RFC3339 end of the window. Defaults to now and later." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                    "cursor": { "type": "string", "description": "The `data.next_cursor` of the previous page." }
+                }
+            }
+        }),
+        json!({
             "name": "get_decision",
             "description": "Fetch a single decision by id. Returns null when absent.",
             "inputSchema": {
@@ -686,7 +725,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_decision_neighborhood",
-            "description": "\"Why does this decision look the way it does?\" — the decision's answer plus its one-hop graph. `data.root` carries the title, rationale, chosen and rejected option labels, who decided, whether it still holds, and status. `data.nodes` and `data.edges` are the neighborhood: proposing/accepting/rejecting actors, options, the chosen option, evidence, premised hypotheses (with their supporting/refuting evidence one hop further), and supersession links in both directions; every node except actors has a `label` (a decision's title, an option's label, a hypothesis' statement, an evidence item's content clipped to 200 characters). Every edge in `data.edges` is an arrow from the newer node to the older node: `from`/`to` are the arrow's ends, an edge's `label` reads the relation along it, and `reversed` marks an arrow that runs against the relation's stored direction. Equivalent to `hivemind query why`. Resolves by decision_id or a free-text description or question (\"why did we move the demo cell to shared Postgres\") — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error; re-call with decision_id from that list. The same shape is returned when no decision contains every word but some contain most of them: each such close candidate lists the words it lacks in `missing_terms`, and none is picked for you. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}` (there is no #N/--pick over MCP to retry against, so there is nothing further to disambiguate).",
+            "description": "\"Why does this decision look the way it does?\" — the decision's answer plus its one-hop graph. `data.root` carries the title, rationale, chosen and rejected option labels, who decided, whether it still holds, and status. `data.nodes` and `data.edges` are the neighborhood: proposing/accepting/rejecting actors, options, the chosen option, evidence, premised hypotheses (with their supporting/refuting evidence one hop further), and supersession links in both directions; every node except actors has a `label` (a decision's title, an option's label, a hypothesis' statement, an evidence item's content clipped to 200 characters). Every edge in `data.edges` is an arrow from the newer node to the older node: `from`/`to` are the arrow's ends, an edge's `label` reads the relation along it, and `reversed` marks an arrow that runs against the relation's stored direction. `data.timeline` is the decision's dated story from the ledger, oldest first: when the question was asked (`asked`), the decision recorded, accepted or rejected, superseded, retitled or moved, and when a premise it rests on stopped standing, each cited by ledger event with its time and actor, plus `asked_at`, `decided_at` and `asked_to_decided_seconds` (absent when nobody asked first). Equivalent to `hivemind query why`. Resolves by decision_id or a free-text description or question (\"why did we move the demo cell to shared Postgres\") — exactly one is required. An ambiguous description returns a successful result shaped `{outcome: \"ambiguous\", candidates: [...]}`, not an error; re-call with decision_id from that list. The same shape is returned when no decision contains every word but some contain most of them: each such close candidate lists the words it lacks in `missing_terms`, and none is picked for you. A description matching nothing is also a successful result, shaped `{outcome: \"not_found\"}` (there is no #N/--pick over MCP to retry against, so there is nothing further to disambiguate).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1266,6 +1305,40 @@ fn tool_get_situational_decisions(
     let graph = open_memory_graph(config)?;
     let provider = StdioLedgerProvider { config };
     let output = core::get_situational_decisions(&provider, &graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn tool_get_waiting_requests(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let core_args = GetWaitingRequestsArgs::from_json(&args)?;
+    let graph = open_memory_graph(config)?;
+    let output = core::get_waiting_requests(&graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn tool_get_contested_decisions(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let core_args = GetContestedDecisionsArgs::from_json(&args)?;
+    let graph = open_memory_graph(config)?;
+    let output = core::get_contested_decisions(&graph, core_args)?;
+    Ok(output.into_value())
+}
+
+fn tool_get_changed_decisions(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let core_args = GetChangedDecisionsArgs::from_json(&args)?;
+    let graph = open_memory_graph(config)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::get_changed_decisions(&provider, &graph, core_args)?;
     Ok(output.into_value())
 }
 

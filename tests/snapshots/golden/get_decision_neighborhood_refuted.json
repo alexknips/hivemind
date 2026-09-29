@@ -163,6 +163,28 @@
         "architecture",
         "slice-one"
       ]
+    },
+    "timeline": {
+      "decided_at": "2026-01-01T00:00:15Z",
+      "decision_id": "decision-005",
+      "entries": [
+        {
+          "actor_id": "actor:planner",
+          "citation_id": "event:15",
+          "event_origin": 15,
+          "kind": "recorded",
+          "ts": "2026-01-01T00:00:15Z"
+        },
+        {
+          "actor_id": "actor:auditor",
+          "citation_id": "event:49",
+          "event_origin": 49,
+          "evidence_id": "evidence-004",
+          "hypothesis_id": "hypothesis-001",
+          "kind": "premise_refuted",
+          "ts": "2026-01-01T00:00:49Z"
+        }
+      ]
     }
   },
   "latency_ms": 0,

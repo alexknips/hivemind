@@ -1725,10 +1725,13 @@ async fn mcp_http_tools_list_returns_18_tools() {
     .await;
     assert_eq!(status, StatusCode::OK); // ubs:ignore
     let tools = body["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 31); // ubs:ignore
+    assert_eq!(tools.len(), 34); // ubs:ignore
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"capture_decision")); // ubs:ignore
     assert!(names.contains(&"request_decision")); // ubs:ignore
+    assert!(names.contains(&"get_waiting_requests")); // ubs:ignore
+    assert!(names.contains(&"get_contested_decisions")); // ubs:ignore
+    assert!(names.contains(&"get_changed_decisions")); // ubs:ignore
     assert!(names.contains(&"get_decision")); // ubs:ignore
     assert!(names.contains(&"retitle_decision")); // ubs:ignore
     assert!(names.contains(&"classify_queue_list")); // ubs:ignore
@@ -2030,6 +2033,159 @@ async fn capture_for_graph(
     let (status, response) = call(app(dir.to_path_buf()), post_json("/v1/decisions", body)).await;
     assert_eq!(status, StatusCode::OK, "capture {title}: {response}");
     response["decision_id"].as_str().unwrap().to_owned()
+}
+
+/// The `kind` of every entry of a timeline (`data.entries` of the sub-resource, `data.timeline
+/// .entries` of `why`).
+fn timeline_kinds(entries: &Value) -> Vec<String> {
+    entries
+        .as_array()
+        .expect("entries array")
+        .iter()
+        .map(|entry| entry["kind"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn attention_lists_and_the_decision_timeline_read_over_http() {
+    let dir = test_ledger_dir();
+
+    // An ask nobody has answered waits.
+    let question = "Which storage engine should the prototype use?";
+    let (status, body) = call(
+        app(dir.clone()),
+        mcp_post(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": { "name": "request_decision", "arguments": { "text": question } }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "ask: {body}");
+    assert_ne!(body["result"]["isError"], true, "ask: {body}");
+    let (status, waiting) = call(app(dir.clone()), get_req("/v1/attention/waiting")).await;
+    assert_eq!(status, StatusCode::OK, "waiting: {waiting}");
+    let items = waiting["data"]["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1, "{waiting}");
+    assert_eq!(items[0]["text"], question);
+    assert!(items[0]["asked_at"].is_string(), "{waiting}");
+    assert_eq!(waiting["truncated"], false);
+
+    // Accepted by the recording agent, then disagreed with by a human: contested.
+    let disputed =
+        capture_for_graph(&dir, "Accepted then disputed", Some("Option one"), None).await;
+    let (status, body) = call(
+        app(dir.clone()),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/decisions/{disputed}/disagreements"))
+            .header("content-type", "application/json")
+            .header("x-hivemind-actor", "human:dana")
+            .body(Body::from(
+                serde_json::json!({ "reason": "This does not survive the load numbers" })
+                    .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "disagree: {body}");
+    let (status, contested) = call(app(dir.clone()), get_req("/v1/attention/contested")).await;
+    assert_eq!(status, StatusCode::OK, "contested: {contested}");
+    let items = contested["data"]["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1, "{contested}");
+    assert_eq!(items[0]["decision_id"], disputed);
+    assert_eq!(items[0]["contest"]["kind"], "disagreement");
+    assert_eq!(
+        items[0]["contest"]["accepted_by"][0],
+        "agent:test:session-1"
+    );
+    assert_eq!(items[0]["contest"]["rejected_by"][0], "human:dana");
+
+    // Replaced: it leaves the contested list and shows as changed.
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            &format!("/v1/decisions/{disputed}/supersessions"),
+            serde_json::json!({
+                "grounding": [{"kind": "bet"}],
+                "title": "The replacement",
+                "rationale": "Learned something that changes the call",
+                "topic_keys": ["graph-standing"],
+                "options": ["Option three"],
+                "chosen_option_label": "Option three"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "supersede: {body}");
+    let (_, contested) = call(app(dir.clone()), get_req("/v1/attention/contested")).await;
+    assert!(
+        contested["data"]["items"].as_array().unwrap().is_empty(),
+        "{contested}"
+    );
+
+    let (status, changed) = call(app(dir.clone()), get_req("/v1/attention/changed")).await;
+    assert_eq!(status, StatusCode::OK, "changed: {changed}");
+    let items = changed["data"]["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1, "{changed}");
+    assert_eq!(items[0]["decision_id"], disputed);
+    assert_eq!(items[0]["status"], "superseded");
+    assert_eq!(items[0]["changes"][0]["kind"], "superseded");
+    assert!(
+        changed["data"]["since"].is_string(),
+        "the window is echoed: {changed}"
+    );
+    let (_, later) = call(
+        app(dir.clone()),
+        get_req("/v1/attention/changed?since=2999-01-01T00:00:00Z"),
+    )
+    .await;
+    assert!(
+        later["data"]["items"].as_array().unwrap().is_empty(),
+        "{later}"
+    );
+    let (status, refused) = call(
+        app(dir.clone()),
+        get_req("/v1/attention/changed?since=not-a-time"),
+    )
+    .await;
+    assert!(
+        status.is_client_error(),
+        "a bad `since` is refused: {refused}"
+    );
+
+    // The decision's own dated story, on its own and inside `why`.
+    let (status, timeline) = call(
+        app(dir.clone()),
+        get_req(&format!("/v1/decisions/{disputed}/timeline")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "timeline: {timeline}");
+    assert_eq!(timeline["data"]["decision_id"], disputed);
+    assert_eq!(
+        timeline_kinds(&timeline["data"]["entries"]),
+        vec!["recorded", "accepted", "rejected", "superseded"]
+    );
+    assert!(timeline["data"]["decided_at"].is_string(), "{timeline}");
+    assert!(
+        timeline["data"]["asked_at"].is_null(),
+        "nobody asked: {timeline}"
+    );
+    let (status, why) = call(
+        app(dir.clone()),
+        get_req(&format!("/v1/decisions/why?id={disputed}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "why: {why}");
+    assert_eq!(
+        timeline_kinds(&why["data"]["timeline"]["entries"]),
+        vec!["recorded", "accepted", "rejected", "superseded"]
+    );
+
+    let (status, missing) = call(app(dir), get_req("/v1/decisions/nonexistent-id/timeline")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    assert_eq!(missing["error"]["code"], "not_found");
 }
 
 #[tokio::test]

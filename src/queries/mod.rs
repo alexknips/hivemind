@@ -5,6 +5,7 @@ mod arrows;
 mod attribution;
 mod brief;
 mod compact_view;
+mod contested;
 mod context;
 mod decision;
 mod decision_log;
@@ -28,6 +29,7 @@ mod situational;
 mod status;
 mod supersession;
 mod terms;
+mod timeline;
 mod waiting;
 
 use serde::Serialize;
@@ -56,6 +58,10 @@ pub use brief::{
 pub use compact_view::{
     get_compact_view, BlockerSummary, CompactView, ContestView, ElidedSummary,
     HypothesisSummaryView, PremiseSummaryView, SupersessionSummary,
+};
+pub use contested::{
+    get_contested_decisions, Contest, ContestedDecisionView, ContestedDecisionsRequest,
+    ContestedDecisionsResults,
 };
 pub use context::{
     context_next_cursor, get_decision_context, get_decision_context_candidates, AuthorshipShape,
@@ -123,6 +129,10 @@ pub use status::{
 pub use supersession::{get_supersession_chain, SupersessionChain};
 pub use terms::{
     content_query, overlap_score, overlapping_terms, path_terms, text_terms, ContentQuery,
+};
+pub use timeline::{
+    get_changed_decisions, get_decision_timeline, ChangedDecisionView, ChangedDecisionsRequest,
+    ChangedDecisionsResults, DecisionTimeline, TimelineEntry, TimelineFact,
 };
 pub use waiting::{
     get_waiting_requests, WaitingRequestView, WaitingRequestsRequest, WaitingRequestsResults,

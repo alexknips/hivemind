@@ -18,15 +18,17 @@ use crate::projector::{
 use crate::quality_profile::{Assessment, Dimension, ScanReport, ScoreReport};
 use crate::queries::{
     derive_decision_status, derive_hypothesis_status, oriented_edges,
-    BlockerNotificationCandidates, CompactView, DecidedBy, DecisionBlockerResults, DecisionBrief,
-    DecisionSearchResults, DecisionStatus, DecisionView, DecisionsAddedSinceResults,
-    DecisionsChangedSinceResults, GroundingAdded, GroundingItem, GroundingItemState, GroundingKind,
-    GroundingState, HistoryChangeKind, HypothesisStatus, MatchReason, MisfiledDecisionCandidate,
-    NeighborhoodView, OutcomeReason, ProjectDecisionsOutcome, ProjectDecisionsPage,
-    ProjectListResults, ProjectMove, ProjectOutcome, ProjectTopicFact, QueryResponse,
-    QuestionAnswer, ReadOnlyExport, ReadOnlyExportFormat as QueryReadOnlyExportFormat,
-    ReadOnlyExportQueryKind, RecentActivityResults, RecentDecisionsResults, ResolveOutcome,
-    SituationalResults, SupersessionChain, TitleChange, WaitingRequestsResults,
+    BlockerNotificationCandidates, ChangedDecisionsResults, CompactView, Contest,
+    ContestedDecisionsResults, DecidedBy, DecisionBlockerResults, DecisionBrief,
+    DecisionSearchResults, DecisionStatus, DecisionTimeline, DecisionView,
+    DecisionsAddedSinceResults, DecisionsChangedSinceResults, GroundingAdded, GroundingItem,
+    GroundingItemState, GroundingKind, GroundingState, HistoryChangeKind, HypothesisStatus,
+    MatchReason, MisfiledDecisionCandidate, NeighborhoodView, OutcomeReason,
+    ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectListResults, ProjectMove, ProjectOutcome,
+    ProjectTopicFact, QueryResponse, QuestionAnswer, ReadOnlyExport,
+    ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
+    RecentActivityResults, RecentDecisionsResults, ResolveOutcome, SituationalResults,
+    SupersessionChain, TimelineEntry, TimelineFact, TitleChange, WaitingRequestsResults,
 };
 use crate::{HivemindError, Result};
 
@@ -1067,6 +1069,9 @@ pub(crate) fn render_neighborhood_summary(neighborhood: &NeighborhoodView) -> St
     if let Some(brief) = &neighborhood.root.brief {
         write_decision_brief(&mut output, brief);
     }
+    if let Some(timeline) = &neighborhood.timeline {
+        write_timeline(&mut output, timeline);
+    }
     let _ = writeln!(
         output,
         "root\t{}\t{}\tpresent={}\tnodes={}\tedges={}",
@@ -1159,6 +1164,184 @@ pub(crate) fn render_waiting_requests_summary(results: &WaitingRequestsResults) 
         );
     }
     output.trim_end().to_owned()
+}
+
+/// The `get_contested_decisions` reply: decisions in contest, oldest first, with who is on each
+/// side (hivemind-bbnw.7).
+pub(crate) fn render_contested_decisions_summary(results: &ContestedDecisionsResults) -> String {
+    if results.items.is_empty() {
+        return "No contested decisions found".to_owned();
+    }
+
+    let mut output = String::new();
+    for item in &results.items {
+        let _ = write!(
+            output,
+            "contested\t{}\tstatus={}\t{}",
+            item.decision_id,
+            decision_status_label(item.status),
+            summary_cell(&item.title)
+        );
+        match &item.contest {
+            Contest::Disagreement {
+                accepted_by,
+                rejected_by,
+            } => {
+                let _ = write!(
+                    output,
+                    "\taccepted_by={}\trejected_by={}",
+                    accepted_by.join(","),
+                    rejected_by.join(",")
+                );
+            }
+            Contest::ConflictingAnswers {
+                question,
+                conflicts_with,
+                ..
+            } => {
+                let others: Vec<String> =
+                    conflicts_with.iter().map(format_question_answer).collect();
+                let _ = write!(
+                    output,
+                    "\tquestion={}\tconflicts_with={}",
+                    summary_cell(question),
+                    others.join("; ")
+                );
+            }
+        }
+        write_project_field(&mut output, Some(&item.project_label));
+        output.push('\n');
+    }
+    output.trim_end().to_owned()
+}
+
+/// The `get_changed_decisions` reply: decisions revised, superseded or left without a premise
+/// in the window, most recently changed first, each followed by its dated changes
+/// (hivemind-bbnw.7).
+pub(crate) fn render_changed_decisions_summary(results: &ChangedDecisionsResults) -> String {
+    if results.items.is_empty() {
+        return "No changed decisions found".to_owned();
+    }
+
+    let mut output = String::new();
+    for item in &results.items {
+        let _ = write!(
+            output,
+            "changed\t{}\tstatus={}\tlast_changed_at={}\t{}",
+            item.decision_id,
+            decision_status_label(item.status),
+            item.last_changed_at
+                .map_or_else(|| "undated".to_owned(), |ts| ts.to_rfc3339()),
+            summary_cell(&item.title)
+        );
+        write_project_field(&mut output, Some(&item.project_label));
+        output.push('\n');
+        for change in &item.changes {
+            write_timeline_entry(&mut output, change);
+        }
+    }
+    output.trim_end().to_owned()
+}
+
+/// A decision's dated story, oldest first, each entry cited by its ledger event, and the one
+/// duration it can honestly give (hivemind-bbnw.7).
+fn write_timeline(output: &mut String, timeline: &DecisionTimeline) {
+    if timeline.entries.is_empty() {
+        return;
+    }
+    let _ = writeln!(output, "  timeline:");
+    for entry in &timeline.entries {
+        write_timeline_entry(output, entry);
+    }
+    if let Some(seconds) = timeline.asked_to_decided_seconds {
+        let _ = writeln!(output, "  asked to decided: {}", format_duration(seconds));
+    }
+}
+
+fn write_timeline_entry(output: &mut String, entry: &TimelineEntry) {
+    let (label, detail) = timeline_fact_summary(&entry.fact);
+    let when = entry
+        .ts
+        .map_or_else(|| "undated".to_owned(), |ts| ts.to_rfc3339());
+    let _ = write!(
+        output,
+        "    {when}  {label}  by {}",
+        entry.actor_id.as_deref().unwrap_or("unknown")
+    );
+    if !detail.is_empty() {
+        let _ = write!(output, "  {detail}");
+    }
+    let _ = writeln!(output, "  ({})", entry.citation_id);
+}
+
+fn timeline_fact_summary(fact: &TimelineFact) -> (&'static str, String) {
+    match fact {
+        TimelineFact::Asked { request_id, .. } => ("asked", format!("request {request_id}")),
+        TimelineFact::Recorded => ("recorded", String::new()),
+        TimelineFact::Accepted => ("accepted", String::new()),
+        TimelineFact::Rejected { reason } => (
+            "rejected",
+            reason
+                .as_deref()
+                .map(|reason| format!("reason: {}", summary_cell(reason)))
+                .unwrap_or_default(),
+        ),
+        TimelineFact::Superseded { by_id } => ("superseded", format!("by {by_id}")),
+        TimelineFact::Supersedes { replaces_id } => ("supersedes", replaces_id.clone()),
+        TimelineFact::Retitled { from, to, reason } => (
+            "retitled",
+            format!(
+                "\"{}\" -> \"{}\"{}",
+                summary_cell(from),
+                summary_cell(to),
+                reason
+                    .as_deref()
+                    .map(|reason| format!(" ({})", summary_cell(reason)))
+                    .unwrap_or_default()
+            ),
+        ),
+        TimelineFact::Moved { from, to, reason } => (
+            "moved",
+            format!(
+                "{from} -> {to}{}",
+                reason
+                    .as_deref()
+                    .map(|reason| format!(" ({})", summary_cell(reason)))
+                    .unwrap_or_default()
+            ),
+        ),
+        TimelineFact::PremiseRefuted {
+            hypothesis_id,
+            evidence_id,
+        } => (
+            "premise refuted",
+            format!("hypothesis {hypothesis_id} refuted by evidence {evidence_id}"),
+        ),
+        TimelineFact::PremiseSuperseded { decision_id, by_id } => (
+            "premise superseded",
+            format!("decision {decision_id} superseded by {by_id}"),
+        ),
+        TimelineFact::PremiseRejected { decision_id } => (
+            "premise rejected",
+            format!("decision {decision_id} rejected"),
+        ),
+    }
+}
+
+/// Whole seconds as the two largest units that are not zero: `3d 4h`, `1h 12m`, `45s`.
+fn format_duration(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    let (days, hours, minutes) = (
+        seconds / 86_400,
+        seconds % 86_400 / 3_600,
+        seconds % 3_600 / 60,
+    );
+    match (days, hours, minutes) {
+        (0, 0, 0) => format!("{seconds}s"),
+        (0, 0, minutes) => format!("{minutes}m {}s", seconds % 60),
+        (0, hours, minutes) => format!("{hours}h {minutes}m"),
+        (days, hours, _) => format!("{days}d {hours}h"),
+    }
 }
 
 pub(crate) fn render_blocker_notifications_summary(

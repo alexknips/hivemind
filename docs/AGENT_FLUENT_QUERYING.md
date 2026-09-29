@@ -563,6 +563,16 @@ evidence item's content (clipped to 200 characters with a trailing `…`).
 `root`/`node`/`edge` lines. `compact-view` reads the bare structure without
 the brief or labels.
 
+**`why` carries the decision's timeline.** Where the caller holds the ledger
+(the CLI, the stdio server, the HTTP endpoint), `why` also returns
+`timeline`: the decision's dated story from the ledger, oldest first, each
+entry cited by its event (asked, recorded, accepted or rejected, superseded,
+retitled, moved, a premise no longer standing), with `asked_at`, `decided_at`
+and `asked_to_decided_seconds`. The graph holds no per-edge times, so a
+graph-only `get_decision_neighborhood` leaves it absent. See
+[`ATTENTION_LISTS.md`](ATTENTION_LISTS.md), which also describes the waiting,
+contested and changed lists.
+
 **Every answer names its project.** Every decision an answer returns carries
 `project` (the address: a registered handle such as `billing`, or the
 recorder's derived personal address such as `personal:human:alex`) and

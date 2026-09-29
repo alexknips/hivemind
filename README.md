@@ -394,6 +394,9 @@ Cursor uses the same shape under `mcp.servers`. The server exposes these tools:
 | `get_supersession_chain` | read | `query get_supersession_chain` |
 | `search_decisions` | read | `query search_decisions` |
 | `recent_decisions` | read | `query recent_decisions` |
+| `get_waiting_requests` | read | `query get_waiting_requests` |
+| `get_contested_decisions` | read | `query get_contested_decisions` |
+| `get_changed_decisions` | read | `query get_changed_decisions` |
 | `dump_graph` | read | `dump --format dot` |
 | `recall_decisions` | layer-3 | search + ranked digest |
 | `hivemind_compact_view` | layer-3 | compact subgraph projection |

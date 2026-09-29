@@ -129,6 +129,35 @@
         "product",
         "slice-one"
       ]
+    },
+    "timeline": {
+      "decided_at": "2026-01-01T00:00:26Z",
+      "decision_id": "decision-016",
+      "entries": [
+        {
+          "actor_id": "actor:planner",
+          "citation_id": "event:26",
+          "event_origin": 26,
+          "kind": "recorded",
+          "ts": "2026-01-01T00:00:26Z"
+        },
+        {
+          "actor_id": "actor:architect",
+          "by_id": "decision-018",
+          "citation_id": "event:46",
+          "event_origin": 46,
+          "kind": "superseded",
+          "ts": "2026-01-01T00:00:46Z"
+        },
+        {
+          "actor_id": "actor:architect",
+          "by_id": "decision-019",
+          "citation_id": "event:47",
+          "event_origin": 47,
+          "kind": "superseded",
+          "ts": "2026-01-01T00:00:47Z"
+        }
+      ]
     }
   },
   "latency_ms": 0,

@@ -7,6 +7,8 @@
 //! instead of invisible. Pure graph reads: exact match only, no ranking, no model, and nothing
 //! is ever resolved for the reader (AGENTS.md §6: disagreement is preserved, never collapsed).
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
@@ -17,7 +19,7 @@ use crate::Result;
 use super::brief::resolve_option_label;
 use super::shared::{
     neighbor_ids, neighbor_pairs, node_row, node_rows, optional_datetime, optional_int,
-    optional_string, query_timer_start, Direction,
+    optional_string, query_timer_start, relation_edges, Direction,
 };
 use super::status::{derive_decision_status, DecisionStatus};
 use super::QueryResponse;
@@ -161,6 +163,100 @@ pub(super) fn earliest_ask(
     Ok(earliest)
 }
 
+/// One explicit ask of a question, read from its `Ask` node.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct AskFact {
+    /// The request id: the `question.asked` event's uuid, what `capture --answers` takes.
+    pub request_id: String,
+    pub asked_at: DateTime<Utc>,
+    pub requested_by: Option<String>,
+    /// The ledger offset of the `question.asked` event (the node's own, real on every backend).
+    pub event_origin: Option<i64>,
+}
+
+/// Every explicit ask of the question `question_id`, in ledger order. A question nobody asked
+/// (only ever named by a capture's `--question`) has none: nothing is guessed.
+pub(super) fn asks_for_question(graph: &impl GraphView, question_id: &str) -> Result<Vec<AskFact>> {
+    let mut asks = Vec::new();
+    for (request_id, row) in node_rows(graph, NodeKind::Ask)? {
+        if optional_string(&row, "question_id").as_deref() != Some(question_id) {
+            continue;
+        }
+        let Some(asked_at) = optional_datetime(&row, "asked_at")? else {
+            continue;
+        };
+        let requested_by = neighbor_pairs(
+            graph,
+            NodeKind::Ask,
+            &request_id,
+            RelationKind::AskedBy,
+            NodeKind::Actor,
+            Direction::Outgoing,
+        )?
+        .into_iter()
+        .next()
+        .map(|(actor_id, _)| actor_id);
+        asks.push(AskFact {
+            request_id,
+            asked_at,
+            requested_by,
+            event_origin: optional_int(&row, "event_origin"),
+        });
+    }
+    asks.sort_by(|left, right| {
+        (left.event_origin, &left.request_id).cmp(&(right.event_origin, &right.request_id))
+    });
+    Ok(asks)
+}
+
+/// A question that accepted, current decisions answer in different ways.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ConflictingAnswers {
+    pub question_id: String,
+    pub text: String,
+    /// Every accepted, non-superseded answer that chose an option, in event order. At least two
+    /// of them chose differently; that is why the question is listed.
+    pub answers: Vec<QuestionAnswer>,
+}
+
+/// Every question whose accepted, non-superseded answers choose different options, sorted by
+/// question id. The same rule as `conflicting_answer_ids`, read for all questions at once: only
+/// a question two or more decisions answer can conflict, so only those are walked. Nothing is
+/// resolved for the reader (AGENTS.md §6).
+pub(super) fn conflicting_answer_sets(graph: &impl GraphView) -> Result<Vec<ConflictingAnswers>> {
+    let mut answering: BTreeMap<String, usize> = BTreeMap::new();
+    for (_decision_id, question_id) in relation_edges(graph, RelationKind::Answers)? {
+        *answering.entry(question_id).or_default() += 1;
+    }
+    let questions = node_rows(graph, NodeKind::Question)?;
+    let mut sets = Vec::new();
+    for (question_id, answer_count) in answering {
+        if answer_count < 2 {
+            continue;
+        }
+        let answers: Vec<QuestionAnswer> = ordered_answers(graph, &question_id)?
+            .into_iter()
+            .map(|ordered| ordered.answer)
+            .filter(|answer| answer.status == DecisionStatus::Accepted)
+            .filter(|answer| choice_key(answer).is_some())
+            .collect();
+        let choices: BTreeSet<String> = answers.iter().filter_map(choice_key).collect();
+        if choices.len() < 2 {
+            continue;
+        }
+        let text = questions
+            .get(&question_id)
+            .and_then(|row| optional_string(row, "text"))
+            .unwrap_or_default();
+        sets.push(ConflictingAnswers {
+            question_id,
+            text,
+            answers,
+        });
+    }
+    Ok(sets)
+}
+
 /// The other decisions that answer the question `decision_id` answers, in event order. Empty
 /// when the decision names no question node or nobody else answers it.
 pub(super) fn other_answers(
@@ -237,7 +333,7 @@ pub(super) fn newer_accepted_answers(
 
 /// What an answer chose, compared case- and space-insensitively so "Postgres" and "postgres"
 /// are one choice.
-fn choice_key(answer: &QuestionAnswer) -> Option<String> {
+pub(super) fn choice_key(answer: &QuestionAnswer) -> Option<String> {
     answer
         .chosen_option
         .as_deref()

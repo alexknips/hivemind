@@ -1,0 +1,125 @@
+{
+  "data": {
+    "cursor": null,
+    "items": [
+      {
+        "changes": [
+          {
+            "actor_id": "actor:auditor",
+            "citation_id": "event:49",
+            "event_origin": 49,
+            "evidence_id": "evidence-004",
+            "hypothesis_id": "hypothesis-001",
+            "kind": "premise_refuted",
+            "ts": "2026-01-01T00:00:49Z"
+          }
+        ],
+        "decided_at": "2026-01-01T00:00:15Z",
+        "decision_id": "decision-005",
+        "last_changed_at": "2026-01-01T00:00:49Z",
+        "project": "personal:actor:planner",
+        "project_label": "actor:planner's personal project",
+        "slug": "seed-decision-005",
+        "status": "proposed",
+        "title": "Seed decision 005"
+      },
+      {
+        "changes": [
+          {
+            "actor_id": "actor:auditor",
+            "citation_id": "event:49",
+            "event_origin": 49,
+            "evidence_id": "evidence-004",
+            "hypothesis_id": "hypothesis-001",
+            "kind": "premise_refuted",
+            "ts": "2026-01-01T00:00:49Z"
+          }
+        ],
+        "decided_at": "2026-01-01T00:00:16Z",
+        "decision_id": "decision-006",
+        "last_changed_at": "2026-01-01T00:00:49Z",
+        "project": "personal:actor:planner",
+        "project_label": "actor:planner's personal project",
+        "slug": "seed-decision-006",
+        "status": "proposed",
+        "title": "Seed decision 006"
+      },
+      {
+        "changes": [
+          {
+            "actor_id": "actor:architect",
+            "by_id": "decision-018",
+            "citation_id": "event:46",
+            "event_origin": 46,
+            "kind": "superseded",
+            "ts": "2026-01-01T00:00:46Z"
+          },
+          {
+            "actor_id": "actor:architect",
+            "by_id": "decision-019",
+            "citation_id": "event:47",
+            "event_origin": 47,
+            "kind": "superseded",
+            "ts": "2026-01-01T00:00:47Z"
+          }
+        ],
+        "decided_at": "2026-01-01T00:00:26Z",
+        "decision_id": "decision-016",
+        "last_changed_at": "2026-01-01T00:00:47Z",
+        "project": "personal:actor:planner",
+        "project_label": "actor:planner's personal project",
+        "slug": "seed-decision-016",
+        "status": "superseded",
+        "title": "Seed decision 016"
+      },
+      {
+        "changes": [
+          {
+            "actor_id": "actor:architect",
+            "by_id": "decision-003",
+            "citation_id": "event:45",
+            "event_origin": 45,
+            "kind": "superseded",
+            "ts": "2026-01-01T00:00:45Z"
+          }
+        ],
+        "decided_at": "2026-01-01T00:00:12Z",
+        "decision_id": "decision-002",
+        "last_changed_at": "2026-01-01T00:00:45Z",
+        "project": "personal:actor:planner",
+        "project_label": "actor:planner's personal project",
+        "slug": "seed-decision-002",
+        "status": "superseded",
+        "title": "Seed decision 002"
+      },
+      {
+        "changes": [
+          {
+            "actor_id": "actor:architect",
+            "by_id": "decision-002",
+            "citation_id": "event:44",
+            "event_origin": 44,
+            "kind": "superseded",
+            "ts": "2026-01-01T00:00:44Z"
+          }
+        ],
+        "decided_at": "2026-01-01T00:00:11Z",
+        "decision_id": "decision-001",
+        "last_changed_at": "2026-01-01T00:00:44Z",
+        "project": "personal:actor:planner",
+        "project_label": "actor:planner's personal project",
+        "slug": "seed-decision-001",
+        "status": "superseded",
+        "title": "Seed decision 001"
+      }
+    ],
+    "limit": 10,
+    "next_cursor": null,
+    "since": "2026-01-01T00:00:00Z",
+    "total_matches": 5,
+    "until": "2026-01-02T00:00:00Z"
+  },
+  "latency_ms": 0,
+  "result_count": 5,
+  "truncated": false
+}

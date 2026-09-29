@@ -16,14 +16,16 @@ use crate::events::{CaptureItem, EventProvenance, IngestTurn};
 use crate::grounding::{
     resolve_grounding, GroundingResolution, GroundingSpec, WIRE_GROUNDING_REFUSAL,
 };
-use crate::ledger::{EventLedger, SqliteEventLedger};
+use crate::ledger::{EventLedger, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::GraphView;
 use crate::queries::{
-    derive_decision_status, get_compact_view, get_decision, get_decision_brief,
-    get_decision_neighborhood, get_relevant_decisions, get_situational_decisions,
-    get_supersession_chain, resolve_decision_by_description, search_decisions_any,
-    NeighborhoodRequest, QueryContext, QueryResponse, ResolveOutcome, SearchDecisionRequest,
-    SituationalRequest,
+    derive_decision_status, get_changed_decisions, get_compact_view, get_contested_decisions,
+    get_decision, get_decision_brief, get_decision_neighborhood, get_decision_timeline,
+    get_relevant_decisions, get_situational_decisions, get_supersession_chain,
+    get_waiting_requests, resolve_decision_by_description, search_decisions_any,
+    ChangedDecisionsRequest, ContestedDecisionsRequest, NeighborhoodRequest, QueryContext,
+    QueryResponse, ResolveOutcome, SearchDecisionRequest, SituationalRequest,
+    WaitingRequestsRequest,
 };
 use crate::summarize::{recall_decisions, RecallRequest, RECALL_DEFAULT_LIMIT};
 
@@ -163,6 +165,26 @@ pub(super) struct SearchParams {
     limit: Option<usize>,
     cursor: Option<String>,
 }
+
+/// Query params of the paged attention lists (`waiting`, `contested`).
+#[derive(Debug, Deserialize)]
+pub(super) struct AttentionParams {
+    limit: Option<usize>,
+    cursor: Option<String>,
+}
+
+/// Query params of `GET /v1/attention/changed`: the window (RFC3339; `since` defaults to seven
+/// days before now) and the page.
+#[derive(Debug, Deserialize)]
+pub(super) struct ChangedParams {
+    since: Option<String>,
+    until: Option<String>,
+    limit: Option<usize>,
+    cursor: Option<String>,
+}
+
+/// Days back from now that `GET /v1/attention/changed` covers when it is given no `since`.
+const CHANGED_DEFAULT_WINDOW_DAYS: i64 = 7;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct RelevantParams {
@@ -745,6 +767,131 @@ pub(super) async fn compact_view_handler(
     respond_envelope(result)
 }
 
+pub(super) async fn timeline_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(decision_id): Path<String>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let scoped_ledger = TenantScopedLedger::new(&ledger, ctx.tenant_id.clone());
+        let response =
+            get_decision_timeline(&*graph, &scoped_ledger, &decision_id).map_err(to_api_error)?;
+        if response.data.is_none() {
+            return Err(ApiError::not_found(format!(
+                "decision not found: {decision_id}"
+            )));
+        }
+        Ok(response)
+    })
+    .await;
+
+    respond_envelope(result)
+}
+
+pub(super) async fn waiting_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<AttentionParams>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let request = WaitingRequestsRequest {
+            limit: params.limit.unwrap_or(25),
+            cursor: params.cursor,
+        };
+        get_waiting_requests(&*graph, &request).map_err(to_api_error)
+    })
+    .await;
+
+    respond_envelope(result)
+}
+
+pub(super) async fn contested_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<AttentionParams>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let request = ContestedDecisionsRequest {
+            limit: params.limit.unwrap_or(25),
+            cursor: params.cursor,
+        };
+        get_contested_decisions(&*graph, &request).map_err(to_api_error)
+    })
+    .await;
+
+    respond_envelope(result)
+}
+
+pub(super) async fn changed_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ChangedParams>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let since = params
+            .since
+            .as_deref()
+            .map(parse_datetime)
+            .transpose()
+            .map_err(|e| ApiError::validation(format!("invalid `since`: {e}")))?
+            .unwrap_or_else(|| Utc::now() - chrono::Duration::days(CHANGED_DEFAULT_WINDOW_DAYS));
+        let until = params
+            .until
+            .as_deref()
+            .map(parse_datetime)
+            .transpose()
+            .map_err(|e| ApiError::validation(format!("invalid `until`: {e}")))?;
+        let request = ChangedDecisionsRequest {
+            since: Some(since),
+            until,
+            limit: params.limit.unwrap_or(25),
+            cursor: params.cursor,
+        };
+
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let scoped_ledger = TenantScopedLedger::new(&ledger, ctx.tenant_id.clone());
+        get_changed_decisions(&*graph, &scoped_ledger, &request).map_err(to_api_error)
+    })
+    .await;
+
+    respond_envelope(result)
+}
+
 pub(super) async fn map_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1115,7 +1262,7 @@ pub(super) async fn why_handler(
         match resolve_fluent_target_http(graph, &params)? {
             FluentTarget::Ambiguous(response) => Ok(envelope_value(&response)),
             FluentTarget::Id(decision_id) => {
-                let response =
+                let mut response =
                     get_decision_neighborhood(graph, &decision_id, &NeighborhoodRequest::all())
                         .map_err(to_api_error)?;
                 if !response.data.root.present {
@@ -1123,6 +1270,11 @@ pub(super) async fn why_handler(
                         "decision not found: {decision_id}"
                     )));
                 }
+                // The graph holds no per-edge times: the ledger supplies the dated story.
+                let scoped_ledger = TenantScopedLedger::new(&ledger, ctx.tenant_id.clone());
+                response.data.timeline = get_decision_timeline(graph, &scoped_ledger, &decision_id)
+                    .map_err(to_api_error)?
+                    .data;
                 Ok(envelope_value(&response))
             }
         }

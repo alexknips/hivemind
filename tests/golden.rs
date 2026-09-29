@@ -203,6 +203,27 @@ const QUERY_SPECS: &[QuerySpec] = &[
         expectation: QueryExpectation::Success,
     },
     QuerySpec {
+        name: "get_contested_decisions",
+        snapshot_file: "get_contested_decisions.json",
+        args: &["query", "get_contested_decisions", "--limit", "10"],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
+        name: "get_changed_decisions",
+        snapshot_file: "get_changed_decisions.json",
+        args: &[
+            "query",
+            "get_changed_decisions",
+            "--since",
+            "2026-01-01",
+            "--until",
+            "2026-01-02",
+            "--limit",
+            "10",
+        ],
+        expectation: QueryExpectation::Success,
+    },
+    QuerySpec {
         name: "get_decision_neighborhood_invalid_id",
         snapshot_file: "get_decision_neighborhood_invalid_id.json",
         args: &["query", "get_decision_neighborhood", "--id", ""],

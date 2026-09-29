@@ -32,6 +32,9 @@
 //! Read:
 //! - `GET  /v1/decisions/{id}`                     — get single decision
 //! - `GET  /v1/decisions/{id}/supersession-chain`  — supersession chain
+//! - `GET  /v1/decisions/{id}/timeline`            — the decision's dated story from the ledger:
+//!   asked, recorded, accepted or rejected, superseded, retitled, moved, premise no longer
+//!   standing (hivemind-bbnw.7)
 //! - `GET  /v1/decisions/search`                   — full-text search (SQLite only)
 //! - `GET  /v1/decisions/relevant`                 — decisions by topic
 //! - `GET  /v1/decisions/situational`               — decisions relevant to touched paths
@@ -39,6 +42,12 @@
 //! - `GET  /v1/decisions/why`                       — decision neighborhood, by id or free text
 //! - `GET  /v1/decisions/verify`                    — decision brief (still holds?), by id or free text
 //! - `GET  /v1/decisions/map[?alpha=0.5]`          — 2-D spectral decision map
+//! - `GET  /v1/attention/waiting[?limit=][?cursor=]`   — open asks with no answering decision,
+//!   oldest first
+//! - `GET  /v1/attention/contested[?limit=][?cursor=]` — decisions in contest (disagreement or
+//!   conflicting answers), oldest first
+//! - `GET  /v1/attention/changed[?since=][?until=][?limit=][?cursor=]` — decisions revised or
+//!   superseded in a window (RFC3339; `since` defaults to seven days back), newest first
 //! - `GET  /v1/classify-queue[?session_id=][?limit=]` — pending ingest batches with
 //!   turn text, plus today's classification budget
 //! - `GET  /v1/graph`                              — full decision graph (JSON)
@@ -580,6 +589,10 @@ fn build_router(state: AppState) -> Router {
         .route("/v1/decisions/recall", get(handlers::recall_handler))
         .route("/v1/decisions/why", get(handlers::why_handler))
         .route("/v1/decisions/verify", get(handlers::verify_handler))
+        // Attention lists (hivemind-bbnw.7): what is waiting, contested, or recently changed
+        .route("/v1/attention/waiting", get(handlers::waiting_handler))
+        .route("/v1/attention/contested", get(handlers::contested_handler))
+        .route("/v1/attention/changed", get(handlers::changed_handler))
         // Decision resource routes
         .route("/v1/decisions", post(handlers::post_decisions_handler))
         .route("/v1/decisions/{id}", get(handlers::get_decision_handler))
@@ -590,6 +603,10 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/v1/decisions/{id}/compact-view",
             get(handlers::compact_view_handler),
+        )
+        .route(
+            "/v1/decisions/{id}/timeline",
+            get(handlers::timeline_handler),
         )
         .route(
             "/v1/decisions/{id}/disagreements",

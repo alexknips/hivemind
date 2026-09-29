@@ -40,18 +40,20 @@ use crate::quality_profile::{
 };
 use crate::queries::{
     decisions_in_project, derive_decision_status, export_decision_log, export_read_only_summary,
-    get_active_decision_blockers, get_blocker_notification_candidates, get_compact_view,
-    get_decision, get_decision_brief, get_decision_neighborhood, get_decisions_added_since,
+    get_active_decision_blockers, get_blocker_notification_candidates, get_changed_decisions,
+    get_compact_view, get_contested_decisions, get_decision, get_decision_brief,
+    get_decision_neighborhood, get_decision_timeline, get_decisions_added_since,
     get_decisions_changed_since, get_project, get_recent_activity, get_recent_decisions,
     get_relevant_decisions, get_situational_decisions, get_supersession_chain,
     get_waiting_requests, list_projects, misfiled_next_cursor, require_registered_project,
     resolve_decision_by_description, scan_misfiled_decisions, search_decisions,
     search_decisions_any, ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest,
-    ChangedSinceRequest, DecisionBlockerFilters, DecisionLogExport, DecisionLogOutcome,
-    DecisionLogRequest, DecisionStatus, DecisionsAddedSinceFilterRequest,
-    DecisionsAddedSinceRequest, HistoryFilterRequest, MisfiledScanRequest, NeighborhoodRequest,
-    ProjectDecisionsRequest, ProjectListRequest, ProjectOutcome, QueryContext, ReadOnlyExportQuery,
-    ReadOnlyExportRequest, RecentActivityRequest, RecentDecisionEntry, RecentDecisionFilterRequest,
+    ChangedDecisionsRequest, ChangedSinceRequest, ContestedDecisionsRequest,
+    DecisionBlockerFilters, DecisionLogExport, DecisionLogOutcome, DecisionLogRequest,
+    DecisionStatus, DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
+    HistoryFilterRequest, MisfiledScanRequest, NeighborhoodRequest, ProjectDecisionsRequest,
+    ProjectListRequest, ProjectOutcome, QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest,
+    RecentActivityRequest, RecentDecisionEntry, RecentDecisionFilterRequest,
     RecentDecisionsRequest, ResolveOutcome, ResolvedCandidate, SearchDecisionRequest,
     SituationalRequest, WaitingRequestsRequest,
 };
@@ -79,9 +81,10 @@ use super::args::{
     IngestCommand, IngestSlackThreadArgs, MapArgs, McpArgs, MoveArgs, ProjectAnchorArgs,
     ProjectArgs, ProjectCommand, ProjectDecisionsArgs, ProjectDeclareTopicArgs, ProjectLinkArgs,
     ProjectListArgs, ProjectRegisterArgs, ProjectShowArgs, ProjectSourceArg, ProjectUseArgs,
-    QualityScanArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority, QueryChangedSinceArgs,
-    QueryCommand, QueryDecisionStatus, QueryExportKind, QueryExportReadOnlySummaryArgs,
-    QueryHistoryFilterArgs, QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
+    QualityScanArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority,
+    QueryChangedDecisionsArgs, QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus,
+    QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs,
+    QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
     QueryScanDecisionQualityArgs, QuerySearchDecisionsArgs, QuerySituationalArgs, QuickstartArgs,
     RetitleArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand, SupersedeArgs, TenantArgs,
     TenantCommand, TenantCreateArgs, TuiArgs,
@@ -97,15 +100,15 @@ use super::render::{
     format_project_register_output, format_project_show_output, format_query_response,
     format_retitle_output, format_review_output, format_supersede_output,
     render_active_blockers_summary, render_added_since_summary,
-    render_blocker_notifications_summary, render_changed_since_summary,
-    render_compact_view_summary, render_decision_brief_summary, render_decision_list_summary,
-    render_decision_summary, render_dot, render_misfiled_scan_summary, render_neighborhood_summary,
-    render_placement_line, render_read_only_export_summary, render_recall_summary,
-    render_recent_activity_summary, render_recent_decisions_summary,
-    render_resolve_outcome_summary, render_scan_report_summary, render_score_report_summary,
-    render_search_summary, render_situational_summary, render_supersession_summary,
-    render_waiting_requests_summary, CaptureCommandOutput, CurrentProjectOutput,
-    DisagreeCommandOutput, ExportReport, OutputEnvelope, ProjectAnchorOutput,
+    render_blocker_notifications_summary, render_changed_decisions_summary,
+    render_changed_since_summary, render_compact_view_summary, render_contested_decisions_summary,
+    render_decision_brief_summary, render_decision_list_summary, render_decision_summary,
+    render_dot, render_misfiled_scan_summary, render_neighborhood_summary, render_placement_line,
+    render_read_only_export_summary, render_recall_summary, render_recent_activity_summary,
+    render_recent_decisions_summary, render_resolve_outcome_summary, render_scan_report_summary,
+    render_score_report_summary, render_search_summary, render_situational_summary,
+    render_supersession_summary, render_waiting_requests_summary, CaptureCommandOutput,
+    CurrentProjectOutput, DisagreeCommandOutput, ExportReport, OutputEnvelope, ProjectAnchorOutput,
     ProjectDeclareTopicOutput, ProjectLinkOutput, ProjectRegisterOutput, ReviewActionOutput,
     ReviewCommandOutput, SupersedeCommandOutput,
 };
@@ -2289,6 +2292,8 @@ fn run_query_with_ledger(ledger: &impl EventLedger, query: &QueryArgs) -> Result
         | QueryCommand::Recall(_)
         | QueryCommand::GetActiveDecisionBlockers(_)
         | QueryCommand::GetWaitingRequests(_)
+        | QueryCommand::GetContestedDecisions(_)
+        | QueryCommand::GetChangedDecisions(_)
         | QueryCommand::GetBlockerNotificationCandidates(_)
         | QueryCommand::ScoreDecision(_)
         | QueryCommand::ScanDecisionQuality(_)
@@ -2604,6 +2609,21 @@ pub(crate) fn added_since_request(
                 .map(QueryDecisionStatus::as_decision_status)
                 .collect(),
         },
+        limit: args.limit,
+        cursor: args.cursor.clone(),
+    })
+}
+
+/// `get_changed_decisions`'s window: `--since` (default 7 days back from `--now`) and `--until`,
+/// each an RFC3339 timestamp, a `YYYY-MM-DD` date or a duration like `7d`.
+fn changed_decisions_request(args: &QueryChangedDecisionsArgs) -> Result<ChangedDecisionsRequest> {
+    let now = parse_utc_timestamp("--now", &args.now)?;
+    let timezone = TimeZoneSpec::parse(&args.timezone)?;
+    let since = resolve_diff_bound("--since", Some(args.since.as_str()), None, now, timezone)?;
+    let until = resolve_diff_bound("--until", args.until.as_deref(), None, now, timezone)?;
+    Ok(ChangedDecisionsRequest {
+        since,
+        until,
         limit: args.limit,
         cursor: args.cursor.clone(),
     })
@@ -2935,7 +2955,11 @@ fn run_query_with_graph(
                             .map(QueryRelationKind::as_graph_relation),
                     )
                 };
-                let response = get_decision_neighborhood(graph, &decision_id, &request)?;
+                let mut response = get_decision_neighborhood(graph, &decision_id, &request)?;
+                // The graph holds no per-edge times: the ledger supplies the dated story.
+                let scoped_ledger = TenantScopedLedger::new(ledger, context.tenant_id.clone());
+                response.data.timeline =
+                    get_decision_timeline(graph, &scoped_ledger, &decision_id)?.data;
                 format_query_response(query.summary, &response, render_neighborhood_summary, None)?
             }
         }
@@ -3057,6 +3081,30 @@ fn run_query_with_graph(
                 query.summary,
                 &response,
                 render_waiting_requests_summary,
+                response.data.next_cursor.as_deref(),
+            )?
+        }
+        QueryCommand::GetContestedDecisions(args) => {
+            let request = ContestedDecisionsRequest {
+                limit: args.limit,
+                cursor: args.cursor.clone(),
+            };
+            let response = get_contested_decisions(graph, &request)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_contested_decisions_summary,
+                response.data.next_cursor.as_deref(),
+            )?
+        }
+        QueryCommand::GetChangedDecisions(args) => {
+            let scoped_ledger = TenantScopedLedger::new(ledger, context.tenant_id.clone());
+            let response =
+                get_changed_decisions(graph, &scoped_ledger, &changed_decisions_request(args)?)?;
+            format_query_response(
+                query.summary,
+                &response,
+                render_changed_decisions_summary,
                 response.data.next_cursor.as_deref(),
             )?
         }

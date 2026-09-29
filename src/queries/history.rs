@@ -1269,7 +1269,7 @@ fn export_from_parts(
     }
 }
 
-fn read_all_events(ledger: &impl EventLedger) -> Result<Vec<Event>> {
+pub(super) fn read_all_events(ledger: &impl EventLedger) -> Result<Vec<Event>> {
     let mut events = Vec::new();
     let mut offset = 0;
 

@@ -20,6 +20,7 @@ use super::shared::{
 use super::status::{
     derive_decision_status, derive_hypothesis_status, DecisionStatus, HypothesisStatus,
 };
+use super::timeline::DecisionTimeline;
 use super::QueryResponse;
 
 /// Node labels longer than this many characters are clipped and end in `…`, so an evidence item
@@ -129,6 +130,12 @@ pub struct NeighborhoodView {
     pub root: NeighborhoodRoot,
     pub nodes: Vec<NeighborNode>,
     pub edges: Vec<NeighborEdge>,
+    /// The root decision's dated story: asked, decided, accepted or rejected, revised,
+    /// superseded, and what stopped standing beneath it (hivemind-bbnw.7). The graph holds no
+    /// per-edge times, so the caller that holds the ledger attaches it
+    /// (`DecisionTimeline` via `get_decision_timeline`); a graph-only read leaves it absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<DecisionTimeline>,
 }
 
 pub struct NeighborhoodRequest {
@@ -303,6 +310,7 @@ pub(super) fn neighborhood_structure(
                 root,
                 nodes: Vec::new(),
                 edges: Vec::new(),
+                timeline: None,
             },
         });
     }
@@ -517,7 +525,12 @@ pub(super) fn neighborhood_structure(
         result_count,
         truncated,
         latency_ms: started.elapsed().as_millis(),
-        data: NeighborhoodView { root, nodes, edges },
+        data: NeighborhoodView {
+            root,
+            nodes,
+            edges,
+            timeline: None,
+        },
     })
 }
 

@@ -1,0 +1,31 @@
+{
+  "data": {
+    "cursor": null,
+    "items": [
+      {
+        "contest": {
+          "accepted_by": [
+            "actor:alice"
+          ],
+          "kind": "disagreement",
+          "rejected_by": [
+            "actor:bob"
+          ]
+        },
+        "decided_at": "2026-01-01T00:00:14Z",
+        "decision_id": "decision-004",
+        "project": "personal:actor:planner",
+        "project_label": "actor:planner's personal project",
+        "slug": "seed-decision-004",
+        "status": "contested",
+        "title": "Seed decision 004"
+      }
+    ],
+    "limit": 10,
+    "next_cursor": null,
+    "total_matches": 1
+  },
+  "latency_ms": 0,
+  "result_count": 1,
+  "truncated": false
+}

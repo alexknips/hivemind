@@ -1820,8 +1820,10 @@ pub enum QueryCommand {
     GetSupersessionChain(QueryFluentDecisionArgs),
     /// "Why was this decided?" — the decision's title, rationale, chosen and rejected options,
     /// who decided, and whether it still holds, plus its one-hop graph (actors, options,
-    /// evidence, premises, supersession) with every node labelled. Takes a description or
-    /// question as well as --id. Friendlier alias: `why`.
+    /// evidence, premises, supersession) with every node labelled, and its dated timeline from
+    /// the ledger (asked, recorded, accepted or rejected, superseded, retitled, moved, a premise
+    /// no longer standing). Takes a description or question as well as --id. Friendlier alias:
+    /// `why`.
     #[command(name = "get_decision_neighborhood", alias = "why")]
     GetDecisionNeighborhood(QueryDecisionNeighborhoodArgs),
     /// A bounded summary of one decision for an agent to read: the decision, its supersession,
@@ -1856,6 +1858,17 @@ pub enum QueryCommand {
     /// events and `ANSWERS` edges, nothing ranked or inferred (hivemind-bbnw.4).
     #[command(name = "get_waiting_requests")]
     GetWaitingRequests(QueryWaitingRequestsArgs),
+    /// Decisions in contest, oldest first: an accepted-and-rejected decision (who is on each
+    /// side), or accepted answers to one question that choose different options (each naming the
+    /// other). Derived from the graph, nothing ranked, picked or resolved (hivemind-bbnw.7).
+    #[command(name = "get_contested_decisions")]
+    GetContestedDecisions(QueryContestedDecisionsArgs),
+    /// Decisions that were revised or superseded, or whose premise stopped standing, in a window
+    /// (`--since`, default the last 7 days), most recently changed first: what changed, when, by
+    /// whom and by what. Facts from the ledger, cited by event offset; no verdict on the change
+    /// (hivemind-bbnw.7).
+    #[command(name = "get_changed_decisions")]
+    GetChangedDecisions(QueryChangedDecisionsArgs),
     /// Which open blockers now warrant telling a human, under a notification policy
     /// (`--policy-version`) evaluated at `--now`: recipient, channel, the threshold rule that
     /// fired and a dedupe key. An internal scheduler surface.
@@ -2048,6 +2061,41 @@ pub struct QueryWaitingRequestsArgs {
     #[arg(long = "limit", default_value_t = 25)]
     pub limit: usize,
 
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
+}
+
+/// `hivemind query get_contested_decisions` (hivemind-bbnw.7).
+#[derive(Debug, Clone, Args)]
+pub struct QueryContestedDecisionsArgs {
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    #[arg(long = "cursor")]
+    pub cursor: Option<String>,
+}
+
+/// `hivemind query get_changed_decisions` (hivemind-bbnw.7).
+#[derive(Debug, Clone, Args)]
+pub struct QueryChangedDecisionsArgs {
+    /// The start of the window: an RFC3339 timestamp, a YYYY-MM-DD date, or a duration such as
+    /// 7d or 24h before now. For the whole ledger, pass an early date such as 1970-01-01.
+    #[arg(long = "since", default_value = "7d")]
+    pub since: String,
+
+    #[arg(long = "until")]
+    pub until: Option<String>,
+
+    #[arg(long = "timezone", default_value = "UTC")]
+    pub timezone: String,
+
+    #[arg(long = "now")]
+    pub now: Option<String>,
+
+    #[arg(long = "limit", default_value_t = 25)]
+    pub limit: usize,
+
+    /// The `next_cursor` of the previous page.
     #[arg(long = "cursor")]
     pub cursor: Option<String>,
 }

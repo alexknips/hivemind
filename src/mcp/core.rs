@@ -31,6 +31,7 @@
 //! `core::<tool>` function — one pair per tool, each independently
 //! reviewable.
 
+use chrono::{DateTime, Duration, Utc};
 use serde_json::{json, Map, Value};
 
 use crate::commands::{
@@ -49,17 +50,21 @@ use crate::quality_profile::{
     self, parse_kinds, ScanRequest, SuggestionsRequest, SCAN_DEFAULT_LIMIT,
 };
 use crate::queries::{
-    context_next_cursor, derive_decision_status, get_compact_view,
+    context_next_cursor, derive_decision_status,
+    get_changed_decisions as query_get_changed_decisions, get_compact_view,
+    get_contested_decisions as query_get_contested_decisions,
     get_decision_brief as query_get_decision_brief,
     get_decision_context as query_get_decision_context, get_decision_context_candidates,
     get_decision_neighborhood as query_get_decision_neighborhood, get_decision_quality_candidates,
-    get_recent_decisions, get_supersession_chain as query_get_supersession_chain,
-    misfiled_next_cursor, outcome_next_cursor, require_registered_project,
-    resolve_decision_by_description, scan_misfiled_decisions as query_scan_misfiled_decisions,
-    DecisionContextRequest, DecisionQualityCandidatesRequest, DecisionStatus,
-    FailureAttributionRequest, MisfiledScanRequest, NeighborhoodRequest, QueryContext,
-    QueryResponse, RecentDecisionFilterRequest, RecentDecisionsRequest, ResolveOutcome,
-    SituationalRequest,
+    get_decision_timeline as query_get_decision_timeline, get_recent_decisions,
+    get_supersession_chain as query_get_supersession_chain,
+    get_waiting_requests as query_get_waiting_requests, misfiled_next_cursor, outcome_next_cursor,
+    require_registered_project, resolve_decision_by_description,
+    scan_misfiled_decisions as query_scan_misfiled_decisions, ChangedDecisionsRequest,
+    ContestedDecisionsRequest, DecisionContextRequest, DecisionQualityCandidatesRequest,
+    DecisionStatus, FailureAttributionRequest, MisfiledScanRequest, NeighborhoodRequest,
+    QueryContext, QueryResponse, RecentDecisionFilterRequest, RecentDecisionsRequest,
+    ResolveOutcome, SituationalRequest, WaitingRequestsRequest,
 };
 use crate::summarize::{RecallRequest, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT};
 
@@ -796,9 +801,13 @@ pub(crate) fn get_decision_neighborhood<P: LedgerProvider>(
 
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&handle.ledger, &handle.tenant_id, &graph).map_err(CoreError::from)?;
-    let response =
+    let mut response =
         query_get_decision_neighborhood(&graph, &decision_id, &NeighborhoodRequest::all())
             .map_err(CoreError::from)?;
+    // The graph holds no per-edge times: the ledger supplies the dated story (hivemind-bbnw.7).
+    response.data.timeline = query_get_decision_timeline(&graph, &handle.ledger, &decision_id)
+        .map_err(CoreError::from)?
+        .data;
 
     Ok(ToolOutput(json!({
         "result_count": response.result_count,
@@ -806,6 +815,109 @@ pub(crate) fn get_decision_neighborhood<P: LedgerProvider>(
         "latency_ms": response.latency_ms,
         "data": response.data,
     })))
+}
+
+// ---------------------------------------------------------------------------
+// get_waiting_requests, get_contested_decisions, get_changed_decisions (hivemind-bbnw.7)
+// ---------------------------------------------------------------------------
+
+/// Days back from now that `get_changed_decisions` covers when it is given no `since`.
+const CHANGED_DEFAULT_WINDOW_DAYS: i64 = 7;
+
+/// Parsed, validated arguments for the `get_waiting_requests` tool.
+pub(crate) struct GetWaitingRequestsArgs {
+    pub(crate) request: WaitingRequestsRequest,
+}
+
+impl GetWaitingRequestsArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            request: WaitingRequestsRequest {
+                limit: optional_usize(args, "limit")?.unwrap_or(25),
+                cursor: optional_string(args, "cursor")?,
+            },
+        })
+    }
+}
+
+/// The core for the `get_waiting_requests` MCP tool (the CLI's `query get_waiting_requests`):
+/// open requests with no answering decision yet, oldest first, one page at a time.
+pub(crate) fn get_waiting_requests(
+    graph: &impl GraphView,
+    args: GetWaitingRequestsArgs,
+) -> Result<ToolOutput, CoreError> {
+    let response = query_get_waiting_requests(graph, &args.request).map_err(CoreError::from)?;
+    query_output(&response)
+}
+
+/// Parsed, validated arguments for the `get_contested_decisions` tool.
+pub(crate) struct GetContestedDecisionsArgs {
+    pub(crate) request: ContestedDecisionsRequest,
+}
+
+impl GetContestedDecisionsArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            request: ContestedDecisionsRequest {
+                limit: optional_usize(args, "limit")?.unwrap_or(25),
+                cursor: optional_string(args, "cursor")?,
+            },
+        })
+    }
+}
+
+/// The core for the `get_contested_decisions` MCP tool (the CLI's `query
+/// get_contested_decisions`): decisions in contest, oldest first, one page at a time.
+pub(crate) fn get_contested_decisions(
+    graph: &impl GraphView,
+    args: GetContestedDecisionsArgs,
+) -> Result<ToolOutput, CoreError> {
+    let response = query_get_contested_decisions(graph, &args.request).map_err(CoreError::from)?;
+    query_output(&response)
+}
+
+/// Parsed, validated arguments for the `get_changed_decisions` tool.
+pub(crate) struct GetChangedDecisionsArgs {
+    /// The start of the window; the last week when omitted.
+    pub(crate) since: Option<DateTime<Utc>>,
+    pub(crate) until: Option<DateTime<Utc>>,
+    pub(crate) limit: usize,
+    pub(crate) cursor: Option<String>,
+}
+
+impl GetChangedDecisionsArgs {
+    pub(crate) fn from_json(args: &Map<String, Value>) -> Result<Self, CoreError> {
+        Ok(Self {
+            since: optional_datetime(args, "since")?,
+            until: optional_datetime(args, "until")?,
+            limit: optional_usize(args, "limit")?.unwrap_or(25),
+            cursor: optional_string(args, "cursor")?,
+        })
+    }
+}
+
+/// The core for the `get_changed_decisions` MCP tool (the CLI's `query get_changed_decisions`):
+/// decisions revised, superseded or left without a premise in the window, most recently changed
+/// first. It reads the ledger for the dated events and the graph for the decisions, so it takes
+/// the provider and a graph. The window it used is echoed in `data.since` / `data.until`.
+pub(crate) fn get_changed_decisions<P: LedgerProvider>(
+    provider: &P,
+    graph: &impl GraphView,
+    args: GetChangedDecisionsArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let since = args
+        .since
+        .unwrap_or_else(|| Utc::now() - Duration::days(CHANGED_DEFAULT_WINDOW_DAYS));
+    let request = ChangedDecisionsRequest {
+        since: Some(since),
+        until: args.until,
+        limit: args.limit,
+        cursor: args.cursor,
+    };
+    let response =
+        query_get_changed_decisions(graph, &handle.ledger, &request).map_err(CoreError::from)?;
+    query_output(&response)
 }
 
 // ---------------------------------------------------------------------------

@@ -87,6 +87,7 @@ fn dot_export_renders_node_statuses_and_relation_labels() {
             reversed: false,
             event_origin: Some(7),
         }],
+        timeline: None,
     };
 
     let dot = render_neighborhood_dot(&neighborhood);

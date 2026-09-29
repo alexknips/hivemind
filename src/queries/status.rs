@@ -1,6 +1,6 @@
 //! Decision status derivation: computes proposed/accepted/contested/superseded from graph edges.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::Serialize;
 
@@ -71,7 +71,8 @@ pub struct DecisionStandings {
     /// Each superseded decision with the decisions that superseded it, sorted by id.
     superseded_by: BTreeMap<String, Vec<String>>,
     accepted_by: BTreeMap<String, Vec<String>>,
-    rejected: BTreeSet<String>,
+    /// Each rejected decision with the actors who rejected it, sorted by actor id.
+    rejected_by: BTreeMap<String, Vec<String>>,
 }
 
 impl DecisionStandings {
@@ -94,8 +95,12 @@ impl DecisionStandings {
                 .or_default()
                 .push(actor_id);
         }
-        for (decision_id, _) in relation_edges(graph, RelationKind::RejectedBy)? {
-            standings.rejected.insert(decision_id);
+        for (decision_id, actor_id) in relation_edges(graph, RelationKind::RejectedBy)? {
+            standings
+                .rejected_by
+                .entry(decision_id)
+                .or_default()
+                .push(actor_id);
         }
         Ok(standings)
     }
@@ -105,7 +110,7 @@ impl DecisionStandings {
         status_from_positions(
             self.superseded_by.contains_key(decision_id),
             self.accepted_by.contains_key(decision_id),
-            self.rejected.contains(decision_id),
+            self.rejected_by.contains_key(decision_id),
         )
     }
 
@@ -113,6 +118,14 @@ impl DecisionStandings {
     /// means concurrent supersessions, which both stand.
     pub fn superseders_of(&self, decision_id: &str) -> &[String] {
         self.superseded_by
+            .get(decision_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Who rejected this decision, sorted by actor id; empty when nobody has.
+    pub fn rejecters_of(&self, decision_id: &str) -> &[String] {
+        self.rejected_by
             .get(decision_id)
             .map(Vec::as_slice)
             .unwrap_or(&[])
