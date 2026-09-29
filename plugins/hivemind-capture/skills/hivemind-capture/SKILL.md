@@ -199,6 +199,25 @@ plugins/hivemind-capture/scripts/capture.sh "Keep the retry budget at 3" \
   without one can be linked afterwards with `hivemind ground "<decision>" --answers
   "<question>"`.
 
+### Questions you ask with AskUserQuestion (Claude Code)
+
+The Claude plugin's hooks record these for you. When you call `AskUserQuestion`,
+the question is written as an ask at that moment; when the person answers, their
+answer is written as a decision they made (`decided by` them, you as the
+recorder), with the options you offered, the one they picked, and any words of
+their own quoted verbatim. Do not capture that answer again: a second decision on
+the same question reads as `also answered by`, or as a conflict.
+
+- The recorded answer says no reasons were given and rests on a bet with nothing
+  declared, because nothing was stated. If the person then says what it rests on
+  (an observation, a decision it follows from, an assumption), record that with
+  `hivemind ground "<decision>" ...`; do not file a duplicate.
+- A question you never put to the person (deciding alone, working from the
+  task) has no ask and no answer to record. Capture the decision as usual, with
+  `--question` if you want it findable.
+- A question the person did not answer stays listed as waiting
+  (`hivemind query get_waiting_requests`). Nothing is recorded for them.
+
 ### When the capture is refused
 
 Add the grounding and re-run the same command. Never drop the capture.

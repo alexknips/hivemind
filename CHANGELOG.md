@@ -114,6 +114,27 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   (`docs/HUMAN_DECISION_BLOCKER_NOTIFICATIONS.md`) with its own required fields (`priority`,
   `authority_class`, `client_request_id`) that do not fit an explicit ask; overloading it would
   have conflated two concepts under one event type. (hivemind-bbnw.4)
+- **The Claude Code plugin records an agent's question to you as an ask, and your answer as a
+  decision that answers it.** `hivemind-capture` now ships hooks on the `AskUserQuestion` tool
+  (`plugins/hivemind-capture/hooks/hooks.json`). `PreToolUse` writes one ask per question at the
+  moment of the tool call (MCP `request_decision`; the event's own time is `asked_at`, never a
+  guess). `PostToolUse` writes one decision per answered question: recorded by the agent,
+  decided by you (`human:<git email>`, or `HIVEMIND_HUMAN_ACTOR`), the offered options, the one
+  you picked, and any words of your own quoted verbatim. Several picks in a multi-select, or your
+  own words, become one combined option (`Search + Export + Other (own words)`) and what you
+  picked into it is not listed as turned down. The decision names the same question as the ask,
+  so `hivemind why` shows `asked_at` beside `answered_at` and the request leaves
+  `get_waiting_requests`; the hooks share no state. It says no reasons were given and rests on a
+  bet with nothing declared, because nothing was stated with the answer. A question you decline
+  or never answer stays waiting; nothing is recorded when nobody asked (an agent deciding alone,
+  you deciding unprompted, an import). Writes go to the local ledger through `hivemind mcp`, or
+  to `POST /mcp` of the server named by `HIVEMIND_API_URL` (bearer token `HIVEMIND_API_KEY`), so
+  a hosted deployment works the same way. The hooks never get in the agent's way: a failed write
+  is logged (`hook.log`) and the question still appears; `HIVEMIND_ASK_HOOK_DISABLE=1` turns
+  them off. Needs `python3` and a CLI or server with the ask verb. Tests replay the hook
+  payloads of a recorded Claude Code session
+  (`tests/fixtures/claude_code/ask_user_question/`). The `hivemind-capture` skill tells agents
+  not to capture the same answer again. (hivemind-bbnw.5)
 - **`GET /v1/graph` says when each decision was made.** Every `decisions[]` entry and every
   `nodes[]` entry of `kind: "Decision"` now carries `decided_at`, the `decision.proposed`
   capture event's timestamp in ISO-8601 UTC (`null` only for an event predating the ledger's

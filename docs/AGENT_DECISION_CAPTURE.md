@@ -261,6 +261,39 @@ linked afterwards with `hivemind ground "<decision>" --answers "<question>"`
 decision answers one question: naming a different one than it already answers
 is refused, and nothing is written.
 
+## Questions asked with AskUserQuestion
+
+In Claude Code an agent puts a question to the person by calling the
+`AskUserQuestion` tool, an act with a time. The `hivemind-capture` plugin hooks it
+(hivemind-bbnw.5), so the ledger records when the question was asked and when it
+was answered, with no model in the loop:
+
+- **`PreToolUse`** writes one ask per question (`hivemind ask`, MCP
+  `request_decision`): the question, the asking agent, and the time of the tool
+  call. The request is `waiting` until a decision answers its question.
+- **`PostToolUse`** writes one decision per answered question, recorded by the agent
+  and **decided by the person** (`--decided-by human:<git email>`, or
+  `HIVEMIND_HUMAN_ACTOR`). Options are the ones offered, chosen is the one picked;
+  several picks, or words of their own, become one combined option
+  (`Search + Export + Other (own words)`) and the words go in `--quote`. It says
+  no reasons were given and rests on a bet with nothing declared, because nothing
+  was stated; `hivemind ground` adds what the answer rests on later.
+
+The decision names the same question as the ask (`--question`, not `--answers`: a
+request id only resolves to its question's text, so the two hooks share no state),
+which is what makes `hivemind why` show `asked_at` beside `answered_at` and takes
+the request off the waiting list.
+
+Only real asks are written. The tool call is the act and its time is the ask's
+time: nothing is back-dated by guess, and an agent deciding alone, a person
+deciding unprompted, or an import writes no ask. A question the person declines or
+never answers has no answer step, so it stays `waiting`. Speed is that waiting
+list plus each decision's own two times; nothing averages them and nothing is
+figured per person. Agents therefore should not capture the same answer again with
+`capture.sh`: a second decision on the question reads as `also answered by`. Setup,
+settings (`HIVEMIND_API_URL` for a hosted server) and failure behaviour are in the
+[plugin README](../plugins/hivemind-capture/README.md#askuserquestion-hooks).
+
 ## Which project a capture lands in
 
 Every decision belongs to exactly one project inside its tenant (the model is in

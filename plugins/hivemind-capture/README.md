@@ -16,6 +16,9 @@ This directory is both the Codex capture plugin and the Claude Code
   classification work queue using the agent's subscription seat. Run after a
   session to classify batches that the server-side classifier has not yet
   processed. See [Queue drain](#queue-drain-worker-a) below.
+- Hooks on Claude Code's `AskUserQuestion` tool: the question is recorded as an
+  ask when the agent puts it to you, and your answer as a decision that answers
+  it. See [AskUserQuestion hooks](#askuserquestion-hooks).
 - A `hivemind` MCP stdio server wired to `hivemind mcp`.
 - The `hivemind-capture` skill for capture boundaries and provenance rules.
 - The Claude `active-capture` skill, which nudges `/capture <text>
@@ -158,6 +161,67 @@ project), and only the CLI and the stdio MCP server this plugin ships fill it in
 from context. See
 [`docs/AGENT_DECISION_CAPTURE.md`](../../docs/AGENT_DECISION_CAPTURE.md#which-project-a-capture-lands-in)
 and [`docs/MULTI_TENANCY.md`](../../docs/MULTI_TENANCY.md#projects-inside-a-tenant).
+
+## AskUserQuestion hooks
+
+An agent asking you a question is an act with a time. The plugin's hooks on Claude
+Code's `AskUserQuestion` tool (`hooks/hooks.json`) record it, so the ledger holds
+when a question was asked and when it was answered:
+
+| Hook | When | Writes |
+|---|---|---|
+| `PreToolUse` | the agent calls `AskUserQuestion` | one ask per question (MCP `request_decision`): the question, who asked, the time of the call |
+| `PostToolUse` | you have answered | one decision per answered question (MCP `capture_decision`) that answers the same question |
+
+The ask and the decision name the same question, so `hivemind why` on the decision
+shows `asked_at` and `answered_at`, and the request leaves the waiting list
+(`hivemind query get_waiting_requests`). The two hooks share no state.
+
+What the decision carries:
+
+- **Decided by** `human:<your git email>` (set `HIVEMIND_HUMAN_ACTOR=human:<name>`
+  to change it), **recorded by** the agent (`agent:claude:<name>`).
+- **Options** are the ones the agent offered, with their descriptions; **chosen** is
+  the one you picked. Several picks in a multi-select, or words of your own
+  ("Other"), become one combined option (`Search + Export + Other (own words)`); what
+  you picked into it is not listed as turned down. Your own words are quoted
+  verbatim.
+- **Title** is `<header>: <chosen>`. **Rationale** is a fixed sentence saying no
+  reasons were given, because none were. **Rests on** is a bet with nothing
+  declared, because nothing was stated with the answer; add what it rests on later
+  with `hivemind ground`.
+- **Project** is worked out from where the agent runs, as for any capture
+  (`HIVEMIND_PROJECT` names one outright).
+
+What it does not do:
+
+- It records only real asks. The tool call is the act and its time is the ask's
+  time. An agent deciding alone, you deciding unprompted and imports write no ask,
+  and nothing is back-dated. A question you decline or leave unanswered stays
+  waiting; nothing is recorded for it.
+- It keeps no averages and no per-person figures: the waiting list is a to-do list,
+  and each decision carries its own two times.
+- It never gets in the agent's way. A failed write is logged (to stderr and to
+  `hook.log`, readable by you alone, under `${CLAUDE_PLUGIN_DATA}/ask-hook/`, else
+  `~/.local/state/hivemind-ask-hook/`) and the question still appears; the hook
+  exits 0 with nothing on stdout. When the ask could not be recorded, the answer is
+  still captured, without `asked_at`.
+
+Where it writes, and the settings it reads:
+
+| Setting | Effect |
+|---|---|
+| none | the local ledger (`HIVEMIND_DIR`, else the plugin's `hivemind_dir` option, else `<repo root>/hivemind`, the same rule as `/hivemind-capture:capture`), through `hivemind mcp` |
+| `HIVEMIND_API_URL`, `HIVEMIND_API_KEY` | that server's `POST /mcp` with the key as the bearer token; the token decides who is writing |
+| `HIVEMIND_CAPTURE_BIN` | the `hivemind` binary to run (default: `hivemind` on `PATH`) |
+| `HIVEMIND_HUMAN_ACTOR`, `HIVEMIND_PROJECT` | who answers, and the project to file under |
+| `HIVEMIND_ASK_HOOK_DISABLE=1` | do nothing |
+
+It needs `python3` (without it nothing is recorded, the question is unaffected) and
+a `hivemind` CLI or server that has the ask verb (`hivemind ask`, MCP
+`request_decision`). A server without it refuses the ask (logged) and the answer is
+still sent as a decision, without `asked_at`. Upgrade the server before relying on
+the asks.
 
 ## Verify
 

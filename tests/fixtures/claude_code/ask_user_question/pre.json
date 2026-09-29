@@ -1,0 +1,45 @@
+{
+  "session_id": "8c2ccf9a-2bb7-4c1b-9539-d20c9bb0c3c0",
+  "transcript_path": "/home/user/.claude/projects/-work-demo/8c2ccf9a-2bb7-4c1b-9539-d20c9bb0c3c0.jsonl",
+  "cwd": "/work/demo",
+  "scratchpad_dir": "/tmp/claude/scratchpad",
+  "prompt_id": "ddce2503-3feb-45a7-82cc-a955857fa45f",
+  "permission_mode": "default",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "AskUserQuestion",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "Which database should the demo use?",
+        "header": "Database",
+        "options": [
+          {
+            "label": "SQLite",
+            "description": "Single file"
+          },
+          {
+            "label": "Postgres, hosted",
+            "description": "Shared server"
+          }
+        ],
+        "multiSelect": false
+      },
+      {
+        "question": "Which features, if any, should ship first?",
+        "header": "Features",
+        "options": [
+          {
+            "label": "Search",
+            "description": ""
+          },
+          {
+            "label": "Export",
+            "description": ""
+          }
+        ],
+        "multiSelect": true
+      }
+    ]
+  },
+  "tool_use_id": "toolu_01HSpMSYgYZRYv4mabTpvxo5"
+}
