@@ -1,7 +1,7 @@
 ---
 name: supersede
 description: Replace a decision with a new one, resolved by description, never by id.
-argument-hint: '"description of the old decision" --title "..." --rationale "..."'
+argument-hint: '"description of the old decision" --title "..." --rationale "..." --rests-on-decision "..." | --rests-on-evidence "..." --evidence-source "..." | --rests-on-assumption "..." | --bet'
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/supersede.sh:*)
 disable-model-invocation: true
 ---
@@ -16,6 +16,13 @@ Run the plugin helper:
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/scripts/supersede.sh $ARGUMENTS
 ```
+
+The replacement must say what it rests on: one of `--rests-on-decision "..."`
+(a decision it follows from), `--rests-on-evidence "..."` with
+`--evidence-source "..."` (something observed, and where),
+`--rests-on-assumption "..."` (something assumed), or `--bet` (a declared bet).
+A supersede that names none of these is refused ("a captured decision must say
+what it rests on") and nothing is written.
 
 `--chose <option>` means the replacement was already decided: it is accepted
 from your actor right away. Add `--still-proposed` to keep an open
