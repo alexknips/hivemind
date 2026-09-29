@@ -147,6 +147,7 @@
           "state": "refuted"
         }
       ],
+      "slug": "seed-decision-005",
       "status": "proposed",
       "still_holds": {
         "held_up": false,

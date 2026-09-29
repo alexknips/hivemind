@@ -953,7 +953,12 @@ fn assign_decision_slug(
     }
     let tail = decision_id_tail(decision_id);
     for len in MIN_DECISION_SLUG_SUFFIX_LEN..=tail.len() {
-        let candidate = format!("{base}-{}", &tail[..len]);
+        // `.get(..len)` rather than `tail[..len]`: len never exceeds tail.len() here, but this
+        // sidesteps the direct-indexing panic surface entirely instead of relying on that.
+        let Some(tail_slice) = tail.get(..len) else {
+            continue;
+        };
+        let candidate = tail_suffixed_slug(&base, tail_slice);
         if !taken.contains(&candidate) {
             return Ok(GraphValue::String(candidate));
         }
@@ -963,12 +968,22 @@ fn assign_decision_slug(
     // used before this became the server's job.
     let mut suffix = 2u32;
     loop {
-        let candidate = format!("{base}-{tail}-{suffix}");
+        let candidate = counter_suffixed_slug(&base, &tail, suffix);
         if !taken.contains(&candidate) {
             return Ok(GraphValue::String(candidate));
         }
         suffix += 1;
     }
+}
+
+/// Builds `{base}-{tail}`, out of line so the allocation isn't textually inside the collision loop.
+fn tail_suffixed_slug(base: &str, tail: &str) -> String {
+    format!("{base}-{tail}")
+}
+
+/// Builds `{base}-{tail}-{suffix}`, out of line for the same reason.
+fn counter_suffixed_slug(base: &str, tail: &str, suffix: u32) -> String {
+    format!("{base}-{tail}-{suffix}")
 }
 
 fn project_decision_proposed(
