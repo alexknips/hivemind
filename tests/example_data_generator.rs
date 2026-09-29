@@ -179,6 +179,40 @@ fn register_projects(dir: &Path) -> TestResult<()> {
             "A jury's deliberation over a single murder trial verdict",
         ],
     )?;
+    declare_topics(dir)
+}
+
+/// A registered project's captures may only use topic keys the project declared, so each story's
+/// keys are declared through the real verb before its first capture uses them. (The supersedes
+/// in the stories name no keys and inherit their predecessor's.)
+fn declare_topics(dir: &Path) -> TestResult<()> {
+    let vocabularies: [(&str, &str, &[&str]); 4] = [
+        (
+            "human:priya",
+            "trailkeeper",
+            &["infrastructure", "trailkeeper"],
+        ),
+        (
+            "human:maya",
+            "ridewell-api",
+            &["infrastructure", "ridewell"],
+        ),
+        (
+            "human:maya",
+            "ridewell-mobile",
+            &["mobile", "reliability", "ridewell"],
+        ),
+        (
+            "human:juror-foreman",
+            "12-angry-men",
+            &["12-angry-men", "verdict"],
+        ),
+    ];
+    for (actor, handle, keys) in vocabularies {
+        let mut args = vec!["project", "declare-topic", handle];
+        args.extend_from_slice(keys);
+        hm(dir, actor, &args)?;
+    }
     Ok(())
 }
 

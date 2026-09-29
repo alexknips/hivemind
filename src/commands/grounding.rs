@@ -314,9 +314,11 @@ impl<L: EventLedger> Commands<'_, L> {
         super::require_aligned_option_labels(input.option_ids, input.option_labels)?;
         // The project refusal (unregistered handle, reserved `personal:` prefix, a source a
         // caller cannot claim) is the last one `propose_decision_detailed` can raise; state it
-        // here, before the first append. Registration is permanent, so the answer cannot change
-        // between this check and the proposal's own resolution.
-        self.resolve_stated_project(input.project)?;
+        // here, before the first append, and the project's topic vocabulary after it. Registration
+        // is permanent, so the answer cannot change between this check and the proposal's own
+        // resolution.
+        let (project, _) = self.resolve_stated_project(input.project)?;
+        self.require_topics_declared(project.as_deref(), input.topic_keys)?;
 
         self.record_planned_nodes(input.actor_id, &planned)?;
         let (decision_id, placement, event_ids) =

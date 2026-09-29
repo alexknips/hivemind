@@ -123,7 +123,9 @@
 //! - A capture adds keys to the vocabulary only by saying so (`Commands::declaring_topics`).
 //!   Each becomes its own `project.topic_declared` event, by the capturing actor, recorded just
 //!   before the proposal, and the reply lists them. A key already declared is not declared
-//!   twice. Declaring a key the capture does not use is refused.
+//!   twice. Declaring a key the capture does not use is refused. The declarations are the
+//!   capture's first writes: every other refusal (grounding, a question that names nothing)
+//!   comes first, so a refused capture leaves no `project.topic_declared` behind.
 //! - `declare_project_topic` adds one key on its own; `declare_topics_in_use` adopts every key
 //!   the project's existing decisions already carry, the one-step migration for a project that
 //!   predates its vocabulary. Nothing removes a key.
@@ -1482,14 +1484,6 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .into());
         }
 
-        // The stated project's vocabulary, refused here so a grounded capture leaves no
-        // orphan evidence behind; the proposal itself checks again, which also covers a
-        // supersede that inherits its project.
-        self.plan_topic_declarations(
-            input.project.as_ref().map(|project| project.handle),
-            &normalized_topic_keys,
-        )?;
-
         {
             let state = self.lock_state()?;
             for option_id in input.option_ids {
@@ -1534,6 +1528,21 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
 
         Ok(())
+    }
+
+    /// The project's topic vocabulary, refused ahead of the first grounding node so a grounded
+    /// capture leaves no orphan evidence behind (the proposal checks again just before its own
+    /// first write, which covers the ungrounded paths). Callers resolve the project first, so a
+    /// project refusal is never masked by a vocabulary one: `project` is the resolved handle,
+    /// stated or inherited.
+    fn require_topics_declared(&self, project: Option<&str>, topic_keys: &[String]) -> Result<()> {
+        let normalized: Vec<String> = topic_keys
+            .iter()
+            .map(|topic| normalize_topic_key(topic))
+            .filter(|topic| !topic.is_empty())
+            .collect();
+        self.plan_topic_declarations(project, &normalized)
+            .map(|_| ())
     }
 
     /// `propose_decision` plus the event ids and `premise_stale` the caller needs to build an
@@ -2269,6 +2278,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 evidence_ids: &plan.evidence_ids,
                 ..proposal_props
             })?;
+            self.require_topics_declared(project.as_deref(), &effective_topic_keys)?;
             self.record_planned_nodes(input.actor_id, planned)?;
         }
 

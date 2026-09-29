@@ -4951,6 +4951,11 @@ fn grounded_capture_refused_for_its_project_leaves_no_orphan_node_behind() {
     commands
         .register_project("actor:alice", "billing", None, None)
         .expect("register billing");
+    // The topic is declared, so it is the project each refusal below names, not the vocabulary,
+    // that stands between the plan and the ledger.
+    commands
+        .declare_project_topic("actor:alice", "billing", "topic")
+        .expect("declare topic");
     let option_id = commands
         .record_option("actor:alice", "A", "Option A")
         .expect("option a");
@@ -5833,6 +5838,19 @@ fn capture_with_topics(
     topic_keys: &[&str],
     declare: &[&str],
 ) -> crate::Result<(String, DecisionPlacement)> {
+    capture_with_topics_naming(ledger, project, topic_keys, declare, None, &[])
+}
+
+/// [`capture_with_topics`] that also names the `question` it answers and the `hypothesis_ids` it
+/// assumes, so a test can make the capture fail on them after its topics were accepted.
+fn capture_with_topics_naming(
+    ledger: &InMemoryEventLedger,
+    project: Option<&str>,
+    topic_keys: &[&str],
+    declare: &[&str],
+    question: Option<&str>,
+    hypothesis_ids: &[String],
+) -> crate::Result<(String, DecisionPlacement)> {
     let owned = |keys: &[&str]| keys.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>();
     let topic_keys = owned(topic_keys);
     let declare = owned(declare);
@@ -5851,10 +5869,10 @@ fn capture_with_topics(
         decided_by: None,
         delegated_by: None,
         still_proposed: false,
-        hypothesis_ids: &[],
+        hypothesis_ids,
         evidence_ids: &[],
         quote: None,
-        question: None,
+        question,
         project: project.map(DeterminedProject::stated),
     })
 }
@@ -5898,6 +5916,46 @@ fn a_capture_into_a_project_may_only_use_declared_topics() {
         events_of(&ledger, EventType::DecisionProposed).is_empty()
             && events_of(&ledger, EventType::ProjectTopicDeclared).is_empty(),
         "a refused capture writes nothing"
+    );
+}
+
+#[test]
+fn a_capture_refused_after_its_topics_were_accepted_declares_nothing() {
+    let ledger = ledger_with_project("billing");
+
+    // A question that names nothing, and an assumption that does not exist: both are refused
+    // only once the topics have passed, and the declaration is written after every refusal.
+    let question_refusal = capture_with_topics_naming(
+        &ledger,
+        Some("billing"),
+        &["pricing"],
+        &["pricing"],
+        Some("?!"),
+        &[],
+    )
+    .expect_err("a question with no words must be refused")
+    .to_string();
+    assert!(question_refusal.contains("question"), "{question_refusal}");
+
+    let assumption_refusal = capture_with_topics_naming(
+        &ledger,
+        Some("billing"),
+        &["pricing"],
+        &["pricing"],
+        Some("Should invoices carry a tax line?"),
+        &["hypothesis-that-was-never-recorded".to_owned()],
+    )
+    .expect_err("an assumption that does not exist must be refused")
+    .to_string();
+    assert!(
+        assumption_refusal.contains("hypothesis does not exist"),
+        "{assumption_refusal}"
+    );
+
+    assert!(
+        events_of(&ledger, EventType::ProjectTopicDeclared).is_empty()
+            && events_of(&ledger, EventType::DecisionProposed).is_empty(),
+        "a refused capture leaves no topic declaration behind"
     );
 }
 
@@ -6087,6 +6145,7 @@ fn a_supersede_answers_to_the_vocabulary_of_the_project_it_inherits() {
             topic_keys,
             option_labels: &["Per seat".to_owned()],
             chosen_option_label: Some("Per seat"),
+            still_proposed: false,
             hypothesis_ids: &[],
             evidence_ids: &[],
             project: None,
@@ -6145,6 +6204,37 @@ fn a_grounded_capture_refused_for_its_topics_leaves_no_orphan_nodes() {
     assert!(
         events_of(&ledger, EventType::EvidenceRecorded).is_empty()
             && events_of(&ledger, EventType::HypothesisRecorded).is_empty(),
+        "the vocabulary is checked before the grounding nodes are recorded"
+    );
+}
+
+#[test]
+fn a_grounded_supersede_refused_for_the_inherited_topics_leaves_no_orphan_nodes() {
+    let ledger = ledger_with_project("billing");
+    let (old_decision_id, _) =
+        capture_with_topics(&ledger, Some("billing"), &["pricing"], &["pricing"])
+            .expect("the first capture declares its key");
+    let plan = GroundingPlan {
+        new_assumptions: vec!["Seats are the unit customers understand".to_owned()],
+        ..GroundingPlan::default()
+    };
+
+    let error = Commands::new(&ledger)
+        .supersede(SupersedeInput {
+            topic_keys: &["seats".to_owned()],
+            ..grounded_supersede_input(&old_decision_id, &plan)
+        })
+        .expect_err("`seats` is not declared for the project the replacement inherits");
+
+    assert!(
+        error
+            .to_string()
+            .contains("`seats` is not declared for project billing"),
+        "{error}"
+    );
+    assert!(
+        events_of(&ledger, EventType::HypothesisRecorded).is_empty()
+            && events_of(&ledger, EventType::ProjectTopicDeclared).len() == 1,
         "the vocabulary is checked before the grounding nodes are recorded"
     );
 }

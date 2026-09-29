@@ -31,7 +31,7 @@ use crate::commands::{CommandContext, Commands};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, ProjectSource, TenantId};
 use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool};
-use crate::ledger::{AnyLedger, LedgerConfig, TenantScopedLedger};
+use crate::ledger::{AnyLedger, LedgerConfig};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
     get_decision, get_relevant_decisions, search_decisions_any, DecisionStatus, QueryContext,
