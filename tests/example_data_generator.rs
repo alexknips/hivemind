@@ -660,6 +660,7 @@ async fn export_snapshot(hivemind_dir: &Path) -> TestResult<(Value, Value)> {
         slack_client_id: None,
         slack_client_secret: None,
         slack_signing_secret: None,
+        slack_api_base_url: None,
     };
     let router = create_router(&config);
 
