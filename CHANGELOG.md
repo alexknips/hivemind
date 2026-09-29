@@ -170,6 +170,15 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   answer `service:api`, so a client can warn that writes made with them carry no person's name.
   Opens no ledger and writes no event; there is no MCP tool for it. Documented in
   `docs/SELF_HOSTING.md`. (hivemind-jro0)
+- **A decision captured before the title cap can be given a short name.** `hivemind retitle`
+  (MCP `retitle_decision`), found by description or `--decision`, appends a new
+  `decision.retitled` event instead of rewriting anything: the projection shows the new title,
+  the node keeps `former_title`, and the event carries `from`/`to` and an optional `reason`.
+  The new title obeys the same cap capture enforces; an unknown decision, a stale `from`, or a
+  title that is already current writes nothing, and no event is appended. Reversible: retitling
+  back is just another recorded retitle. `recent_decisions` / `decisions_added_since` /
+  `decisions_changed_since` gain their own `title_changed` history line (mirrors
+  `decision.moved`'s `project_moved`), and `why` is unaffected. (hivemind-ydmp)
 
 ### Fixed
 

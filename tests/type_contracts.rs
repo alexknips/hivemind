@@ -23,7 +23,7 @@ use hivemind::{CliError, CommandError, HivemindError, LedgerError, ProjectorErro
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const EVENT_TYPES: [EventType; 25] = [
+const EVENT_TYPES: [EventType; 26] = [
     EventType::DecisionProposed,
     EventType::DecisionRequested,
     EventType::DecisionAccepted,
