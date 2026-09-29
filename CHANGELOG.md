@@ -124,8 +124,10 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   own words, become one combined option (`Search + Export + Other (own words)`) and what you
   picked into it is not listed as turned down. The decision names the same question as the ask,
   so `hivemind why` shows `asked_at` beside `answered_at` and the request leaves
-  `get_waiting_requests`; the hooks share no state. It says no reasons were given and rests on a
-  bet with nothing declared, because nothing was stated with the answer. A question you decline
+  `get_waiting_requests`; the hooks share no state. The note you write on your pick is the
+  rationale, word for word (a note too short to read on its own is quoted instead); only with
+  neither a note nor words of your own does it say no reasons were given. It rests on a bet with
+  nothing declared, because nothing was stated with the answer. A question you decline
   or never answer stays waiting; nothing is recorded when nobody asked (an agent deciding alone,
   you deciding unprompted, an import). Writes go to the local ledger through `hivemind mcp`, or
   to `POST /mcp` of the server named by `HIVEMIND_API_URL` (bearer token `HIVEMIND_API_KEY`), so

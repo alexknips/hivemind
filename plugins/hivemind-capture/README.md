@@ -186,10 +186,12 @@ What the decision carries:
   ("Other"), become one combined option (`Search + Export + Other (own words)`); what
   you picked into it is not listed as turned down. Your own words are quoted
   verbatim.
-- **Title** is `<header>: <chosen>`. **Rationale** is a fixed sentence saying no
-  reasons were given, because none were. **Rests on** is a bet with nothing
-  declared, because nothing was stated with the answer; add what it rests on later
-  with `hivemind ground`.
+- **Title** is `<header>: <chosen>`. **Rationale** is the note you wrote on your
+  pick, word for word. A note too short to read on its own is quoted instead, and
+  the rationale says a note is attached. Only when you gave neither a note nor
+  words of your own is it a fixed sentence saying no reasons were given. **Rests
+  on** is a bet with nothing declared, because nothing was stated with the answer;
+  add what it rests on later with `hivemind ground`.
 - **Project** is worked out from where the agent runs, as for any capture
   (`HIVEMIND_PROJECT` names one outright).
 

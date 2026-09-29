@@ -8,7 +8,10 @@ An agent's AskUserQuestion is an ask that somebody performed, at a time. This re
   post  (PostToolUse)  -> `capture_decision` per answered question: the human's answer as a
                           decision that answers the same question. Decider = the human, options =
                           the offered ones, chosen = the picked one, the human's own words (an
-                          "Other" answer) quoted verbatim.
+                          "Other" answer) quoted verbatim, and the note they added to their pick
+                          (the tool's `annotations[question].notes`) as the rationale, word for
+                          word. Only with neither a note nor own words does the rationale say no
+                          reasons were given.
 
 The two hooks share no state. The link between an ask and its answer is the question itself: the
 ask and the decision name the same question text, so they resolve to one Question node, the way
@@ -64,18 +67,26 @@ COMBINED_DESCRIPTION = (
     "The person's answer as given: several offered options together, or their own words."
 )
 
-# Nothing here is the person's reasoning, so nothing here pretends to be: a constant sentence, no
-# question or label text (those can trip the write layer's readable-rationale check), that says
-# how the answer came about and that no reasons were given. The question, the options and the
-# person's own words are recorded in their own fields.
+# A person's reasoning is theirs to state, so this hook never writes any for them. The rationale is
+# the note they added to their pick, word for word. Only when there is neither a note nor words of
+# their own does it say, in a constant sentence, that no reasons were given. The sentences carry no
+# question or label text (those can trip the write layer's readable-rationale check); the question,
+# the options and the person's own words are recorded in their own fields.
 RATIONALE_PICKED = (
     "A person chose this answer from the options an AI agent offered in a Claude Code question; "
     "no reasons were given with the answer."
 )
 RATIONALE_OWN_WORDS = (
     "A person answered an AI agent's Claude Code question in their own words, quoted with this "
-    "decision; no further reasons were given."
+    "decision."
 )
+# A note the write layer refuses as a rationale (too short to read on its own) is kept in the
+# quote instead, and the rationale says so.
+RATIONALE_NOTE_ATTACHED = (
+    "A person answered an AI agent's Claude Code question and added a note to their answer, "
+    "quoted with this decision."
+)
+NOTE_QUOTE_PREFIX = "Note: "
 
 
 class HookError(Exception):
@@ -318,6 +329,24 @@ def answers_of(payload: Dict[str, Any]) -> Dict[str, str]:
     return {one_line(q): str(a) for q, a in answers.items() if one_line(q) and str(a).strip()}
 
 
+def notes_of(payload: Dict[str, Any]) -> Dict[str, str]:
+    """{question text: the note the person added to their pick}, keyed on one-line question text.
+
+    The tool reports `annotations` beside `answers`, keyed by question: `{"<question>": {"notes":
+    "..."}}`. A note is the person's free text about their pick, kept as written.
+    """
+    notes: Dict[str, str] = {}
+    for source in (payload.get("tool_input"), payload.get("tool_response")):
+        annotations = source.get("annotations") if isinstance(source, dict) else None
+        if not isinstance(annotations, dict):
+            continue
+        for question, annotation in annotations.items():
+            note = annotation.get("notes") if isinstance(annotation, dict) else None
+            if one_line(question) and isinstance(note, str) and note.strip():
+                notes[one_line(question)] = note.strip()
+    return notes
+
+
 def offered_labels(question: Dict[str, Any]) -> List[Tuple[str, str]]:
     """[(label, description)] in the order offered."""
     offered = []
@@ -379,8 +408,20 @@ def human_actor(cwd: str) -> str:
     return f"human:{name or 'local-user'}"
 
 
-def answer_arguments(question: Dict[str, Any], answer: str, human: str) -> Dict[str, Any]:
-    """The `capture_decision` call for one answered question."""
+def answer_arguments(
+    question: Dict[str, Any],
+    answer: str,
+    human: str,
+    note: Optional[str] = None,
+    note_as_quote: bool = False,
+) -> Dict[str, Any]:
+    """The `capture_decision` call for one answered question.
+
+    The rationale is the person's `note` on their pick, word for word. With `note_as_quote` (the
+    write layer refused the note as a rationale) the note rides in the quote instead and the
+    rationale says a note is attached. With neither a note nor own words, the constant sentence
+    says no reasons were given.
+    """
     text = one_line(question.get("question"))
     offered = offered_labels(question)
     picked, own_words = split_answer(
@@ -408,10 +449,19 @@ def answer_arguments(question: Dict[str, Any], answer: str, human: str) -> Dict[
         options.append({"label": chosen, "description": COMBINED_DESCRIPTION})
 
     header = one_line(question.get("header")) or clip(text, 60)
+    if note and not note_as_quote:
+        rationale = note
+    elif note:
+        rationale = RATIONALE_NOTE_ATTACHED
+    elif own_words:
+        rationale = RATIONALE_OWN_WORDS
+    else:
+        rationale = RATIONALE_PICKED
+
     title = re.sub(r"[.!?]+(?=\s|$)", "", f"{header}: {chosen}")
     arguments: Dict[str, Any] = {
         "title": clip(title, MAX_TITLE_CHARS),
-        "rationale": RATIONALE_OWN_WORDS if own_words else RATIONALE_PICKED,
+        "rationale": rationale,
         "topic_keys": [slug(header) or "claude-code-question"],
         "options": options,
         "chosen_option_label": chosen,
@@ -421,8 +471,11 @@ def answer_arguments(question: Dict[str, Any], answer: str, human: str) -> Dict[
         # so it is recorded as what it is: a bet with nothing declared.
         "grounding": [{"kind": "bet"}],
     }
-    if own_words:
-        arguments["quote"] = own_words
+    quoted = [own_words] if own_words else []
+    if note and note_as_quote:
+        quoted.append(NOTE_QUOTE_PREFIX + note if own_words else note)
+    if quoted:
+        arguments["quote"] = "\n\n".join(quoted)
     project = os.environ.get("HIVEMIND_PROJECT", "").strip()
     if project:
         arguments["project"] = project
@@ -452,11 +505,29 @@ def record_asks(payload: Dict[str, Any]) -> None:
                 log(f"pre: could not record the ask {text[:60]!r}: {exc}")
 
 
+def capture_answer(
+    transport: Transport, question: Dict[str, Any], answer: str, human: str, note: Optional[str]
+) -> None:
+    """Write one answer. A note is the rationale; if the write layer's readable-rationale check
+    refuses it (too short to stand alone), write it again with the note in the quote."""
+    try:
+        transport.call("capture_decision", answer_arguments(question, answer, human, note))
+    except HookError as exc:
+        # Only a refusal of the rationale is retried: a transport failure may have reached the
+        # ledger already, and a second write would duplicate the decision.
+        if not note or "rationale" not in str(exc):
+            raise
+        transport.call(
+            "capture_decision", answer_arguments(question, answer, human, note, note_as_quote=True)
+        )
+
+
 def record_answers(payload: Dict[str, Any]) -> None:
     answers = answers_of(payload)
     questions = questions_of(payload)
     if not answers or not questions:
         return
+    notes = notes_of(payload)
     cwd = session_cwd(payload)
     human = human_actor(cwd)
     with open_transport(cwd, str(payload.get("session_id") or "")) as transport:
@@ -466,7 +537,7 @@ def record_answers(payload: Dict[str, Any]) -> None:
             if not answer:
                 continue
             try:
-                transport.call("capture_decision", answer_arguments(question, answer.strip(), human))
+                capture_answer(transport, question, answer.strip(), human, notes.get(text))
             except HookError as exc:
                 log(f"post: could not record the answer to {text[:60]!r}: {exc}")
 

@@ -275,9 +275,13 @@ was answered, with no model in the loop:
   and **decided by the person** (`--decided-by human:<git email>`, or
   `HIVEMIND_HUMAN_ACTOR`). Options are the ones offered, chosen is the one picked;
   several picks, or words of their own, become one combined option
-  (`Search + Export + Other (own words)`) and the words go in `--quote`. It says
-  no reasons were given and rests on a bet with nothing declared, because nothing
-  was stated; `hivemind ground` adds what the answer rests on later.
+  (`Search + Export + Other (own words)`) and the words go in `--quote`. The
+  rationale is the note the person wrote on their pick (the tool's
+  `annotations[question].notes`), word for word; a note the write layer refuses as
+  too short to read on its own goes in `--quote` instead, and the rationale says a
+  note is attached. Only with neither a note nor words of their own does it say no
+  reasons were given. It rests on a bet with nothing declared, because nothing was
+  stated; `hivemind ground` adds what the answer rests on later.
 
 The decision names the same question as the ask (`--question`, not `--answers`: a
 request id only resolves to its question's text, so the two hooks share no state),

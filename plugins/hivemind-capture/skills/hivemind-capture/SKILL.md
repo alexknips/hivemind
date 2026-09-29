@@ -208,8 +208,11 @@ recorder), with the options you offered, the one they picked, and any words of
 their own quoted verbatim. Do not capture that answer again: a second decision on
 the same question reads as `also answered by`, or as a conflict.
 
-- The recorded answer says no reasons were given and rests on a bet with nothing
-  declared, because nothing was stated. If the person then says what it rests on
+- The recorded answer's rationale is the note the person wrote on their pick, word
+  for word (a note too short to read on its own is quoted instead). Only with
+  neither a note nor words of their own does it say no reasons were given. It rests
+  on a bet with nothing declared, because nothing was stated. If the person then
+  says what it rests on
   (an observation, a decision it follows from, an assumption), record that with
   `hivemind ground "<decision>" ...`; do not file a duplicate.
 - A question you never put to the person (deciding alone, working from the

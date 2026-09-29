@@ -32,6 +32,8 @@ const ASKER: &str = "agent:claude:test/askbot";
 const HUMAN: &str = "human:alice";
 const DATABASE_QUESTION: &str = "Which database should the demo use?";
 const FEATURES_QUESTION: &str = "Which features, if any, should ship first?";
+/// What the hook's fixed rationale says when a person gave neither a note nor words of their own.
+const NO_REASONS: &str = "no reasons were given";
 
 struct Scratch {
     dir: TempDir,
@@ -192,6 +194,10 @@ fn instant(value: &Value) -> TestResult<DateTime<Utc>> {
     Ok(DateTime::parse_from_rfc3339(value.as_str().ok_or("a timestamp")?)?.with_timezone(&Utc))
 }
 
+fn rationale(brief: &Value) -> TestResult<&str> {
+    Ok(brief["rationale"].as_str().ok_or("a rationale")?)
+}
+
 fn labels(options: &Value) -> Vec<&str> {
     options
         .as_array()
@@ -261,6 +267,10 @@ fn recorded_session_links_each_answer_to_the_ask_it_answers() -> TestResult<()> 
         database["quote"].is_null(),
         "no words of their own: {database}"
     );
+    assert!(
+        rationale(&database)?.contains(NO_REASONS),
+        "no note and no words of their own, so the fixed sentence: {database}"
+    );
 
     // A multi-select with two offered options and the person's own words: one combined choice,
     // the words quoted, and nothing they picked listed as turned down.
@@ -274,6 +284,10 @@ fn recorded_session_links_each_answer_to_the_ask_it_answers() -> TestResult<()> 
     assert!(
         labels(&features["rejected_options"]).is_empty(),
         "what was picked is not rejected: {features}"
+    );
+    assert!(
+        !rationale(&features)?.contains(NO_REASONS),
+        "their own words may hold reasons, so none are claimed absent: {features}"
     );
 
     // The ledger holds both times per decision: the ask's own timestamp, then the answer's.
@@ -294,6 +308,49 @@ fn recorded_session_links_each_answer_to_the_ask_it_answers() -> TestResult<()> 
             "asked_at is the ask event's own time, never a guess"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn a_note_on_the_pick_is_the_rationale_word_for_word() -> TestResult<()> {
+    let scratch = Scratch::new()?;
+    let ledger = scratch.ledger();
+
+    // The recorded post payload plus the `annotations` Claude Code reports beside `answers` when a
+    // person writes a note on their pick: keyed by question, `notes` is their free text. One note
+    // reads on its own; the other is too short to be a rationale.
+    let note = "SQLite cannot be shared between the two demo hosts, so it has to be a server.";
+    let short_note = "and Notion";
+    let mut post = payload(&scratch, "post")?;
+    for source in ["tool_input", "tool_response"] {
+        post[source]["annotations"][DATABASE_QUESTION] = serde_json::json!({ "notes": note });
+        post[source]["annotations"][FEATURES_QUESTION] = serde_json::json!({ "notes": short_note });
+    }
+    run_hook_ok(&scratch, "post", &post.to_string(), &[])?;
+    assert_eq!(
+        events_of(&ledger, EventType::DecisionAccepted)?.len(),
+        2,
+        "one decision per answer, the refused first attempt wrote nothing"
+    );
+
+    // A note that stands on its own is the rationale, word for word, and no reasons are claimed
+    // absent.
+    let database = why_for(&ledger, "Database: Postgres, hosted")?;
+    assert_eq!(rationale(&database)?, note);
+    assert!(database["quote"].is_null(), "{database}");
+
+    // A note the write layer refuses as a rationale is quoted instead, after their own words, and
+    // the rationale says a note is attached.
+    let features = why_for(&ledger, "Features: Search + Export + Other (own words)")?;
+    assert!(
+        rationale(&features)?.contains("added a note")
+            && !rationale(&features)?.contains(NO_REASONS),
+        "{features}"
+    );
+    assert_eq!(
+        features["quote"], "Import from Notion\n\nNote: and Notion",
+        "{features}"
+    );
     Ok(())
 }
 
