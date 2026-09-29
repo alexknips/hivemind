@@ -541,3 +541,173 @@ fn resolve_by_id_rejects_a_blank_id() -> Result<()> {
     assert!(resolve_decision_by_id(&graph, "   ").is_err());
     Ok(())
 }
+
+// A read-only verb (`why`, `verify`, ...) resolves at the bar `recall` uses, and answers with a
+// close candidate that leads alone (hivemind-3lko). A verb that writes keeps the stricter bar and
+// never picks a close candidate for the asker.
+
+fn reading(graph: &MemoryGraph, description: &str) -> Result<QueryResponse<ResolveOutcome>> {
+    resolve_decision_for_reading(graph, description, None)
+}
+
+const LINKS_TITLE: &str = "Decision links use title slugs worked out the same in every browser";
+
+#[test]
+fn reading_answers_a_question_that_shares_half_its_words() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:links", LINKS_TITLE, &["links"]),
+        decision_proposed(2, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])?;
+    // keep, links, stable, browsers: the decision has links and browsers, two of four.
+    let question = "how do we keep decision links stable in browsers";
+
+    match reading(&graph, question)?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:links");
+            assert_eq!(candidate.missing_terms, vec!["keep", "stable"]);
+        }
+        other => panic!("expected the decision, got {other:?}"),
+    }
+    // A verb that writes needs more than half of the words: the same question finds nothing.
+    assert_eq!(
+        resolve_decision_by_description(&graph, question, None)?.data,
+        ResolveOutcome::NotFound
+    );
+    Ok(())
+}
+
+#[test]
+fn reading_resolves_a_lone_close_candidate_a_writer_only_lists() -> Result<()> {
+    let graph = graph_from_events([decision_proposed(
+        1,
+        "d:design",
+        DESIGN_SYSTEM_TITLE,
+        &["design"],
+    )])?;
+    let question = "why did we finally pick shadcn for the design system";
+
+    match reading(&graph, question)?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:design");
+            assert_eq!(candidate.missing_terms, vec!["finally"]);
+        }
+        other => panic!("expected the decision with what it lacks, got {other:?}"),
+    }
+    match resolve_decision_by_description(&graph, question, None)?.data {
+        ResolveOutcome::Ambiguous { candidates } => assert_eq!(candidates.len(), 1),
+        other => panic!("a writer lists the close candidate, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn reading_lists_close_candidates_that_lack_the_same_number_of_words() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:upheld", "Name the product Upheld", &[]),
+        decision_proposed(2, "d:jev", "Call the product Jev", &[]),
+    ])?;
+
+    // product, called, upheld: each decision lacks exactly one, and nothing says which was meant.
+    match reading(&graph, "is the product still called Upheld")?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            let mut ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+            ids.sort_unstable();
+            assert_eq!(ids, vec!["d:jev", "d:upheld"]);
+            assert!(candidates.iter().all(|c| c.missing_terms.len() == 1));
+        }
+        other => panic!("expected both close candidates, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn reading_resolves_the_close_candidate_that_lacks_the_fewest_words() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:queue", "Adopt async queue for billing", &[]),
+        decision_proposed(2, "d:retries", "Billing retries policy", &[]),
+    ])?;
+
+    // queue, billing, async, retries: d:queue lacks one word, d:retries two.
+    match reading(&graph, "queue billing async retries")?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:queue");
+            assert_eq!(candidate.missing_terms, vec!["retries"]);
+        }
+        other => panic!("expected the closer decision, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn reading_lists_but_does_not_answer_with_one_shared_word() -> Result<()> {
+    let graph = projects_graph()?;
+
+    // Only "billing" matches: half of two words is enough to list, not to answer with.
+    match reading(&graph, "billing unicorn")?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].decision_id, "d:queue");
+            assert_eq!(candidates[0].missing_terms, vec!["unicorn"]);
+        }
+        other => panic!("expected a one-candidate list, got {other:?}"),
+    }
+    // No word shared is still nothing.
+    assert_eq!(
+        reading(&graph, "unicorn pegasus")?.data,
+        ResolveOutcome::NotFound
+    );
+    Ok(())
+}
+
+#[test]
+fn reading_still_prefers_a_full_match_and_keeps_the_ambiguity_gate() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:full", "Adopt async queue for billing", &[]),
+        decision_proposed(2, "d:near", "Adopt async retries for billing", &[]),
+        decision_proposed(3, "d:billing", "Move billing to Postgres", &[]),
+        decision_proposed(4, "d:notify", "Move notifications to Postgres", &[]),
+    ])?;
+
+    match reading(&graph, "adopt async queue billing")?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:full");
+            assert!(candidate.missing_terms.is_empty());
+        }
+        other => panic!("expected the full match, got {other:?}"),
+    }
+    match reading(&graph, "why did we move to postgres")?.data {
+        ResolveOutcome::Ambiguous { candidates } => assert_eq!(candidates.len(), 2),
+        other => panic!("expected the two full matches, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_close_match_is_named_in_the_envelope_and_a_full_match_is_not() {
+    let close = ResolvedCandidate {
+        decision_id: "d:links".to_owned(),
+        title: LINKS_TITLE.to_owned(),
+        rank: 1,
+        event_origin: 1,
+        matched_fields: vec!["title".to_owned()],
+        missing_terms: vec!["keep".to_owned(), "stable".to_owned()],
+    };
+    let full = ResolvedCandidate {
+        missing_terms: Vec::new(),
+        ..close.clone()
+    };
+
+    let mut envelope = json!({"result_count": 1, "data": {}});
+    annotate_close_match(&mut envelope, &full);
+    assert!(envelope.get("close_match").is_none());
+
+    annotate_close_match(&mut envelope, &close);
+    assert_eq!(
+        envelope["close_match"],
+        json!({
+            "decision_id": "d:links",
+            "title": LINKS_TITLE,
+            "missing_terms": ["keep", "stable"],
+        })
+    );
+}

@@ -17,7 +17,7 @@ use crate::projector::{
 };
 use crate::quality_profile::{Assessment, Dimension, ScanReport, ScoreReport};
 use crate::queries::{
-    derive_decision_status, derive_hypothesis_status, oriented_edges,
+    annotate_close_match, derive_decision_status, derive_hypothesis_status, oriented_edges,
     BlockerNotificationCandidates, ChangedDecisionsResults, CompactView, Contest,
     ContestedDecisionsResults, DecidedBy, DecisionBlockerResults, DecisionBrief,
     DecisionSearchResults, DecisionStatus, DecisionTimeline, DecisionView,
@@ -27,8 +27,9 @@ use crate::queries::{
     ProjectDecisionsOutcome, ProjectDecisionsPage, ProjectListResults, ProjectMove, ProjectOutcome,
     ProjectTopicFact, QueryResponse, QuestionAnswer, ReadOnlyExport,
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
-    RecentActivityResults, RecentDecisionsResults, ResolveOutcome, SituationalResults,
-    SupersessionChain, TimelineEntry, TimelineFact, TitleChange, WaitingRequestsResults,
+    RecentActivityResults, RecentDecisionsResults, ResolveOutcome, ResolvedCandidate,
+    SituationalResults, SupersessionChain, TimelineEntry, TimelineFact, TitleChange,
+    WaitingRequestsResults,
 };
 use crate::{HivemindError, Result};
 
@@ -256,6 +257,42 @@ pub(crate) fn format_query_response<T: Serialize>(
     let mut output = render_summary(&response.data);
     append_truncation_notice(&mut output, response.truncated, next_cursor);
     Ok(output.trim_end().to_owned())
+}
+
+/// `format_query_response` for a read verb that resolved its target from a description. When the
+/// description named a word the decision lacks, the answer says so: a `close match:` line ahead
+/// of `--summary` output, `close_match` beside `data` in `--json` (hivemind-3lko). A full match
+/// (`None`) prints exactly what `format_query_response` does.
+pub(crate) fn format_close_matched_response<T: Serialize>(
+    summary: bool,
+    response: &QueryResponse<T>,
+    close_match: Option<&ResolvedCandidate>,
+    render_summary: impl FnOnce(&T) -> String,
+) -> Result<String> {
+    let Some(candidate) = close_match else {
+        return format_query_response(summary, response, render_summary, None);
+    };
+    if summary {
+        let body = format_query_response(true, response, render_summary, None)?;
+        return Ok(format!("{}\n{body}", render_close_match_notice(candidate)));
+    }
+    let mut envelope = serde_json::to_value(response)
+        .map_err(|error| CliError::InvalidInput(format!("json serialization failed: {error}")))?;
+    annotate_close_match(&mut envelope, candidate);
+    format_json_value(true, &envelope)
+}
+
+/// The line that tells a reader the decision below matched all but some of their words.
+fn render_close_match_notice(candidate: &ResolvedCandidate) -> String {
+    let words: Vec<String> = candidate
+        .missing_terms
+        .iter()
+        .map(|term| format!("\"{term}\""))
+        .collect();
+    format!(
+        "close match: no decision has every word you asked with; this one has no {} (name a decision exactly with --id)",
+        words.join(", ")
+    )
 }
 
 pub(crate) fn append_truncation_notice(

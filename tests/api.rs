@@ -976,6 +976,57 @@ async fn why_resolves_by_id_and_by_description() {
 }
 
 #[tokio::test]
+async fn why_and_verify_answer_a_description_that_shares_half_its_words_and_name_what_is_missing() {
+    let dir = test_ledger_dir();
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            serde_json::json!({
+                "grounding": [{"kind": "bet"}],
+                "title": "Decision links use title slugs worked out the same in every browser",
+                "rationale": "A slug computed from the title gives the same link on every device",
+                "topic_keys": ["close-match-test"],
+                "options": [{"label": "opt"}]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "capture: {body}"); // ubs:ignore
+    let decision_id = body["decision_id"].as_str().unwrap().to_owned();
+
+    // keep, links, stable, browsers: the decision has two of the four words.
+    let question = "how+do+we+keep+decision+links+stable+in+browsers";
+    for route in ["why", "verify"] {
+        let (status, body) = call(
+            app(dir.clone()),
+            get_req(&format!("/v1/decisions/{route}?description={question}")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{route}: {body}"); // ubs:ignore
+        assert_eq!(
+            body["close_match"]["decision_id"], decision_id,
+            "{route} names the decision it answered with: {body}"
+        ); // ubs:ignore
+        assert_eq!(
+            body["close_match"]["missing_terms"],
+            serde_json::json!(["keep", "stable"]),
+            "{route} names the words the decision lacks: {body}"
+        ); // ubs:ignore
+    }
+
+    let (status, body) = call(
+        app(dir),
+        get_req("/v1/decisions/why?description=decision+links+use+title+slugs"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["data"]["root"]["id"], decision_id); // ubs:ignore
+    assert!(body.get("close_match").is_none(), "{body}"); // ubs:ignore
+}
+
+#[tokio::test]
 async fn why_returns_404_for_missing_id() {
     let dir = test_ledger_dir();
     let (status, body) = call(app(dir), get_req("/v1/decisions/why?id=nonexistent-id")).await;

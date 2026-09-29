@@ -46,14 +46,14 @@ use crate::queries::{
     get_decisions_changed_since, get_project, get_recent_activity, get_recent_decisions,
     get_relevant_decisions, get_situational_decisions, get_supersession_chain,
     get_waiting_requests, list_projects, misfiled_next_cursor, require_registered_project,
-    resolve_decision_by_description, scan_misfiled_decisions, search_decisions,
-    search_decisions_any, ActiveDecisionBlockersRequest, BlockerNotificationCandidatesRequest,
-    ChangedDecisionsRequest, ChangedSinceRequest, ContestedDecisionsRequest,
-    DecisionBlockerFilters, DecisionLogExport, DecisionLogOutcome, DecisionLogRequest,
-    DecisionStatus, DecisionsAddedSinceFilterRequest, DecisionsAddedSinceRequest,
-    HistoryFilterRequest, MisfiledScanRequest, NeighborhoodRequest, ProjectDecisionsRequest,
-    ProjectListRequest, ProjectOutcome, QueryContext, ReadOnlyExportQuery, ReadOnlyExportRequest,
-    RecentActivityRequest, RecentDecisionEntry, RecentDecisionFilterRequest,
+    resolve_decision_by_description, resolve_decision_for_reading, scan_misfiled_decisions,
+    search_decisions, search_decisions_any, ActiveDecisionBlockersRequest,
+    BlockerNotificationCandidatesRequest, ChangedDecisionsRequest, ChangedSinceRequest,
+    ContestedDecisionsRequest, DecisionBlockerFilters, DecisionLogExport, DecisionLogOutcome,
+    DecisionLogRequest, DecisionStatus, DecisionsAddedSinceFilterRequest,
+    DecisionsAddedSinceRequest, HistoryFilterRequest, MisfiledScanRequest, NeighborhoodRequest,
+    ProjectDecisionsRequest, ProjectListRequest, ProjectOutcome, QueryContext, ReadOnlyExportQuery,
+    ReadOnlyExportRequest, RecentActivityRequest, RecentDecisionEntry, RecentDecisionFilterRequest,
     RecentDecisionsRequest, ResolveOutcome, ResolvedCandidate, SearchDecisionRequest,
     SituationalRequest, WaitingRequestsRequest,
 };
@@ -93,13 +93,13 @@ use super::current_project::CurrentProjectStore;
 use super::project_context::{resolve_project_in_ledger, ProjectContextEnv, ResolvedProject};
 use super::render::{
     append_truncation_notice, decision_status_label, format_capture_output,
-    format_current_project_output, format_disagree_output, format_export_output,
-    format_import_output, format_json_value, format_move_output, format_output,
-    format_prepare_documents_output, format_project_anchor_output, format_project_decisions_output,
-    format_project_declare_topic_output, format_project_link_output, format_project_list_output,
-    format_project_register_output, format_project_show_output, format_query_response,
-    format_retitle_output, format_review_output, format_supersede_output,
-    render_active_blockers_summary, render_added_since_summary,
+    format_close_matched_response, format_current_project_output, format_disagree_output,
+    format_export_output, format_import_output, format_json_value, format_move_output,
+    format_output, format_prepare_documents_output, format_project_anchor_output,
+    format_project_decisions_output, format_project_declare_topic_output,
+    format_project_link_output, format_project_list_output, format_project_register_output,
+    format_project_show_output, format_query_response, format_retitle_output, format_review_output,
+    format_supersede_output, render_active_blockers_summary, render_added_since_summary,
     render_blocker_notifications_summary, render_changed_decisions_summary,
     render_changed_since_summary, render_compact_view_summary, render_contested_decisions_summary,
     render_decision_brief_summary, render_decision_list_summary, render_decision_summary,
@@ -1060,11 +1060,72 @@ fn resolve_fluent_target(
     pick: Option<usize>,
     topic: Option<&str>,
 ) -> Result<FluentResolution> {
+    let ask = FluentAsk {
+        id,
+        description,
+        pick,
+        topic,
+    };
+    let (resolution, _) = resolve_fluent(hivemind_dir, summary, graph, ask, FluentVerb::Writes)?;
+    Ok(resolution)
+}
+
+/// Resolves a read-only verb's target (`why`, `verify`, `chain`, `compact-view`). Besides the
+/// resolution it returns the close match the target rests on, when the description named a word
+/// the decision lacks and it was answered anyway: the caller labels its output with it
+/// (`format_close_matched_response`), so a partial match never reads as a full one.
+fn resolve_fluent_target_for_reading(
+    hivemind_dir: &Path,
+    summary: bool,
+    graph: &impl GraphView,
+    id: Option<&str>,
+    description: Option<&str>,
+    pick: Option<usize>,
+    topic: Option<&str>,
+) -> Result<(FluentResolution, Option<ResolvedCandidate>)> {
+    let ask = FluentAsk {
+        id,
+        description,
+        pick,
+        topic,
+    };
+    resolve_fluent(hivemind_dir, summary, graph, ask, FluentVerb::Reads)
+}
+
+/// Whether a fluent verb changes the decision it resolves or only shows it. A read-only verb
+/// answers with a close match that leads alone; a writing verb never does.
+#[derive(Clone, Copy)]
+enum FluentVerb {
+    Reads,
+    Writes,
+}
+
+/// The selectors every fluent verb takes: an id, or a description with its `--pick` and `--topic`.
+struct FluentAsk<'a> {
+    id: Option<&'a str>,
+    description: Option<&'a str>,
+    pick: Option<usize>,
+    topic: Option<&'a str>,
+}
+
+fn resolve_fluent(
+    hivemind_dir: &Path,
+    summary: bool,
+    graph: &impl GraphView,
+    ask: FluentAsk<'_>,
+    verb: FluentVerb,
+) -> Result<(FluentResolution, Option<ResolvedCandidate>)> {
+    let FluentAsk {
+        id,
+        description,
+        pick,
+        topic,
+    } = ask;
     // `--id` bypasses resolution entirely, byte-for-byte, including an empty string: existing
     // scripts and their error messages (e.g. an empty-id validation error from the underlying
     // verb) must be unaffected by this fluent addition.
     if let Some(id) = id {
-        return Ok(FluentResolution::Id(id.to_owned()));
+        return Ok((FluentResolution::Id(id.to_owned()), None));
     }
 
     let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -1076,15 +1137,22 @@ fn resolve_fluent_target(
 
     if let Some(index) = candidate_handle_index(description) {
         let candidate = read_continuation_candidate(hivemind_dir, index)?;
-        return Ok(FluentResolution::Id(candidate.decision_id));
+        return Ok((FluentResolution::Id(candidate.decision_id), None));
     }
 
-    let response = resolve_decision_by_description(graph, description, topic)?;
+    let response = match verb {
+        FluentVerb::Reads => resolve_decision_for_reading(graph, description, topic)?,
+        FluentVerb::Writes => resolve_decision_by_description(graph, description, topic)?,
+    };
     write_continuation_candidates(hivemind_dir, &candidates_of(&response.data));
 
     match &response.data {
         ResolveOutcome::Resolved { candidate } => {
-            Ok(FluentResolution::Id(candidate.decision_id.clone()))
+            let close_match = (!candidate.missing_terms.is_empty()).then(|| candidate.clone());
+            Ok((
+                FluentResolution::Id(candidate.decision_id.clone()),
+                close_match,
+            ))
         }
         ResolveOutcome::Ambiguous { candidates } => {
             if let Some(pick) = pick {
@@ -1092,7 +1160,9 @@ fn resolve_fluent_target(
                     .checked_sub(1)
                     .ok_or_else(|| CliError::InvalidInput("--pick must be >= 1".to_owned()))?;
                 match candidates.get(index) {
-                    Some(candidate) => Ok(FluentResolution::Id(candidate.decision_id.clone())),
+                    Some(candidate) => {
+                        Ok((FluentResolution::Id(candidate.decision_id.clone()), None))
+                    }
                     None => Err(CliError::InvalidInput(format!(
                         "--pick {pick} is out of range: {} candidate(s) matched",
                         candidates.len()
@@ -1100,20 +1170,20 @@ fn resolve_fluent_target(
                     .into()),
                 }
             } else {
-                Ok(FluentResolution::Output(format_query_response(
+                let output = format_query_response(
                     summary,
                     &response,
                     render_resolve_outcome_summary,
                     None,
-                )?))
+                )?;
+                Ok((FluentResolution::Output(output), None))
             }
         }
-        ResolveOutcome::NotFound => Ok(FluentResolution::Output(format_query_response(
-            summary,
-            &response,
-            render_resolve_outcome_summary,
-            None,
-        )?)),
+        ResolveOutcome::NotFound => {
+            let output =
+                format_query_response(summary, &response, render_resolve_outcome_summary, None)?;
+            Ok((FluentResolution::Output(output), None))
+        }
     }
 }
 
@@ -2906,7 +2976,7 @@ fn run_query_with_graph(
             )?
         }
         QueryCommand::GetSupersessionChain(args) => {
-            let target = resolve_fluent_target(
+            let (target, close_match) = resolve_fluent_target_for_reading(
                 hivemind_dir,
                 query.summary,
                 graph,
@@ -2920,10 +2990,15 @@ fn run_query_with_graph(
                 FluentResolution::Output(output) => return Ok(output),
             };
             let response = get_supersession_chain(graph, &decision_id)?;
-            format_query_response(query.summary, &response, render_supersession_summary, None)?
+            format_close_matched_response(
+                query.summary,
+                &response,
+                close_match.as_ref(),
+                render_supersession_summary,
+            )?
         }
         QueryCommand::GetDecisionNeighborhood(args) => {
-            let target = resolve_fluent_target(
+            let (target, close_match) = resolve_fluent_target_for_reading(
                 hivemind_dir,
                 query.summary,
                 graph,
@@ -2938,7 +3013,12 @@ fn run_query_with_graph(
             };
             if args.compact {
                 let response = get_compact_view(graph, &decision_id)?;
-                format_query_response(query.summary, &response, render_compact_view_summary, None)?
+                format_close_matched_response(
+                    query.summary,
+                    &response,
+                    close_match.as_ref(),
+                    render_compact_view_summary,
+                )?
             } else {
                 if args.depth != 1 {
                     return Err(CliError::InvalidInput(format!(
@@ -2962,11 +3042,16 @@ fn run_query_with_graph(
                 let scoped_ledger = TenantScopedLedger::new(ledger, context.tenant_id.clone());
                 response.data.timeline =
                     get_decision_timeline(graph, &scoped_ledger, &decision_id)?.data;
-                format_query_response(query.summary, &response, render_neighborhood_summary, None)?
+                format_close_matched_response(
+                    query.summary,
+                    &response,
+                    close_match.as_ref(),
+                    render_neighborhood_summary,
+                )?
             }
         }
         QueryCommand::GetCompactView(args) => {
-            let target = resolve_fluent_target(
+            let (target, close_match) = resolve_fluent_target_for_reading(
                 hivemind_dir,
                 query.summary,
                 graph,
@@ -2980,10 +3065,15 @@ fn run_query_with_graph(
                 FluentResolution::Output(output) => return Ok(output),
             };
             let response = get_compact_view(graph, &decision_id)?;
-            format_query_response(query.summary, &response, render_compact_view_summary, None)?
+            format_close_matched_response(
+                query.summary,
+                &response,
+                close_match.as_ref(),
+                render_compact_view_summary,
+            )?
         }
         QueryCommand::GetDecisionOutcome(args) => {
-            let target = resolve_fluent_target(
+            let (target, close_match) = resolve_fluent_target_for_reading(
                 hivemind_dir,
                 query.summary,
                 graph,
@@ -2997,11 +3087,11 @@ fn run_query_with_graph(
                 FluentResolution::Output(output) => return Ok(output),
             };
             let response = get_decision_brief(graph, &decision_id)?;
-            format_query_response(
+            format_close_matched_response(
                 query.summary,
                 &response,
+                close_match.as_ref(),
                 render_decision_brief_summary,
-                None,
             )?
         }
         QueryCommand::Search(args) => {

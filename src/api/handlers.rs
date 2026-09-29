@@ -19,13 +19,13 @@ use crate::grounding::{
 use crate::ledger::{EventLedger, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::GraphView;
 use crate::queries::{
-    derive_decision_status, get_changed_decisions, get_compact_view, get_contested_decisions,
-    get_decision, get_decision_brief, get_decision_neighborhood, get_decision_timeline,
-    get_relevant_decisions, get_situational_decisions, get_supersession_chain,
-    get_waiting_requests, resolve_decision_by_description, search_decisions_any,
-    ChangedDecisionsRequest, ContestedDecisionsRequest, NeighborhoodRequest, QueryContext,
-    QueryResponse, ResolveOutcome, SearchDecisionRequest, SituationalRequest,
-    WaitingRequestsRequest,
+    annotate_close_match, derive_decision_status, get_changed_decisions, get_compact_view,
+    get_contested_decisions, get_decision, get_decision_brief, get_decision_neighborhood,
+    get_decision_timeline, get_relevant_decisions, get_situational_decisions,
+    get_supersession_chain, get_waiting_requests, resolve_decision_for_reading,
+    search_decisions_any, ChangedDecisionsRequest, ContestedDecisionsRequest, NeighborhoodRequest,
+    QueryContext, QueryResponse, ResolveOutcome, ResolvedCandidate, SearchDecisionRequest,
+    SituationalRequest, WaitingRequestsRequest,
 };
 use crate::summarize::{recall_decisions, RecallRequest, RECALL_DEFAULT_LIMIT};
 
@@ -223,9 +223,38 @@ pub(super) struct FluentLookupParams {
 /// Outcome of resolving a fluent lookup route's target over HTTP. Unlike the CLI,
 /// there is no `--pick`/`#N` continuation here: the API is stateless, so an ambiguous
 /// result is returned to the caller, who re-calls with `id=` from the candidate list.
+///
+/// Both lookup routes (`why`, `verify`) only read, so they resolve for reading: a description
+/// that no decision matches in full can still be answered by the one that lacks the fewest of
+/// its words (`close_match` says which words, hivemind-3lko).
 enum FluentTarget {
-    Id(String),
+    Id {
+        id: String,
+        close_match: Option<ResolvedCandidate>,
+    },
     Ambiguous(QueryResponse<ResolveOutcome>),
+}
+
+impl FluentTarget {
+    fn by_id(id: String) -> Self {
+        Self::Id {
+            id,
+            close_match: None,
+        }
+    }
+}
+
+/// `envelope_value` for an answer resolved from a description, labelled with the close match it
+/// rests on when the description named a word the decision lacks.
+fn answer_envelope<T: Serialize>(
+    response: &QueryResponse<T>,
+    close_match: Option<&ResolvedCandidate>,
+) -> serde_json::Value {
+    let mut envelope = envelope_value(response);
+    if let Some(candidate) = close_match {
+        annotate_close_match(&mut envelope, candidate);
+    }
+    envelope
 }
 
 fn resolve_fluent_target_http(
@@ -244,15 +273,16 @@ fn resolve_fluent_target_http(
         .filter(|s| !s.is_empty());
 
     match (id, description) {
-        (Some(id), None) => Ok(FluentTarget::Id(id.to_owned())),
+        (Some(id), None) => Ok(FluentTarget::by_id(id.to_owned())),
         (None, Some(description)) => {
             let response =
-                resolve_decision_by_description(graph, description, params.topic.as_deref())
+                resolve_decision_for_reading(graph, description, params.topic.as_deref())
                     .map_err(to_api_error)?;
             match &response.data {
-                ResolveOutcome::Resolved { candidate } => {
-                    Ok(FluentTarget::Id(candidate.decision_id.clone()))
-                }
+                ResolveOutcome::Resolved { candidate } => Ok(FluentTarget::Id {
+                    id: candidate.decision_id.clone(),
+                    close_match: Some(candidate.clone()),
+                }),
                 ResolveOutcome::Ambiguous { .. } => Ok(FluentTarget::Ambiguous(response)),
                 ResolveOutcome::NotFound => Err(ApiError::not_found(
                     "no decision matches the given description",
@@ -1261,7 +1291,10 @@ pub(super) async fn why_handler(
 
         match resolve_fluent_target_http(graph, &params)? {
             FluentTarget::Ambiguous(response) => Ok(envelope_value(&response)),
-            FluentTarget::Id(decision_id) => {
+            FluentTarget::Id {
+                id: decision_id,
+                close_match,
+            } => {
                 let mut response =
                     get_decision_neighborhood(graph, &decision_id, &NeighborhoodRequest::all())
                         .map_err(to_api_error)?;
@@ -1275,7 +1308,7 @@ pub(super) async fn why_handler(
                 response.data.timeline = get_decision_timeline(graph, &scoped_ledger, &decision_id)
                     .map_err(to_api_error)?
                     .data;
-                Ok(envelope_value(&response))
+                Ok(answer_envelope(&response, close_match.as_ref()))
             }
         }
     })
@@ -1303,14 +1336,17 @@ pub(super) async fn verify_handler(
 
         match resolve_fluent_target_http(graph, &params)? {
             FluentTarget::Ambiguous(response) => Ok(envelope_value(&response)),
-            FluentTarget::Id(decision_id) => {
+            FluentTarget::Id {
+                id: decision_id,
+                close_match,
+            } => {
                 let response = get_decision_brief(graph, &decision_id).map_err(to_api_error)?;
                 if response.data.is_none() {
                     return Err(ApiError::not_found(format!(
                         "decision not found: {decision_id}"
                     )));
                 }
-                Ok(envelope_value(&response))
+                Ok(answer_envelope(&response, close_match.as_ref()))
             }
         }
     })

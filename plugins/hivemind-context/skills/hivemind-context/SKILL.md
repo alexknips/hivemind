@@ -151,6 +151,15 @@ When you see an ambiguous result:
    matches (`NotFound`), that is itself the answer — the decision does not
    exist yet, or your description needs different terms.
 
+A read verb (`why`, `verify`, `chain`, `compact-view`) can also answer with a
+**close match**. When no decision has every word you asked with and one lacks
+fewer of them than the others, it answers with that decision and opens with a
+`close match:` line naming the words the decision does not have (`close_match`
+with `missing_terms` in JSON). Read that line before you rely on the answer: if
+a missing word changes what you asked ("still", "not", a name), ask again with
+other words or with `--id`. The write verbs never do this; they list close
+candidates and write nothing.
+
 This mirrors AGENTS.md's honesty standard: no invented confidence. A wrong
 guess on a write verb is worse than asking again.
 

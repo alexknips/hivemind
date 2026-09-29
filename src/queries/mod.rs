@@ -110,7 +110,8 @@ pub use record_facts::{
 };
 pub use relevant::get_relevant_decisions;
 pub use resolve::{
-    resolve_decision_by_description, resolve_decision_by_id, ResolveOutcome, ResolvedCandidate,
+    annotate_close_match, resolve_decision_by_description, resolve_decision_by_id,
+    resolve_decision_for_reading, ResolveOutcome, ResolvedCandidate,
 };
 pub use search::{
     search_decisions, search_decisions_any, search_decisions_fluent, search_decisions_fts,

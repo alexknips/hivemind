@@ -1085,12 +1085,13 @@ pub(crate) fn collect_resolver_candidates(
     graph: &impl GraphView,
     description: &str,
     topic_keys: &[String],
+    close: CloseMatch,
 ) -> Result<Vec<ResolverCandidateRow>> {
     let terms = resolver_terms(description);
     let scored = collect_graph_search_results(
         graph,
         Some(description),
-        &SearchTerms::resolver(&terms),
+        &SearchTerms::resolver(&terms, close),
         topic_keys,
         &[],
         &[],
@@ -1168,7 +1169,7 @@ fn add_node_search_fields(
 
 /// When a decision that lacks some of a query's terms is still returned, and with how few.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CloseMatch {
+pub(crate) enum CloseMatch {
     /// Every term must match: `search`, which keeps literal matching.
     Never,
     /// More than half of the terms, and at least two. A resolver's close candidates feed the
@@ -1177,7 +1178,8 @@ enum CloseMatch {
     Majority,
     /// At least half of the terms. `recall` only reads and labels every item with what it lacks,
     /// so a question naming two things ("sign-in and pricing") still finds a decision about
-    /// either, after the ones about both.
+    /// either, after the ones about both. The fluent verbs that only read (`why`, `verify`)
+    /// resolve with the same bar, so they name what `recall` just named.
     Half,
 }
 
@@ -1212,11 +1214,11 @@ impl<'a> SearchTerms<'a> {
         }
     }
 
-    fn resolver(terms: &'a [String]) -> Self {
+    fn resolver(terms: &'a [String], close: CloseMatch) -> Self {
         Self {
             terms,
             stemmed: true,
-            close: CloseMatch::Majority,
+            close,
         }
     }
 

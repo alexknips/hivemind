@@ -949,6 +949,77 @@ fn disagree_decision_tool_ambiguous_description_does_not_write() {
 }
 
 #[test]
+fn a_read_tool_answers_a_description_that_shares_half_its_words_and_a_write_tool_does_not() {
+    let dir = unique_dir("close-match");
+    let config = McpConfig::new(&dir).with_session_id("close-match-session");
+
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "grounding": [{"kind": "bet"}],
+                "title": "Decision links use title slugs worked out the same in every browser",
+                "rationale": "A slug computed from the title gives the same link on every device",
+                "topic_keys": ["web"],
+                "options": [{"label": "title slugs"}]
+            }
+        }
+    })
+    .to_string();
+    let captured = drive(&config, &[capture.as_str()]);
+    let decision_id = captured[0]["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("captured decision id")
+        .to_owned();
+
+    // keep, links, stable, browsers: the decision has two of the four words.
+    let question = "how do we keep decision links stable in browsers";
+    let why = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "get_decision_neighborhood",
+            "arguments": { "description": question }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[why.as_str()]);
+    let structured = &responses[0]["result"]["structuredContent"];
+    assert_eq!(structured["data"]["root"]["id"], json!(decision_id));
+    assert_eq!(
+        structured["close_match"]["missing_terms"],
+        json!(["keep", "stable"])
+    );
+
+    let ledger = SqliteEventLedger::open(&dir).expect("ledger opens");
+    let offset_before = ledger.latest_offset().expect("offset before");
+    let disagree = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "disagree_decision",
+            "arguments": { "description": question, "reason": "the slugs collide" }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[disagree.as_str()]);
+    let structured = &responses[0]["result"]["structuredContent"];
+    assert_eq!(structured["data"]["outcome"], json!("not_found"));
+    assert_eq!(
+        ledger.latest_offset().expect("offset after"),
+        offset_before,
+        "a decision that lacks half of the words is not disagreed with"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn supersede_decision_tool_marks_old_and_is_idempotent() {
     let dir = unique_dir("supersede");
     let config = McpConfig::new(&dir).with_session_id("supersede-session");

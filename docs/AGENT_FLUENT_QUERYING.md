@@ -130,11 +130,33 @@ matching.
 ("why did we *finally* move the demo cell..."). When no decision matches every
 term, decisions matching more than half of them (and at least two) come back as
 an `Ambiguous` list, ranked by fewest missing terms, then rank tier, then
-recency, each with `missing_terms` naming what it lacks. A close candidate is
-never `Resolved`, even when there is only one: the caller picks with `--pick`,
-`#N` or `--id`. When any decision matches every term, close candidates are
-dropped. One matching word out of two is not close enough, so an unrelated
-description is still `NotFound`.
+recency, each with `missing_terms` naming what it lacks. For a verb that writes
+(`disagree`, `supersede`, `move`, `retitle`, `ground`, a grounding premise), a
+close candidate is never `Resolved`, even when there is only one: the caller
+picks with `--pick`, `#N` or `--id`. When any decision matches every term, close
+candidates are dropped. One matching word out of two is not close enough, so an
+unrelated description is still `NotFound`.
+
+**Close candidates for a verb that only reads.** `why`, `verify`, `chain` and
+`compact-view` resolve with `resolve_decision_for_reading`. A wrong pick there
+shows the wrong decision, labelled with what it lacks; it writes nothing. Two
+differences from a writer, both for a description no decision matches in full
+(hivemind-3lko):
+
+- The bar for a close candidate is `recall`'s: at least half of the terms. A
+  question `recall` answers is therefore never answered "no decision matches"
+  by `why`.
+- When close candidates are all there is, and one lacks fewer terms than the
+  next and shares at least two terms, it is `Resolved` and carries its
+  `missing_terms`. The verb shows the decision and says what it lacks: a
+  `close match:` line ahead of `--summary` output, `close_match: {decision_id,
+  title, missing_terms}` beside `data` in `--json`, the HTTP routes and MCP.
+  Equally close candidates stay an `Ambiguous` list (rank and recency say
+  nothing about which of two decisions that each lack one word was meant), and a
+  candidate that shares one term is listed, not answered with.
+
+A full match is unchanged for both, including the ambiguity gate, and adds no
+`close_match`.
 
 **`recall` asks the same way.** `recall_decisions` (Layer 3) drops the question
 words ("what did we decide about projects" searches for `projects`) before it
@@ -791,7 +813,10 @@ the reference regenerated in the site repo so `cli.md` stays accurate — see
    Recommendation: identical gate for all verbs in v1 (simpler, and matches
    §7.2's "no numeric margin" recommendation which leaves no daylight to
    asymmetrize anyway) — revisit only if it proves too conservative for
-   read verbs in practice.
+   read verbs in practice. Revisited for close candidates only (hivemind-3lko):
+   the gate for a full match stays identical for every verb; what a read verb
+   does with a description no decision matches in full differs (see "Close
+   candidates for a verb that only reads", §1.1).
 
 4. **Principle 1/7 reading.** Confirm the "deterministic tiering + ledger-
    offset recency, no embeddings/fuzzy matching/learned weights" reading of

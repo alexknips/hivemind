@@ -50,7 +50,7 @@ use crate::quality_profile::{
     self, parse_kinds, ScanRequest, SuggestionsRequest, SCAN_DEFAULT_LIMIT,
 };
 use crate::queries::{
-    context_next_cursor, derive_decision_status,
+    annotate_close_match, context_next_cursor, derive_decision_status,
     get_changed_decisions as query_get_changed_decisions, get_compact_view,
     get_contested_decisions as query_get_contested_decisions,
     get_decision_brief as query_get_decision_brief,
@@ -59,12 +59,12 @@ use crate::queries::{
     get_decision_timeline as query_get_decision_timeline, get_recent_decisions,
     get_supersession_chain as query_get_supersession_chain,
     get_waiting_requests as query_get_waiting_requests, misfiled_next_cursor, outcome_next_cursor,
-    require_registered_project, resolve_decision_by_description,
+    require_registered_project, resolve_decision_by_description, resolve_decision_for_reading,
     scan_misfiled_decisions as query_scan_misfiled_decisions, ChangedDecisionsRequest,
     ContestedDecisionsRequest, DecisionContextRequest, DecisionQualityCandidatesRequest,
     DecisionStatus, FailureAttributionRequest, MisfiledScanRequest, NeighborhoodRequest,
     QueryContext, QueryResponse, RecentDecisionFilterRequest, RecentDecisionsRequest,
-    ResolveOutcome, SituationalRequest, WaitingRequestsRequest,
+    ResolveOutcome, ResolvedCandidate, SituationalRequest, WaitingRequestsRequest,
 };
 use crate::summarize::{RecallRequest, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT};
 
@@ -665,7 +665,8 @@ pub(crate) enum ResolvedTarget {
 /// Resolve a fluent tool's target: `id` bypasses resolution entirely
 /// (unvalidated, matching the CLI's `--id` escape hatch byte-for-byte);
 /// otherwise `description` is resolved via [`resolve_decision_by_description`]
-/// over a graph rebuilt from `handle`.
+/// over a graph rebuilt from `handle`. For the tools that write: a close
+/// candidate is listed, never picked.
 ///
 /// Both ambiguity and not-found are success, rendered as the identical
 /// `{result_count, truncated, latency_ms, data: {outcome: ..., ...}}`
@@ -678,8 +679,67 @@ pub(crate) fn resolve_target<L: EventLedger>(
     topic: Option<&str>,
     selector_field: &str,
 ) -> Result<ResolvedTarget, CoreError> {
+    resolve_target_as(
+        handle,
+        id,
+        description,
+        topic,
+        selector_field,
+        resolve_decision_by_description,
+    )
+    .map(|(target, _)| target)
+}
+
+/// [`resolve_target`] for the tools that only read (`get_decision_neighborhood`,
+/// `get_decision_outcome`, `get_supersession_chain`, `get_compact_view`): the description
+/// resolves via [`resolve_decision_for_reading`], so a decision that lacks some of its words but
+/// leads alone is the target. Alongside the target it returns that close match, which the tool
+/// puts in its reply with `read_reply` so the caller sees what the decision lacks.
+pub(crate) fn resolve_target_for_reading<L: EventLedger>(
+    handle: &LedgerHandle<L>,
+    id: Option<&str>,
+    description: Option<&str>,
+    topic: Option<&str>,
+    selector_field: &str,
+) -> Result<(ResolvedTarget, Option<ResolvedCandidate>), CoreError> {
+    resolve_target_as(
+        handle,
+        id,
+        description,
+        topic,
+        selector_field,
+        resolve_decision_for_reading,
+    )
+}
+
+/// A read tool's reply: the query response's envelope, labelled with the close match its target
+/// was resolved from, when there was one (`close_match` beside `data`).
+fn read_reply<T: serde::Serialize>(
+    response: &QueryResponse<T>,
+    close_match: Option<&ResolvedCandidate>,
+) -> ToolOutput {
+    let mut envelope = json!({
+        "result_count": response.result_count,
+        "truncated": response.truncated,
+        "latency_ms": response.latency_ms,
+        "data": response.data,
+    });
+    if let Some(candidate) = close_match {
+        annotate_close_match(&mut envelope, candidate);
+    }
+    ToolOutput(envelope)
+}
+
+fn resolve_target_as<L: EventLedger>(
+    handle: &LedgerHandle<L>,
+    id: Option<&str>,
+    description: Option<&str>,
+    topic: Option<&str>,
+    selector_field: &str,
+    resolve: fn(&MemoryGraph, &str, Option<&str>) -> crate::Result<QueryResponse<ResolveOutcome>>,
+) -> Result<(ResolvedTarget, Option<ResolvedCandidate>), CoreError> {
     if let Some(id) = id {
-        return Ok(ResolvedTarget::Id(id.to_owned()));
+        return Ok((ResolvedTarget::Id(id.to_owned()), None));
     }
 
     let Some(description) = description.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -690,8 +750,7 @@ pub(crate) fn resolve_target<L: EventLedger>(
 
     let graph = MemoryGraph::default();
     rebuild_graph_for_tenant(&handle.ledger, &handle.tenant_id, &graph).map_err(CoreError::from)?;
-    let response =
-        resolve_decision_by_description(&graph, description, topic).map_err(CoreError::from)?;
+    let response = resolve(&graph, description, topic).map_err(CoreError::from)?;
 
     let QueryResponse {
         result_count,
@@ -700,21 +759,30 @@ pub(crate) fn resolve_target<L: EventLedger>(
         data,
     } = response;
     match data {
-        ResolveOutcome::Resolved { candidate } => Ok(ResolvedTarget::Id(candidate.decision_id)),
-        ResolveOutcome::NotFound => Ok(ResolvedTarget::NotFound(ToolOutput(json!({
-            "result_count": result_count,
-            "truncated": truncated,
-            "latency_ms": latency_ms,
-            "data": ResolveOutcome::NotFound,
-        })))),
-        ResolveOutcome::Ambiguous { candidates } => {
-            let data = ResolveOutcome::Ambiguous { candidates };
-            Ok(ResolvedTarget::Ambiguous(ToolOutput(json!({
+        ResolveOutcome::Resolved { candidate } => {
+            let close_match = (!candidate.missing_terms.is_empty()).then(|| candidate.clone());
+            Ok((ResolvedTarget::Id(candidate.decision_id), close_match))
+        }
+        ResolveOutcome::NotFound => Ok((
+            ResolvedTarget::NotFound(ToolOutput(json!({
                 "result_count": result_count,
                 "truncated": truncated,
                 "latency_ms": latency_ms,
-                "data": data,
-            }))))
+                "data": ResolveOutcome::NotFound,
+            }))),
+            None,
+        )),
+        ResolveOutcome::Ambiguous { candidates } => {
+            let data = ResolveOutcome::Ambiguous { candidates };
+            Ok((
+                ResolvedTarget::Ambiguous(ToolOutput(json!({
+                    "result_count": result_count,
+                    "truncated": truncated,
+                    "latency_ms": latency_ms,
+                    "data": data,
+                }))),
+                None,
+            ))
         }
     }
 }
@@ -786,7 +854,7 @@ pub(crate) fn get_decision_neighborhood<P: LedgerProvider>(
     args: GetDecisionNeighborhoodArgs,
 ) -> Result<ToolOutput, CoreError> {
     let handle = provider.ledger()?;
-    let target = resolve_target(
+    let (target, close_match) = resolve_target_for_reading(
         &handle,
         args.decision_id.as_deref(),
         args.description.as_deref(),
@@ -809,12 +877,7 @@ pub(crate) fn get_decision_neighborhood<P: LedgerProvider>(
         .map_err(CoreError::from)?
         .data;
 
-    Ok(ToolOutput(json!({
-        "result_count": response.result_count,
-        "truncated": response.truncated,
-        "latency_ms": response.latency_ms,
-        "data": response.data,
-    })))
+    Ok(read_reply(&response, close_match.as_ref()))
 }
 
 // ---------------------------------------------------------------------------
@@ -956,7 +1019,7 @@ pub(crate) fn compact_view<P: LedgerProvider>(
     args: CompactViewArgs,
 ) -> Result<ToolOutput, CoreError> {
     let handle = provider.ledger()?;
-    let target = resolve_target(
+    let (target, close_match) = resolve_target_for_reading(
         &handle,
         args.decision_id.as_deref(),
         args.description.as_deref(),
@@ -973,12 +1036,7 @@ pub(crate) fn compact_view<P: LedgerProvider>(
     rebuild_graph_for_tenant(&handle.ledger, &handle.tenant_id, &graph).map_err(CoreError::from)?;
     let response = get_compact_view(&graph, &decision_id).map_err(CoreError::from)?;
 
-    Ok(ToolOutput(json!({
-        "result_count": response.result_count,
-        "truncated": response.truncated,
-        "latency_ms": response.latency_ms,
-        "data": response.data,
-    })))
+    Ok(read_reply(&response, close_match.as_ref()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1147,7 +1205,7 @@ pub(crate) fn get_decision_outcome<P: LedgerProvider>(
     args: GetDecisionOutcomeArgs,
 ) -> Result<ToolOutput, CoreError> {
     let handle = provider.ledger()?;
-    let target = resolve_target(
+    let (target, close_match) = resolve_target_for_reading(
         &handle,
         args.decision_id.as_deref(),
         args.description.as_deref(),
@@ -1164,12 +1222,7 @@ pub(crate) fn get_decision_outcome<P: LedgerProvider>(
     rebuild_graph_for_tenant(&handle.ledger, &handle.tenant_id, &graph).map_err(CoreError::from)?;
     let response = query_get_decision_brief(&graph, &decision_id).map_err(CoreError::from)?;
 
-    Ok(ToolOutput(json!({
-        "result_count": response.result_count,
-        "truncated": response.truncated,
-        "latency_ms": response.latency_ms,
-        "data": response.data,
-    })))
+    Ok(read_reply(&response, close_match.as_ref()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1546,7 +1599,7 @@ pub(crate) fn get_supersession_chain<P: LedgerProvider>(
     args: GetSupersessionChainArgs,
 ) -> Result<ToolOutput, CoreError> {
     let handle = provider.ledger()?;
-    let target = resolve_target(
+    let (target, close_match) = resolve_target_for_reading(
         &handle,
         args.decision_id.as_deref(),
         args.description.as_deref(),
@@ -1563,12 +1616,7 @@ pub(crate) fn get_supersession_chain<P: LedgerProvider>(
     rebuild_graph_for_tenant(&handle.ledger, &handle.tenant_id, &graph).map_err(CoreError::from)?;
     let response = query_get_supersession_chain(&graph, &decision_id).map_err(CoreError::from)?;
 
-    Ok(ToolOutput(json!({
-        "result_count": response.result_count,
-        "truncated": response.truncated,
-        "latency_ms": response.latency_ms,
-        "data": response.data,
-    })))
+    Ok(read_reply(&response, close_match.as_ref()))
 }
 
 // ---------------------------------------------------------------------------

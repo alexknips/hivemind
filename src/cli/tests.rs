@@ -2044,6 +2044,178 @@ fn query_why_answers_a_natural_question_with_the_why() -> CliTestResult {
 }
 
 #[test]
+fn query_why_and_verify_answer_a_question_that_shares_half_its_words_and_say_what_it_lacks(
+) -> CliTestResult {
+    // hivemind-3lko: `recall` returns the decision for this question, so `why` and `verify` must
+    // answer it too, instead of "no decision matches".
+    let hivemind_dir = unique_test_dir("query-why-close-match");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let decision_id = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Decision links use title slugs worked out the same in every browser",
+        "--rationale",
+        "A slug computed from the title gives the same link on every device",
+        "--topic-keys",
+        "web",
+        "--options",
+        "Title slugs,Random ids",
+        "--chose",
+        "Title slugs",
+    ]))?;
+    run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:alice",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Adopt async queue for billing",
+        "--rationale",
+        "Billing must not block on the payment provider",
+        "--topic-keys",
+        "billing",
+        "--options",
+        "Async queue,Inline call",
+        "--chose",
+        "Async queue",
+    ]))?;
+    // keep, links, stable, browsers: the decision has two of the four words.
+    let question = "how do we keep decision links stable in browsers";
+
+    let recalled = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "recall",
+        question,
+    ]))?;
+    let recalled: serde_json::Value = serde_json::from_str(&recalled)?;
+    ensure_json_eq(
+        &recalled["data"]["ranked"]["items"][0]["decision"]["id"],
+        serde_json::json!(decision_id),
+        "recall answers the question with the decision",
+    )?;
+
+    let why = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "why",
+        question,
+    ]))?;
+    let why: serde_json::Value = serde_json::from_str(&why)?;
+    ensure_json_eq(
+        &why["data"]["root"]["id"],
+        serde_json::json!(decision_id),
+        "why answers the question recall answers, in one call",
+    )?;
+    ensure_json_eq(
+        &why["close_match"]["missing_terms"],
+        serde_json::json!(["keep", "stable"]),
+        "why names the words the decision lacks",
+    )?;
+    ensure_json_eq(
+        &why["close_match"]["decision_id"],
+        serde_json::json!(decision_id),
+        "why names the decision it answered with",
+    )?;
+
+    for verb in ["why", "verify"] {
+        let summary = run(&Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            dir,
+            "query",
+            verb,
+            question,
+            "--summary",
+        ]))?;
+        ensure(
+            summary.starts_with("close match:") && summary.contains("\"keep\", \"stable\""),
+            &format!("{verb} --summary opens with what the decision lacks, got:\n{summary}"),
+        )?;
+        ensure(
+            summary.contains("decision: Decision links use title slugs"),
+            &format!("{verb} --summary still answers with the decision, got:\n{summary}"),
+        )?;
+    }
+
+    let compact = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "compact-view",
+        question,
+    ]))?;
+    let compact: serde_json::Value = serde_json::from_str(&compact)?;
+    ensure_json_eq(
+        &compact["close_match"]["decision_id"],
+        serde_json::json!(decision_id),
+        "compact-view resolves the same way and says so",
+    )?;
+
+    // A description that matches in full says nothing extra.
+    let exact = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "why",
+        "decision links use title slugs",
+    ]))?;
+    let exact: serde_json::Value = serde_json::from_str(&exact)?;
+    ensure(
+        exact.get("close_match").is_none(),
+        "a full match carries no close_match",
+    )?;
+
+    // A verb that writes still needs more than half of the words and never picks for the asker.
+    let events_before = ledger_event_count(&hivemind_dir);
+    let disagreed = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:bob",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "disagree",
+        question,
+        "--reason",
+        "the slugs collide",
+    ]))?;
+    let disagreed: serde_json::Value = serde_json::from_str(&disagreed)?;
+    ensure_json_eq(
+        &disagreed["data"]["outcome"],
+        serde_json::json!("not_found"),
+        "disagree does not act on a decision that lacks half of the words",
+    )?;
+    ensure_eq(
+        ledger_event_count(&hivemind_dir),
+        events_before,
+        "disagree wrote nothing",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn query_verify_alias_returns_decision_brief() -> CliTestResult {
     let hivemind_dir = unique_test_dir("query-verify-fluent");
     let dir = hivemind_dir.to_str().expect("utf-8 temp path");
