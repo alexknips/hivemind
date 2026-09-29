@@ -7,6 +7,11 @@
 //! questions, a single choice whose label contains a comma, and a multi-select answered with two
 //! offered options plus the person's own words. The tests replay them through the real hook
 //! script and the real `hivemind` binary.
+//!
+//! A registered project accepts only the topic keys it declared (hivemind-zywz), so the tests that
+//! name a project anchor it to a rig and run the hooks in that rig (`GC_RIG`), the way a Gas City
+//! checkout is anchored: the answer must be recorded there too, under the header's key when the
+//! project declared it and under the one fixed key otherwise.
 
 use std::fs;
 use std::io::Write;
@@ -32,8 +37,15 @@ const ASKER: &str = "agent:claude:test/askbot";
 const HUMAN: &str = "human:alice";
 const DATABASE_QUESTION: &str = "Which database should the demo use?";
 const FEATURES_QUESTION: &str = "Which features, if any, should ship first?";
+/// The titles the hook gives the two recorded answers: `<header>: <chosen option>`.
+const DATABASE_TITLE: &str = "Database: Postgres, hosted";
+const FEATURES_TITLE: &str = "Features: Search + Export + Other (own words)";
 /// What the hook's fixed rationale says when a person gave neither a note nor words of their own.
 const NO_REASONS: &str = "no reasons were given";
+/// The rig the registered-project tests anchor their project to and run the hooks in.
+const RIG: &str = "testrig";
+/// The topic key an answer goes under when its project has not declared the header's key.
+const FALLBACK_TOPIC: &str = "claude-code-question";
 
 struct Scratch {
     dir: TempDir,
@@ -87,6 +99,7 @@ fn run_hook(
         .arg(phase)
         .current_dir(scratch.work())
         .env_remove("GC_ALIAS")
+        .env_remove("GC_RIG")
         .env_remove("HIVEMIND_API_URL")
         .env_remove("HIVEMIND_API_KEY")
         .env_remove("HIVEMIND_AGENT_SESSION")
@@ -188,6 +201,53 @@ fn why_for(ledger_dir: &Path, title: &str) -> TestResult<Value> {
         .to_owned();
     let why = cli(ledger_dir, &["query", "why", "--id", &decision_id])?;
     Ok(why["data"]["root"].clone())
+}
+
+/// The topic keys the decision the capture titled `title` was proposed under.
+fn topic_keys_of(ledger_dir: &Path, title: &str) -> TestResult<Vec<String>> {
+    let proposed = events_of(ledger_dir, EventType::DecisionProposed)?
+        .into_iter()
+        .find(|event| event.payload["title"] == title)
+        .ok_or_else(|| format!("no decision titled {title:?}"))?;
+    Ok(proposed.payload["topic_keys"]
+        .as_array()
+        .ok_or("topic_keys")?
+        .iter()
+        .filter_map(|key| key.as_str().map(str::to_owned))
+        .collect())
+}
+
+/// Register `handle` with `topics` in its vocabulary and anchor it to [`RIG`], as the operator
+/// of a rig would, so a hook run with `GC_RIG=testrig` files its writes under it.
+fn register_rig_project(ledger_dir: &Path, handle: &str, topics: &[&str]) -> TestResult<()> {
+    fs::create_dir_all(ledger_dir)?;
+    let registrar = |args: &[&str]| -> TestResult<Value> {
+        let mut full = vec!["--actor", "human:test-registrar"];
+        full.extend_from_slice(args);
+        cli(ledger_dir, &full)
+    };
+    registrar(&["project", "register", handle])?;
+    registrar(&[
+        "project", "anchor", "--handle", handle, "--kind", "rig", "--value", RIG,
+    ])?;
+    for &topic in topics {
+        registrar(&["project", "declare-topic", handle, topic])?;
+    }
+    Ok(())
+}
+
+/// Every topic key `handle` declared, in the order the ledger recorded them.
+fn declared_topics(ledger_dir: &Path, handle: &str) -> TestResult<Vec<String>> {
+    Ok(events_of(ledger_dir, EventType::ProjectTopicDeclared)?
+        .iter()
+        .filter(|event| event.payload["handle"] == handle)
+        .filter_map(|event| event.payload["topic_key"].as_str().map(str::to_owned))
+        .collect())
+}
+
+/// What the hooks logged, or nothing if they never logged.
+fn hook_log(scratch: &Scratch) -> String {
+    fs::read_to_string(scratch.state().join("ask-hook").join("hook.log")).unwrap_or_default()
 }
 
 fn instant(value: &Value) -> TestResult<DateTime<Utc>> {
@@ -350,6 +410,210 @@ fn a_note_on_the_pick_is_the_rationale_word_for_word() -> TestResult<()> {
     assert_eq!(
         features["quote"], "Import from Notion\n\nNote: and Notion",
         "{features}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_header_the_project_never_declared_is_filed_under_the_fixed_key_declared_once() -> TestResult<()>
+{
+    let scratch = Scratch::new()?;
+    let ledger = scratch.ledger();
+    // The project declares neither header of the recorded questions ("database", "features").
+    register_rig_project(&ledger, "billing", &["invoicing"])?;
+    let in_rig = [("GC_RIG", RIG)];
+
+    run_hook_ok(
+        &scratch,
+        "pre",
+        &payload(&scratch, "pre")?.to_string(),
+        &in_rig,
+    )?;
+    assert_eq!(waiting_texts(&ledger)?.len(), 2, "both asks are waiting");
+    run_hook_ok(
+        &scratch,
+        "post",
+        &payload(&scratch, "post")?.to_string(),
+        &in_rig,
+    )?;
+
+    // The person's answers are recorded, not refused, and the asks they answer leave waiting.
+    assert_eq!(
+        events_of(&ledger, EventType::DecisionAccepted)?.len(),
+        2,
+        "one decision per answer: {}",
+        hook_log(&scratch)
+    );
+    assert!(
+        waiting_texts(&ledger)?.is_empty(),
+        "answered, so nothing is waiting"
+    );
+    for title in [DATABASE_TITLE, FEATURES_TITLE] {
+        assert_eq!(
+            topic_keys_of(&ledger, title)?,
+            [FALLBACK_TOPIC],
+            "filed under the one fixed key, not a key per question"
+        );
+    }
+    // The vocabulary grew by exactly that key, once, though both answers used it.
+    assert_eq!(
+        declared_topics(&ledger, "billing")?,
+        ["invoicing", FALLBACK_TOPIC]
+    );
+
+    // Both attempts are logged, for each question: the refused header key, then the fixed key.
+    let log = hook_log(&scratch);
+    for header_key in ["'database'", "'features'"] {
+        assert!(
+            log.contains(&format!("does not declare topic {header_key}")),
+            "the refused attempt is logged: {log}"
+        );
+    }
+    assert_eq!(
+        log.matches("under 'claude-code-question'").count(),
+        4,
+        "each answer logs the retry and its success: {log}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_header_the_project_declared_is_used_as_is_and_nothing_is_declared() -> TestResult<()> {
+    let scratch = Scratch::new()?;
+    let ledger = scratch.ledger();
+    register_rig_project(&ledger, "billing", &["database", "features"])?;
+    let in_rig = [("GC_RIG", RIG)];
+
+    run_hook_ok(
+        &scratch,
+        "pre",
+        &payload(&scratch, "pre")?.to_string(),
+        &in_rig,
+    )?;
+    run_hook_ok(
+        &scratch,
+        "post",
+        &payload(&scratch, "post")?.to_string(),
+        &in_rig,
+    )?;
+
+    assert_eq!(events_of(&ledger, EventType::DecisionAccepted)?.len(), 2);
+    assert!(waiting_texts(&ledger)?.is_empty());
+    assert_eq!(topic_keys_of(&ledger, DATABASE_TITLE)?, ["database"]);
+    assert_eq!(topic_keys_of(&ledger, FEATURES_TITLE)?, ["features"]);
+    assert_eq!(
+        declared_topics(&ledger, "billing")?,
+        ["database", "features"],
+        "the hooks declared nothing: only the operator's two declarations exist"
+    );
+    assert!(
+        !hook_log(&scratch).contains(FALLBACK_TOPIC),
+        "no retry happened: {}",
+        hook_log(&scratch)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_checkout_no_project_is_anchored_to_files_under_the_header_and_declares_nothing(
+) -> TestResult<()> {
+    let scratch = Scratch::new()?;
+    let ledger = scratch.ledger();
+    // The ledger has a registered project with a vocabulary, but this checkout is not in its rig:
+    // the writes fall back to the personal project, which has no vocabulary.
+    register_rig_project(&ledger, "billing", &["invoicing"])?;
+
+    run_hook_ok(&scratch, "pre", &payload(&scratch, "pre")?.to_string(), &[])?;
+    run_hook_ok(
+        &scratch,
+        "post",
+        &payload(&scratch, "post")?.to_string(),
+        &[],
+    )?;
+
+    assert_eq!(events_of(&ledger, EventType::DecisionAccepted)?.len(), 2);
+    assert!(waiting_texts(&ledger)?.is_empty());
+    assert_eq!(topic_keys_of(&ledger, DATABASE_TITLE)?, ["database"]);
+    assert_eq!(topic_keys_of(&ledger, FEATURES_TITLE)?, ["features"]);
+    assert_eq!(
+        declared_topics(&ledger, "billing")?,
+        ["invoicing"],
+        "nothing was declared, here or anywhere"
+    );
+    assert!(
+        !hook_log(&scratch).contains(FALLBACK_TOPIC),
+        "no retry happened: {}",
+        hook_log(&scratch)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_refused_note_and_an_undeclared_header_are_each_retried_once_without_a_duplicate(
+) -> TestResult<()> {
+    let scratch = Scratch::new()?;
+    let ledger = scratch.ledger();
+    register_rig_project(&ledger, "billing", &["invoicing"])?;
+
+    // One answer with a note that reads on its own, one with a note too short to be a rationale:
+    // the second is refused twice (the note, then the header's key) and still lands once.
+    let note = "SQLite cannot be shared between the two demo hosts, so it has to be a server.";
+    let mut post = payload(&scratch, "post")?;
+    for source in ["tool_input", "tool_response"] {
+        post[source]["annotations"][DATABASE_QUESTION] = serde_json::json!({ "notes": note });
+        post[source]["annotations"][FEATURES_QUESTION] =
+            serde_json::json!({ "notes": "and Notion" });
+    }
+    run_hook_ok(&scratch, "post", &post.to_string(), &[("GC_RIG", RIG)])?;
+
+    assert_eq!(
+        events_of(&ledger, EventType::DecisionAccepted)?.len(),
+        2,
+        "one decision per answer, however many refused attempts came first: {}",
+        hook_log(&scratch)
+    );
+    let database = why_for(&ledger, DATABASE_TITLE)?;
+    assert_eq!(rationale(&database)?, note);
+    let features = why_for(&ledger, FEATURES_TITLE)?;
+    assert_eq!(
+        features["quote"], "Import from Notion\n\nNote: and Notion",
+        "{features}"
+    );
+    for title in [DATABASE_TITLE, FEATURES_TITLE] {
+        assert_eq!(topic_keys_of(&ledger, title)?, [FALLBACK_TOPIC]);
+    }
+    assert_eq!(
+        declared_topics(&ledger, "billing")?,
+        ["invoicing", FALLBACK_TOPIC]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_refusal_that_is_not_about_topics_is_not_retried() -> TestResult<()> {
+    let scratch = Scratch::new()?;
+    let ledger = scratch.ledger();
+    // The ledger's project is anchored to another rig, so a capture from this one is the write
+    // layer's wrong-ledger refusal: nothing to do with the topic key, so no second attempt.
+    register_rig_project(&ledger, "billing", &["invoicing"])?;
+
+    run_hook_ok(
+        &scratch,
+        "post",
+        &payload(&scratch, "post")?.to_string(),
+        &[("GC_RIG", "some-other-rig")],
+    )?;
+
+    assert!(events_of(&ledger, EventType::DecisionProposed)?.is_empty());
+    assert_eq!(declared_topics(&ledger, "billing")?, ["invoicing"]);
+    let log = hook_log(&scratch);
+    assert!(
+        log.contains("post: could not record the answer") && log.contains("some-other-rig"),
+        "the refusal is logged: {log}"
+    );
+    assert!(
+        !log.contains(FALLBACK_TOPIC),
+        "it was not retried under the fixed key: {log}"
     );
     Ok(())
 }

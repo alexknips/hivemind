@@ -194,6 +194,14 @@ What the decision carries:
   add what it rests on later with `hivemind ground`.
 - **Project** is worked out from where the agent runs, as for any capture
   (`HIVEMIND_PROJECT` names one outright).
+- **Topic** is the slug of the question's header (`Database` becomes `database`). A
+  registered project accepts only topic keys it has declared, so when the project has
+  not declared that one, the hook files the answer under the fixed key
+  `claude-code-question` instead and declares only that key. The hook retries once,
+  and only for that refusal (both attempts are in `hook.log`; any other refusal is
+  logged, not retried). A project's vocabulary grows by at most that one key from
+  these hooks, never one per question. In a personal or unregistered checkout there
+  is no vocabulary: the header's key is used and nothing is declared.
 
 What it does not do:
 

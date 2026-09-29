@@ -283,6 +283,17 @@ was answered, with no model in the loop:
   reasons were given. It rests on a bet with nothing declared, because nothing was
   stated; `hivemind ground` adds what the answer rests on later.
 
+The decision's topic is the slug of the question's header. A registered project
+accepts only topic keys it declared (the vocabulary rule, under
+[Which project a capture lands in](#which-project-a-capture-lands-in)), so when the
+project has not declared the header's key the hook writes the answer once more under
+the fixed key `claude-code-question` and declares only that key (MCP
+`declare_topics`). It retries on that refusal alone and logs both attempts; every
+other refusal is logged and not retried. From these hooks a project's vocabulary
+grows by at most one key, never one per question. A personal or unregistered
+checkout has no vocabulary, so the header's key is used and nothing is declared. The
+person's answer is recorded in every checkout.
+
 The decision names the same question as the ask (`--question`, not `--answers`: a
 request id only resolves to its question's text, so the two hooks share no state),
 which is what makes `hivemind why` show `asked_at` beside `answered_at` and takes

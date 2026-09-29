@@ -127,7 +127,13 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   `get_waiting_requests`; the hooks share no state. The note you write on your pick is the
   rationale, word for word (a note too short to read on its own is quoted instead); only with
   neither a note nor words of your own does it say no reasons were given. It rests on a bet with
-  nothing declared, because nothing was stated with the answer. A question you decline
+  nothing declared, because nothing was stated with the answer. The answer is filed under the
+  slug of the question's header; when a registered project has not declared that topic (a
+  project accepts only declared ones), the hook writes it once more under the fixed key
+  `claude-code-question` and declares only that key, so a project's vocabulary grows by at most
+  one key from these hooks, never one per question, and your answer is recorded in every
+  checkout (a personal or unregistered one has no vocabulary and declares nothing). Only that
+  refusal is retried; both attempts are in `hook.log`. A question you decline
   or never answer stays waiting; nothing is recorded when nobody asked (an agent deciding alone,
   you deciding unprompted, an import). Writes go to the local ledger through `hivemind mcp`, or
   to `POST /mcp` of the server named by `HIVEMIND_API_URL` (bearer token `HIVEMIND_API_KEY`), so

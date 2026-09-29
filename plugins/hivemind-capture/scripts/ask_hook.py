@@ -22,6 +22,12 @@ A question the human never answers (declined, session closed) has no PostToolUse
 stays waiting. When the ask itself was never recorded (the plugin was installed mid-question, the
 write failed) the answer is still captured and `why` shows no asked_at, which is the truth.
 
+The answer is filed under one topic key: the slug of the question's header. A registered project
+accepts only topic keys it declared, so when the write refuses that key as undeclared the answer is
+written once more under the fixed key `claude-code-question`, declaring only that key. A project's
+vocabulary therefore grows by at most one key from these hooks, never one per question. A personal
+or unregistered checkout has no vocabulary: the first write succeeds and nothing is declared.
+
 Writes go to a local ledger through `hivemind mcp` (stdio), or, when HIVEMIND_API_URL is set, to
 that server's POST /mcp with HIVEMIND_API_KEY as the bearer token. Both take the same tool calls.
 
@@ -87,6 +93,13 @@ RATIONALE_NOTE_ATTACHED = (
     "quoted with this decision."
 )
 NOTE_QUOTE_PREFIX = "Note: "
+
+# The topic key an answer is filed under when its project has not declared the header's key, and
+# the words of the write layer's refusal for a key a registered project never declared ("topic
+# `x` is not declared for project p (declared: ...)", src/commands/mod.rs). Only this refusal
+# sends the answer to the fixed key; any other refusal is not retried.
+FALLBACK_TOPIC = "claude-code-question"
+UNDECLARED_TOPIC_REFUSAL = "not declared for project"
 
 
 class HookError(Exception):
@@ -414,6 +427,7 @@ def answer_arguments(
     human: str,
     note: Optional[str] = None,
     note_as_quote: bool = False,
+    fallback_topic: bool = False,
 ) -> Dict[str, Any]:
     """The `capture_decision` call for one answered question.
 
@@ -421,6 +435,9 @@ def answer_arguments(
     write layer refused the note as a rationale) the note rides in the quote instead and the
     rationale says a note is attached. With neither a note nor own words, the constant sentence
     says no reasons were given.
+
+    The topic key is the slug of the header. With `fallback_topic` (the project has not declared
+    it) the answer goes under FALLBACK_TOPIC and the call declares that one key.
     """
     text = one_line(question.get("question"))
     offered = offered_labels(question)
@@ -462,7 +479,7 @@ def answer_arguments(
     arguments: Dict[str, Any] = {
         "title": clip(title, MAX_TITLE_CHARS),
         "rationale": rationale,
-        "topic_keys": [slug(header) or "claude-code-question"],
+        "topic_keys": [FALLBACK_TOPIC if fallback_topic else slug(header) or FALLBACK_TOPIC],
         "options": options,
         "chosen_option_label": chosen,
         "decided_by": human,
@@ -471,6 +488,8 @@ def answer_arguments(
         # so it is recorded as what it is: a bet with nothing declared.
         "grounding": [{"kind": "bet"}],
     }
+    if fallback_topic:
+        arguments["declare_topics"] = [FALLBACK_TOPIC]
     quoted = [own_words] if own_words else []
     if note and note_as_quote:
         quoted.append(NOTE_QUOTE_PREFIX + note if own_words else note)
@@ -508,18 +527,49 @@ def record_asks(payload: Dict[str, Any]) -> None:
 def capture_answer(
     transport: Transport, question: Dict[str, Any], answer: str, human: str, note: Optional[str]
 ) -> None:
-    """Write one answer. A note is the rationale; if the write layer's readable-rationale check
-    refuses it (too short to stand alone), write it again with the note in the quote."""
-    try:
-        transport.call("capture_decision", answer_arguments(question, answer, human, note))
-    except HookError as exc:
-        # Only a refusal of the rationale is retried: a transport failure may have reached the
-        # ledger already, and a second write would duplicate the decision.
-        if not note or "rationale" not in str(exc):
-            raise
-        transport.call(
-            "capture_decision", answer_arguments(question, answer, human, note, note_as_quote=True)
+    """Write one answer, again after a refusal that has a known way out, once per kind:
+
+    - the project never declared the header's topic key: write it under FALLBACK_TOPIC, declaring
+      only that key;
+    - the readable-rationale check refused the person's note (too short to stand alone): write it
+      with the note in the quote.
+
+    Every other refusal, and any transport failure, is raised and not retried: a refusal wrote
+    nothing, but a failure may have reached the ledger already and a second write would duplicate
+    the decision. The two ways out are independent, so at most two retries happen, each logged.
+    """
+    text = one_line(question.get("question"))[:60]
+    note_as_quote = False
+    fallback_topic = False
+    while True:
+        arguments = answer_arguments(
+            question,
+            answer,
+            human,
+            note,
+            note_as_quote=note_as_quote,
+            fallback_topic=fallback_topic,
         )
+        try:
+            transport.call("capture_decision", arguments)
+        except HookError as exc:
+            reason = str(exc)
+            # The topic refusal is told apart first: it names the header's key, which may itself
+            # contain the word "rationale".
+            if not fallback_topic and UNDECLARED_TOPIC_REFUSAL in reason:
+                log(
+                    f"post: the project does not declare topic {arguments['topic_keys'][0]!r} "
+                    f"({reason}); writing the answer to {text!r} again under {FALLBACK_TOPIC!r}"
+                )
+                fallback_topic = True
+            elif note and not note_as_quote and "rationale" in reason:
+                note_as_quote = True
+            else:
+                raise
+        else:
+            if fallback_topic:
+                log(f"post: recorded the answer to {text!r} under {FALLBACK_TOPIC!r}")
+            return
 
 
 def record_answers(payload: Dict[str, Any]) -> None:
