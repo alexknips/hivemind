@@ -1730,6 +1730,7 @@ async fn mcp_http_tools_list_returns_18_tools() {
     assert!(names.contains(&"capture_decision")); // ubs:ignore
     assert!(names.contains(&"request_decision")); // ubs:ignore
     assert!(names.contains(&"get_decision")); // ubs:ignore
+    assert!(names.contains(&"retitle_decision")); // ubs:ignore
     assert!(names.contains(&"classify_queue_list")); // ubs:ignore
     assert!(names.contains(&"classify_queue_submit")); // ubs:ignore
     assert!(names.contains(&"get_decision_outcome")); // ubs:ignore

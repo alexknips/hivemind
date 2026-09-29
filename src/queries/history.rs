@@ -551,9 +551,11 @@ pub fn get_recent_decisions(
             // wins over the proposal's own title (hivemind-ydmp) — without this override,
             // `query recent` / `recent_decisions` stay stale forever after a retitle even
             // though recall/why/digest/search read straight off the projected node.
-            let title = entry
-                .and_then(|entry| entry.retitled_to.clone())
-                .unwrap_or(payload.title);
+            let retitled_to = entry.and_then(|entry| entry.retitled_to.as_deref());
+            let title = match retitled_to {
+                Some(to) => to.to_owned(), // ubs:ignore: entry owns its handle
+                None => payload.title,
+            };
             items.push(RecentDecisionEntry {
                 decision_id,
                 title,
