@@ -4117,4 +4117,93 @@ fn attribution_effect_sign_negative_means_better_than_baseline() {
     );
 }
 
+// --- a captured decision a human made reads as decided, and says when (hivemind-s0ra) ---
+
+const CAPTURE_BATCH_TIME: &str = "2026-09-20T10:30:00Z";
+
+/// The decision's brief and context, read the way `why` and `verify` read them.
+fn capture_reads(
+    scenario: &Scenario,
+    capture_id: &str,
+) -> Result<(DecisionBrief, DecisionContext, DecisionStatus)> {
+    let graph = scenario.graph()?;
+    let brief = get_decision_brief(&graph, capture_id)?
+        .data
+        .expect("the capture is a decision");
+    let context = get_decision_context(&graph, capture_id)?
+        .data
+        .expect("the capture has a context");
+    let status = derive_decision_status(&graph, capture_id)?;
+    Ok((brief, context, status))
+}
+
+#[test]
+fn a_capture_credited_to_a_human_is_accepted_by_them_and_says_when() -> Result<()> {
+    let scenario = Scenario::new();
+    let capture = scenario.classified_decision(
+        "agent:claude:classifier",
+        CAPTURE_BATCH_TIME,
+        "Run every seat on one model",
+        Some("human:alex"),
+    )?;
+
+    let (brief, context, status) = capture_reads(&scenario, &capture)?;
+
+    assert_eq!(status, DecisionStatus::Accepted);
+    assert_eq!(brief.status, DecisionStatus::Accepted);
+    assert_eq!(brief.decided_by.decider_ids, vec!["human:alex".to_owned()]);
+    assert_eq!(brief.decided_by.proposer_id.as_deref(), Some("human:alex"));
+    assert_eq!(
+        brief.occurred_at,
+        Some(super::test_fixtures::ts(CAPTURE_BATCH_TIME)),
+        "a capture is recorded at its batch's time"
+    );
+    assert_eq!(context.authorship, AuthorshipShape::HumanAuthored);
+    assert_eq!(context.review, ReviewShape::SelfAccepted);
+    Ok(())
+}
+
+#[test]
+fn a_capture_credited_to_an_agent_stays_proposed_but_still_says_when() -> Result<()> {
+    let scenario = Scenario::new();
+    let capture = scenario.classified_decision(
+        "agent:claude:classifier",
+        CAPTURE_BATCH_TIME,
+        "Retry the flaky gate once",
+        Some("agent:claude:mayor"),
+    )?;
+
+    let (brief, context, status) = capture_reads(&scenario, &capture)?;
+
+    assert_eq!(status, DecisionStatus::Proposed);
+    assert!(brief.decided_by.decider_ids.is_empty());
+    assert_eq!(context.authorship, AuthorshipShape::AgentOnly);
+    assert_eq!(context.review, ReviewShape::Unreviewed);
+    assert_eq!(
+        brief.occurred_at,
+        Some(super::test_fixtures::ts(CAPTURE_BATCH_TIME))
+    );
+    Ok(())
+}
+
+#[test]
+fn a_capture_naming_nobody_stays_proposed_and_is_not_called_human_authored() -> Result<()> {
+    let scenario = Scenario::new();
+    let capture = scenario.classified_decision(
+        "agent:claude:classifier",
+        CAPTURE_BATCH_TIME,
+        "Copy the ledger before reading it",
+        None,
+    )?;
+
+    let (brief, context, status) = capture_reads(&scenario, &capture)?;
+
+    assert_eq!(status, DecisionStatus::Proposed);
+    assert!(brief.decided_by.decider_ids.is_empty());
+    assert_eq!(brief.decided_by.proposer_id, None);
+    assert_eq!(context.authorship, AuthorshipShape::Unknown);
+    assert_eq!(context.review, ReviewShape::Unreviewed);
+    Ok(())
+}
+
 mod project_naming;

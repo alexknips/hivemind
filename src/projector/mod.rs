@@ -407,6 +407,7 @@ pub fn project_event_reporting(
             &event.actor_id,
             &payload,
             &origin_properties,
+            event_timestamp(event),
         )?,
         EventPayload::DecisionScored(payload) => {
             project_decision_scored(graph, &payload, &origin_properties)?
@@ -527,7 +528,14 @@ pub fn project_captures_in_memory(id_captures: &[(&str, &CaptureItem)]) -> Resul
     let graph = memory::MemoryGraph::default();
     let (resolved, _stats) = resolve_batch_local_references(id_captures);
     for (node_id, capture) in &resolved {
-        project_capture(&graph, capture, node_id, None, &GraphProperties::default())?;
+        project_capture(
+            &graph,
+            capture,
+            node_id,
+            None,
+            &GraphProperties::default(),
+            GraphValue::Null,
+        )?;
     }
     let (nodes_map, edges) = graph.nodes_and_edges()?;
     let nodes = nodes_map
@@ -1769,12 +1777,15 @@ fn project_notification_acknowledged(
     )
 }
 
+/// `batch_time` is the classified-batch event's own timestamp: the time every decision it
+/// captured is recorded at (see `project_capture_decision`).
 fn project_ingest_batch_classified(
     graph: &impl GraphView,
     event_origin: i64,
     recorder: &str,
     payload: &IngestBatchClassifiedPayload,
     origin_properties: &GraphProperties,
+    batch_time: GraphValue,
 ) -> Result<()> {
     let node_ids: Vec<String> = (0..payload.captures.len())
         .map(|idx| format!("capture:{event_origin}:{idx}"))
@@ -1786,7 +1797,14 @@ fn project_ingest_batch_classified(
         .collect();
     let (resolved, _stats) = resolve_batch_local_references(&id_captures);
     for (node_id, capture) in &resolved {
-        project_capture(graph, capture, node_id, Some(recorder), origin_properties)?;
+        project_capture(
+            graph,
+            capture,
+            node_id,
+            Some(recorder),
+            origin_properties,
+            batch_time.clone(), // ubs:ignore: one timestamp per capture; the value is a short string
+        )?;
     }
     Ok(())
 }
@@ -1950,18 +1968,26 @@ fn project_decision_retitled(
 
 /// `recorder` is the actor that recorded the batch, when there is one (the in-memory evaluation
 /// projection has none): a captured decision belongs to their personal project, the same rule
-/// `project_decision_proposed` applies to a proposal that names no project.
+/// `project_decision_proposed` applies to a proposal that names no project. `batch_time` is the
+/// classified-batch event's timestamp (`Null` when there is none, as in the in-memory
+/// projection).
 fn project_capture(
     graph: &impl GraphView,
     capture: &CaptureItem,
     node_id: &str,
     recorder: Option<&str>,
     origin_properties: &GraphProperties,
+    batch_time: GraphValue,
 ) -> Result<()> {
     match capture.kind.as_str() {
-        "decision" => {
-            project_capture_decision(graph, capture, node_id, recorder, origin_properties)
-        }
+        "decision" => project_capture_decision(
+            graph,
+            capture,
+            node_id,
+            recorder,
+            origin_properties,
+            batch_time,
+        ),
         "evidence" => project_capture_evidence(graph, capture, node_id, origin_properties),
         "hypothesis" => project_capture_hypothesis(graph, capture, node_id, origin_properties),
         "blocker" => project_capture_blocker(graph, capture, node_id, origin_properties),
@@ -1979,14 +2005,28 @@ fn project_capture(
     }
 }
 
+/// A captured decision is recorded at the classified batch's time (`occurred_at`, the value
+/// `why` and `verify` read as when it was decided): the ledger holds no per-capture time, and no
+/// shipper sends a per-turn one yet, so the batch's own time is the honest answer.
+///
+/// Who decided it is what the classifier read out of the text. `accepted_by` names them
+/// outright. Otherwise a capture credited to a human (`actor_id`) is that human's own call: the
+/// classifier only records a person when the text says they proposed, made or reported it, and
+/// a `decision` capture is a choice already made (an open question is a `decision-request`), so
+/// the human is its decider and it is `accepted`, not `proposed`. An agent named the same way
+/// stays `proposed` until a person decides; a capture that names nobody stays `proposed` too.
+/// A capture anyone rejected is left as the text has it: whether the proposer also decided is
+/// then unknown, and nothing is invented.
 fn project_capture_decision(
     graph: &impl GraphView,
     capture: &CaptureItem,
     node_id: &str,
     recorder: Option<&str>,
     origin_properties: &GraphProperties,
+    batch_time: GraphValue,
 ) -> Result<()> {
     let mut props = origin_properties.clone();
+    props.insert("occurred_at".to_owned(), batch_time);
     if let Some(recorder) = recorder {
         props.insert(
             "project".to_owned(),
@@ -2044,6 +2084,9 @@ fn project_capture_decision(
             rejected_by,
             origin_properties,
         )?;
+    }
+    if let Some(human) = capture_human_decider(capture) {
+        graph.upsert_edge(RelationKind::AcceptedBy, node_id, human, origin_properties)?;
     }
     if let Some(supersedes_id) = &capture.supersedes_id {
         ensure_node_reference(graph, NodeKind::Decision, supersedes_id, origin_properties)?;
@@ -2126,6 +2169,18 @@ fn project_capture_decision(
         graph.upsert_edge(RelationKind::Chose, node_id, &opt_id, origin_properties)?;
     }
     Ok(())
+}
+
+/// The human a `decision` capture is credited to when it names no acceptor and no rejecter:
+/// `actor_id` when it is a `human:` id, else none. See [`project_capture_decision`].
+fn capture_human_decider(capture: &CaptureItem) -> Option<&str> {
+    if !capture.accepted_by.is_empty() || !capture.rejected_by.is_empty() {
+        return None;
+    }
+    capture
+        .actor_id
+        .as_deref()
+        .filter(|actor_id| actor_kind(actor_id) == "human")
 }
 
 fn project_capture_evidence(

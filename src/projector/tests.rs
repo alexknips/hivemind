@@ -2371,6 +2371,179 @@ fn classified_batch_decision_projects_node_and_actor_edges() -> Result<()> {
     Ok(())
 }
 
+/// One `decision` capture as the classifier writes it, naming `actor_id`, `accepted_by` and
+/// `rejected_by` and nothing else about who decided.
+fn classified_decision_capture(
+    actor_id: Option<&str>,
+    accepted_by: &[&str],
+    rejected_by: &[&str],
+) -> serde_json::Value {
+    json!({
+        "kind": "decision",
+        "title": "Run every seat on one model",
+        "rationale": "The budget resets on the first",
+        "topic_keys": ["usage"],
+        "evidence_ids": [],
+        "options": ["one model", "two models"],
+        "chosen_option": "one model",
+        "extraction_confidence": 0.9,
+        "expressed_confidence": null,
+        "supersedes_id": null,
+        "premised_on_ids": [],
+        "supports_ids": [],
+        "refutes_ids": [],
+        "actor_id": actor_id,
+        "accepted_by": accepted_by,
+        "rejected_by": rejected_by,
+        "blocked_actor_id": null,
+        "decision_id": null
+    })
+}
+
+type DecisionEdges = Vec<(RelationKind, String)>;
+
+/// `edges` in the order the graph lists them, so a test can write them in any order.
+fn in_graph_order(mut edges: DecisionEdges) -> DecisionEdges {
+    edges.sort();
+    edges
+}
+
+/// The edges of a decision capture projected from a batch recorded at `2026-09-20T10:30:00Z`,
+/// as `(relation, actor)` pairs, and the `occurred_at` its node carries.
+fn project_classified_decision(capture: serde_json::Value) -> Result<(DecisionEdges, GraphValue)> {
+    let mut batch = event(
+        EventType::IngestBatchClassified,
+        "agent:claude:classifier",
+        json!({
+            "batch_id": "batch:1",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [capture]
+        }),
+    );
+    batch.ts = Some(
+        chrono::DateTime::parse_from_rfc3339("2026-09-20T10:30:00Z")
+            .expect("test timestamp parses")
+            .with_timezone(&Utc),
+    );
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(batch)?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let nodes = graph.nodes();
+    let (decision_id, properties) = nodes
+        .iter()
+        .find(|((kind, _), _)| *kind == NodeKind::Decision)
+        .map(|((_, id), properties)| (id.clone(), properties.clone()))
+        .expect("decision node from capture"); // ubs:ignore
+    let edges = graph
+        .edges()
+        .keys()
+        .filter(|(kind, from, _)| {
+            from == &decision_id
+                && matches!(
+                    kind,
+                    RelationKind::AcceptedBy | RelationKind::RejectedBy | RelationKind::ProposedBy
+                )
+        })
+        .map(|(kind, _, to)| (*kind, to.clone()))
+        .collect();
+    let occurred_at = properties
+        .get("occurred_at")
+        .cloned()
+        .expect("a captured decision carries occurred_at"); // ubs:ignore
+    Ok((edges, occurred_at))
+}
+
+#[test]
+fn classified_decision_credited_to_a_human_is_accepted_by_them_at_the_batch_time() -> Result<()> {
+    let (edges, occurred_at) =
+        project_classified_decision(classified_decision_capture(Some("human:alex"), &[], &[]))?;
+
+    assert_eq!(
+        // ubs:ignore
+        edges,
+        in_graph_order(vec![
+            (RelationKind::AcceptedBy, "human:alex".to_owned()),
+            (RelationKind::ProposedBy, "human:alex".to_owned()),
+        ])
+    );
+    assert_eq!(
+        // ubs:ignore
+        occurred_at,
+        GraphValue::String("2026-09-20T10:30:00+00:00".to_owned())
+    );
+    Ok(())
+}
+
+#[test]
+fn classified_decision_credited_to_an_agent_or_nobody_is_not_accepted() -> Result<()> {
+    let (agent_edges, agent_time) = project_classified_decision(classified_decision_capture(
+        Some("agent:claude:mayor"),
+        &[],
+        &[],
+    ))?;
+    assert_eq!(
+        // ubs:ignore
+        agent_edges,
+        vec![(RelationKind::ProposedBy, "agent:claude:mayor".to_owned())],
+        "an agent's own capture waits for a person to decide it"
+    );
+    assert_eq!(
+        // ubs:ignore
+        agent_time,
+        GraphValue::String("2026-09-20T10:30:00+00:00".to_owned()),
+        "it still says when it was recorded"
+    );
+
+    let (nobody_edges, _) =
+        project_classified_decision(classified_decision_capture(None, &[], &[]))?;
+    assert_eq!(
+        // ubs:ignore
+        nobody_edges,
+        Vec::new(),
+        "a capture that names nobody has no decider and no proposer"
+    );
+    Ok(())
+}
+
+#[test]
+fn classified_decision_that_names_an_acceptor_or_a_rejecter_is_not_also_accepted_by_its_proposer(
+) -> Result<()> {
+    let (accepted, _) = project_classified_decision(classified_decision_capture(
+        Some("human:alice"),
+        &["human:bob"],
+        &[],
+    ))?;
+    assert_eq!(
+        // ubs:ignore
+        accepted,
+        in_graph_order(vec![
+            (RelationKind::AcceptedBy, "human:bob".to_owned()),
+            (RelationKind::ProposedBy, "human:alice".to_owned()),
+        ]),
+        "the named acceptor is the decider; the proposer only recorded it"
+    );
+
+    let (rejected, _) = project_classified_decision(classified_decision_capture(
+        Some("human:alice"),
+        &[],
+        &["human:bob"],
+    ))?;
+    assert_eq!(
+        // ubs:ignore
+        rejected,
+        in_graph_order(vec![
+            (RelationKind::RejectedBy, "human:bob".to_owned()),
+            (RelationKind::ProposedBy, "human:alice".to_owned()),
+        ]),
+        "a rejected capture is not turned into a contested one on a guess"
+    );
+    Ok(())
+}
+
 #[test]
 fn classified_batch_decision_projects_to_the_recorders_personal_project() -> Result<()> {
     // A captured decision names no project either: like a proposal that names none, it belongs

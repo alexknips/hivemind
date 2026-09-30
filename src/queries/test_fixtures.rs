@@ -171,6 +171,43 @@ impl Scenario {
         )
     }
 
+    /// `ingest.batch_classified` recorded by `recorder`, holding one `decision` capture whose
+    /// classifier-named actor is `capture_actor_id` (no acceptor, no rejecter). Returns the
+    /// capture's node id, `capture:<event>:0`.
+    pub(crate) fn classified_decision(
+        &self,
+        recorder: &str,
+        timestamp: &str,
+        title: &str,
+        capture_actor_id: Option<&str>,
+    ) -> Result<String> {
+        let event_id = self.push(
+            recorder,
+            EventType::IngestBatchClassified,
+            json!({
+                "batch_id": "batch:1",
+                "classifier_model": "claude-haiku-4-5-20251001",
+                "schema_version": "2",
+                "captures": [{
+                    "kind": "decision",
+                    "title": title,
+                    "rationale": format!("Rationale for {title}, long enough to read on its own"),
+                    "topic_keys": ["capture"],
+                    "evidence_ids": [],
+                    "options": ["A", "B"],
+                    "chosen_option": "A",
+                    "extraction_confidence": 0.9,
+                    "actor_id": capture_actor_id,
+                    "accepted_by": [],
+                    "rejected_by": []
+                }]
+            }),
+            None,
+            timestamp,
+        )?;
+        Ok(format!("capture:{event_id}:0"))
+    }
+
     /// `decision.scored`, schema version 2: a model's assessment of `decision_id`. The payload is
     /// written raw, as a replayed ledger would hold it, so the write path's quote check is not
     /// applied here (its own tests cover it); `dimensions` is the seven answers, see
