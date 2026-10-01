@@ -4,6 +4,7 @@ mod active_blockers;
 mod arrows;
 mod attribution;
 mod brief;
+mod capture_facts;
 mod compact_view;
 mod contested;
 mod context;
@@ -56,6 +57,7 @@ pub use attribution::{
 pub use brief::{
     get_decision_brief, get_decision_brief_at, DecidedBy, DecisionBrief, OptionLabel, StillHolds,
 };
+pub use capture_facts::{decision_capture_facts, recorded_decision_links, CaptureFact};
 pub use compact_view::{
     get_compact_view, BlockerSummary, CompactView, ContestView, ElidedSummary,
     HypothesisSummaryView, PremiseSummaryView, SupersessionSummary,

@@ -16,6 +16,7 @@ pub mod ledger;
 pub mod linear;
 pub mod map;
 pub mod mcp;
+pub mod possibly_related;
 pub mod projector;
 pub mod quality_profile;
 pub mod queries;

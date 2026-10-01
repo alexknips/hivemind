@@ -1683,6 +1683,190 @@ async fn classify_queue_submit_enforces_daily_cap() {
     assert_eq!(batches[0]["batch_id"], "cap-sess:1-2"); // ubs:ignore
 }
 
+/// A decision capture with the topic keys the possibly-related tests care about.
+fn keyed_capture_json(title: &str, topic_keys: &[&str]) -> Value {
+    serde_json::json!({
+        "kind": "decision",
+        "title": title,
+        "rationale": "Recorded so the possibly-related endpoint has something to infer from",
+        "topic_keys": topic_keys,
+        "evidence_ids": [],
+        "options": null,
+        "chosen_option": null,
+        "extraction_confidence": 0.9
+    })
+}
+
+/// hivemind-xarm over HTTP: `GET /v1/decisions/{id}/possibly-related` offers the decisions
+/// recorded out of the same conversation first, then decisions sharing a topic key only a few
+/// decisions carry; an area tag many decisions carry links nothing and is named as set aside; the
+/// answer says it is inferred; and nothing is drawn into the graph.
+#[tokio::test]
+async fn possibly_related_offers_same_conversation_and_specific_topics_and_draws_no_edge() {
+    let dir = test_ledger_dir();
+    let submit = |batch_ids: Vec<&str>, captures: Vec<Value>| {
+        post_json(
+            "/v1/classify-queue/submit",
+            serde_json::json!({
+                "batch_ids": batch_ids,
+                "captures": captures,
+                "model": "agent:worker-a"
+            }),
+        )
+    };
+
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/ingest",
+            ingest_json_at("rel:0-1", "rel-sess", "2026-09-30T10:00:00Z"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}"); // ubs:ignore
+
+    // One conversation: two decisions on the same specific topic, and one on something else.
+    let (status, body) = call(
+        app(dir.clone()),
+        submit(
+            vec!["rel:0-1"],
+            vec![
+                keyed_capture_json("Gate the Kuzu build", &["refinery", "kuzu-gate"]),
+                keyed_capture_json("Run Kuzu nightly", &["refinery", "kuzu-gate"]),
+                keyed_capture_json("Cap the daily spend", &["cost"]),
+            ],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    let conversation = body["event_id"].as_u64().expect("event_id"); // ubs:ignore
+    let gate = format!("capture:{conversation}:0");
+    let nightly = format!("capture:{conversation}:1");
+    let spend = format!("capture:{conversation}:2");
+
+    // A dozen decisions recorded by hand under the same area tag and nothing else.
+    for index in 0..12 {
+        let (status, body) = call(
+            app(dir.clone()),
+            post_json(
+                "/v1/decisions",
+                serde_json::json!({
+                    "grounding": [{"kind": "bet"}],
+                    "title": format!("Refinery routine {index}"),
+                    "rationale": "A routine call made inside the merge queue, nothing more",
+                    "topic_keys": ["refinery"],
+                    "options": [{"label": "routine"}]
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    }
+
+    // One decision recorded by hand, on the specific topic.
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/decisions",
+            serde_json::json!({
+                "grounding": [{"kind": "bet"}],
+                "title": "Document the Kuzu gate",
+                "rationale": "The gate is easy to forget unless the runbook names it",
+                "topic_keys": ["kuzu-gate"],
+                "options": [{"label": "runbook"}]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    let by_hand = body["decision_id"]
+        .as_str()
+        .expect("decision_id")
+        .to_owned(); // ubs:ignore
+
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req(&format!("/v1/decisions/{gate}/possibly-related")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["data"]["layer"], "inferred", "{body}"); // ubs:ignore
+    assert!(
+        body["data"]["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("No one recorded a relation")),
+        "{body}"
+    ); // ubs:ignore
+    let ids: Vec<&str> = body["data"]["items"]
+        .as_array()
+        .expect("items") // ubs:ignore
+        .iter()
+        .map(|item| item["decision_id"].as_str().unwrap_or_default())
+        .collect();
+    // Same conversation first (the one sharing the specific topic before the one sharing none),
+    // then the hand-recorded decision on the specific topic. The twelve under the area tag alone
+    // are not offered.
+    assert_eq!(
+        ids,
+        [nightly.as_str(), spend.as_str(), by_hand.as_str()],
+        "{body}"
+    ); // ubs:ignore
+    let items = body["data"]["items"].as_array().expect("items"); // ubs:ignore
+    assert_eq!(items[0]["same_conversation"], true, "{body}"); // ubs:ignore
+    assert_eq!(items[2]["same_conversation"], false, "{body}"); // ubs:ignore
+    assert_eq!(
+        items[0]["shared_topic_keys"],
+        serde_json::json!([{ "key": "kuzu-gate", "carried_by": 3 }]),
+        "{body}"
+    ); // ubs:ignore
+    assert_eq!(
+        body["data"]["ignored_topic_keys"],
+        serde_json::json!([{ "key": "refinery", "carried_by": 14 }]),
+        "{body}"
+    ); // ubs:ignore
+    assert_eq!(body["truncated"], false, "{body}"); // ubs:ignore
+
+    // A page that is cut says so and says how to continue.
+    let (status, page) = call(
+        app(dir.clone()),
+        get_req(&format!("/v1/decisions/{gate}/possibly-related?limit=1")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}"); // ubs:ignore
+    assert_eq!(page["truncated"], true, "{page}"); // ubs:ignore
+    assert_eq!(page["data"]["total_matches"], 3, "{page}"); // ubs:ignore
+    assert_eq!(page["data"]["next_cursor"], "1", "{page}"); // ubs:ignore
+
+    // Nothing was drawn: no edge joins two captured decisions.
+    let (status, graph) = call(app(dir.clone()), get_req("/v1/graph")).await;
+    assert_eq!(status, StatusCode::OK, "{graph}"); // ubs:ignore
+    let joined = graph["edges"]
+        .as_array()
+        .expect("edges") // ubs:ignore
+        .iter()
+        .filter(|edge| {
+            edge["from"]
+                .as_str()
+                .is_some_and(|id| id.contains("capture:"))
+                && edge["to"]
+                    .as_str()
+                    .is_some_and(|id| id.contains("capture:"))
+        })
+        .count();
+    assert_eq!(
+        joined, 0,
+        "an inferred suggestion is never a recorded edge: {graph}"
+    ); // ubs:ignore
+
+    // A decision that does not exist is a 404, not an empty list.
+    let (status, body) = call(
+        app(dir),
+        get_req("/v1/decisions/capture:999:0/possibly-related"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}"); // ubs:ignore
+}
+
 /// Requires the `shared-backend-postgres` feature and a live Postgres
 /// instance. Set HIVEMIND_TEST_POSTGRES_URL to run; skipped when unset (same
 /// pattern as tests/migrate.rs). CI's dedicated `rust-postgres` job always

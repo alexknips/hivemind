@@ -67,4 +67,5 @@ src/quality_profile/markdown/tests.rs
 src/queries/grounding_facts/tests.rs
 src/queries/same_as/tests.rs
 src/restatement/tests.rs
+src/possibly_related/tests.rs
 work-orf0.5/

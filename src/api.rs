@@ -35,6 +35,9 @@
 //! - `GET  /v1/decisions/{id}/timeline`            — the decision's dated story from the ledger:
 //!   asked, recorded, accepted or rejected, superseded, retitled, moved, premise no longer
 //!   standing (hivemind-bbnw.7)
+//! - `GET  /v1/decisions/{id}/possibly-related[?limit=][?cursor=]` — decisions recorded out of the
+//!   same conversation or sharing a specific topic key, ranked, labelled `inferred`; never a
+//!   recorded relation (hivemind-xarm)
 //! - `GET  /v1/decisions/search`                   — full-text search (SQLite only)
 //! - `GET  /v1/decisions/relevant`                 — decisions by topic
 //! - `GET  /v1/decisions/situational`               — decisions relevant to touched paths
@@ -620,6 +623,10 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/v1/decisions/{id}/timeline",
             get(handlers::timeline_handler),
+        )
+        .route(
+            "/v1/decisions/{id}/possibly-related",
+            get(handlers::possibly_related_handler),
         )
         .route(
             "/v1/decisions/{id}/disagreements",

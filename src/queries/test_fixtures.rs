@@ -154,6 +154,69 @@ impl Scenario {
         )
     }
 
+    /// `decision.proposed` filed under exactly `topic_keys`, for tests about what topic keys link.
+    pub(crate) fn decision_topics(
+        &self,
+        decision_id: &str,
+        title: &str,
+        topic_keys: &[&str],
+        actor_id: &str,
+        timestamp: &str,
+    ) -> Result<EventId> {
+        self.proposal(
+            actor_id,
+            timestamp,
+            json!({
+                "decision_id": decision_id,
+                "title": title,
+                "rationale": format!("Rationale for {title}, long enough to read on its own"),
+                "topic_keys": topic_keys,
+                "option_ids": [],
+                "option_labels": [],
+                "chosen_option_id": Value::Null,
+                "hypothesis_ids": [],
+                "evidence_ids": [],
+            }),
+        )
+    }
+
+    /// One `ingest.batch_classified` event recording a decision capture per `(title, topic_keys)`
+    /// out of one conversation. The decisions are `capture:<returned event id>:<index>`, and all
+    /// of them carry the returned event id as their `event_origin`.
+    pub(crate) fn classified_decisions(
+        &self,
+        decisions: &[(&str, &[&str])],
+        timestamp: &str,
+    ) -> Result<EventId> {
+        let captures: Vec<Value> = decisions
+            .iter()
+            .map(|(title, topic_keys)| {
+                json!({
+                    "kind": "decision",
+                    "title": title,
+                    "rationale": format!("Rationale for {title}, long enough to read on its own"),
+                    "topic_keys": topic_keys,
+                    "evidence_ids": [],
+                    "options": Value::Null,
+                    "chosen_option": Value::Null,
+                    "extraction_confidence": 0.9,
+                })
+            })
+            .collect();
+        self.push(
+            "agent:claude:classifier",
+            EventType::IngestBatchClassified,
+            json!({
+                "batch_id": format!("session-{timestamp}:0"),
+                "classifier_model": "test-classifier",
+                "schema_version": "2",
+                "captures": captures,
+            }),
+            None,
+            timestamp,
+        )
+    }
+
     /// `decision.proposed` from a hand-built payload, for tests that control exactly which
     /// options, question and evidence a record carries (see `record_payload`).
     pub(crate) fn proposal(

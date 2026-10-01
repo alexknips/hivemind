@@ -17,6 +17,7 @@ use crate::grounding::{
     resolve_grounding, GroundingResolution, GroundingSpec, WIRE_GROUNDING_REFUSAL,
 };
 use crate::ledger::{EventLedger, SqliteEventLedger, TenantScopedLedger};
+use crate::possibly_related::{possibly_related, PossiblyRelatedRequest};
 use crate::projector::GraphView;
 use crate::queries::{
     annotate_resolution, derive_decision_status, get_changed_decisions, get_compact_view,
@@ -166,7 +167,7 @@ pub(super) struct SearchParams {
     cursor: Option<String>,
 }
 
-/// Query params of the paged attention lists (`waiting`, `contested`).
+/// Query params of the paged lists (`waiting`, `contested`, a decision's `possibly-related`).
 #[derive(Debug, Deserialize)]
 pub(super) struct AttentionParams {
     limit: Option<usize>,
@@ -816,6 +817,39 @@ pub(super) async fn timeline_handler(
         let scoped_ledger = TenantScopedLedger::new(&ledger, ctx.tenant_id.clone());
         let response =
             get_decision_timeline(&*graph, &scoped_ledger, &decision_id).map_err(to_api_error)?;
+        if response.data.is_none() {
+            return Err(ApiError::not_found(format!(
+                "decision not found: {decision_id}"
+            )));
+        }
+        Ok(response)
+    })
+    .await;
+
+    respond_envelope(result)
+}
+
+pub(super) async fn possibly_related_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(decision_id): Path<String>,
+    Query(params): Query<AttentionParams>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let request = PossiblyRelatedRequest {
+            limit: params.limit.unwrap_or(0),
+            cursor: params.cursor,
+        };
+        let response = possibly_related(&*graph, &decision_id, &request).map_err(to_api_error)?;
         if response.data.is_none() {
             return Err(ApiError::not_found(format!(
                 "decision not found: {decision_id}"
