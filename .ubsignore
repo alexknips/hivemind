@@ -65,4 +65,6 @@ src/quality_profile/failure_modes/tests.rs
 src/quality_profile/report/tests.rs
 src/quality_profile/markdown/tests.rs
 src/queries/grounding_facts/tests.rs
+src/queries/same_as/tests.rs
+src/restatement/tests.rs
 work-orf0.5/

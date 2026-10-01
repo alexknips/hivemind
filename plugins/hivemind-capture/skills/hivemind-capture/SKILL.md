@@ -596,6 +596,13 @@ All fields listed in step 2 are required. Use empty arrays for `evidence_ids`,
 `assumes_ids`, `supports_ids`, `refutes_ids`. Use `null` for all optional
 string fields unless the input text explicitly names them. Do not invent ids.
 
+A `decision` that states an already recorded decision again (the same question,
+answered the same way) may name it in `restates_id`, taking the id from
+`query recall` on its title. The id must be a recorded decision; a decision
+restated from the very same moment is not recorded a second time. Leave it out
+when unsure. An older hivemind refuses the field as unknown: submit again
+without it.
+
 ## Assess via Haiku Subagent (Keyless)
 
 When you want to assess the seven quality dimensions of a decision without a

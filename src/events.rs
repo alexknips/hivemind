@@ -575,6 +575,14 @@ pub struct CaptureItem {
     /// ID of the decision being superseded; only when present in the input text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supersedes_id: Option<String>,
+    /// ID of an already recorded decision this capture states again: the same choice, made or
+    /// relayed once more. Only on a `decision`. The classifier judges it from the closest recorded
+    /// decisions it was shown; the write path only checks that the id names a recorded decision.
+    /// Recorded, it projects a `SAME_AS` link to that decision, so reads show one decision;
+    /// restated from the very same moment (see `record_ingest_batch_classified`) it is not
+    /// recorded a second time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restates_id: Option<String>,
     /// Hypothesis IDs this decision is premised on; only IDs present in the input.
     #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "assumes_ids")]
     pub premised_on_ids: Vec<String>,
@@ -638,10 +646,33 @@ pub struct IngestBatchClassifiedPayload {
     /// more than one batch with one model call and one event, so every
     /// listed batch moves from pending to classified together. Empty on
     /// events written before this field existed — readers use `batch_id` as
-    /// the fallback (see `classifier::classified_batch_ids_from_payload`,
-    /// which applies that same fallback over the raw event payload).
+    /// the fallback (see `classified_batch_ids`, which applies that same
+    /// fallback over the raw event payload).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub batch_ids: Vec<String>,
+}
+
+/// The batch ids a raw `ingest.batch_classified` event payload covers: `batch_ids` when present
+/// (session-grouped submissions), falling back to the singular `batch_id` of an event written
+/// before `batch_ids` existed. Reads the raw payload so a scan never fails on one odd event.
+pub fn classified_batch_ids(payload: &serde_json::Value) -> Vec<String> {
+    let from_array: Vec<String> = payload
+        .get("batch_ids")
+        .and_then(|value| value.as_array())
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !from_array.is_empty() {
+        return from_array;
+    }
+    payload
+        .get("batch_id")
+        .and_then(|value| value.as_str())
+        .map(|id| vec![id.to_owned()])
+        .unwrap_or_default()
 }
 
 /// One scored quality dimension: score in [0,1] plus a human-readable explanation.

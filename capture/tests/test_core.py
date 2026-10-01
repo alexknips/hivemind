@@ -79,6 +79,20 @@ class TestExtractTurn(unittest.TestCase):
         self.assertEqual(turn["role"], "assistant")
         self.assertEqual(turn["text"], "REST is better for ergonomics.")
 
+    def test_ships_the_records_own_time_as_the_turns_ts(self):
+        record = self._make_record("user", "user", [{"type": "text", "text": "Go with REST."}])
+        record["timestamp"] = "2026-09-27T14:03:11.123Z"
+        self.assertEqual(_extract_turn(record)["ts"], "2026-09-27T14:03:11.123Z")
+
+    def test_a_record_without_a_readable_time_ships_no_ts(self):
+        for timestamp in (None, "", "yesterday", "2026-09-27T14:03:11", 1790000000):
+            record = self._make_record(
+                "user", "user", [{"type": "text", "text": "Go with REST."}]
+            )
+            if timestamp is not None:
+                record["timestamp"] = timestamp
+            self.assertNotIn("ts", _extract_turn(record), msg=repr(timestamp))
+
     def test_skips_non_user_assistant_types(self):
         record = {"type": "file-history-snapshot", "uuid": "u", "message": {}}
         self.assertIsNone(_extract_turn(record))

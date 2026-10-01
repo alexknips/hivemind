@@ -50,7 +50,7 @@ use crate::quality_profile::{
     self, parse_kinds, ScanRequest, SuggestionsRequest, SCAN_DEFAULT_LIMIT,
 };
 use crate::queries::{
-    annotate_close_match, context_next_cursor, derive_decision_status,
+    annotate_resolution, context_next_cursor, derive_decision_status,
     get_changed_decisions as query_get_changed_decisions, get_compact_view,
     get_contested_decisions as query_get_contested_decisions,
     get_decision_brief as query_get_decision_brief,
@@ -745,7 +745,7 @@ fn read_reply<T: serde::Serialize>(
         "data": response.data,
     });
     if let Some(candidate) = close_match {
-        annotate_close_match(&mut envelope, candidate);
+        annotate_resolution(&mut envelope, candidate);
     }
     ToolOutput(envelope)
 }
@@ -780,7 +780,7 @@ fn resolve_target_as<L: EventLedger>(
     } = response;
     match data {
         ResolveOutcome::Resolved { candidate } => {
-            let close_match = (!candidate.missing_terms.is_empty()).then(|| candidate.clone());
+            let close_match = candidate.needs_annotation().then(|| candidate.clone());
             Ok((ResolvedTarget::Id(candidate.decision_id), close_match))
         }
         ResolveOutcome::NotFound => Ok((

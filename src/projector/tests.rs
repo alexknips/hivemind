@@ -2575,6 +2575,60 @@ fn classified_batch_decision_supersedes_edge() -> Result<()> {
 }
 
 #[test]
+fn classified_batch_decision_restating_another_projects_a_same_as_edge_newer_to_older() -> Result<()>
+{
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::DecisionProposed,
+        "actor:alice",
+        json!({
+            "decision_id": "decision:first",
+            "title": "Run every town seat on Fable only",
+            "rationale": "Hold the spend",
+            "topic_keys": ["cost"],
+            "option_ids": [],
+            "chosen_option_id": null,
+            "hypothesis_ids": [],
+            "evidence_ids": []
+        }),
+    ))?;
+    ledger.append(event(
+        EventType::IngestBatchClassified,
+        "agent:hivemind:classifier",
+        json!({
+            "batch_id": "batch:restates",
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [{
+                "kind": "decision",
+                "title": "Fable only for every town seat",
+                "rationale": "The same ruling, relayed",
+                "topic_keys": ["cost"],
+                "evidence_ids": [],
+                "options": null,
+                "chosen_option": null,
+                "extraction_confidence": 0.85,
+                "restates_id": "decision:first"
+            }]
+        }),
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    let edges = graph.edges();
+    let same_as: Vec<_> = edges
+        .keys()
+        .filter(|(kind, _, _)| *kind == RelationKind::SameAs)
+        .collect();
+    assert_eq!(same_as.len(), 1, "{same_as:?}");
+    let (_, from, to) = same_as[0];
+    assert!(from.starts_with("capture:"), "{from}");
+    assert_eq!(to, "decision:first");
+    Ok(())
+}
+
+#[test]
 fn classified_batch_evidence_supports_and_refutes() -> Result<()> {
     let ledger = InMemoryEventLedger::new();
     // Seed hypothesis nodes.
@@ -2948,6 +3002,7 @@ fn capture_with_title(kind: &str, title: &str) -> CaptureItem {
         blocked_actor_id: None,
         decision_id: None,
         participants: vec![],
+        restates_id: None,
         session_initiator: None,
     }
 }

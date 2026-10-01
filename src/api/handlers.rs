@@ -19,7 +19,7 @@ use crate::grounding::{
 use crate::ledger::{EventLedger, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::GraphView;
 use crate::queries::{
-    annotate_close_match, derive_decision_status, get_changed_decisions, get_compact_view,
+    annotate_resolution, derive_decision_status, get_changed_decisions, get_compact_view,
     get_contested_decisions, get_decision, get_decision_brief, get_decision_neighborhood,
     get_decision_timeline, get_relevant_decisions, get_situational_decisions,
     get_supersession_chain, get_waiting_requests, resolve_decision_for_reading,
@@ -253,7 +253,7 @@ fn answer_envelope<T: Serialize>(
 ) -> serde_json::Value {
     let mut envelope = envelope_value(response);
     if let Some(candidate) = close_match {
-        annotate_close_match(&mut envelope, candidate);
+        annotate_resolution(&mut envelope, candidate);
     }
     envelope
 }
@@ -1551,8 +1551,7 @@ fn classify_queue_submit_blocking(
         ),
     );
 
-    let capture_count = req.captures.len();
-    let event_id = commands
+    let recorded = commands
         .record_ingest_batch_classified(
             &ctx.actor_id,
             &req.batch_ids,
@@ -1563,9 +1562,11 @@ fn classify_queue_submit_blocking(
         )
         .map_err(to_api_error)?;
 
-    Ok(serde_json::json!({
+    let mut reply = serde_json::json!({
         "batch_ids": req.batch_ids,
-        "capture_count": capture_count,
-        "event_id": event_id,
-    }))
+        "capture_count": recorded.recorded_count,
+        "event_id": recorded.event_id,
+    });
+    recorded.annotate_reply(&mut reply);
+    Ok(reply)
 }

@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::commands::{
     DecisionMoveOutcome, DecisionPlacement, DecisionRetitleOutcome, ProjectTopicDeclaration,
-    RestsOn, RestsOnKind,
+    RestatedCapture, RestsOn, RestsOnKind,
 };
 use crate::error::{CliError, CommandError};
 use crate::events::{EventId, EventType, ModelDimension};
@@ -17,7 +17,7 @@ use crate::projector::{
 };
 use crate::quality_profile::{Assessment, Dimension, ScanReport, ScoreReport};
 use crate::queries::{
-    annotate_close_match, derive_decision_status, derive_hypothesis_status, oriented_edges,
+    annotate_resolution, derive_decision_status, derive_hypothesis_status, oriented_edges,
     BlockerNotificationCandidates, ChangedDecisionsResults, CompactView, Contest,
     ContestedDecisionsResults, DecidedBy, DecisionBlockerResults, DecisionBrief,
     DecisionSearchResults, DecisionStatus, DecisionTimeline, DecisionView,
@@ -31,6 +31,7 @@ use crate::queries::{
     SituationalResults, SupersessionChain, TimelineEntry, TimelineFact, TitleChange,
     WaitingRequestsResults,
 };
+use crate::restatement::{AppliedLink, RestatementProposals};
 use crate::{HivemindError, Result};
 
 use super::args::CliExit;
@@ -260,9 +261,11 @@ pub(crate) fn format_query_response<T: Serialize>(
 }
 
 /// `format_query_response` for a read verb that resolved its target from a description. When the
-/// description named a word the decision lacks, the answer says so: a `close match:` line ahead
-/// of `--summary` output, `close_match` beside `data` in `--json` (hivemind-3lko). A full match
-/// (`None`) prints exactly what `format_query_response` does.
+/// description named a word the decision lacks, or the decision was recorded more than once, the
+/// answer says so: `close match:` / `also recorded as:` lines ahead of `--summary` output,
+/// `close_match` / `also_recorded_as` beside `data` in `--json` (hivemind-3lko, hivemind-83cj). A
+/// full match of a decision recorded once (`None`) prints exactly what `format_query_response`
+/// does.
 pub(crate) fn format_close_matched_response<T: Serialize>(
     summary: bool,
     response: &QueryResponse<T>,
@@ -274,25 +277,91 @@ pub(crate) fn format_close_matched_response<T: Serialize>(
     };
     if summary {
         let body = format_query_response(true, response, render_summary, None)?;
-        return Ok(format!("{}\n{body}", render_close_match_notice(candidate)));
+        return Ok(format!("{}\n{body}", render_resolution_notices(candidate)));
     }
     let mut envelope = serde_json::to_value(response)
         .map_err(|error| CliError::InvalidInput(format!("json serialization failed: {error}")))?;
-    annotate_close_match(&mut envelope, candidate);
+    annotate_resolution(&mut envelope, candidate);
     format_json_value(true, &envelope)
 }
 
-/// The line that tells a reader the decision below matched all but some of their words.
-fn render_close_match_notice(candidate: &ResolvedCandidate) -> String {
-    let words: Vec<String> = candidate
-        .missing_terms
+/// The lines that tell a reader how the decision below was resolved: the words it lacks, and the
+/// other records of the same decision.
+fn render_resolution_notices(candidate: &ResolvedCandidate) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    if !candidate.missing_terms.is_empty() {
+        let words: Vec<String> = candidate
+            .missing_terms
+            .iter()
+            .map(|term| format!("\"{term}\""))
+            .collect();
+        lines.push(format!(
+            "close match: no decision has every word you asked with; this one has no {} (name a decision exactly with --id)",
+            words.join(", ")
+        ));
+    }
+    if !candidate.also_recorded_as.is_empty() {
+        let copies: Vec<String> = candidate
+            .also_recorded_as
+            .iter()
+            .map(|copy| format!("{} \"{}\"", copy.decision_id, copy.title))
+            .collect();
+        lines.push(format!("also recorded as: {}", copies.join("; ")));
+    }
+    lines.join("\n")
+}
+
+/// The proposals as one line per link, then what was scanned and how to record them.
+pub(crate) fn render_restatement_proposals(proposals: &RestatementProposals) -> String {
+    let mut output = String::new();
+    for link in &proposals.proposed {
+        let _ = writeln!(
+            output,
+            "{later} = {earlier}\toverlap={overlap:.2}\tshared={shared}\t{title:?} | {earlier_title:?}",
+            later = link.decision_id,
+            earlier = link.restates_id,
+            overlap = link.overlap,
+            shared = link.shared_terms.join(","),
+            title = link.title,
+            earlier_title = link.restates_title,
+        );
+    }
+    let _ = write!(
+        output,
+        "{} link(s) proposed over {} decision(s). Record them with `restatements apply --all`, or pick with `--link LATER=EARLIER`.",
+        proposals.proposed.len(),
+        proposals.decisions_scanned
+    );
+    output
+}
+
+/// One line per link applied, saying whether it was written or already there.
+pub(crate) fn render_applied_links(applied: &[AppliedLink]) -> String {
+    let mut output = String::new();
+    for link in applied {
+        let _ = match link.event_id {
+            Some(event_id) => writeln!(
+                output,
+                "linked {} = {} (event {event_id})",
+                link.decision_id, link.restates_id
+            ),
+            None => writeln!(
+                output,
+                "already linked {} = {}",
+                link.decision_id, link.restates_id
+            ),
+        };
+    }
+    let written = applied
         .iter()
-        .map(|term| format!("\"{term}\""))
-        .collect();
-    format!(
-        "close match: no decision has every word you asked with; this one has no {} (name a decision exactly with --id)",
-        words.join(", ")
-    )
+        .filter(|link| link.event_id.is_some())
+        .count();
+    let _ = write!(
+        output,
+        "{written} link(s) recorded, {} already there.",
+        applied.len() - written
+    );
+    output
 }
 
 pub(crate) fn append_truncation_notice(
@@ -495,6 +564,15 @@ pub(crate) fn render_recall_summary(response: &crate::summarize::RecallResponse)
         // A close match says which words of the question it lacks.
         if !item.missing_terms.is_empty() {
             let _ = write!(output, "\tmissing={}", item.missing_terms.join(","));
+        }
+        // A decision recorded more than once is one match; the other records are named.
+        if !item.also_recorded_as.is_empty() {
+            let copies: Vec<&str> = item
+                .also_recorded_as
+                .iter()
+                .map(|copy| copy.decision_id.as_str())
+                .collect();
+            let _ = write!(output, "\talso_recorded_as={}", copies.join(","));
         }
         output.push('\n');
     }
@@ -2170,6 +2248,10 @@ pub(crate) struct OutputEnvelope {
     /// the personal project with how to move it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) project_reminder: Option<String>,
+    /// Captures of an `emit ingest.batch_classified` that named a decision they restate, and
+    /// whether each was linked or not recorded; absent when none did.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) restated: Vec<RestatedCapture>,
 }
 
 impl OutputEnvelope {
@@ -2181,7 +2263,13 @@ impl OutputEnvelope {
             placement: None,
             project_notice: None,
             project_reminder: None,
+            restated: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_restated(mut self, restated: Vec<RestatedCapture>) -> Self {
+        self.restated = restated;
+        self
     }
 
     pub(crate) fn with_placement(mut self, placement: DecisionPlacement) -> Self {

@@ -1256,6 +1256,7 @@ async fn classifier_batch_classified_event_round_trips() {
         blocked_actor_id: None,
         decision_id: None,
         participants: vec![],
+        restates_id: None,
         session_initiator: None,
     }];
 
@@ -1268,7 +1269,8 @@ async fn classifier_batch_classified_event_round_trips() {
             captures,
             Some(batch_event_id),
         )
-        .unwrap();
+        .unwrap()
+        .event_id;
 
     assert!(
         // ubs:ignore
@@ -1393,6 +1395,149 @@ async fn classify_queue_list_filters_by_session_id() {
     let batches = body["batches"].as_array().unwrap(); // ubs:ignore
     assert_eq!(batches.len(), 1, "{body}"); // ubs:ignore
     assert_eq!(batches[0]["batch_id"], "s1:0-1"); // ubs:ignore
+}
+
+fn ingest_json_at(batch_id: &str, session_id: &str, ts: &str) -> Value {
+    serde_json::json!({
+        "batch_id": batch_id,
+        "agent_tool": "claude",
+        "session_id": session_id,
+        "turns": [
+            { "turn_id": "t1", "role": "user", "text": "Run every town seat on Fable only",
+              "truncated": false, "ts": ts }
+        ]
+    })
+}
+
+fn decision_capture_json(title: &str, restates_id: Option<&str>) -> Value {
+    let mut capture = serde_json::json!({
+        "kind": "decision",
+        "title": title,
+        "rationale": "Every town seat runs on the Fable model this week, to hold the spend",
+        "topic_keys": ["cost"],
+        "evidence_ids": [],
+        "options": ["fable-only", "fable-and-opus"],
+        "chosen_option": "fable-only",
+        "extraction_confidence": 0.9
+    });
+    if let Some(restates_id) = restates_id {
+        capture["restates_id"] = serde_json::json!(restates_id);
+    }
+    capture
+}
+
+/// hivemind-83cj over HTTP: a restatement of a decision from another moment is recorded and
+/// linked, so `why` answers with one decision; the same moment sent again is not recorded twice;
+/// and an id that is not a recorded decision is refused with nothing written.
+#[tokio::test]
+async fn classify_queue_submit_links_a_restatement_and_does_not_record_the_same_moment_twice() {
+    let dir = test_ledger_dir();
+    let submit = |batch_ids: Vec<&str>, captures: Vec<Value>| {
+        post_json(
+            "/v1/classify-queue/submit",
+            serde_json::json!({
+                "batch_ids": batch_ids,
+                "captures": captures,
+                "model": "agent:worker-a"
+            }),
+        )
+    };
+
+    for (batch_id, ts) in [
+        ("restate:first", "2026-09-27T10:00:00Z"),
+        ("restate:resent", "2026-09-27T10:00:00Z"),
+        ("restate:later", "2026-09-28T09:30:00Z"),
+    ] {
+        let (status, body) = call(
+            app(dir.clone()),
+            post_json("/v1/ingest", ingest_json_at(batch_id, "restate-sess", ts)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}"); // ubs:ignore
+    }
+
+    let (status, body) = call(
+        app(dir.clone()),
+        submit(
+            vec!["restate:first"],
+            vec![decision_capture_json(
+                "Run every town seat on Fable only",
+                None,
+            )],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    let first_id = format!("capture:{}:0", body["event_id"].as_u64().expect("event_id")); // ubs:ignore
+    assert!(body.get("restated").is_none(), "{body}"); // ubs:ignore
+
+    // An id nobody recorded is refused, and the batch stays pending.
+    let (status, body) = call(
+        app(dir.clone()),
+        submit(
+            vec!["restate:resent"],
+            vec![decision_capture_json(
+                "Fable only for every town seat",
+                Some("capture:999999:0"),
+            )],
+        ),
+    )
+    .await;
+    assert!(status.is_client_error(), "{status} {body}"); // ubs:ignore
+    assert!(body.to_string().contains("capture:999999:0"), "{body}"); // ubs:ignore
+    let (_, pending) = call(
+        app(dir.clone()),
+        get_req("/v1/classify-queue?session_id=restate-sess"),
+    )
+    .await;
+    assert_eq!(pending["batches"].as_array().unwrap().len(), 2, "{pending}"); // ubs:ignore
+
+    // The same transcript sent again: classified, and nothing recorded a second time.
+    let (status, body) = call(
+        app(dir.clone()),
+        submit(
+            vec!["restate:resent"],
+            vec![decision_capture_json(
+                "Fable only for every town seat",
+                Some(&first_id),
+            )],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["capture_count"], 0, "{body}"); // ubs:ignore
+    assert_eq!(body["restated"][0]["outcome"], "deduplicated", "{body}"); // ubs:ignore
+    assert_eq!(body["restated"][0]["restates_id"], first_id, "{body}"); // ubs:ignore
+
+    // The decision made again the next day: recorded, and linked.
+    let (status, body) = call(
+        app(dir.clone()),
+        submit(
+            vec!["restate:later"],
+            vec![decision_capture_json(
+                "Fable only for every town seat",
+                Some(&first_id),
+            )],
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["capture_count"], 1, "{body}"); // ubs:ignore
+    assert_eq!(body["restated"][0]["outcome"], "linked", "{body}"); // ubs:ignore
+    let later_id = format!("capture:{}:0", body["event_id"].as_u64().expect("event_id")); // ubs:ignore
+
+    // Two records, one decision to `why`: the earliest, naming the other.
+    let (status, body) = call(
+        app(dir.clone()),
+        get_req("/v1/decisions/why?description=fable%20town%20seat"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["data"]["root"]["id"], first_id, "{body}"); // ubs:ignore
+    assert_eq!(
+        body["also_recorded_as"][0]["decision_id"], later_id,
+        "{body}"
+    ); // ubs:ignore
 }
 
 #[tokio::test]

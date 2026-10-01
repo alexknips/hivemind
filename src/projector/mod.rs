@@ -2054,6 +2054,17 @@ fn project_capture_decision(
             origin_properties,
         )?;
     }
+    // A decision stated again points at the record it restates, so reads show one decision
+    // (`queries::same_as`). Newer to older, the direction `SUPERSEDES` reads.
+    if let Some(restates_id) = &capture.restates_id {
+        ensure_node_reference(graph, NodeKind::Decision, restates_id, origin_properties)?;
+        graph.upsert_edge(
+            RelationKind::SameAs,
+            node_id,
+            restates_id,
+            origin_properties,
+        )?;
+    }
     let (premised_on_kind, premised_on_from) = if let Some(chosen) = &capture.chosen_option {
         (RelationKind::PremisedOn, option_node_id(node_id, chosen))
     } else {

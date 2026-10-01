@@ -228,6 +228,7 @@ fn minimal_decision_capture() -> CaptureItem {
         blocked_actor_id: None,
         decision_id: None,
         participants: vec![],
+        restates_id: None,
         session_initiator: None,
     }
 }
@@ -445,7 +446,8 @@ fn resolve_capture_node_id_finds_decision_capture() {
             vec![minimal_decision_capture()],
             None,
         )
-        .expect("record succeeds");
+        .expect("record succeeds")
+        .event_id;
 
     let (node_id, causation_event_id) =
         resolve_capture_node_id(&ledger, &TenantId::local(), "batch-1", 0)

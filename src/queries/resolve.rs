@@ -25,12 +25,14 @@
 //! beats one that only mentions the words somewhere in a long rationale.
 
 use std::cmp::Reverse;
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::Result;
 
+use super::same_as::{fold_linked, RecordedCopy};
 use super::search::{collect_resolver_candidates, CloseMatch, ResolverCandidateRow};
 use super::shared::{
     optional_int, optional_string, query_error, query_timer_start, MAX_QUERY_RESULTS,
@@ -71,6 +73,18 @@ pub struct ResolvedCandidate {
     /// for the close candidates offered when no decision matches every term.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_terms: Vec<String>,
+    /// Other records of this same decision, linked `SAME_AS` (hivemind-83cj): the candidate is the
+    /// earliest recorded of them that matches the description, and these are the rest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_recorded_as: Vec<RecordedCopy>,
+}
+
+impl ResolvedCandidate {
+    /// Whether an answer resolved to this candidate has something to say about how it was
+    /// resolved: words it lacks, or other records of the same decision.
+    pub fn needs_annotation(&self) -> bool {
+        !self.missing_terms.is_empty() || !self.also_recorded_as.is_empty()
+    }
 }
 
 /// Outcome of a resolve-by-description call: either a confident single match, or a candidate
@@ -139,7 +153,21 @@ fn resolve_for(
         Asker::Writer => CloseMatch::Majority,
         Asker::Reader => CloseMatch::Half,
     };
-    let mut rows = collect_resolver_candidates(graph, description, &topic_keys, close)?;
+    // Records of one decision, linked `SAME_AS`, are one candidate; records with no link between
+    // them stay separate, so a tie among them stays `Ambiguous`.
+    let mut also_recorded_as: HashMap<String, Vec<RecordedCopy>> = HashMap::new();
+    let mut rows: Vec<ResolverCandidateRow> = Vec::new();
+    for folded in fold_linked(
+        graph,
+        collect_resolver_candidates(graph, description, &topic_keys, close)?,
+        |row| row.decision_id.as_str(),
+        absorb_record,
+    )? {
+        if !folded.also_recorded_as.is_empty() {
+            also_recorded_as.insert(folded.item.decision_id.clone(), folded.also_recorded_as);
+        }
+        rows.push(folded.item);
+    }
     let only_close_candidates =
         !rows.is_empty() && rows.iter().all(|row| !row.missing_terms.is_empty());
     if !only_close_candidates {
@@ -170,6 +198,9 @@ fn resolve_for(
     let mut candidates: Vec<ResolvedCandidate> = rows
         .into_iter()
         .map(|row| ResolvedCandidate {
+            also_recorded_as: also_recorded_as
+                .remove(&row.decision_id)
+                .unwrap_or_default(),
             decision_id: row.decision_id,
             title: row.title,
             rank: row.rank,
@@ -235,6 +266,20 @@ fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bo
             .is_none_or(|next| closeness(first) < closeness(next))
 }
 
+/// Takes the match of another record of the same decision onto the one shown: the best rank, the
+/// fields either matched, and only the words neither record lacks.
+fn absorb_record(shown: &mut ResolverCandidateRow, other: ResolverCandidateRow) {
+    shown.rank = shown.rank.min(other.rank);
+    for field in other.matched_fields {
+        if !shown.matched_fields.contains(&field) {
+            shown.matched_fields.push(field);
+        }
+    }
+    shown
+        .missing_terms
+        .retain(|term| other.missing_terms.contains(term));
+}
+
 /// Look up a decision named by its literal id, as a grounding premise: `Resolved` when the
 /// decision exists, `NotFound` when it does not. Same outcome shape as a description lookup so a
 /// caller resolving a mixed list of ids and descriptions handles one type; the candidate carries
@@ -262,6 +307,7 @@ pub fn resolve_decision_by_id(
                 event_origin: optional_int(row, "event_origin").unwrap_or(0),
                 matched_fields: vec!["id".to_owned()],
                 missing_terms: Vec::new(),
+                also_recorded_as: Vec::new(),
             },
         },
         None => ResolveOutcome::NotFound,
@@ -275,15 +321,17 @@ pub fn resolve_decision_by_id(
     })
 }
 
-/// Says, beside `data` in a read verb's JSON envelope, which decision a close match resolved to
-/// and what it lacks: `close_match: {decision_id, title, missing_terms}`. A description that
-/// matched in full adds nothing, so the key's presence is the whole signal. Shared by the CLI's
-/// `--json`, the HTTP API and MCP so the three cannot name it differently.
-pub fn annotate_close_match(envelope: &mut serde_json::Value, candidate: &ResolvedCandidate) {
-    if candidate.missing_terms.is_empty() {
+/// Says, beside `data` in a read verb's JSON envelope, how a description was resolved when that
+/// is worth knowing: `close_match: {decision_id, title, missing_terms}` for a decision that
+/// matched all but some of the words asked, and `also_recorded_as: [{decision_id, title}]` for
+/// the other records of a decision recorded more than once. A description that matched in full
+/// a decision recorded once adds nothing, so a key's presence is the whole signal. Shared by the
+/// CLI's `--json`, the HTTP API and MCP so the three cannot name it differently.
+pub fn annotate_resolution(envelope: &mut serde_json::Value, candidate: &ResolvedCandidate) {
+    let Some(envelope) = envelope.as_object_mut() else {
         return;
-    }
-    if let Some(envelope) = envelope.as_object_mut() {
+    };
+    if !candidate.missing_terms.is_empty() {
         envelope.insert(
             "close_match".to_owned(),
             serde_json::json!({
@@ -291,6 +339,12 @@ pub fn annotate_close_match(envelope: &mut serde_json::Value, candidate: &Resolv
                 "title": candidate.title,
                 "missing_terms": candidate.missing_terms,
             }),
+        );
+    }
+    if !candidate.also_recorded_as.is_empty() {
+        envelope.insert(
+            "also_recorded_as".to_owned(),
+            serde_json::json!(candidate.also_recorded_as),
         );
     }
 }

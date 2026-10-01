@@ -11314,3 +11314,209 @@ fn the_misfiled_report_carries_the_project_and_the_move_and_nothing_is_moved() -
         "nothing left to move",
     )
 }
+
+/// hivemind-83cj: the same ruling recorded three times is one decision to `recall` and `why`
+/// once the classifier links the restatement, and the one-time backfill (`restatements`) folds a
+/// copy recorded before that.
+#[test]
+fn a_restated_decision_is_one_decision_to_recall_and_why() -> CliTestResult {
+    let hivemind_dir = unique_test_dir("restated-decision-one-answer");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let cli = |args: &[&str]| -> crate::Result<String> {
+        let mut full = vec!["hivemind", "--hivemind-dir", dir];
+        full.extend_from_slice(args);
+        run(&Cli::parse_from(full))
+    };
+    let submit = |session: &str,
+                  captures: serde_json::Value|
+     -> std::result::Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let path = unique_test_dir(&format!("restated-captures-{session}")).with_extension("json");
+        std::fs::write(&path, captures.to_string())?;
+        let reply = cli(&[
+            "--json",
+            "emit",
+            "ingest.batch_classified",
+            "--captures",
+            path.to_str().expect("utf-8 captures path"),
+            "--agent-tool",
+            "claude",
+            "--agent-session",
+            session,
+            "--classifier-model",
+            "claude-haiku-4-5-20251001",
+        ])?;
+        Ok(serde_json::from_str(&reply)?)
+    };
+    let capture = |title: &str, restates_id: Option<&str>| {
+        let mut capture = serde_json::json!({
+            "kind": "decision",
+            "title": title,
+            "rationale": "Every town seat runs on the Fable model this week, to hold the spend",
+            "topic_keys": ["fable"],
+            "evidence_ids": [],
+            "options": ["Fable only", "Fable and Opus"],
+            "chosen_option": "Fable only",
+            "extraction_confidence": 0.9
+        });
+        if let Some(restates_id) = restates_id {
+            capture["restates_id"] = serde_json::json!(restates_id);
+        }
+        capture
+    };
+    let question = "which model do the town seats run on this week?";
+    let first_title = "Run every town seat on Fable only until Oct 1 with no added usage this week";
+    let restated_title = "Run every town seat on Fable only with no added usage this week";
+    let legacy_title = "Run every town seat on Fable only for this week with no added usage";
+
+    submit("first", serde_json::json!([capture(first_title, None)]))?;
+    let recalled: serde_json::Value =
+        serde_json::from_str(&cli(&["--json", "query", "recall", question])?)?;
+    let first_id = recalled["data"]["ranked"]["items"][0]["decision"]["id"]
+        .as_str()
+        .expect("the first record is recalled")
+        .to_owned();
+
+    // A later session states it again, and the classifier says so.
+    let reply = submit(
+        "second",
+        serde_json::json!([capture(restated_title, Some(&first_id))]),
+    )?;
+    ensure_json_eq(
+        &reply["restated"][0]["outcome"],
+        serde_json::json!("linked"),
+        "a decision made again later is recorded and linked",
+    )?;
+    ensure_json_eq(
+        &reply["restated"][0]["restates_id"],
+        serde_json::json!(first_id),
+        "the reply names the decision it restates",
+    )?;
+
+    let recalled: serde_json::Value =
+        serde_json::from_str(&cli(&["--json", "query", "recall", question])?)?;
+    let items = recalled["data"]["ranked"]["items"]
+        .as_array()
+        .expect("items");
+    ensure_json_eq(
+        &serde_json::json!(items.len()),
+        serde_json::json!(1),
+        "recall shows the two records as one decision",
+    )?;
+    ensure_json_eq(
+        &items[0]["decision"]["id"],
+        serde_json::json!(first_id),
+        "the earliest record is shown",
+    )?;
+    ensure_json_eq(
+        &items[0]["also_recorded_as"][0]["title"],
+        serde_json::json!(restated_title),
+        "the other record is named",
+    )?;
+    let restated_id = items[0]["also_recorded_as"][0]["decision_id"]
+        .as_str()
+        .expect("the other record's id")
+        .to_owned();
+
+    let why: serde_json::Value =
+        serde_json::from_str(&cli(&["--json", "query", "why", question])?)?;
+    ensure_json_eq(
+        &why["data"]["root"]["id"],
+        serde_json::json!(first_id),
+        "why resolves without --pick",
+    )?;
+    ensure_json_eq(
+        &why["also_recorded_as"][0]["decision_id"],
+        serde_json::json!(restated_id),
+        "why says where the other record is",
+    )?;
+    let summary = cli(&["query", "why", question, "--summary"])?;
+    ensure(
+        summary.contains("also recorded as:") && summary.contains(&restated_id),
+        &format!("the summary names the other record, got:\n{summary}"),
+    )?;
+
+    // A copy recorded before restatements were linked: unlinked, so it is a second decision.
+    submit("legacy", serde_json::json!([capture(legacy_title, None)]))?;
+    let why = cli(&["--json", "query", "why", question])?;
+    let why: serde_json::Value = serde_json::from_str(&why)?;
+    ensure_json_eq(
+        &why["data"]["outcome"],
+        serde_json::json!("ambiguous"),
+        "an unlinked copy is still a tie",
+    )?;
+
+    // `propose` writes nothing; `apply` records the link, once.
+    let proposed: serde_json::Value =
+        serde_json::from_str(&cli(&["--json", "restatements", "propose"])?)?;
+    let links = proposed["proposed"].as_array().expect("proposed links");
+    ensure_json_eq(
+        &serde_json::json!(links.len()),
+        serde_json::json!(1),
+        "only the unlinked copy is proposed",
+    )?;
+    let legacy_id = links[0]["decision_id"]
+        .as_str()
+        .expect("the copy")
+        .to_owned();
+    let proposed_earlier_id = links[0]["restates_id"]
+        .as_str()
+        .expect("the record it restates")
+        .to_owned();
+    ensure(
+        links[0]["shared_terms"]
+            .as_array()
+            .is_some_and(|terms| !terms.is_empty()),
+        "a proposal shows the words it rests on",
+    )?;
+    ensure(
+        cli(&["--json", "query", "why", question])?.contains("ambiguous"),
+        "proposing links nothing",
+    )?;
+    ensure(
+        cli(&["restatements", "apply"]).is_err(),
+        "apply needs --all or --link",
+    )?;
+    let applied: serde_json::Value = serde_json::from_str(&cli(&[
+        "--actor",
+        "human:alex",
+        "--json",
+        "restatements",
+        "apply",
+        "--all",
+    ])?)?;
+    ensure(
+        applied[0]["event_id"].is_u64(),
+        &format!("the link is recorded: {applied}"),
+    )?;
+
+    let why: serde_json::Value =
+        serde_json::from_str(&cli(&["--json", "query", "why", question])?)?;
+    ensure_json_eq(
+        &why["data"]["root"]["id"],
+        serde_json::json!(first_id),
+        "with the link approved, why resolves the three records to one decision",
+    )?;
+    ensure_json_eq(
+        &serde_json::json!(why["also_recorded_as"].as_array().map(Vec::len)),
+        serde_json::json!(2),
+        "and names the other two",
+    )?;
+    ensure(
+        why["also_recorded_as"].to_string().contains(&legacy_id),
+        "including the copy that was recorded before links",
+    )?;
+    let again: serde_json::Value = serde_json::from_str(&cli(&[
+        "--json",
+        "restatements",
+        "apply",
+        "--link",
+        &format!("{legacy_id}={proposed_earlier_id}"),
+    ])?)?;
+    ensure(
+        again[0]["event_id"].is_null(),
+        "naming a pair already linked writes nothing",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}

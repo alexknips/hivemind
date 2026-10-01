@@ -16,6 +16,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from datetime import datetime
 from typing import Optional
 
 # Per-turn text cap before we mark truncated=True.
@@ -203,12 +204,34 @@ def _extract_turn(obj: dict) -> Optional[dict]:
         text = text[:_MAX_TURN_TEXT] + "…"
         truncated = True
 
-    return {
+    turn = {
         "turn_id": uuid,
         "role": role,
         "text": text,
         "truncated": truncated,
     }
+    ts = _turn_timestamp(obj)
+    if ts is not None:
+        turn["ts"] = ts
+    return turn
+
+
+def _turn_timestamp(obj: dict) -> Optional[str]:
+    """The record's own time in the transcript, as the string the transcript holds.
+
+    Shipped as the turn's `ts` so the server can tell a transcript sent twice (the same turn
+    times) from a decision made again later. Only a time that carries a UTC offset is sent, since
+    the server refuses the whole batch for one it cannot read; anything else is left out, and the
+    turn simply has no source time.
+    """
+    value = obj.get("timestamp")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value if parsed.tzinfo is not None else None
 
 
 def _post(api_url: str, api_key: str, envelope: dict) -> None:

@@ -17,6 +17,7 @@ use super::decision::{DecisionView, HypothesisContext};
 use super::grounding::{hypothesis_facts_from_row, GroundingState};
 use super::project_label::ProjectLabels;
 use super::project_scope::{project_scope, MatchScope, ProjectScope, ScopeNote, ScopeRelation};
+use super::same_as::{fold_linked, RecordedCopy};
 use super::shared::{
     node_rows, normalized_filter_values, normalized_limit, normalized_query, normalized_statuses,
     optional_int, optional_string, optional_string_list, parse_cursor, query_error, query_terms,
@@ -109,6 +110,47 @@ pub struct DecisionSearchResult {
     /// parent, or from a dependency). Absent when the request named no project.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<MatchScope>,
+    /// Other records of this same decision, linked `SAME_AS`: set only by `recall`, which shows a
+    /// decision recorded more than once as one item (hivemind-83cj). `search` lists records.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub also_recorded_as: Vec<RecordedCopy>,
+}
+
+impl DecisionSearchResult {
+    /// Takes the match of another record of the same decision onto this one: the best rank, the
+    /// fields either matched, and only the words neither record lacks.
+    fn absorb_record(&mut self, other: Self) {
+        self.rank = self.rank.min(other.rank);
+        for field in other.matched_fields {
+            if !self.matched_fields.contains(&field) {
+                self.matched_fields.push(field);
+            }
+        }
+        self.missing_terms
+            .retain(|term| other.missing_terms.contains(term));
+    }
+}
+
+/// Shows each decision recorded more than once, linked `SAME_AS`, as one result: the record made
+/// first among those that matched, carrying the best match of any of them and naming the other
+/// records in `also_recorded_as` (hivemind-83cj). Results with no link pass through unchanged,
+/// and nothing is folded on closeness.
+pub(crate) fn fold_linked_results(
+    graph: &impl GraphView,
+    results: Vec<DecisionSearchResult>,
+) -> Result<Vec<DecisionSearchResult>> {
+    Ok(fold_linked(
+        graph,
+        results,
+        |result| result.decision.id.as_str(),
+        DecisionSearchResult::absorb_record,
+    )?
+    .into_iter()
+    .map(|folded| DecisionSearchResult {
+        also_recorded_as: folded.also_recorded_as,
+        ..folded.item
+    })
+    .collect())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -1071,6 +1113,7 @@ fn collect_graph_search_results(
                     matched_nodes: match_info.matched_nodes,
                 },
                 scope: None,
+                also_recorded_as: Vec::new(),
             },
         });
     }

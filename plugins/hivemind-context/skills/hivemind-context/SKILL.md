@@ -161,6 +161,12 @@ a missing word changes what you asked ("still", "not", a name), ask again with
 other words or with `--id`. The write verbs never do this; they list close
 candidates and write nothing.
 
+A newer hivemind also folds a decision that was recorded more than once and
+linked as the same decision: the answer shows the earliest matching record and
+lists the others under `also_recorded_as` (an `also recorded as:` line in
+`--summary` output). Those are the same decision, not rivals; do not pick
+between them.
+
 This mirrors AGENTS.md's honesty standard: no invented confidence. A wrong
 guess on a write verb is worse than asking again.
 

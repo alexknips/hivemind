@@ -703,6 +703,26 @@ worker exits immediately when `ANTHROPIC_API_KEY` is absent — the rest of
 the system stays correct without it. See
 [`CAPTURE_CLASSIFIER.md`](CAPTURE_CLASSIFIER.md) for the classifier design.
 
+**Restatements** (hivemind-83cj): every session that relays or re-reads a ruling
+can classify it into a fresh decision. After extracting a decision, the worker
+shows a model the closest recorded decisions (the same read `recall` answers
+from) and asks which, if any, the new decision restates: the same choice, made
+again or relayed once more. A yes puts that id in the capture's `restates_id`;
+the model never names an id it was not shown, and any failure leaves the
+capture as extracted. The agent-seat path (`classify-queue`) does the same with
+`query recall` on each decision's title. The write layer judges nothing: it
+checks `restates_id` names a recorded decision (refusing the classification
+otherwise), records the capture as its own decision, and the projector links it
+`SAME_AS` to the one it restates, so `recall` and `why` show one decision with
+`also_recorded_as`. The one mechanical exception: a capture restating a decision
+classified from turns with the very same newest source time (`ts`) is the same
+moment seen again, a re-ingested transcript, and is not recorded a second time;
+the reply's `restated` lists every such capture as `linked` or `deduplicated`.
+Turns without a source time never count as the same moment. For decisions
+recorded before this, `hivemind restatements propose` lists the links to
+approve (a title-word overlap, with the shared words printed) and `restatements
+apply` records the ones you confirm; nothing is deleted or rewritten.
+
 **Agent-shaped tokens**: `POST /v1/users` (and `.../tokens`) always mint a
 `human:<email>` token, since agents aren't users with an email or role. An
 admin mints a token bound directly to an agent identity instead, with

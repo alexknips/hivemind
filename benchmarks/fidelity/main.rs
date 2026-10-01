@@ -1109,6 +1109,7 @@ fn gold_as_captures(expected: &Expected) -> Vec<(String, hivemind::events::Captu
                 blocked_actor_id: None,
                 decision_id: None,
                 participants: vec![],
+                restates_id: None,
                 session_initiator: None,
             },
         ));
@@ -1516,6 +1517,7 @@ mod tests {
             blocked_actor_id: None,
             decision_id: None,
             participants: vec![],
+            restates_id: None,
             session_initiator: None,
         };
         let id_captures = [("d", &cap)];

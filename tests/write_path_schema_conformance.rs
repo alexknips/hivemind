@@ -300,6 +300,7 @@ fn every_write_path_event_validates_against_its_schema() {
                 blocked_actor_id: None,
                 decision_id: None,
                 participants: vec![],
+                restates_id: None,
                 session_initiator: None,
             }],
             None,

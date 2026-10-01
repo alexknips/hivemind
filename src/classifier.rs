@@ -14,8 +14,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::commands::{CommandContext, Commands};
-use crate::events::{CaptureItem, EventProvenance, EventType, TenantId};
+use crate::events::{classified_batch_ids, CaptureItem, EventProvenance, EventType, TenantId};
 use crate::ledger::{EventLedger, SqliteEventLedger};
+use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 
 const CLASSIFIER_MODEL: &str = "claude-haiku-4-5-20251001";
 const CLASSIFIER_MODEL_ENV: &str = "HIVEMIND_CLASSIFIER_MODEL";
@@ -265,30 +266,6 @@ fn payload_string(payload: &serde_json::Value, key: &str) -> String {
         .to_owned()
 }
 
-/// Extracts the set of batch ids a raw `ingest.batch_classified` event
-/// payload covers: `batch_ids` when present (session-grouped submissions),
-/// falling back to the legacy singular `batch_id` for events written before
-/// `batch_ids` existed.
-fn classified_batch_ids_from_payload(payload: &serde_json::Value) -> Vec<String> {
-    let from_array: Vec<String> = payload
-        .get("batch_ids")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default();
-    if !from_array.is_empty() {
-        return from_array;
-    }
-    payload
-        .get("batch_id")
-        .and_then(|v| v.as_str())
-        .map(|s| vec![s.to_owned()])
-        .unwrap_or_default()
-}
-
 /// Lists batches received but not yet classified (no `IngestBatchClassified`
 /// event covers their batch id), for `classify-queue list`. Generic over any
 /// [`EventLedger`] backend so the HTTP API (SQLite dev mode or Postgres) and
@@ -332,7 +309,7 @@ pub fn list_pending_batches_for_ledger(
                     }
                 }
                 EventType::IngestBatchClassified => {
-                    for batch_id in classified_batch_ids_from_payload(&event.payload) {
+                    for batch_id in classified_batch_ids(&event.payload) {
                         classified_ids.insert(batch_id);
                     }
                 }
@@ -523,10 +500,22 @@ async fn classify_pending_batches(
                             blocked_actor_id: r.blocked_actor_id,
                             decision_id: r.decision_id,
                             participants,
+                            restates_id: None,
                             session_initiator: session_initiator.clone(),
                         }
                     })
                     .collect();
+
+                let mut captures = captures;
+                mark_restatements_best_effort(
+                    client,
+                    api_key,
+                    &model,
+                    hivemind_dir,
+                    tenant_id,
+                    &mut captures,
+                )
+                .await;
 
                 if let Err(e) = write_classification(
                     hivemind_dir,
@@ -546,6 +535,42 @@ async fn classify_pending_batches(
     }
 }
 
+/// Layer 3's restatement judgement (hivemind-83cj): each decision capture is compared with the
+/// closest recorded decisions and, when the judge says it states one again, carries that
+/// decision's id in `restates_id`. Best effort: any failure leaves the captures as extracted.
+async fn mark_restatements_best_effort(
+    client: &reqwest::Client,
+    api_key: &str,
+    model: &str,
+    hivemind_dir: &PathBuf,
+    tenant_id: &TenantId,
+    captures: &mut [CaptureItem],
+) {
+    if !captures.iter().any(|capture| capture.kind == "decision") {
+        return;
+    }
+    let graph = match recorded_decisions_graph(hivemind_dir, tenant_id) {
+        Ok(graph) => graph,
+        Err(e) => {
+            warn!(target: "hivemind::classifier", "restatement check skipped: {e}");
+            return;
+        }
+    };
+    crate::restatement::mark_restatements(client, api_key, model, &graph, captures).await;
+}
+
+/// The recorded decisions as a graph, for the restatement judgement. The ledger is closed again
+/// before the model is asked anything.
+fn recorded_decisions_graph(
+    hivemind_dir: &PathBuf,
+    tenant_id: &TenantId,
+) -> crate::Result<MemoryGraph> {
+    let ledger = SqliteEventLedger::open(hivemind_dir)?;
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&ledger, tenant_id, &graph)?;
+    Ok(graph)
+}
+
 fn find_unclassified_batches(
     hivemind_dir: &PathBuf,
     tenant_id: &TenantId,
@@ -555,7 +580,7 @@ fn find_unclassified_batches(
     const PAGE: usize = 256;
 
     let mut received: Vec<BatchInfo> = Vec::new();
-    let mut classified_batch_ids: std::collections::HashSet<String> =
+    let mut already_classified: std::collections::HashSet<String> =
         std::collections::HashSet::new();
 
     loop {
@@ -595,8 +620,8 @@ fn find_unclassified_batches(
                     }
                 }
                 EventType::IngestBatchClassified => {
-                    for batch_id in classified_batch_ids_from_payload(&event.payload) {
-                        classified_batch_ids.insert(batch_id);
+                    for batch_id in classified_batch_ids(&event.payload) {
+                        already_classified.insert(batch_id);
                     }
                 }
                 _ => {}
@@ -612,7 +637,7 @@ fn find_unclassified_batches(
 
     let pending: Vec<_> = received
         .into_iter()
-        .filter(|b| !classified_batch_ids.contains(&b.batch_id))
+        .filter(|b| !already_classified.contains(&b.batch_id))
         .collect();
 
     Ok(pending)
@@ -718,6 +743,7 @@ fn raw_captures_to_items(captures: Vec<CaptureItemRaw>) -> Vec<CaptureItem> {
             blocked_actor_id: r.blocked_actor_id,
             decision_id: r.decision_id,
             participants: vec![],
+            restates_id: None,
             session_initiator: None,
         })
         .collect()

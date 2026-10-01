@@ -288,6 +288,23 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A decision that several sessions restate is one decision to `recall` and `why`, not
+  three records that make `why` ambiguous.** The classifier now compares each decision it
+  extracts with the closest recorded decisions and, when it states one again, records it with
+  `restates_id`; the capture projects a `SAME_AS` link to the decision it restates. `recall`
+  and the description resolvers behind `why`, `verify`, `chain` and `compact-view` show linked
+  records as one: the earliest record that matches the words, with the others as
+  `also_recorded_as` (`{decision_id, title}`; an `also recorded as:` line in `--summary`).
+  Records with no link between them stay separate, so a description matching two is still
+  ambiguous. A restating capture classified from turns with the same newest source time as
+  the decision it restates (a transcript sent twice) is not recorded a second time; the
+  reply's `restated` lists each restating capture as `linked` or `deduplicated`. The capture
+  hook now sends each turn's own time (`ts`) so this can tell a re-sent transcript from a
+  decision made again. For decisions recorded before this, `hivemind restatements propose`
+  lists the links to approve (title-word overlap, with the shared words) and
+  `restatements apply [--all | --link LATER=EARLIER]` records them; nothing is deleted or
+  rewritten. `restates_id` is a new field of `ingest.batch_classified` captures: upgrade the
+  server before a client that sends it. (hivemind-83cj)
 - **One malformed model-assessment row no longer makes every read of the ledger fail.** A
   `decision.scored` event of schema version 2 whose payload cannot be read (a hand-injected
   row, a buggy or old producer, a partial import) used to abort the projection, so `query

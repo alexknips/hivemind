@@ -135,6 +135,12 @@ stored; the reversed label when the stored target was recorded after the stored 
 | `ASK_FOR` | Ask → Question | asks | is asked by |
 | `ASKED_BY` | Ask → Actor | asked by | never |
 
+`SAME_AS` is a link between two records of one decision, never a merge: both nodes stay
+as recorded. It is written by `relation.added`, and by a classified `decision` capture that
+names the decision it restates (`restates_id`): the capture's node points at the restated
+decision, newer to older. `recall` and the description resolvers fold linked records into
+one answer (see `AGENT_FLUENT_QUERYING.md`).
+
 Why these reverse. Most edges are written by the event that creates their source, so the
 target already exists and the arrow runs as stored. The 17 kinds with a reversed label can
 also be written later, by `relation.added`, `decision.superseded` or `project.linked`, or

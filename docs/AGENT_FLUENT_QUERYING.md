@@ -175,6 +175,22 @@ though a writer still never has a close candidate picked for it.
 A full match is unchanged for both, including the ambiguity gate, and adds no
 `close_match`.
 
+**A decision recorded more than once is one decision** (hivemind-83cj). When two
+records are linked `SAME_AS` (the classifier named the earlier one when it
+recorded the later, or `restatements apply` linked records made before that),
+both resolvers and `recall` treat them as one: the earliest record that matches
+the words is the candidate, and the other records come back as
+`also_recorded_as: [{decision_id, title}]` (an `also recorded as:` line ahead of
+`--summary` output, the key beside `data` in `--json`, the HTTP routes and MCP;
+`recall` carries it on the item). The links are followed in either direction and
+transitively, and the matches of the records are combined: the words a candidate
+lacks are the words none of its records has. Nothing folds on closeness: two
+records with no link between them stay two, and a description matching both is
+`Ambiguous` as before (the tenv.1 rule). `--id` looks up exactly the record
+named, and `search` lists records, not decisions. A `relation.removed` for a
+`SAME_AS` is a ledger fact the graph does not project, so a retracted link is
+still folded.
+
 **`recall` asks the same way.** `recall_decisions` (Layer 3) drops the question
 words ("what did we decide about projects" searches for `projects`) before it
 searches (the same list, decision verbs and framing adverbs included), reports

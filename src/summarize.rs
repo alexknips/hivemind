@@ -18,7 +18,7 @@ use serde::Serialize;
 use crate::ledger::AnyLedger;
 use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::queries::{
-    content_query, get_decision, get_supersession_chain, search_decisions_any,
+    content_query, fold_linked_results, get_decision, get_supersession_chain, search_decisions_any,
     search_decisions_fluent, DecisionSearchResult, DecisionStatus, DecisionView, GroundingState,
     QueryContext, QueryResponse, ScopeNote, SearchDecisionRequest,
 };
@@ -362,7 +362,11 @@ pub struct RecallRequest {
 /// The ranked search portion of a recall response (Layer-2 provenance).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RecallRanked {
+    /// A decision recorded more than once and linked `SAME_AS` is one item here, with its other
+    /// records in `also_recorded_as`.
     pub items: Vec<DecisionSearchResult>,
+    /// Records matched, before linked records are folded into one item: a decision recorded three
+    /// times counts three times, so this can exceed the items of a page that is not `truncated`.
     pub total_matches: usize,
     pub truncated: bool,
 }
@@ -425,7 +429,9 @@ pub fn recall_decisions(
     };
     let search_response = search_decisions_fluent(context, ledger, graph, &search_req)?;
     let truncated = search_response.truncated;
-    let search_data = search_response.data;
+    let mut search_data = search_response.data;
+    // A decision recorded more than once and linked `SAME_AS` is one item, not a list of copies.
+    search_data.items = fold_linked_results(graph, std::mem::take(&mut search_data.items))?;
 
     let decision_ids: Vec<String> = search_data
         .items
@@ -466,6 +472,32 @@ pub fn recall_decisions(
             digest.summary,
             "\n\nClose matches (each lacks some of the words asked): {}.",
             close.join("; ")
+        );
+    }
+
+    // A decision recorded more than once reads as one item, so the digest says where the rest are.
+    let recorded_again: Vec<String> = search_data
+        .items
+        .iter()
+        .filter(|item| !item.also_recorded_as.is_empty())
+        .map(|item| {
+            let copies: Vec<&str> = item
+                .also_recorded_as
+                .iter()
+                .map(|copy| copy.decision_id.as_str())
+                .collect();
+            format!(
+                "{} is also recorded as {}",
+                item.decision.id,
+                copies.join(", ")
+            )
+        })
+        .collect();
+    if !recorded_again.is_empty() {
+        let _ = write!(
+            digest.summary,
+            "\n\nRecorded more than once, shown once: {}.",
+            recorded_again.join("; ")
         );
     }
 

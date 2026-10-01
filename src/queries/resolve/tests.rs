@@ -782,6 +782,7 @@ fn a_close_match_is_named_in_the_envelope_and_a_full_match_is_not() {
         event_origin: 1,
         matched_fields: vec!["title".to_owned()],
         missing_terms: vec!["keep".to_owned(), "stable".to_owned()],
+        also_recorded_as: Vec::new(),
     };
     let full = ResolvedCandidate {
         missing_terms: Vec::new(),
@@ -789,10 +790,10 @@ fn a_close_match_is_named_in_the_envelope_and_a_full_match_is_not() {
     };
 
     let mut envelope = json!({"result_count": 1, "data": {}});
-    annotate_close_match(&mut envelope, &full);
+    annotate_resolution(&mut envelope, &full);
     assert!(envelope.get("close_match").is_none());
 
-    annotate_close_match(&mut envelope, &close);
+    annotate_resolution(&mut envelope, &close);
     assert_eq!(
         envelope["close_match"],
         json!({
@@ -801,4 +802,203 @@ fn a_close_match_is_named_in_the_envelope_and_a_full_match_is_not() {
             "missing_terms": ["keep", "stable"],
         })
     );
+}
+
+// ---------------------------------------------------------------------------
+// Records of one decision, linked SAME_AS (hivemind-83cj)
+// ---------------------------------------------------------------------------
+
+fn same_as(sequence: u128, from_id: &str, to_id: &str) -> Event {
+    Event {
+        event_type: EventType::RelationAdded,
+        payload: json!({"relation": "SAME_AS", "from_id": from_id, "to_id": to_id}),
+        ..decision_proposed(sequence, "unused", "unused", &[])
+    }
+}
+
+/// Three records of one ruling, the third lacking two words the first two have.
+fn fable_records() -> Vec<Event> {
+    vec![
+        decision_proposed(1, "d:1", "Run every town seat on Fable only this week", &[]),
+        decision_proposed(
+            2,
+            "d:2",
+            "Run every town seat on Fable with no added usage this week",
+            &[],
+        ),
+        decision_proposed(
+            3,
+            "d:3",
+            "Run every seat on Fable only until the reset",
+            &[],
+        ),
+    ]
+}
+
+const FABLE_QUESTION: &str = "run town seat week";
+
+#[test]
+fn records_of_one_ruling_with_no_link_between_them_stay_ambiguous() -> Result<()> {
+    let graph = graph_from_events(fable_records())?;
+
+    let outcome = resolve_decision_for_reading(&graph, FABLE_QUESTION, None)?.data;
+
+    match outcome {
+        ResolveOutcome::Ambiguous { candidates } => {
+            assert_eq!(candidates.len(), 2);
+            assert!(candidates.iter().all(|c| c.also_recorded_as.is_empty()));
+        }
+        other => panic!("closeness alone never folds: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn linked_records_resolve_as_one_decision_naming_the_others() -> Result<()> {
+    let mut events = fable_records();
+    events.push(same_as(4, "d:2", "d:1"));
+    events.push(same_as(5, "d:3", "d:1"));
+    let graph = graph_from_events(events)?;
+
+    for response in [
+        resolve_decision_for_reading(&graph, FABLE_QUESTION, None)?,
+        resolve_decision_by_description(&graph, FABLE_QUESTION, None)?,
+    ] {
+        assert_eq!(response.result_count, 1);
+        match response.data {
+            ResolveOutcome::Resolved { candidate } => {
+                assert_eq!(candidate.decision_id, "d:1", "the earliest record");
+                assert!(candidate.missing_terms.is_empty(), "{candidate:?}");
+                let others: Vec<&str> = candidate
+                    .also_recorded_as
+                    .iter()
+                    .map(|copy| copy.decision_id.as_str())
+                    .collect();
+                assert_eq!(others, vec!["d:2", "d:3"]);
+                assert_eq!(
+                    candidate.also_recorded_as[1].title,
+                    "Run every seat on Fable only until the reset"
+                );
+            }
+            other => panic!("expected one decision, got {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_link_folds_only_the_records_it_joins() -> Result<()> {
+    // d:2 and d:3 are one decision; d:1 is a second decision that happens to share the words.
+    let mut events = fable_records();
+    events.push(same_as(4, "d:3", "d:2"));
+    let graph = graph_from_events(events)?;
+
+    match resolve_decision_for_reading(&graph, FABLE_QUESTION, None)?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            let ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+            assert_eq!(ids.len(), 2, "{ids:?}");
+            assert!(ids.contains(&"d:1") && ids.contains(&"d:2"), "{ids:?}");
+            let folded = candidates
+                .iter()
+                .find(|c| c.decision_id == "d:2")
+                .expect("d:2");
+            assert_eq!(folded.also_recorded_as.len(), 1);
+            assert_eq!(folded.also_recorded_as[0].decision_id, "d:3");
+        }
+        other => panic!("two different decisions stay a tie: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn the_earliest_record_that_matches_is_shown_even_when_an_earlier_one_does_not() -> Result<()> {
+    let mut events = vec![decision_proposed(
+        1,
+        "d:1",
+        "Keep the demo cell on its own host",
+        &[],
+    )];
+    events.push(decision_proposed(
+        2,
+        "d:2",
+        "Move the demo cell to shared Postgres",
+        &[],
+    ));
+    events.push(decision_proposed(
+        3,
+        "d:3",
+        "Move the demo cell onto shared Postgres",
+        &[],
+    ));
+    events.push(same_as(4, "d:2", "d:1"));
+    events.push(same_as(5, "d:3", "d:1"));
+    let graph = graph_from_events(events)?;
+
+    match resolve_decision_for_reading(&graph, "move demo cell shared postgres", None)?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:2");
+            let others: Vec<&str> = candidate
+                .also_recorded_as
+                .iter()
+                .map(|copy| copy.decision_id.as_str())
+                .collect();
+            assert_eq!(
+                others,
+                vec!["d:1", "d:3"],
+                "the record that did not match is listed too"
+            );
+        }
+        other => panic!("expected one decision, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_decision_looked_up_by_id_is_not_folded() -> Result<()> {
+    let mut events = fable_records();
+    events.push(same_as(4, "d:2", "d:1"));
+    let graph = graph_from_events(events)?;
+
+    match resolve_decision_by_id(&graph, "d:2")?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:2");
+            assert!(candidate.also_recorded_as.is_empty());
+        }
+        other => panic!("expected the decision asked for: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn the_envelope_names_the_other_records_beside_data() {
+    let candidate = ResolvedCandidate {
+        decision_id: "d:1".to_owned(),
+        title: "Run every town seat on Fable".to_owned(),
+        rank: 1,
+        event_origin: 1,
+        matched_fields: vec!["title".to_owned()],
+        missing_terms: Vec::new(),
+        also_recorded_as: vec![RecordedCopy {
+            decision_id: "d:2".to_owned(),
+            title: "Fable for every town seat".to_owned(),
+        }],
+    };
+    let mut envelope = json!({"data": {}});
+    annotate_resolution(&mut envelope, &candidate);
+
+    assert_eq!(
+        envelope["also_recorded_as"],
+        json!([{"decision_id": "d:2", "title": "Fable for every town seat"}])
+    );
+    assert!(envelope.get("close_match").is_none());
+    assert!(candidate.needs_annotation());
+
+    let mut plain = json!({"data": {}});
+    let alone = ResolvedCandidate {
+        also_recorded_as: Vec::new(),
+        ..candidate
+    };
+    annotate_resolution(&mut plain, &alone);
+    assert_eq!(plain, json!({"data": {}}));
+    assert!(!alone.needs_annotation());
 }

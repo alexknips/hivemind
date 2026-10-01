@@ -86,8 +86,8 @@ use super::args::{
     QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs,
     QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
     QueryScanDecisionQualityArgs, QuerySearchDecisionsArgs, QuerySituationalArgs, QuickstartArgs,
-    RetitleArgs, ReviewArgs, ServeArgs, SlackAppArgs, SlackAppCommand, SupersedeArgs, TenantArgs,
-    TenantCommand, TenantCreateArgs, TuiArgs,
+    RestatementsArgs, RestatementsCommand, RetitleArgs, ReviewArgs, ServeArgs, SlackAppArgs,
+    SlackAppCommand, SupersedeArgs, TenantArgs, TenantCommand, TenantCreateArgs, TuiArgs,
 };
 use super::current_project::CurrentProjectStore;
 use super::project_context::{resolve_project_in_ledger, ProjectContextEnv, ResolvedProject};
@@ -100,17 +100,17 @@ use super::render::{
     format_project_link_output, format_project_list_output, format_project_register_output,
     format_project_show_output, format_query_response, format_retitle_output, format_review_output,
     format_supersede_output, render_active_blockers_summary, render_added_since_summary,
-    render_blocker_notifications_summary, render_changed_decisions_summary,
+    render_applied_links, render_blocker_notifications_summary, render_changed_decisions_summary,
     render_changed_since_summary, render_compact_view_summary, render_contested_decisions_summary,
     render_decision_brief_summary, render_decision_list_summary, render_decision_summary,
     render_dot, render_misfiled_scan_summary, render_neighborhood_summary, render_placement_line,
     render_read_only_export_summary, render_recall_summary, render_recent_activity_summary,
-    render_recent_decisions_summary, render_resolve_outcome_summary, render_scan_report_summary,
-    render_score_report_summary, render_search_summary, render_situational_summary,
-    render_supersession_summary, render_waiting_requests_summary, CaptureCommandOutput,
-    CurrentProjectOutput, DisagreeCommandOutput, ExportReport, OutputEnvelope, ProjectAnchorOutput,
-    ProjectDeclareTopicOutput, ProjectLinkOutput, ProjectRegisterOutput, ReviewActionOutput,
-    ReviewCommandOutput, SupersedeCommandOutput,
+    render_recent_decisions_summary, render_resolve_outcome_summary, render_restatement_proposals,
+    render_scan_report_summary, render_score_report_summary, render_search_summary,
+    render_situational_summary, render_supersession_summary, render_waiting_requests_summary,
+    CaptureCommandOutput, CurrentProjectOutput, DisagreeCommandOutput, ExportReport,
+    OutputEnvelope, ProjectAnchorOutput, ProjectDeclareTopicOutput, ProjectLinkOutput,
+    ProjectRegisterOutput, ReviewActionOutput, ReviewCommandOutput, SupersedeCommandOutput,
 };
 #[cfg(feature = "shared-backend-postgres")]
 use super::render::{MigrateReport, ParityCheckResult};
@@ -165,6 +165,7 @@ fn dispatch(cli: &Cli) -> Result<String> {
         Command::Map(args) => run_map(cli, args),
         Command::Digest(args) => run_digest(cli, args),
         Command::ClassifyQueue(args) => run_classify_queue(cli, args),
+        Command::Restatements(args) => run_restatements(cli, args),
         Command::Connector(args) => run_connector(cli, args),
         Command::QualityScan(args) => run_quality_scan(cli, args),
         Command::Export(args) => run_export(cli, args),
@@ -443,6 +444,67 @@ fn run_digest(cli: &Cli, args: &DigestArgs) -> Result<String> {
     }
 }
 
+fn run_restatements(cli: &Cli, args: &RestatementsArgs) -> Result<String> {
+    let tenant_id = cli_tenant(cli)?;
+    let ledger = open_ledger(cli)?;
+    let graph = MemoryGraph::default();
+    rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;
+
+    match &args.command {
+        RestatementsCommand::Propose(args) => {
+            let proposals =
+                crate::restatement::propose_same_as_links(&graph, args.project.as_deref())?;
+            if cli.json {
+                format_json_value(true, &proposals)
+            } else {
+                Ok(render_restatement_proposals(&proposals))
+            }
+        }
+        RestatementsCommand::Apply(args) => {
+            let links = if args.all {
+                crate::restatement::propose_same_as_links(&graph, args.project.as_deref())?
+                    .proposed
+                    .into_iter()
+                    .map(|link| (link.decision_id, link.restates_id))
+                    .collect()
+            } else if args.link.is_empty() {
+                return Err(CliError::InvalidInput(
+                    "name the links to record with --link LATER=EARLIER, or record every proposed link with --all".to_owned(),
+                )
+                .into());
+            } else {
+                args.link
+                    .iter()
+                    .map(|link| parse_restatement_link(link))
+                    .collect::<Result<Vec<_>>>()?
+            };
+            let commands = Commands::new_with_context(
+                &ledger,
+                CommandContext::new(tenant_id, fluent_write_provenance(&cli.actor)),
+            );
+            let applied = crate::restatement::apply_links(&commands, &cli.actor, &links)?;
+            if cli.json {
+                format_json_value(true, &applied)
+            } else {
+                Ok(render_applied_links(&applied))
+            }
+        }
+    }
+}
+
+/// `LATER=EARLIER` as `(later, earlier)`.
+fn parse_restatement_link(link: &str) -> Result<(String, String)> {
+    match link.split_once('=') {
+        Some((later, earlier)) if !later.trim().is_empty() && !earlier.trim().is_empty() => {
+            Ok((later.trim().to_owned(), earlier.trim().to_owned()))
+        }
+        _ => Err(CliError::InvalidInput(format!(
+            "--link {link:?} is not LATER=EARLIER: two decision ids joined by ="
+        ))
+        .into()),
+    }
+}
+
 fn run_classify_queue(cli: &Cli, args: &ClassifyQueueArgs) -> Result<String> {
     match &args.command {
         ClassifyQueueCommand::List(args) => run_classify_queue_list(cli, args),
@@ -491,8 +553,7 @@ fn run_classify_queue_submit(cli: &Cli, args: &ClassifyQueueSubmitArgs) -> Resul
         CommandContext::new(tenant_id, EventProvenance::cli()),
     );
 
-    let capture_count = captures.len();
-    commands.record_ingest_batch_classified(
+    let recorded = commands.record_ingest_batch_classified(
         &cli.actor,
         &args.batch_id,
         &args.model,
@@ -501,10 +562,11 @@ fn run_classify_queue_submit(cli: &Cli, args: &ClassifyQueueSubmitArgs) -> Resul
         None,
     )?;
 
-    let result = serde_json::json!({
+    let mut result = serde_json::json!({
         "batch_ids": args.batch_id,
-        "capture_count": capture_count,
+        "capture_count": recorded.recorded_count,
     });
+    recorded.annotate_reply(&mut result);
     format_json_value(cli.json, &result)
 }
 
@@ -974,7 +1036,7 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
             let captures: Vec<CaptureItem> = serde_json::from_str(&json_text)
                 .map_err(|e| CliError::InvalidInput(format!("captures JSON parse error: {e}")))?;
             let batch_id = Uuid::new_v4().to_string();
-            let _event_id = commands.record_ingest_batch_classified(
+            let recorded = commands.record_ingest_batch_classified(
                 &actor_id,
                 std::slice::from_ref(&batch_id),
                 &args.classifier_model,
@@ -982,7 +1044,7 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
                 captures,
                 None,
             )?;
-            OutputEnvelope::new("emit", "batch_id", batch_id)
+            OutputEnvelope::new("emit", "batch_id", batch_id).with_restated(recorded.restated)
         }
         EmitCommand::DecisionScored(args) => {
             let (actor_id, provenance) = capture_actor_and_provenance(&args.provenance)?;
@@ -1172,7 +1234,7 @@ fn resolve_fluent(
 
     match &response.data {
         ResolveOutcome::Resolved { candidate } => {
-            let close_match = (!candidate.missing_terms.is_empty()).then(|| candidate.clone());
+            let close_match = candidate.needs_annotation().then(|| candidate.clone());
             Ok((
                 FluentResolution::Id(candidate.decision_id.clone()),
                 close_match,

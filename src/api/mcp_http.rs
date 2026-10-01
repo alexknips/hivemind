@@ -933,8 +933,7 @@ fn mcp_classify_queue_submit(
             EventProvenance::agent(ctx.actor_id.clone()),
         ),
     );
-    let capture_count = captures.len();
-    let event_id = commands
+    let recorded = commands
         .record_ingest_batch_classified(
             &ctx.actor_id,
             &batch_ids,
@@ -945,9 +944,11 @@ fn mcp_classify_queue_submit(
         )
         .map_err(|e| (-32603i32, e.to_string()))?;
 
-    Ok(serde_json::json!({
+    let mut reply = serde_json::json!({
         "batch_ids": batch_ids,
-        "capture_count": capture_count,
-        "event_id": event_id,
-    }))
+        "capture_count": recorded.recorded_count,
+        "event_id": recorded.event_id,
+    });
+    recorded.annotate_reply(&mut reply);
+    Ok(reply)
 }

@@ -23,6 +23,7 @@ mod question;
 mod record_facts;
 mod relevant;
 mod resolve;
+mod same_as;
 mod search;
 mod shared;
 mod situational;
@@ -110,9 +111,13 @@ pub use record_facts::{
 };
 pub use relevant::get_relevant_decisions;
 pub use resolve::{
-    annotate_close_match, resolve_decision_by_description, resolve_decision_by_id,
+    annotate_resolution, resolve_decision_by_description, resolve_decision_by_id,
     resolve_decision_for_reading, ResolveOutcome, ResolvedCandidate,
 };
+pub use same_as::{
+    decision_headings, same_as_groups, supersession_pairs, DecisionHeading, RecordedCopy,
+};
+pub(crate) use search::fold_linked_results;
 pub use search::{
     search_decisions, search_decisions_any, search_decisions_fluent, search_decisions_fts,
     search_decisions_fts_with_context, search_decisions_with_ledger, DecisionSearchResult,

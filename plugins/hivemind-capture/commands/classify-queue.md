@@ -59,6 +59,25 @@ Capture an item ONLY when the conversation text shows:
 plumbing), stack traces, raw command output, status narration, todos, or private scratch
 notes. When in doubt, return an empty captures array.
 
+**Step 2b: Check each decision against what is already recorded**
+
+A decision that was already recorded (by an earlier session, or by this one) must
+not be recorded again as a second decision. For each `decision` you are about to
+submit, look it up by its own title:
+
+```bash
+hivemind query recall "<the decision's title>"
+```
+
+If one of the results is the same decision (the same question, answered the same
+way, made again or relayed once more), put that result's `decision_id` in the
+capture's `restates_id`. Keep your capture: it records that the decision was made
+again, and `recall` and `why` then show the two as one decision. A decision that
+only concerns the same topic, answers a different question, chooses differently,
+or replaces the earlier one is not a restatement; leave `restates_id` out. When
+unsure, leave it out: two records of one decision cost little, and two different
+decisions called one cost more.
+
 **Step 3: Submit classifications, grouped by session**
 
 Batches from the same `session_id` came from one conversation — submit them
@@ -89,6 +108,12 @@ Each CaptureItem JSON object must include:
 Optional fields (omit rather than null unless needed):
 - `expressed_confidence`: "low" | "medium" | "high" — only when stated in the text
 - `supersedes_id`: ID of a decision this supersedes, only if named in the text
+- `restates_id`: ID of a recorded decision this decision states again (step 2b), only on
+  a `decision`. The id must be a decision already recorded; submit refuses an unknown one,
+  naming it. A decision restated from the very same moment (the same transcript submitted
+  twice) is not recorded a second time, and the reply's `restated` list says so. If submit
+  is refused because `restates_id` is an unknown field, the cell runs an older hivemind
+  than this plugin: submit the same captures again without it.
 - `actor_id`: the person who proposed/decided, only if named in the text
 - `accepted_by`: the actor who accepted, only if named in the text
 - `rejected_by`: the actor who rejected, only if named in the text

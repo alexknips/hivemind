@@ -780,6 +780,7 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                     blocked_actor_id: None,
                     decision_id: None,
                     participants: vec![],
+                    restates_id: None,
                     session_initiator: None,
                 }],
             }),

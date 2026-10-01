@@ -239,6 +239,11 @@ pub enum Command {
     /// to write structured captures produced by the agent on its subscription seat.
     #[command(name = "classify-queue")]
     ClassifyQueue(ClassifyQueueArgs),
+    /// Find and link decisions that were recorded more than once. `restatements propose` lists
+    /// the decisions whose titles look like a decision already recorded, with the words that make
+    /// them look alike; `restatements apply` records the links you approve. A link is never a
+    /// merge: both records stay as recorded, and `recall` and `why` show them as one decision.
+    Restatements(RestatementsArgs),
     /// Manage connector authentication (e.g., Google Docs OAuth).
     /// Set HIVEMIND_GOOGLE_CLIENT_ID and HIVEMIND_GOOGLE_CLIENT_SECRET before running.
     Connector(ConnectorArgs),
@@ -658,6 +663,46 @@ pub struct DigestArgs {
     /// Output readable prose instead of JSON.
     #[arg(long)]
     pub summary: bool,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct RestatementsArgs {
+    #[command(subcommand)]
+    pub command: RestatementsCommand,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum RestatementsCommand {
+    /// List the links that would make decisions recorded more than once into one decision, each
+    /// with the title words the two share. Writes nothing; a proposal is a candidate for you to
+    /// confirm, because words cannot tell the same choice from a similar one.
+    Propose(RestatementsProposeArgs),
+    /// Record `SAME_AS` links as `--actor`: every proposed link (`--all`) or the ones you name
+    /// (`--link`). A pair already linked writes nothing. Nothing is deleted or rewritten.
+    Apply(RestatementsApplyArgs),
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct RestatementsProposeArgs {
+    /// Only decisions filed under this project address.
+    #[arg(long)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Clone, Args)]
+pub struct RestatementsApplyArgs {
+    /// Record every link `restatements propose` lists now (for `--project`, when given).
+    #[arg(long, conflicts_with = "link")]
+    pub all: bool,
+
+    /// One link to record, as `<later decision id>=<earlier decision id>`: the first is the
+    /// decision recorded again, the second the one it restates. Repeat for more links.
+    #[arg(long = "link", value_name = "LATER=EARLIER")]
+    pub link: Vec<String>,
+
+    /// With `--all`: only decisions filed under this project address.
+    #[arg(long, requires = "all")]
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone, Args)]

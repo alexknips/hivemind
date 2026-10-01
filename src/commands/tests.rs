@@ -5820,6 +5820,7 @@ fn capture(kind: &str, title: &str, rationale: &str) -> CaptureItem {
         blocked_actor_id: None,
         decision_id: None,
         participants: Vec::new(),
+        restates_id: None,
         session_initiator: None,
     }
 }
@@ -5856,7 +5857,8 @@ fn a_classified_capture_can_be_assessed_against_its_own_text() {
             ],
             None,
         )
-        .expect("classified batch");
+        .expect("classified batch")
+        .event_id;
     let node_id = format!("capture:{batch_event}:0");
     let before = ledger.latest_offset().expect("latest offset");
 
@@ -6378,4 +6380,420 @@ fn declare_topics_in_use_adopts_what_the_decisions_now_in_the_project_carry() {
     );
     capture_with_topics(&ledger, Some("billing"), &["pricing"], &[])
         .expect("an adopted topic is usable");
+}
+
+// ---------------------------------------------------------------------------
+// Restatements (hivemind-83cj): the rules in the module header, one test each.
+// ---------------------------------------------------------------------------
+
+use chrono::{DateTime, Utc};
+
+use super::RestatementOutcome;
+
+fn moment(timestamp: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(timestamp)
+        .expect("test time parses")
+        .with_timezone(&Utc)
+}
+
+fn turn(turn_id: &str, ts: Option<&str>) -> IngestTurn {
+    IngestTurn {
+        turn_id: turn_id.to_owned(),
+        role: "user".to_owned(),
+        text: "Run every town seat on Fable only this week".to_owned(),
+        truncated: false,
+        ts: ts.map(moment),
+    }
+}
+
+/// A received batch whose one turn carries `ts` (or none), then its classification.
+fn classified_batch(
+    commands: &Commands<'_, InMemoryEventLedger>,
+    batch_id: &str,
+    ts: Option<&str>,
+    captures: Vec<CaptureItem>,
+) -> crate::Result<super::ClassifiedBatchRecorded> {
+    commands.record_ingest_batch(
+        "agent:claude:hook",
+        batch_id,
+        "claude",
+        "session-1",
+        vec![turn(&format!("{batch_id}-turn"), ts)],
+    )?;
+    commands.record_ingest_batch_classified(
+        "agent:hivemind:classifier",
+        &[batch_id.to_owned()],
+        "claude-haiku-4-5-20251001",
+        "2",
+        captures,
+        None,
+    )
+}
+
+fn restating(title: &str, restated_id: &str) -> CaptureItem {
+    CaptureItem {
+        restates_id: Some(restated_id.to_owned()),
+        ..capture("decision", title, "The ruling, relayed once more")
+    }
+}
+
+fn recorded_captures(
+    ledger: &InMemoryEventLedger,
+    event_id: crate::events::EventId,
+) -> Vec<serde_json::Value> {
+    let event = ledger.read(event_id - 1, 1).expect("event reads").remove(0);
+    event.payload["captures"]
+        .as_array()
+        .expect("captures array")
+        .clone()
+}
+
+#[test]
+fn a_restating_capture_from_another_moment_is_recorded_and_linked() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let first = classified_batch(
+        &commands,
+        "batch-1",
+        Some("2026-09-27T10:00:00Z"),
+        vec![capture(
+            "decision",
+            "Run every town seat on Fable only",
+            "Cost",
+        )],
+    )
+    .expect("first classification");
+    let restated_id = format!("capture:{}:0", first.event_id);
+    assert!(first.restated.is_empty());
+
+    let second = classified_batch(
+        &commands,
+        "batch-2",
+        Some("2026-09-28T09:00:00Z"),
+        vec![restating("Fable only for every town seat", &restated_id)],
+    )
+    .expect("restatement is recorded");
+
+    assert_eq!(second.recorded_count, 1);
+    assert_eq!(second.restated.len(), 1);
+    assert_eq!(second.restated[0].index, 0);
+    assert_eq!(second.restated[0].restates_id, restated_id);
+    assert_eq!(second.restated[0].outcome, RestatementOutcome::Linked);
+    let recorded = recorded_captures(&ledger, second.event_id);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0]["restates_id"], restated_id);
+}
+
+#[test]
+fn a_restatement_from_the_same_moment_is_not_recorded_a_second_time() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let first = classified_batch(
+        &commands,
+        "batch-1",
+        Some("2026-09-27T10:00:00Z"),
+        vec![capture(
+            "decision",
+            "Run every town seat on Fable only",
+            "Cost",
+        )],
+    )
+    .expect("first classification");
+    let restated_id = format!("capture:{}:0", first.event_id);
+
+    // The same transcript sent again: another batch, the same turn time.
+    let again = classified_batch(
+        &commands,
+        "batch-1-again",
+        Some("2026-09-27T10:00:00Z"),
+        vec![
+            restating("Fable only for every town seat", &restated_id),
+            capture(
+                "decision",
+                "Review the cost on Friday",
+                "To check the spend",
+            ),
+        ],
+    )
+    .expect("the batch is still classified");
+
+    assert_eq!(
+        again.recorded_count, 1,
+        "only the other decision is recorded"
+    );
+    assert_eq!(again.restated.len(), 1);
+    assert_eq!(again.restated[0].outcome, RestatementOutcome::Deduplicated);
+    let recorded = recorded_captures(&ledger, again.event_id);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0]["title"], "Review the cost on Friday");
+}
+
+#[test]
+fn a_batch_of_only_duplicates_is_still_classified_so_it_leaves_the_queue() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let first = classified_batch(
+        &commands,
+        "batch-1",
+        Some("2026-09-27T10:00:00Z"),
+        vec![capture(
+            "decision",
+            "Run every town seat on Fable only",
+            "Cost",
+        )],
+    )
+    .expect("first classification");
+    let restated_id = format!("capture:{}:0", first.event_id);
+
+    let before = ledger.latest_offset().expect("offset");
+    let again = classified_batch(
+        &commands,
+        "batch-1-again",
+        Some("2026-09-27T10:00:00Z"),
+        vec![restating("Fable only for every town seat", &restated_id)],
+    )
+    .expect("recorded");
+
+    // The received batch and its classification, with no capture inside.
+    assert_eq!(ledger.latest_offset().expect("offset"), before + 2);
+    assert_eq!(again.recorded_count, 0);
+    assert!(recorded_captures(&ledger, again.event_id).is_empty());
+}
+
+#[test]
+fn a_restatement_is_linked_never_dropped_when_either_side_has_no_dated_turn() {
+    for (first_ts, second_ts) in [
+        (None, Some("2026-09-27T10:00:00Z")),
+        (Some("2026-09-27T10:00:00Z"), None),
+        (None, None),
+    ] {
+        let ledger = InMemoryEventLedger::new();
+        let commands = Commands::new(&ledger);
+        let first = classified_batch(
+            &commands,
+            "batch-1",
+            first_ts,
+            vec![capture(
+                "decision",
+                "Run every town seat on Fable only",
+                "Cost",
+            )],
+        )
+        .expect("first classification");
+        let restated_id = format!("capture:{}:0", first.event_id);
+
+        let second = classified_batch(
+            &commands,
+            "batch-2",
+            second_ts,
+            vec![restating("Fable only for every town seat", &restated_id)],
+        )
+        .expect("recorded");
+        assert_eq!(
+            second.restated[0].outcome,
+            RestatementOutcome::Linked,
+            "{first_ts:?} / {second_ts:?}"
+        );
+        assert_eq!(second.recorded_count, 1);
+    }
+}
+
+#[test]
+fn a_decision_proposed_directly_is_never_the_same_moment() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let proposed = proposed_gateway_decision(&commands);
+
+    let recorded = classified_batch(
+        &commands,
+        "batch-1",
+        Some("2026-09-27T10:00:00Z"),
+        vec![restating("Route every call through one gateway", &proposed)],
+    )
+    .expect("recorded");
+    assert_eq!(recorded.restated[0].outcome, RestatementOutcome::Linked);
+    assert_eq!(recorded.recorded_count, 1);
+}
+
+#[test]
+fn restates_id_must_name_a_recorded_decision_or_nothing_is_written() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let first = classified_batch(
+        &commands,
+        "batch-1",
+        None,
+        vec![
+            capture("decision", "Run every town seat on Fable only", "Cost"),
+            capture("evidence", "The bill doubled", "The invoice says so"),
+        ],
+    )
+    .expect("first classification");
+
+    for unrecorded in [
+        "decision:nobody-recorded-this".to_owned(),
+        format!("capture:{}:1", first.event_id), // a capture, but not a decision
+        format!("capture:{}:9", first.event_id), // past the end of the batch
+    ] {
+        let before = ledger.latest_offset().expect("offset");
+        let error = commands
+            .record_ingest_batch_classified(
+                "agent:hivemind:classifier",
+                &["batch-2".to_owned()],
+                "claude-haiku-4-5-20251001",
+                "2",
+                vec![restating("Fable only for every town seat", &unrecorded)],
+                None,
+            )
+            .expect_err("an unrecorded decision cannot be restated");
+        assert!(error.to_string().contains(&unrecorded), "{error}");
+        assert_eq!(ledger.latest_offset().expect("offset"), before);
+    }
+}
+
+#[test]
+fn only_a_decision_can_restate_a_decision() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let first = classified_batch(
+        &commands,
+        "batch-1",
+        None,
+        vec![capture(
+            "decision",
+            "Run every town seat on Fable only",
+            "Cost",
+        )],
+    )
+    .expect("first classification");
+    let restated_id = format!("capture:{}:0", first.event_id);
+
+    let before = ledger.latest_offset().expect("offset");
+    let mut evidence = restating("The bill doubled", &restated_id);
+    evidence.kind = "evidence".to_owned();
+    let error = commands
+        .record_ingest_batch_classified(
+            "agent:hivemind:classifier",
+            &["batch-2".to_owned()],
+            "claude-haiku-4-5-20251001",
+            "2",
+            vec![evidence],
+            None,
+        )
+        .expect_err("evidence cannot restate a decision");
+    assert!(error.to_string().contains("only a decision"), "{error}");
+    assert_eq!(ledger.latest_offset().expect("offset"), before);
+}
+
+#[test]
+fn a_reference_to_a_deduplicated_capture_by_title_names_the_decision_it_restated() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let first = classified_batch(
+        &commands,
+        "batch-1",
+        Some("2026-09-27T10:00:00Z"),
+        vec![capture(
+            "decision",
+            "Run every town seat on Fable only",
+            "Cost",
+        )],
+    )
+    .expect("first classification");
+    let restated_id = format!("capture:{}:0", first.event_id);
+
+    let mut follow_up = capture(
+        "decision",
+        "Review the cost on Friday",
+        "To check the spend",
+    );
+    follow_up.supersedes_id = Some("Fable only for every town seat".to_owned());
+    let again = classified_batch(
+        &commands,
+        "batch-1-again",
+        Some("2026-09-27T10:00:00Z"),
+        vec![
+            restating("Fable only for every town seat", &restated_id),
+            follow_up,
+        ],
+    )
+    .expect("recorded");
+
+    let recorded = recorded_captures(&ledger, again.event_id);
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0]["supersedes_id"], restated_id);
+}
+
+#[test]
+fn link_same_as_links_two_recorded_decisions_once() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let first = classified_batch(
+        &commands,
+        "batch-1",
+        None,
+        vec![
+            capture("decision", "Run every town seat on Fable only", "Cost"),
+            capture("decision", "Fable only for every town seat", "Cost again"),
+        ],
+    )
+    .expect("classified");
+    let (earlier, later) = (
+        format!("capture:{}:0", first.event_id),
+        format!("capture:{}:1", first.event_id),
+    );
+
+    let event_id = commands
+        .link_same_as("human:alex", &later, &earlier)
+        .expect("links")
+        .expect("a new link is written");
+    let event = ledger.read(event_id - 1, 1).expect("reads").remove(0);
+    assert_eq!(event.event_type, EventType::RelationAdded);
+    assert_eq!(event.payload["relation"], "SAME_AS");
+    assert_eq!(event.payload["from_id"], later);
+    assert_eq!(event.payload["to_id"], earlier);
+
+    let after = ledger.latest_offset().expect("offset");
+    assert_eq!(
+        commands
+            .link_same_as("human:alex", &later, &earlier)
+            .expect("again"),
+        None
+    );
+    assert_eq!(
+        commands
+            .link_same_as("human:alex", &earlier, &later)
+            .expect("reversed"),
+        None,
+        "the other way round is the same link"
+    );
+    assert_eq!(ledger.latest_offset().expect("offset"), after);
+}
+
+#[test]
+fn link_same_as_refuses_itself_an_unrecorded_decision_and_anonymity() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let first = classified_batch(
+        &commands,
+        "batch-1",
+        None,
+        vec![capture(
+            "decision",
+            "Run every town seat on Fable only",
+            "Cost",
+        )],
+    )
+    .expect("classified");
+    let recorded = format!("capture:{}:0", first.event_id);
+    let before = ledger.latest_offset().expect("offset");
+
+    assert!(commands
+        .link_same_as("human:alex", &recorded, &recorded)
+        .is_err());
+    assert!(commands
+        .link_same_as("human:alex", "decision:nobody-recorded-this", &recorded)
+        .is_err());
+    assert!(commands.link_same_as(" ", &recorded, &recorded).is_err());
+    assert_eq!(ledger.latest_offset().expect("offset"), before);
 }

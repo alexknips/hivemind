@@ -112,6 +112,31 @@
 //!   <text>` would — no new invariant, and no requirement that the request still be unanswered
 //!   (re-answering a question is the contested flow `question` already supports).
 
+//! # Restatements (`restatement` module, hivemind-83cj)
+//!
+//! A decision stated again is one decision, not two. The classifier (layer 3) judges that a
+//! capture restates a recorded decision and names it in `CaptureItem::restates_id`; this layer
+//! never judges, it only checks the named id and applies one mechanical rule. Enforced by
+//! `record_ingest_batch_classified` and `link_same_as`, tested in `commands/tests.rs`:
+//!
+//! - `restates_id` is allowed only on a `decision` capture and must name a recorded decision (a
+//!   `decision.proposed` id or a classified decision capture). Anything else refuses the whole
+//!   classification before the first write. No similarity runs here, and nothing is guessed.
+//! - A restating capture is recorded as its own decision, and the projector links it `SAME_AS` to
+//!   the one it restates (newer to older). Reads fold linked decisions into one
+//!   (`queries::same_as`); nothing is deleted or rewritten.
+//! - Exception: a restating capture from the same moment as the decision it restates is not
+//!   recorded at all. Same moment = both were classified from turns whose newest source time
+//!   (`IngestTurn::ts`) is the same instant, so a re-ingested transcript adds no second copy
+//!   while a decision made again later is kept and linked (Alex's ruling, 2026-09-30). Either
+//!   side with no dated turns is never the same moment: it is linked, never dropped on a guess.
+//! - The classification event is recorded in every case, so the batches leave the queue; the
+//!   reply lists each restating capture and whether it was `linked` or `deduplicated`. A sibling
+//!   capture that named a deduplicated one by title now names the decision it restated.
+//! - `link_same_as` links two recorded decisions as `relation.added SAME_AS` (newer to older).
+//!   A decision is never its own twin, and a pair already linked either way round writes nothing.
+//!   A link is never a merge: both records stay as recorded.
+//!
 //! # Project topic vocabulary (hivemind-zywz)
 //!
 //! A registered project has a topic vocabulary: the keys declared for it by
@@ -149,6 +174,7 @@ use uuid::Uuid;
 mod ground_later;
 mod grounding;
 mod question;
+mod restatement;
 
 pub use ground_later::GroundedAddition;
 use grounding::{plan_grounding_nodes, IdMode};
@@ -160,6 +186,7 @@ use question::{require_question_text, QuestionEventUuids};
 pub use question::{
     AnsweredQuestion, AskPlan, AskRecorded, AskedRequest, QuestionAnswerPlan, QuestionId,
 };
+pub use restatement::{ClassifiedBatchRecorded, RestatedCapture, RestatementOutcome};
 
 use crate::error::CommandError;
 use crate::events::{
@@ -1280,6 +1307,10 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     /// path (hivemind-zdsh.18) uses this to cover a whole session's pending
     /// batches with one model call and one event, instead of one event per
     /// batch.
+    ///
+    /// A capture may name a decision it restates (`CaptureItem::restates_id`); the rules are in
+    /// the module header ("Restatements"). The classification event is always recorded, so the
+    /// batches leave the queue even when every capture was a duplicate of the same moment.
     pub fn record_ingest_batch_classified(
         &self,
         actor_id: &str,
@@ -1288,7 +1319,7 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         schema_version: &str,
         captures: Vec<CaptureItem>,
         causation_event_id: Option<EventId>,
-    ) -> Result<EventId> {
+    ) -> Result<ClassifiedBatchRecorded> {
         require_valid_actor_id(actor_id)?;
         let Some(first_batch_id) = batch_ids.first() else {
             return Err(CommandError::Validation("batch_ids must not be empty".into()).into());
@@ -1298,6 +1329,9 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         }
         require_non_empty("classifier_model", classifier_model)?;
         require_non_empty("schema_version", schema_version)?;
+
+        let (captures, restated) = self.settle_restatements(batch_ids, captures)?;
+        let recorded_count = captures.len();
 
         let event = self.event_with_uuid(
             actor_id,
@@ -1312,7 +1346,12 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             Uuid::new_v4(),
         )?;
 
-        self.append_event(event)
+        let event_id = self.append_event(event)?;
+        Ok(ClassifiedBatchRecorded {
+            event_id,
+            recorded_count,
+            restated,
+        })
     }
 
     /// Records a model's assessment of one decision (`decision.scored`, schema version 2).
