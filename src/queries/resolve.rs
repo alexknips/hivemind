@@ -19,7 +19,10 @@
 //! carrying the terms it lacks. A verb that writes never auto-resolves a close candidate. A verb
 //! that only reads (`why`, `verify`, ...) asks with `resolve_decision_for_reading`: it matches at
 //! the bar `recall` uses, and answers with a close candidate that leads alone, saying what the
-//! decision lacks, instead of making the asker repeat the question with `--pick`.
+//! decision lacks, instead of making the asker repeat the question with `--pick`. Which candidate
+//! leads is decided by how many terms each lacks and then by how many of the terms it did match
+//! its title or topic keys carry (see `closeness`), so a decision about the thing asked about
+//! beats one that only mentions the words somewhere in a long rationale.
 
 use std::cmp::Reverse;
 
@@ -28,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::Result;
 
-use super::search::{collect_resolver_candidates, CloseMatch};
+use super::search::{collect_resolver_candidates, CloseMatch, ResolverCandidateRow};
 use super::shared::{
     optional_int, optional_string, query_error, query_timer_start, MAX_QUERY_RESULTS,
 };
@@ -102,9 +105,10 @@ pub fn resolve_decision_by_description(
 ///
 /// - a close candidate needs at least half of the terms, the bar `recall` uses, so a question
 ///   `recall` answers is not answered with "no decision matches" here;
-/// - when close candidates are all there is, and one lacks fewer terms than the rest and shares
+/// - when close candidates are all there is, and one is closer than the rest (lacks fewer terms,
+///   or lacks as many but has more of the terms it matched in its title or topic keys) and shares
 ///   at least two terms, it is `Resolved` with its `missing_terms` set, so the caller shows the
-///   decision and names what it lacks. Several equally close candidates stay an `Ambiguous` list.
+///   decision and names what it lacks. Equally close candidates stay an `Ambiguous` list.
 pub fn resolve_decision_for_reading(
     graph: &impl GraphView,
     description: &str,
@@ -143,13 +147,13 @@ fn resolve_for(
     }
     rows.sort_by(|left, right| {
         (
-            left.missing_terms.len(),
+            closeness(left),
             left.rank,
             Reverse(left.event_origin),
             &left.decision_id,
         )
             .cmp(&(
-                right.missing_terms.len(),
+                closeness(right),
                 right.rank,
                 Reverse(right.event_origin),
                 &right.decision_id,
@@ -158,6 +162,10 @@ fn resolve_for(
 
     let truncated = rows.len() > MAX_QUERY_RESULTS;
     rows.truncate(MAX_QUERY_RESULTS);
+
+    let leader_is_clear = only_close_candidates
+        && asker == Asker::Reader
+        && close_candidate_leads(resolver_terms(description).len(), &rows);
 
     let mut candidates: Vec<ResolvedCandidate> = rows
         .into_iter()
@@ -173,7 +181,7 @@ fn resolve_for(
 
     let result_count = candidates.len();
     let outcome = if only_close_candidates {
-        if asker == Asker::Reader && close_candidate_leads(description, &candidates) {
+        if leader_is_clear {
             ResolveOutcome::Resolved {
                 candidate: candidates.remove(0),
             }
@@ -201,21 +209,30 @@ fn resolve_for(
     })
 }
 
-/// Whether the first of `candidates` (all close, fewest missing terms first) is the one asked
-/// about: it lacks fewer terms than the next, and shares enough of them to be named as the
-/// answer. A tie on missing terms is not resolved: the lists are ordered by rank and recency
-/// after that, which say nothing about which of two equally close decisions was meant.
-fn close_candidate_leads(description: &str, candidates: &[ResolvedCandidate]) -> bool {
-    let Some(first) = candidates.first() else {
+/// How far a candidate is from the description, smaller being closer: it lacks fewer of the
+/// terms, and between two that lack the same number, the one whose title or topic keys carry more
+/// of the terms it matched. A decision about the product's name says "product" and "Upheld" in its
+/// title; one that happens to say "product" and "called" somewhere in a long rationale is not
+/// about that, though it lacks just as many words. Where the words matched is already in
+/// `matched_fields`; nothing is counted across the ledger and nothing is learned. A full match is
+/// 0 on both (its order is the rank tier's).
+fn closeness(row: &ResolverCandidateRow) -> (usize, Reverse<usize>) {
+    (row.missing_terms.len(), Reverse(row.headline_terms))
+}
+
+/// Whether the first of `rows` (all close, closest first) is the one asked about: it is closer
+/// than the next, by `closeness`, and shares enough terms to be named as the answer. Equal
+/// closeness is not resolved: after it the lists are ordered by rank and recency, which say
+/// nothing about which of two equally close decisions was meant.
+fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bool {
+    let Some(first) = rows.first() else {
         return false;
     };
-    let shared = resolver_terms(description)
-        .len()
-        .saturating_sub(first.missing_terms.len());
+    let shared = term_count.saturating_sub(first.missing_terms.len());
     shared >= MIN_WORDS_TO_ANSWER_CLOSE
-        && candidates
+        && rows
             .get(1)
-            .is_none_or(|next| first.missing_terms.len() < next.missing_terms.len())
+            .is_none_or(|next| closeness(first) < closeness(next))
 }
 
 /// Look up a decision named by its literal id, as a grounding premise: `Resolved` when the

@@ -152,8 +152,9 @@ When you see an ambiguous result:
    exist yet, or your description needs different terms.
 
 A read verb (`why`, `verify`, `chain`, `compact-view`) can also answer with a
-**close match**. When no decision has every word you asked with and one lacks
-fewer of them than the others, it answers with that decision and opens with a
+**close match**. When no decision has every word you asked with and one is
+closer than the others (it lacks fewer of the words, or lacks as many but has more
+of the words it did match in its title or topic keys), it answers with that decision and opens with a
 `close match:` line naming the words the decision does not have (`close_match`
 with `missing_terms` in JSON). Read that line before you rely on the answer: if
 a missing word changes what you asked ("still", "not", a name), ask again with

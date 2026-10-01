@@ -129,8 +129,9 @@ matching.
 **Close candidates.** A question often names a word the record never uses
 ("why did we *finally* move the demo cell..."). When no decision matches every
 term, decisions matching more than half of them (and at least two) come back as
-an `Ambiguous` list, ranked by fewest missing terms, then rank tier, then
-recency, each with `missing_terms` naming what it lacks. For a verb that writes
+an `Ambiguous` list, ranked by fewest missing terms, then by how many of the
+matched terms the decision's title or topic keys carry (below), then rank tier,
+then recency, each with `missing_terms` naming what it lacks. For a verb that writes
 (`disagree`, `supersede`, `move`, `retitle`, `ground`, a grounding premise), a
 close candidate is never `Resolved`, even when there is only one: the caller
 picks with `--pick`, `#N` or `--id`. When any decision matches every term, close
@@ -146,14 +147,30 @@ differences from a writer, both for a description no decision matches in full
 - The bar for a close candidate is `recall`'s: at least half of the terms. A
   question `recall` answers is therefore never answered "no decision matches"
   by `why`.
-- When close candidates are all there is, and one lacks fewer terms than the
-  next and shares at least two terms, it is `Resolved` and carries its
-  `missing_terms`. The verb shows the decision and says what it lacks: a
-  `close match:` line ahead of `--summary` output, `close_match: {decision_id,
-  title, missing_terms}` beside `data` in `--json`, the HTTP routes and MCP.
-  Equally close candidates stay an `Ambiguous` list (rank and recency say
-  nothing about which of two decisions that each lack one word was meant), and a
-  candidate that shares one term is listed, not answered with.
+- When close candidates are all there is, and one is closer than the next and
+  shares at least two terms, it is `Resolved` and carries its `missing_terms`.
+  The verb shows the decision and says what it lacks: a `close match:` line
+  ahead of `--summary` output, `close_match: {decision_id, title,
+  missing_terms}` beside `data` in `--json`, the HTTP routes and MCP. Equally
+  close candidates stay an `Ambiguous` list (rank and recency say nothing about
+  which of two decisions was meant), and a candidate that shares one term is
+  listed, not answered with.
+
+*Closer* is two counts, compared in order. A candidate that lacks fewer terms is
+closer. Between candidates that lack the same number, the one whose title or topic
+keys contain more of the terms it did match is closer: a decision about a thing
+says it in its headline, and one that merely holds the same words somewhere in a
+long rationale or in its evidence is a weaker answer. "Is the product still called
+Upheld" is lacked by two decisions, one without "called" and one without "upheld":
+the decision titled "Name the product Upheld" has both of its words in the title,
+the one that says "product" and "called" in its rationale has neither, so the
+first is the answer. The basis is where the matched words sit (the `matched_fields`
+a result already shows), nothing counted across the ledger and nothing learned,
+and it only separates candidates that lack the same number of words: it never lets
+a decision lacking more words win. A full match is not ordered this way, so the
+ambiguity gate and the rank tiers of the full matches are unchanged. The ordering
+applies to every close list the resolver returns, including the one a writer gets,
+though a writer still never has a close candidate picked for it.
 
 A full match is unchanged for both, including the ambiguity gate, and adds no
 `close_match`.
@@ -167,8 +184,10 @@ text filter, so `--topic` alone decides.
 It then matches the way the resolver does, with a lower bar for close matches.
 A word also matches a field word with the same stem (`moving` finds `moves`;
 whole-word equality, as above). A decision matching every word comes first; then,
-fewest missing words first (then rank tier, then decision id), a decision that
-lacks some of the words is still returned when it matches at least half of them.
+fewest missing words first (then the decision whose title or topic keys carry more
+of the matched words, as for `why` above, then rank tier, then decision id), a
+decision that lacks some of the words is still returned when it matches at least
+half of them.
 Each such close match carries `missing_terms` (`missing=` in `--summary`, and a
 `Close matches` line in the digest naming what each one lacks), so a partial
 answer never reads as a complete one. The bar is half, not the resolver's "more

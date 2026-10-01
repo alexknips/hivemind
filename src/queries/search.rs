@@ -1,5 +1,6 @@
 //! Full-text and filter search over decisions via SQLite FTS and graph predicate evaluation.
 
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
@@ -427,6 +428,7 @@ pub fn search_decisions_fts_with_context(
             .unwrap_or_else(|| SearchMatchInfo {
                 rank: 3,
                 missing_terms: Vec::new(),
+                headline_terms: 0,
                 matched_fields: Vec::new(),
                 snippets: Vec::new(),
                 matched_nodes: Vec::new(),
@@ -434,6 +436,7 @@ pub fn search_decisions_fts_with_context(
             None => SearchMatchInfo {
                 rank: 4,
                 missing_terms: Vec::new(),
+                headline_terms: 0,
                 matched_fields: Vec::new(),
                 snippets: Vec::new(),
                 matched_nodes: Vec::new(),
@@ -532,20 +535,23 @@ fn narrow_to_scope(
 }
 
 /// Own project first, then the parent's, then a dependency's; within each, the decisions that
-/// lack the fewest of the question's terms, then (rank, id) order. An unscoped document has no
-/// relation and a literal match lacks nothing, so an unscoped `search` keeps the plain (rank, id)
-/// order.
+/// lack the fewest of the question's terms, then (among close matches) the ones whose title or
+/// topic keys carry more of the terms they did match, then (rank, id) order. An unscoped document
+/// has no relation and a literal match lacks nothing, so an unscoped `search` keeps the plain
+/// (rank, id) order.
 fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
     scored.sort_by(|left, right| {
         (
             left.relation,
             left.result.missing_terms.len(),
+            Reverse(left.headline_terms),
             left.rank,
             &left.id,
         )
             .cmp(&(
                 right.relation,
                 right.result.missing_terms.len(),
+                Reverse(right.headline_terms),
                 right.rank,
                 &right.id,
             ))
@@ -808,6 +814,9 @@ struct ScoredDecisionSearchResult {
     rank: u8,
     id: String,
     event_origin: i64,
+    /// `SearchMatchInfo::headline_terms`: for a close match, how many of the terms its title or
+    /// topic keys contain.
+    headline_terms: usize,
     result: DecisionSearchResult,
     fields: Vec<SearchField>,
 }
@@ -1042,6 +1051,7 @@ fn collect_graph_search_results(
             rank: match_info.rank,
             id,
             event_origin,
+            headline_terms: match_info.headline_terms,
             fields,
             result: DecisionSearchResult {
                 decision,
@@ -1079,6 +1089,9 @@ pub(crate) struct ResolverCandidateRow {
     pub(crate) matched_fields: Vec<String>,
     /// Description terms this decision does not contain; empty for a full match.
     pub(crate) missing_terms: Vec<String>,
+    /// For a close candidate, how many description terms its title or topic keys contain; 0 for a
+    /// full match.
+    pub(crate) headline_terms: usize,
 }
 
 /// Backend-agnostic candidate rows for resolve-by-description: reuses
@@ -1109,6 +1122,7 @@ pub(crate) fn collect_resolver_candidates(
             event_origin: scored.event_origin,
             matched_fields: scored.result.matched_fields,
             missing_terms: scored.result.missing_terms,
+            headline_terms: scored.headline_terms,
         })
         .collect())
 }
@@ -1146,6 +1160,12 @@ struct SearchMatchInfo {
     rank: u8,
     /// Query terms no field matched; non-empty only for a close match.
     missing_terms: Vec<String>,
+    /// For a close match, how many of the terms the decision's title or topic keys contain; 0 for
+    /// a full match, which `rank` already orders. A decision about a thing says it in its
+    /// headline, so among close matches lacking the same number of terms, the one whose headline
+    /// carries more of the words it did match is the likelier answer than one that only holds
+    /// them somewhere in a long rationale or in evidence.
+    headline_terms: usize,
     matched_fields: Vec<String>,
     snippets: Vec<SearchSnippet>,
     matched_nodes: Vec<SearchMatchedNode>,
@@ -1244,6 +1264,7 @@ fn evaluate_search_match(
         return Some(SearchMatchInfo {
             rank: 4,
             missing_terms: Vec::new(),
+            headline_terms: 0,
             matched_fields: Vec::new(),
             snippets: Vec::new(),
             matched_nodes: Vec::new(),
@@ -1251,6 +1272,7 @@ fn evaluate_search_match(
     };
 
     let mut matched_terms = BTreeSet::new();
+    let mut headline_terms = BTreeSet::new();
     let mut matched_fields = BTreeSet::new();
     let mut snippets = Vec::new();
     let mut matched_nodes = BTreeSet::new();
@@ -1264,6 +1286,7 @@ fn evaluate_search_match(
         let value_lower = field.value.to_ascii_lowercase();
         let mut field_stems: Option<BTreeSet<&str>> = None;
         let mut field_matched = false;
+        let in_headline = matches!(field.field.as_str(), "decision.title" | "decision.topic");
         for term in terms {
             let found = value_lower.contains(term)
                 || (search_terms.stemmed
@@ -1272,6 +1295,9 @@ fn evaluate_search_match(
                         .contains(stem(term)));
             if found {
                 matched_terms.insert(term.clone());
+                if in_headline {
+                    headline_terms.insert(term.clone());
+                }
                 field_matched = true;
             }
         }
@@ -1312,6 +1338,11 @@ fn evaluate_search_match(
 
     Some(SearchMatchInfo {
         rank,
+        headline_terms: if missing_terms.is_empty() {
+            0
+        } else {
+            headline_terms.len()
+        },
         missing_terms,
         matched_fields: matched_fields.into_iter().collect(),
         snippets,

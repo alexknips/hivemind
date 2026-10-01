@@ -22,6 +22,16 @@ fn graph_from_events(events: impl IntoIterator<Item = Event>) -> Result<MemoryGr
 }
 
 fn decision_proposed(sequence: u128, decision_id: &str, title: &str, topic_keys: &[&str]) -> Event {
+    decision_proposed_because(sequence, decision_id, title, "because reasons", topic_keys)
+}
+
+fn decision_proposed_because(
+    sequence: u128,
+    decision_id: &str,
+    title: &str,
+    rationale: &str,
+    topic_keys: &[&str],
+) -> Event {
     Event {
         tenant_id: Default::default(),
         event_id: None,
@@ -35,7 +45,7 @@ fn decision_proposed(sequence: u128, decision_id: &str, title: &str, topic_keys:
         payload: json!({
             "decision_id": decision_id,
             "title": title,
-            "rationale": "because reasons",
+            "rationale": rationale,
             "topic_keys": topic_keys,
             "option_ids": [],
             "chosen_option_id": null,
@@ -607,7 +617,8 @@ fn reading_lists_close_candidates_that_lack_the_same_number_of_words() -> Result
         decision_proposed(2, "d:jev", "Call the product Jev", &[]),
     ])?;
 
-    // product, called, upheld: each decision lacks exactly one, and nothing says which was meant.
+    // product, called, upheld: each decision lacks exactly one, and each carries the two words it
+    // has in its title, so nothing says which was meant.
     match reading(&graph, "is the product still called Upheld")?.data {
         ResolveOutcome::Ambiguous { candidates } => {
             let mut ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
@@ -616,6 +627,86 @@ fn reading_lists_close_candidates_that_lack_the_same_number_of_words() -> Result
             assert!(candidates.iter().all(|c| c.missing_terms.len() == 1));
         }
         other => panic!("expected both close candidates, got {other:?}"),
+    }
+    Ok(())
+}
+
+/// "is the product still called Upheld": the decision about the product's name lacks "called";
+/// another says "product" and "called" only inside a long rationale and lacks "upheld"
+/// (hivemind-3lko). Each lacks one word, so only where the words matched tells them apart.
+fn upheld_graph() -> Result<MemoryGraph> {
+    graph_from_events([
+        decision_proposed_because(
+            1,
+            "d:triage",
+            "Triage gate runs on a local model",
+            "The product was called Jev while the gate was built against one shape.",
+            &[],
+        ),
+        decision_proposed_because(
+            2,
+            "d:name",
+            "Name the product Upheld",
+            "A short name that says what the record does.",
+            &[],
+        ),
+    ])
+}
+
+#[test]
+fn reading_answers_with_the_candidate_whose_title_carries_the_words() -> Result<()> {
+    let graph = upheld_graph()?;
+
+    // d:name has product and upheld in its title and lacks "called"; d:triage has product and
+    // called, but only in its rationale, and lacks "upheld". The title is what says which decision
+    // is about the product's name, so that one is the answer, and it names what it lacks.
+    match reading(&graph, "is the product still called Upheld")?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:name");
+            assert_eq!(candidate.missing_terms, vec!["called"]);
+        }
+        other => panic!("expected the decision about the name, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_writer_lists_the_same_candidates_in_the_same_order_and_picks_none() -> Result<()> {
+    let graph = upheld_graph()?;
+
+    match resolve_decision_by_description(&graph, "is the product still called Upheld", None)?.data
+    {
+        ResolveOutcome::Ambiguous { candidates } => {
+            let ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+            assert_eq!(ids, vec!["d:name", "d:triage"]);
+        }
+        other => panic!("a writer lists close candidates, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn fewer_missing_words_still_beat_more_words_in_the_title() -> Result<()> {
+    let graph = graph_from_events([
+        // Lacks only "zebra", but has three of the other four only in its rationale.
+        decision_proposed_because(
+            1,
+            "d:one",
+            "Queue notes",
+            "Adopt the async queue for billing.",
+            &[],
+        ),
+        // Lacks two words, but carries the three it has in its title.
+        decision_proposed(2, "d:two", "Adopt async queue", &[]),
+    ])?;
+
+    // adopt, async, queue, billing, zebra: d:one matches four of five, d:two three of five.
+    match reading(&graph, "adopt async queue billing zebra")?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:one");
+            assert_eq!(candidate.missing_terms, vec!["zebra"]);
+        }
+        other => panic!("expected the decision lacking one word, got {other:?}"),
     }
     Ok(())
 }

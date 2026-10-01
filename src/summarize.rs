@@ -387,7 +387,8 @@ pub struct RecallResponse {
 /// Search for relevant decisions and return them ranked alongside a concise text
 /// digest. The rank comes from the Layer-2 match tier and is ordinal — it is NOT
 /// a confidence score: decisions matching every word come first, then those matching at
-/// least half of them, fewest missing first, each close match naming what it lacks. The
+/// least half of them, fewest missing first (and, among those lacking as many, the one whose
+/// title or topic keys carry more of the matched words), each close match naming what it lacks. The
 /// digest is deterministic template rendering (Layer 3) with no invented content; every
 /// contributing decision ID is listed in `digest.cited_decision_ids`.
 pub fn recall_decisions(

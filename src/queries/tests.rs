@@ -1266,6 +1266,36 @@ fn fluent_search_returns_full_matches_first_then_close_matches_naming_what_they_
 }
 
 #[test]
+fn fluent_search_puts_the_close_match_whose_title_carries_the_words_first() -> Result<()> {
+    let scenario = titled_decisions(&[
+        (
+            // "beta" only in the rationale; the id sorts first.
+            "d:aaa-buried",
+            "Alpha page layout",
+            "Rollout is gated on beta feedback from the first testers.",
+        ),
+        (
+            "d:zzz-titled",
+            "Alpha beta rollout",
+            "Testers see it first.",
+        ),
+    ])?;
+
+    let (items, _) = fluent_answer(&scenario, "alpha beta gamma", 10)?;
+
+    // Each lacks "gamma" and both match in the title, so the rank tier and the id alone would put
+    // d:aaa-buried first. The decision whose title carries both words is the likelier answer.
+    assert_eq!(
+        items,
+        vec![
+            ("d:zzz-titled".to_owned(), vec!["gamma".to_owned()]),
+            ("d:aaa-buried".to_owned(), vec!["gamma".to_owned()]),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn fluent_search_matches_inflected_words_the_literal_search_misses() -> Result<()> {
     let scenario = titled_decisions(&[(
         "d:demo",

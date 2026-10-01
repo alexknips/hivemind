@@ -328,12 +328,17 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   "is the product still called Upheld" stopped at a "close" list of one that needed a second
   call with `--pick`. These verbs only read, so they now match at the bar `recall` uses (at
   least half of the words, not more than half), and when the close candidates that are left
-  are not tied on how many words they lack, the one that lacks the fewest is the answer, with
-  a `close match:` line ahead of `--summary` output and `close_match: {decision_id, title,
-  missing_terms}` beside `data` in `--json`, the HTTP `why`/`verify` routes and the MCP
-  `get_decision_neighborhood`, `get_decision_outcome`, `get_supersession_chain` and
-  `get_compact_view`. Equally close candidates are still listed, and a decision that shares
-  only one word with the question is listed, never answered with. Verbs that write
+  are not tied, the closest one is the answer, with a `close match:` line ahead of
+  `--summary` output and `close_match: {decision_id, title, missing_terms}` beside `data` in
+  `--json`, the HTTP `why`/`verify` routes and the MCP `get_decision_neighborhood`,
+  `get_decision_outcome`, `get_supersession_chain` and `get_compact_view`. The closest is the
+  one that lacks the fewest words; between candidates that lack the same number, it is the
+  one whose title or topic keys carry more of the words it did match, so the decision named
+  "Name the product Upheld" beats a decision that only says "product" and "called" somewhere
+  in a long rationale for "is the product still called Upheld". `recall` orders its close
+  matches the same way, so it and `why` name the same decision first. Candidates equally
+  close on both counts are still listed, and a decision that shares only one word with the
+  question is listed, never answered with. Verbs that write
   (`disagree`, `supersede`, `move`, `retitle`, `ground`, and a grounding premise named by
   description) are unchanged: more than half of the words, at least two, and a close
   candidate is listed, never picked. (hivemind-3lko)

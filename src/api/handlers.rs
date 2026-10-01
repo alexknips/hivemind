@@ -225,8 +225,9 @@ pub(super) struct FluentLookupParams {
 /// result is returned to the caller, who re-calls with `id=` from the candidate list.
 ///
 /// Both lookup routes (`why`, `verify`) only read, so they resolve for reading: a description
-/// that no decision matches in full can still be answered by the one that lacks the fewest of
-/// its words (`close_match` says which words, hivemind-3lko).
+/// that no decision matches in full can still be answered by the closest one: it lacks the fewest
+/// of its words, or carries more of the rest in its title (`close_match` says which words
+/// are missing, hivemind-3lko).
 enum FluentTarget {
     Id {
         id: String,
