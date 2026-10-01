@@ -339,16 +339,13 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   instead of the Claude plugin's, which filed Codex MCP captures as `agent:claude`, and the
   shared skill's direct CLI form names `claude` or `codex` instead of always `codex`. The
   plugin manifests are 0.1.1 so installed copies update. (hivemind-cxqd)
-- **A decision the classifier captured from a transcript no longer sits at `proposed` with no
-  decider and no time when a human made it.** A `decision` capture credited to a human
-  (`actor_id` starts with `human:`) that names no acceptor and no rejecter is now `accepted`
-  with that human as its decider, so `why` says "decided by" and `review` reads `self_accepted`
-  rather than `human_authored` + `unreviewed`. Every classified decision now carries the time
-  of its batch as `occurred_at`, so `why`, `verify`, `GET /v1/decisions/why` and `decided_at`
-  on `GET /v1/graph` say when. A capture credited to an agent, or to nobody, stays `proposed`;
-  one that names a rejecter is left as named. The change is in how a classified batch
-  projects, so a ledger already holding captures reads right after the graph is rebuilt from
-  it; no event is rewritten. (hivemind-s0ra)
+- **A decision the classifier captured from a transcript no longer reads with no time.** Every
+  classified decision now carries the time of its batch as `occurred_at`, so `why`, `verify`,
+  `GET /v1/decisions/why` and `decided_at` on `GET /v1/graph` say when. Who decided is still
+  only what the classifier named as acceptor or rejecter: a capture that names none stays
+  `proposed`, even when a human is credited as the one who proposed it. The change is in how a
+  classified batch projects, so a ledger already holding captures reads right after the graph
+  is rebuilt from it; no event is rewritten. (hivemind-s0ra)
 - **`why`, `verify`, `chain` and `compact-view` answer a question `recall` answers, in one
   call.** `recall` returned a decision for "how do we keep links to a decision page stable
   across browsers?" while `why` said "no decision matches that description", and `verify` on

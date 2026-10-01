@@ -2009,14 +2009,11 @@ fn project_capture(
 /// `why` and `verify` read as when it was decided): the ledger holds no per-capture time, and no
 /// shipper sends a per-turn one yet, so the batch's own time is the honest answer.
 ///
-/// Who decided it is what the classifier read out of the text. `accepted_by` names them
-/// outright. Otherwise a capture credited to a human (`actor_id`) is that human's own call: the
-/// classifier only records a person when the text says they proposed, made or reported it, and
-/// a `decision` capture is a choice already made (an open question is a `decision-request`), so
-/// the human is its decider and it is `accepted`, not `proposed`. An agent named the same way
-/// stays `proposed` until a person decides; a capture that names nobody stays `proposed` too.
-/// A capture anyone rejected is left as the text has it: whether the proposer also decided is
-/// then unknown, and nothing is invented.
+/// Who decided it is what the classifier read out of the text, and only that: `accepted_by`
+/// names the acceptors. `actor_id` is who proposed, made or reported the item, so it is never
+/// read as the decider: a capture that names no acceptor stays `proposed`, even when its
+/// `actor_id` is a human. Judging who decided belongs to the classifier (layer 3), not the
+/// projector.
 fn project_capture_decision(
     graph: &impl GraphView,
     capture: &CaptureItem,
@@ -2084,9 +2081,6 @@ fn project_capture_decision(
             rejected_by,
             origin_properties,
         )?;
-    }
-    if let Some(human) = capture_human_decider(capture) {
-        graph.upsert_edge(RelationKind::AcceptedBy, node_id, human, origin_properties)?;
     }
     if let Some(supersedes_id) = &capture.supersedes_id {
         ensure_node_reference(graph, NodeKind::Decision, supersedes_id, origin_properties)?;
@@ -2169,18 +2163,6 @@ fn project_capture_decision(
         graph.upsert_edge(RelationKind::Chose, node_id, &opt_id, origin_properties)?;
     }
     Ok(())
-}
-
-/// The human a `decision` capture is credited to when it names no acceptor and no rejecter:
-/// `actor_id` when it is a `human:` id, else none. See [`project_capture_decision`].
-fn capture_human_decider(capture: &CaptureItem) -> Option<&str> {
-    if !capture.accepted_by.is_empty() || !capture.rejected_by.is_empty() {
-        return None;
-    }
-    capture
-        .actor_id
-        .as_deref()
-        .filter(|actor_id| actor_kind(actor_id) == "human")
 }
 
 fn project_capture_evidence(

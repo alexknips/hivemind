@@ -2458,17 +2458,15 @@ fn project_classified_decision(capture: serde_json::Value) -> Result<(DecisionEd
 }
 
 #[test]
-fn classified_decision_credited_to_a_human_is_accepted_by_them_at_the_batch_time() -> Result<()> {
+fn classified_decision_credited_to_a_human_is_not_accepted_but_says_when() -> Result<()> {
     let (edges, occurred_at) =
         project_classified_decision(classified_decision_capture(Some("human:alex"), &[], &[]))?;
 
     assert_eq!(
         // ubs:ignore
         edges,
-        in_graph_order(vec![
-            (RelationKind::AcceptedBy, "human:alex".to_owned()),
-            (RelationKind::ProposedBy, "human:alex".to_owned()),
-        ])
+        vec![(RelationKind::ProposedBy, "human:alex".to_owned())],
+        "actor_id is who proposed, made or reported the item, never its decider"
     );
     assert_eq!(
         // ubs:ignore

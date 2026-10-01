@@ -73,11 +73,9 @@ a reader needs without reconstructing them from edges:
     accepts. Distinct from the proposer (`PROPOSED_BY`, whoever recorded it) and the
     participants (`PARTICIPATED_BY`). On a contested decision these are the acceptors; the
     rejecters are the `REJECTED_BY` edges. A decision the classifier captured from a
-    transcript (`capture:<event>:<index>`) has the acceptors and rejecters the classifier named.
-    When it names none, a `decision` capture credited to a human (`actor_id` starts with
-    `human:`) is that human's own call, so they are its decider and it is `accepted`. One
-    credited to an agent, or to nobody, stays `proposed` until a person decides it. A capture
-    that names a rejecter is left as named, never made `contested` on a guess.
+    transcript (`capture:<event>:<index>`) has the acceptors and rejecters the classifier named
+    and no others: its `actor_id` is who proposed, made or reported it, so it is never read as
+    the decider, and a capture that names no acceptor stays `proposed` until a person decides it.
   - `decided_at`: the `decision.proposed` capture event's timestamp, ISO-8601 UTC (the same
     value the query layer calls `occurred_at`, e.g. `DecisionBrief`). A classified capture
     carries its batch's timestamp: the classified-batch event's time, since the ledger holds

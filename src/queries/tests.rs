@@ -4117,7 +4117,7 @@ fn attribution_effect_sign_negative_means_better_than_baseline() {
     );
 }
 
-// --- a captured decision a human made reads as decided, and says when (hivemind-s0ra) ---
+// --- a captured decision says when; its proposer is not its decider (hivemind-s0ra) ---
 
 const CAPTURE_BATCH_TIME: &str = "2026-09-20T10:30:00Z";
 
@@ -4138,7 +4138,7 @@ fn capture_reads(
 }
 
 #[test]
-fn a_capture_credited_to_a_human_is_accepted_by_them_and_says_when() -> Result<()> {
+fn a_capture_credited_to_a_human_stays_proposed_but_says_when() -> Result<()> {
     let scenario = Scenario::new();
     let capture = scenario.classified_decision(
         "agent:claude:classifier",
@@ -4149,9 +4149,13 @@ fn a_capture_credited_to_a_human_is_accepted_by_them_and_says_when() -> Result<(
 
     let (brief, context, status) = capture_reads(&scenario, &capture)?;
 
-    assert_eq!(status, DecisionStatus::Accepted);
-    assert_eq!(brief.status, DecisionStatus::Accepted);
-    assert_eq!(brief.decided_by.decider_ids, vec!["human:alex".to_owned()]);
+    assert_eq!(
+        status,
+        DecisionStatus::Proposed,
+        "the classifier credits a human as proposer; who decided is not read from that"
+    );
+    assert_eq!(brief.status, DecisionStatus::Proposed);
+    assert!(brief.decided_by.decider_ids.is_empty());
     assert_eq!(brief.decided_by.proposer_id.as_deref(), Some("human:alex"));
     assert_eq!(
         brief.occurred_at,
@@ -4159,7 +4163,7 @@ fn a_capture_credited_to_a_human_is_accepted_by_them_and_says_when() -> Result<(
         "a capture is recorded at its batch's time"
     );
     assert_eq!(context.authorship, AuthorshipShape::HumanAuthored);
-    assert_eq!(context.review, ReviewShape::SelfAccepted);
+    assert_eq!(context.review, ReviewShape::Unreviewed);
     Ok(())
 }
 
