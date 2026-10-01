@@ -101,6 +101,12 @@ NOTE_QUOTE_PREFIX = "Note: "
 FALLBACK_TOPIC = "claude-code-question"
 UNDECLARED_TOPIC_REFUSAL = "not declared for project"
 
+# A release before `question` could stand alone refuses it without a `quote` ("quote and question
+# must be given together", src/commands/mod.rs at v0.7.0). This hook runs ahead of the release it
+# is installed beside (hivemind-cxqd), so that refusal is answered by writing the answer without
+# the question: it records, but is not linked to the ask.
+QUESTION_NEEDS_QUOTE_REFUSAL = "quote and question must be given together"
+
 
 class HookError(Exception):
     """A write that did not happen, with the reason to log."""
@@ -143,19 +149,34 @@ def rpc_request(request_id: int, name: str, arguments: Dict[str, Any]) -> Dict[s
     }
 
 
+def cli_has_flag(binary: str, flag: str, *subcommand: str) -> bool:
+    """Whether the installed CLI lists `flag` in that subcommand's --help.
+
+    The marketplace serves this plugin from master while people install the latest release
+    binary, so a flag only master has must be passed only when the CLI under it knows it
+    (hivemind-cxqd). A CLI that cannot be asked counts as not having the flag.
+    """
+    try:
+        done = subprocess.run(
+            [binary, *subcommand, "--help"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return re.search(r"(^|\s)" + re.escape(flag) + r"(\s|=|,|<|\[|$)", done.stdout) is not None
+
+
 class StdioTransport:
     """`hivemind mcp` as a child process, one per hook run."""
 
     def __init__(self, binary: str, hivemind_dir: str, cwd: str, env: Dict[str, str]) -> None:
-        self.command = [
-            binary,
-            "--hivemind-dir",
-            hivemind_dir,
-            "mcp",
-            "--agent-tool",
-            "claude",
-            "--project-from-context",
-        ]
+        self.command = [binary, "--hivemind-dir", hivemind_dir, "mcp", "--agent-tool", "claude"]
+        if cli_has_flag(binary, "--project-from-context", "mcp"):
+            self.command.append("--project-from-context")
         self.cwd = cwd
         self.env = env
         self.proc: Optional["subprocess.Popen[str]"] = None
@@ -428,6 +449,7 @@ def answer_arguments(
     note: Optional[str] = None,
     note_as_quote: bool = False,
     fallback_topic: bool = False,
+    drop_question: bool = False,
 ) -> Dict[str, Any]:
     """The `capture_decision` call for one answered question.
 
@@ -437,7 +459,8 @@ def answer_arguments(
     says no reasons were given.
 
     The topic key is the slug of the header. With `fallback_topic` (the project has not declared
-    it) the answer goes under FALLBACK_TOPIC and the call declares that one key.
+    it) the answer goes under FALLBACK_TOPIC and the call declares that one key. With
+    `drop_question` (the server takes a question only beside a quote) the question is left out.
     """
     text = one_line(question.get("question"))
     offered = offered_labels(question)
@@ -490,6 +513,8 @@ def answer_arguments(
     }
     if fallback_topic:
         arguments["declare_topics"] = [FALLBACK_TOPIC]
+    if drop_question:
+        del arguments["question"]
     quoted = [own_words] if own_words else []
     if note and note_as_quote:
         quoted.append(NOTE_QUOTE_PREFIX + note if own_words else note)
@@ -532,15 +557,18 @@ def capture_answer(
     - the project never declared the header's topic key: write it under FALLBACK_TOPIC, declaring
       only that key;
     - the readable-rationale check refused the person's note (too short to stand alone): write it
-      with the note in the quote.
+      with the note in the quote;
+    - a release that takes a question only beside a quote refused the bare question: write it
+      without the question.
 
     Every other refusal, and any transport failure, is raised and not retried: a refusal wrote
     nothing, but a failure may have reached the ledger already and a second write would duplicate
-    the decision. The two ways out are independent, so at most two retries happen, each logged.
+    the decision. The ways out are independent, so at most three retries happen, each logged.
     """
     text = one_line(question.get("question"))[:60]
     note_as_quote = False
     fallback_topic = False
+    drop_question = False
     while True:
         arguments = answer_arguments(
             question,
@@ -549,6 +577,7 @@ def capture_answer(
             note,
             note_as_quote=note_as_quote,
             fallback_topic=fallback_topic,
+            drop_question=drop_question,
         )
         try:
             transport.call("capture_decision", arguments)
@@ -562,6 +591,12 @@ def capture_answer(
                     f"({reason}); writing the answer to {text!r} again under {FALLBACK_TOPIC!r}"
                 )
                 fallback_topic = True
+            elif not drop_question and QUESTION_NEEDS_QUOTE_REFUSAL in reason:
+                log(
+                    f"post: this hivemind takes a question only beside a quote ({reason}); "
+                    f"writing the answer to {text!r} again without the question"
+                )
+                drop_question = True
             elif note and not note_as_quote and "rationale" in reason:
                 note_as_quote = True
             else:

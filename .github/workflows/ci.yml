@@ -128,6 +128,24 @@ jobs:
           build-args: |
             GIT_SHA=${{ github.sha }}
 
+  # The marketplace serves the plugins from master, but people install the latest RELEASE
+  # binary, so every plugin change runs ahead of the CLI under it (hivemind-cxqd). This runs the
+  # plugins' MCP servers, capture helper, AskUserQuestion hooks and context verbs against that
+  # release binary and fails when one needs a flag or verb the release lacks. It needs no Rust
+  # toolchain: the plugins are shell and Python, and the binary is the published one.
+  plugin-release-compat:
+    name: Plugins against the latest release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run the plugins against the latest release binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/check_plugin_against_release.py --repo "$GITHUB_REPOSITORY"
+
   dependency-audit:
     name: Dependency audit
     runs-on: ubuntu-latest

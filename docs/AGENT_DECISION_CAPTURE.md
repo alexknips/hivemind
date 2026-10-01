@@ -349,9 +349,9 @@ do not carry it (see the HTTP paragraph).
 
 **Working it out from where the agent is.** `--project-from-context` on the same
 CLI verbs, and on the stdio server (`hivemind mcp --project-from-context`, which
-the capture plugin's `.mcp.json` sets), makes the client work the project out
-from its surroundings when none was named. First match wins, and each rung
-records how:
+the capture plugin's `.mcp.json` sets when the installed CLI lists the flag),
+makes the client work the project out from its surroundings when none was named.
+First match wins, and each rung records how:
 
 | # | Source | `project_source` |
 |---|---|---|

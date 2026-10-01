@@ -1,6 +1,6 @@
 {
   "name": "hivemind-context",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Consult, verify, and contest HiveMind decisions from Claude Code by description, never by id, through the deterministic local CLI.",
   "author": {
     "name": "HiveMind contributors",

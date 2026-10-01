@@ -104,6 +104,13 @@ confirmation line shows `project=<handle>` and how it was determined
 (`project_source=`). The other write verbs record no decision and take no
 project. See the `hivemind-capture` README for the full order.
 
+The marketplace serves this plugin from `master` while people install the latest
+release binary, so `lib.sh` passes `--project-from-context` only when the CLI
+lists it (an older CLI files the replacement in the decision's own project), and
+refuses a verb the CLI does not have at all (`ground` on v0.7.0) with that said.
+`scripts/check_plugin_against_release.py` runs these scripts against the latest
+release in CI.
+
 The read verbs never work a project out from the folder. Pass `--project
 HANDLE` to `situational` or `recall` (`/hivemind-context:situational --project
 billing`) to ask project-first: that project's decisions, then its parent's

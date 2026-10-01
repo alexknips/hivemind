@@ -1,6 +1,6 @@
 {
   "name": "hivemind-capture",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Capture Codex decisions into HiveMind through the deterministic local CLI.",
   "author": {
     "name": "HiveMind contributors",
@@ -16,7 +16,7 @@
     "provenance"
   ],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
+  "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
     "displayName": "HiveMind Capture",
     "shortDescription": "Record Codex decisions with actor provenance.",

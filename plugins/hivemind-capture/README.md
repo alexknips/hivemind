@@ -69,6 +69,19 @@ project skills directory:
 plugins/hivemind-capture/scripts/install-active-capture-skill.sh --project-dir .
 ```
 
+### The plugin and the CLI version
+
+The marketplace serves this plugin from `master`, while people install the latest
+release binary of `hivemind`, so the plugin always runs ahead of the CLI under
+it. Anything the plugin passes that only `master` has is therefore passed only
+when the installed CLI lists it: the MCP server config, `capture.sh` and the
+`AskUserQuestion` hooks each ask `--help` first. On a CLI older than the flag the
+plugin works without it (for `--project-from-context`, decisions are filed under
+the personal project). CI runs the plugin's MCP servers, capture helper and hooks
+against the latest release binary
+(`scripts/check_plugin_against_release.py`), so a plugin change that needs a
+newer CLI fails there instead of in a stranger's install.
+
 The default ledger is the project-local `./hivemind/` directory. The bundled MCP
 server descriptor pins that location so agents launched from this checkout use
 the same ledger without per-session setup. To use another ledger for slash
@@ -86,7 +99,10 @@ tools when `actor_id` is omitted.
 
 Codex skill writes use the same convention with `actor_id=agent:codex:<name>`,
 preferring `GC_AGENT`/`GC_ALIAS` and falling back to `CODEX_SESSION_ID`,
-`CODEX_TASK_ID`, or `HIVEMIND_CODEX_SESSION`.
+`CODEX_TASK_ID`, or `HIVEMIND_CODEX_SESSION`. The Codex bundle has its own MCP
+config, `.codex-plugin/mcp.json`, which starts the server with
+`--agent-tool codex`; each surface names its own tool, because the CLI's
+fallback when none is named is `codex`.
 
 Bare terminal writes such as `hivemind emit decision.proposed ...` or
 `hivemind emit decision.capture ...` default to
@@ -154,8 +170,9 @@ hypothesis captures carry no project. `/hivemind-context:supersede` works the
 same way for the replacement decision; with none found it stays in the project
 of the decision it replaces. A wrong project is fixed with `hivemind move
 "<description>" --to <handle>`. The `--project-from-context` flag needs a
-`hivemind` CLI that has it; an older CLI refuses the flag, so update the CLI
-along with the plugin. Nothing here applies over HTTP: MCP-over-HTTP takes the
+`hivemind` CLI newer than v0.7.0; the helper and the MCP server leave it out on an
+older CLI, and its captures are then filed under the personal project. Nothing
+here applies over HTTP: MCP-over-HTTP takes the
 project as an argument and REST takes none (its decisions land in the personal
 project), and only the CLI and the stdio MCP server this plugin ships fill it in
 from context. See

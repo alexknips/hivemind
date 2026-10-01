@@ -33,7 +33,9 @@ fn codex_capture_plugin_bundle_is_installable_and_points_at_cli_capture() -> Tes
     let manifest = read_json(root.join("plugins/hivemind-capture/.codex-plugin/plugin.json"))?;
     assert_eq!(manifest["name"], "hivemind-capture");
     assert_eq!(manifest["skills"], "./skills/");
-    assert_eq!(manifest["mcpServers"], "./.mcp.json");
+    // hivemind-cxqd: the bundle starts its own server config, which names codex. Sharing the
+    // Claude plugin's `.mcp.json` filed every Codex MCP capture as agent:claude.
+    assert_eq!(manifest["mcpServers"], "./.codex-plugin/mcp.json");
     assert!(manifest["interface"]["capabilities"]
         .as_array()
         .expect("capabilities")
@@ -41,14 +43,25 @@ fn codex_capture_plugin_bundle_is_installable_and_points_at_cli_capture() -> Tes
         .any(|capability| capability == "MCP"));
     assert_no_todos("plugin manifest", &manifest.to_string());
 
-    let mcp = read_json(root.join("plugins/hivemind-capture/.mcp.json"))?;
+    let mcp = read_json(root.join("plugins/hivemind-capture/.codex-plugin/mcp.json"))?;
     assert_mcp_pins_shared_ledger(&mcp);
+    let codex_server = mcp_command_line(&mcp);
+    assert!(
+        codex_server.contains("--agent-tool codex")
+            && !codex_server.contains("--agent-tool claude"),
+        "the Codex bundle's MCP server names codex: {codex_server}"
+    );
+    assert_mcp_probes_project_flag(&codex_server);
 
     let skill =
         fs::read_to_string(root.join("plugins/hivemind-capture/skills/hivemind-capture/SKILL.md"))?;
     assert_no_todos("skill", &skill);
     assert!(skill.contains("decision.capture"));
-    assert!(skill.contains("--agent-tool codex"));
+    // hivemind-cxqd: the skill is shared by Claude Code and Codex, so its direct CLI form names
+    // whichever tool is running instead of hard-coding one.
+    assert!(skill.contains(r#"--agent-tool "$HIVEMIND_AGENT_TOOL""#));
+    assert!(skill.contains("echo codex || echo claude"));
+    assert!(skill.contains("unexpected argument '--project-from-context'"));
     // hivemind-zdsh.9: the skill now documents actor construction generically
     // (agent:<tool>:<name>, a stable identity, not a raw session id) rather
     // than repeating a per-tool "agent:codex:<session>" example.
@@ -198,24 +211,17 @@ fn claude_code_plugin_bundle_is_installable_and_wires_cli_mcp() -> TestResult<()
     assert_no_todos("Claude plugin manifest", &manifest.to_string());
 
     let mcp = read_json(root.join("plugins/hivemind-capture/.mcp.json"))?;
-    assert_eq!(mcp["mcpServers"]["hivemind"]["command"], "hivemind");
-    assert!(mcp["mcpServers"]["hivemind"]["args"]
-        .as_array()
-        .expect("mcp args")
-        .iter()
-        .any(|arg| arg == "mcp"));
-    assert!(mcp["mcpServers"]["hivemind"]["args"]
-        .as_array()
-        .expect("mcp args")
-        .windows(2)
-        .any(|pair| pair[0] == "--agent-tool" && pair[1] == "claude"));
+    let claude_server = mcp_command_line(&mcp);
+    assert!(
+        claude_server.contains("--agent-tool claude")
+            && !claude_server.contains("--agent-tool codex"),
+        "the Claude plugin's MCP server names claude: {claude_server}"
+    );
     // hivemind-s15q.15: the bundled stdio server works a capture's project out from its own
-    // working directory when the call names none.
-    assert!(mcp["mcpServers"]["hivemind"]["args"]
-        .as_array()
-        .expect("mcp args")
-        .iter()
-        .any(|arg| arg == "--project-from-context"));
+    // working directory when the call names none, but only on a CLI that has the flag
+    // (hivemind-cxqd): the marketplace serves this file from master while people install the
+    // latest release binary.
+    assert_mcp_probes_project_flag(&claude_server);
     assert_eq!(
         mcp["mcpServers"]["hivemind"]["env"]["HIVEMIND_DIR"],
         "./hivemind/"
@@ -1082,20 +1088,43 @@ fn human_cli_emit_defaults_actor_and_source_from_git_email() -> TestResult<()> {
     Ok(())
 }
 
+/// The server's command and arguments as one line: a plain `hivemind ... mcp` entry or a
+/// `sh -c "<script>"` entry that starts it, whichever the config uses.
+fn mcp_command_line(mcp: &Value) -> String {
+    let server = &mcp["mcpServers"]["hivemind"];
+    let command = server["command"].as_str().expect("mcp command");
+    let args = server["args"].as_array().expect("mcp args");
+    std::iter::once(command)
+        .chain(args.iter().map(|arg| arg.as_str().expect("mcp arg")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn assert_mcp_pins_shared_ledger(mcp: &Value) {
     let server = &mcp["mcpServers"]["hivemind"];
-    assert_eq!(server["command"], "hivemind");
     assert_eq!(server["env"]["HIVEMIND_DIR"], "./hivemind/");
 
-    let args = server["args"].as_array().expect("mcp args");
+    let line = mcp_command_line(mcp);
     assert!(
-        args.windows(2)
-            .any(|window| window[0] == "--hivemind-dir" && window[1] == "./hivemind/"),
-        "mcp args should pin --hivemind-dir ./hivemind/: {args:?}"
+        line.contains("--hivemind-dir ./hivemind/"),
+        "mcp command should pin --hivemind-dir ./hivemind/: {line}"
     );
     assert!(
-        args.iter().any(|arg| arg == "mcp"),
-        "mcp args should run the mcp subcommand: {args:?}"
+        line.split_whitespace().any(|word| word == "mcp"),
+        "mcp command should run the mcp subcommand: {line}"
+    );
+}
+
+/// A plugin config the marketplace serves from master must not hand the release binary a flag it
+/// lacks: `--project-from-context` goes on the server only when `mcp --help` lists it.
+fn assert_mcp_probes_project_flag(line: &str) {
+    assert!(
+        line.contains("hivemind mcp --help") && line.contains("grep -q -e --project-from-context"),
+        "the MCP server asks the CLI whether it has --project-from-context: {line}"
+    );
+    assert!(
+        line.contains("exec hivemind --hivemind-dir ./hivemind/ mcp") && line.ends_with("$flag"),
+        "the flag reaches the server only through the probe: {line}"
     );
 }
 

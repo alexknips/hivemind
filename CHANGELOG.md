@@ -307,6 +307,21 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   malformed event of any other kind
   (the ones the graph is built from) still fails the read. There is no `doctor` command; the
   notice is where the bad rows are listed. (hivemind-qo11.10)
+- **The Claude Code and Codex capture plugins work with the latest release binary.** The
+  marketplace serves the plugins from `master` while people install the release binary, so a
+  plugin change that passed a flag only `master` has (`--project-from-context`) broke every
+  stranger's install: the MCP server closed at start and `capture.sh` exited 2 with nothing
+  written. The MCP server config, `capture.sh`, the AskUserQuestion hooks and the
+  hivemind-context `supersede` verb now pass such a flag only when the installed CLI lists it
+  in its `--help` (an older CLI files the decision under the personal project), the hook
+  writes an answer without its question for a release that takes a question only beside a
+  quote, and hivemind-context `ground` says the release has no such command. CI runs the
+  plugins against the latest release binary (`scripts/check_plugin_against_release.py`), so a
+  plugin change that needs a newer CLI fails there. Each surface also names its own tool: the
+  Codex bundle starts its own MCP config (`.codex-plugin/mcp.json`, `--agent-tool codex`)
+  instead of the Claude plugin's, which filed Codex MCP captures as `agent:claude`, and the
+  shared skill's direct CLI form names `claude` or `codex` instead of always `codex`. The
+  plugin manifests are 0.1.1 so installed copies update. (hivemind-cxqd)
 - **`why`, `verify`, `chain` and `compact-view` answer a question `recall` answers, in one
   call.** `recall` returned a decision for "how do we keep links to a decision page stable
   across browsers?" while `why` said "no decision matches that description", and `verify` on

@@ -168,6 +168,19 @@ hivemind_context_resolve() {
   fi
 }
 
+# cli_has_flag FLAG SUBCOMMAND...: does the installed CLI list FLAG in that subcommand's
+# --help? The marketplace serves these plugins from master while people install the latest
+# release binary, so the plugin runs ahead of the CLI after every merge: a flag only master
+# has is passed only when the CLI under it knows it (hivemind-cxqd). The help text goes
+# through a variable, not a pipe, so `grep -q` closing early cannot fail the probe under
+# pipefail. Needs hivemind_context_resolve to have set BASE_CMD.
+cli_has_flag() {
+  local flag="$1" help
+  shift
+  help="$("${BASE_CMD[@]}" "$@" --help 2>/dev/null || true)"
+  grep -qE -- "(^|[[:space:]])${flag}([[:space:]=,<[]|\$)" <<<"$help"
+}
+
 # hivemind_context_exec [--write] [--project-from-context] <subcommand...>
 # --write injects `--actor agent:<tool>:<name>` ahead of the subcommand so
 # disagree/supersede record agent provenance in actor_id rather than falling
@@ -178,24 +191,36 @@ hivemind_context_resolve() {
 # a flag of that subcommand, so it goes right after the subcommand name; the
 # CLI owns the rule (nearest .hivemind-project, then the rig, then the current
 # project), a --project the caller passes still wins, and a supersede that
-# finds no project inherits the old decision's.
+# finds no project inherits the old decision's. A CLI older than the flag does
+# not get it, and the replacement stays in the old decision's project.
+# A verb the installed CLI does not have at all (a plugin verb newer than the
+# release) is refused with that said, instead of the CLI's bare usage error.
 hivemind_context_exec() {
   hivemind_context_resolve
   log_hivemind_resolution
 
   local global_args=(--hivemind-dir "$HIVEMIND_DIR")
   local subcommand_args=()
+  local want_project_context=0
   while [[ "${1:-}" == --write || "${1:-}" == --project-from-context ]]; do
     if [[ "$1" == "--write" ]]; then
       global_args+=(--actor "$AGENT_ACTOR")
     else
-      subcommand_args+=(--project-from-context)
+      want_project_context=1
     fi
     shift
   done
 
   local subcommand="$1"
   shift
+  if ! "${BASE_CMD[@]}" "$subcommand" --help >/dev/null 2>&1; then
+    printf 'the installed hivemind CLI (%s) has no `%s` command: this plugin is newer than that release. Update the CLI.\n' \
+      "$("${BASE_CMD[@]}" --version 2>/dev/null || echo unknown)" "$subcommand" >&2
+    exit 2
+  fi
+  if [[ "$want_project_context" == 1 ]] && cli_has_flag --project-from-context "$subcommand"; then
+    subcommand_args+=(--project-from-context)
+  fi
   exec "${BASE_CMD[@]}" "${global_args[@]}" "$subcommand" \
     ${subcommand_args[@]+"${subcommand_args[@]}"} "$@"
 }

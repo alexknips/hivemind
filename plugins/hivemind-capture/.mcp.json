@@ -1,14 +1,10 @@
 {
   "mcpServers": {
     "hivemind": {
-      "command": "hivemind",
+      "command": "sh",
       "args": [
-        "--hivemind-dir",
-        "./hivemind/",
-        "mcp",
-        "--agent-tool",
-        "claude",
-        "--project-from-context"
+        "-c",
+        "flag=; hivemind mcp --help 2>/dev/null | grep -q -e --project-from-context && flag=--project-from-context; exec hivemind --hivemind-dir ./hivemind/ mcp --agent-tool claude $flag"
       ],
       "env": {
         "HIVEMIND_DIR": "./hivemind/"

@@ -287,16 +287,22 @@ ledger write must stay explicit and deterministic.
 
    The CLI applies the same stable-identity-first resolution for Codex and
    Claude unless `--actor-id` is explicitly provided. Use
-   `--agent-tool codex --agent-session <session>` only when the helper is
+   `--agent-tool claude|codex --agent-session <session>` only when the helper is
    unavailable or when overriding the environment-derived defaults.
+
+   Each surface names its own tool: `claude` in Claude Code, `codex` in Codex. The
+   CLI's own fallback when nothing names a tool is `codex`, so a Claude Code
+   capture that leaves the tool out is filed as a Codex agent's. The helper, the
+   bundled MCP servers and the direct forms below all name it.
 
 3. Capture a new proposed decision directly when the helper is unavailable:
 
    ```bash
-   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
+   HIVEMIND_AGENT_TOOL="${HIVEMIND_AGENT_TOOL:-$([ -n "${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CODEX_TASK_ID:-}" ] && echo codex || echo claude)}"
+   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" emit decision.capture \
      --project-from-context \
-     --agent-tool codex \
+     --agent-tool "$HIVEMIND_AGENT_TOOL" \
      --agent-session "$HIVEMIND_AGENT_SESSION" \
      --title "Prefer direct CLI capture before MCP" \
      --rationale "The write path is explicit, testable, and does not depend on hooks or MCP setup" \
@@ -309,6 +315,12 @@ ledger write must stay explicit and deterministic.
    If the `hivemind` binary is not on `PATH`, run the same command from a
    HiveMind source checkout with `cargo run --` before the flags.
 
+   `--project-from-context` needs a `hivemind` newer than v0.7.0. If the CLI
+   answers `unexpected argument '--project-from-context'`, re-run without that
+   one flag: the capture is then filed under your personal project (`hivemind
+   move` fixes it later). The helper and the bundled MCP servers leave the flag
+   out on their own when the CLI lacks it.
+
    From the Claude Code plugin, prefer the installed slash command:
 
    ```text
@@ -320,10 +332,11 @@ ledger write must stay explicit and deterministic.
    by-description flags above whenever you do not hold the id:
 
    ```bash
-   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
+   HIVEMIND_AGENT_TOOL="${HIVEMIND_AGENT_TOOL:-$([ -n "${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CODEX_TASK_ID:-}" ] && echo codex || echo claude)}"
+   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" emit decision.capture \
      --project-from-context \
-     --agent-tool codex \
+     --agent-tool "$HIVEMIND_AGENT_TOOL" \
      --agent-session "$HIVEMIND_AGENT_SESSION" \
      --title "Use shared ledger storage for the integration demo" \
      --rationale "Multiple agents must query the same provenance without local file copying" \
@@ -339,15 +352,17 @@ ledger write must stay explicit and deterministic.
    answers "what does this rest on?" like any other):
 
    ```bash
-   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
-   hivemind --actor "agent:codex:$HIVEMIND_AGENT_SESSION" \
+   HIVEMIND_AGENT_TOOL="${HIVEMIND_AGENT_TOOL:-$([ -n "${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CODEX_TASK_ID:-}" ] && echo codex || echo claude)}"
+   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}}}"
+   hivemind --actor "agent:$HIVEMIND_AGENT_TOOL:$HIVEMIND_AGENT_SESSION" \
      --hivemind-dir "$HIVEMIND_DIR" emit decision.accepted \
      --decision-id decision-001
    ```
 
    ```bash
-   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
-   hivemind --actor "agent:codex:$HIVEMIND_AGENT_SESSION" \
+   HIVEMIND_AGENT_TOOL="${HIVEMIND_AGENT_TOOL:-$([ -n "${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CODEX_TASK_ID:-}" ] && echo codex || echo claude)}"
+   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}}}"
+   hivemind --actor "agent:$HIVEMIND_AGENT_TOOL:$HIVEMIND_AGENT_SESSION" \
      --hivemind-dir "$HIVEMIND_DIR" emit decision.superseded \
      --old decision-001 \
      --new decision-002
@@ -359,9 +374,10 @@ ledger write must stay explicit and deterministic.
    for the full fluent surface shipped in the `hivemind-context` plugin):
 
    ```bash
-   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}"
+   HIVEMIND_AGENT_TOOL="${HIVEMIND_AGENT_TOOL:-$([ -n "${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CODEX_TASK_ID:-}" ] && echo codex || echo claude)}"
+   HIVEMIND_AGENT_SESSION="${GC_AGENT:-${GC_ALIAS:-${CLAUDE_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-${CODEX_THREAD_ID:-${CODEX_SESSION_ID:-${CODEX_TASK_ID:-${GC_SESSION_ID:-${GC_SESSION_NAME:-manual-session}}}}}}}}}"
    hivemind --hivemind-dir "$HIVEMIND_DIR" query recall \
-     --actor-id "agent:codex:$HIVEMIND_AGENT_SESSION" \
+     --actor-id "agent:$HIVEMIND_AGENT_TOOL:$HIVEMIND_AGENT_SESSION" \
      --source agent \
      --limit 10
    ```

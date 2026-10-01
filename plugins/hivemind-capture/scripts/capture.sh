@@ -205,6 +205,18 @@ Or set HIVEMIND_CAPTURE_BIN to a built hivemind binary.
 HINT
 }
 
+# cli_has_flag FLAG SUBCOMMAND...: does the installed CLI list FLAG in that subcommand's --help?
+# The marketplace serves this plugin from master while people install the latest release
+# binary, so the plugin runs ahead of the CLI after every merge: a flag only master has is
+# passed only when the CLI under it knows it (hivemind-cxqd). The help text goes through a
+# variable, not a pipe, so `grep -q` closing early cannot fail the probe under pipefail.
+cli_has_flag() {
+  local flag="$1" help
+  shift
+  help="$("${BASE_CMD[@]}" "$@" --help 2>/dev/null || true)"
+  grep -qE -- "(^|[[:space:]])${flag}([[:space:]=,<[]|\$)" <<<"$help"
+}
+
 append_text() {
   local next="$1"
   if [[ -z "$TEXT" ]]; then
@@ -315,10 +327,15 @@ ERROR
     exit 2
   fi
   errfile="$(mktemp "${TMPDIR:-/tmp}/hivemind-capture.XXXXXX")"
-  # --project-from-context is always on: the CLI, not this script, decides the project
-  # (a --project stated by the caller still wins), so it is one rule in one place.
+  # --project-from-context is always on when the CLI has it: the CLI, not this script,
+  # decides the project (a --project stated by the caller still wins), so it is one rule in
+  # one place. A CLI older than the flag files the decision under the personal project.
+  local context_flag=()
+  if cli_has_flag --project-from-context emit decision.capture; then
+    context_flag=(--project-from-context)
+  fi
   result="$("${BASE_CMD[@]}" --hivemind-dir "$HIVEMIND_DIR" emit decision.capture \
-    "${PROVENANCE[@]}" --project-from-context "${FORWARDED[@]}" 2>"$errfile")" || status=$?
+    "${PROVENANCE[@]}" ${context_flag[@]+"${context_flag[@]}"} "${FORWARDED[@]}" 2>"$errfile")" || status=$?
   if [[ "$status" -ne 0 ]]; then
     cat "$errfile" >&2
     rm -f "$errfile"
@@ -406,8 +423,8 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --project-from-context)
-      # Always on for decision captures (see emit_decision); a second copy would be
-      # refused by the CLI ("cannot be used multiple times"), so accept and drop it.
+      # Always on for decision captures when the CLI has it (see emit_decision); a second
+      # copy would be refused by the CLI ("cannot be used multiple times"), so accept and drop it.
       shift
       ;;
     --bet)
