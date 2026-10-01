@@ -454,6 +454,20 @@ not fluent over HTTP at all today.
 
 ---
 
+### 3.5 Reads past a row nobody can read (hivemind-qo11.10)
+
+Every verb above reads a ledger that is append-only and shared, so it can hold a
+`decision.scored` (assessment) or `decision.metadata_derived` row whose payload
+fails validation: a buggy or old producer, a partial import, a hand edit. A read
+does not fail over it. The projector and the history and search queries skip such
+a row, and the decision it names answers with what its own events say (the floors,
+no `model_assessment`). The answer says so: `notice` beside `data` in `--json` and
+in the MCP result, a final `notice:` line in `--summary` output (CLI `query`,
+`digest`, `export`, `quality-scan`; every MCP read tool, stdio and `/mcp`),
+naming the ledger events. A ledger with nothing unreadable in it carries no
+`notice`. Only these two annotation kinds are skipped: a malformed event that the
+graph is built from still fails the read.
+
 ## 4. Output Contract — `DecisionBrief`
 
 No existing query response leads with "the decision, then why, then who,

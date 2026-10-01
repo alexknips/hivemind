@@ -220,9 +220,9 @@ is the same with or without one.
   merely cites (evidence, assumptions, prior decisions) is not part of it. One quote that is
   not found refuses the whole event, names the dimension, and appends nothing. A blank
   quote, explanation or reason, a `partial` or `solid` answer without a quote, a missing
-  dimension and importance out of range are refused the same way (and when events are
-  validated on replay). The substring check needs the ledger, so it runs on the write path
-  only.
+  dimension and importance out of range are refused the same way (a row that got into the
+  ledger anyway is skipped on replay, below). The substring check needs the ledger, so it
+  runs on the write path only.
 - **The newest assessment of a decision is the one the graph shows.** Earlier ones stay in
   the ledger; nothing is overwritten there. It is stored on the decision node as
   `model_assessment` (the model, prompt version and the seven answers, as JSON) and
@@ -248,6 +248,22 @@ is the same with or without one.
   model and prompt and adds one nested `model` bullet under each dimension. Neither
   invents a quote for a `none` answer that gave none. Scan findings and ticket bodies are
   about floors and facts and do not carry it.
+- **An assessment that cannot be read is skipped, never fatal.** The ledger is append-only
+  and shared, so a buggy or old producer, a partial import or a hand edit can leave a
+  `decision.scored` row whose payload fails the checks above; the write path refuses such an
+  event, but nothing stops one that is already there. Every reader (the projector, the
+  history and search queries) treats it as "assessment unavailable for this decision": the
+  row is skipped, the decision keeps its floors and any readable assessment (before or
+  after it), and nothing the row names is created. This holds for a `decision.scored` row of
+  either version and for `decision.metadata_derived`; a malformed event of any other kind
+  is what the graph is built from and still fails the read. The skip is said out loud: CLI
+  `query`, `digest`, `export` and `quality-scan`, and every MCP read tool (stdio and
+  `/mcp`), carry a one-line `notice` (`1 assessment row could not be read and was skipped
+  (ledger event 57: …); answers leave it out`) naming the ledger events, as a `notice` key
+  in JSON and a final `notice:` line in `--summary` output, and a projection logs one
+  warning with the count and offsets. The background scorer does not count such a row as an
+  assessment, so the decision is still picked up and assessed. A ledger with nothing unreadable
+  in it says nothing extra.
 - **Version-1 scores stay as they are.** Every `decision.scored` event written before
   schema version 2 (no `schema_version`) keeps its shape: 0 to 1 floats per dimension,
   keyed by a classifier capture node. The ledger is immutable, so those events keep

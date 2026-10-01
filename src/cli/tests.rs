@@ -2215,6 +2215,151 @@ fn query_why_and_verify_answer_a_question_that_shares_half_its_words_and_say_wha
     Ok(())
 }
 
+/// Leave an assessment nobody can parse in the ledger, as a buggy or old producer, a partial
+/// import or a hand edit could: `Commands::record_decision_assessed` refuses it, the ledger
+/// itself does not. Returns the ledger offset it landed at.
+fn inject_malformed_assessment(hivemind_dir: &std::path::Path, decision_id: &str) -> u64 {
+    let ledger = SqliteEventLedger::open(hivemind_dir).expect("ledger opens");
+    ledger
+        .append(crate::events::Event {
+            tenant_id: Default::default(),
+            event_id: None,
+            event_uuid: uuid::Uuid::new_v4(),
+            correlation_id: None,
+            causation_event_id: None,
+            event_type: crate::events::EventType::DecisionScored,
+            actor_id: "agent:hivemind:scorer".to_owned(),
+            source: crate::events::EventSource::Agent,
+            source_ref: Some("scorer-session".to_owned()),
+            payload: serde_json::json!({
+                "schema_version": 2,
+                "decision_id": decision_id,
+                "model": "model-x",
+                "prompt_version": "prompt-x",
+                "dimensions": {"framing": "not an answer"}
+            }),
+            ts: Some(chrono::Utc::now()),
+        })
+        .expect("a raw append does not validate")
+}
+
+#[test]
+fn every_read_verb_answers_past_a_malformed_assessment_row_and_says_it_skipped_it() -> CliTestResult
+{
+    let hivemind_dir = unique_test_dir("read-past-malformed-assessment");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let out_dir = unique_test_dir("read-past-malformed-assessment-export");
+    let cli = |extra: &[&str]| -> crate::Result<String> {
+        let mut args = vec!["hivemind", "--hivemind-dir", dir];
+        args.extend_from_slice(extra);
+        run(&Cli::parse_from(args))
+    };
+    let decision_id = cli(&[
+        "--actor",
+        "human:alice",
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Adopt async queue for billing",
+        "--rationale",
+        "Billing must not block on the payment provider",
+        "--topic-keys",
+        "billing",
+        "--options",
+        "Async queue,Inline call",
+        "--chose",
+        "Async queue",
+    ])?;
+    let question = "adopt async queue billing";
+    let out = out_dir.to_str().expect("utf-8 temp path");
+    let json_verbs: Vec<Vec<&str>> = vec![
+        vec!["--json", "query", "recall", question],
+        vec!["--json", "query", "why", question],
+        vec!["--json", "query", "verify", question],
+        vec!["--json", "query", "chain", question],
+        vec!["--json", "query", "compact-view", question],
+        vec!["--json", "query", "search_decisions", "--topic", "billing"],
+        vec!["--json", "query", "recent", "--since", "7d"],
+        vec!["--json", "digest"],
+        vec!["--json", "export", "--out", out],
+    ];
+
+    // A ledger with nothing unreadable in it says nothing extra.
+    for verb in &json_verbs {
+        let answer: serde_json::Value = serde_json::from_str(&cli(verb)?)?;
+        ensure(
+            answer.get("notice").is_none(),
+            &format!("{verb:?} carries no notice on a clean ledger"),
+        )?;
+    }
+
+    let bad_offset = inject_malformed_assessment(&hivemind_dir, &decision_id);
+    let notice_start =
+        format!("1 assessment row could not be read and was skipped (ledger event {bad_offset}:");
+
+    for verb in &json_verbs {
+        let answer: serde_json::Value = serde_json::from_str(&cli(verb)?)?;
+        let notice = answer["notice"].as_str().unwrap_or_default();
+        ensure(
+            notice.starts_with(&notice_start),
+            &format!("{verb:?} answers and names the unreadable row, got: {answer}"),
+        )?;
+    }
+
+    // It still answers with the decision it would have answered with.
+    let recalled: serde_json::Value =
+        serde_json::from_str(&cli(&["--json", "query", "recall", question])?)?;
+    ensure_json_eq(
+        &recalled["data"]["ranked"]["items"][0]["decision"]["id"],
+        serde_json::json!(decision_id),
+        "recall still answers with the decision",
+    )?;
+    let why: serde_json::Value =
+        serde_json::from_str(&cli(&["--json", "query", "why", question])?)?;
+    ensure_json_eq(
+        &why["data"]["root"]["id"],
+        serde_json::json!(decision_id),
+        "why still answers with the decision",
+    )?;
+
+    // --summary output carries the notice as its last line.
+    for verb in ["why", "verify", "recall"] {
+        let summary = cli(&["query", verb, question, "--summary"])?;
+        let last_line = summary.lines().last().unwrap_or_default();
+        ensure(
+            last_line.starts_with(&format!("notice: {notice_start}")),
+            &format!("{verb} --summary ends with the notice, got:\n{summary}"),
+        )?;
+    }
+
+    // A write does not scan the ledger and does not carry the notice.
+    let written = cli(&[
+        "--json",
+        "--actor",
+        "human:alice",
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Adopt a second queue for email",
+        "--rationale",
+        "Email must not share the billing queue",
+        "--topic-keys",
+        "email",
+        "--options",
+        "Second queue,Shared queue",
+        "--chose",
+        "Second queue",
+    ])?;
+    ensure(
+        !written.contains("could not be read"),
+        "a write carries no read notice",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    let _ = std::fs::remove_dir_all(&out_dir);
+    Ok(())
+}
+
 #[test]
 fn query_verify_alias_returns_decision_brief() -> CliTestResult {
     let hivemind_dir = unique_test_dir("query-verify-fluent");

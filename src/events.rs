@@ -1493,6 +1493,58 @@ pub enum EventValidationError {
     },
 }
 
+/// An annotation row a reader could not make sense of: a `decision.scored` (either shape) or
+/// `decision.metadata_derived` event whose payload fails [`validate`]. These are Layer-3
+/// enrichment of a decision, never part of what was decided, and the ledger is append-only and
+/// shared, so a buggy or old producer, a partial import or a hand edit can leave one behind. A
+/// reader treats it as "annotation unavailable" — skips it, keeps everything the decision's own
+/// events say — and says so; it never fails the read over it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UnreadableAnnotation {
+    pub event_id: Option<EventId>,
+    pub event_type: EventType,
+    /// Why [`validate`] refused the row.
+    pub reason: String,
+}
+
+/// What a reader gets from one ledger row: its payload, or, for an annotation row that cannot
+/// be read, the fact that it was skipped. Every other event kind that fails validation is still
+/// an error: those rows are what the graph is built from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReadEvent {
+    Payload(Box<EventPayload>),
+    Unreadable(UnreadableAnnotation),
+}
+
+impl EventType {
+    /// Layer-3 enrichment events: an assessment or score of a decision, or metadata derived
+    /// from it. A reader may skip an unreadable one ([`validate_for_read`]).
+    pub fn is_annotation(self) -> bool {
+        matches!(self, Self::DecisionScored | Self::DecisionMetadataDerived)
+    }
+}
+
+/// [`validate`] for a reader (the projector and every query over the ledger). The write path
+/// keeps using [`validate`], which refuses a malformed annotation before it is appended.
+pub fn validate_for_read(event: &Event) -> std::result::Result<ReadEvent, EventValidationError> {
+    match validate(event) {
+        Ok(payload) => Ok(ReadEvent::Payload(Box::new(payload))),
+        Err(error) if event.event_type.is_annotation() => {
+            Ok(ReadEvent::Unreadable(UnreadableAnnotation {
+                event_id: event.event_id,
+                event_type: event.event_type,
+                reason: error.to_string(),
+            }))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// True when `event` is an annotation row that [`validate_for_read`] would skip.
+pub fn is_unreadable_annotation(event: &Event) -> bool {
+    event.event_type.is_annotation() && validate(event).is_err()
+}
+
 pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidationError> {
     validate_common(event)?;
 

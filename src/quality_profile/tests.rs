@@ -2037,3 +2037,49 @@ fn queries_and_commands_never_import_the_profile() {
         );
     }
 }
+
+/// A ledger is append-only and shared, so an assessment nobody can parse (a buggy or old
+/// producer, a partial import, a hand edit) can be in it. The profile of every decision is what
+/// it was without that row: the floors from what the record states, and for a decision a model
+/// did assess earlier, that assessment, not a newer row that cannot be read.
+#[test]
+fn a_malformed_assessment_row_leaves_every_profile_as_it_was_without_it() -> Result<()> {
+    let clean = floor_scenario()?;
+    let dirty = floor_scenario()?;
+    let bad = serde_json::json!("not an answer");
+    dirty.assessment(
+        "d:bare",
+        "model-x",
+        "prompt-x",
+        bad.clone(),
+        "2026-09-22T12:00:00Z",
+    )?;
+    dirty.assessment(
+        "d:solid",
+        "model-x",
+        "prompt-x",
+        bad,
+        "2026-09-22T12:00:01Z",
+    )?;
+    let (clean_graph, dirty_graph) = (clean.graph()?, dirty.graph()?);
+
+    for decision_id in FLOOR_SCENARIO_DECISIONS {
+        assert_eq!(
+            quality_profile_of(&dirty_graph, decision_id)?,
+            quality_profile_of(&clean_graph, decision_id)?,
+            "{decision_id}"
+        );
+    }
+    let solid = quality_profile_of(&dirty_graph, "d:solid")?.expect("d:solid has a profile");
+    assert_eq!(
+        solid.model_assessment.map(|assessment| assessment.model),
+        Some("model-b".to_owned()),
+        "the newest assessment that can be read is still the one shown"
+    );
+    let bare = quality_profile_of(&dirty_graph, "d:bare")?.expect("d:bare has a profile");
+    assert!(
+        bare.model_assessment.is_none(),
+        "floors only, and it says nothing else"
+    );
+    Ok(())
+}

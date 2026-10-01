@@ -929,6 +929,68 @@ fn an_assessment_refuses_an_unknown_version_a_blank_name_and_importance_out_of_r
     assert!(validate(&event).is_ok());
 }
 
+/// A reader skips an annotation it cannot parse and says which row it was; the write path still
+/// refuses the same row (`validate`), so nothing malformed is ever appended by a producer that
+/// checks. The ledger is shared and append-only, so a bad row that got in anyway must not blind
+/// every read.
+#[test]
+fn a_reader_skips_a_malformed_annotation_and_names_it() {
+    let mut event = assessed_event();
+    event.event_id = Some(41);
+    event.payload["dimensions"]["framing"] = json!("not an answer");
+
+    assert!(validate(&event).is_err(), "the write path still refuses it");
+    let ReadEvent::Unreadable(row) = validate_for_read(&event).expect("a reader does not fail")
+    else {
+        panic!("a malformed assessment is unreadable, not a payload");
+    };
+    assert_eq!(row.event_id, Some(41));
+    assert_eq!(row.event_type, EventType::DecisionScored);
+    assert!(
+        row.reason.contains("does not match event type"),
+        "the row says why it failed: {}",
+        row.reason
+    );
+    assert!(is_unreadable_annotation(&event));
+
+    // The shape rules are skipped the same way, not only a payload that does not parse.
+    let mut event = assessed_event();
+    event.payload["dimensions"]["framing"]["quote"] = json!(" ");
+    assert!(is_unreadable_annotation(&event));
+    let mut event = assessed_event();
+    event.payload["schema_version"] = json!(3);
+    assert!(is_unreadable_annotation(&event));
+
+    // A version-1 score and metadata derived from a decision are annotations too.
+    let mut event = scored_v1_event();
+    event.payload = json!({"capture_node_id": ""});
+    assert!(is_unreadable_annotation(&event));
+}
+
+#[test]
+fn a_reader_still_gets_every_readable_annotation_and_refuses_every_other_bad_event() {
+    for event in [
+        assessed_event(),
+        assessed_none_without_quote_event(),
+        scored_v1_event(),
+    ] {
+        assert!(matches!(
+            validate_for_read(&event),
+            Ok(ReadEvent::Payload(_))
+        ));
+        assert!(!is_unreadable_annotation(&event));
+    }
+
+    // What the graph is built from is not skippable: a malformed decision is still an error.
+    let mut proposed: Event = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/decision.proposed.json"
+    ))
+    .unwrap();
+    proposed.payload["title"] = json!("");
+    assert!(validate_for_read(&proposed).is_err());
+    assert!(!is_unreadable_annotation(&proposed));
+}
+
 /// The schema file and the Rust validation agree on the assessment shape.
 #[test]
 fn the_decision_scored_schema_rejects_what_validation_rejects() {

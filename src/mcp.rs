@@ -374,7 +374,16 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
     };
 
     match outcome {
-        Ok(content) => Ok(tool_success(content)),
+        Ok(mut content) => {
+            if core::tool_reads_decisions(&name) {
+                let ledger = AnyLedger::open(&config.ledger, &config.tenant_id)?;
+                let rows = crate::read_notice::unreadable_annotations(&ledger, &config.tenant_id)?;
+                if let Some(notice) = crate::read_notice::notice_for(&rows) {
+                    crate::read_notice::annotate_json(&mut content, &notice);
+                }
+            }
+            Ok(tool_success(content))
+        }
         Err(rpc) => Ok(tool_error(rpc.message)),
     }
 }

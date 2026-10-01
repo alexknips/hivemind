@@ -11,8 +11,8 @@ use axum::response::{IntoResponse, Response};
 use crate::events::TenantId;
 use crate::ledger::EventLedger;
 use crate::projector::{
-    memory::MemoryGraph, project_from_ledger_for_tenant, GraphParams, GraphRow, GraphValue,
-    GraphView, NodeKind,
+    memory::MemoryGraph, project_from_ledger_for_tenant_reporting, GraphParams, GraphRow,
+    GraphValue, GraphView, NodeKind,
 };
 use crate::queries::{oriented_edges, DecisionStandings};
 
@@ -288,8 +288,10 @@ pub(super) fn get_cached_graph(
         Some((cached_offset, cached_graph)) => (cached_graph.as_ref().clone(), *cached_offset),
         None => (MemoryGraph::default(), 0),
     };
-    project_from_ledger_for_tenant(ledger, tenant_id, &base_graph, base_offset)
-        .map_err(graph_err)?;
+    let report =
+        project_from_ledger_for_tenant_reporting(ledger, tenant_id, &base_graph, base_offset)
+            .map_err(graph_err)?;
+    base_graph.note_unreadable_annotations(report.unreadable_annotations);
     let new_graph = Arc::new(base_graph);
     guard.insert(tenant_id.clone(), (latest, Arc::clone(&new_graph)));
     Ok(new_graph)

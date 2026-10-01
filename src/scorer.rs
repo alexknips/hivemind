@@ -277,7 +277,9 @@ fn find_unscored_decisions(
                         .get("schema_version")
                         .and_then(serde_json::Value::as_u64)
                         == Some(u64::from(DECISION_ASSESSED_SCHEMA_VERSION));
-                    if is_v2 {
+                    // A row no reader can parse is "assessment unavailable" (hivemind-qo11.10),
+                    // so it must not stop the decision from being assessed properly.
+                    if is_v2 && !crate::events::is_unreadable_annotation(event) {
                         if let Some(decision_id) =
                             event.payload.get("decision_id").and_then(|v| v.as_str())
                         {

@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use serde::Serialize;
 
-use crate::events::{self, EventPayload};
+use crate::events::{self, EventPayload, ReadEvent};
 use crate::ledger::{AnyLedger, EventLedger, SqliteEventLedger, TenantScopedLedger};
 use crate::projector::{GraphRow, GraphView, NodeKind, RelationKind};
 use crate::Result;
@@ -705,9 +705,12 @@ fn decision_proposed_at_by_id(
 ) -> Result<BTreeMap<String, DateTime<Utc>>> {
     let mut proposed_at = BTreeMap::new();
     ledger.replay_from_for_tenant(&context.tenant_id, 0, &mut |event| {
-        let payload = events::validate(event)
-            .map_err(|error| query_error(format!("invalid event during search replay: {error}")))?;
-        if let EventPayload::DecisionProposed(payload) = payload {
+        let ReadEvent::Payload(payload) = events::validate_for_read(event)
+            .map_err(|error| query_error(format!("invalid event during search replay: {error}")))?
+        else {
+            return Ok(());
+        };
+        if let EventPayload::DecisionProposed(payload) = *payload {
             if let Some(ts) = event.ts {
                 proposed_at.insert(payload.decision_id, ts);
             }

@@ -225,7 +225,19 @@ fn mcp_tools_call_blocking(
     // Per MCP spec: tool-level errors are returned as success responses with
     // `isError: true` rather than as JSON-RPC error objects.
     match outcome {
-        Ok(payload) => Ok(mcp_tool_ok(payload)),
+        Ok(mut payload) => {
+            if crate::mcp::core::tool_reads_decisions(&name) {
+                // The cached graph carries what its replays skipped, so the notice costs no
+                // second pass over the ledger.
+                let graph = mcp_open_graph(backend, ctx, cache)?;
+                if let Some(notice) =
+                    crate::read_notice::notice_for(&graph.unreadable_annotations())
+                {
+                    crate::read_notice::annotate_json(&mut payload, &notice);
+                }
+            }
+            Ok(mcp_tool_ok(payload))
+        }
         Err((_, msg)) => Ok(mcp_tool_err(msg)),
     }
 }

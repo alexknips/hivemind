@@ -359,6 +359,77 @@ fn find_unscored_decisions_includes_classified_and_direct_and_dedupes_v2() {
     let _ = std::fs::remove_dir_all(&hivemind_dir);
 }
 
+#[test]
+fn a_malformed_v2_row_does_not_count_as_an_assessment_so_the_decision_is_still_pending() {
+    let hivemind_dir = unique_test_dir("find-unscored-malformed");
+    let tenant_id = TenantId::local();
+    let decision_id = {
+        let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+        let commands = Commands::new(&ledger);
+        let option_a = commands
+            .record_option("actor:test", "REST", "REST is simpler to operate")
+            .expect("option a");
+        let option_b = commands
+            .record_option("actor:test", "gRPC", "gRPC needs HTTP/2 and codegen")
+            .expect("option b");
+        let decision_id = commands
+            .propose_decision(DecisionProposalInput {
+                grounding: Grounding::NotAsked,
+                expressed_confidence: None,
+                project: None,
+                actor_id: "actor:test",
+                title: "Pick the API style",
+                rationale: "REST is simpler to operate for this team",
+                topic_keys: &["api".to_owned()],
+                option_ids: &[option_a.clone(), option_b],
+                option_labels: &["REST".to_owned(), "gRPC".to_owned()],
+                chosen_option_id: Some(option_a.as_str()),
+                decided_by: None,
+                delegated_by: None,
+                still_proposed: false,
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+                quote: None,
+                question: None,
+            })
+            .expect("propose decision");
+        // A row a buggy producer or a hand edit left behind: schema version 2, bad shape. The
+        // write path refuses it, so it goes in through the ledger.
+        ledger
+            .append(crate::events::Event {
+                tenant_id: tenant_id.clone(),
+                event_id: None,
+                event_uuid: uuid::Uuid::new_v4(),
+                correlation_id: None,
+                causation_event_id: None,
+                event_type: EventType::DecisionScored,
+                actor_id: ACTOR_ID.to_owned(),
+                source: crate::events::EventSource::Agent,
+                source_ref: None,
+                payload: serde_json::json!({
+                    "schema_version": 2,
+                    "decision_id": decision_id,
+                    "model": "model-x",
+                    "prompt_version": "prompt-x",
+                    "dimensions": {"framing": "not an answer"}
+                }),
+                ts: Some(chrono::Utc::now()),
+            })
+            .expect("a ledger appends what it is given");
+        decision_id
+    };
+
+    let pending = find_unscored_decisions(&hivemind_dir, &tenant_id).expect("scan succeeds");
+    assert_eq!(
+        pending.len(),
+        1,
+        "the unreadable row is no assessment: the decision stays pending"
+    );
+    assert_eq!(pending[0].decision_id, decision_id);
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+}
+
 // --- resolve_capture_node_id ---
 
 #[test]

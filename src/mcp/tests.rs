@@ -1554,6 +1554,138 @@ mod transport_parity {
         }
     }
 
+    /// Leave an assessment nobody can parse in `dir`'s ledger, as a buggy or old producer, a
+    /// partial import or a hand edit could (the write path refuses it; the ledger does not).
+    /// Returns the ledger offset it landed at.
+    fn inject_malformed_assessment(dir: &std::path::Path, decision_id: &str) -> u64 {
+        let ledger = SqliteEventLedger::open(dir).expect("ledger opens"); // ubs:ignore: test-only; panicking is correct in tests
+        ledger
+            .append(crate::events::Event {
+                tenant_id: Default::default(),
+                event_id: None,
+                event_uuid: uuid::Uuid::new_v4(),
+                correlation_id: None,
+                causation_event_id: None,
+                event_type: crate::events::EventType::DecisionScored,
+                actor_id: "agent:hivemind:scorer".to_owned(),
+                source: crate::events::EventSource::Agent,
+                source_ref: Some("scorer-session".to_owned()),
+                payload: json!({
+                    "schema_version": 2,
+                    "decision_id": decision_id,
+                    "model": "model-x",
+                    "prompt_version": "prompt-x",
+                    "dimensions": {"framing": "not an answer"}
+                }),
+                ts: Some(chrono::Utc::now()),
+            })
+            .expect("a raw append does not validate") // ubs:ignore: test-only; panicking is correct in tests
+    }
+
+    #[tokio::test]
+    async fn a_malformed_assessment_row_never_fails_a_read_and_both_transports_say_so() {
+        let stdio_dir = unique_dir("parity-stdio-malformed-assessment");
+        let http_dir = unique_dir("parity-http-malformed-assessment");
+        let capture_args = json!({
+            "grounding": [{"kind": "bet"}],
+            "title": "Use SQLite for the ledger",
+            "rationale": "Local-first storage is enough for v1",
+            "topic_keys": ["storage"],
+            "options": [{"label": "sqlite"}],
+        });
+        let stdio_capture = stdio_call(&stdio_dir, "capture_decision", capture_args.clone());
+        let http_capture = http_call(&http_dir, "capture_decision", capture_args).await;
+        let decision_id = |capture: &Value| -> String {
+            capture["result"]["structuredContent"]["decision_id"]
+                .as_str()
+                .expect("decision_id") // ubs:ignore: test-only; panicking is correct in tests
+                .to_owned()
+        };
+        let (stdio_id, http_id) = (decision_id(&stdio_capture), decision_id(&http_capture));
+
+        // On a clean ledger no read says anything extra.
+        let reads = |id: &str| -> Vec<(&'static str, Value)> {
+            vec![
+                ("recall_decisions", json!({"q": "sqlite ledger"})),
+                ("get_decision", json!({"decision_id": id})),
+                ("get_decision_neighborhood", json!({"decision_id": id})),
+                ("get_decision_outcome", json!({"decision_id": id})),
+                ("score_decision", json!({"decision_id": id})),
+                ("search_decisions", json!({"query": "sqlite"})),
+                ("recent_decisions", json!({"since": "2020-01-01T00:00:00Z"})),
+                ("dump_graph", json!({})),
+            ]
+        };
+        for (tool, arguments) in reads(&stdio_id) {
+            let response = stdio_call(&stdio_dir, tool, arguments);
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{tool}: clean ledger reads"); // ubs:ignore: test-only assertion
+            assert!(
+                result["structuredContent"].get("notice").is_none(),
+                "{tool}: a clean ledger carries no notice"
+            ); // ubs:ignore: test-only assertion
+        }
+
+        let stdio_offset = inject_malformed_assessment(&stdio_dir, &stdio_id);
+        let http_offset = inject_malformed_assessment(&http_dir, &http_id);
+        assert_eq!(
+            stdio_offset, http_offset,
+            "the same capture makes the same ledger"
+        ); // ubs:ignore: test-only assertion
+        let notice_start = format!(
+            "1 assessment row could not be read and was skipped (ledger event {stdio_offset}:"
+        );
+
+        for ((tool, stdio_args), (_, http_args)) in
+            reads(&stdio_id).into_iter().zip(reads(&http_id))
+        {
+            let stdio = stdio_call(&stdio_dir, tool, stdio_args);
+            let http = http_call(&http_dir, tool, http_args).await;
+            let (stdio, http) = (&stdio["result"], &http["result"]);
+            for (name, result) in [("stdio", stdio), ("http", http)] {
+                assert_eq!(
+                    result["isError"], false,
+                    "{name} {tool}: the read still answers"
+                ); // ubs:ignore: test-only assertion
+                let notice = result["structuredContent"]["notice"]
+                    .as_str()
+                    .unwrap_or_default();
+                assert!(
+                    notice.starts_with(&notice_start),
+                    "{name} {tool}: names the unreadable row, got: {result}"
+                ); // ubs:ignore: test-only assertion
+            }
+            assert_eq!(
+                stdio["structuredContent"]["notice"], http["structuredContent"]["notice"],
+                "{tool}: both transports say the same thing"
+            ); // ubs:ignore: test-only assertion
+        }
+
+        // The decision is still there with its floors, and nothing was assessed.
+        let stdio_profile = stdio_call(
+            &stdio_dir,
+            "score_decision",
+            json!({"decision_id": stdio_id}),
+        );
+        let data = &stdio_profile["result"]["structuredContent"]["data"];
+        assert_eq!(data["decision_id"], json!(stdio_id)); // ubs:ignore: test-only assertion
+        assert!(data.get("model_assessment").is_none_or(Value::is_null)); // ubs:ignore: test-only assertion
+
+        // A write does not scan the ledger and does not carry the notice.
+        let write = stdio_call(
+            &stdio_dir,
+            "capture_evidence",
+            json!({"content": "measured 3ms p95"}),
+        );
+        assert!(
+            write["result"]["structuredContent"].get("notice").is_none(),
+            "a write carries no read notice: {write}"
+        ); // ubs:ignore: test-only assertion
+
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+    }
+
     #[tokio::test]
     async fn capture_decision_happy_path_with_chosen_option() {
         let (stdio, http) = run(

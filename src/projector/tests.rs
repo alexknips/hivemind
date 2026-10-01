@@ -1482,6 +1482,146 @@ fn a_model_assessment_of_a_decision_no_event_created_gets_a_placeholder_origin()
     Ok(())
 }
 
+/// An assessment row nobody can parse, as a buggy producer or a hand edit could leave in a shared
+/// ledger. The write path refuses it; a reader has to survive it.
+pub(super) fn malformed_assessment_event() -> Event {
+    event(
+        EventType::DecisionScored,
+        "agent:hivemind:scorer",
+        json!({
+            "schema_version": 2,
+            "decision_id": "decision:first",
+            "model": "model-x",
+            "prompt_version": "prompt-x",
+            "dimensions": {"framing": "not an answer"}
+        }),
+    )
+}
+
+#[test]
+fn a_malformed_assessment_row_is_skipped_and_reported_never_a_failed_replay() -> Result<()> {
+    use super::memory::MemoryGraph;
+
+    // The proposal, then the bad row (ledger offset 2), then a good assessment (offset 3).
+    let mut events = decision_assessed_fixture_events();
+    let good = events.remove(1);
+    let proposal = events.remove(0);
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(proposal)?;
+    ledger.append(malformed_assessment_event())?;
+
+    // Alone, the bad row leaves the decision with what its own events say: no assessment.
+    let graph = MemoryGraph::default();
+    let report = project_from_ledger_for_tenant_reporting(&ledger, &TenantId::local(), &graph, 0)?;
+    let facts = crate::queries::get_record_facts(&graph, "decision:first")?
+        .expect("the decision is projected");
+    assert_eq!(facts.event_origin, Some(1));
+    assert!(facts.model_assessment.is_none());
+    assert_eq!(report.unreadable_annotations.len(), 1);
+    let row = &report.unreadable_annotations[0];
+    assert_eq!(row.event_id, Some(2));
+    assert_eq!(row.event_type, EventType::DecisionScored);
+    assert!(row.reason.contains("does not match event type"));
+    // The bad row created nothing: not its decision, not the actor that wrote it.
+    assert!(!graph
+        .nodes_and_edges()?
+        .0
+        .contains_key(&(NodeKind::Actor, "agent:hivemind:scorer".to_owned())));
+
+    // A good assessment recorded after it still lands, and the bad row is still reported.
+    ledger.append(good)?;
+    let graph = MemoryGraph::default();
+    let report = project_from_ledger_for_tenant_reporting(&ledger, &TenantId::local(), &graph, 0)?;
+    let facts = crate::queries::get_record_facts(&graph, "decision:first")?
+        .expect("the decision is projected");
+    let assessment = facts
+        .model_assessment
+        .expect("the readable assessment lands");
+    assert_eq!(assessment.model, "model-a");
+    assert_eq!(assessment.event_origin, Some(3));
+    assert_eq!(report.unreadable_annotations.len(), 1);
+    assert_eq!(report.unreadable_annotations[0].event_id, Some(2));
+
+    // The plain entry points succeed too: every existing caller of a rebuild is unchanged.
+    let rebuilt = MemoryGraph::default();
+    rebuild_graph(&ledger, &rebuilt)?;
+    assert!(crate::queries::get_record_facts(&rebuilt, "decision:first")?.is_some());
+    Ok(())
+}
+
+#[test]
+fn a_replay_logs_the_unreadable_rows_once_and_a_clean_replay_logs_nothing() -> Result<()> {
+    use super::memory::MemoryGraph;
+
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(decision_assessed_fixture_events().remove(0))?;
+    for _ in 0..3 {
+        ledger.append(malformed_assessment_event())?;
+    }
+
+    let subscriber = CapturingSubscriber::default();
+    let sink = subscriber.messages.clone();
+    tracing::subscriber::with_default(subscriber, || {
+        project_from_ledger(&ledger, &MemoryGraph::default(), 0)
+    })?;
+    let messages = sink.lock().expect("messages lock poisoned").clone();
+    assert_eq!(
+        messages.len(),
+        1,
+        "one line for the replay, not one per row: {messages:?}"
+    );
+    assert!(
+        messages[0].contains("3 assessment rows could not be read")
+            && messages[0].contains("ledger events 2, 3, 4"),
+        "the line names the count and the offsets: {messages:?}"
+    );
+
+    let clean = InMemoryEventLedger::new();
+    clean.append(decision_assessed_fixture_events().remove(0))?;
+    let subscriber = CapturingSubscriber::default();
+    let sink = subscriber.messages.clone();
+    tracing::subscriber::with_default(subscriber, || {
+        project_from_ledger(&clean, &MemoryGraph::default(), 0)
+    })?;
+    assert!(sink.lock().expect("messages lock poisoned").is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_malformed_event_that_builds_the_graph_still_fails_the_replay() {
+    // Only annotations are skippable. A decision whose own event is malformed is what the graph
+    // is built from; skipping it would be a silent hole, so the replay still says no.
+    let ledger = InMemoryEventLedger::new();
+    let mut proposal = decision_assessed_fixture_events().remove(0);
+    proposal.payload["title"] = json!("");
+    ledger.append(proposal).expect("append does not validate");
+
+    assert!(project_from_ledger(&ledger, &memory::MemoryGraph::default(), 0).is_err());
+}
+
+#[test]
+fn a_graph_keeps_the_unreadable_rows_it_was_built_past_through_a_clone() {
+    use super::memory::MemoryGraph;
+
+    let graph = MemoryGraph::default();
+    assert!(graph.unreadable_annotations().is_empty());
+    graph.note_unreadable_annotations(Vec::new());
+    assert!(graph.unreadable_annotations().is_empty());
+
+    let row = UnreadableAnnotation {
+        event_id: Some(7),
+        event_type: EventType::DecisionScored,
+        reason: "bad".to_owned(),
+    };
+    graph.note_unreadable_annotations(vec![row.clone()]);
+    // A cached graph is cloned and replayed forward; what it skipped comes along.
+    let clone = graph.clone();
+    assert_eq!(clone.unreadable_annotations(), vec![row.clone()]);
+    clone.note_unreadable_annotations(vec![row.clone()]);
+    assert_eq!(clone.unreadable_annotations().len(), 2);
+    assert_eq!(graph.unreadable_annotations().len(), 1);
+}
+
 #[test]
 fn decision_proposed_without_project_falls_back_to_personal_address_for_agent_actor() -> Result<()>
 {

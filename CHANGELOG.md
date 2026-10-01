@@ -288,6 +288,25 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **One malformed model-assessment row no longer makes every read of the ledger fail.** A
+  `decision.scored` event of schema version 2 whose payload cannot be read (a hand-injected
+  row, a buggy or old producer, a partial import) used to abort the projection, so `query
+  recall`, `why`, `verify`, the CLI summary, the Markdown export, the MCP stdio server and
+  `/mcp` all refused to answer. Readers now skip an assessment (and a `decision.scored` or
+  `decision.metadata_derived` row of any shape) that fails validation: the decision it names
+  shows what its own events say (the floors of `score_decision`, no `model_assessment`), and
+  a readable assessment before or after it still lands. The skip is never silent: `query`,
+  `digest`, `export` and `quality-scan` on the CLI, and every read tool on the MCP stdio
+  server and `/mcp`, carry a one-line notice naming the rows, for example `1 assessment row
+  could not be read and was skipped (ledger event 57: payload does not match event type
+  DecisionScored: ...); answers leave it out`: a `notice` key beside `data` in `--json` and in
+  the MCP result, a final `notice:` line in `--summary` output. The server logs one warning per
+  replay with the count and the ledger offsets. An unreadable assessment does not count as
+  assessed either, so the background scorer still assesses that decision. The write path is
+  unchanged: it still refuses a malformed assessment before anything is appended, and a
+  malformed event of any other kind
+  (the ones the graph is built from) still fails the read. There is no `doctor` command; the
+  notice is where the bad rows are listed. (hivemind-qo11.10)
 - **`why`, `verify`, `chain` and `compact-view` answer a question `recall` answers, in one
   call.** `recall` returned a decision for "how do we keep links to a decision page stable
   across browsers?" while `why` said "no decision matches that description", and `verify` on

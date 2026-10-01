@@ -118,6 +118,30 @@ use super::render::{MigrateReport, ParityCheckResult};
 pub fn run(cli: &Cli) -> Result<String> {
     validate_global_flags(cli)?;
 
+    let output = dispatch(cli)?;
+    with_unreadable_notice(cli, output)
+}
+
+/// The read verbs answer even when the ledger holds annotation rows nobody can parse (a
+/// malformed assessment): the projector and every history read skip them. What they do not do is
+/// skip them silently: the answer carries a one-line notice naming the rows.
+fn with_unreadable_notice(cli: &Cli, output: String) -> Result<String> {
+    if !matches!(
+        cli.command,
+        Command::Query(_) | Command::Export(_) | Command::Digest(_) | Command::QualityScan(_)
+    ) {
+        return Ok(output);
+    }
+    let tenant_id = cli_tenant(cli)?;
+    let ledger = open_ledger(cli)?;
+    let rows = crate::read_notice::unreadable_annotations(&ledger, &tenant_id)?;
+    Ok(match crate::read_notice::notice_for(&rows) {
+        Some(notice) => crate::read_notice::annotate_output(output, &notice),
+        None => output,
+    })
+}
+
+fn dispatch(cli: &Cli) -> Result<String> {
     match &cli.command {
         Command::Quickstart(args) => run_quickstart(cli, args),
         Command::Emit(command) => run_emit(cli, command),
@@ -2410,7 +2434,10 @@ pub(crate) fn review_recent_decisions_request(args: &ReviewArgs) -> Result<Recen
 fn read_ledger_events(ledger: &impl EventLedger) -> Result<Vec<Event>> {
     let mut events = Vec::new();
     ledger.replay_from(0, &mut |event| {
-        events.push(event.clone());
+        // An annotation row nobody can parse is no reason to refuse a review of the decisions.
+        if !crate::events::is_unreadable_annotation(event) {
+            events.push(event.clone());
+        }
         Ok(())
     })?;
     Ok(events)

@@ -43,6 +43,7 @@ src/queries/contested/tests.rs
 src/queries/timeline/tests.rs
 src/mcp/tests.rs
 src/events/tests.rs
+src/read_notice/tests.rs
 src/slack_app/tests.rs
 src/api/slack/tests.rs
 src/ledger/sqlite/tests.rs

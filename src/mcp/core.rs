@@ -178,6 +178,26 @@ impl ToolOutput {
     }
 }
 
+/// True for every tool that reads the ledger's decisions back. The write tools and the
+/// classification queue are named instead, so a tool added later carries the unreadable-rows
+/// notice (`read_notice`) unless someone says it never reads decisions.
+pub(crate) fn tool_reads_decisions(name: &str) -> bool {
+    !matches!(
+        name,
+        "capture_decision"
+            | "capture_evidence"
+            | "capture_hypothesis"
+            | "disagree_decision"
+            | "supersede_decision"
+            | "move_decision"
+            | "retitle_decision"
+            | "ground_decision"
+            | "request_decision"
+            | "classify_queue_list"
+            | "classify_queue_submit"
+    )
+}
+
 // ---------------------------------------------------------------------------
 // project / project_source (capture_decision, supersede_decision)
 // ---------------------------------------------------------------------------

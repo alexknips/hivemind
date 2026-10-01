@@ -14,7 +14,7 @@ use crate::events::{
     HypothesisRecordedPayload, IngestBatchClassifiedPayload, NotificationAcknowledgedPayload,
     NotificationSentPayload, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind,
     ProjectRegisteredPayload, ProjectSource, QuestionAskedPayload, QuestionRecordedPayload,
-    RelationKind as EventRelationKind, TenantId,
+    ReadEvent, RelationKind as EventRelationKind, TenantId, UnreadableAnnotation,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -275,7 +275,28 @@ pub trait GraphView {
 }
 
 pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
-    let payload = events::validate(event).map_err(projector_error)?;
+    project_event_reporting(graph, event).map(drop)
+}
+
+/// What one replay skipped: annotation rows ([`UnreadableAnnotation`]) that could not be read.
+/// Empty for a ledger with none, which is every ledger a well-behaved producer wrote.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectionReport {
+    pub unreadable_annotations: Vec<UnreadableAnnotation>,
+}
+
+/// [`project_event`], returning the annotation row it skipped, if it skipped one. An annotation
+/// (an assessment or score) that cannot be read is skipped, never projected and never an error:
+/// the decision it named shows what its own events say, as if the annotation was never made.
+/// Any other event that fails validation is still an error.
+pub fn project_event_reporting(
+    graph: &impl GraphView,
+    event: &Event,
+) -> Result<Option<UnreadableAnnotation>> {
+    let payload = match events::validate_for_read(event).map_err(projector_error)? {
+        ReadEvent::Payload(payload) => *payload,
+        ReadEvent::Unreadable(row) => return Ok(Some(row)),
+    };
     let event_origin = event_origin(event)?;
     let origin_properties = origin_properties(event, event_origin);
 
@@ -427,7 +448,7 @@ pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
         }
     }
 
-    Ok(())
+    Ok(None)
 }
 
 pub fn project_from_ledger(
@@ -435,7 +456,7 @@ pub fn project_from_ledger(
     graph: &impl GraphView,
     offset: EventId,
 ) -> Result<()> {
-    ledger.replay_from(offset, &mut |event| project_event(graph, event))
+    project_replay(graph, |callback| ledger.replay_from(offset, callback)).map(drop)
 }
 
 pub fn project_from_ledger_for_tenant(
@@ -444,7 +465,43 @@ pub fn project_from_ledger_for_tenant(
     graph: &impl GraphView,
     offset: EventId,
 ) -> Result<()> {
-    ledger.replay_from_for_tenant(tenant_id, offset, &mut |event| project_event(graph, event))
+    project_from_ledger_for_tenant_reporting(ledger, tenant_id, graph, offset).map(drop)
+}
+
+/// [`project_from_ledger_for_tenant`], returning what the replay skipped so a caller that keeps
+/// the graph (the HTTP graph cache) can keep the notice with it.
+pub fn project_from_ledger_for_tenant_reporting(
+    ledger: &impl EventLedger,
+    tenant_id: &TenantId,
+    graph: &impl GraphView,
+    offset: EventId,
+) -> Result<ProjectionReport> {
+    project_replay(graph, |callback| {
+        ledger.replay_from_for_tenant(tenant_id, offset, callback)
+    })
+}
+
+/// Project every event a replay yields, skipping unreadable annotation rows and logging them
+/// once (not once per row) so a log reader sees the count and the offsets.
+fn project_replay(
+    graph: &impl GraphView,
+    replay: impl FnOnce(&mut dyn FnMut(&Event) -> Result<()>) -> Result<()>,
+) -> Result<ProjectionReport> {
+    let mut report = ProjectionReport::default();
+    replay(&mut |event| {
+        report
+            .unreadable_annotations
+            .extend(project_event_reporting(graph, event)?);
+        Ok(())
+    })?;
+    if !report.unreadable_annotations.is_empty() {
+        tracing::warn!(
+            target: "hivemind::projector",
+            "{}",
+            crate::read_notice::unreadable_annotations_notice(&report.unreadable_annotations)
+        );
+    }
+    Ok(report)
 }
 
 pub fn rebuild_graph(ledger: &impl EventLedger, graph: &impl GraphView) -> Result<()> {

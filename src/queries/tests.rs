@@ -1314,6 +1314,47 @@ fn literal_search_still_requires_every_term_and_never_reports_missing_terms() ->
 }
 
 #[test]
+fn both_searches_answer_with_a_malformed_assessment_row_in_the_ledger() -> Result<()> {
+    let clean = sign_in_and_pricing()?;
+    let dirty = sign_in_and_pricing()?;
+    dirty.assessment(
+        "d:both",
+        "model-x",
+        "prompt-x",
+        json!("not an answer"),
+        "2026-01-01T00:00:00Z",
+    )?;
+
+    for scenario in [&clean, &dirty] {
+        let graph = scenario.graph()?;
+        let literal = search_decisions_with_ledger(
+            &QueryContext::local(),
+            scenario.ledger(),
+            &graph,
+            &SearchDecisionRequest {
+                query: Some("sign-in pricing".to_owned()),
+                ..SearchDecisionRequest::default()
+            },
+        )?;
+        let ids: Vec<&str> = literal
+            .data
+            .items
+            .iter()
+            .map(|item| item.decision.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["d:both"]);
+    }
+    assert_eq!(
+        fluent_answer(&dirty, "sign-in pricing", 10)?.0,
+        fluent_answer(&clean, "sign-in pricing", 10)?.0
+    );
+    // The bad row is not a model assessment of the decision: the record says none was made.
+    let facts = get_record_facts(&dirty.graph()?, "d:both")?.expect("the decision is recorded");
+    assert!(facts.model_assessment.is_none());
+    Ok(())
+}
+
+#[test]
 fn fluent_search_needs_at_least_half_the_terms() -> Result<()> {
     let scenario = titled_decisions(&[
         (

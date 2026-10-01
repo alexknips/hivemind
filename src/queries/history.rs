@@ -1280,7 +1280,12 @@ pub(super) fn read_all_events(ledger: &impl EventLedger) -> Result<Vec<Event>> {
         };
         offset = event_id(last)?;
         let page_len = page.len();
-        events.extend(page);
+        // An annotation row nobody can parse is skipped, not a reason to refuse every history
+        // read; the caller that wants to tell the reader scans for it (`read_notice`).
+        events.extend(
+            page.into_iter()
+                .filter(|event| !events::is_unreadable_annotation(event)),
+        );
         if page_len < LEDGER_READ_PAGE_SIZE {
             break;
         }

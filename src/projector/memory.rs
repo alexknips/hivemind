@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, MutexGuard};
 
 use crate::error::ProjectorError;
+use crate::events::UnreadableAnnotation;
 use crate::Result;
 
 use super::{
@@ -19,6 +20,9 @@ type NodesAndEdges = (
 pub struct MemoryGraph {
     nodes: Mutex<BTreeMap<(NodeKind, String), GraphProperties>>,
     edges: Mutex<BTreeSet<MemoryEdge>>,
+    /// Annotation rows the replays that built this graph skipped because they could not be
+    /// read. Not graph data: it travels with a cached graph so a reader of the cache can say so.
+    unreadable_annotations: Mutex<Vec<UnreadableAnnotation>>,
 }
 
 impl Clone for MemoryGraph {
@@ -26,7 +30,28 @@ impl Clone for MemoryGraph {
         MemoryGraph {
             nodes: Mutex::new(self.nodes_snapshot().unwrap_or_default()),
             edges: Mutex::new(self.edges_snapshot().unwrap_or_default()),
+            unreadable_annotations: Mutex::new(self.unreadable_annotations()),
         }
+    }
+}
+
+impl MemoryGraph {
+    /// Remember annotation rows a replay skipped (see [`UnreadableAnnotation`]).
+    pub fn note_unreadable_annotations(&self, rows: Vec<UnreadableAnnotation>) {
+        if rows.is_empty() {
+            return;
+        }
+        if let Ok(mut noted) = self.unreadable_annotations.lock() {
+            noted.extend(rows);
+        }
+    }
+
+    /// The annotation rows the replays that built this graph skipped, in ledger order.
+    pub fn unreadable_annotations(&self) -> Vec<UnreadableAnnotation> {
+        self.unreadable_annotations
+            .lock()
+            .map(|noted| noted.clone())
+            .unwrap_or_default()
     }
 }
 

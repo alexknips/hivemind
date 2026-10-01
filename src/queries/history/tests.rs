@@ -302,6 +302,98 @@ fn export_summary_includes_query_params_ledger_range_and_citations() -> Result<(
     Ok(())
 }
 
+/// A malformed assessment row (`decision.scored`, schema version 2) that a buggy or old producer,
+/// a partial import or a hand edit left in the ledger. `validate` refuses it; every ledger read
+/// has to answer anyway.
+fn malformed_assessment_event(sequence: u64) -> Event {
+    event(
+        sequence,
+        EventType::DecisionScored,
+        "agent:hivemind:scorer",
+        json!({
+            "schema_version": 2,
+            "decision_id": "decision-a",
+            "model": "model-x",
+            "prompt_version": "prompt-x",
+            "dimensions": {"framing": "not an answer"}
+        }),
+    )
+}
+
+#[test]
+fn every_history_read_answers_the_same_with_a_malformed_assessment_row_in_the_ledger() -> Result<()>
+{
+    // What a read says about decisions, not the ledger range it reports: the range counts every
+    // event in the ledger, the row that is skipped included.
+    fn without_ledger_range(mut answer: Value) -> Value {
+        if let Some(object) = answer.as_object_mut() {
+            object.remove("ledger_range");
+            object.remove("resolved_until");
+        }
+        answer
+    }
+
+    fn answers(ledger: &InMemoryEventLedger) -> Result<Vec<Value>> {
+        let graph = crate::projector::memory::MemoryGraph::default();
+        crate::projector::rebuild_graph(ledger, &graph)?;
+        Ok(vec![
+            without_ledger_range(
+                serde_json::to_value(
+                    get_recent_activity(ledger, &RecentActivityRequest::default())?.data,
+                )
+                .expect("serializes"),
+            ),
+            without_ledger_range(
+                serde_json::to_value(
+                    get_decisions_changed_since(ledger, &ChangedSinceRequest::default())?.data,
+                )
+                .expect("serializes"),
+            ),
+            without_ledger_range(
+                serde_json::to_value(
+                    get_recent_decisions(
+                        ledger,
+                        &RecentDecisionsRequest {
+                            since_timestamp: Utc.with_ymd_and_hms(2026, 5, 19, 0, 0, 0).unwrap(),
+                            until_timestamp: None,
+                            filters: RecentDecisionFilterRequest::default(),
+                            limit: 25,
+                            cursor: None,
+                        },
+                    )?
+                    .data,
+                )
+                .expect("serializes"),
+            ),
+            without_ledger_range(
+                serde_json::to_value(
+                    crate::queries::get_decision_timeline(&graph, ledger, "decision-a")?.data,
+                )
+                .expect("serializes"),
+            ),
+            without_ledger_range(
+                serde_json::to_value(
+                    crate::queries::get_changed_decisions(
+                        &graph,
+                        ledger,
+                        &crate::queries::ChangedDecisionsRequest::default(),
+                    )?
+                    .data,
+                )
+                .expect("serializes"),
+            ),
+        ])
+    }
+
+    let ledger = fixture_ledger()?;
+    let clean = answers(&ledger)?;
+
+    // Appended after everything else, so no other event moves; nothing may be added or dropped.
+    ledger.append(malformed_assessment_event(900))?;
+    assert_eq!(answers(&ledger)?, clean);
+    Ok(())
+}
+
 fn fixture_ledger() -> Result<InMemoryEventLedger> {
     let ledger = InMemoryEventLedger::new();
     for (index, event) in [
