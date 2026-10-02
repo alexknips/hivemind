@@ -241,23 +241,23 @@ struct QuestionTokens {
 }
 
 fn question_tokens(description: &str) -> QuestionTokens {
-    let tokens = description_tokens(description);
     let mut split = QuestionTokens {
         content: Vec::new(),
         framing: Vec::new(),
         negated: false,
     };
-    for (at, token) in tokens.iter().enumerate() {
-        let negation = is_negation(token);
+    let mut tokens = description_tokens(description).into_iter().peekable();
+    while let Some(token) = tokens.next() {
+        let negation = is_negation(&token);
         split.negated |= negation;
-        let framing = negation || is_question_word(token, tokens.get(at + 1).map(String::as_str));
+        let framing = negation || is_question_word(&token, tokens.peek().map(String::as_str));
         let bucket = if framing {
             &mut split.framing
         } else {
             &mut split.content
         };
-        if !bucket.contains(token) {
-            bucket.push(token.clone());
+        if !bucket.contains(&token) {
+            bucket.push(token);
         }
     }
     split
