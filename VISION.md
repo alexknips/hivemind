@@ -45,14 +45,16 @@ of the record, never inside it.
 
 ## Who it's for
 
-HiveMind is for an engineer and the agents associated with that engineer, and
-the decisions they make together — who actually decided, reviewed vs
-rubber-stamped, where they disagreed, whether it held up.
+HiveMind is for one person and the agents they work with, and the decisions
+they make together — who actually decided, reviewed vs rubber-stamped, where
+they disagreed, whether it held up. The focus limits the unit, one person and
+their agents, not the field: engineering is where it runs today, on a
+developer's setup, and not the edge of what it is for.
 
 **Later:** Wider audiences are a real aspiration — small teams, large
-organizations, technical leaders, compliance teams, beyond engineering — but
-they are not the current target. VISION and STRATEGY are the filters beads are
-judged against; the wide list invites scope creep.
+organizations, technical leaders, compliance teams — but they are not the
+current target. VISION and STRATEGY are the filters beads are judged against;
+the wide list invites scope creep.
 
 ## What changes when HiveMind exists
 
