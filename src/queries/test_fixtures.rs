@@ -415,6 +415,62 @@ impl Scenario {
         .map(|_| ())
     }
 
+    /// `suggestion.surfaced`: `finding_id` (about `decision_id`) shown to `recipient`. Returns the
+    /// notification id (the event's uuid) an acknowledgement names.
+    pub(crate) fn surfaced(
+        &self,
+        finding_id: &str,
+        decision_id: &str,
+        recipient: &str,
+        timestamp: &str,
+    ) -> Result<String> {
+        let notification_id = Uuid::from_u128(self.sequence.get() + 1).to_string();
+        self.push_with_source_ref(
+            recipient,
+            EventType::SuggestionSurfaced,
+            json!({
+                "finding_id": finding_id,
+                "decision_id": decision_id,
+                "recipient_actor_id": recipient,
+                "channel": "test",
+                "sent_at": timestamp,
+            }),
+            None,
+            timestamp,
+            Some("test:scenario"),
+        )?;
+        Ok(notification_id)
+    }
+
+    /// `notification.acknowledged` of `notification_id`, with the `action` and `snooze_until` a
+    /// test names (none for neither).
+    pub(crate) fn acknowledged(
+        &self,
+        notification_id: &str,
+        actor_id: &str,
+        action: Option<&str>,
+        snooze_until: Option<&str>,
+        timestamp: &str,
+    ) -> Result<()> {
+        let mut payload = json!({
+            "notification_id": notification_id,
+            "ack_at": timestamp,
+            "snooze_until": snooze_until,
+        });
+        if let Some(action) = action {
+            payload["action"] = json!(action);
+        }
+        self.push_with_source_ref(
+            actor_id,
+            EventType::NotificationAcknowledged,
+            payload,
+            None,
+            timestamp,
+            Some("test:scenario"),
+        )
+        .map(|_| ())
+    }
+
     pub(crate) fn reject(&self, decision_id: &str, actor_id: &str, timestamp: &str) -> Result<()> {
         self.push(
             actor_id,

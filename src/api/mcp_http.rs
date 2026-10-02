@@ -21,8 +21,8 @@ use crate::mcp::args::{
     require_string_array as mcp_req_str_array,
 };
 use crate::mcp::core::{
-    AnalyzeFailureModesArgs, CaptureDecisionArgs, CompactViewArgs, CoreError,
-    DecisionContextCandidatesArgs, DecisionQualityCandidatesArgs, DisagreeArgs,
+    AcknowledgeSuggestionArgs, AnalyzeFailureModesArgs, CaptureDecisionArgs, CompactViewArgs,
+    CoreError, DecisionContextCandidatesArgs, DecisionQualityCandidatesArgs, DisagreeArgs,
     GetChangedDecisionsArgs, GetContestedDecisionsArgs, GetDecisionContextArgs,
     GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs, GetSituationalDecisionsArgs,
     GetSuggestionsArgs, GetSupersessionChainArgs, GetWaitingRequestsArgs, GroundDecisionArgs,
@@ -192,6 +192,7 @@ fn mcp_tools_call_blocking(
         "supersede_decision" => mcp_supersede(backend, ctx, &actor_id, args),
         "move_decision" => mcp_move(backend, ctx, &actor_id, args),
         "retitle_decision" => mcp_retitle(backend, ctx, &actor_id, args),
+        "acknowledge_suggestion" => mcp_acknowledge_suggestion(backend, ctx, &actor_id, args),
         "ground_decision" => mcp_ground(backend, ctx, &actor_id, args),
         "request_decision" => mcp_request_decision(backend, ctx, &actor_id, args),
         "get_waiting_requests" => mcp_get_waiting_requests(backend, ctx, args, cache),
@@ -458,6 +459,21 @@ fn mcp_retitle(
         tenant_id: &ctx.tenant_id,
     };
     let output = crate::mcp::core::retitle_decision(&provider, core_args)?;
+    Ok(output.into_value())
+}
+
+fn mcp_acknowledge_suggestion(
+    backend: &ApiBackend,
+    ctx: &ApiRequestCtx,
+    actor_id: &str,
+    args: serde_json::Map<String, serde_json::Value>,
+) -> McpToolResult {
+    let core_args = AcknowledgeSuggestionArgs::from_json(&args, actor_id.to_owned())?;
+    let provider = HttpLedgerProvider {
+        backend,
+        tenant_id: &ctx.tenant_id,
+    };
+    let output = crate::mcp::core::acknowledge_suggestion(&provider, core_args)?;
     Ok(output.into_value())
 }
 

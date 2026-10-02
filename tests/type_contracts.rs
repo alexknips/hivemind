@@ -15,7 +15,7 @@ use hivemind::events::{
     ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload, ProjectRegisteredPayload,
     ProjectTopicDeclaredPayload, QualityDim, QualityDims, QualityLevel, QuestionAskedPayload,
     QuestionRecordedPayload, RelationAddedPayload, RelationKind as EventRelationKind,
-    RelationRemovedPayload, DECISION_ASSESSED_SCHEMA_VERSION,
+    RelationRemovedPayload, SuggestionSurfacedPayload, DECISION_ASSESSED_SCHEMA_VERSION,
 };
 use hivemind::projector::{NodeKind, RelationKind as ProjectorRelationKind};
 use hivemind::queries::{DecisionStatus, HypothesisStatus, QueryResponse};
@@ -23,7 +23,7 @@ use hivemind::{CliError, CommandError, HivemindError, LedgerError, ProjectorErro
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-const EVENT_TYPES: [EventType; 27] = [
+const EVENT_TYPES: [EventType; 28] = [
     EventType::DecisionProposed,
     EventType::DecisionRequested,
     EventType::DecisionAccepted,
@@ -39,6 +39,7 @@ const EVENT_TYPES: [EventType; 27] = [
     EventType::BlockerResolved,
     EventType::NotificationSent,
     EventType::NotificationAcknowledged,
+    EventType::SuggestionSurfaced,
     EventType::IngestBatchReceived,
     EventType::IngestBatchClassified,
     EventType::DecisionScored,
@@ -455,6 +456,7 @@ fn event_type_name(event_type: EventType) -> &'static str {
         EventType::BlockerResolved => "blocker.resolved",
         EventType::NotificationSent => "notification.sent",
         EventType::NotificationAcknowledged => "notification.acknowledged",
+        EventType::SuggestionSurfaced => "suggestion.surfaced",
         EventType::IngestBatchReceived => "ingest.batch_received",
         EventType::IngestBatchClassified => "ingest.batch_classified",
         EventType::DecisionScored => "decision.scored",
@@ -487,6 +489,7 @@ fn payload_variant_type(payload: &EventPayload) -> EventType {
         EventPayload::BlockerResolved(_) => EventType::BlockerResolved,
         EventPayload::NotificationSent(_) => EventType::NotificationSent,
         EventPayload::NotificationAcknowledged(_) => EventType::NotificationAcknowledged,
+        EventPayload::SuggestionSurfaced(_) => EventType::SuggestionSurfaced,
         EventPayload::IngestBatchReceived(_) => EventType::IngestBatchReceived,
         EventPayload::IngestBatchClassified(_) => EventType::IngestBatchClassified,
         EventPayload::DecisionScored(_) | EventPayload::DecisionAssessed(_) => {
@@ -549,6 +552,9 @@ fn typed_payload_from_value(
         }
         EventType::NotificationAcknowledged => {
             EventPayload::NotificationAcknowledged(serde_json::from_value(payload)?)
+        }
+        EventType::SuggestionSurfaced => {
+            EventPayload::SuggestionSurfaced(serde_json::from_value(payload)?)
         }
         EventType::IngestBatchReceived => {
             EventPayload::IngestBatchReceived(serde_json::from_value(payload)?)
@@ -736,6 +742,19 @@ fn typed_payload_cases() -> Vec<(EventType, EventPayload)> {
                     .unwrap()
                     .with_timezone(&chrono::Utc),
                 snooze_until: None,
+                action: None,
+            }),
+        ),
+        (
+            EventType::SuggestionSurfaced,
+            EventPayload::SuggestionSurfaced(SuggestionSurfacedPayload {
+                finding_id: "finding-minimal".to_owned(),
+                decision_id: "decision:minimal".to_owned(),
+                recipient_actor_id: "human:owner".to_owned(),
+                channel: "mcp".to_owned(),
+                sent_at: chrono::DateTime::parse_from_rfc3339("2026-05-19T11:30:00Z")
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
             }),
         ),
         (
@@ -934,6 +953,7 @@ fn payload_json(payload: &EventPayload) -> Value {
         EventPayload::BlockerResolved(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::NotificationSent(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::NotificationAcknowledged(payload) => serde_json::to_value(payload).unwrap(),
+        EventPayload::SuggestionSurfaced(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::IngestBatchReceived(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::IngestBatchClassified(payload) => serde_json::to_value(payload).unwrap(),
         EventPayload::DecisionScored(payload) => serde_json::to_value(payload).unwrap(),

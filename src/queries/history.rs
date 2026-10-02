@@ -1526,6 +1526,7 @@ impl DecisionIndex {
                 | EventPayload::BlockerResolved(_)
                 | EventPayload::NotificationSent(_)
                 | EventPayload::NotificationAcknowledged(_)
+                | EventPayload::SuggestionSurfaced(_)
                 | EventPayload::IngestBatchReceived(_)
                 | EventPayload::IngestBatchClassified(_)
                 | EventPayload::DecisionScored(_)
@@ -1772,6 +1773,7 @@ fn change_kind_for_payload(payload: &EventPayload) -> HistoryChangeKind {
         | EventPayload::BlockerResolved(_)
         | EventPayload::NotificationSent(_)
         | EventPayload::NotificationAcknowledged(_)
+        | EventPayload::SuggestionSurfaced(_)
         | EventPayload::IngestBatchReceived(_)
         | EventPayload::IngestBatchClassified(_)
         | EventPayload::DecisionScored(_)
@@ -1853,6 +1855,7 @@ fn decision_ids_for_payload(payload: &EventPayload, index: &DecisionIndex) -> Ve
         | EventPayload::BlockerResolved(_)
         | EventPayload::NotificationSent(_)
         | EventPayload::NotificationAcknowledged(_)
+        | EventPayload::SuggestionSurfaced(_)
         | EventPayload::IngestBatchReceived(_)
         | EventPayload::IngestBatchClassified(_)
         | EventPayload::DecisionScored(_)
@@ -1994,6 +1997,13 @@ fn affected_nodes_for_event(event: &Event, payload: &EventPayload) -> Vec<Affect
                 &payload.notification_id,
                 NodeKind::Notification,
             ));
+        }
+        EventPayload::SuggestionSurfaced(payload) => {
+            nodes.insert(affected_node(
+                &event.event_uuid.to_string(),
+                NodeKind::Notification,
+            ));
+            nodes.insert(affected_node(&payload.recipient_actor_id, NodeKind::Actor));
         }
         EventPayload::IngestBatchReceived(_)
         | EventPayload::IngestBatchClassified(_)

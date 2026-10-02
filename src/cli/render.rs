@@ -1551,6 +1551,7 @@ fn event_type_label(event_type: EventType) -> &'static str {
         EventType::BlockerResolved => "blocker.resolved",
         EventType::NotificationSent => "notification.sent",
         EventType::NotificationAcknowledged => "notification.acknowledged",
+        EventType::SuggestionSurfaced => "suggestion.surfaced",
         EventType::IngestBatchReceived => "ingest.batch_received",
         EventType::IngestBatchClassified => "ingest.batch_classified",
         EventType::DecisionScored => "decision.scored",

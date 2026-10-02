@@ -51,7 +51,7 @@ const NODE_DDL: &[(NodeKind, &str)] = &[
     ),
     (
         NodeKind::Notification,
-        "CREATE NODE TABLE IF NOT EXISTS `Notification` (id STRING, blocker_id STRING, recipient_actor_id STRING, channel STRING, threshold_rule STRING, source_event_ids STRING[], dedupe_key STRING, sent_at STRING, ack_at STRING, snooze_until STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
+        "CREATE NODE TABLE IF NOT EXISTS `Notification` (id STRING, blocker_id STRING, finding_id STRING, decision_id STRING, recipient_actor_id STRING, channel STRING, threshold_rule STRING, source_event_ids STRING[], dedupe_key STRING, sent_at STRING, ack_at STRING, snooze_until STRING, action STRING, tenant_id STRING, event_origin INT64, source STRING, source_ref STRING, PRIMARY KEY(id));",
     ),
     (
         NodeKind::Project,

@@ -4373,6 +4373,18 @@ pub(super) fn every_event_scenario() -> Result<InMemoryEventLedger> {
         }
         capture
     };
+    let surfaced = event(
+        EventType::SuggestionSurfaced,
+        "agent:claude:builder",
+        json!({
+            "finding_id": "finding-0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+            "decision_id": "decision:1",
+            "recipient_actor_id": "agent:claude:builder",
+            "channel": "mcp",
+            "sent_at": "2026-05-19T11:30:00Z"
+        }),
+    );
+    let surfaced_id = surfaced.event_uuid.to_string();
     for event in [
         event(
             EventType::DecisionAccepted,
@@ -4427,6 +4439,17 @@ pub(super) fn every_event_scenario() -> Result<InMemoryEventLedger> {
                 "notification_id": notification_id,
                 "ack_at": "2026-05-19T11:00:00Z",
                 "snooze_until": "2026-05-19T12:00:00Z"
+            }),
+        ),
+        surfaced,
+        event(
+            EventType::NotificationAcknowledged,
+            "agent:claude:builder",
+            json!({
+                "notification_id": surfaced_id,
+                "ack_at": "2026-05-19T11:31:00Z",
+                "snooze_until": null,
+                "action": "dismissed"
             }),
         ),
         event(
@@ -4609,6 +4632,135 @@ fn arrow_table_in_the_graph_contract_doc_matches_the_code() {
             "docs/GRAPH_CONTRACT.md must have the row: {expected}"
         );
     }
+}
+
+/// `suggestion.surfaced` is the suggestion-side twin of `notification.sent`: a `Notification` node
+/// that says which finding was shown to whom, and no blocker (hivemind-m306.4.2). The
+/// acknowledgement annotates that node (`ack_at`, `action`) without moving where it was recorded.
+#[test]
+fn a_surfaced_suggestion_is_a_notification_with_no_blocker_and_its_acknowledgement_marks_it(
+) -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    let surfaced = event(
+        EventType::SuggestionSurfaced,
+        "agent:claude:builder",
+        json!({
+            "finding_id": "finding-0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+            "decision_id": "decision:1",
+            "recipient_actor_id": "human:alex",
+            "channel": "slack",
+            "sent_at": "2026-05-19T11:30:00Z"
+        }),
+    );
+    let notification_id = surfaced.event_uuid.to_string();
+    let surfaced_origin = ledger.append(surfaced)?;
+    // An acknowledgement of a blocker notification (no action) written the old way.
+    ledger.append(event(
+        EventType::NotificationAcknowledged,
+        "human:alex",
+        json!({"notification_id": "notification:old-style", "ack_at": "2026-05-19T11:00:00Z", "snooze_until": null}),
+    ))?;
+
+    let unacknowledged = RecordingGraph::default();
+    project_from_ledger(&ledger, &unacknowledged, 0)?;
+    let nodes = unacknowledged.nodes();
+    let node = nodes
+        .get(&(NodeKind::Notification, notification_id.clone()))
+        .expect("the surfaced suggestion is a Notification node");
+    let string = |value: &str| Some(GraphValue::String(value.to_owned()));
+    assert_eq!(
+        node.get("finding_id").cloned(),
+        string("finding-0f1e2d3c4b5a69788796a5b4c3d2e1f0")
+    );
+    assert_eq!(node.get("decision_id").cloned(), string("decision:1"));
+    assert_eq!(
+        node.get("recipient_actor_id").cloned(),
+        string("human:alex")
+    );
+    assert_eq!(node.get("channel").cloned(), string("slack"));
+    assert_eq!(
+        node.get("sent_at").cloned(),
+        string("2026-05-19T11:30:00+00:00")
+    );
+    assert_eq!(
+        node.get("event_origin"),
+        Some(&GraphValue::Int(
+            i64::try_from(surfaced_origin).expect("fits")
+        ))
+    );
+    // Not acknowledged yet, and not a notification about a blocker.
+    assert_eq!(node.get("ack_at"), None);
+    assert_eq!(node.get("blocker_id"), None);
+    assert!(nodes.keys().all(|(kind, _)| *kind != NodeKind::Blocker));
+    // Naming a notification no event created leaves a bare node with no finding.
+    assert_eq!(
+        nodes
+            .get(&(NodeKind::Notification, "notification:old-style".to_owned()))
+            .and_then(|properties| properties.get("finding_id")),
+        None
+    );
+    drop(nodes);
+    let edges = unacknowledged.edges();
+    assert!(edges.contains_key(&(
+        RelationKind::NotificationRecipient,
+        notification_id.clone(),
+        "human:alex".to_owned()
+    )));
+    assert!(
+        edges
+            .keys()
+            .all(|(kind, _, _)| *kind != RelationKind::NotificationForBlocker),
+        "a finding is not a blocker: no notification-for-blocker fact"
+    );
+    drop(edges);
+
+    // Acknowledged: the node gains `ack_at` and `action`, and keeps where it was recorded.
+    ledger.append(event(
+        EventType::NotificationAcknowledged,
+        "human:alex",
+        json!({
+            "notification_id": notification_id,
+            "ack_at": "2026-05-19T11:45:00Z",
+            "snooze_until": "2026-05-20T00:00:00Z",
+            "action": "acted"
+        }),
+    ))?;
+    // `MemoryGraph` merges what an annotation writes into the node, as every real backend does.
+    let graph = project_ledger(&ledger)?;
+    let row = |id: &str| -> Result<GraphRow> {
+        let rows = graph.query(
+            "MATCH (node:`Notification` {id: $id}) RETURN node.id AS id ORDER BY node.id;",
+            &GraphParams::from([("id".to_owned(), GraphValue::String(id.to_owned()))]),
+        )?;
+        assert_eq!(rows.len(), 1, "{id} projected exactly once");
+        Ok(rows.into_iter().next().expect("one row"))
+    };
+    let node = row(&notification_id)?;
+    assert_eq!(
+        node.get("ack_at").cloned(),
+        string("2026-05-19T11:45:00+00:00")
+    );
+    assert_eq!(
+        node.get("snooze_until").cloned(),
+        string("2026-05-20T00:00:00+00:00")
+    );
+    assert_eq!(node.get("action").cloned(), string("acted"));
+    assert_eq!(
+        node.get("finding_id").cloned(),
+        string("finding-0f1e2d3c4b5a69788796a5b4c3d2e1f0")
+    );
+    assert_eq!(
+        node.get("event_origin"),
+        Some(&GraphValue::Int(
+            i64::try_from(surfaced_origin).expect("fits")
+        ))
+    );
+    // The old-style acknowledgement carries no action.
+    assert_eq!(
+        row("notification:old-style")?.get("action"),
+        Some(&GraphValue::Null)
+    );
+    Ok(())
 }
 
 /// Every non-actor node's `event_origin`, read back from the projected graph.

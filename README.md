@@ -95,7 +95,8 @@ required; works self-hosted.
 look now: a bet past its check date, a decision whose premise was superseded, rejected or
 refuted, evidence nobody has re-checked. Each finding carries a stable id, the reason in
 words and the dimensions it bears on. `get_suggestions` returns the same page without the
-findings someone has acknowledged (`exclude_acknowledged`, true by default). What happened to
+findings someone has acknowledged (`exclude_acknowledged`, true by default);
+`acknowledge_suggestion` records that a finding was looked at, as an attributed event. What happened to
 a decision afterwards (superseded, contested, refuted premise) is shown as outcome, status or
 staleness, not folded into a quality grade. See
 [`docs/DECISION_SCORING.md`](docs/DECISION_SCORING.md).
@@ -389,6 +390,7 @@ Cursor uses the same shape under `mcp.servers`. The server exposes these tools:
 | `move_decision` | write | `move` |
 | `retitle_decision` | write | `retitle` |
 | `ground_decision` | write | `ground` |
+| `acknowledge_suggestion` | write | (MCP only) |
 | `get_decision` | read | `query get_decision` |
 | `get_relevant_decisions` | read | `query get_relevant_decisions` |
 | `get_supersession_chain` | read | `query get_supersession_chain` |

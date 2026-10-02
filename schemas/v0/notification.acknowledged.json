@@ -25,6 +25,10 @@
         "snooze_until": {
           "type": ["string", "null"],
           "format": "date-time"
+        },
+        "action": {
+          "enum": ["seen", "acted", "dismissed"],
+          "description": "What was done with the notification or suggestion. Optional: absent on every acknowledgement written before hivemind-m306.4.2, which stay valid and replay unchanged."
         }
       }
     }

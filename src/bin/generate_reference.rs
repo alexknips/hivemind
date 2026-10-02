@@ -28,6 +28,7 @@ const WRITE_TOOLS: &[&str] = &[
     "supersede_decision",
     "move_decision",
     "ground_decision",
+    "acknowledge_suggestion",
 ];
 
 const MCP_SETUP_PATH: &str = "website/src/content/docs/guides/mcp-setup.md";

@@ -14,7 +14,8 @@ use crate::events::{
     HypothesisRecordedPayload, IngestBatchClassifiedPayload, NotificationAcknowledgedPayload,
     NotificationSentPayload, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind,
     ProjectRegisteredPayload, ProjectSource, QuestionAskedPayload, QuestionRecordedPayload,
-    ReadEvent, RelationKind as EventRelationKind, TenantId, UnreadableAnnotation,
+    ReadEvent, RelationKind as EventRelationKind, SuggestionSurfacedPayload, TenantId,
+    UnreadableAnnotation,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -397,6 +398,9 @@ pub fn project_event_reporting(
         }
         EventPayload::NotificationAcknowledged(payload) => {
             project_notification_acknowledged(graph, &payload, &origin_properties)?
+        }
+        EventPayload::SuggestionSurfaced(payload) => {
+            project_suggestion_surfaced(graph, event, &payload, &origin_properties)?
         }
         EventPayload::IngestBatchReceived(_) => {
             // Raw transcript batches are ledger-only; they do not project to the graph.
@@ -1750,6 +1754,50 @@ fn project_notification_sent(
     Ok(())
 }
 
+/// `suggestion.surfaced` makes a `Notification` node (id = the event's uuid, the id a later
+/// acknowledgement names) that says which finding was shown to whom, over what channel and when.
+/// It deliberately draws no `NotificationForBlocker` edge and carries no `blocker_id`: a finding
+/// is not a blocker, and a blocker edge would be a false fact. Everything that reads blocker
+/// notifications matches on `blocker_id`, so this node is invisible to them (hivemind-m306.4.2).
+fn project_suggestion_surfaced(
+    graph: &impl GraphView,
+    event: &Event,
+    payload: &SuggestionSurfacedPayload,
+    origin_properties: &GraphProperties,
+) -> Result<()> {
+    let notification_id = event.event_uuid.to_string();
+    let mut properties = origin_properties.clone();
+    properties.insert(
+        "finding_id".to_owned(),
+        GraphValue::String(payload.finding_id.clone()),
+    );
+    properties.insert(
+        "decision_id".to_owned(),
+        GraphValue::String(payload.decision_id.clone()),
+    );
+    properties.insert(
+        "recipient_actor_id".to_owned(),
+        GraphValue::String(payload.recipient_actor_id.clone()),
+    );
+    properties.insert(
+        "channel".to_owned(),
+        GraphValue::String(payload.channel.clone()),
+    );
+    properties.insert(
+        "sent_at".to_owned(),
+        GraphValue::String(payload.sent_at.to_rfc3339()),
+    );
+    graph.upsert_node(NodeKind::Notification, &notification_id, &properties)?;
+
+    upsert_actor(graph, &payload.recipient_actor_id, origin_properties)?;
+    graph.upsert_edge(
+        RelationKind::NotificationRecipient,
+        &notification_id,
+        &payload.recipient_actor_id,
+        origin_properties,
+    )
+}
+
 fn project_notification_acknowledged(
     graph: &impl GraphView,
     payload: &NotificationAcknowledgedPayload,
@@ -1765,6 +1813,13 @@ fn project_notification_acknowledged(
             payload
                 .snooze_until
                 .map(|value| GraphValue::String(value.to_rfc3339()))
+                .unwrap_or(GraphValue::Null),
+        ),
+        (
+            "action".to_owned(),
+            payload
+                .action
+                .map(|action| GraphValue::String(action.as_str().to_owned()))
                 .unwrap_or(GraphValue::Null),
         ),
     ]);

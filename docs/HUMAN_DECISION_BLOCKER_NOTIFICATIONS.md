@@ -114,7 +114,8 @@ Minimum write events:
 | `blocker.reported` | `blocked_actor_id`, `decision_id` or `topic_keys`, `blocked_ref`, `blocked_ref_type`, `reason`, `priority`, `last_progress_at`, `required_owner_id`, `source_ref`, `correlation_id`. |
 | `blocker.resolved` | `blocker_id`, `actor_id`, `resolution_event_id` or `resolution_reason`, `source_ref`. |
 | `notification.sent` | `blocker_id`, `recipient_actor_id`, `channel`, `threshold_rule`, `source_event_ids`, `dedupe_key`, `sent_at`. |
-| `notification.acknowledged` | `notification_id`, `actor_id`, `ack_at`, optional `snooze_until`. |
+| `notification.acknowledged` | `notification_id`, `actor_id`, `ack_at`, optional `snooze_until`, optional `action` (`seen`, `acted` or `dismissed`; absent on acknowledgements written before it existed). It also acknowledges a surfaced suggestion (below). |
+| `suggestion.surfaced` | `finding_id`, `decision_id`, `recipient_actor_id`, `channel`, `sent_at`. The suggestion-side twin of `notification.sent`: its subject is a quality finding, not a blocker, so it draws no notification-for-blocker fact. Its uuid is the `notification_id` a `notification.acknowledged` names. See [`DECISION_SCORING.md`](DECISION_SCORING.md). |
 | `owner.policy.recorded` | `topic_pattern` or `authority_class`, `owner_actor_id`, backup or escalation actor, and effective interval. |
 
 The first implementation can start with `decision.requested`,

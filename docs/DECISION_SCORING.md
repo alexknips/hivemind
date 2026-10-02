@@ -402,6 +402,7 @@ and `data`.
 | Profile of one decision | `score_decision {decision_id}` | `hivemind query score_decision --id <id>` |
 | A page of findings | `scan_decision_quality {kinds?, evidence_window_days?, limit?, cursor?}` | `hivemind query scan_decision_quality [--kind a,b] [--evidence-window-days N] [--limit N] [--cursor C]` |
 | A page of findings not yet acknowledged | `get_suggestions {kinds?, evidence_window_days?, exclude_acknowledged?, limit?, cursor?}` | `hivemind query get_suggestions [--kind a,b] [--evidence-window-days N] [--exclude-acknowledged BOOL] [--limit N] [--cursor C]` |
+| Acknowledge a finding | `acknowledge_suggestion {finding_id, decision_id, action?, channel?, actor_id?}` | |
 | One Linear ticket per finding | | `hivemind quality-scan [--kind a,b] [--limit N] [--dry-run]` |
 
 ### `score_decision`
@@ -493,7 +494,7 @@ the findings that have been acknowledged. It takes the same arguments (`kinds`,
 `evidence_window_days`, `limit`, `cursor`), reads and refuses them the same way, and adds
 `exclude_acknowledged`: true by default, "what is new since I last looked"; false returns
 every finding, as `scan_decision_quality` always does. On the CLI it is
-`--exclude-acknowledged false`.
+`--exclude-acknowledged false`. `acknowledge_suggestion` is MCP-only.
 
 A finding is acknowledged by its `finding_id`. The id changes when the finding's basis
 does (newer evidence is linked, another decision supersedes the premise, a bet gets
@@ -505,11 +506,40 @@ Acknowledged findings are left out before the page is cut (see
 with a long run of findings still gets a full page, and `truncated` and `data.next_cursor`
 say exactly whether more follow.
 
-**No event records an acknowledgement yet.** Until one does, nothing is acknowledged and
-`get_suggestions` returns what `scan_decision_quality` returns, whichever way
-`exclude_acknowledged` is set. The argument, its default and the way findings are left
-out are in place, so a consumer written against `get_suggestions` today needs no change
-when acknowledgements arrive.
+#### Acknowledging a finding
+
+An acknowledgement is two recorded events, both attributed to an actor and never edited:
+
+1. `suggestion.surfaced`: this `finding_id` (about `decision_id`) was shown to
+   `recipient_actor_id` over `channel` at `sent_at`. `channel` is a label the consumer
+   chooses (`slack`, `linear`, `mcp`); HiveMind attaches no meaning to it. The projection
+   is a `Notification` node keyed by the event's uuid, with the finding on it. It is not a
+   notification about a blocker: it has no `blocker_id` and draws no
+   `NOTIFICATION_FOR_BLOCKER` edge, and the blocker queries do not see it.
+2. `notification.acknowledged`, naming that uuid as `notification_id`, with `ack_at`, an
+   optional `snooze_until` and an optional `action`: `seen` (looked at, nothing more
+   claimed), `acted` (dealt with) or `dismissed` (set aside on purpose). Acknowledgements
+   written before `action` existed carry none and are unchanged.
+
+`acknowledge_suggestion` appends both through the ordinary write path: `finding_id` and
+`decision_id` are read off the finding, `action` defaults to `seen`, `channel` to `mcp`,
+and the recipient is the acting actor. A consumer that surfaces findings itself (a Slack
+bot, a Linear connector) records `suggestion.surfaced` when it posts and
+`notification.acknowledged` when someone responds, and `get_suggestions` reads both the same
+way.
+
+A finding is hidden when a surfaced record of its `finding_id` has been acknowledged. Every
+action hides it; the ledger keeps which. Acknowledgement is by finding, not by actor: once
+anyone has acknowledged a finding, `get_suggestions` leaves it out for everyone, and
+`exclude_acknowledged: false` shows it again. An acknowledgement with a `snooze_until` hides
+the finding only until that moment. The finding is read through the same pure read of the
+graph as everything else (no LLM, nothing derived beyond these events), so it is reversible
+by replay: nothing is deleted, and a finding whose basis changes has a new `finding_id` and
+is shown again.
+
+The write path does not check the finding. Finding findings is the scan's work, and a write
+that ran it would be Layer 3 inside Layer 1: an acknowledgement of an id nothing reports
+acknowledges nothing, and the decision id is recorded as given.
 
 ### `analyze_failure_modes`
 

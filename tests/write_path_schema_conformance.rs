@@ -6,9 +6,9 @@
 //! A payload field a caller starts populating without a matching schema update fails this
 //! test, not just a hand-maintained fixture that nobody remembers to update alongside it.
 //!
-//! Six event types declared in `schemas/v0` (`decision.requested`, `blocker.reported`,
-//! `blocker.resolved`, `notification.sent`, `notification.acknowledged`,
-//! `decision.metadata_derived`) have no production write path anywhere in this codebase
+//! Five event types declared in `schemas/v0` (`decision.requested`, `blocker.reported`,
+//! `blocker.resolved`, `notification.sent`, `decision.metadata_derived`) have no production
+//! write path anywhere in this codebase
 //! today (verified by grepping for their payload struct literals outside `#[cfg(test)]`
 //! code) — their schemas and fixtures exist ahead of the feature that will emit them, so
 //! this test cannot and does not exercise them.
@@ -24,12 +24,13 @@ use std::fs;
 use std::path::PathBuf;
 
 use hivemind::commands::{
-    Commands, DecisionProposalInput, DeterminedProject, GroundInput, Grounding, GroundingPlan,
-    NewBet, NewEvidence, SupersedeInput,
+    CommandContext, Commands, DecisionProposalInput, DeterminedProject, GroundInput, Grounding,
+    GroundingPlan, NewBet, NewEvidence, SupersedeInput,
 };
 use hivemind::connector;
 use hivemind::events::{
-    CaptureItem, EventType, IngestTurn, ProjectAnchorKind, ProjectLinkKind, TenantId,
+    AckAction, CaptureItem, EventProvenance, EventType, IngestTurn, ProjectAnchorKind,
+    ProjectLinkKind, TenantId,
 };
 use hivemind::ledger::{EventLedger, InMemoryEventLedger};
 use serde_json::Value;
@@ -551,6 +552,22 @@ fn every_write_path_event_validates_against_its_schema() {
         .expect("plan ask");
     commands.record_ask(actor, &ask_plan).expect("record ask");
 
+    // -- suggestion.surfaced and notification.acknowledged with an action (hivemind-m306.4.2) --
+    // Both events require a source_ref, which the CLI's default context lacks: an
+    // acknowledgement is recorded under an agent's provenance, as the MCP tool does.
+    Commands::new_with_context(
+        &ledger,
+        CommandContext::local(EventProvenance::agent("agent:contract-test")),
+    )
+    .acknowledge_suggestion(
+        actor,
+        "finding-0123456789abcdef0123456789abcdef",
+        &decision_id,
+        AckAction::Dismissed,
+        "mcp",
+    )
+    .expect("acknowledge suggestion");
+
     // -- validate every emitted event against its schemas/v0 file --
     let events = ledger.read(0, 1000).expect("read events");
     assert!(
@@ -581,6 +598,8 @@ fn every_write_path_event_validates_against_its_schema() {
         EventType::ProjectAnchored,
         EventType::ProjectUnanchored,
         EventType::ProjectTopicDeclared,
+        EventType::SuggestionSurfaced,
+        EventType::NotificationAcknowledged,
     ] {
         assert!(
             seen_types.contains(&expected),
@@ -668,6 +687,7 @@ fn schema_file_stem(event_type: EventType) -> &'static str {
         EventType::BlockerResolved => "blocker.resolved",
         EventType::NotificationSent => "notification.sent",
         EventType::NotificationAcknowledged => "notification.acknowledged",
+        EventType::SuggestionSurfaced => "suggestion.surfaced",
         EventType::IngestBatchReceived => "ingest.batch_received",
         EventType::IngestBatchClassified => "ingest.batch_classified",
         EventType::DecisionScored => "decision.scored",

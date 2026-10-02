@@ -88,6 +88,13 @@ pub enum EventType {
     NotificationSent,
     #[serde(rename = "notification.acknowledged")]
     NotificationAcknowledged,
+    /// A finding (an attention finding from the quality profile) was shown to a recipient over
+    /// a channel. The suggestion-side twin of `notification.sent`: its subject is a finding,
+    /// not a blocker, so it never draws a notification-for-blocker fact. A
+    /// `notification.acknowledged` naming this event's uuid is the acknowledgement
+    /// (hivemind-m306.4.2).
+    #[serde(rename = "suggestion.surfaced")]
+    SuggestionSurfaced,
     #[serde(rename = "ingest.batch_received")]
     IngestBatchReceived,
     #[serde(rename = "ingest.batch_classified")]
@@ -370,12 +377,60 @@ pub struct BlockerResolvedPayload {
     pub resolution_reason: Option<String>,
 }
 
+/// `suggestion.surfaced` (hivemind-m306.4.2). `finding_id` is the stable id a finding carries
+/// (a hash of its kind, node ids and basis time), `decision_id` the decision it is about and
+/// `channel` a label the consumer chose: HiveMind does not know what any channel means. The
+/// event's own uuid is the notification id a later `notification.acknowledged` names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SuggestionSurfacedPayload {
+    pub finding_id: String,
+    pub decision_id: String,
+    pub recipient_actor_id: String,
+    pub channel: String,
+    pub sent_at: DateTime<Utc>,
+}
+
+/// What an acknowledgement says was done with the notification or suggestion it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AckAction {
+    /// Looked at, nothing more claimed.
+    Seen,
+    /// Acted on: the thing it pointed at was dealt with.
+    Acted,
+    /// Looked at and set aside on purpose.
+    Dismissed,
+}
+
+impl AckAction {
+    pub const ALL: [Self; 3] = [Self::Seen, Self::Acted, Self::Dismissed];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Seen => "seen",
+            Self::Acted => "acted",
+            Self::Dismissed => "dismissed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|action| action.as_str() == value)
+    }
+}
+
+/// `notification.acknowledged`. `action` is optional and absent on every acknowledgement written
+/// before it existed, which stay valid and replay unchanged (hivemind-m306.4.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NotificationAcknowledgedPayload {
     pub notification_id: String,
     pub ack_at: DateTime<Utc>,
     pub snooze_until: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<AckAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1274,6 +1329,7 @@ pub enum EventPayload {
     BlockerResolved(BlockerResolvedPayload),
     NotificationSent(NotificationSentPayload),
     NotificationAcknowledged(NotificationAcknowledgedPayload),
+    SuggestionSurfaced(SuggestionSurfacedPayload),
     IngestBatchReceived(IngestBatchReceivedPayload),
     IngestBatchClassified(IngestBatchClassifiedPayload),
     DecisionScored(DecisionScoredPayload),
@@ -1308,6 +1364,7 @@ impl EventPayload {
             Self::BlockerResolved(_) => EventType::BlockerResolved,
             Self::NotificationSent(_) => EventType::NotificationSent,
             Self::NotificationAcknowledged(_) => EventType::NotificationAcknowledged,
+            Self::SuggestionSurfaced(_) => EventType::SuggestionSurfaced,
             Self::IngestBatchReceived(_) => EventType::IngestBatchReceived,
             Self::IngestBatchClassified(_) => EventType::IngestBatchClassified,
             Self::DecisionScored(_) | Self::DecisionAssessed(_) => EventType::DecisionScored,
@@ -1340,6 +1397,7 @@ impl EventPayload {
             Self::BlockerResolved(payload) => serde_json::to_value(payload),
             Self::NotificationSent(payload) => serde_json::to_value(payload),
             Self::NotificationAcknowledged(payload) => serde_json::to_value(payload),
+            Self::SuggestionSurfaced(payload) => serde_json::to_value(payload),
             Self::IngestBatchReceived(payload) => serde_json::to_value(payload),
             Self::IngestBatchClassified(payload) => serde_json::to_value(payload),
             Self::DecisionScored(payload) => serde_json::to_value(payload),
@@ -1765,6 +1823,15 @@ pub fn validate(event: &Event) -> std::result::Result<EventPayload, EventValidat
             let payload: NotificationAcknowledgedPayload = parse_payload(event)?;
             require_non_empty("payload.notification_id", &payload.notification_id)?;
             Ok(EventPayload::NotificationAcknowledged(payload))
+        }
+        EventType::SuggestionSurfaced => {
+            require_event_provenance(event)?;
+            let payload: SuggestionSurfacedPayload = parse_payload(event)?;
+            require_non_empty("payload.finding_id", &payload.finding_id)?;
+            require_non_empty("payload.decision_id", &payload.decision_id)?;
+            require_non_empty("payload.recipient_actor_id", &payload.recipient_actor_id)?;
+            require_non_empty("payload.channel", &payload.channel)?;
+            Ok(EventPayload::SuggestionSurfaced(payload))
         }
         EventType::IngestBatchReceived => {
             let payload: IngestBatchReceivedPayload = parse_payload(event)?;

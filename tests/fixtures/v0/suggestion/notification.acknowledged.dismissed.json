@@ -1,0 +1,17 @@
+{
+  "event_id": 13,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe0d",
+  "correlation_id": "suggestion-ack:018f5d8a-03fb-7df0-8e36-64d7410cfe0c",
+  "causation_event_id": 12,
+  "type": "notification.acknowledged",
+  "actor_id": "agent:claude:crew",
+  "source": "agent",
+  "source_ref": "agent:claude:crew",
+  "payload": {
+    "notification_id": "018f5d8a-03fb-7df0-8e36-64d7410cfe0c",
+    "ack_at": "2026-09-08T09:00:00Z",
+    "snooze_until": null,
+    "action": "dismissed"
+  },
+  "ts": "2026-09-08T09:00:00Z"
+}

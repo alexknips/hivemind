@@ -40,8 +40,8 @@ use crate::queries::{
 use crate::summarize::{summarize_decisions, SummarizeMode, SummarizeRequest};
 use crate::Result;
 use core::{
-    AnalyzeFailureModesArgs, CaptureDecisionArgs, CompactViewArgs, CoreError,
-    DecisionContextCandidatesArgs, DecisionQualityCandidatesArgs, DisagreeArgs,
+    AcknowledgeSuggestionArgs, AnalyzeFailureModesArgs, CaptureDecisionArgs, CompactViewArgs,
+    CoreError, DecisionContextCandidatesArgs, DecisionQualityCandidatesArgs, DisagreeArgs,
     GetChangedDecisionsArgs, GetContestedDecisionsArgs, GetDecisionContextArgs,
     GetDecisionNeighborhoodArgs, GetDecisionOutcomeArgs, GetSituationalDecisionsArgs,
     GetSuggestionsArgs, GetSupersessionChainArgs, GetWaitingRequestsArgs, GroundDecisionArgs,
@@ -345,6 +345,7 @@ fn tools_call(params: Value, config: &McpConfig) -> std::result::Result<Value, R
         "supersede_decision" => tool_supersede_decision(arguments, config),
         "move_decision" => tool_move_decision(arguments, config),
         "retitle_decision" => tool_retitle_decision(arguments, config),
+        "acknowledge_suggestion" => tool_acknowledge_suggestion(arguments, config),
         "ground_decision" => tool_ground_decision(arguments, config),
         "request_decision" => tool_request_decision(arguments, config),
         "get_waiting_requests" => tool_get_waiting_requests(arguments, config),
@@ -616,6 +617,21 @@ pub fn tool_definitions() -> Vec<Value> {
                     "topic": { "type": "string", "description": "Narrows description resolution to decisions carrying this topic key." },
                     "to": { "type": "string", "description": "The new title: a short name, not a paragraph. What it is now is read from the ledger, never passed." },
                     "reason": { "type": "string", "description": "Why the decision was renamed; kept with the retitle and shown in the decision's history." }
+                }
+            }
+        }),
+        json!({
+            "name": "acknowledge_suggestion",
+            "description": "Record that a finding from get_suggestions has been looked at, so get_suggestions stops returning it. Appends two attributed, append-only events: suggestion.surfaced (this finding, shown to `actor_id`, over `channel`) and the notification.acknowledged that names it, carrying `action`. Nothing is deleted or rewritten, and nothing is checked against the scan: the finding is identified by `finding_id` alone, so an id nothing currently reports acknowledges nothing. A finding whose basis later changes gets a new finding_id and is returned again. Acknowledgement is per finding, not per actor: once anyone has acknowledged it, get_suggestions leaves it out for everyone unless exclude_acknowledged is false. Read `finding_id` and `decision_id` off the finding. The reply is `{finding_id, decision_id, action, notification_id, surfaced_event_id, acknowledged_event_id}`. No LLM involved; works self-hosted.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["finding_id", "decision_id"],
+                "properties": {
+                    "actor_id": { "type": "string", "description": "Acknowledging actor, who the finding is recorded as surfaced to. Defaults to `agent:<tool>:<name>` when omitted." },
+                    "finding_id": { "type": "string", "description": "The finding's `finding_id`, exactly as get_suggestions returned it." },
+                    "decision_id": { "type": "string", "description": "The finding's `decision_id`." },
+                    "action": { "type": "string", "enum": ["seen", "acted", "dismissed"], "description": "What was done with it: `seen` (looked at, nothing more claimed; the default), `acted` (dealt with) or `dismissed` (set aside on purpose). Every action hides the finding from get_suggestions; the ledger keeps which." },
+                    "channel": { "type": "string", "description": "A label for where the finding was shown; HiveMind attaches no meaning to it. Defaults to `mcp`." }
                 }
             }
         }),
@@ -971,7 +987,7 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_suggestions",
-            "description": "One page of what needs a look and has not been dealt with: the attention findings of scan_decision_quality (same kinds, same shape: finding_id, kind, decision_id, decision_title, the reason in words, the node ids it rests on, basis_at when the graph records one, and the dimensions it bears on with their levels and reasons), without the findings that have been acknowledged (matched by finding_id) unless exclude_acknowledged is false. A finding's finding_id changes when its basis does, so a finding whose premise moved on after it was acknowledged is shown again. The page is filled from the findings that remain: it holds limit findings whenever that many remain, and when truncated is true, data.next_cursor resumes. Nothing records an acknowledgement yet, so today both settings return the same findings as scan_decision_quality. Findings are ordered by decision id, not by priority; this is not a ranking or a grade. No LLM involved; works self-hosted.",
+            "description": "One page of what needs a look and has not been dealt with: the attention findings of scan_decision_quality (same kinds, same shape: finding_id, kind, decision_id, decision_title, the reason in words, the node ids it rests on, basis_at when the graph records one, and the dimensions it bears on with their levels and reasons), without the findings that have been acknowledged (matched by finding_id) unless exclude_acknowledged is false. A finding's finding_id changes when its basis does, so a finding whose premise moved on after it was acknowledged is shown again. The page is filled from the findings that remain: it holds limit findings whenever that many remain, and when truncated is true, data.next_cursor resumes. A finding is acknowledged with acknowledge_suggestion, or by a consumer that records suggestion.surfaced and notification.acknowledged itself; an acknowledgement with a snooze_until hides the finding only until that moment. Findings are ordered by decision id, not by priority; this is not a ranking or a grade. No LLM involved; works self-hosted.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1260,6 +1276,18 @@ fn tool_retitle_decision(args: Value, config: &McpConfig) -> std::result::Result
     let core_args = RetitleDecisionArgs::from_json(&args, actor_id)?;
     let provider = StdioLedgerProvider { config };
     let output = core::retitle_decision(&provider, core_args)?;
+    Ok(output.into_value())
+}
+
+fn tool_acknowledge_suggestion(
+    args: Value,
+    config: &McpConfig,
+) -> std::result::Result<Value, RpcError> {
+    let args = args.as_object().cloned().unwrap_or_default();
+    let actor_id = mcp_actor_id(&args, config)?;
+    let core_args = AcknowledgeSuggestionArgs::from_json(&args, actor_id)?;
+    let provider = StdioLedgerProvider { config };
+    let output = core::acknowledge_suggestion(&provider, core_args)?;
     Ok(output.into_value())
 }
 

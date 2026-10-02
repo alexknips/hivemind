@@ -51,7 +51,7 @@ fn tools_list_includes_all_eighteen_tools() {
     );
     assert_eq!(responses.len(), 1); // ubs:ignore: test-only; index guaranteed by test setup
     let tools = responses[0]["result"]["tools"].as_array().expect("array"); // ubs:ignore: test-only; panicking is correct in tests
-    assert_eq!(tools.len(), 34, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
+    assert_eq!(tools.len(), 35, "tool count mismatch: {tools:?}"); // ubs:ignore: test-only assertion
     let names: Vec<&str> = tools
         .iter()
         .map(|tool| tool["name"].as_str().expect("string name")) // ubs:ignore: test-only; panicking is correct in tests
@@ -64,6 +64,7 @@ fn tools_list_includes_all_eighteen_tools() {
         "supersede_decision",
         "move_decision",
         "retitle_decision",
+        "acknowledge_suggestion",
         "ground_decision",
         "request_decision",
         "get_waiting_requests",
@@ -1983,9 +1984,200 @@ mod transport_parity {
         }
     }
 
+    /// The `suggestion.surfaced` and `notification.acknowledged` events under `dir`, oldest first.
+    fn suggestion_events(dir: &std::path::Path) -> Vec<crate::events::Event> {
+        let ledger = SqliteEventLedger::open(dir).expect("ledger opens"); // ubs:ignore: test-only; panicking is correct in tests
+        ledger
+            .read(0, 1000)
+            .expect("read ledger") // ubs:ignore: test-only; panicking is correct in tests
+            .into_iter()
+            .filter(|event| {
+                matches!(
+                    event.event_type,
+                    crate::events::EventType::SuggestionSurfaced
+                        | crate::events::EventType::NotificationAcknowledged
+                )
+            })
+            .collect()
+    }
+
+    /// `acknowledge_suggestion` (hivemind-m306.4.2): over either transport it records who saw which
+    /// finding and what they did about it, and `get_suggestions` then leaves the finding out
+    /// (`exclude_acknowledged: false` still shows it).
+    #[tokio::test]
+    async fn acknowledge_suggestion_hides_the_finding_and_records_it_alike_on_both_transports() {
+        for (name, http) in [("stdio", false), ("http", true)] {
+            let dir = unique_dir(&format!("ack-suggestion-{name}"));
+            let call = |tool: &'static str, args: Value| {
+                let dir = dir.clone();
+                async move {
+                    if http {
+                        http_call(&dir, tool, args).await
+                    } else {
+                        stdio_call(&dir, tool, args)
+                    }
+                }
+            };
+            let overdue = capture_on(&dir, "Use SQLite for the ledger", overdue_bet());
+            let first = call("get_suggestions", json!({})).await;
+            let findings = first["result"]["structuredContent"]["data"]["findings"]
+                .as_array()
+                .expect("findings") // ubs:ignore: test-only; panicking is correct in tests
+                .clone();
+            assert_eq!(findings.len(), 1, "{name}: the overdue bet needs a look"); // ubs:ignore: test-only assertion
+            let finding_id = findings[0]["finding_id"]
+                .as_str()
+                .expect("finding id")
+                .to_owned(); // ubs:ignore: test-only; panicking is correct in tests
+            assert!(
+                suggestion_events(&dir).is_empty(),
+                "{name}: nothing recorded yet"
+            ); // ubs:ignore: test-only assertion
+
+            let acknowledged = call(
+                "acknowledge_suggestion",
+                json!({
+                    "actor_id": "agent:claude:tester",
+                    "finding_id": finding_id,
+                    "decision_id": overdue,
+                    "action": "dismissed",
+                    "channel": "review-queue",
+                }),
+            )
+            .await;
+            assert_eq!(
+                acknowledged["result"]["isError"], false,
+                "{name}: {acknowledged:?}"
+            ); // ubs:ignore: test-only assertion
+            let reply = acknowledged["result"]["structuredContent"].clone();
+            assert!(
+                reply.get("notice").is_none(),
+                "{name}: a write carries no read notice: {reply}"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(reply["finding_id"], json!(finding_id), "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(reply["decision_id"], json!(overdue), "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(reply["action"], "dismissed", "{name}"); // ubs:ignore: test-only assertion
+            assert!(reply["notification_id"].is_string(), "{name}: {reply}"); // ubs:ignore: test-only assertion
+            assert!(reply["surfaced_event_id"].is_u64(), "{name}: {reply}"); // ubs:ignore: test-only assertion
+            assert!(reply["acknowledged_event_id"].is_u64(), "{name}: {reply}"); // ubs:ignore: test-only assertion
+
+            // Two attributed events, the second naming the first.
+            let events = suggestion_events(&dir);
+            assert_eq!(events.len(), 2, "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                events[0].event_type,
+                crate::events::EventType::SuggestionSurfaced
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(events[0].actor_id, "agent:claude:tester", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(events[0].payload["finding_id"], json!(finding_id), "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(events[0].payload["decision_id"], json!(overdue), "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                events[0].payload["recipient_actor_id"], "agent:claude:tester",
+                "{name}"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(events[0].payload["channel"], "review-queue", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                events[1].event_type,
+                crate::events::EventType::NotificationAcknowledged
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(events[1].actor_id, "agent:claude:tester", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(events[1].payload["action"], "dismissed", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                events[1].payload["notification_id"],
+                json!(events[0].event_uuid.to_string()),
+                "{name}"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                reply["notification_id"], events[1].payload["notification_id"],
+                "{name}"
+            ); // ubs:ignore: test-only assertion
+
+            // Left out of the next page; the escape hatch still shows it.
+            let after = call("get_suggestions", json!({})).await;
+            assert_eq!(
+                after["result"]["structuredContent"]["data"]["findings"],
+                json!([]),
+                "{name}: acknowledged, so left out"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                after["result"]["structuredContent"]["result_count"], 0,
+                "{name}"
+            ); // ubs:ignore: test-only assertion
+            let everything = call("get_suggestions", json!({"exclude_acknowledged": false})).await;
+            assert_eq!(
+                everything["result"]["structuredContent"]["data"]["findings"][0]["finding_id"],
+                json!(finding_id),
+                "{name}"
+            ); // ubs:ignore: test-only assertion
+            let scanned = call("scan_decision_quality", json!({})).await;
+            assert_eq!(
+                scanned["result"]["structuredContent"]["data"]["findings"][0]["finding_id"],
+                json!(finding_id),
+                "{name}: the scan is not filtered"
+            ); // ubs:ignore: test-only assertion
+
+            // Defaults: the weakest honest claim, over the `mcp` channel.
+            call(
+                "acknowledge_suggestion",
+                json!({
+                    "actor_id": "agent:claude:tester",
+                    "finding_id": "finding-defaults",
+                    "decision_id": overdue,
+                }),
+            )
+            .await;
+            let events = suggestion_events(&dir);
+            assert_eq!(events[2].payload["channel"], "mcp", "{name}"); // ubs:ignore: test-only assertion
+            assert_eq!(events[3].payload["action"], "seen", "{name}"); // ubs:ignore: test-only assertion
+
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[tokio::test]
+    async fn acknowledge_suggestion_refuses_the_same_bad_arguments_on_both_transports_and_writes_nothing(
+    ) {
+        let cases: &[(&str, Value, &str)] = &[
+            (
+                "no-finding",
+                json!({"decision_id": "decision-1"}),
+                "missing `finding_id`",
+            ),
+            (
+                "no-decision",
+                json!({"finding_id": "finding-1"}),
+                "missing `decision_id`",
+            ),
+            (
+                "unknown-action",
+                json!({"finding_id": "finding-1", "decision_id": "decision-1", "action": "ignored"}),
+                "unknown action `ignored`; expected one of seen, acted, dismissed",
+            ),
+            (
+                "blank-finding",
+                json!({"finding_id": "  ", "decision_id": "decision-1"}),
+                "`finding_id` must be a non-empty string",
+            ),
+        ];
+        for (label, arguments, expected_message) in cases {
+            let (stdio, http) = run("acknowledge_suggestion", label, arguments.clone()).await;
+            for (name, result) in [("stdio", &stdio), ("http", &http)] {
+                assert!(
+                    result["isError"].as_bool().unwrap_or(false), // ubs:ignore: test-only assertion
+                    "{label}: {name} should error: {result:?}"
+                );
+                assert_eq!(
+                    result["content"][0]["text"].as_str(), // ubs:ignore: test-only assertion
+                    Some(*expected_message),
+                    "{label}: {name} message"
+                );
+            }
+        }
+    }
+
     /// `get_suggestions` shares the scan's core (hivemind-m306.4.1): the stdio server, the HTTP
     /// endpoint and the CLI read the same ledger and must answer alike, and with nothing
-    /// acknowledged yet the answer is the scan's, whichever way `exclude_acknowledged` is set.
+    /// acknowledged the answer is the scan's, whichever way `exclude_acknowledged` is set.
     #[tokio::test]
     async fn get_suggestions_answers_the_same_on_stdio_http_and_the_cli() {
         let dir = unique_dir("parity-suggestions");

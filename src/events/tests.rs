@@ -145,6 +145,16 @@ const FIXTURES: &[(&str, &str, EventType)] = &[
         EventType::NotificationAcknowledged,
     ),
     (
+        include_str!("../../schemas/v0/notification.acknowledged.json"),
+        include_str!("../../tests/fixtures/v0/suggestion/notification.acknowledged.dismissed.json"),
+        EventType::NotificationAcknowledged,
+    ),
+    (
+        include_str!("../../schemas/v0/suggestion.surfaced.json"),
+        include_str!("../../tests/fixtures/v0/suggestion.surfaced.json"),
+        EventType::SuggestionSurfaced,
+    ),
+    (
         include_str!("../../schemas/v0/decision.moved.json"),
         include_str!("../../tests/fixtures/v0/decision.moved.json"),
         EventType::DecisionMoved,
@@ -470,6 +480,110 @@ fn notification_sent_requires_source_event_ids() {
         validate(&event),
         Err(EventValidationError::EmptyList("payload.source_event_ids"))
     ));
+}
+
+fn suggestion_surfaced_event() -> Event {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/suggestion.surfaced.json"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn suggestion_surfaced_requires_every_field_and_a_provenance() {
+    assert!(validate(&suggestion_surfaced_event()).is_ok());
+
+    for field in ["finding_id", "decision_id", "recipient_actor_id", "channel"] {
+        let mut event = suggestion_surfaced_event();
+        event.payload[field] = json!(" ");
+        assert!(
+            matches!(
+                validate(&event),
+                Err(EventValidationError::EmptyField(name)) if name == format!("payload.{field}")
+            ),
+            "{field}"
+        );
+    }
+
+    let mut event = suggestion_surfaced_event();
+    event.payload.as_object_mut().unwrap().remove("sent_at");
+    assert!(matches!(
+        validate(&event),
+        Err(EventValidationError::Payload { .. })
+    ));
+
+    let mut event = suggestion_surfaced_event();
+    event.source_ref = None;
+    assert!(validate(&event).is_err());
+    let mut event = suggestion_surfaced_event();
+    event.correlation_id = None;
+    assert!(validate(&event).is_err());
+
+    // The payload is closed: a blocker field has no place on a suggestion.
+    let mut event = suggestion_surfaced_event();
+    event.payload["blocker_id"] = json!("blocker-1");
+    assert!(matches!(
+        validate(&event),
+        Err(EventValidationError::Payload { .. })
+    ));
+}
+
+#[test]
+fn notification_acknowledged_takes_an_optional_action_and_old_events_still_validate() {
+    // Written before `action` existed: valid, and replays to no action.
+    let old: Event = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/notification.acknowledged.json"
+    ))
+    .unwrap();
+    assert!(matches!(
+        validate(&old).unwrap(),
+        EventPayload::NotificationAcknowledged(ref payload) if payload.action.is_none()
+    ));
+
+    for action in AckAction::ALL {
+        let mut event: Event = serde_json::from_str(include_str!(
+            "../../tests/fixtures/v0/suggestion/notification.acknowledged.dismissed.json"
+        ))
+        .unwrap();
+        event.payload["action"] = json!(action.as_str());
+        assert!(matches!(
+            validate(&event).unwrap(),
+            EventPayload::NotificationAcknowledged(ref payload) if payload.action == Some(action)
+        ));
+        assert_eq!(AckAction::parse(action.as_str()), Some(action));
+    }
+
+    // Any other word is refused, and the schema says so too.
+    let mut event: Event = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/suggestion/notification.acknowledged.dismissed.json"
+    ))
+    .unwrap();
+    event.payload["action"] = json!("ignored");
+    assert!(matches!(
+        validate(&event),
+        Err(EventValidationError::Payload { .. })
+    ));
+    assert_eq!(AckAction::parse("ignored"), None);
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../schemas/v0/notification.acknowledged.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::validator_for(&schema).expect("schema compiles");
+    let mut raw: Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/suggestion/notification.acknowledged.dismissed.json"
+    ))
+    .unwrap();
+    assert!(validator.is_valid(&raw));
+    raw["payload"]["action"] = json!("ignored");
+    assert!(!validator.is_valid(&raw));
+
+    // An absent action stays absent on the wire: an old event re-serializes unchanged.
+    let payload: NotificationAcknowledgedPayload =
+        serde_json::from_value(old.payload.clone()).unwrap();
+    assert!(serde_json::to_value(&payload)
+        .unwrap()
+        .get("action")
+        .is_none());
 }
 
 #[test]

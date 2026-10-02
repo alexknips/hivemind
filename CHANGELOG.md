@@ -280,9 +280,25 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   true by default; false returns every finding. The page is filled from the findings that
   remain, so it holds `limit` findings whenever that many remain and `truncated` is exact. A
   finding whose basis changed has a new `finding_id`, so an old acknowledgement never hides
-  it. Nothing records an acknowledgement yet, so today both settings return the same findings
-  as the scan. Same arguments, response shape and refusals as `scan_decision_quality`; no
-  score, no tier. (hivemind-m306.4.1)
+  it. Same arguments, response shape and refusals as `scan_decision_quality`; no score, no
+  tier. (hivemind-m306.4.1)
+- **`acknowledge_suggestion` records that a finding was looked at, and `get_suggestions` then
+  leaves it out.** A new MCP tool on the stdio server and the HTTP endpoint: pass the
+  finding's `finding_id` and `decision_id` (and optionally `action`: `seen`, `acted` or
+  `dismissed`, default `seen`; `channel`, default `mcp`). It appends two attributed events: a
+  new event type `suggestion.surfaced` (this finding, shown to the acting actor over this
+  channel) and a `notification.acknowledged` naming it. `get_suggestions` with
+  `exclude_acknowledged` (the default) leaves the finding out until its basis changes and its
+  `finding_id` changes with it; `exclude_acknowledged: false` and `scan_decision_quality` still
+  show it. Acknowledgement is by finding, not by actor, and an acknowledgement with a
+  `snooze_until` hides the finding only until then. A surfaced finding projects to a
+  `Notification` node with no blocker, so the blocker queries do not see it.
+  **Schema:** `notification.acknowledged` gains an optional `action` (`seen`, `acted`,
+  `dismissed`) and `suggestion.surfaced` is a new `schemas/v0` event. Both are additive: no
+  migration, every acknowledgement already in a ledger stays valid and replays unchanged, and
+  Kuzu graphs are rebuilt from the ledger. **Upgrade the server before any client writes the
+  new event:** a binary from before this change cannot read a ledger that holds a
+  `suggestion.surfaced`. (hivemind-m306.4.2)
 - **A decision answers a question, and decisions that answer the same one are findable.**
   `--question "<one line>"` on `emit decision.capture` (MCP `question`) now names the
   question the decision answers, and it no longer needs a `--quote`: only a quote needs its

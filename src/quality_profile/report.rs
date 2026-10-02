@@ -32,8 +32,9 @@
 //! looked"; false is every finding, which is what `scan_decision_quality` always returns.
 //! Acknowledged findings are left out before the page is cut ([`AttentionRequest::excluded`]), so
 //! a page is full whenever that many findings remain and `truncated` is exact. What counts as
-//! acknowledged is read by [`acknowledged_finding_ids`]: no event records an acknowledgement yet,
-//! so today both settings return the same findings.
+//! acknowledged is read by [`acknowledged_finding_ids`] (a layer-2 read of the
+//! `suggestion.surfaced` and `notification.acknowledged` events): a finding is acknowledged when a
+//! surfaced record of its `finding_id` has been acknowledged and not snoozed past `now`.
 //!
 //! # Cost
 //! A scan page costs what [`attention_findings_at`] costs (a fixed number of bulk reads plus at
@@ -55,7 +56,8 @@ use serde::Serialize;
 
 use crate::projector::GraphView;
 use crate::queries::{
-    get_decision_context, AuthorshipShape, DecisionContext, QueryResponse, ReviewShape,
+    acknowledged_finding_ids, get_decision_context, AuthorshipShape, DecisionContext,
+    QueryResponse, ReviewShape,
 };
 use crate::Result;
 
@@ -271,17 +273,11 @@ pub fn get_suggestions_at(
     now: DateTime<Utc>,
 ) -> Result<QueryResponse<ScanReport>> {
     let excluded = if request.exclude_acknowledged {
-        acknowledged_finding_ids(graph)?
+        acknowledged_finding_ids(graph, now)?
     } else {
         BTreeSet::new()
     };
     scan_page_at(graph, &request.scan, excluded, now)
-}
-
-/// The `finding_id`s someone has acknowledged. No event records an acknowledgement yet, so nothing
-/// is acknowledged and this is empty; the event and the read of it belong together.
-pub fn acknowledged_finding_ids(_graph: &impl GraphView) -> Result<BTreeSet<String>> {
-    Ok(BTreeSet::new())
 }
 
 /// One page of findings without those in `excluded`, each with the dimensions it bears on.

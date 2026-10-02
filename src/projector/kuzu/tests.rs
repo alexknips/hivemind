@@ -525,6 +525,25 @@ fn assert_scenario_columns(graph: &KuzuGraph) -> Result<()> {
         Some(&GraphValue::StringList(vec!["kuzu".to_string()]))
     );
 
+    // A surfaced suggestion and its acknowledgement: the finding, the action and the ack time
+    // sit on the Notification node, and no blocker does (hivemind-m306.4.2).
+    let surfaced = graph.query(
+        "MATCH (n:`Notification`) WHERE n.finding_id = 'finding-0f1e2d3c4b5a69788796a5b4c3d2e1f0' RETURN n.decision_id AS decision_id, n.channel AS channel, n.action AS action, n.ack_at AS ack_at, n.blocker_id AS blocker_id;",
+        &GraphParams::new(),
+    )?;
+    assert_eq!(surfaced.len(), 1);
+    assert_eq!(surfaced[0].get("decision_id").cloned(), text("decision:1"));
+    assert_eq!(surfaced[0].get("channel").cloned(), text("mcp"));
+    assert_eq!(surfaced[0].get("action").cloned(), text("dismissed"));
+    assert_eq!(
+        surfaced[0].get("ack_at").cloned(),
+        text("2026-05-19T11:31:00+00:00")
+    );
+    assert!(matches!(
+        surfaced[0].get("blocker_id"),
+        None | Some(GraphValue::Null)
+    ));
+
     assert_eq!(
         count(
             graph,

@@ -26,7 +26,7 @@
 //! `scan_decision_quality`, `get_suggestions`, `recent_decisions`,
 //! `decision_quality_candidates`, `get_decision_context`,
 //! `decision_context_candidates`, `scan_misfiled_decisions`,
-//! `analyze_failure_modes`, `request_decision`. Later
+//! `analyze_failure_modes`, `request_decision`, `acknowledge_suggestion`. Later
 //! tools follow the same shape — an `Args::from_json` parser plus a
 //! `core::<tool>` function — one pair per tool, each independently
 //! reviewable.
@@ -39,7 +39,7 @@ use crate::commands::{
     Grounding, SupersedeInput,
 };
 use crate::error::{CliError, CommandError, HivemindError};
-use crate::events::{EventProvenance, ProjectSource, TenantId};
+use crate::events::{AckAction, EventProvenance, ProjectSource, TenantId};
 use crate::grounding::{
     premise_cycle_refusal, resolve_grounding, GroundingResolution, GroundingSpec,
     WIRE_GROUNDING_REFUSAL,
@@ -191,6 +191,7 @@ pub(crate) fn tool_reads_decisions(name: &str) -> bool {
             | "supersede_decision"
             | "move_decision"
             | "retitle_decision"
+            | "acknowledge_suggestion"
             | "ground_decision"
             | "request_decision"
             | "classify_queue_list"
@@ -1579,6 +1580,82 @@ pub(crate) fn retitle_decision<P: LedgerProvider>(
             &decision_id,
             &args.to,
             args.reason.as_deref(),
+        )
+        .map_err(CoreError::from)?;
+
+    serde_json::to_value(outcome)
+        .map(ToolOutput)
+        .map_err(|error| CoreError::Internal(error.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// acknowledge_suggestion
+// ---------------------------------------------------------------------------
+
+/// The channel an acknowledgement made through MCP is recorded as surfaced over when the caller
+/// names none. A label the consumer owns; HiveMind attaches no meaning to it.
+pub(crate) const DEFAULT_ACK_CHANNEL: &str = "mcp";
+
+/// Parsed, validated arguments for the `acknowledge_suggestion` tool. `finding_id` and
+/// `decision_id` are both read off the finding `get_suggestions` returned.
+pub(crate) struct AcknowledgeSuggestionArgs {
+    pub(crate) actor_id: String,
+    pub(crate) finding_id: String,
+    pub(crate) decision_id: String,
+    pub(crate) action: AckAction,
+    pub(crate) channel: String,
+}
+
+impl AcknowledgeSuggestionArgs {
+    pub(crate) fn from_json(
+        args: &Map<String, Value>,
+        actor_id: String,
+    ) -> Result<Self, CoreError> {
+        let action = match optional_string(args, "action")? {
+            None => AckAction::Seen,
+            Some(name) => AckAction::parse(name.trim()).ok_or_else(|| {
+                let valid: Vec<&str> = AckAction::ALL.iter().map(|a| a.as_str()).collect();
+                CoreError::InvalidArgument(format!(
+                    "unknown action `{name}`; expected one of {}",
+                    valid.join(", ")
+                ))
+            })?,
+        };
+        Ok(Self {
+            actor_id,
+            finding_id: require_string(args, "finding_id")?.trim().to_owned(),
+            decision_id: require_string(args, "decision_id")?.trim().to_owned(),
+            action,
+            channel: optional_string(args, "channel")?
+                .map_or_else(|| DEFAULT_ACK_CHANNEL.to_owned(), |c| c.trim().to_owned()),
+        })
+    }
+}
+
+/// The core for the `acknowledge_suggestion` MCP tool, one implementation for both transports.
+/// Appends `suggestion.surfaced` and the `notification.acknowledged` that names it through the
+/// ordinary actor-attributed write path; the reply is
+/// [`crate::commands::SuggestionAcknowledgement`]. No finding is looked up: the write path does
+/// not run the scan (layer 3).
+pub(crate) fn acknowledge_suggestion<P: LedgerProvider>(
+    provider: &P,
+    args: AcknowledgeSuggestionArgs,
+) -> Result<ToolOutput, CoreError> {
+    let handle = provider.ledger()?;
+    let commands = Commands::new_with_context(
+        &handle.ledger,
+        CommandContext::new(
+            handle.tenant_id.clone(),
+            EventProvenance::agent(args.actor_id.clone()),
+        ),
+    );
+    let outcome = commands
+        .acknowledge_suggestion(
+            &args.actor_id,
+            &args.finding_id,
+            &args.decision_id,
+            args.action,
+            &args.channel,
         )
         .map_err(CoreError::from)?;
 

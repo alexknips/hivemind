@@ -7,17 +7,17 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::events::{
-    validate, CaptureItem, DecisionAssessedPayload, EventPayload, EventProvenance, EventSource,
-    EventType, HypothesisKind, IngestTurn, ProjectAnchorKind, ProjectLinkKind, ProjectSource,
-    RelationKind,
+    validate, AckAction, CaptureItem, DecisionAssessedPayload, EventPayload, EventProvenance,
+    EventSource, EventType, HypothesisKind, IngestTurn, ProjectAnchorKind, ProjectLinkKind,
+    ProjectSource, RelationKind,
 };
 use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
 use super::{
-    agent_actor_session, normalize_topic_key, personal_project_handle, Commands, DecisionPlacement,
-    DecisionProposalInput, DeterminedProject, GroundInput, Grounding, GroundingPlan, NewBet,
-    NewEvidence, RestsOnKind, SupersedeInput, SupersedeOutcome, MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN,
-    PERSONAL_FALLBACK_NOTICE,
+    agent_actor_session, normalize_topic_key, personal_project_handle, CommandContext, Commands,
+    DecisionPlacement, DecisionProposalInput, DeterminedProject, GroundInput, Grounding,
+    GroundingPlan, NewBet, NewEvidence, RestsOnKind, SupersedeInput, SupersedeOutcome,
+    MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN, PERSONAL_FALLBACK_NOTICE,
 };
 
 #[test]
@@ -6799,4 +6799,135 @@ fn link_same_as_refuses_itself_an_unrecorded_decision_and_anonymity() {
         .is_err());
     assert!(commands.link_same_as(" ", &recorded, &recorded).is_err());
     assert_eq!(ledger.latest_offset().expect("offset"), before);
+}
+
+// ── acknowledge_suggestion (hivemind-m306.4.2) ────────────────────────────────
+
+fn agent_commands(ledger: &InMemoryEventLedger) -> Commands<'_, InMemoryEventLedger> {
+    Commands::new_with_context(
+        ledger,
+        CommandContext::local(EventProvenance::agent("agent:claude:crew")),
+    )
+}
+
+#[test]
+fn acknowledge_suggestion_records_who_saw_which_finding_and_what_they_did_about_it() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = agent_commands(&ledger);
+
+    let outcome = commands
+        .acknowledge_suggestion(
+            "agent:claude:crew",
+            "finding-aaaa",
+            "decision-1",
+            AckAction::Dismissed,
+            "slack",
+        )
+        .expect("acknowledging succeeds");
+
+    let events = ledger.read(0, 10).expect("read succeeds");
+    assert_eq!(
+        events.len(),
+        2,
+        "one surfaced event and one acknowledgement"
+    );
+    let (surfaced, acknowledged) = (&events[0], &events[1]);
+
+    assert_eq!(surfaced.event_type, EventType::SuggestionSurfaced);
+    assert_eq!(surfaced.event_id, Some(outcome.surfaced_event_id));
+    assert_eq!(surfaced.actor_id, "agent:claude:crew");
+    assert_eq!(surfaced.source, EventSource::Agent);
+    assert_eq!(surfaced.payload["finding_id"], "finding-aaaa");
+    assert_eq!(surfaced.payload["decision_id"], "decision-1");
+    assert_eq!(surfaced.payload["recipient_actor_id"], "agent:claude:crew");
+    assert_eq!(surfaced.payload["channel"], "slack");
+
+    assert_eq!(acknowledged.event_type, EventType::NotificationAcknowledged);
+    assert_eq!(acknowledged.event_id, Some(outcome.acknowledged_event_id));
+    assert_eq!(acknowledged.actor_id, "agent:claude:crew");
+    assert_eq!(
+        acknowledged.causation_event_id,
+        Some(outcome.surfaced_event_id),
+        "the acknowledgement is caused by the surfacing"
+    );
+    // It names the surfaced event's own uuid, which is what the node is keyed by.
+    assert_eq!(
+        acknowledged.payload["notification_id"],
+        surfaced.event_uuid.to_string()
+    );
+    assert_eq!(outcome.notification_id, surfaced.event_uuid.to_string());
+    assert_eq!(acknowledged.payload["action"], "dismissed");
+    assert_eq!(acknowledged.payload["snooze_until"], json!(null));
+    assert_eq!(
+        surfaced.correlation_id, acknowledged.correlation_id,
+        "the two events of one act share a correlation id"
+    );
+
+    // What was written is exactly what the validator accepts.
+    for event in &events {
+        validate(event).expect("the recorded event validates");
+    }
+    assert_eq!(outcome.finding_id, "finding-aaaa");
+    assert_eq!(outcome.decision_id, "decision-1");
+    assert_eq!(outcome.action, AckAction::Dismissed);
+}
+
+#[test]
+fn acknowledge_suggestion_checks_no_finding_and_no_decision() {
+    // Finding a finding is the scan's work (layer 3); the write path takes the ids as given.
+    let ledger = InMemoryEventLedger::new();
+    let commands = agent_commands(&ledger);
+
+    commands
+        .acknowledge_suggestion(
+            "agent:claude:crew",
+            "finding-nothing-reports-this",
+            "decision-that-was-never-proposed",
+            AckAction::Seen,
+            "mcp",
+        )
+        .expect("an acknowledgement of an unknown id is recorded, and acknowledges nothing");
+
+    assert_eq!(ledger.read(0, 10).expect("read succeeds").len(), 2);
+}
+
+#[test]
+fn acknowledge_suggestion_refuses_what_it_cannot_attribute_or_name_and_writes_nothing() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = agent_commands(&ledger);
+
+    for (actor, finding, decision, channel) in [
+        ("", "finding-1", "decision-1", "mcp"),
+        ("   ", "finding-1", "decision-1", "mcp"),
+        ("agent:claude:crew", "", "decision-1", "mcp"),
+        ("agent:claude:crew", "finding-1", " ", "mcp"),
+        ("agent:claude:crew", "finding-1", "decision-1", ""),
+    ] {
+        assert!(
+            commands
+                .acknowledge_suggestion(actor, finding, decision, AckAction::Seen, channel)
+                .is_err(),
+            "{actor:?} {finding:?} {decision:?} {channel:?}"
+        );
+    }
+    assert!(ledger.read(0, 10).expect("read succeeds").is_empty());
+}
+
+#[test]
+fn acknowledge_suggestion_needs_a_provenance_to_record_under() {
+    // The CLI's default context names no source_ref; both events require one, and no ledger
+    // validates on append, so the command refuses before it writes.
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+
+    assert!(commands
+        .acknowledge_suggestion(
+            "agent:claude:crew",
+            "finding-1",
+            "decision-1",
+            AckAction::Seen,
+            "mcp"
+        )
+        .is_err());
+    assert!(ledger.read(0, 10).expect("read succeeds").is_empty());
 }

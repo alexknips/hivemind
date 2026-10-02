@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::commands::{CommandContext, Commands};
+use crate::events::{AckAction, EventProvenance};
 use crate::projector::GraphView;
 use crate::queries::test_fixtures::{attention_scenario, ts, CountingGraph, ATTENTION_NOW};
 use crate::queries::MAX_QUERY_RESULTS;
@@ -391,10 +393,10 @@ fn suggestions_leave_acknowledged_findings_out_unless_told_not_to() {
 }
 
 #[test]
-fn nothing_is_acknowledged_yet_so_suggestions_are_the_findings_of_a_scan() -> Result<()> {
+fn until_something_is_acknowledged_suggestions_are_the_findings_of_a_scan() -> Result<()> {
     let graph = attention_scenario()?.graph()?;
 
-    assert!(acknowledged_finding_ids(&graph)?.is_empty());
+    assert!(acknowledged_finding_ids(&graph, now())?.is_empty());
     let scanned = scan(&graph, &everything())?;
     for exclude_acknowledged in [true, false] {
         let suggested = get_suggestions_at(
@@ -409,6 +411,101 @@ fn nothing_is_acknowledged_yet_so_suggestions_are_the_findings_of_a_scan() -> Re
         assert_eq!(suggested.result_count, scanned.result_count);
         assert_eq!(suggested.truncated, scanned.truncated);
     }
+    Ok(())
+}
+
+/// The round trip: a finding is surfaced and acknowledged through the write path, `get_suggestions`
+/// then leaves it out (and only it), and a finding whose basis has since changed has a new id and
+/// is shown again (hivemind-m306.4.2).
+#[test]
+fn an_acknowledged_finding_leaves_get_suggestions_and_comes_back_when_its_basis_changes(
+) -> Result<()> {
+    let scenario = attention_scenario()?;
+    let commands = Commands::new_with_context(
+        scenario.ledger(),
+        CommandContext::local(EventProvenance::agent("agent:claude:crew")),
+    );
+    let suggestions = |graph: &crate::projector::memory::MemoryGraph, exclude_acknowledged| {
+        get_suggestions_at(
+            graph,
+            &SuggestionsRequest {
+                scan: everything(),
+                exclude_acknowledged,
+            },
+            now(),
+        )
+    };
+    let stale_evidence = |findings: &[ScanFinding]| {
+        findings
+            .iter()
+            .find(|scanned| {
+                scanned.finding.decision_id == "d:ev-stale"
+                    && scanned.finding.kind == FindingKind::EvidenceNotRechecked
+            })
+            .map(|scanned| scanned.finding.clone())
+    };
+
+    let all = scan(&scenario.graph()?, &everything())?.data.findings;
+    let flagged =
+        stale_evidence(&all).expect("d:ev-stale is flagged for evidence nobody re-checked");
+    assert_eq!(flagged.basis_at, Some(ts("2026-03-01T00:00:00Z")));
+
+    // Surface and acknowledge it.
+    let outcome = commands.acknowledge_suggestion(
+        "agent:claude:crew",
+        &flagged.finding_id,
+        &flagged.decision_id,
+        AckAction::Acted,
+        "mcp",
+    )?;
+    assert_eq!(outcome.finding_id, flagged.finding_id);
+
+    // Left out of the next page, and only it; the escape hatch and the scan still show it.
+    let graph = scenario.graph()?;
+    let remaining = suggestions(&graph, true)?;
+    let expected: Vec<_> = all
+        .iter()
+        .filter(|scanned| scanned.finding.finding_id != flagged.finding_id)
+        .cloned()
+        .collect();
+    assert_eq!(remaining.data.findings, expected);
+    assert_eq!(remaining.result_count, all.len() - 1);
+    assert_eq!(suggestions(&graph, false)?.data.findings, all);
+    assert_eq!(scan(&graph, &everything())?.data.findings, all);
+
+    // The basis moves on: newer evidence is linked, still outside the window. The finding is about
+    // that evidence now, has another id, and the old acknowledgement does not hide it.
+    scenario.evidence(
+        "e:mid",
+        "Benchmark from April",
+        Some("bench run"),
+        "2026-04-20T00:00:00Z",
+    )?;
+    scenario.relation(
+        "BASED_ON",
+        "d:ev-stale",
+        "e:mid",
+        "human:alex",
+        None,
+        "2026-09-16T00:00:00Z",
+    )?;
+    let graph = scenario.graph()?;
+    let reshown = stale_evidence(&suggestions(&graph, true)?.data.findings)
+        .expect("a finding whose basis changed is shown again");
+    assert_ne!(reshown.finding_id, flagged.finding_id);
+    assert_eq!(reshown.basis_at, Some(ts("2026-04-20T00:00:00Z")));
+
+    // Acknowledging the new one hides it in turn.
+    commands.acknowledge_suggestion(
+        "agent:claude:crew",
+        &reshown.finding_id,
+        &reshown.decision_id,
+        AckAction::Seen,
+        "mcp",
+    )?;
+    let graph = scenario.graph()?;
+    assert!(stale_evidence(&suggestions(&graph, true)?.data.findings).is_none());
+    assert!(stale_evidence(&suggestions(&graph, false)?.data.findings).is_some());
     Ok(())
 }
 

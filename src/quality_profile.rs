@@ -80,10 +80,9 @@ pub use findings::{
 };
 pub use markdown::{decision_log_section, dimension_markdown, profile_markdown};
 pub use report::{
-    acknowledged_finding_ids, get_suggestions, get_suggestions_at, parse_kinds,
-    scan_decision_quality, scan_decision_quality_at, score_decision, DimensionLine, Provenance,
-    ScanFinding, ScanReport, ScanRequest, ScoreReport, SuggestionsRequest, NOT_REVIEWED_BY_A_HUMAN,
-    SCAN_DEFAULT_LIMIT,
+    get_suggestions, get_suggestions_at, parse_kinds, scan_decision_quality,
+    scan_decision_quality_at, score_decision, DimensionLine, Provenance, ScanFinding, ScanReport,
+    ScanRequest, ScoreReport, SuggestionsRequest, NOT_REVIEWED_BY_A_HUMAN, SCAN_DEFAULT_LIMIT,
 };
 
 /// The version of the floor rules in this module.

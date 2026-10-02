@@ -1,0 +1,17 @@
+{
+  "event_id": 12,
+  "event_uuid": "018f5d8a-03fb-7df0-8e36-64d7410cfe0c",
+  "correlation_id": "suggestion-ack:018f5d8a-03fb-7df0-8e36-64d7410cfe0c",
+  "type": "suggestion.surfaced",
+  "actor_id": "agent:claude:crew",
+  "source": "agent",
+  "source_ref": "agent:claude:crew",
+  "payload": {
+    "finding_id": "finding-7c1e5f0a2b9d4e63a1f0c3d85e2b9a47",
+    "decision_id": "decision-storage-choice-1",
+    "recipient_actor_id": "agent:claude:crew",
+    "channel": "mcp",
+    "sent_at": "2026-09-08T09:00:00Z"
+  },
+  "ts": "2026-09-08T09:00:00Z"
+}

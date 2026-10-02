@@ -232,14 +232,14 @@ use transcript::captured_answers;
 
 use crate::error::CommandError;
 use crate::events::{
-    CaptureItem, DecisionAcceptedPayload, DecisionAssessedPayload, DecisionMovedPayload,
+    AckAction, CaptureItem, DecisionAcceptedPayload, DecisionAssessedPayload, DecisionMovedPayload,
     DecisionProposedPayload, DecisionRejectedPayload, DecisionRetitledPayload,
     DecisionSupersededPayload, Event, EventBuilder, EventId, EventPayload, EventProvenance,
     EventType, EvidenceRecordedPayload, HypothesisKind, HypothesisRecordedPayload,
     IngestBatchClassifiedPayload, IngestBatchReceivedPayload, IngestTurn, ModelDimension,
-    ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind, ProjectLinkPayload,
-    ProjectRegisteredPayload, ProjectSource, ProjectTopicDeclaredPayload, RelationAddedPayload,
-    RelationKind, TenantId,
+    NotificationAcknowledgedPayload, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind,
+    ProjectLinkPayload, ProjectRegisteredPayload, ProjectSource, ProjectTopicDeclaredPayload,
+    RelationAddedPayload, RelationKind, SuggestionSurfacedPayload, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::util::{require_non_empty, require_valid_actor_id};
@@ -424,6 +424,20 @@ pub struct DecisionRetitleOutcome {
     pub to: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// The recorded result of acknowledging a suggestion: the `suggestion.surfaced` event and the
+/// `notification.acknowledged` that names it. The one shape both MCP transports serialize, so
+/// they can't drift (hivemind-m306.4.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SuggestionAcknowledgement {
+    pub finding_id: String,
+    pub decision_id: DecisionId,
+    pub action: AckAction,
+    /// The `suggestion.surfaced` event's uuid: the id the acknowledgement names.
+    pub notification_id: String,
+    pub surfaced_event_id: EventId,
+    pub acknowledged_event_id: EventId,
 }
 
 /// What `Commands::declare_project_topic` recorded (or, for a key the project already had,
@@ -1312,6 +1326,80 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             from,
             to: to.to_owned(),
             reason: reason.map(ToOwned::to_owned),
+        })
+    }
+
+    /// Acknowledge a suggestion: record that `finding_id` (about `decision_id`) was surfaced to
+    /// `actor_id` over `channel`, then that `actor_id` acknowledged it with `action`. Two
+    /// append-only, actor-attributed events, the second caused by the first
+    /// (hivemind-m306.4.2). After this, `get_suggestions` leaves the finding out until its
+    /// basis changes (its `finding_id` then changes with it).
+    ///
+    /// Rules enforced here: non-empty ids and channel, a valid actor, and a provenance with a
+    /// `source_ref` (the events are refused on read without one; the CLI's default context has
+    /// none, an agent's does). Not enforced: that the
+    /// finding or the decision exists. Finding a finding is the scan's work, and a write path
+    /// that ran it would be layer 3 inside layer 1; an acknowledgement of an id nothing
+    /// currently reports acknowledges nothing. If the second append fails the first stays: a
+    /// finding recorded as surfaced and not acknowledged, which is true.
+    pub fn acknowledge_suggestion(
+        &self,
+        actor_id: &str,
+        finding_id: &str,
+        decision_id: &str,
+        action: AckAction,
+        channel: &str,
+    ) -> Result<SuggestionAcknowledgement> {
+        require_valid_actor_id(actor_id)?;
+        require_non_empty("finding_id", finding_id)?;
+        require_non_empty("decision_id", decision_id)?;
+        require_non_empty("channel", channel)?;
+
+        let now = self.context.event_ts.unwrap_or_else(Utc::now);
+        let surfaced_uuid = Uuid::new_v4();
+        // One correlation id for the two events of this one act.
+        let correlation_id = format!("suggestion-ack:{surfaced_uuid}");
+        let surfaced = self.event_with_correlation(
+            actor_id,
+            EventPayload::SuggestionSurfaced(SuggestionSurfacedPayload {
+                finding_id: finding_id.to_owned(),
+                decision_id: decision_id.to_owned(),
+                recipient_actor_id: actor_id.to_owned(),
+                channel: channel.to_owned(),
+                sent_at: now,
+            }),
+            None,
+            surfaced_uuid,
+            Some(correlation_id.clone()),
+        )?;
+        // No ledger validates on append, and a notification event that lacks a source_ref or
+        // correlation id is refused when it is read back. Refuse it here, before anything is
+        // written, so the ledger never holds an acknowledgement it cannot read.
+        crate::events::validate(&surfaced)
+            .map_err(|error| CommandError::Validation(error.to_string()))?;
+        let surfaced_event_id = self.append_event(surfaced)?;
+
+        let acknowledged = self.event_with_correlation(
+            actor_id,
+            EventPayload::NotificationAcknowledged(NotificationAcknowledgedPayload {
+                notification_id: surfaced_uuid.to_string(),
+                ack_at: now,
+                snooze_until: None,
+                action: Some(action),
+            }),
+            Some(surfaced_event_id),
+            Uuid::new_v4(),
+            Some(correlation_id),
+        )?;
+        let acknowledged_event_id = self.append_event(acknowledged)?;
+
+        Ok(SuggestionAcknowledgement {
+            finding_id: finding_id.to_owned(),
+            decision_id: decision_id.to_owned(),
+            action,
+            notification_id: surfaced_uuid.to_string(),
+            surfaced_event_id,
+            acknowledged_event_id,
         })
     }
 
@@ -2719,9 +2807,23 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         causation_event_id: Option<EventId>,
         event_uuid: Uuid,
     ) -> Result<Event> {
+        self.event_with_correlation(actor_id, payload, causation_event_id, event_uuid, None)
+    }
+
+    /// `event_with_uuid` for the event types that require a correlation id
+    /// (`notification.*`, `suggestion.surfaced`).
+    fn event_with_correlation(
+        &self,
+        actor_id: &str,
+        payload: EventPayload,
+        causation_event_id: Option<EventId>,
+        event_uuid: Uuid,
+        correlation_id: Option<String>,
+    ) -> Result<Event> {
         EventBuilder::new(event_uuid, actor_id, payload)
             .tenant_id(self.context.tenant_id.clone())
             .provenance(self.context.provenance.clone())
+            .correlation_id(correlation_id)
             .causation_event_id(causation_event_id)
             .timestamp(Some(self.context.event_ts.unwrap_or_else(Utc::now)))
             .build()

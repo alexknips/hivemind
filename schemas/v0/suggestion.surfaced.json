@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hivemind.local/schemas/v0/suggestion.surfaced.json",
+  "title": "suggestion.surfaced event",
+  "description": "A finding was shown to a recipient. The event's own uuid is the notification id a later notification.acknowledged names. Added in hivemind-m306.4.2.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_uuid", "correlation_id", "type", "actor_id", "source", "source_ref", "payload"],
+  "properties": {
+    "event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "event_uuid": { "type": "string", "format": "uuid" },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "causation_event_id": { "type": ["integer", "null"], "minimum": 1 },
+    "type": { "const": "suggestion.surfaced" },
+    "actor_id": { "type": "string", "minLength": 1 },
+    "source": { "enum": ["cli", "agent", "human", "slack", "document", "api"] },
+    "source_ref": { "type": "string", "minLength": 1 },
+    "ts": { "type": ["string", "null"], "format": "date-time" },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finding_id", "decision_id", "recipient_actor_id", "channel", "sent_at"],
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/id",
+          "description": "The finding's stable id (a hash of its kind, node ids and basis time), as get_suggestions returns it."
+        },
+        "decision_id": {
+          "$ref": "#/$defs/id",
+          "description": "The decision the finding is about."
+        },
+        "recipient_actor_id": { "$ref": "#/$defs/id" },
+        "channel": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A label the consumer chose for where the finding was shown. HiveMind attaches no meaning to it."
+        },
+        "sent_at": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1 }
+  }
+}

@@ -29,6 +29,7 @@ mod search;
 mod shared;
 mod situational;
 mod status;
+mod suggestion_acks;
 mod supersession;
 mod terms;
 mod timeline;
@@ -134,6 +135,7 @@ pub use status::{
     derive_decision_status, derive_hypothesis_status, Decider, DecisionStandings, DecisionStatus,
     HypothesisStatus,
 };
+pub use suggestion_acks::acknowledged_finding_ids;
 pub use supersession::{get_supersession_chain, SupersessionChain};
 pub use terms::{
     content_query, overlap_score, overlapping_terms, path_terms, text_terms, ContentQuery,

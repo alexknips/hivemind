@@ -171,6 +171,12 @@ name a placeholder that a later event fills in:
   in practice this arrow never reverses; it carries a real reversed label anyway because its
   target is not an `Actor`.
 
+A `Notification` node is created by `notification.sent` (about a blocker, with a
+`NOTIFICATION_FOR_BLOCKER` edge) or by `suggestion.surfaced` (about a finding: it carries
+`finding_id` and `decision_id` and has only the `NOTIFICATION_RECIPIENT` edge, never a
+blocker edge). `notification.acknowledged` annotates either with `ack_at`, `snooze_until`
+and `action`.
+
 ## Forward references
 
 `decision.requested`, `blocker.reported`, `notification.sent` and classified captures
