@@ -279,7 +279,7 @@ fn question_tokens(description: &str) -> QuestionTokens {
     };
     let tokens = description_tokens(description);
     let making: Vec<bool> = (0..tokens.len())
-        .map(|index| is_decision_making(&tokens[index..]))
+        .map(|index| tokens.get(index..).is_some_and(is_decision_making))
         .collect();
     let mut tokens = tokens.into_iter().zip(making).peekable();
     while let Some((token, making)) = tokens.next() {
@@ -483,9 +483,10 @@ fn word_keys(word: &str) -> Vec<&str> {
     let verbs: Vec<&str> = keys
         .iter()
         .copied()
-        .filter(|key| key.len() >= 5 && key.ends_with('d'))
+        .filter(|key| key.len() >= 5)
+        .filter_map(|key| key.strip_suffix('d'))
         .collect();
-    keys.extend(verbs.into_iter().map(|key| &key[..key.len() - 1]));
+    keys.extend(verbs);
     if let Some(root) = plain
         .strip_suffix("ssion")
         .or_else(|| plain.strip_suffix("sion"))
@@ -577,7 +578,8 @@ impl<'a> RelatedWord<'a> {
         // of the word and no stand-in: the common case costs one substring scan per key.
         let stand_in_keys: &[&str] = self
             .group
-            .map_or(&[], |group| VOCABULARY.group_keys[group].as_slice());
+            .and_then(|group| VOCABULARY.group_keys.get(group))
+            .map_or(&[], Vec::as_slice);
         if !self
             .keys
             .iter()
