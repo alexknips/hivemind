@@ -370,8 +370,30 @@ fn stemming_compares_words_not_substrings() -> Result<()> {
     Ok(())
 }
 
+/// Every spelling of a negated question about adopting Kafka: bare, contracted, a typographic
+/// apostrophe, asked as a why-question and as a bare imperative.
+const NEGATED_KAFKA_QUESTIONS: &[&str] = &[
+    "do not adopt kafka",
+    "don't adopt kafka",
+    "don\u{2019}t adopt kafka",
+    "didn't we adopt kafka",
+    "why didn't we adopt kafka",
+    "why won't we adopt kafka",
+    "why aren't we adopting kafka",
+    "never adopt kafka",
+];
+
+/// What both kinds of asker, the one that writes and the one that only shows, make of a
+/// description.
+fn both_askers(graph: &MemoryGraph, description: &str) -> Result<[ResolveOutcome; 2]> {
+    Ok([
+        resolve_decision_by_description(graph, description, None)?.data,
+        resolve_decision_for_reading(graph, description, None)?.data,
+    ])
+}
+
 #[test]
-fn negation_is_kept_so_it_cannot_resolve_to_the_opposite_decision() -> Result<()> {
+fn a_negated_question_never_resolves_to_the_opposite_decision() -> Result<()> {
     let graph = graph_from_events([decision_proposed(
         1,
         "d:kafka",
@@ -379,20 +401,152 @@ fn negation_is_kept_so_it_cannot_resolve_to_the_opposite_decision() -> Result<()
         &[],
     )])?;
 
-    // "not" is a term, so the decision that adopted Kafka is only a close candidate that says
-    // it lacks "not" -- never a resolution.
-    let response = resolve_decision_by_description(&graph, "do not adopt kafka", None)?;
-    match response.data {
-        ResolveOutcome::Ambiguous { candidates } => {
-            assert_eq!(candidates.len(), 1);
-            assert_eq!(candidates[0].missing_terms, vec!["not".to_owned()]);
+    // Every spelling of the negation (hivemind-g889) gets the same answer: the decision that
+    // adopted Kafka is a close candidate that says why -- the question is negated, it is not --
+    // and is never a resolution, for a verb that writes or one that reads. The negation is not a
+    // word it lacks.
+    for question in NEGATED_KAFKA_QUESTIONS {
+        for outcome in both_askers(&graph, question)? {
+            match outcome {
+                ResolveOutcome::Ambiguous { candidates } => {
+                    assert_eq!(candidates.len(), 1, "{question:?}");
+                    assert_eq!(candidates[0].decision_id, "d:kafka", "{question:?}");
+                    assert!(candidates[0].polarity_mismatch, "{question:?}");
+                    assert!(candidates[0].is_close(), "{question:?}");
+                    assert!(
+                        candidates[0].missing_terms.is_empty(),
+                        "{question:?} lacks no word: {:?}",
+                        candidates[0].missing_terms
+                    );
+                }
+                other => panic!("{question:?} must stay a close candidate, got {other:?}"),
+            }
         }
-        other => panic!("expected close candidate, got {other:?}"),
     }
+
+    // Without the negation it still resolves, and says nothing about polarity.
+    for question in ["why did we adopt kafka", "adopt kafka"] {
+        for outcome in both_askers(&graph, question)? {
+            match outcome {
+                ResolveOutcome::Resolved { candidate } => {
+                    assert_eq!(candidate.decision_id, "d:kafka", "{question:?}");
+                    assert!(!candidate.polarity_mismatch, "{question:?}");
+                    assert!(!candidate.needs_annotation(), "{question:?}");
+                }
+                other => panic!("{question:?} must resolve, got {other:?}"),
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_negated_question_resolves_to_the_decision_that_is_negated_too() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:kafka", "Adopt Kafka for events", &[]),
+        decision_proposed(2, "d:no-kafka", "Do not adopt Kafka for billing", &[]),
+    ])?;
+
+    // Both say "adopt" and "kafka"; only one is negated, in any spelling.
+    for question in NEGATED_KAFKA_QUESTIONS {
+        for outcome in both_askers(&graph, question)? {
+            match outcome {
+                ResolveOutcome::Resolved { candidate } => {
+                    assert_eq!(candidate.decision_id, "d:no-kafka", "{question:?}");
+                    assert!(!candidate.polarity_mismatch, "{question:?}");
+                    assert!(candidate.missing_terms.is_empty(), "{question:?}");
+                }
+                other => panic!("{question:?} must resolve to the negated one, got {other:?}"),
+            }
+        }
+    }
+
+    // Asked without a negation the polarity does not choose: both match, as before.
+    for outcome in both_askers(&graph, "adopt kafka")? {
+        match outcome {
+            ResolveOutcome::Ambiguous { candidates } => {
+                assert_eq!(candidates.len(), 2);
+                assert!(candidates.iter().all(|candidate| !candidate.is_close()));
+            }
+            other => panic!("expected the two full matches, got {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn polarity_is_read_from_the_title_not_the_reasons_given() -> Result<()> {
+    // A rationale says "not" for many reasons that leave the decision itself positive: it must not
+    // make "don't adopt kafka" resolve to the decision that adopted it.
+    let graph = graph_from_events([decision_proposed_because(
+        1,
+        "d:kafka",
+        "Adopt Kafka for events",
+        "We do not need exactly-once delivery, and nothing else is as cheap.",
+        &[],
+    )])?;
+
+    for outcome in both_askers(&graph, "don't adopt kafka")? {
+        match outcome {
+            ResolveOutcome::Ambiguous { candidates } => {
+                assert!(candidates[0].polarity_mismatch);
+            }
+            other => panic!("expected a close candidate, got {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_close_candidate_of_the_right_polarity_leads_one_of_the_wrong_polarity() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:kafka", "Adopt Kafka for events", &[]),
+        decision_proposed(2, "d:no-kafka", "Do not adopt Kafka for billing", &[]),
+    ])?;
+
+    // No decision has all of adopt/kafka/billing/queue. The negated one lacks only "queue" and
+    // says what was asked; the positive one lacks "billing" and "queue" and is the opposite.
+    let asked = "why didn't we adopt kafka for billing queue";
+    let response = resolve_decision_for_reading(&graph, asked, None)?;
+    match response.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:no-kafka");
+            assert_eq!(candidate.missing_terms, vec!["queue".to_owned()]);
+            assert!(!candidate.polarity_mismatch);
+        }
+        other => panic!("expected the negated decision, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_candidate_says_it_is_the_opposite_only_when_it_is() -> Result<()> {
+    let graph = graph_from_events([decision_proposed(
+        1,
+        "d:kafka",
+        "Adopt Kafka for events",
+        &[],
+    )])?;
+
+    let ResolveOutcome::Ambiguous { candidates } =
+        resolve_decision_for_reading(&graph, "don't adopt kafka", None)?.data
+    else {
+        panic!("expected a close candidate");
+    };
     assert_eq!(
-        resolved_id(&graph, "why did we adopt kafka")?.as_deref(),
-        Some("d:kafka")
+        serde_json::to_value(&candidates[0]).expect("candidate serializes")["polarity_mismatch"],
+        json!(true)
     );
+
+    let ResolveOutcome::Resolved { candidate } =
+        resolve_decision_for_reading(&graph, "adopt kafka", None)?.data
+    else {
+        panic!("expected a resolution");
+    };
+    assert!(serde_json::to_value(&candidate)
+        .expect("candidate serializes")
+        .get("polarity_mismatch")
+        .is_none());
     Ok(())
 }
 
@@ -782,6 +936,7 @@ fn a_close_match_is_named_in_the_envelope_and_a_full_match_is_not() {
         event_origin: 1,
         matched_fields: vec!["title".to_owned()],
         missing_terms: vec!["keep".to_owned(), "stable".to_owned()],
+        polarity_mismatch: false,
         also_recorded_as: Vec::new(),
     };
     let full = ResolvedCandidate {
@@ -978,6 +1133,7 @@ fn the_envelope_names_the_other_records_beside_data() {
         event_origin: 1,
         matched_fields: vec!["title".to_owned()],
         missing_terms: Vec::new(),
+        polarity_mismatch: false,
         also_recorded_as: vec![RecordedCopy {
             decision_id: "d:2".to_owned(),
             title: "Fable for every town seat".to_owned(),

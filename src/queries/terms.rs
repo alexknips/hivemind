@@ -71,21 +71,14 @@ pub fn overlap_score(query_terms: &[String], candidate_terms: &[String]) -> f64 
 
 /// Question, function and decision-frame words that carry no identifying signal in a natural
 /// question ("why did we decide to move the demo cell to shared Postgres", "why did we pick
-/// shadcn", "why is the demo still on the site", "why doesn't the decision page show..."): the
-/// verbs people use to ask about a decision (pick, choose, decide) and the adverbs they put in a
-/// why-question (still, again, ever, ...), plus the negated-auxiliary contractions a why-question
-/// asks with (doesn't, don't, isn't, aren't, won't, didn't). Fixed and literal: `-s` and past
-/// forms are listed, nothing is stemmed, no synonyms. They are dropped from the question only,
-/// never from a decision's text, so a decision titled "Pick the cheapest vendor" still matches on
-/// "pick".
+/// shadcn", "why is the demo still on the site"): the verbs people use to ask about a decision
+/// (pick, choose, decide) and the adverbs they put in a why-question (still, again, ever, ...).
+/// Fixed and literal: `-s` and past forms are listed, nothing is stemmed, no synonyms. They are
+/// dropped from the question only, never from a decision's text, so a decision titled "Pick the
+/// cheapest vendor" still matches on "pick".
 ///
-/// Deliberately omits the bare negation words (`not`, `no`, `never`, `without`): dropping them
-/// would let "do not adopt Kafka" resolve to the decision that adopted it. A why-question's
-/// contraction is different: "why doesn't the decision page show X" asks about an absence of
-/// behavior, not the decision's own polarity the way "do not adopt Kafka" does, and a decision's
-/// text essentially never contains the contraction verbatim — kept as a required term, it just
-/// sinks the right answer behind every close candidate tied on missing the same unmatchable word
-/// (hivemind-m974).
+/// Negations (`not`, `doesn't`, ...) are not here: they are not framing but polarity, and have one
+/// rule of their own (see `is_negation`).
 const QUESTION_STOPWORDS: &[&str] = &[
     "a",
     "about",
@@ -95,7 +88,6 @@ const QUESTION_STOPWORDS: &[&str] = &[
     "and",
     "anymore",
     "are",
-    "aren't",
     "as",
     "at",
     "be",
@@ -115,11 +107,8 @@ const QUESTION_STOPWORDS: &[&str] = &[
     "decision",
     "decisions",
     "did",
-    "didn't",
     "do",
     "does",
-    "doesn't",
-    "don't",
     "even",
     "ever",
     "for",
@@ -133,7 +122,6 @@ const QUESTION_STOPWORDS: &[&str] = &[
     "in",
     "into",
     "is",
-    "isn't",
     "it",
     "its",
     "me",
@@ -174,7 +162,6 @@ const QUESTION_STOPWORDS: &[&str] = &[
     "why",
     "will",
     "with",
-    "won't",
     "would",
     "you",
     "your",
@@ -196,16 +183,36 @@ const FRAMING_PHRASES: &[(&str, &str)] = &[
     ("settles", "on"),
 ];
 
-/// Lowercased whitespace tokens in the order asked, with surrounding punctuation trimmed. Inner
-/// punctuation is kept (`per-host`, `gc-ox429`); a token that is all punctuation keeps its raw
-/// form so it still matches literally.
+/// Words that negate on their own. A contraction of a negated auxiliary (`doesn't`, `won't`,
+/// `can't`, ...) ends in `n't`; `is_negation` covers both.
+const NEGATION_WORDS: &[&str] = &["cannot", "never", "no", "not", "without"];
+
+/// Whether `word` (lowercase, apostrophes straight) is a negation, bare (`not`, `no`, `never`,
+/// `without`, `cannot`) or contracted (`doesn't`, `don't`, `isn't`, ...). One rule for every
+/// spelling, so "do not adopt Kafka" and "don't adopt Kafka" are asked the same way.
+fn is_negation(word: &str) -> bool {
+    NEGATION_WORDS.contains(&word) || word.ends_with("n't")
+}
+
+/// Whether `text` (a decision's title) says something negated: any of its words is a negation.
+/// Whole words only, so "Notion" and "note" are not "not".
+pub(crate) fn is_negated_text(text: &str) -> bool {
+    text.split(|c: char| !c.is_alphanumeric() && c != '\'' && c != '\u{2019}')
+        .map(|word| word.trim_matches(['\'', '\u{2019}']))
+        .any(|word| is_negation(&word.to_lowercase().replace('\u{2019}', "'")))
+}
+
+/// Lowercased whitespace tokens in the order asked, with surrounding punctuation trimmed and a
+/// typographic apostrophe (`don’t`) written straight. Inner punctuation is kept (`per-host`,
+/// `gc-ox429`); a token that is all punctuation keeps its raw form so it still matches literally.
 fn description_tokens(description: &str) -> Vec<String> {
     description
         .split_whitespace()
         .map(|raw| {
             let token = raw
                 .trim_matches(|c: char| !c.is_alphanumeric())
-                .to_ascii_lowercase();
+                .to_ascii_lowercase()
+                .replace('\u{2019}', "'");
             if token.is_empty() {
                 raw.to_ascii_lowercase()
             } else {
@@ -223,48 +230,76 @@ fn is_question_word(token: &str, next: Option<&str>) -> bool {
             .any(|(lead, partner)| *lead == token && next == Some(*partner))
 }
 
-/// A description split into what to search for and the question framing around it. Each word
-/// appears once, in the order asked.
+/// A description split into what to search for and the words around it. Each word appears once,
+/// in the order asked.
 struct QuestionTokens {
     content: Vec<String>,
+    /// Question words and negations: what is asked with, not what is asked about.
     framing: Vec<String>,
+    /// Whether the question says "not" in any form. A negation is polarity, never a term to find.
+    negated: bool,
 }
 
 fn question_tokens(description: &str) -> QuestionTokens {
     let tokens = description_tokens(description);
-    let framing_at: Vec<bool> = tokens
-        .iter()
-        .enumerate()
-        .map(|(at, token)| is_question_word(token, tokens.get(at + 1).map(String::as_str)))
-        .collect();
     let mut split = QuestionTokens {
         content: Vec::new(),
         framing: Vec::new(),
+        negated: false,
     };
-    for (token, framing) in tokens.into_iter().zip(framing_at) {
+    for (at, token) in tokens.iter().enumerate() {
+        let negation = is_negation(token);
+        split.negated |= negation;
+        let framing = negation || is_question_word(token, tokens.get(at + 1).map(String::as_str));
         let bucket = if framing {
             &mut split.framing
         } else {
             &mut split.content
         };
-        if !bucket.contains(&token) {
-            bucket.push(token);
+        if !bucket.contains(token) {
+            bucket.push(token.clone());
         }
     }
     split
 }
 
+/// What a free-text description asks a decision to be: the terms it must contain and whether it
+/// asks for a negated one.
+pub(crate) struct ResolverQuestion {
+    pub(crate) terms: Vec<String>,
+    /// The description says "not" in some form (`not`, `no`, `never`, `without`, `doesn't`, ...).
+    /// Only a decision whose own title is negated answers it: "don't adopt Kafka" must never
+    /// resolve to the decision "Adopt Kafka". A negation is never one of `terms`.
+    pub(crate) negated: bool,
+}
+
 /// Terms for resolving a free-text description to a decision: the description's tokens minus
-/// question words. Falls back to the unfiltered tokens when every token is a question word, so
-/// "why did we" never matches every decision.
-pub(crate) fn resolver_terms(description: &str) -> Vec<String> {
-    let QuestionTokens { content, framing } = question_tokens(description);
+/// question words and negations. Falls back to the unfiltered tokens when nothing else is left,
+/// so "why did we" never matches every decision; those tokens are then searched as written and
+/// the question is not read as negated.
+pub(crate) fn resolver_question(description: &str) -> ResolverQuestion {
+    let QuestionTokens {
+        content,
+        framing,
+        negated,
+    } = question_tokens(description);
     // No content means every token is framing, so `framing` holds them all.
     if content.is_empty() {
-        framing
+        ResolverQuestion {
+            terms: framing,
+            negated: false,
+        }
     } else {
-        content
+        ResolverQuestion {
+            terms: content,
+            negated,
+        }
     }
+}
+
+/// The terms of `resolver_question`.
+pub(crate) fn resolver_terms(description: &str) -> Vec<String> {
+    resolver_question(description).terms
 }
 
 /// A free-text query split into what to search for and what was left out.
@@ -274,12 +309,19 @@ pub struct ContentQuery {
     /// "projects"), or `None` when nothing else is left ("what did we decide"): a bare question
     /// adds no filter, so the caller's other filters (topic, status, ...) decide the result.
     pub query: Option<String>,
-    /// The question words that were dropped, in the order they were asked.
+    /// The question words and negations that were dropped, in the order they were asked.
     pub ignored: Vec<String>,
+    /// The question says "not" in some form. It does not narrow the answer: among decisions that
+    /// match equally, one whose own title is negated comes first.
+    pub negated: bool,
 }
 
 pub fn content_query(text: &str) -> ContentQuery {
-    let QuestionTokens { content, framing } = question_tokens(text);
+    let QuestionTokens {
+        content,
+        framing,
+        negated,
+    } = question_tokens(text);
     // A word that frames the question in one place and is asked about in another ("go with Go")
     // is searched for, so it is not reported as dropped.
     let ignored = framing
@@ -293,6 +335,7 @@ pub fn content_query(text: &str) -> ContentQuery {
             Some(content.join(" "))
         },
         ignored,
+        negated: negated && !content.is_empty(),
     }
 }
 

@@ -15,6 +15,7 @@ use crate::grounding::{
     ResolvedGrounding, UnresolvedPremise,
 };
 use crate::ledger::EventLedger;
+use crate::queries::{ResolvedCandidate, POLARITY_REASON};
 use crate::Result;
 
 use super::{
@@ -154,10 +155,9 @@ fn refuse_unresolved(hivemind_dir: &Path, unresolved: &UnresolvedPremise) -> Cli
     }
 
     write_continuation_candidates(hivemind_dir, candidates);
-    // No decision containing every word means every candidate is a close one that lacks some.
-    let close = candidates
-        .iter()
-        .all(|candidate| !candidate.missing_terms.is_empty());
+    // No decision containing every word means every candidate is a close one: it lacks some, or
+    // it is the opposite of what a negated premise asked for.
+    let close = candidates.iter().all(ResolvedCandidate::is_close);
     let mut message = if close {
         format!(
             "no decision matches every word of '{text}'; {} are close and none is picked for you; nothing was written.",
@@ -182,6 +182,9 @@ fn refuse_unresolved(hivemind_dir: &Path, unresolved: &UnresolvedPremise) -> Cli
             for term in &candidate.missing_terms {
                 let _ = write!(message, " {term}");
             }
+        }
+        if candidate.polarity_mismatch {
+            let _ = write!(message, " polarity: {POLARITY_REASON}");
         }
     }
     message.push_str(

@@ -23,6 +23,12 @@
 //! leads is decided by how many terms each lacks and then by how many of the terms it did match
 //! its title or topic keys carry (see `closeness`), so a decision about the thing asked about
 //! beats one that only mentions the words somewhere in a long rationale.
+//!
+//! A negation in the description ("don't adopt Kafka", "why didn't we ...", "do not ...") is not a
+//! word to find: it never appears in `missing_terms`. It is polarity. Only a decision whose own
+//! title is negated answers a negated description; one that matches every other word with the
+//! opposite polarity is a close candidate whose reason is `POLARITY_REASON`, and is never resolved
+//! to, by a verb that writes or one that reads.
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -44,6 +50,16 @@ use super::QueryResponse;
 /// instead of listing it. Listing needs only half the words (as `recall` does); answering names
 /// the decision as the one asked about, and one shared word out of two is too little for that.
 const MIN_WORDS_TO_ANSWER_CLOSE: usize = 2;
+
+/// Why a decision that has every word asked is still only a close candidate: the description is
+/// negated and the decision's title is not. Shown beside the candidate wherever `missing_terms`
+/// would be, so a reader sees the opposite polarity instead of being told it lacks "not".
+pub const POLARITY_REASON: &str = "question is negated; this decision is not";
+
+/// `serde` skip for a flag that is only worth saying when set.
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 /// Who asks: a verb that acts on the decision it resolves, or one that only shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +89,10 @@ pub struct ResolvedCandidate {
     /// for the close candidates offered when no decision matches every term.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_terms: Vec<String>,
+    /// The description is negated and this decision's title is not (`POLARITY_REASON`). Such a
+    /// decision is a close candidate even with `missing_terms` empty, and is never `Resolved`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub polarity_mismatch: bool,
     /// Other records of this same decision, linked `SAME_AS` (hivemind-83cj): the candidate is the
     /// earliest recorded of them that matches the description, and these are the rest.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -80,6 +100,12 @@ pub struct ResolvedCandidate {
 }
 
 impl ResolvedCandidate {
+    /// Whether this is a close candidate rather than a full match: it lacks some of the words
+    /// asked, or it is the opposite of what a negated description asked for.
+    pub fn is_close(&self) -> bool {
+        !self.missing_terms.is_empty() || self.polarity_mismatch
+    }
+
     /// Whether an answer resolved to this candidate has something to say about how it was
     /// resolved: words it lacks, or other records of the same decision.
     pub fn needs_annotation(&self) -> bool {
@@ -168,10 +194,9 @@ fn resolve_for(
         }
         rows.push(folded.item);
     }
-    let only_close_candidates =
-        !rows.is_empty() && rows.iter().all(|row| !row.missing_terms.is_empty());
+    let only_close_candidates = !rows.is_empty() && rows.iter().all(ResolverCandidateRow::is_close);
     if !only_close_candidates {
-        rows.retain(|row| row.missing_terms.is_empty());
+        rows.retain(|row| !row.is_close());
     }
     rows.sort_by(|left, right| {
         (
@@ -207,6 +232,7 @@ fn resolve_for(
             event_origin: row.event_origin,
             matched_fields: row.matched_fields,
             missing_terms: row.missing_terms,
+            polarity_mismatch: row.polarity_mismatch,
         })
         .collect();
 
@@ -254,22 +280,26 @@ fn closeness(row: &ResolverCandidateRow) -> (usize, Reverse<usize>) {
 /// Whether the first of `rows` (all close, closest first) is the one asked about: it is closer
 /// than the next, by `closeness`, and shares enough terms to be named as the answer. Equal
 /// closeness is not resolved: after it the lists are ordered by rank and recency, which say
-/// nothing about which of two equally close decisions was meant.
+/// nothing about which of two equally close decisions was meant. A decision of the opposite
+/// polarity is never the one asked about, however many words it shares.
 fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bool {
     let Some(first) = rows.first() else {
         return false;
     };
     let shared = term_count.saturating_sub(first.missing_terms.len());
-    shared >= MIN_WORDS_TO_ANSWER_CLOSE
+    !first.polarity_mismatch
+        && shared >= MIN_WORDS_TO_ANSWER_CLOSE
         && rows
             .get(1)
             .is_none_or(|next| closeness(first) < closeness(next))
 }
 
 /// Takes the match of another record of the same decision onto the one shown: the best rank, the
-/// fields either matched, and only the words neither record lacks.
+/// fields either matched, only the words neither record lacks, and the opposite polarity only when
+/// neither record says what was asked.
 fn absorb_record(shown: &mut ResolverCandidateRow, other: ResolverCandidateRow) {
     shown.rank = shown.rank.min(other.rank);
+    shown.polarity_mismatch &= other.polarity_mismatch;
     for field in other.matched_fields {
         if !shown.matched_fields.contains(&field) {
             shown.matched_fields.push(field);
@@ -307,6 +337,7 @@ pub fn resolve_decision_by_id(
                 event_origin: optional_int(row, "event_origin").unwrap_or(0),
                 matched_fields: vec!["id".to_owned()],
                 missing_terms: Vec::new(),
+                polarity_mismatch: false,
                 also_recorded_as: Vec::new(),
             },
         },

@@ -346,6 +346,16 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **One rule for every negation in a question.** "not", "no", "never", "without", "cannot" and
+  every contraction ending in "n't" (doesn't, don't, isn't, can't, …) are never missing words:
+  `recall "why does the decision page not show when a decision was accepted or superseded?"`
+  no longer lists every candidate as "missing: not" and leads with the decision asked about.
+  A negated question also never resolves to the opposite decision: `why`, `verify` and the
+  write verbs resolve it only to a decision whose own title is negated, so "don't adopt Kafka",
+  "didn't we adopt Kafka" and "do not adopt Kafka" no longer answer with "Adopt Kafka". It is
+  listed as a close candidate with `polarity_mismatch: true` (`polarity: question is negated;
+  this decision is not` in `--summary` output) instead of `missing: not`. `recall` ranks as if
+  the negation were absent and uses polarity only to break ties. (hivemind-g889)
 - **A decision that several sessions restate is one decision to `recall` and `why`, not
   three records that make `why` ambiguous.** The classifier now compares each decision it
   extracts with the closest recorded decisions and, when it states one again, records it with

@@ -29,7 +29,7 @@ use crate::queries::{
     ReadOnlyExportFormat as QueryReadOnlyExportFormat, ReadOnlyExportQueryKind,
     RecentActivityResults, RecentDecisionsResults, ResolveOutcome, ResolvedCandidate,
     SituationalResults, SupersessionChain, TimelineEntry, TimelineFact, TitleChange,
-    WaitingRequestsResults,
+    WaitingRequestsResults, POLARITY_REASON,
 };
 use crate::restatement::{AppliedLink, RestatementProposals};
 use crate::{HivemindError, Result};
@@ -1140,13 +1140,19 @@ pub(crate) fn render_resolve_outcome_summary(outcome: &ResolveOutcome) -> String
         ),
         ResolveOutcome::Ambiguous { candidates } => {
             let mut output = String::new();
-            if candidates
-                .iter()
-                .all(|candidate| !candidate.missing_terms.is_empty())
-            {
+            if candidates.iter().all(ResolvedCandidate::is_close) {
+                // Every candidate lacks a word, or has the opposite polarity of a negated question.
+                let reason = if candidates
+                    .iter()
+                    .any(|candidate| !candidate.missing_terms.is_empty())
+                {
+                    "no decision matches every word"
+                } else {
+                    "the question is negated and no decision matching its words is"
+                };
                 let _ = writeln!(
                     output,
-                    "close: no decision matches every word; {} close candidates — resolve with --pick N, #N, or --id",
+                    "close: {reason}; {} close candidates — resolve with --pick N, #N, or --id",
                     candidates.len()
                 );
             } else {
@@ -1166,6 +1172,9 @@ pub(crate) fn render_resolve_outcome_summary(outcome: &ResolveOutcome) -> String
                 );
                 if !candidate.missing_terms.is_empty() {
                     let _ = write!(output, "\tmissing: {}", candidate.missing_terms.join(" "));
+                }
+                if candidate.polarity_mismatch {
+                    let _ = write!(output, "\tpolarity: {POLARITY_REASON}");
                 }
                 output.push('\n');
             }

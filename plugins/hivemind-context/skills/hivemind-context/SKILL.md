@@ -157,9 +157,15 @@ closer than the others (it lacks fewer of the words, or lacks as many but has mo
 of the words it did match in its title or topic keys), it answers with that decision and opens with a
 `close match:` line naming the words the decision does not have (`close_match`
 with `missing_terms` in JSON). Read that line before you rely on the answer: if
-a missing word changes what you asked ("still", "not", a name), ask again with
+a missing word changes what you asked ("still", a name), ask again with
 other words or with `--id`. The write verbs never do this; they list close
 candidates and write nothing.
+
+A newer hivemind reads a negation ("not", "never", "without", "doesn't", "didn't", …) as
+polarity, never as a missing word. A negated question ("why didn't we adopt Kafka") resolves
+only to a decision whose own title is negated; "Adopt Kafka" comes back as a close candidate
+with `polarity_mismatch` in JSON (a `polarity: question is negated; this decision is not`
+line in `--summary`), never as the answer. `recall` ranks as if the negation were absent.
 
 A newer hivemind also folds a decision that was recorded more than once and
 linked as the same decision: the answer shows the earliest matching record and

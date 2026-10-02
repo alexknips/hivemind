@@ -3432,6 +3432,131 @@ fn recall_finds_a_decision_from_a_plain_question_that_shares_most_of_its_words()
 }
 
 #[test]
+fn a_negation_is_polarity_in_every_spelling_never_a_word_the_decision_lacks() -> CliTestResult {
+    // hivemind-g889: "not" and "doesn't" are never missing words, and a negated question never
+    // resolves to the decision that says the opposite.
+    let hivemind_dir = unique_test_dir("query-negation-polarity");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let emit = |title: &str, rationale: &str| -> Result<String, Box<dyn std::error::Error>> {
+        Ok(run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "human:alice",
+            "--hivemind-dir",
+            dir,
+            "emit",
+            "decision.proposed",
+            "--title",
+            title,
+            "--rationale",
+            rationale,
+            "--topic-keys",
+            "negation",
+            "--options",
+            "Adopt this,Leave it open",
+            "--chose",
+            "Adopt this",
+        ]))?)
+    };
+    let status_history = emit(
+        "The decision page shows when a decision was accepted or superseded from the status history",
+        "The status history lists only what the log gives the page.",
+    )?;
+    let kafka = emit(
+        "Adopt Kafka for events",
+        "One log feeds every consumer; we do not need exactly-once delivery.",
+    )?;
+    let ask =
+        |verb: &str, summary: bool, question: &str| -> Result<String, Box<dyn std::error::Error>> {
+            let mut args = vec!["hivemind", "--hivemind-dir", dir, "query"];
+            if summary {
+                args.push("--summary");
+            }
+            args.extend([verb, question]);
+            Ok(run(&Cli::parse_from(args))?)
+        };
+
+    // recall ranks as if the negation were absent: the right decision leads and no candidate is
+    // reported as lacking "not" or the contraction.
+    for question in [
+        "why does the decision page not show when a decision was accepted or superseded?",
+        "why doesn't the decision page show when a decision was accepted or superseded?",
+        "why does the decision page never show when a decision was accepted or superseded?",
+    ] {
+        let answer: serde_json::Value = serde_json::from_str(&ask("recall", false, question)?)?;
+        let items = answer["data"]["ranked"]["items"]
+            .as_array()
+            .expect("recall items");
+        ensure(
+            items
+                .first()
+                .is_some_and(|item| item["decision"]["id"].as_str() == Some(&status_history)),
+            &format!("{question:?} should lead with the status-history decision: {answer}"),
+        )?;
+        for item in items {
+            let missing = item["missing_terms"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            ensure(
+                !missing
+                    .iter()
+                    .any(|term| matches!(term.as_str(), Some("not" | "never" | "doesn't"))),
+                &format!("{question:?} must not report a negation as a missing word: {item}"),
+            )?;
+        }
+    }
+
+    // why / verify with every spelling of the negation: the decision that adopted Kafka is shown
+    // as a close candidate with the polarity reason, never answered as if it were the one asked.
+    for verb in ["why", "verify"] {
+        for question in [
+            "don't adopt kafka",
+            "didn't we adopt kafka",
+            "do not adopt kafka",
+        ] {
+            let summary = ask(verb, true, question)?;
+            ensure(
+                summary.starts_with("close: ") && summary.contains(&kafka),
+                &format!("{verb} {question:?} lists the decision as a close candidate: {summary}"),
+            )?;
+            let kafka_line = summary
+                .lines()
+                .find(|line| line.contains(&kafka))
+                .unwrap_or_default();
+            ensure(
+                kafka_line.contains("polarity: question is negated; this decision is not"),
+                &format!("{verb} {question:?} says why it is only close: {summary}"),
+            )?;
+            ensure(
+                !kafka_line.contains("missing:"),
+                &format!("{verb} {question:?} lacks no word, only the polarity: {summary}"),
+            )?;
+            let json: serde_json::Value = serde_json::from_str(&ask(verb, false, question)?)?;
+            ensure_json_eq(
+                &json["data"]["outcome"],
+                serde_json::json!("ambiguous"),
+                "a negated question never resolves to the decision that says the opposite",
+            )?;
+            ensure_json_eq(
+                &json["data"]["candidates"][0]["polarity_mismatch"],
+                serde_json::json!(true),
+                "the candidate carries the polarity reason",
+            )?;
+        }
+        // Without the negation the decision still answers.
+        let answered = ask(verb, true, "why did we adopt kafka")?;
+        ensure(
+            !answered.starts_with("close: ") && !answered.starts_with("ambiguous"),
+            &format!("{verb} 'why did we adopt kafka' still resolves: {answered}"),
+        )?;
+    }
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn digest_cli_returns_decisions_in_window() {
     let hivemind_dir = unique_test_dir("digest");
     let decision_id = run(&Cli::parse_from([

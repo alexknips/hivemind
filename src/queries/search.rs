@@ -24,7 +24,7 @@ use super::shared::{
     relation_edges_by_kind, relation_sources, relation_targets,
 };
 use super::status::{derive_decision_status, derive_hypothesis_status, DecisionStatus};
-use super::terms::{resolver_terms, stem, word_stems};
+use super::terms::{is_negated_text, resolver_question, stem, word_stems};
 use super::{QueryContext, QueryResponse};
 
 const MAX_SNIPPETS_PER_RESULT: usize = 5;
@@ -282,6 +282,10 @@ pub fn search_decisions_with_ledger(
 /// never presented as a complete one. Filters, project scope, ordering ties and pagination are
 /// those of `search_decisions_with_ledger`.
 ///
+/// `negated` says the question was asked with a negation ("why doesn't ..."), which the request's
+/// text no longer carries. It never narrows the answer and is never a missing term: among
+/// decisions that match equally, one whose own title is negated comes first.
+///
 /// One in-memory path for every backend: SQLite's FTS5 only matches whole tokens (every term,
 /// exactly as written), which is the strictness this exists to relax.
 pub fn search_decisions_fluent(
@@ -289,8 +293,15 @@ pub fn search_decisions_fluent(
     ledger: &impl EventLedger,
     graph: &impl GraphView,
     request: &SearchDecisionRequest,
+    negated: bool,
 ) -> Result<QueryResponse<DecisionSearchResults>> {
-    search_with_ledger(context, ledger, graph, request, Matching::Fluent)
+    search_with_ledger(
+        context,
+        ledger,
+        graph,
+        request,
+        Matching::Fluent { negated },
+    )
 }
 
 /// How a search request's free text is matched against a decision.
@@ -298,8 +309,9 @@ pub fn search_decisions_fluent(
 enum Matching {
     /// Every term as a substring (`search`).
     Literal,
-    /// Stemmed terms, close matches after the full ones (`recall`).
-    Fluent,
+    /// Stemmed terms, close matches after the full ones (`recall`); `negated` is the polarity of
+    /// the question.
+    Fluent { negated: bool },
 }
 
 fn search_with_ledger(
@@ -314,7 +326,7 @@ fn search_with_ledger(
     let terms = query_terms(query.as_deref());
     let search_terms = match matching {
         Matching::Literal => SearchTerms::literal(&terms),
-        Matching::Fluent => SearchTerms::fluent(&terms),
+        Matching::Fluent { negated } => SearchTerms::fluent(&terms, negated),
     };
     let topic_keys = normalized_filter_values(&request.topic_keys);
     let statuses = normalized_statuses(&request.statuses);
@@ -470,6 +482,7 @@ pub fn search_decisions_fts_with_context(
             .unwrap_or_else(|| SearchMatchInfo {
                 rank: 3,
                 missing_terms: Vec::new(),
+                polarity_mismatch: false,
                 headline_terms: 0,
                 matched_fields: Vec::new(),
                 snippets: Vec::new(),
@@ -478,6 +491,7 @@ pub fn search_decisions_fts_with_context(
             None => SearchMatchInfo {
                 rank: 4,
                 missing_terms: Vec::new(),
+                polarity_mismatch: false,
                 headline_terms: 0,
                 matched_fields: Vec::new(),
                 snippets: Vec::new(),
@@ -578,9 +592,11 @@ fn narrow_to_scope(
 
 /// Own project first, then the parent's, then a dependency's; within each, the decisions that
 /// lack the fewest of the question's terms, then (among close matches) the ones whose title or
-/// topic keys carry more of the terms they did match, then (rank, id) order. An unscoped document
-/// has no relation and a literal match lacks nothing, so an unscoped `search` keeps the plain
-/// (rank, id) order.
+/// topic keys carry more of the terms they did match, then (rank, id) order. A negated question
+/// does not change that order: among decisions tied on all of it, the ones whose title is negated
+/// too come before the ones whose title is not. An unscoped document has no relation and a literal
+/// match lacks nothing and is never negated, so an unscoped `search` keeps the plain (rank, id)
+/// order.
 fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
     scored.sort_by(|left, right| {
         (
@@ -588,6 +604,7 @@ fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
             left.result.missing_terms.len(),
             Reverse(left.headline_terms),
             left.rank,
+            left.polarity_mismatch,
             &left.id,
         )
             .cmp(&(
@@ -595,6 +612,7 @@ fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
                 right.result.missing_terms.len(),
                 Reverse(right.headline_terms),
                 right.rank,
+                right.polarity_mismatch,
                 &right.id,
             ))
     });
@@ -856,6 +874,8 @@ struct ScoredDecisionSearchResult {
     rank: u8,
     id: String,
     event_origin: i64,
+    /// `SearchMatchInfo::polarity_mismatch`.
+    polarity_mismatch: bool,
     /// `SearchMatchInfo::headline_terms`: for a close match, how many of the terms its title or
     /// topic keys contain.
     headline_terms: usize,
@@ -1093,6 +1113,7 @@ fn collect_graph_search_results(
             rank: match_info.rank,
             id,
             event_origin,
+            polarity_mismatch: match_info.polarity_mismatch,
             headline_terms: match_info.headline_terms,
             fields,
             result: DecisionSearchResult {
@@ -1132,9 +1153,20 @@ pub(crate) struct ResolverCandidateRow {
     pub(crate) matched_fields: Vec<String>,
     /// Description terms this decision does not contain; empty for a full match.
     pub(crate) missing_terms: Vec<String>,
+    /// The description is negated and this decision's title is not: it is a close candidate even
+    /// when it contains every term, and is never resolved to.
+    pub(crate) polarity_mismatch: bool,
     /// For a close candidate, how many description terms its title or topic keys contain; 0 for a
     /// full match.
     pub(crate) headline_terms: usize,
+}
+
+impl ResolverCandidateRow {
+    /// Whether this is a close candidate rather than a full match: it lacks some of the terms, or
+    /// it is the opposite of what a negated description asked for.
+    pub(crate) fn is_close(&self) -> bool {
+        !self.missing_terms.is_empty() || self.polarity_mismatch
+    }
 }
 
 /// Backend-agnostic candidate rows for resolve-by-description: reuses
@@ -1146,11 +1178,11 @@ pub(crate) fn collect_resolver_candidates(
     topic_keys: &[String],
     close: CloseMatch,
 ) -> Result<Vec<ResolverCandidateRow>> {
-    let terms = resolver_terms(description);
+    let question = resolver_question(description);
     let scored = collect_graph_search_results(
         graph,
         Some(description),
-        &SearchTerms::resolver(&terms, close),
+        &SearchTerms::resolver(&question.terms, close, question.negated),
         topic_keys,
         &[],
         &[],
@@ -1165,6 +1197,7 @@ pub(crate) fn collect_resolver_candidates(
             event_origin: scored.event_origin,
             matched_fields: scored.result.matched_fields,
             missing_terms: scored.result.missing_terms,
+            polarity_mismatch: scored.polarity_mismatch,
             headline_terms: scored.headline_terms,
         })
         .collect())
@@ -1203,6 +1236,8 @@ struct SearchMatchInfo {
     rank: u8,
     /// Query terms no field matched; non-empty only for a close match.
     missing_terms: Vec<String>,
+    /// The question is negated and the decision's title is not (see `SearchTerms::negated`).
+    polarity_mismatch: bool,
     /// For a close match, how many of the terms the decision's title or topic keys contain; 0 for
     /// a full match, which `rank` already orders. A decision about a thing says it in its
     /// headline, so among close matches lacking the same number of terms, the one whose headline
@@ -1269,6 +1304,10 @@ struct SearchTerms<'a> {
     terms: &'a [String],
     stemmed: bool,
     close: CloseMatch,
+    /// The question was asked negated ("don't adopt Kafka"). The negation is not one of `terms`:
+    /// it never makes a decision lack a word. It only marks a decision whose title is not negated
+    /// as the opposite of what was asked (`SearchMatchInfo::polarity_mismatch`).
+    negated: bool,
 }
 
 impl<'a> SearchTerms<'a> {
@@ -1277,22 +1316,25 @@ impl<'a> SearchTerms<'a> {
             terms,
             stemmed: false,
             close: CloseMatch::Never,
+            negated: false,
         }
     }
 
-    fn resolver(terms: &'a [String], close: CloseMatch) -> Self {
+    fn resolver(terms: &'a [String], close: CloseMatch, negated: bool) -> Self {
         Self {
             terms,
             stemmed: true,
             close,
+            negated,
         }
     }
 
-    fn fluent(terms: &'a [String]) -> Self {
+    fn fluent(terms: &'a [String], negated: bool) -> Self {
         Self {
             terms,
             stemmed: true,
             close: CloseMatch::Half,
+            negated,
         }
     }
 }
@@ -1307,6 +1349,7 @@ fn evaluate_search_match(
         return Some(SearchMatchInfo {
             rank: 4,
             missing_terms: Vec::new(),
+            polarity_mismatch: false,
             headline_terms: 0,
             matched_fields: Vec::new(),
             snippets: Vec::new(),
@@ -1379,8 +1422,16 @@ fn evaluate_search_match(
         return None;
     }
 
+    // The title is the sentence that states what was decided; a rationale says "not" for a dozen
+    // reasons that leave the decision itself positive.
+    let polarity_mismatch = search_terms.negated
+        && !fields
+            .iter()
+            .any(|field| field.field == "decision.title" && is_negated_text(&field.value));
+
     Some(SearchMatchInfo {
         rank,
+        polarity_mismatch,
         headline_terms: if missing_terms.is_empty() {
             0
         } else {

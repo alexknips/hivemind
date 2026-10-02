@@ -102,15 +102,8 @@ No new matching logic, no configuration knobs, no learned weights.
 its keywords: "why did we move the demo cell to shared Postgres" finds
 "Demo cell storage moves to shared Postgres backend…".
 `resolver_terms` (`src/queries/terms.rs`) trims punctuation and drops question
-and function words (why, did, we, the, to, …) but keeps bare negations (not,
-no, never, without), so "do not adopt Kafka" cannot resolve to the decision
-that adopted it. Negated-auxiliary contractions (doesn't, don't, isn't,
-aren't, won't, didn't) are dropped, not kept: a why-question asks with them
-("why doesn't the decision page show X") to name an absence of behavior, not
-the decision's own polarity, and a decision's text essentially never contains
-the contraction verbatim — kept as a required term it only sank the right
-answer behind every close candidate tied on missing the same unmatchable word
-(hivemind-m974). The verbs people ask about a decision with (pick, choose, decide,
+and function words (why, did, we, the, to, …) and negations (one rule, see
+**Negation** below). The verbs people ask about a decision with (pick, choose, decide,
 and "go with", "settle on", "opt for", each with its past and `-s` forms) and
 the adverbs they put in a why-question (still, again, ever, even, really,
 actually, now, anymore, currently) are question words too, so "why did we pick
@@ -125,6 +118,36 @@ whole-word equality, never by prefix, so `string` does not match `strategy`),
 and a repeated word counts once. A description made only of stop words falls back to its literal words.
 The ambiguity gate (§1.4) is unchanged, and `search` keeps literal substring
 matching.
+
+**Negation.** One rule for every spelling of "not" (hivemind-m974, hivemind-g889):
+the bare `not`, `no`, `never`, `without` and `cannot`, and any contraction that
+ends in `n't` (doesn't, don't, isn't, aren't, won't, didn't, can't, …), with a
+typographic apostrophe read as a straight one. A negation is polarity, not a
+word to find.
+
+- It is never a term. It is never listed in `missing_terms` and never lowers a
+  candidate's rank: a decision's text almost never contains "doesn't" verbatim,
+  and a "not" matched as a word counted against every candidate, so the right
+  decision sank behind any decision that shared one more ordinary word.
+- A negated question resolves, for `why`, `verify`, `chain`, `compact-view` and
+  for every verb that writes, only to a decision whose own title is negated, in
+  any spelling (whole words: "Notion" is not "not"). The title is what states
+  what was decided; a rationale says "not" for many reasons that leave the
+  decision itself positive. A decision that matches every other word but is not
+  negated stays a close candidate and is never `Resolved`: its reason is the
+  polarity, `polarity_mismatch: true` on the candidate in JSON and
+  `polarity: question is negated; this decision is not` in `--summary` output
+  where `missing:` would be. So "don't adopt Kafka", "didn't we adopt Kafka" and
+  "do not adopt Kafka" never resolve to the decision "Adopt Kafka"; they resolve
+  to "Do not adopt Kafka" when that exists, and close candidates are dropped when
+  one does, as they are for missing words.
+- `recall` ranks as if the negation were absent. Polarity only breaks a tie: among
+  decisions equal on closeness, headline and rank tier, one whose title is negated
+  comes before one whose title is not, and a negated question never lets a close
+  match outrank a full one. The negation is listed in `ignored_words`.
+- A question with no negation behaves as before, whatever a decision's title says.
+  A description made only of question words and negations ("why not") is searched
+  as written, like "why did we", and is not read as negated.
 
 **Close candidates.** A question often names a word the record never uses
 ("why did we *finally* move the demo cell..."). When no decision matches every

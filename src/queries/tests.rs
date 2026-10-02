@@ -17,7 +17,7 @@ use crate::projector::{
 use crate::Result;
 
 use super::neighborhood::neighborhood_structure;
-use super::terms::{content_query, resolver_terms, stem};
+use super::terms::{content_query, is_negated_text, resolver_question, resolver_terms, stem};
 use super::test_fixtures::Scenario;
 use super::*;
 
@@ -1212,6 +1212,7 @@ fn fluent_answer(
             limit,
             ..SearchDecisionRequest::default()
         },
+        false,
     )?;
     let items = response
         .data
@@ -1412,6 +1413,100 @@ fn fluent_search_needs_at_least_half_the_terms() -> Result<()> {
     Ok(())
 }
 
+/// The ids of a fluent search for `query`, asked as a negated question or not, in the order
+/// returned, with each item's missing terms.
+fn fluent_ids(scenario: &Scenario, query: &str, negated: bool) -> Result<FluentItems> {
+    let graph = scenario.graph()?;
+    let response = search_decisions_fluent(
+        &QueryContext::local(),
+        scenario.ledger(),
+        &graph,
+        &SearchDecisionRequest {
+            query: Some(query.to_owned()),
+            limit: 10,
+            ..SearchDecisionRequest::default()
+        },
+        negated,
+    )?;
+    Ok(response
+        .data
+        .items
+        .iter()
+        .map(|item| (item.decision.id.clone(), item.missing_terms.clone()))
+        .collect())
+}
+
+#[test]
+fn a_negated_question_ranks_as_if_the_negation_were_absent_and_polarity_breaks_ties() -> Result<()>
+{
+    let scenario = titled_decisions(&[
+        (
+            "d:a-positive",
+            "The decision page shows when a decision was accepted",
+            "The status history carries it.",
+        ),
+        (
+            "d:b-negated",
+            "The decision page does not show when a decision was accepted",
+            "The status history is not the log.",
+        ),
+        (
+            "d:c-unrelated",
+            "Pricing is chosen after the trial",
+            "Testers answer a real price more honestly.",
+        ),
+    ])?;
+
+    // Not negated: the tie is broken by id, as before.
+    let plain = fluent_ids(&scenario, "page show accepted", false)?;
+    assert_eq!(
+        plain,
+        vec![
+            ("d:a-positive".to_owned(), vec![]),
+            ("d:b-negated".to_owned(), vec![])
+        ]
+    );
+
+    // Negated: the same two decisions match in full and neither lacks the negation; the one whose
+    // own title is negated comes first because they are otherwise tied.
+    let negated = fluent_ids(&scenario, "page show accepted", true)?;
+    assert_eq!(
+        negated,
+        vec![
+            ("d:b-negated".to_owned(), vec![]),
+            ("d:a-positive".to_owned(), vec![])
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_negated_question_never_makes_a_close_match_rank_below_a_full_one() -> Result<()> {
+    let scenario = titled_decisions(&[
+        (
+            "d:a-full",
+            "The decision page shows when a decision was accepted",
+            "The status history carries it.",
+        ),
+        (
+            "d:b-close",
+            "The decision page does not show who accepted a decision",
+            "Actors are listed elsewhere.",
+        ),
+    ])?;
+
+    // Polarity is only a tie-break: the full match leads although the close one is negated.
+    let negated = fluent_ids(&scenario, "page show when accepted", true)?;
+    assert_eq!(
+        negated,
+        vec![
+            ("d:a-full".to_owned(), vec![]),
+            ("d:b-close".to_owned(), vec!["when".to_owned()]),
+        ]
+    );
+    Ok(())
+}
+
 #[test]
 fn fluent_search_paginates_across_full_and_close_matches() -> Result<()> {
     let scenario = sign_in_and_pricing()?;
@@ -1421,8 +1516,13 @@ fn fluent_search_paginates_across_full_and_close_matches() -> Result<()> {
         limit: 2,
         ..SearchDecisionRequest::default()
     };
-    let first =
-        search_decisions_fluent(&QueryContext::local(), scenario.ledger(), &graph, &request)?;
+    let first = search_decisions_fluent(
+        &QueryContext::local(),
+        scenario.ledger(),
+        &graph,
+        &request,
+        false,
+    )?;
     assert!(
         first.truncated,
         "a third match is left, so the answer says so"
@@ -1431,8 +1531,13 @@ fn fluent_search_paginates_across_full_and_close_matches() -> Result<()> {
     assert_eq!(first.data.items.len(), 2);
 
     request.cursor = first.data.next_cursor;
-    let second =
-        search_decisions_fluent(&QueryContext::local(), scenario.ledger(), &graph, &request)?;
+    let second = search_decisions_fluent(
+        &QueryContext::local(),
+        scenario.ledger(),
+        &graph,
+        &request,
+        false,
+    )?;
     assert!(!second.truncated);
     assert_eq!(second.data.items.len(), 1);
     assert_eq!(second.data.items[0].decision.id, "d:signin");
@@ -1508,23 +1613,23 @@ fn stem_leaves_ids_and_short_words_alone() {
 }
 
 #[test]
-fn resolver_terms_drop_question_words_but_keep_negations() {
+fn resolver_terms_drop_question_words_and_negations() {
     assert_eq!(
         resolver_terms("Why did we move the demo cell to shared Postgres?"),
         vec!["move", "demo", "cell", "shared", "postgres"]
     );
-    assert_eq!(
-        resolver_terms("do not adopt kafka"),
-        vec!["not", "adopt", "kafka"]
-    );
+    // A negation is polarity, not a word to find: it is not a term, but the question is negated.
+    assert_eq!(resolver_terms("do not adopt kafka"), vec!["adopt", "kafka"]);
+    assert!(resolver_question("do not adopt kafka").negated);
+    assert!(!resolver_question("why did we adopt kafka").negated);
 }
 
 #[test]
-fn resolver_terms_drop_why_question_negation_contractions() {
-    // "doesn't"/"don't"/"isn't"/"aren't"/"won't"/"didn't" frame a why-question about an absence
-    // of behavior; a decision's own text essentially never contains the contraction verbatim, so
-    // it is dropped the same as "did"/"does" (hivemind-m974). "decision"/"the"/"or" are already
-    // dropped question words, unrelated to this fix.
+fn resolver_terms_drop_every_negation_spelling() {
+    // "doesn't"/"don't"/"isn't"/"aren't"/"won't"/"didn't" ask about an absence of behavior; a
+    // decision's own text essentially never contains the contraction verbatim, so none is a term
+    // (hivemind-m974), and the bare "not" is held to the same rule (hivemind-g889). "decision"/
+    // "the"/"or" are already dropped question words, unrelated to this fix.
     assert_eq!(
         resolver_terms("why doesn't the decision page show accepted or superseded"),
         vec!["page", "show", "accepted", "superseded"]
@@ -1549,12 +1654,77 @@ fn resolver_terms_drop_why_question_negation_contractions() {
         resolver_terms("why didn't the decision page show this"),
         vec!["page", "show"]
     );
-    // The bare negation word is still kept: dropping it would let "do not adopt kafka" resolve
-    // to the decision that adopted it (see the test above).
     assert_eq!(
         resolver_terms("why does the decision page not show this"),
-        vec!["page", "not", "show"]
+        vec!["page", "show"]
     );
+    // Every other negation spells the same: the bare ones, the other contractions, a cannot, and a
+    // typographic apostrophe.
+    for question in [
+        "why does the page no longer show this",
+        "why does the page never show this",
+        "why do we show this without a page",
+        "why can't the page show this",
+        "why cannot the page show this",
+        "why wasn't the page shown",
+        "why don\u{2019}t we show the page",
+    ] {
+        let asked = resolver_question(question);
+        assert!(asked.negated, "{question:?} is negated");
+        for negation in [
+            "no",
+            "never",
+            "without",
+            "can't",
+            "cannot",
+            "wasn't",
+            "don\u{2019}t",
+            "don't",
+        ] {
+            assert!(
+                !asked.terms.iter().any(|term| term == negation),
+                "{question:?} must not search for {negation:?}: {:?}",
+                asked.terms
+            );
+        }
+    }
+}
+
+#[test]
+fn a_question_of_only_framing_and_negations_is_searched_as_written() {
+    // Nothing is left to ask about, so the words are searched as written -- as "why did we" is --
+    // rather than matching every decision; there is no polarity to apply to nothing.
+    let asked = resolver_question("why not");
+    assert_eq!(asked.terms, vec!["why", "not"]);
+    assert!(!asked.negated);
+    let bare = content_query("why didn't we");
+    assert_eq!(bare.query, None);
+    assert!(!bare.negated);
+}
+
+#[test]
+fn negated_text_is_whole_words_only() {
+    for negated in [
+        "Do not adopt Kafka",
+        "Don't adopt Kafka",
+        "Don\u{2019}t adopt Kafka",
+        "NO Kafka for events",
+        "Never page on-call for this",
+        "Ship without TLS",
+        "The cli cannot read it",
+        "Sign-in isn't blocked by billing",
+    ] {
+        assert!(is_negated_text(negated), "{negated:?} is negated");
+    }
+    for positive in [
+        "Adopt Kafka for events",
+        "Notion is the commercial layer",
+        "Take a note of every export",
+        "Another nominal cost",
+        "Use 'quotes' freely",
+    ] {
+        assert!(!is_negated_text(positive), "{positive:?} is not negated");
+    }
 }
 
 #[test]
@@ -1674,15 +1844,25 @@ fn content_query_drops_decision_verbs_and_reports_them() {
 }
 
 #[test]
-fn content_query_drops_why_question_negation_contractions() {
-    // recall's `content_query` shares `resolver_terms`' question-word list, so a "why doesn't…"
-    // recall query no longer requires "doesn't" of every candidate (hivemind-m974).
+fn content_query_drops_every_negation_and_says_the_question_is_negated() {
+    // recall's `content_query` shares `resolver_terms`' question words and negations, so a "why
+    // doesn't…" or "why does … not" recall query requires neither of every candidate (hivemind-m974,
+    // hivemind-g889); the negation is reported as ignored and as the question's polarity.
     let asked = content_query("why doesn't the decision page show accepted or superseded");
     assert_eq!(
         asked.query.as_deref(),
         Some("page show accepted superseded")
     );
     assert!(asked.ignored.contains(&"doesn't".to_owned()));
+    assert!(asked.negated);
+
+    let spelled_out =
+        content_query("why does the decision page not show when a decision was accepted");
+    assert_eq!(spelled_out.query.as_deref(), Some("page show accepted"));
+    assert!(spelled_out.ignored.contains(&"not".to_owned()));
+    assert!(spelled_out.negated);
+
+    assert!(!content_query("why does the decision page show accepted").negated);
 }
 
 #[test]

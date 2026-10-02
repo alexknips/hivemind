@@ -427,7 +427,10 @@ pub fn recall_decisions(
         cursor: request.cursor.clone(),
         project: request.project.clone(),
     };
-    let search_response = search_decisions_fluent(context, ledger, graph, &search_req)?;
+    // A negated question ("why doesn't ...") does not narrow the answer; among decisions that
+    // match equally, one whose own title is negated comes first.
+    let negated = content.as_ref().is_some_and(|content| content.negated);
+    let search_response = search_decisions_fluent(context, ledger, graph, &search_req, negated)?;
     let truncated = search_response.truncated;
     let mut search_data = search_response.data;
     // A decision recorded more than once and linked `SAME_AS` is one item, not a list of copies.

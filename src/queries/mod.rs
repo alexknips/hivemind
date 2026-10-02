@@ -115,7 +115,7 @@ pub use record_facts::{
 pub use relevant::get_relevant_decisions;
 pub use resolve::{
     annotate_resolution, resolve_decision_by_description, resolve_decision_by_id,
-    resolve_decision_for_reading, ResolveOutcome, ResolvedCandidate,
+    resolve_decision_for_reading, ResolveOutcome, ResolvedCandidate, POLARITY_REASON,
 };
 pub use same_as::{
     decision_headings, same_as_groups, supersession_pairs, DecisionHeading, RecordedCopy,
