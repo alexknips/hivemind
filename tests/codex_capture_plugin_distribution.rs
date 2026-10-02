@@ -1244,6 +1244,105 @@ fn capture_script_forwards_grounding_flags_and_refuses_an_ungrounded_capture() -
     Ok(())
 }
 
+#[test]
+fn capture_script_answers_a_question_that_was_asked_and_the_request_stops_waiting() -> TestResult<()>
+{
+    // hivemind-ig9i: `--answers <request id>` takes a value. The script once let it fall through
+    // to its generic unknown-flag branch, which forwarded the flag alone and glued the request id
+    // onto the capture text: the CLI refused ("a value is required"), nothing was written and the
+    // request stayed waiting. The plugin has to answer an ask the way the CLI does.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let hivemind_dir = unique_temp_dir("hivemind-capture-script-answers")?;
+    let script = root.join("plugins/hivemind-capture/scripts/capture.sh");
+    let cli = |args: &[&str]| -> TestResult<Value> {
+        let output = Command::new(env!("CARGO_BIN_EXE_hivemind"))
+            .args(["--json", "--actor", "human:checker", "--hivemind-dir"])
+            .arg(&hivemind_dir)
+            .args(args)
+            .output()?;
+        require(
+            output.status.success(),
+            format!(
+                "hivemind {args:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )?;
+        Ok(serde_json::from_slice(&output.stdout)?)
+    };
+
+    let asked = cli(&["ask", "Which currency do invoices use?"])?;
+    let request_id = asked["request_id"]
+        .as_str()
+        .ok_or("ask returns the request id")?
+        .to_owned();
+    let waiting = cli(&["query", "get_waiting_requests"])?;
+    require_eq(
+        waiting["data"]["items"].as_array().map(Vec::len),
+        Some(1),
+        "the ask is waiting before anything answers it",
+    )?;
+
+    let captured = Command::new(&script)
+        .current_dir(markerless_cwd())
+        .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+        .env("HIVEMIND_DIR", &hivemind_dir)
+        .env("CLAUDE_PROJECT_DIR", root)
+        .env("CLAUDE_SESSION_ID", "answers-script-session")
+        .env_remove("GC_AGENT")
+        .env_remove("GC_ALIAS")
+        .env_remove("GC_RIG")
+        .args([
+            "Invoices are issued in euro",
+            "--kind",
+            "decision",
+            "--title",
+            "Invoices are issued in euro",
+            "--rationale",
+            "Customers are in the euro area, so one currency keeps invoicing simple",
+            "--topic-keys",
+            "billing",
+            "--options",
+            "Euro,Multi-currency",
+            "--chose",
+            "Euro",
+            "--answers",
+            &request_id,
+            "--rests-on-assumption",
+            "Customers are in the euro area",
+        ])
+        .output()?;
+    require(
+        captured.status.success(),
+        format!(
+            "answering a request through the plugin failed: {}",
+            String::from_utf8_lossy(&captured.stderr)
+        ),
+    )?;
+
+    let waiting = cli(&["query", "get_waiting_requests"])?;
+    require_eq(
+        waiting["data"]["items"].as_array().map(Vec::len),
+        Some(0),
+        "the answered request leaves the waiting list",
+    )?;
+    let proposal = event_with_type(&hivemind_dir, hivemind::events::EventType::DecisionProposed)?;
+    let decision_id = proposal.payload["decision_id"]
+        .as_str()
+        .ok_or("the proposal names its decision")?;
+    require(
+        !proposal.payload.to_string().contains(&request_id),
+        "the request id is a link, not part of the decision's text",
+    )?;
+    let why = cli(&["query", "why", "--id", decision_id])?;
+    require(
+        why["data"]["root"]["asked_at"].is_string(),
+        format!("why shows when the answered question was asked: {why}"),
+    )?;
+
+    let _ = fs::remove_dir_all(hivemind_dir);
+    Ok(())
+}
+
 /// hivemind-s15q.15: the capture scripts ask the CLI to work a decision's project out from the
 /// folder they run in (the nearest `.hivemind-project` walking up). Tests that are not about
 /// projects run from here instead of the repository root, where this rig's own marker sits: the

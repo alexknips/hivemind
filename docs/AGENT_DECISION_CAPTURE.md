@@ -243,6 +243,12 @@ and dropping trailing punctuation share one node. The match is exact and
 deterministic (no ranking, no model); a question worded differently is a
 different question. The reply's `question_id` names the node.
 
+A question someone asked with `hivemind ask` is a request that stays on the waiting list
+(`hivemind query get_waiting_requests`) until a decision answers it. Answer it with
+`--answers <request id>` (MCP `answers`; `capture.sh` forwards it) in place of `--question`: the
+decision is linked to the request's question, the request leaves the list, and `why` shows
+`asked_at` beside `answered_at`.
+
 What sharing buys, in every answer:
 
 - `also answered by: <title> [status]` under the question, one line per other

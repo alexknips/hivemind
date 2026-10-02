@@ -48,6 +48,11 @@ reply as `--rests-on-evidence`. They go in `--quote` (verbatim), paired with
 answers, one line (optional; decisions that answer the same question share a node). Pass `--confidence low|medium|high` only when
 the decider's own words state it; omit it otherwise.
 
+A question someone asked with `hivemind ask` waits until a decision answers it
+(`hivemind query get_waiting_requests` lists them with their request ids). To
+answer one, pass its request id as `--answers <request id>` in place of
+`--question`: the decision is linked to the request and the request stops waiting.
+
 A capture that names nothing exits 2 and writes nothing. After any refusal (no
 grounding, an ambiguous premise, no match), add the grounding and re-run: never
 drop the capture. For an ambiguous premise, re-run with `--rests-on-decision

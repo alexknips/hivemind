@@ -36,7 +36,11 @@ decider's verbatim words) requires --question (the question those words
 answer, spelled out) — a quote with no stated question is unreadable once the
 source conversation is gone. --question also stands alone: it names the
 question the decision answers (one line, optional), and decisions whose
-question matches share one question node.
+question matches share one question node. --answers REQUEST_ID links the
+decision to a question that was asked with `hivemind ask` (the request id is
+the one `hivemind query get_waiting_requests` lists): the request stops
+waiting, and why shows asked_at and answered_at. It stands in for --question,
+so the two are not given together.
 
 Every decision capture must say what it rests on; a capture that names nothing
 is refused (exit 2) and nothing is written. Answer with at least one of:
@@ -418,7 +422,7 @@ while [[ $# -gt 0 ]]; do
       HIVEMIND_DIR="${2:-}"
       shift 2
       ;;
-    --title|--rationale|--topic-keys|--options|--chose|--decided-by|--delegated-by|--hypotheses|--evidence|--quote|--question|--rests-on-decision|--rests-on-evidence|--evidence-source|--rests-on-assumption|--would-change-if|--check-by|--confidence|--project|--project-source|--declare-topic)
+    --title|--rationale|--topic-keys|--options|--chose|--decided-by|--delegated-by|--hypotheses|--evidence|--quote|--question|--answers|--rests-on-decision|--rests-on-evidence|--evidence-source|--rests-on-assumption|--would-change-if|--check-by|--confidence|--project|--project-source|--declare-topic)
       FORWARDED+=("$1" "${2:-}")
       shift 2
       ;;

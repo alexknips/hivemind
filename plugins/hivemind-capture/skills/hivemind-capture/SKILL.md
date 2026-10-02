@@ -198,6 +198,13 @@ plugins/hivemind-capture/scripts/capture.sh "Keep the retry budget at 3" \
   answering a question that was already answered; a decision already captured
   without one can be linked afterwards with `hivemind ground "<decision>" --answers
   "<question>"`.
+- A question that was asked with `hivemind ask` is a request, and it is listed as
+  waiting (`hivemind query get_waiting_requests`) until a decision answers it.
+  Answer it by passing the request id the list shows as `--answers <request id>`
+  on the capture, in place of `--question`: the decision is linked to the
+  request, the request leaves the waiting list, and `why` shows `asked_at` and
+  `answered_at`. `--answers` takes a request id; `hivemind ground --answers` takes
+  the question's text.
 
 ### Questions you ask with AskUserQuestion (Claude Code)
 

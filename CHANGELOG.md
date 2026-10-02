@@ -350,6 +350,15 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The capture plugin can answer a question that was asked.** `capture.sh --answers <request
+  id>` (a request `hivemind ask` wrote, listed by `query get_waiting_requests`) was refused with
+  "a value is required for '--answers'" and wrote nothing: the script did not know the flag takes
+  a value, so it sent the flag alone and put the request id into the capture text. It now passes
+  the request id through, so the decision is linked to the request, the request leaves the waiting
+  list and `why` shows `asked_at` and `answered_at`, exactly as `emit decision.capture --answers`
+  does. The capture skill and `/hivemind-capture:capture` now say how to answer an asked
+  question. A CLI older than the flag (the 0.7.0 release) refuses `--answers` with its own
+  unexpected-argument error. (hivemind-ig9i)
 - **One rule for every negation in a question.** "not", "no", "never", "without", "cannot" and
   every contraction ending in "n't" (doesn't, don't, isn't, can't, …) are never missing words:
   `recall "why does the decision page not show when a decision was accepted or superseded?"`
