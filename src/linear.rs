@@ -7,22 +7,43 @@
 //! `Authorization` header (not `Bearer`).  The endpoint is always
 //! `https://api.linear.app/graphql`.
 //!
+//! # The reference consumer of `get_suggestions`
+//! The connector keeps no list of what it has filed. It asks `get_suggestions` for the findings
+//! nobody has acknowledged, files one ticket for each, and acknowledges each finding
+//! (`acknowledge_suggestion` semantics: channel `linear`, action `acted`), so the next run is
+//! not shown it. A finding whose basis changes has a new `finding_id` and is filed again. This
+//! is the pattern for any sink: "where" suggestions go is the consumer's own configuration, and
+//! HiveMind records only that a finding was surfaced and what was done about it.
+//!
 //! # Layer discipline
 //! This is an **output connector** used exclusively by the `quality-scan` CLI
 //! command (layer-3 adjacent: it sends derived signals outward to a human
 //! review queue).  It must not be called from layer 1 (ingest) or layer 2
-//! (queries).
+//! (queries).  It reads through the layer-2 suggestions query and writes only
+//! through the ordinary actor-attributed command path.
 
 use std::fmt::Write as _;
 
+use chrono::{DateTime, Utc};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
+use crate::commands::Commands;
 use crate::error::CliError;
-use crate::quality_profile::{dimension_markdown, ScanFinding};
+use crate::events::AckAction;
+use crate::ledger::EventLedger;
+use crate::projector::GraphView;
+use crate::quality_profile::{
+    dimension_markdown, get_suggestions_at, ScanFinding, ScanReport, ScanRequest,
+    SuggestionsRequest,
+};
+use crate::queries::QueryResponse;
 use crate::Result;
 
 const LINEAR_API_URL: &str = "https://api.linear.app/graphql";
+
+/// The `channel` the connector records its acknowledgements under: a label the consumer owns.
+pub const ACK_CHANNEL: &str = "linear";
 
 // ---------------------------------------------------------------------------
 // Client
@@ -244,6 +265,103 @@ pub fn format_issue_description(scanned: &ScanFinding, hivemind_base_url: Option
     out.push_str("---\n*Filed by HiveMind quality-scan. Human review required — HiveMind never auto-acts on decisions.*\n");
 
     out
+}
+
+// ---------------------------------------------------------------------------
+// Filing what is new
+// ---------------------------------------------------------------------------
+
+/// The findings nobody has acknowledged yet, as of `now`: the one read the connector makes.
+/// Because every filed finding is acknowledged, a graph that has not changed has none, and a
+/// backlog longer than `request.limit` is worked through one page per run.
+pub fn pending_findings(
+    graph: &impl GraphView,
+    request: &ScanRequest,
+    now: DateTime<Utc>,
+) -> Result<QueryResponse<ScanReport>> {
+    get_suggestions_at(
+        graph,
+        &SuggestionsRequest {
+            scan: request.clone(),
+            exclude_acknowledged: true,
+        },
+        now,
+    )
+}
+
+/// A finding the connector filed as a ticket and then acknowledged.
+#[derive(Debug, Clone)]
+pub struct FiledFinding {
+    pub finding_id: String,
+    pub decision_id: String,
+    pub kind: &'static str,
+    pub issue: CreatedIssue,
+}
+
+/// Files one ticket per finding through `create_issue(title, description)` and acknowledges the
+/// finding (`acted`, channel [`ACK_CHANNEL`], by `actor_id`) right after its ticket exists, so a
+/// run that stops part-way has recorded exactly the tickets it filed.
+///
+/// The first failure stops the run: later findings stay unacknowledged and are filed by the next
+/// run. A ticket whose acknowledgement could not be recorded is named in the error, because the
+/// next run would file that finding a second time.
+pub fn file_findings<L: EventLedger>(
+    findings: &[ScanFinding],
+    commands: &Commands<'_, L>,
+    actor_id: &str,
+    hivemind_base_url: Option<&str>,
+    mut create_issue: impl FnMut(&str, &str) -> Result<CreatedIssue>,
+) -> Result<Vec<FiledFinding>> {
+    let mut filed: Vec<FiledFinding> = Vec::with_capacity(findings.len());
+    for scanned in findings {
+        let finding = &scanned.finding;
+        let issue = create_issue(
+            &format_issue_title(scanned),
+            &format_issue_description(scanned, hivemind_base_url),
+        )
+        .map_err(|error| CliError::InvalidInput(format!("{error}{}", filed_so_far(&filed))))?;
+
+        commands
+            .acknowledge_suggestion(
+                actor_id,
+                &finding.finding_id,
+                &finding.decision_id,
+                AckAction::Acted,
+                ACK_CHANNEL,
+            )
+            .map_err(|error| {
+                CliError::InvalidInput(format!(
+                    "filed {} ({}) for finding {} but could not record that it was acted on: \
+                     {error}. Acknowledge it (acknowledge_suggestion, channel `{ACK_CHANNEL}`, \
+                     action `acted`) or the next run files it again{}",
+                    issue.identifier,
+                    issue.url,
+                    finding.finding_id,
+                    filed_so_far(&filed),
+                ))
+            })?;
+
+        filed.push(FiledFinding {
+            finding_id: finding.finding_id.clone(),
+            decision_id: finding.decision_id.clone(),
+            kind: finding.kind.as_str(),
+            issue,
+        });
+    }
+    Ok(filed)
+}
+
+/// What a failed run had already filed and acknowledged, for its error message.
+fn filed_so_far(filed: &[FiledFinding]) -> String {
+    if filed.is_empty() {
+        return String::new();
+    }
+    let identifiers: Vec<&str> = filed
+        .iter()
+        .map(|done| done.issue.identifier.as_str())
+        .collect();
+    let list = identifiers.join(", "); // ubs:ignore: one-shot error-message join; no simpler idiom
+    format!(" (filed and acknowledged earlier in this run: {list})")
 }
 
 #[cfg(test)]

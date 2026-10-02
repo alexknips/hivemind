@@ -403,7 +403,7 @@ and `data`.
 | A page of findings | `scan_decision_quality {kinds?, evidence_window_days?, limit?, cursor?}` | `hivemind query scan_decision_quality [--kind a,b] [--evidence-window-days N] [--limit N] [--cursor C]` |
 | A page of findings not yet acknowledged | `get_suggestions {kinds?, evidence_window_days?, exclude_acknowledged?, limit?, cursor?}` | `hivemind query get_suggestions [--kind a,b] [--evidence-window-days N] [--exclude-acknowledged BOOL] [--limit N] [--cursor C]` |
 | Acknowledge a finding | `acknowledge_suggestion {finding_id, decision_id, action?, channel?, actor_id?}` | |
-| One Linear ticket per finding | | `hivemind quality-scan [--kind a,b] [--limit N] [--dry-run]` |
+| One Linear ticket per finding not yet acknowledged | | `hivemind quality-scan [--kind a,b] [--limit N] [--dry-run]` |
 
 ### `score_decision`
 
@@ -526,7 +526,7 @@ An acknowledgement is two recorded events, both attributed to an actor and never
 and the recipient is the acting actor. A consumer that surfaces findings itself (a Slack
 bot, a Linear connector) records `suggestion.surfaced` when it posts and
 `notification.acknowledged` when someone responds, and `get_suggestions` reads both the same
-way.
+way. [`quality-scan`](#quality-scan) is that consumer for Linear.
 
 A finding is hidden when a surfaced record of its `finding_id` has been acknowledged. Every
 action hides it; the ledger keeps which. Acknowledgement is by finding, not by actor: once
@@ -540,6 +540,27 @@ is shown again.
 The write path does not check the finding. Finding findings is the scan's work, and a write
 that ran it would be Layer 3 inside Layer 1: an acknowledgement of an id nothing reports
 acknowledges nothing, and the decision id is recorded as given.
+
+#### Routing suggestions to wherever you work
+
+HiveMind sends nothing anywhere. Where a finding goes is the consumer's choice, so any agent,
+script or cron can route suggestions the way `quality-scan` does, with no connector in
+HiveMind:
+
+1. Call `get_suggestions` (it leaves out what has been acknowledged by default).
+2. Do with each finding what your setup does with it: open a beads issue or a ticket, add a
+   line to a review list or a `CLAUDE.md` rule, post a message. The finding carries what a
+   reader needs: the decision's title and id, the kind of finding, the reason in words and the
+   nodes it rests on.
+3. Call `acknowledge_suggestion` with the finding's `finding_id` and `decision_id`, `action`
+   `acted`, and a `channel` label of your own naming where it went (`beads`, `linear`,
+   `claude-md`).
+
+Acknowledge after the finding is routed, never before: if step 2 fails nothing is recorded and
+the next run offers the finding again, so a loop that stops between steps 2 and 3 routes a
+finding twice and never zero times. A finding you choose not to route is acknowledged with
+`dismissed`; the ledger keeps that it was set aside, and by whom. Linear is one such sink, not
+the product: the ledger stays portable and no tool is privileged.
 
 ### `analyze_failure_modes`
 
@@ -556,9 +577,26 @@ part in `findings` like any other. stdio MCP only.
 
 ### `quality-scan`
 
-`hivemind quality-scan` reads the first page of findings (at most `--limit`, 1–50,
-default 10) and files one Linear ticket for each, or prints them with `--dry-run`. Its
-`finding_id` is what to dedupe on across runs.
+`hivemind quality-scan` is the reference consumer of `get_suggestions` (see
+[Routing suggestions](#routing-suggestions-to-wherever-you-work)). It reads the first page of
+findings nobody has acknowledged (at most `--limit`, 1–50, default 10), files one Linear
+ticket for each, and acknowledges each finding as soon as its ticket exists:
+`acknowledge_suggestion` semantics, action `acted`, channel `linear`, recorded under `--actor`.
+`--dry-run` prints the same findings and files and acknowledges nothing. When a schedule runs
+it, run `hivemind --actor agent:<name> quality-scan`, so the ledger says an agent surfaced the
+findings and not a person.
+
+Because every ticket it files is acknowledged, running it again over decisions that have not
+changed files nothing, so it is safe on a schedule. A finding whose basis changes has a new
+`finding_id` and is filed as a new ticket; the earlier ticket is left as it is, and the
+connector never reads Linear back, so closing a ticket does not file it again. A backlog longer
+than `--limit` is filed one page per run (`truncated: true` says more remain).
+
+A run stops at the first ticket Linear refuses: the findings it filed stay acknowledged and the
+rest are filed by the next run. If a ticket was filed but its acknowledgement could not be
+recorded, the error names the ticket and the finding, because the next run would file that
+finding again; acknowledge it with `acknowledge_suggestion` (channel `linear`, action `acted`)
+to prevent that.
 
 A ticket is titled `[HiveMind] <kind>: <decision title>` (the decision id when it has no
 title). Its body, in Markdown, has:

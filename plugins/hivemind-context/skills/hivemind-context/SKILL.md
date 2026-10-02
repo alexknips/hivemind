@@ -129,6 +129,31 @@ what it wants to ask.
   other decisions that answer it, and flags two accepted answers that chose
   differently.
 
+## What Needs a Look — and Where to Send It
+
+A newer hivemind (one whose MCP server lists `get_suggestions`) can say which decisions
+need a look and have not been dealt with: a bet past its check date, a premise that was
+superseded or rejected, evidence nobody has re-checked. There is no script for it; it is an MCP
+tool (`hivemind query get_suggestions` on the CLI), and where its findings go is yours to fit
+to where your work already looks: a beads issue, a ticket, a line in a review list or a
+`CLAUDE.md` rule, a cron.
+
+1. Call `get_suggestions`. Each finding has a `finding_id`, the `decision_id` and
+   `decision_title`, the `kind`, the `reason` in words and the nodes it rests on. It is not a
+   ranking and carries no grade.
+2. Do with each finding what your setup does with it. Keep the reason in what you write, so the
+   reader sees why it needs a look and not only that it does.
+3. Call `acknowledge_suggestion` with the finding's `finding_id` and `decision_id`, `action`
+   `acted` (routed or dealt with), `seen` or `dismissed` (set aside on purpose), and a `channel`
+   label naming where it went (`beads`, `claude-md`). Do this after step 2, never before: a
+   finding you could not route stays on the list. Once anyone has acknowledged a finding,
+   `get_suggestions` leaves it out for everyone; one whose basis changes comes back under a new
+   `finding_id`.
+
+Do not dismiss a finding to shorten the list: a dismissal is on the ledger under your actor id.
+`docs/DECISION_SCORING.md` ("Routing suggestions to wherever you work") has the full contract,
+and `hivemind quality-scan` is the same loop for Linear.
+
 ## The Ambiguity Gate — Never Guess
 
 Every command above resolves your description deterministically (term match

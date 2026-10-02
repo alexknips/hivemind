@@ -350,6 +350,18 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`hivemind quality-scan` files each finding once, however often it runs.** It filed a Linear
+  ticket for every finding above the threshold on every run, so a scheduled run against decisions
+  that had not changed filed the same tickets again each time. It now reads `get_suggestions`
+  (the findings nobody has acknowledged) and acknowledges each finding as soon as its ticket
+  exists (`acknowledge_suggestion`, action `acted`, channel `linear`, under `--actor`), so a
+  repeated run files nothing and a finding whose basis changed is filed as a new ticket. A run
+  stops at the first ticket Linear refuses and the next run files the rest. Each filed finding
+  now writes a `suggestion.surfaced` and a `notification.acknowledged` to the ledger, so
+  **upgrade the server before running it against a shared ledger** (see `acknowledge_suggestion`
+  above). The "nothing to file" line now reads `quality-scan: no unacknowledged finding —
+  nothing to file`. The context plugin's skill says how an agent routes suggestions to a tracker,
+  a `CLAUDE.md` rule or a cron of its own. (hivemind-m306.4.3)
 - **The capture plugin can answer a question that was asked.** `capture.sh --answers <request
   id>` (a request `hivemind ask` wrote, listed by `query get_waiting_requests`) was refused with
   "a value is required for '--answers'" and wrote nothing: the script did not know the flag takes

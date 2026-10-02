@@ -2370,7 +2370,50 @@ mod transport_parity {
         // The same ledger, another kind: nothing needs a look.
         assert_eq!(
             scan(&["--kind", "premise_superseded"]),
-            "quality-scan: no decision needs a look — nothing to file"
+            "quality-scan: no unacknowledged finding — nothing to file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The connector previews and files only what nobody has acknowledged (hivemind-m306.4.3):
+    /// a finding acknowledged over the `linear` channel is not in the next scan.
+    #[test]
+    fn quality_scan_leaves_out_a_finding_that_has_been_acknowledged() {
+        use clap::Parser as _;
+        let dir = unique_dir("quality-scan-acknowledged");
+        let overdue = capture_on(&dir, "Use SQLite for the ledger", overdue_bet());
+        let scan = || -> String {
+            let argv = [
+                "hivemind",
+                "--hivemind-dir",
+                dir.to_str().expect("utf-8 dir"), // ubs:ignore: test-only; panicking is correct in tests
+                "quality-scan",
+                "--dry-run",
+            ];
+            crate::cli::run(&crate::cli::Cli::parse_from(argv)).expect("quality-scan runs")
+            // ubs:ignore: test-only; panicking is correct in tests
+        };
+
+        let before: Value = serde_json::from_str(&scan()).expect("json"); // ubs:ignore: test-only; panicking is correct in tests
+        assert_eq!(before["filed"], 1);
+        let finding_id = before["issues"][0]["finding_id"].clone();
+
+        let acknowledged = stdio_call(
+            &dir,
+            "acknowledge_suggestion",
+            json!({
+                "actor_id": "agent:linear:connector",
+                "finding_id": finding_id,
+                "decision_id": overdue,
+                "action": "acted",
+                "channel": "linear",
+            }),
+        );
+        assert_eq!(acknowledged["result"]["isError"], false, "{acknowledged:?}"); // ubs:ignore: test-only assertion
+
+        assert_eq!(
+            scan(),
+            "quality-scan: no unacknowledged finding — nothing to file"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

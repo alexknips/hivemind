@@ -3948,7 +3948,9 @@ fn run_migrate(cli: &Cli, args: &MigrateArgs) -> Result<String> {
 // ---------------------------------------------------------------------------
 
 fn run_quality_scan(cli: &Cli, args: &QualityScanArgs) -> Result<String> {
-    use crate::linear::{format_issue_description, format_issue_title, LinearClient};
+    use crate::linear::{
+        file_findings, format_issue_description, format_issue_title, pending_findings, LinearClient,
+    };
 
     let tenant_id = cli_tenant(cli)?;
     let ledger = open_ledger(cli)?;
@@ -3961,81 +3963,76 @@ fn run_quality_scan(cli: &Cli, args: &QualityScanArgs) -> Result<String> {
         cursor: None,
         evidence_window_days: None,
     };
-    let scan = quality_profile::scan_decision_quality(&graph, &request)?;
+    // The connector's one read: the findings nobody has acknowledged. A finding it files is
+    // acknowledged straight away, so a second run over an unchanged graph files nothing.
+    let pending = pending_findings(&graph, &request, Utc::now())?;
 
-    if scan.data.findings.is_empty() {
-        return Ok("quality-scan: no decision needs a look — nothing to file".to_owned());
+    if pending.data.findings.is_empty() {
+        return Ok("quality-scan: no unacknowledged finding — nothing to file".to_owned());
     }
 
-    // Resolve Linear API key from env (not a CLI flag to avoid accidental exposure).
-    let api_key = if args.dry_run {
-        String::new()
+    let base_url = args.hivemind_base_url.as_deref();
+
+    let issues: Vec<serde_json::Value> = if args.dry_run {
+        pending
+            .data
+            .findings
+            .iter()
+            .map(|scanned| {
+                serde_json::json!({
+                    "dry_run": true,
+                    "finding_id": scanned.finding.finding_id,
+                    "decision_id": scanned.finding.decision_id,
+                    "kind": scanned.finding.kind.as_str(),
+                    "title": format_issue_title(scanned),
+                    "description": format_issue_description(scanned, base_url),
+                })
+            })
+            .collect()
     } else {
-        std::env::var("HIVEMIND_LINEAR_API_KEY").map_err(|_| {
+        // Resolve Linear API key from env (not a CLI flag to avoid accidental exposure).
+        let api_key = std::env::var("HIVEMIND_LINEAR_API_KEY").map_err(|_| {
             CliError::InvalidInput(
                 "HIVEMIND_LINEAR_API_KEY is not set; pass --dry-run to preview without filing"
                     .to_owned(),
             )
-        })?
-    };
-
-    let team_id = if args.dry_run {
-        args.linear_team_id.clone().unwrap_or_default()
-    } else {
-        args.linear_team_id.clone().ok_or_else(|| {
+        })?;
+        let team_id = args.linear_team_id.clone().ok_or_else(|| {
             CliError::InvalidInput(
                 "HIVEMIND_LINEAR_TEAM_ID is not set and --linear-team-id was not passed".to_owned(),
             )
-        })?
+        })?;
+        let client = LinearClient::new(api_key);
+        let commands = Commands::new_with_context(
+            &ledger,
+            CommandContext::new(tenant_id, fluent_write_provenance(&cli.actor)),
+        );
+        file_findings(
+            &pending.data.findings,
+            &commands,
+            &cli.actor,
+            base_url,
+            |title, description| client.create_issue(&team_id, title, description),
+        )?
+        .into_iter()
+        .map(|filed| {
+            serde_json::json!({
+                "finding_id": filed.finding_id,
+                "decision_id": filed.decision_id,
+                "kind": filed.kind,
+                "linear_identifier": filed.issue.identifier,
+                "linear_url": filed.issue.url,
+            })
+        })
+        .collect()
     };
 
-    let client = if args.dry_run {
-        None
-    } else {
-        Some(LinearClient::new(&api_key))
-    };
-
-    let base_url = args.hivemind_base_url.as_deref();
-
-    let mut results: Vec<serde_json::Value> = Vec::new();
-
-    for scanned in &scan.data.findings {
-        let finding = &scanned.finding;
-        let kind = finding.kind.as_str();
-        let issue_title = format_issue_title(scanned);
-        let issue_body = format_issue_description(scanned, base_url);
-
-        if args.dry_run {
-            results.push(serde_json::json!({
-                "dry_run": true,
-                "finding_id": finding.finding_id,
-                "decision_id": finding.decision_id,
-                "kind": kind,
-                "title": issue_title,
-                "description": issue_body,
-            }));
-        } else {
-            let created = client
-                .as_ref()
-                .ok_or_else(|| CliError::InvalidInput("Linear client not initialized".to_owned()))?
-                .create_issue(&team_id, &issue_title, &issue_body)?;
-            results.push(serde_json::json!({
-                "finding_id": finding.finding_id,
-                "decision_id": finding.decision_id,
-                "kind": kind,
-                "linear_identifier": created.identifier,
-                "linear_url": created.url,
-            }));
-        }
-    }
-
-    let truncated = scan.truncated;
     let output = serde_json::json!({
         "dry_run": args.dry_run,
-        "scanned": scan.result_count,
-        "filed": results.len(),
-        "truncated": truncated,
-        "issues": results,
+        "scanned": pending.result_count,
+        "filed": issues.len(),
+        "truncated": pending.truncated,
+        "issues": issues,
     });
 
     format_json_value(cli.json || true, &output)

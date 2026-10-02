@@ -249,8 +249,10 @@ pub enum Command {
     Connector(ConnectorArgs),
     /// File a Linear ticket for each decision that needs a look (an attention finding: a bet
     /// past its check date, a premise that changed, evidence nobody re-checked) for human review.
+    /// Only findings nobody has acknowledged are filed, and each one filed is acknowledged
+    /// (action acted, channel linear, by --actor), so running it again files only what is new.
     /// Set HIVEMIND_LINEAR_API_KEY and HIVEMIND_LINEAR_TEAM_ID before running.
-    /// Pass --dry-run to preview what would be filed without calling Linear.
+    /// Pass --dry-run to preview what would be filed without calling Linear or acknowledging.
     #[command(name = "quality-scan")]
     QualityScan(QualityScanArgs),
     /// Export the decision log as a tree of Markdown files grouped per
