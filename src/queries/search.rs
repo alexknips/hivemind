@@ -24,7 +24,7 @@ use super::shared::{
     relation_edges_by_kind, relation_sources, relation_targets,
 };
 use super::status::{derive_decision_status, derive_hypothesis_status, DecisionStatus};
-use super::terms::{is_negated_text, resolver_question, stem, word_stems};
+use super::terms::{is_negated_text, resolver_question, stem, word_stems, RelatedWord, WordMatch};
 use super::{QueryContext, QueryResponse};
 
 const MAX_SNIPPETS_PER_RESULT: usize = 5;
@@ -484,6 +484,7 @@ pub fn search_decisions_fts_with_context(
                 missing_terms: Vec::new(),
                 polarity_mismatch: false,
                 headline_terms: 0,
+                stand_in_terms: 0,
                 matched_fields: Vec::new(),
                 snippets: Vec::new(),
                 matched_nodes: Vec::new(),
@@ -493,6 +494,7 @@ pub fn search_decisions_fts_with_context(
                 missing_terms: Vec::new(),
                 polarity_mismatch: false,
                 headline_terms: 0,
+                stand_in_terms: 0,
                 matched_fields: Vec::new(),
                 snippets: Vec::new(),
                 matched_nodes: Vec::new(),
@@ -592,7 +594,9 @@ fn narrow_to_scope(
 
 /// Own project first, then the parent's, then a dependency's; within each, the decisions that
 /// lack the fewest of the question's terms, then (among close matches) the ones whose title or
-/// topic keys carry more of the terms they did match, then (rank, id) order. A negated question
+/// topic keys carry more of the terms they did match, then the ones that match fewer of them only
+/// through a stand-in word (a decision that has the word asked for comes before one that has a
+/// synonym), then (rank, id) order. A negated question
 /// does not change that order: among decisions tied on all of it, the ones whose title is negated
 /// too come before the ones whose title is not. An unscoped document has no relation and a literal
 /// match lacks nothing and is never negated, so an unscoped `search` keeps the plain (rank, id)
@@ -603,6 +607,7 @@ fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
             left.relation,
             left.result.missing_terms.len(),
             Reverse(left.headline_terms),
+            left.stand_ins,
             left.rank,
             left.polarity_mismatch,
             &left.id,
@@ -611,6 +616,7 @@ fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
                 right.relation,
                 right.result.missing_terms.len(),
                 Reverse(right.headline_terms),
+                right.stand_ins,
                 right.rank,
                 right.polarity_mismatch,
                 &right.id,
@@ -879,6 +885,8 @@ struct ScoredDecisionSearchResult {
     /// `SearchMatchInfo::headline_terms`: for a close match, how many of the terms its title or
     /// topic keys contain.
     headline_terms: usize,
+    /// `SearchMatchInfo::stand_in_terms`.
+    stand_ins: usize,
     result: DecisionSearchResult,
     fields: Vec<SearchField>,
 }
@@ -1115,6 +1123,7 @@ fn collect_graph_search_results(
             event_origin,
             polarity_mismatch: match_info.polarity_mismatch,
             headline_terms: match_info.headline_terms,
+            stand_ins: match_info.stand_in_terms,
             fields,
             result: DecisionSearchResult {
                 decision,
@@ -1159,6 +1168,9 @@ pub(crate) struct ResolverCandidateRow {
     /// For a close candidate, how many description terms its title or topic keys contain; 0 for a
     /// full match.
     pub(crate) headline_terms: usize,
+    /// How many of the terms it matched only through a stand-in word (`SearchMatchInfo::
+    /// stand_in_terms`); 0 for an asker that writes, which never reads stand-ins.
+    pub(crate) stand_in_terms: usize,
 }
 
 impl ResolverCandidateRow {
@@ -1172,17 +1184,20 @@ impl ResolverCandidateRow {
 /// Backend-agnostic candidate rows for resolve-by-description: reuses
 /// `collect_graph_search_results`'s tier system unmodified (§1.1 of the design), narrowed by an
 /// optional topic hint. `description` is required — an empty resolver query is the caller's bug.
+/// `related` reads the description as `recall` does (word forms and stand-in words); a verb that
+/// writes asks with `false` and matches a word and its inflections only.
 pub(crate) fn collect_resolver_candidates(
     graph: &impl GraphView,
     description: &str,
     topic_keys: &[String],
     close: CloseMatch,
+    related: bool,
 ) -> Result<Vec<ResolverCandidateRow>> {
     let question = resolver_question(description);
     let scored = collect_graph_search_results(
         graph,
         Some(description),
-        &SearchTerms::resolver(&question.terms, close, question.negated),
+        &SearchTerms::resolver(&question.terms, close, question.negated, related),
         topic_keys,
         &[],
         &[],
@@ -1199,6 +1214,7 @@ pub(crate) fn collect_resolver_candidates(
             missing_terms: scored.result.missing_terms,
             polarity_mismatch: scored.polarity_mismatch,
             headline_terms: scored.headline_terms,
+            stand_in_terms: scored.stand_ins,
         })
         .collect())
 }
@@ -1244,6 +1260,11 @@ struct SearchMatchInfo {
     /// carries more of the words it did match is the likelier answer than one that only holds
     /// them somewhere in a long rationale or in evidence.
     headline_terms: usize,
+    /// How many of the matched terms the decision has only as a stand-in word (`WORD_GROUPS`),
+    /// never as the term or a form of it. A decision that has the word asked for is a better
+    /// answer than one that has a synonym of it, so among decisions lacking the same number of
+    /// terms the one that leans on fewer stand-ins comes first.
+    stand_in_terms: usize,
     matched_fields: Vec<String>,
     snippets: Vec<SearchSnippet>,
     matched_nodes: Vec<SearchMatchedNode>,
@@ -1299,10 +1320,14 @@ impl CloseMatch {
 /// admits a decision that lacks some. `literal` terms match as a substring. Fluent terms
 /// (`resolver`, `fluent`) also match a field word with the same stem ("move" finds "moves" and
 /// "moved"), and when no decision matches every term, a decision matching most of them is
-/// returned with the terms it lacks.
+/// returned with the terms it lacks. Related terms (`fluent`, and the resolver of a verb that only
+/// reads) also match the other forms of a word ("superseded" finds "supersession") and the words
+/// `WORD_GROUPS` lists as standing in for it ("interface" finds "UI").
 struct SearchTerms<'a> {
     terms: &'a [String],
     stemmed: bool,
+    /// One per term, in the same order, for a request that reads related words; empty otherwise.
+    related: Vec<RelatedWord<'a>>,
     close: CloseMatch,
     /// The question was asked negated ("don't adopt Kafka"). The negation is not one of `terms`:
     /// it never makes a decision lack a word. It only marks a decision whose title is not negated
@@ -1315,15 +1340,17 @@ impl<'a> SearchTerms<'a> {
         Self {
             terms,
             stemmed: false,
+            related: Vec::new(),
             close: CloseMatch::Never,
             negated: false,
         }
     }
 
-    fn resolver(terms: &'a [String], close: CloseMatch, negated: bool) -> Self {
+    fn resolver(terms: &'a [String], close: CloseMatch, negated: bool, related: bool) -> Self {
         Self {
             terms,
             stemmed: true,
+            related: Self::related_words(terms, related),
             close,
             negated,
         }
@@ -1333,8 +1360,17 @@ impl<'a> SearchTerms<'a> {
         Self {
             terms,
             stemmed: true,
+            related: Self::related_words(terms, true),
             close: CloseMatch::Half,
             negated,
+        }
+    }
+
+    fn related_words(terms: &'a [String], related: bool) -> Vec<RelatedWord<'a>> {
+        if related {
+            terms.iter().map(|term| RelatedWord::new(term)).collect()
+        } else {
+            Vec::new()
         }
     }
 }
@@ -1351,6 +1387,7 @@ fn evaluate_search_match(
             missing_terms: Vec::new(),
             polarity_mismatch: false,
             headline_terms: 0,
+            stand_in_terms: 0,
             matched_fields: Vec::new(),
             snippets: Vec::new(),
             matched_nodes: Vec::new(),
@@ -1358,6 +1395,8 @@ fn evaluate_search_match(
     };
 
     let mut matched_terms = BTreeSet::new();
+    // The matched terms that some field holds as the word itself or a form of it.
+    let mut worded_terms: BTreeSet<&String> = BTreeSet::new();
     let mut headline_terms = BTreeSet::new();
     let mut matched_fields = BTreeSet::new();
     let mut snippets = Vec::new();
@@ -1373,14 +1412,25 @@ fn evaluate_search_match(
         let mut field_stems: Option<BTreeSet<&str>> = None;
         let mut field_matched = false;
         let in_headline = matches!(field.field.as_str(), "decision.title" | "decision.topic");
-        for term in terms {
-            let found = value_lower.contains(term)
-                || (search_terms.stemmed
-                    && field_stems
-                        .get_or_insert_with(|| word_stems(&value_lower))
-                        .contains(stem(term)));
-            if found {
+        for (index, term) in terms.iter().enumerate() {
+            let found = if value_lower.contains(term) {
+                Some(WordMatch::Word)
+            } else if let Some(related) = search_terms.related.get(index) {
+                related.find_in(&value_lower)
+            } else if search_terms.stemmed
+                && field_stems
+                    .get_or_insert_with(|| word_stems(&value_lower))
+                    .contains(stem(term))
+            {
+                Some(WordMatch::Word)
+            } else {
+                None
+            };
+            if let Some(how) = found {
                 matched_terms.insert(term.clone());
+                if how == WordMatch::Word {
+                    worded_terms.insert(term);
+                }
                 if in_headline {
                     headline_terms.insert(term.clone());
                 }
@@ -1437,6 +1487,7 @@ fn evaluate_search_match(
         } else {
             headline_terms.len()
         },
+        stand_in_terms: matched_terms.len() - worded_terms.len(),
         missing_terms,
         matched_fields: matched_fields.into_iter().collect(),
         snippets,

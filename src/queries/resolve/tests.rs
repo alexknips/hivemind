@@ -1158,3 +1158,61 @@ fn the_envelope_names_the_other_records_beside_data() {
     assert_eq!(plain, json!({"data": {}}));
     assert!(!alone.needs_annotation());
 }
+
+#[test]
+fn a_verb_that_shows_reads_other_word_forms_and_stand_ins_and_a_verb_that_writes_does_not(
+) -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed_because(
+            1,
+            "d:ui",
+            "The UI names every agent 'an agent'",
+            "A reader needs to know a person from an agent.",
+            &[],
+        ),
+        decision_proposed_because(
+            2,
+            "d:history",
+            "Status history lists only what the log gives",
+            "No time for acceptance, rejection or supersession.",
+            &[],
+        ),
+    ])?;
+
+    for (question, expected) in [
+        ("interface agent", "d:ui"),
+        ("status history superseded", "d:history"),
+    ] {
+        match resolve_decision_for_reading(&graph, question, None)?.data {
+            ResolveOutcome::Resolved { candidate } => {
+                assert_eq!(candidate.decision_id, expected, "{question:?}");
+                assert!(candidate.missing_terms.is_empty(), "{question:?}");
+            }
+            other => panic!("{question:?} should resolve for a verb that shows: {other:?}"),
+        }
+        // A synonym or another form never picks what a verb writes to.
+        let written = resolve_decision_by_description(&graph, question, None)?.data;
+        assert!(
+            !matches!(written, ResolveOutcome::Resolved { .. }),
+            "{question:?} must not resolve for a verb that writes: {written:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_decision_with_the_word_is_not_tied_with_one_that_only_has_a_stand_in() -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:ui", "UI layout is two columns", &[]),
+        decision_proposed(2, "d:interface", "Interface layout is two columns", &[]),
+    ])?;
+
+    // Both match both words, in the same rank tier; only one has the word that was asked for.
+    match resolve_decision_for_reading(&graph, "interface layout", None)?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:interface");
+        }
+        other => panic!("expected the decision that says \"interface\", got {other:?}"),
+    }
+    Ok(())
+}

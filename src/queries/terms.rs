@@ -4,7 +4,8 @@
 //! matching (AGENTS.md Principles 1/7). Whichever bead's implementation lands first keeps
 //! this module; the other adopts it rather than forking a second ranker (see hivemind-tenv).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::LazyLock;
 
 /// Segment separators inside a file path or branch-like string.
 const PATH_SEPARATORS: &[char] = &['/', '\\', '_', '-', '.', ' '];
@@ -205,6 +206,8 @@ pub(crate) fn is_negated_text(text: &str) -> bool {
 /// Lowercased whitespace tokens in the order asked, with surrounding punctuation trimmed and a
 /// typographic apostrophe (`don’t`) written straight. Inner punctuation is kept (`per-host`,
 /// `gc-ox429`); a token that is all punctuation keeps its raw form so it still matches literally.
+/// A possessive is the word it belongs to (`website's` is `website`): a decision's text says
+/// "the website", not "the website's".
 fn description_tokens(description: &str) -> Vec<String> {
     description
         .split_whitespace()
@@ -216,10 +219,38 @@ fn description_tokens(description: &str) -> Vec<String> {
             if token.is_empty() {
                 raw.to_ascii_lowercase()
             } else {
-                token
+                match token.strip_suffix("'s") {
+                    Some(owner) if !owner.is_empty() => owner.to_owned(),
+                    _ => token,
+                }
             }
         })
         .collect()
+}
+
+/// The forms of "make" people ask about a decision with: "which agent made a decision", "why did
+/// we make the decision to ...".
+const MAKING_WORDS: &[&str] = &["make", "makes", "made", "making"];
+
+/// Words that may stand between "made" and the decision it made.
+const DETERMINERS: &[&str] = &["a", "an", "the", "this", "that", "any", "some", "each"];
+
+/// Whether the first of `tokens` is a form of "make" in front of the decision it makes ("made a
+/// decision", "make decisions"): question framing, like "pick" or "decide", and only there. Alone it
+/// is a real word ("what makes a link the same", "made readable").
+fn is_decision_making(tokens: &[String]) -> bool {
+    let [verb, rest @ ..] = tokens else {
+        return false;
+    };
+    if !MAKING_WORDS.contains(&verb.as_str()) {
+        return false;
+    }
+    let is_decision = |word: &String| matches!(word.as_str(), "decision" | "decisions");
+    match rest {
+        [next, ..] if is_decision(next) => true,
+        [next, after, ..] => DETERMINERS.contains(&next.as_str()) && is_decision(after),
+        _ => false,
+    }
 }
 
 /// Whether `token`, followed by `next`, frames the question rather than naming what it asks about.
@@ -246,11 +277,17 @@ fn question_tokens(description: &str) -> QuestionTokens {
         framing: Vec::new(),
         negated: false,
     };
-    let mut tokens = description_tokens(description).into_iter().peekable();
-    while let Some(token) = tokens.next() {
+    let tokens = description_tokens(description);
+    let making: Vec<bool> = (0..tokens.len())
+        .map(|index| is_decision_making(&tokens[index..]))
+        .collect();
+    let mut tokens = tokens.into_iter().zip(making).peekable();
+    while let Some((token, making)) = tokens.next() {
         let negation = is_negation(&token);
         split.negated |= negation;
-        let framing = negation || is_question_word(&token, tokens.peek().map(String::as_str));
+        let framing = negation
+            || making
+            || is_question_word(&token, tokens.peek().map(|(next, _)| next.as_str()));
         let bucket = if framing {
             &mut split.framing
         } else {
@@ -345,31 +382,48 @@ pub fn content_query(text: &str) -> ContentQuery {
 /// non-letters (ids, `per-host`, `3f2a`) are returned unchanged. Compared for equality, never as
 /// a substring, so a short stem cannot match unrelated words.
 pub(crate) fn stem(word: &str) -> &str {
-    if !word.bytes().all(|b| b.is_ascii_alphabetic()) {
+    if !is_plain_word(word) {
         return word;
     }
-    let mut root = word;
-    if let Some(stripped) = root.strip_suffix("ies").filter(|s| s.len() >= 3) {
-        root = stripped;
-    } else if let Some(stripped) = root.strip_suffix("es").filter(|s| s.len() >= 3) {
-        root = stripped;
-    } else if let Some(stripped) = root
+    strip_inflection(strip_plural(word))
+}
+
+/// Letters only: the words the suffix rules below apply to. An id, `per-host` or `3f2a` is
+/// compared as written.
+fn is_plain_word(word: &str) -> bool {
+    word.bytes().all(|b| b.is_ascii_alphabetic())
+}
+
+/// `-ies`, `-es` or `-s` off a lowercase word, each only when at least three letters remain.
+fn strip_plural(word: &str) -> &str {
+    if let Some(stripped) = word.strip_suffix("ies").filter(|s| s.len() >= 3) {
+        stripped
+    } else if let Some(stripped) = word.strip_suffix("es").filter(|s| s.len() >= 3) {
+        stripped
+    } else if let Some(stripped) = word
         .strip_suffix('s')
         .filter(|s| s.len() >= 3 && !s.ends_with(['s', 'u', 'i']))
     {
-        root = stripped;
+        stripped
+    } else {
+        word
     }
-    if let Some(stripped) = root
+}
+
+/// `-ing` or `-ed`, then a trailing `e` or `y`, each only when at least three letters remain.
+fn strip_inflection(root: &str) -> &str {
+    let root = root
         .strip_suffix("ing")
         .or_else(|| root.strip_suffix("ed"))
         .filter(|s| s.len() >= 3)
-    {
-        root = stripped;
-    }
-    if let Some(stripped) = root.strip_suffix(['e', 'y']).filter(|s| s.len() >= 3) {
-        root = stripped;
-    }
-    root
+        .unwrap_or(root);
+    strip_final_vowel(root)
+}
+
+fn strip_final_vowel(root: &str) -> &str {
+    root.strip_suffix(['e', 'y'])
+        .filter(|s| s.len() >= 3)
+        .unwrap_or(root)
 }
 
 /// The stem of every word in `text` (split on non-alphanumerics), for matching a stemmed term
@@ -379,4 +433,173 @@ pub(crate) fn word_stems(text: &str) -> BTreeSet<&str> {
         .filter(|word| !word.is_empty())
         .map(stem)
         .collect()
+}
+
+/// Suffixes that make a noun or an adjective of a verb or a noun (`accept` -> `acceptance`,
+/// `refute` -> `refutation`, `move` -> `movement`), each with the fewest letters that must be left
+/// once it is off, so a short word is never cut to a stub: `section` is not `sect`, `former` is
+/// not `form`.
+const DERIVED_SUFFIXES: &[(&str, usize)] = &[
+    ("ation", 4),
+    ("ition", 4),
+    ("ion", 5),
+    ("ment", 4),
+    ("ance", 4),
+    ("ence", 4),
+    ("ness", 4),
+    ("ity", 5),
+    ("al", 5),
+    ("er", 5),
+    ("or", 5),
+];
+
+/// The keys under which `recall` compares a lowercase `word`: two words are forms of one word when
+/// they share a key.
+///
+/// - its stem (`stem`);
+/// - the word with its plural off and nothing else, for a form the stem cuts twice (`supersedes`
+///   is `supersed` here and `super` as a stem);
+/// - what a noun suffix was added to (`acceptance` -> `accept`, `movement` -> `mov`);
+/// - the part a verb in `-d`/`-de` and its noun in `-sion` share (`supersede` and `supersession`
+///   share `superse`, `decide` and `decision` share `deci`, `expand` and `expansion` share
+///   `expan`).
+///
+/// Every key is a leading part of the word, so a text holds a form of a word only if it holds one
+/// of its keys. A word with anything but letters in it (an id, `per-host`) has no key but itself.
+fn word_keys(word: &str) -> Vec<&str> {
+    if !is_plain_word(word) {
+        return vec![word];
+    }
+    let plain = strip_plural(word);
+    let mut keys = vec![stem(word), strip_final_vowel(plain)];
+    for (suffix, kept) in DERIVED_SUFFIXES {
+        if let Some(base) = plain
+            .strip_suffix(suffix)
+            .filter(|base| base.len() >= *kept)
+        {
+            keys.push(strip_final_vowel(base));
+        }
+    }
+    let verbs: Vec<&str> = keys
+        .iter()
+        .copied()
+        .filter(|key| key.len() >= 5 && key.ends_with('d'))
+        .collect();
+    keys.extend(verbs.into_iter().map(|key| &key[..key.len() - 1]));
+    if let Some(root) = plain
+        .strip_suffix("ssion")
+        .or_else(|| plain.strip_suffix("sion"))
+        .filter(|root| root.len() >= 4)
+    {
+        keys.push(root);
+    }
+    keys
+}
+
+/// Groups of words that say the same thing in this product's own vocabulary, so a question that
+/// uses one finds a decision that uses another: the site draws a supersession as "replaces", the
+/// UI says "assumption" where the code says "hypothesis", and one asker's "picture" is another's
+/// "graph". Fixed and literal, like `QUESTION_STOPWORDS`: nothing is learned and nothing is
+/// guessed. Any word of a group, and any form of it, stands in for any other. A stand-in is never
+/// the word itself: a decision that has the word asked for outranks one that only has a stand-in
+/// (`WordMatch`). The groups are disjoint, and kept small on purpose: a word belongs here only
+/// when people do ask about the same decision with either of them.
+pub(crate) const WORD_GROUPS: &[&[&str]] = &[
+    &["supersede", "supersession", "replace"],
+    &[
+        "refute",
+        "disprove",
+        "disproven",
+        "falsify",
+        "invalidate",
+        "wrong",
+    ],
+    &["assumption", "hypothesis", "hypotheses", "premise"],
+    &["ui", "interface"],
+    &["graph", "diagram", "chart", "picture"],
+    &["site", "website"],
+    &["link", "url", "address"],
+    &["browser", "device", "laptop", "phone", "mobile", "desktop"],
+];
+
+struct Vocabulary {
+    /// The group each key of a listed word belongs to.
+    group_of: HashMap<&'static str, usize>,
+    /// The keys of every word of each group: what a text must contain for a stand-in to be in it.
+    group_keys: Vec<Vec<&'static str>>,
+}
+
+static VOCABULARY: LazyLock<Vocabulary> = LazyLock::new(|| {
+    let mut group_of = HashMap::new();
+    let mut group_keys = Vec::new();
+    for (group, words) in WORD_GROUPS.iter().enumerate() {
+        let keys: BTreeSet<&'static str> = words.iter().copied().flat_map(word_keys).collect();
+        for key in &keys {
+            group_of.entry(*key).or_insert(group);
+        }
+        group_keys.push(keys.into_iter().collect());
+    }
+    Vocabulary {
+        group_of,
+        group_keys,
+    }
+});
+
+/// How a text holds a word of the question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WordMatch {
+    /// The word itself, or a form of it (`word_keys`).
+    Word,
+    /// A word `WORD_GROUPS` lists as standing in for it.
+    StandIn,
+}
+
+/// One word of a question, ready to be looked for in the text of a decision.
+pub(crate) struct RelatedWord<'a> {
+    keys: BTreeSet<&'a str>,
+    group: Option<usize>,
+}
+
+impl<'a> RelatedWord<'a> {
+    /// `word` must be lowercase.
+    pub(crate) fn new(word: &'a str) -> Self {
+        let keys: BTreeSet<&str> = word_keys(word).into_iter().collect();
+        let group = keys
+            .iter()
+            .find_map(|key| VOCABULARY.group_of.get(*key).copied());
+        Self { keys, group }
+    }
+
+    /// How `text` (lowercase) holds this word: as itself or a form of it, else as a stand-in, else
+    /// not at all. Whole words are compared, never prefixes, so `string` is not in `strategy`.
+    pub(crate) fn find_in(&self, text: &str) -> Option<WordMatch> {
+        // Every key is a leading part of its word, so a text holding none of them holds no form
+        // of the word and no stand-in: the common case costs one substring scan per key.
+        let stand_in_keys: &[&str] = self
+            .group
+            .map_or(&[], |group| VOCABULARY.group_keys[group].as_slice());
+        if !self
+            .keys
+            .iter()
+            .chain(stand_in_keys)
+            .any(|key| text.contains(key))
+        {
+            return None;
+        }
+        let mut found = None;
+        for word in text
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+        {
+            for key in word_keys(word) {
+                if self.keys.contains(key) {
+                    return Some(WordMatch::Word);
+                }
+                if self.group.is_some() && VOCABULARY.group_of.get(key).copied() == self.group {
+                    found = Some(WordMatch::StandIn);
+                }
+            }
+        }
+        found
+    }
 }

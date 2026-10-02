@@ -106,7 +106,9 @@ and function words (why, did, we, the, to, …) and negations (one rule, see
 **Negation** below). The verbs people ask about a decision with (pick, choose, decide,
 and "go with", "settle on", "opt for", each with its past and `-s` forms) and
 the adverbs they put in a why-question (still, again, ever, even, really,
-actually, now, anymore, currently) are question words too, so "why did we pick
+actually, now, anymore, currently) are question words too, and so is "make" in front of
+the decision it makes ("which agent made a decision", "make the decision to"; alone it stays
+a word: "what makes a link the same"), so "why did we pick
 shadcn for the design system" resolves in one step instead of listing the
 decision as a close candidate missing "pick". The list is fixed and literal —
 no stemming, no synonyms — and applies to the question only: a decision titled
@@ -222,9 +224,40 @@ text filter, so `--topic` alone decides.
 
 It then matches the way the resolver does, with a lower bar for close matches.
 A word also matches a field word with the same stem (`moving` finds `moves`;
-whole-word equality, as above). A decision matching every word comes first; then,
+whole-word equality, as above), and, for `recall` and for the verbs that only read
+(`why`, `verify`, `chain`, `compact-view`), two more kinds of word, so a question
+asked with another form or a synonym of a decision's words still finds it
+(hivemind-md0y):
+
+- **The noun or the verb of a word.** A noun suffix is taken off (`accepted` finds
+  `acceptance`, `refuted` finds `refutation`, `moved` finds `movement`, `secure`
+  finds `security`; at least four or five letters must remain, so `section` is not
+  `sect` and `former` is not `form`), and a verb in `-d`/`-de` meets its noun in
+  `-sion` at the part they share (`superseded` finds `supersession`, `decide` finds
+  `decision`, `expand` finds `expansion`). Still whole-word equality of a key, never
+  a prefix, so `string` does not match `strategy`.
+- **A stand-in word.** `WORD_GROUPS` in `src/queries/terms.rs` lists the few groups
+  of words that say the same thing in this product's own vocabulary: `supersede` and
+  `replace` (the site draws a supersession as "replaces"), `assumption`, `hypothesis`
+  and `premise`, `ui` and `interface`, `graph`, `diagram`, `chart` and `picture`,
+  `site` and `website`, `link`, `url` and `address`, `refute` and `wrong`, and
+  `browser`, `laptop` and `phone`. The list is fixed and literal, like the question
+  words: nothing is learned, and a word belongs in it only when people ask about the
+  same decision with either. A stand-in is never the word itself: among decisions that
+  lack the same number of words, the one that matches fewer of them only through a
+  stand-in comes first (after the one whose title or topic keys carry more of the words), so
+  among decisions that match equally well, one that says "interface" outranks one that says
+  "UI" for a question about the interface.
+
+A verb that writes (`disagree`, `supersede`, `retitle`, `ground`, ...) keeps the
+resolver's own match, the word and its inflections: a synonym never picks the
+decision a write lands on. A possessive is the word it belongs to ("the website's
+picture" asks about the website).
+
+A decision matching every word comes first; then,
 fewest missing words first (then the decision whose title or topic keys carry more
-of the matched words, as for `why` above, then rank tier, then decision id), a
+of the matched words, as for `why` above, then the one that leans on fewer stand-in words,
+then rank tier, then decision id), a
 decision that lacks some of the words is still returned when it matches at least
 half of them.
 Each such close match carries `missing_terms` (`missing=` in `--summary`, and a

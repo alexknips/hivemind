@@ -359,6 +359,21 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   does. The capture skill and `/hivemind-capture:capture` now say how to answer an asked
   question. A CLI older than the flag (the 0.7.0 release) refuses `--answers` with its own
   unexpected-argument error. (hivemind-ig9i)
+- **`recall` finds a decision when the question uses another form or a synonym of its
+  words.** "why doesn't the decision page show when a decision was accepted or superseded?"
+  left out the decision whose text says "acceptance, rejection or supersession", because
+  `superseded` and `supersession` shared no stem; "how does the interface refer to an agent
+  that made a decision?" never found "The UI names every agent 'an agent'". `recall` (and
+  `why`, `verify`, `chain` and `compact-view`, which name what `recall` names) now also match
+  the noun or verb of a word (`superseded` ~ `supersession`, `accepted` ~ `acceptance`,
+  `decide` ~ `decision`, `refuted` ~ `refutation`) and a short fixed list of stand-in words
+  from the product's own vocabulary (`interface` ~ `UI`, `assumption` ~ `hypothesis`, `picture`
+  ~ `graph`, `replace` ~ `supersede`, `site` ~ `website`, `link` ~ `url`, ...). Among decisions
+  that match equally well, the one that has the word asked for comes before one that only has a
+  stand-in. A possessive ("the website's picture") is the word it belongs to, and "made a
+  decision" / "make the decision" is question framing, like "pick" (alone, "make" stays a
+  word). The verbs that write keep matching a word and its inflections only, so a synonym never
+  picks what a write lands on. `search` is still literal. (hivemind-md0y)
 - **One rule for every negation in a question.** "not", "no", "never", "without", "cannot" and
   every contraction ending in "n't" (doesn't, don't, isn't, can't, …) are never missing words:
   `recall "why does the decision page not show when a decision was accepted or superseded?"`

@@ -179,13 +179,17 @@ fn resolve_for(
         Asker::Writer => CloseMatch::Majority,
         Asker::Reader => CloseMatch::Half,
     };
+    // A verb that only shows a decision reads the description as `recall` does, so it names what
+    // `recall` just named: a word's other forms and the words that stand in for it. A verb that
+    // writes matches a word and its inflections only; a synonym never picks what it writes to.
+    let related = asker == Asker::Reader;
     // Records of one decision, linked `SAME_AS`, are one candidate; records with no link between
     // them stay separate, so a tie among them stays `Ambiguous`.
     let mut also_recorded_as: HashMap<String, Vec<RecordedCopy>> = HashMap::new();
     let mut rows: Vec<ResolverCandidateRow> = Vec::new();
     for folded in fold_linked(
         graph,
-        collect_resolver_candidates(graph, description, &topic_keys, close)?,
+        collect_resolver_candidates(graph, description, &topic_keys, close, related)?,
         |row| row.decision_id.as_str(),
         absorb_record,
     )? {
@@ -216,6 +220,13 @@ fn resolve_for(
     let truncated = rows.len() > MAX_QUERY_RESULTS;
     rows.truncate(MAX_QUERY_RESULTS);
 
+    // The leader's ties: the rows as close as it is, in its rank tier, that lean on no more
+    // stand-in words than it does.
+    let leader_ties = rows.first().map_or(0, |leader| {
+        rows.iter()
+            .filter(|row| row.rank == leader.rank && closeness(row) == closeness(leader))
+            .count()
+    });
     let leader_is_clear = only_close_candidates
         && asker == Asker::Reader
         && close_candidate_leads(resolver_terms(description).len(), &rows);
@@ -245,9 +256,8 @@ fn resolve_for(
         } else {
             ResolveOutcome::Ambiguous { candidates }
         }
-    } else if let Some(best_rank) = candidates.first().map(|candidate| candidate.rank) {
-        let best_tier_count = candidates.iter().filter(|c| c.rank == best_rank).count();
-        if best_tier_count == 1 {
+    } else if !candidates.is_empty() {
+        if leader_ties == 1 {
             ResolveOutcome::Resolved {
                 candidate: candidates.remove(0),
             }
@@ -268,13 +278,19 @@ fn resolve_for(
 
 /// How far a candidate is from the description, smaller being closer: it lacks fewer of the
 /// terms, and between two that lack the same number, the one whose title or topic keys carry more
-/// of the terms it matched. A decision about the product's name says "product" and "Upheld" in its
-/// title; one that happens to say "product" and "called" somewhere in a long rationale is not
-/// about that, though it lacks just as many words. Where the words matched is already in
-/// `matched_fields`; nothing is counted across the ledger and nothing is learned. A full match is
-/// 0 on both (its order is the rank tier's).
-fn closeness(row: &ResolverCandidateRow) -> (usize, Reverse<usize>) {
-    (row.missing_terms.len(), Reverse(row.headline_terms))
+/// of the terms it matched, then the one that matched fewer of them only through a stand-in word
+/// (a decision that says "agent" is closer to a question about an agent than one that says "bot").
+/// A decision about the product's name says "product" and "Upheld" in its title; one that happens
+/// to say "product" and "called" somewhere in a long rationale is not about that, though it lacks
+/// just as many words. Where the words matched is already in `matched_fields`; nothing is counted
+/// across the ledger and nothing is learned. A full match is 0 on the headline count (its order is
+/// the rank tier's), and a verb that writes never reads stand-ins, so it is 0 on the last one too.
+fn closeness(row: &ResolverCandidateRow) -> (usize, Reverse<usize>, usize) {
+    (
+        row.missing_terms.len(),
+        Reverse(row.headline_terms),
+        row.stand_in_terms,
+    )
 }
 
 /// Whether the first of `rows` (all close, closest first) is the one asked about: it is closer
@@ -299,6 +315,7 @@ fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bo
 /// neither record says what was asked.
 fn absorb_record(shown: &mut ResolverCandidateRow, other: ResolverCandidateRow) {
     shown.rank = shown.rank.min(other.rank);
+    shown.stand_in_terms = shown.stand_in_terms.min(other.stand_in_terms);
     shown.polarity_mismatch &= other.polarity_mismatch;
     for field in other.matched_fields {
         if !shown.matched_fields.contains(&field) {

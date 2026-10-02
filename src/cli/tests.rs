@@ -3432,6 +3432,127 @@ fn recall_finds_a_decision_from_a_plain_question_that_shares_most_of_its_words()
 }
 
 #[test]
+fn recall_finds_a_decision_asked_with_another_form_or_a_synonym_of_its_words() -> CliTestResult {
+    // hivemind-md0y: "superseded" never matched "supersession", "interface" never found "UI", and
+    // a question that says "laptop and phone" never found the decision about every browser.
+    let hivemind_dir = unique_test_dir("query-recall-forms-and-synonyms");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let emit = |title: &str, rationale: &str| -> Result<String, Box<dyn std::error::Error>> {
+        Ok(run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "human:alice",
+            "--hivemind-dir",
+            dir,
+            "emit",
+            "decision.proposed",
+            "--title",
+            title,
+            "--rationale",
+            rationale,
+            "--topic-keys",
+            "recall",
+            "--options",
+            "Adopt this,Leave it open",
+            "--chose",
+            "Adopt this",
+        ]))?)
+    };
+    emit(
+        "Decision page reads each decision's brief from the verify endpoint",
+        "The page shows the question, quote and chosen option, which the graph does not carry.",
+    )?;
+    let history = emit(
+        "Status history lists only what the log gives the UI; change days wait on a server list",
+        "The server carries the current status and the proposal's time, but no time for acceptance, rejection or supersession. So the page lists the current status as of now and skips any change it cannot place in time. Everywhere else a status shows it is labelled as of now.",
+    )?;
+    let agents = emit(
+        "The UI names every agent 'an agent', never by the tool or role it ran as",
+        "An agent's actor id names the tool that ran it and its role in that tool, which a reader cannot make sense of. What a reader needs is whether a person or an agent decided.",
+    )?;
+    let links = emit(
+        "Decision links use title slugs worked out the same in every browser, not slugs remembered per browser",
+        "The server keeps no slug, and titles can change. A slug remembered by one browser could give two browsers one link to different decisions, so deterministic slugs open the same decision everywhere.",
+    )?;
+    let chain = emit(
+        "Site graph 'one assumption falls' shows refutation marking only direct dependents; the chain goes stale on replacement",
+        "The product marks a decision as not holding when a hypothesis it rests on directly is refuted, one hop. A decision further down the chain is not marked until the decision in between is replaced.",
+    )?;
+    // Decisions that share a few common words with the questions but are about something else.
+    emit(
+        "UI shows possibly-related decisions as an opt-in graph layer: dashed, no arrowhead",
+        "The layer is off by default, so the page stays readable.",
+    )?;
+    emit(
+        "Listing order after the proof: plugin first, then the registry",
+        "The plugin goes first, then the registry, then the community lists; docs follow.",
+    )?;
+    emit(
+        "The public demo reads its snapshot at runtime",
+        "The page fetches static files from the snapshot folder, the same on every device.",
+    )?;
+
+    let top_three = |question: &str| -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let answer: serde_json::Value = serde_json::from_str(&run(&Cli::parse_from([
+            "hivemind",
+            "--hivemind-dir",
+            dir,
+            "query",
+            "recall",
+            question,
+        ]))?)?;
+        Ok(answer["data"]["ranked"]["items"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .take(3)
+                    .filter_map(|item| item["decision"]["id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default())
+    };
+
+    for (question, target) in [
+        // The other form of a word: superseded ~ supersession.
+        (
+            "why doesn't the decision page show when a decision was accepted or superseded?",
+            &history,
+        ),
+        // A stand-in word: interface ~ UI.
+        (
+            "how does the interface refer to an agent that made a decision?",
+            &agents,
+        ),
+        // Stand-ins for the browser, and a word that no decision uses at all.
+        (
+            "what makes a link to a decision the same on my laptop and my phone?",
+            &links,
+        ),
+        // A possessive, a picture for a graph, a wrong assumption for a refuted one.
+        (
+            "when an assumption turns out wrong, how far does the website's picture show the damage spreading?",
+            &chain,
+        ),
+    ] {
+        let top = top_three(question)?;
+        ensure(
+            top.contains(target),
+            &format!("`{question}` should return its decision in the top 3, got {top:?}"),
+        )?;
+    }
+
+    // Stand-ins do not make an unrelated question answerable.
+    ensure(
+        top_three("what did we decide about the kubernetes autoscaler quota")?.is_empty(),
+        "nothing recorded about kubernetes",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn a_negation_is_polarity_in_every_spelling_never_a_word_the_decision_lacks() -> CliTestResult {
     // hivemind-g889: "not" and "doesn't" are never missing words, and a negated question never
     // resolves to the decision that says the opposite.

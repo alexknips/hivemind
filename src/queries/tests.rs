@@ -17,7 +17,10 @@ use crate::projector::{
 use crate::Result;
 
 use super::neighborhood::neighborhood_structure;
-use super::terms::{content_query, is_negated_text, resolver_question, resolver_terms, stem};
+use super::terms::{
+    content_query, is_negated_text, resolver_question, resolver_terms, stem, RelatedWord,
+    WordMatch, WORD_GROUPS,
+};
 use super::test_fixtures::Scenario;
 use super::*;
 
@@ -1321,6 +1324,89 @@ fn fluent_search_matches_inflected_words_the_literal_search_misses() -> Result<(
 }
 
 #[test]
+fn fluent_search_matches_the_other_form_of_a_word_the_literal_search_misses() -> Result<()> {
+    let scenario = titled_decisions(&[
+        (
+            "d:history",
+            "Status history lists only what the log gives the UI",
+            "The server has no time for acceptance, rejection or supersession.",
+        ),
+        (
+            "d:unrelated",
+            "Use Postgres for the hosted cell",
+            "The cell needs shared storage.",
+        ),
+    ])?;
+
+    let (items, _) = fluent_answer(&scenario, "status history superseded", 10)?;
+    assert_eq!(
+        items,
+        vec![("d:history".to_owned(), vec![])],
+        "superseded finds supersession, in full"
+    );
+
+    let graph = scenario.graph()?;
+    let literal = search_decisions_with_ledger(
+        &QueryContext::local(),
+        scenario.ledger(),
+        &graph,
+        &SearchDecisionRequest {
+            query: Some("status history superseded".to_owned()),
+            ..SearchDecisionRequest::default()
+        },
+    )?;
+    assert_eq!(literal.result_count, 0, "search stays literal");
+    Ok(())
+}
+
+#[test]
+fn fluent_search_finds_a_decision_through_a_stand_in_word() -> Result<()> {
+    let scenario = titled_decisions(&[
+        (
+            "d:ui",
+            "The UI names every agent 'an agent'",
+            "A reader needs to know a person from an agent.",
+        ),
+        (
+            "d:unrelated",
+            "Use Postgres for the hosted cell",
+            "The cell needs shared storage.",
+        ),
+    ])?;
+
+    let (items, _) = fluent_answer(&scenario, "interface agent", 10)?;
+
+    assert_eq!(items, vec![("d:ui".to_owned(), vec![])]);
+    Ok(())
+}
+
+#[test]
+fn a_decision_with_the_word_asked_for_comes_before_one_with_a_stand_in() -> Result<()> {
+    let scenario = titled_decisions(&[
+        // Both match every term, in the title. The id of the stand-in one sorts first.
+        ("d:aaa-stand-in", "UI layout", "Two columns."),
+        ("d:zzz-word", "Interface layout", "Two columns."),
+        // Both lack "layout"; the id of the stand-in one sorts first here too.
+        ("d:mmm-close-stand-in", "UI colours", "Dark and light."),
+        ("d:nnn-close", "Interface colours", "Dark and light."),
+    ])?;
+
+    let (items, _) = fluent_answer(&scenario, "interface layout", 10)?;
+
+    assert_eq!(
+        items,
+        vec![
+            ("d:zzz-word".to_owned(), vec![]),
+            ("d:aaa-stand-in".to_owned(), vec![]),
+            ("d:nnn-close".to_owned(), vec!["layout".to_owned()]),
+            ("d:mmm-close-stand-in".to_owned(), vec!["layout".to_owned()]),
+        ],
+        "full matches before close ones; within each, the word before its stand-in"
+    );
+    Ok(())
+}
+
+#[test]
 fn literal_search_still_requires_every_term_and_never_reports_missing_terms() -> Result<()> {
     let scenario = sign_in_and_pricing()?;
     let graph = scenario.graph()?;
@@ -1610,6 +1696,163 @@ fn stem_leaves_ids_and_short_words_alone() {
     for word in ["per-host", "3f2a", "gc-ox429", "red", "bus", "1"] {
         assert_eq!(stem(word), word);
     }
+}
+
+/// How `text` holds `word`, asked as `recall` asks it.
+fn held(word: &str, text: &str) -> Option<WordMatch> {
+    RelatedWord::new(word).find_in(text)
+}
+
+#[test]
+fn a_word_matches_its_noun_and_its_verb() {
+    // (what is asked, what a decision says): each way round, since either can be the asked one.
+    for (verb, noun) in [
+        ("superseded", "supersession"),
+        ("supersedes", "supersession"),
+        ("superseding", "supersession"),
+        ("superseded", "superseder"),
+        ("accepted", "acceptance"),
+        ("refuted", "refutation"),
+        ("rejecting", "rejection"),
+        ("decided", "decision"),
+        ("decide", "decisions"),
+        ("expanded", "expansion"),
+        ("created", "creation"),
+        ("moved", "movement"),
+        ("implemented", "implementation"),
+        ("secure", "security"),
+        ("approved", "approval"),
+        ("proposed", "proposal"),
+        ("tracked", "tracker"),
+    ] {
+        assert_eq!(
+            held(verb, noun),
+            Some(WordMatch::Word),
+            "{verb:?} asked, {noun:?} said"
+        );
+        assert_eq!(
+            held(noun, verb),
+            Some(WordMatch::Word),
+            "{noun:?} asked, {verb:?} said"
+        );
+    }
+}
+
+#[test]
+fn a_word_does_not_match_a_different_word_it_starts() {
+    for (asked, said) in [
+        ("string", "strategy"),
+        ("sect", "section"),
+        ("form", "former"),
+        ("storage", "store"),
+        ("status", "stat"),
+        ("act", "action"),
+        ("rel", "relation"),
+        ("interface", "service"),
+        ("page", "pager"),
+    ] {
+        assert_eq!(held(asked, said), None, "{asked:?} asked, {said:?} said");
+        assert_eq!(held(said, asked), None, "{said:?} asked, {asked:?} said");
+    }
+}
+
+#[test]
+fn a_word_is_compared_as_written_when_it_is_not_just_letters() {
+    assert_eq!(held("3f2a", "decision 3f2a is"), Some(WordMatch::Word));
+    assert_eq!(held("3f2", "decision 3f2a is"), None, "never by prefix");
+    assert_eq!(held("per-host", "one cert per host"), None);
+}
+
+#[test]
+fn a_stand_in_word_matches_and_is_not_the_word_itself() {
+    assert_eq!(
+        held("interface", "the ui names every agent"),
+        Some(WordMatch::StandIn)
+    );
+    assert_eq!(
+        held("ui", "a friendlier interface"),
+        Some(WordMatch::StandIn)
+    );
+    assert_eq!(
+        held("replacement", "it was superseded"),
+        Some(WordMatch::StandIn)
+    );
+    assert_eq!(
+        held("wrong", "refutation marks only direct dependents"),
+        Some(WordMatch::StandIn)
+    );
+    assert_eq!(
+        held("laptop", "the same in every browser"),
+        Some(WordMatch::StandIn)
+    );
+    // The word itself wins wherever the text also has a stand-in for it.
+    assert_eq!(
+        held("interface", "the ui, the interface"),
+        Some(WordMatch::Word)
+    );
+    assert_eq!(held("interface", "the service"), None);
+}
+
+#[test]
+fn every_word_of_a_group_stands_in_for_every_other_and_no_group_reaches_another() {
+    for (group, words) in WORD_GROUPS.iter().enumerate() {
+        for asked in *words {
+            for said in *words {
+                if asked != said {
+                    assert!(
+                        held(asked, said).is_some(),
+                        "{asked:?} asked, {said:?} said"
+                    );
+                }
+            }
+            for other in WORD_GROUPS
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != group)
+                .flat_map(|(_, words)| words.iter())
+            {
+                assert_eq!(
+                    held(asked, other),
+                    None,
+                    "{asked:?} asked, {other:?} said: two groups share a word"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn making_a_decision_is_question_framing_and_making_anything_else_is_a_word() {
+    assert_eq!(
+        resolver_terms("how does the interface refer to an agent that made a decision?"),
+        vec!["interface", "refer", "agent"]
+    );
+    assert_eq!(
+        resolver_terms("why did we make the decision to drop workos"),
+        vec!["drop", "workos"]
+    );
+    assert_eq!(
+        resolver_terms("who makes decisions about pricing"),
+        vec!["pricing"]
+    );
+    // Alone, "make" is a word a decision may be about.
+    assert_eq!(
+        resolver_terms("what makes a link the same on every device"),
+        vec!["makes", "link", "same", "every", "device"]
+    );
+    assert_eq!(
+        resolver_terms("graph list view made readable"),
+        vec!["graph", "list", "view", "made", "readable"]
+    );
+}
+
+#[test]
+fn a_possessive_is_the_word_it_belongs_to() {
+    assert_eq!(
+        resolver_terms("how far does the website's picture show an agent's names"),
+        vec!["far", "website", "picture", "show", "agent", "names"]
+    );
+    assert_eq!(resolver_terms("why isn't it ready"), vec!["ready"]);
 }
 
 #[test]
