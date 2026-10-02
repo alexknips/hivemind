@@ -1,0 +1,56 @@
+{
+  "batch": {
+    "batch_id": "batch-user-asks",
+    "agent_tool": "claude",
+    "session_id": "session-user-asks",
+    "turns": [
+      {
+        "turn_id": "t-1",
+        "role": "user",
+        "truncated": false,
+        "ts": "2026-09-04T09:00:00Z",
+        "text": "Which queue should the importer use for retries, Redis or Postgres?"
+      },
+      {
+        "turn_id": "t-2",
+        "role": "assistant",
+        "truncated": false,
+        "ts": "2026-09-04T09:05:00Z",
+        "text": "Postgres. The importer already writes there, so a retry queue in the same database needs no second service to run or to keep consistent."
+      }
+    ]
+  },
+  "captures": [
+    {
+      "kind": "decision-request",
+      "title": "Choose the retry queue for the importer",
+      "rationale": "The owner asked which store the importer should use for retries.",
+      "topic_keys": [
+        "importer"
+      ],
+      "evidence_ids": [],
+      "options": null,
+      "chosen_option": null,
+      "extraction_confidence": 0.8,
+      "source_turn_id": "t-1",
+      "question": "Which queue should the importer use for retries, Redis or Postgres?"
+    },
+    {
+      "kind": "decision",
+      "title": "Use Postgres as the importer's retry queue",
+      "rationale": "The importer already writes to Postgres, so a retry queue there needs no second service to run or to keep consistent.",
+      "topic_keys": [
+        "importer"
+      ],
+      "evidence_ids": [],
+      "options": [
+        "Postgres",
+        "Redis"
+      ],
+      "chosen_option": "Postgres",
+      "extraction_confidence": 0.8,
+      "source_turn_id": "t-2",
+      "question": "Which queue should the importer use for retries, Redis or Postgres?"
+    }
+  ]
+}

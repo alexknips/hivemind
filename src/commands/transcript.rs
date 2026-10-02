@@ -23,12 +23,26 @@ use super::{payload_value_as_str, CommandContext, Commands};
 /// One explicit ask a request turn makes, resolved and checked before anything is written.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TranscriptAsk {
-    /// Who asked: the actor the classifier named on the request, else whoever submitted the
-    /// batch the request turn is in.
+    /// Who asked: the actor the classifier named on the request, else, when the request turn is
+    /// an assistant's, whoever submitted the batch (the agent that spoke the turn).
     actor_id: String,
     text: String,
     /// The request turn's own time.
     ts: DateTime<Utc>,
+}
+
+impl TranscriptAsk {
+    /// The ask's event uuid, derived from the tenant, the question, the time and the asker, so the
+    /// same request turn seen again is the same event.
+    fn event_uuid(&self, tenant_id: &str) -> Uuid {
+        let stable_name = format!(
+            "{tenant_id}\0transcript-ask\0{}\0{}\0{}",
+            normalize_question_text(&self.text),
+            self.ts.to_rfc3339(),
+            self.actor_id
+        );
+        Uuid::new_v5(&Uuid::NAMESPACE_URL, stable_name.as_bytes())
+    }
 }
 
 /// A recorded decision capture that states the question it answers.
@@ -40,6 +54,21 @@ pub(super) struct CapturedAnswer {
     question: String,
     /// The decision's own turn time, when it has one.
     ts: Option<DateTime<Utc>>,
+}
+
+impl CapturedAnswer {
+    /// The recorded decision's node id.
+    fn decision_id(&self, batch_event_id: EventId) -> String {
+        format!("capture:{batch_event_id}:{}", self.index)
+    }
+
+    /// The uuid the question events of this answer derive from, stable per classification.
+    fn event_uuid(&self, classification_uuid: Uuid) -> Uuid {
+        Uuid::new_v5(
+            &classification_uuid,
+            format!("capture:{}", self.index).as_bytes(),
+        )
+    }
 }
 
 /// The decision captures among `captures` (as recorded) that state a question.
@@ -58,11 +87,68 @@ pub(super) fn captured_answers(captures: &[CaptureItem]) -> Vec<CapturedAnswer> 
         .collect()
 }
 
+/// What one received turn holds that a capture can use.
+struct ReceivedTurn {
+    /// The speaker's role as the shipper recorded it (`user`, `assistant`, ...).
+    role: String,
+    /// The turn's own time, `None` when the shipper sent none.
+    ts: Option<DateTime<Utc>>,
+}
+
 /// What one received batch holds that a capture can name.
 struct ReceivedBatch {
     submitter: String,
-    /// Each turn's own time, `None` when the shipper sent none.
-    turns: HashMap<String, Option<DateTime<Utc>>>,
+    turns: HashMap<String, ReceivedTurn>,
+}
+
+/// The role of a turn an agent spoke. Only such a turn lets the batch's submitter stand in for
+/// an asker the classifier did not name: the submitter is that agent, so crediting it is a
+/// recorded fact. A human's turn is not, and no other role says who spoke.
+const ASSISTANT_ROLE: &str = "assistant";
+
+/// Checks what one capture says about its turn and question, before anything is looked up.
+fn check_capture(index: usize, capture: &CaptureItem) -> Result<()> {
+    if let Some(turn_id) = &capture.source_turn_id {
+        require_non_empty("source_turn_id", turn_id)?;
+    }
+    let Some(question) = &capture.question else {
+        return Ok(());
+    };
+    if !matches!(capture.kind.as_str(), "decision" | "decision-request") {
+        return Err(CommandError::Validation(format!(
+            "capture {index} is a {}, and only a decision or a decision-request can carry a question: leave question out",
+            capture.kind
+        ))
+        .into());
+    }
+    if normalize_question_text(question).is_empty() {
+        return Err(CommandError::Validation(format!(
+            "capture {index} has a question with no words in it: write the question as it was asked, or leave question out"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+/// The first of `batch_ids`, in order, whose received batch holds `turn_id`, with that turn.
+fn find_turn<'a>(
+    received: &'a HashMap<String, ReceivedBatch>,
+    batch_ids: &[String],
+    index: usize,
+    turn_id: &str,
+) -> Result<(&'a ReceivedBatch, &'a ReceivedTurn)> {
+    batch_ids
+        .iter()
+        .find_map(|batch_id| {
+            let batch = received.get(batch_id.as_str())?;
+            Some((batch, batch.turns.get(turn_id)?))
+        })
+        .ok_or_else(|| {
+            CommandError::Validation(format!(
+                "capture {index} names turn {turn_id}, which is not a turn of the batches this classification covers: name one of their turn ids, or leave source_turn_id out"
+            ))
+            .into()
+        })
 }
 
 impl<L: EventLedger> Commands<'_, L> {
@@ -75,6 +161,11 @@ impl<L: EventLedger> Commands<'_, L> {
     /// Whatever a submission carried in `source_ts` is replaced: only a received turn's own
     /// time counts. A request turn with no time makes no ask, because the ask would then be
     /// dated by when it was classified.
+    ///
+    /// The asker is the actor the classifier named on the request. When it named none, the turn's
+    /// recorded role decides: an assistant's turn is credited to the batch's submitter (the agent
+    /// that spoke it), and any other turn, a human's above all, makes no ask, because the batch
+    /// does not record who that human is and a human's question is never credited to an agent.
     pub(super) fn plan_transcript_asks(
         &self,
         batch_ids: &[String],
@@ -82,25 +173,7 @@ impl<L: EventLedger> Commands<'_, L> {
     ) -> Result<Vec<TranscriptAsk>> {
         for (index, capture) in captures.iter_mut().enumerate() {
             capture.source_ts = None;
-            if let Some(turn_id) = &capture.source_turn_id {
-                require_non_empty("source_turn_id", turn_id)?;
-            }
-            let Some(question) = &capture.question else {
-                continue;
-            };
-            if !matches!(capture.kind.as_str(), "decision" | "decision-request") {
-                return Err(CommandError::Validation(format!(
-                    "capture {index} is a {}, and only a decision or a decision-request can carry a question: leave question out",
-                    capture.kind
-                ))
-                .into());
-            }
-            if normalize_question_text(question).is_empty() {
-                return Err(CommandError::Validation(format!(
-                    "capture {index} has a question with no words in it: write the question as it was asked, or leave question out"
-                ))
-                .into());
-            }
+            check_capture(index, capture)?;
         }
         if captures
             .iter()
@@ -115,19 +188,10 @@ impl<L: EventLedger> Commands<'_, L> {
             let Some(turn_id) = capture.source_turn_id.as_deref() else {
                 continue;
             };
-            let found = batch_ids.iter().find_map(|batch_id| {
-                let batch = received.get(batch_id.as_str())?;
-                batch.turns.get(turn_id).map(|ts| (batch, *ts))
-            });
-            let Some((batch, turn_ts)) = found else {
-                return Err(CommandError::Validation(format!(
-                    "capture {index} names turn {turn_id}, which is not a turn of the batches this classification covers: name one of their turn ids, or leave source_turn_id out"
-                ))
-                .into());
-            };
-            capture.source_ts = turn_ts;
+            let (batch, turn) = find_turn(&received, batch_ids, index, turn_id)?;
+            capture.source_ts = turn.ts;
             let (Some(ts), Some(question), "decision-request") =
-                (turn_ts, capture.question.as_deref(), capture.kind.as_str())
+                (turn.ts, capture.question.as_deref(), capture.kind.as_str())
             else {
                 continue;
             };
@@ -135,9 +199,14 @@ impl<L: EventLedger> Commands<'_, L> {
                 .actor_id
                 .as_deref()
                 .filter(|actor_id| require_valid_actor_id(actor_id).is_ok());
+            let asker = named_asker
+                .or_else(|| (turn.role == ASSISTANT_ROLE).then_some(batch.submitter.as_str()));
+            let Some(asker) = asker else {
+                continue;
+            };
             asks.push(TranscriptAsk {
-                actor_id: named_asker.map_or_else(|| batch.submitter.clone(), str::to_owned),
-                text: question.trim().to_owned(),
+                actor_id: asker.to_owned(),       // ubs:ignore: one owned asker per ask
+                text: question.trim().to_owned(), // ubs:ignore: one owned text per ask
                 ts,
             });
         }
@@ -152,17 +221,10 @@ impl<L: EventLedger> Commands<'_, L> {
         for ask in asks {
             let commands = self.at_source_time(Some(ask.ts));
             let plan = commands.plan_ask(&ask.text)?;
-            let stable_name = format!(
-                "{}\0transcript-ask\0{}\0{}\0{}",
-                self.context.tenant_id.as_str(),
-                normalize_question_text(&ask.text),
-                ask.ts.to_rfc3339(),
-                ask.actor_id
-            );
             commands.record_ask_with_uuid(
                 &ask.actor_id,
                 &plan,
-                Uuid::new_v5(&Uuid::NAMESPACE_URL, stable_name.as_bytes()),
+                ask.event_uuid(self.context.tenant_id.as_str()),
             )?;
         }
         Ok(())
@@ -181,12 +243,9 @@ impl<L: EventLedger> Commands<'_, L> {
     ) -> Result<()> {
         for answer in answers {
             let commands = self.at_source_time(answer.ts);
-            let decision_id = format!("capture:{batch_event_id}:{}", answer.index);
-            let plan = commands.question_answer_plan(&decision_id, &answer.question)?;
-            let uuids = QuestionEventUuids::derived_from(Uuid::new_v5(
-                &classification_uuid,
-                format!("capture:{}", answer.index).as_bytes(),
-            ));
+            let plan = commands
+                .question_answer_plan(&answer.decision_id(batch_event_id), &answer.question)?;
+            let uuids = QuestionEventUuids::derived_from(answer.event_uuid(classification_uuid));
             commands.record_question_answer(actor_id, &plan, Some(batch_event_id), uuids)?;
         }
         Ok(())
@@ -234,12 +293,19 @@ impl<L: EventLedger> Commands<'_, L> {
                 let Some(turn_id) = turn.get("turn_id").and_then(|id| id.as_str()) else {
                     continue;
                 };
+                let role = turn.get("role").and_then(|role| role.as_str());
                 let ts = turn
                     .get("ts")
                     .and_then(|ts| ts.as_str())
                     .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
                     .map(|ts| ts.with_timezone(&Utc));
-                batch.turns.entry(turn_id.to_owned()).or_insert(ts);
+                batch
+                    .turns
+                    .entry(turn_id.to_owned()) // ubs:ignore: one owned key per received turn
+                    .or_insert_with(|| ReceivedTurn {
+                        role: role.unwrap_or_default().to_owned(), // ubs:ignore: one owned role per received turn
+                        ts,
+                    });
             }
         })?;
         Ok(received)

@@ -123,7 +123,10 @@ Optional fields (omit rather than null unless needed):
 - `question`: only on a `decision-request` (the question being asked) or a `decision` (the
   question it answers, when the text states it), in the words it was asked in. Never write a
   question the text does not contain. A request and the decision that answers it must state the
-  question in the same words (case and trailing punctuation do not matter) to be linked. If
+  question in the same words (case and trailing punctuation do not matter) to be linked. The ask
+  is by the `actor_id` you name on the request; with none named, a request in an `assistant`
+  turn is credited to the agent that submitted the batch, and a request in a `user` turn writes
+  no ask, so name the person in `actor_id` when the text says who asked. If
   submit is refused because `source_turn_id`, `source_ts` or `question` is an unknown field,
   the cell runs an older hivemind than this plugin: submit the same captures again without them.
 - `actor_id`: the person who proposed/decided, only if named in the text

@@ -231,8 +231,11 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   time, so `why` shows when it was decided instead of when the transcript was classified. A
   capture that names no turn, or whose turn carries no time, keeps the classification's time.
   A `decision-request` that states a question and names a turn with a time writes one
-  `question.asked` at that turn's time, by the actor the classifier named on the request (else
-  whoever submitted the batch); a later decision that states the same question links to it with
+  `question.asked` at that turn's time, by the actor the classifier named on the request (with
+  none named, a request in an assistant's turn is credited to whoever submitted the batch, that
+  agent having spoken it, and a request in a user's turn writes no ask, since the batch records
+  no human and a human's question is never credited to an agent); a later decision that states
+  the same question links to it with
   `ANSWERS`, matched on the normalized text exactly as `capture --question` is. No ask is
   written for an agent deciding alone, for a request with no question, or for a request turn
   with no time (the timeline reads "asked at: not recorded"), and a re-ingested transcript

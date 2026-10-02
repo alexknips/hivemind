@@ -28,6 +28,8 @@ const REQUEST_THEN_ANSWER: &str =
     include_str!("../../../tests/fixtures/transcripts/request_then_answer.json");
 const AGENT_DECIDES_ALONE: &str =
     include_str!("../../../tests/fixtures/transcripts/agent_decides_alone.json");
+const USER_ASKS_UNNAMED: &str =
+    include_str!("../../../tests/fixtures/transcripts/user_asks_unnamed.json");
 
 fn moment(timestamp: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(timestamp)
@@ -302,20 +304,99 @@ fn a_re_ingested_request_turn_is_not_asked_twice() {
     assert_eq!(events_of(&ledger, EventType::QuestionRecorded).len(), 1);
 }
 
-/// Without an actor named on the request, the batch's submitter is the one who asked.
-#[test]
-fn an_ask_with_no_named_asker_is_by_the_batch_submitter() {
-    let ledger = InMemoryEventLedger::new();
+/// The request fixture with the actor the classifier named on the request left out.
+fn request_with_no_named_asker() -> Value {
     let mut fixture: Value = serde_json::from_str(REQUEST_THEN_ANSWER).expect("parses");
     fixture["captures"][0]
         .as_object_mut()
         .expect("capture")
         .remove("actor_id");
+    fixture
+}
+
+/// Without an actor named on the request, a request an assistant's turn made is credited to the
+/// batch's submitter: that agent spoke the turn, which the batch records.
+#[test]
+fn an_assistant_turn_request_with_no_named_asker_is_by_the_batch_submitter() {
+    let ledger = InMemoryEventLedger::new();
+    let fixture = request_with_no_named_asker();
+    assert_eq!(fixture["batch"]["turns"][0]["role"], "assistant");
     record_as(&ledger, &fixture.to_string(), "batch-unnamed-asker").expect("recorded");
 
     let asks = events_of(&ledger, EventType::QuestionAsked);
     assert_eq!(asks.len(), 1);
     assert_eq!(asks[0].actor_id, SUBMITTER);
+    assert_eq!(asks[0].ts, Some(moment("2026-09-02T10:00:00Z")));
+}
+
+/// Without an actor named on the request, a request a user's turn made writes no ask: the batch
+/// records no human, and a human's question is never credited to the agent that submitted it.
+/// The decision that answers it is still recorded, at its own turn's time, and still linked to
+/// the question; the timeline reads "asked at: not recorded" and nothing waits.
+#[test]
+fn a_user_turn_request_with_no_named_asker_writes_no_ask_but_the_decision_is_recorded() {
+    let ledger = InMemoryEventLedger::new();
+    let recorded = record(&ledger, USER_ASKS_UNNAMED);
+
+    assert!(events_of(&ledger, EventType::QuestionAsked).is_empty());
+    assert_eq!(events_of(&ledger, EventType::QuestionRecorded).len(), 1);
+    assert_eq!(answers_relations(&ledger).len(), 1);
+
+    let graph = graph_of(&ledger);
+    let decision_id = format!("capture:{}:1", recorded.event_id);
+    let brief = get_decision_brief(&graph, &decision_id)
+        .expect("brief reads")
+        .data
+        .expect("decision is in the graph");
+    assert_eq!(brief.occurred_at, Some(moment("2026-09-04T09:05:00Z")));
+    assert_eq!(brief.asked_at, None);
+    let waiting = get_waiting_requests(
+        &graph,
+        &WaitingRequestsRequest {
+            limit: 10,
+            cursor: None,
+        },
+    )
+    .expect("waiting reads")
+    .data;
+    assert!(waiting.items.is_empty());
+}
+
+/// A role that does not say an agent spoke the turn (a system note, a tool summary, none at all)
+/// credits nobody: only an assistant's turn lets the submitter stand in for the asker.
+#[test]
+fn a_request_turn_of_any_other_role_with_no_named_asker_writes_no_ask() {
+    for role in ["system", "tool-summary", "", "Assistant"] {
+        let ledger = InMemoryEventLedger::new();
+        let mut fixture = request_with_no_named_asker();
+        fixture["batch"]["turns"][0]["role"] = json!(role);
+        record_as(&ledger, &fixture.to_string(), "batch-other-role").expect("recorded");
+
+        assert!(
+            events_of(&ledger, EventType::QuestionAsked).is_empty(),
+            "a request in a {role:?} turn with no named asker writes no ask"
+        );
+    }
+}
+
+/// A named actor wins on either role: the classifier said who asked, so the ask is theirs.
+#[test]
+fn a_named_asker_is_credited_whatever_the_role_of_the_request_turn() {
+    for role in ["assistant", "user"] {
+        let ledger = InMemoryEventLedger::new();
+        let mut fixture: Value = serde_json::from_str(REQUEST_THEN_ANSWER).expect("parses");
+        fixture["batch"]["turns"][0]["role"] = json!(role);
+        fixture["captures"][0]["actor_id"] = json!("human:alex");
+        record_as(&ledger, &fixture.to_string(), "batch-named-asker").expect("recorded");
+
+        let asks = events_of(&ledger, EventType::QuestionAsked);
+        assert_eq!(
+            asks.len(),
+            1,
+            "a named asker in a {role} turn makes the ask"
+        );
+        assert_eq!(asks[0].actor_id, "human:alex");
+    }
 }
 
 /// (c) An agent deciding alone mid-task makes no ask.

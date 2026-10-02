@@ -730,7 +730,8 @@ layer refuses a turn the classified batches do not hold, reads that turn's own `
 `source_ts` (never from the caller), and records a decision at that time instead of when it was
 classified; with no turn, or a turn with no `ts`, the classification's time stays. A
 decision-request with a question and a dated turn writes one `question.asked` at that turn's
-time, by the actor named on the request (else the batch's submitter); a decision stating the
+time, by the actor named on the request (with none named, an assistant's turn is credited to
+the batch's submitter and a user's turn writes no ask); a decision stating the
 same question (after the normalization `capture --question` uses) links to it with `ANSWERS`,
 so `why` shows both times. An agent deciding alone writes no ask, and no earlier "first
 raised" time is inferred. The same transcript ingested again writes its ask once.

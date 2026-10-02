@@ -199,8 +199,14 @@ time from the classifier.
 - A decision is recorded at its turn's time (`occurred_at`). With no turn, or a
   turn with no `ts`, it keeps the classification's own time.
 - A `decision-request` with a `question` and a turn that has a `ts` writes one
-  `question.asked` at that turn's time, by the actor named on the request, else
-  by whoever submitted the batch. It is the only home of an ask time.
+  `question.asked` at that turn's time, by the actor named on the request. With
+  no actor named, the turn's role decides: a request in an `assistant` turn is
+  credited to whoever submitted the batch (that agent spoke it), and a request
+  in a `user` turn (or any other role) writes no ask, because the batch does not
+  record which human spoke and a human's question is never credited to an agent.
+  The decision that answers it is still recorded and linked. Name the asker's
+  `actor_id` on the request whenever the text says who asked. It is the only
+  home of an ask time.
 - A `decision` with a `question` links to the question with `ANSWERS`, matched
   on the normalized text exactly as `capture --question` is: a request and a
   decision that state the same question (up to case, spacing and trailing

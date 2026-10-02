@@ -153,10 +153,13 @@
 //! - `question` is allowed only on a `decision` or a `decision-request` and must contain words,
 //!   not only punctuation; otherwise the whole classification is refused before the first write.
 //! - A `decision-request` that states a `question` and names a turn with a time writes one
-//!   `question.asked` at that turn's own time, by the actor the classifier named on the request
-//!   (else whoever submitted the batch), resolving the question to its `Question` node like any
-//!   ask (`plan_ask`). A request with no `question`, no turn, or a turn with no time writes no
-//!   ask: the timeline reads "asked at: not recorded" rather than a time that is only when it
+//!   `question.asked` at that turn's own time, by the actor the classifier named on the request,
+//!   resolving the question to its `Question` node like any ask (`plan_ask`). When it named
+//!   none, the turn's recorded role decides: an `assistant` turn is credited to whoever
+//!   submitted the batch (that agent spoke it), and a turn of any other role, a user's above
+//!   all, writes no ask, because the batch records no human and a human's question is never
+//!   credited to an agent; the decision that answers it is still recorded and linked. A request
+//!   with no `question`, no turn, or a turn with no time writes no ask: the timeline reads "asked at: not recorded" rather than a time that is only when it
 //!   was classified. The same question asked by the same actor at the same turn time is the same
 //!   moment seen again (a re-ingested transcript) and is written once.
 //! - A `decision` that states a `question` is linked to it with `ANSWERS` exactly as `capture

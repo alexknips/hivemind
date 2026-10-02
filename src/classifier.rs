@@ -698,16 +698,12 @@ fn render_batch_text(event: &crate::events::Event) -> String {
             .get("truncated")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let header = if turn_id.is_empty() {
-            format!("[{role}]")
-        } else {
-            format!("[{role} turn {turn_id}]")
-        };
-        if truncated {
-            let _ = writeln!(out, "{header} {text} [TRUNCATED]");
-        } else {
-            let _ = writeln!(out, "{header} {text}");
+        let _ = write!(out, "[{role}");
+        if !turn_id.is_empty() {
+            let _ = write!(out, " turn {turn_id}");
         }
+        let marker = if truncated { " [TRUNCATED]" } else { "" };
+        let _ = writeln!(out, "] {text}{marker}");
     }
     out
 }
