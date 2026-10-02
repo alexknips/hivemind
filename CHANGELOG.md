@@ -343,6 +343,10 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   `--move-to <project>` names the destination, skips decisions already there and gives each
   text row the `hivemind move --decision <id> --to <project>` that moves it. Still a report:
   it moves nothing. (hivemind-zywz)
+- **Docs.** The README now says HiveMind is for one person and their agents in any field, not
+  only engineering, and says plainly that a developer's setup (a local ledger or a
+  self-hosted cell, the MCP server, the Claude Code and Codex plugins) is what runs it today.
+  No capability changed. (hivemind-48zc)
 
 ### Fixed
 

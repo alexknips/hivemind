@@ -3,11 +3,18 @@
 [![CI](https://github.com/alexknips/hivemind/actions/workflows/ci.yml/badge.svg)](https://github.com/alexknips/hivemind/actions/workflows/ci.yml)
 [![Kuzu nightly](https://github.com/alexknips/hivemind/actions/workflows/kuzu-nightly.yml/badge.svg?branch=master)](https://github.com/alexknips/hivemind/actions/workflows/kuzu-nightly.yml)
 
-HiveMind is memory for decisions. Your coding agents record what was decided,
+HiveMind is memory for decisions. You and your agents record what was decided,
 which options lost and why, and who decided, you or the agent. The next session
 does not reintroduce what you dropped or rewrite what you agreed. When a
 decision is contested or replaced, its status changes; nothing goes quietly
-stale. One engineer and their agents, local-first, AGPL-3.0, free to self-host.
+stale. One person and their agents, local-first, AGPL-3.0, free to self-host.
+
+It is not only for engineering. A decision record holds a title, a rationale,
+the options weighed, the evidence it rests on and who decided; nothing in it is
+specific to code, so it fits a research design, a launch plan or a purchase as
+well as an architecture choice. The examples below are engineering ones because
+a developer's setup is what can run HiveMind today: a local ledger or a
+self-hosted cell, the MCP server, and the Claude Code and Codex plugins.
 
 It is deliberately a decision graph, not a chat archive, notes app, or task
 tracker. Humans and agents are both represented as actors, disagreement is
