@@ -723,6 +723,18 @@ recorded before this, `hivemind restatements propose` lists the links to
 approve (a title-word overlap, with the shared words printed) and `restatements
 apply` records the ones you confirm; nothing is deleted or rewritten.
 
+**Source time and asks** (hivemind-bbnw.8): the classifier sees each turn's id and may name,
+on a capture, the turn it came from (`source_turn_id`) and, on a decision or a
+decision-request, the question in the words it was asked in (`question`). The write
+layer refuses a turn the classified batches do not hold, reads that turn's own `ts` into
+`source_ts` (never from the caller), and records a decision at that time instead of when it was
+classified; with no turn, or a turn with no `ts`, the classification's time stays. A
+decision-request with a question and a dated turn writes one `question.asked` at that turn's
+time, by the actor named on the request (else the batch's submitter); a decision stating the
+same question (after the normalization `capture --question` uses) links to it with `ANSWERS`,
+so `why` shows both times. An agent deciding alone writes no ask, and no earlier "first
+raised" time is inferred. The same transcript ingested again writes its ask once.
+
 **Agent-shaped tokens**: `POST /v1/users` (and `.../tokens`) always mint a
 `human:<email>` token, since agents aren't users with an email or role. An
 admin mints a token bound directly to an agent identity instead, with

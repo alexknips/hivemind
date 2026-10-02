@@ -5821,6 +5821,9 @@ fn capture(kind: &str, title: &str, rationale: &str) -> CaptureItem {
         decision_id: None,
         participants: Vec::new(),
         restates_id: None,
+        source_turn_id: None,
+        source_ts: None,
+        question: None,
         session_initiator: None,
     }
 }

@@ -79,6 +79,19 @@ fn render_batch_text_multiple_turns_preserves_order() {
 }
 
 #[test]
+fn render_batch_text_names_each_turn_by_its_id() {
+    let event = batch_event(serde_json::json!([
+        { "turn_id": "t-1", "role": "assistant", "text": "which database?", "truncated": false },
+        { "turn_id": "t-2", "role": "user", "text": "partial", "truncated": true },
+    ]));
+    assert_eq!(
+        render_batch_text(&event),
+        "[assistant turn t-1] which database?\n[user turn t-2] partial [TRUNCATED]\n"
+    );
+    assert_eq!(turn_ids(&event), vec!["t-1", "t-2"]);
+}
+
+#[test]
 fn render_batch_text_unknown_role_defaults_to_unknown() {
     let event = batch_event(serde_json::json!([
         { "text": "no role field" }
@@ -236,4 +249,109 @@ fn session_agent_actor_is_stable_across_different_session_ids() {
 #[test]
 fn session_agent_actor_none_when_no_tool_and_not_agent_token() {
     assert_eq!(session_agent_actor("human:alex@example.com", ""), None);
+}
+
+// --- source turn and question (hivemind-bbnw.8) ---
+
+fn parsed_capture(extra: serde_json::Value) -> CaptureItem {
+    let mut capture = serde_json::json!({
+        "kind": "decision",
+        "title": "Use Postgres for the hosted MVP",
+        "rationale": "Several friends write at once",
+        "topic_keys": ["hosted-mvp"],
+        "evidence_ids": [],
+        "options": null,
+        "chosen_option": null,
+        "extraction_confidence": 0.9,
+        "expressed_confidence": null,
+        "supersedes_id": null,
+        "actor_id": null,
+        "blocked_actor_id": null,
+        "decision_id": null,
+    });
+    capture
+        .as_object_mut()
+        .expect("capture is an object")
+        .extend(extra.as_object().expect("extra is an object").clone());
+    let response = serde_json::json!({ "captures": [capture] }).to_string();
+    parse_capture_response(&response)
+        .expect("response parses")
+        .remove(0)
+}
+
+#[test]
+fn the_schema_asks_for_a_source_turn_and_a_question_on_every_capture() {
+    let schema = capture_schema();
+    let items = &schema["properties"]["captures"]["items"];
+    for field in ["source_turn_id", "question"] {
+        assert!(
+            items["properties"].get(field).is_some(),
+            "{field} is a property"
+        );
+        assert!(
+            items["required"]
+                .as_array()
+                .expect("required list")
+                .iter()
+                .any(|name| name == field),
+            "{field} is required (nullable) under structured outputs"
+        );
+    }
+}
+
+#[test]
+fn a_response_without_the_new_fields_still_parses() {
+    let capture = parsed_capture(serde_json::json!({}));
+    assert_eq!(capture.source_turn_id, None);
+    assert_eq!(capture.question, None);
+}
+
+#[test]
+fn the_evaluator_path_keeps_the_question_but_no_turn() {
+    // No batch, so no turn the model could honestly name.
+    let capture = parsed_capture(serde_json::json!({
+        "source_turn_id": "t-1",
+        "question": "Which database should the hosted MVP use?"
+    }));
+    assert_eq!(capture.source_turn_id, None);
+    assert_eq!(
+        capture.question.as_deref(),
+        Some("Which database should the hosted MVP use?")
+    );
+}
+
+#[test]
+fn a_turn_the_batch_does_not_hold_is_dropped_before_submission() {
+    let mut named = parsed_capture(serde_json::json!({}));
+    named.source_turn_id = Some("t-2".to_owned());
+    let mut invented = parsed_capture(serde_json::json!({}));
+    invented.source_turn_id = Some("t-99".to_owned());
+    let mut captures = vec![named, invented];
+
+    conform_to_batch(&mut captures, &["t-1".to_owned(), "t-2".to_owned()]);
+
+    assert_eq!(captures[0].source_turn_id.as_deref(), Some("t-2"));
+    assert_eq!(captures[1].source_turn_id, None);
+}
+
+#[test]
+fn a_question_the_write_path_would_refuse_is_dropped_before_submission() {
+    let mut kept = parsed_capture(serde_json::json!({}));
+    kept.question = Some("Which database should the hosted MVP use?".to_owned());
+    let mut request = parsed_capture(serde_json::json!({}));
+    request.kind = "decision-request".to_owned();
+    request.question = Some("Which database?".to_owned());
+    let mut wordless = parsed_capture(serde_json::json!({}));
+    wordless.question = Some(" ? ".to_owned());
+    let mut on_evidence = parsed_capture(serde_json::json!({}));
+    on_evidence.kind = "evidence".to_owned();
+    on_evidence.question = Some("Which database?".to_owned());
+    let mut captures = vec![kept, request, wordless, on_evidence];
+
+    conform_to_batch(&mut captures, &[]);
+
+    assert!(captures[0].question.is_some());
+    assert!(captures[1].question.is_some());
+    assert_eq!(captures[2].question, None);
+    assert_eq!(captures[3].question, None);
 }

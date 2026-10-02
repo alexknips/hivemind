@@ -66,6 +66,21 @@
                 "type": "string",
                 "minLength": 1,
                 "description": "A decision capture only: the id of an already recorded decision this capture states again. It projects a SAME_AS link to that decision."
+              },
+              "source_turn_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The turn_id of the turn, in one of the batches this classification covers, that this capture came from: the turn that made the decision, or the turn that asked the question of a decision-request. The write path refuses an id that names no such turn."
+              },
+              "source_ts": {
+                "type": "string",
+                "format": "date-time",
+                "description": "The time of the turn source_turn_id names, set by the write path from the received batch and never taken from the caller. A decision is recorded at this time in place of the classification's own. Absent when the capture names no turn or that turn carries no time."
+              },
+              "question": {
+                "type": "string",
+                "minLength": 1,
+                "description": "A decision or decision-request capture only: the question, in the words it was asked in. On a decision-request with a source turn that carries a time, one question.asked is written at that time. On a decision, the question it answers (ANSWERS), resolved by normalized text like capture --question."
               }
             }
           }

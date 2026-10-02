@@ -38,6 +38,7 @@ src/grounding/tests.rs
 src/queries/follows_from/tests.rs
 src/commands/ground_later/tests.rs
 src/commands/question/tests.rs
+src/commands/transcript/tests.rs
 src/queries/question/tests.rs
 src/queries/contested/tests.rs
 src/queries/timeline/tests.rs

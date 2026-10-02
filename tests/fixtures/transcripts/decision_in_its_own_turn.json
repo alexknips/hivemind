@@ -1,0 +1,48 @@
+{
+  "batch": {
+    "batch_id": "batch-own-turn",
+    "agent_tool": "claude",
+    "session_id": "session-own-turn",
+    "turns": [
+      {
+        "turn_id": "t-1",
+        "role": "user",
+        "truncated": false,
+        "ts": "2026-09-01T09:00:00Z",
+        "text": "Let's look at why the nightly import is slow."
+      },
+      {
+        "turn_id": "t-2",
+        "role": "assistant",
+        "truncated": false,
+        "ts": "2026-09-01T09:05:00Z",
+        "text": "The import re-reads the whole ledger on every run. I'm switching it to read from the last offset, because a full re-read grows with the ledger and an offset read does not."
+      },
+      {
+        "turn_id": "t-3",
+        "role": "user",
+        "truncated": false,
+        "ts": "2026-09-01T09:20:00Z",
+        "text": "ok, run the tests"
+      }
+    ]
+  },
+  "captures": [
+    {
+      "kind": "decision",
+      "title": "Read the nightly import from the last offset",
+      "rationale": "A full re-read grows with the ledger and an offset read does not.",
+      "topic_keys": [
+        "import"
+      ],
+      "evidence_ids": [],
+      "options": [
+        "Read from the last offset",
+        "Re-read the whole ledger"
+      ],
+      "chosen_option": "Read from the last offset",
+      "extraction_confidence": 0.9,
+      "source_turn_id": "t-2"
+    }
+  ]
+}

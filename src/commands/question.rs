@@ -291,8 +291,19 @@ impl<L: EventLedger> Commands<'_, L> {
     /// then `question.asked`. Unlike an answer, an ask is never suppressed as a duplicate — a
     /// question can be asked more than once, each its own outstanding request.
     pub fn record_ask(&self, actor_id: &str, plan: &AskPlan) -> Result<AskRecorded> {
+        self.record_ask_with_uuid(actor_id, plan, Uuid::new_v4())
+    }
+
+    /// `record_ask` with the ask's own event uuid chosen by the caller, so an ask that must not
+    /// be written twice (the same moment of a transcript seen again) can derive it and let the
+    /// ledger deduplicate.
+    pub(super) fn record_ask_with_uuid(
+        &self,
+        actor_id: &str,
+        plan: &AskPlan,
+        ask_uuid: Uuid,
+    ) -> Result<AskRecorded> {
         require_valid_actor_id(actor_id)?;
-        let ask_uuid = Uuid::new_v4();
         if let Some(text) = &plan.new_question_text {
             let event = self.event_with_uuid(
                 actor_id,

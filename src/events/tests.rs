@@ -118,6 +118,13 @@ const FIXTURES: &[(&str, &str, EventType)] = &[
         EventType::IngestBatchReceived,
     ),
     (
+        include_str!("../../schemas/v0/ingest.batch_classified.json"),
+        include_str!(
+            "../../tests/fixtures/v0/transcript/ingest.batch_classified.turn_and_question.json"
+        ),
+        EventType::IngestBatchClassified,
+    ),
+    (
         include_str!("../../schemas/v0/blocker.reported.json"),
         include_str!("../../tests/fixtures/v0/blocker.reported.json"),
         EventType::BlockerReported,
@@ -545,6 +552,31 @@ fn ingest_batch_classified_grouped_batch_ids_matches_schema() {
             "session-abc:0-512".to_owned(),
             "session-abc:512-1024".to_owned()
         ]
+    );
+}
+
+#[test]
+fn ingest_batch_classified_captures_carry_their_turn_and_question() {
+    // hivemind-bbnw.8: a capture names the turn it came from, the write path stores that turn's
+    // own time beside it, and a decision or decision-request states its question. All three are
+    // optional, so every classification written before them keeps decoding (checked above).
+    let event: Event = serde_json::from_str(include_str!(
+        "../../tests/fixtures/v0/transcript/ingest.batch_classified.turn_and_question.json"
+    ))
+    .expect("fixture deserializes");
+    let EventPayload::IngestBatchClassified(payload) = validate(&event).expect("validates") else {
+        panic!("expected IngestBatchClassified payload");
+    };
+    let request = &payload.captures[0];
+    assert_eq!(request.kind, "decision-request");
+    assert_eq!(request.source_turn_id.as_deref(), Some("turn-1"));
+    assert_eq!(
+        request.source_ts,
+        Some("2026-06-16T06:58:10Z".parse().expect("literal parses"))
+    );
+    assert_eq!(
+        request.question.as_deref(),
+        Some("Should we use REST or JSON-RPC for the HTTP API?")
     );
 }
 

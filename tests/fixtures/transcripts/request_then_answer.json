@@ -1,0 +1,61 @@
+{
+  "batch": {
+    "batch_id": "batch-request-answer",
+    "agent_tool": "claude",
+    "session_id": "session-request-answer",
+    "turns": [
+      {
+        "turn_id": "t-1",
+        "role": "assistant",
+        "truncated": false,
+        "ts": "2026-09-02T10:00:00Z",
+        "text": "I need a call from you: which database should the hosted MVP use? Postgres is the safer path to several friends writing at once; SQLite is simpler to run."
+      },
+      {
+        "turn_id": "t-2",
+        "role": "user",
+        "truncated": false,
+        "ts": "2026-09-02T10:30:00Z",
+        "text": "Postgres. Several friends will write at once and I don't want to migrate later."
+      }
+    ]
+  },
+  "captures": [
+    {
+      "kind": "decision-request",
+      "title": "Choose the database for the hosted MVP",
+      "rationale": "The agent cannot pick between Postgres and SQLite without the owner's call.",
+      "topic_keys": [
+        "hosted-mvp"
+      ],
+      "evidence_ids": [],
+      "options": null,
+      "chosen_option": null,
+      "extraction_confidence": 0.9,
+      "actor_id": "agent:claude:builder",
+      "source_turn_id": "t-1",
+      "question": "Which database should the hosted MVP use?"
+    },
+    {
+      "kind": "decision",
+      "title": "Use Postgres for the hosted MVP",
+      "rationale": "Several friends will write at once, and moving later would mean a migration.",
+      "topic_keys": [
+        "hosted-mvp"
+      ],
+      "evidence_ids": [],
+      "options": [
+        "Postgres",
+        "SQLite"
+      ],
+      "chosen_option": "Postgres",
+      "extraction_confidence": 0.9,
+      "actor_id": "human:alex",
+      "accepted_by": [
+        "human:alex"
+      ],
+      "source_turn_id": "t-2",
+      "question": "which database should the hosted MVP use"
+    }
+  ]
+}

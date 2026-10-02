@@ -1257,6 +1257,9 @@ async fn classifier_batch_classified_event_round_trips() {
         decision_id: None,
         participants: vec![],
         restates_id: None,
+        source_turn_id: None,
+        source_ts: None,
+        question: None,
         session_initiator: None,
     }];
 

@@ -133,6 +133,43 @@
 //! - The classification event is recorded in every case, so the batches leave the queue; the
 //!   reply lists each restating capture and whether it was `linked` or `deduplicated`. A sibling
 //!   capture that named a deduplicated one by title now names the decision it restated.
+//!
+//! # Transcript captures (`transcript` module, hivemind-bbnw.8)
+//!
+//! A capture can say which turn it came from and the question it asks or answers. The classifier
+//! (layer 3) judges both (`CaptureItem::source_turn_id`, `CaptureItem::question`); this layer
+//! checks and applies mechanical rules. Enforced by `record_ingest_batch_classified`, tested in
+//! `commands/tests.rs`:
+//!
+//! - `source_turn_id` must name a turn (`IngestTurn::turn_id`) of one of the batches the
+//!   classification covers; a blank one, or one that names no such turn, refuses the whole
+//!   classification before the first write. The first covered batch, in submission order, that
+//!   holds the turn is the one read.
+//! - The named turn's own time (`IngestTurn::ts`) is stored on the capture as `source_ts`, and a
+//!   classified decision is then recorded at that time (its `occurred_at`) in place of the
+//!   classification's own. A capture that names no turn, or whose turn carries no time, keeps
+//!   the classification's time: nothing is guessed. `source_ts` is never taken from the caller;
+//!   whatever a submission carries there is replaced.
+//! - `question` is allowed only on a `decision` or a `decision-request` and must contain words,
+//!   not only punctuation; otherwise the whole classification is refused before the first write.
+//! - A `decision-request` that states a `question` and names a turn with a time writes one
+//!   `question.asked` at that turn's own time, by the actor the classifier named on the request
+//!   (else whoever submitted the batch), resolving the question to its `Question` node like any
+//!   ask (`plan_ask`). A request with no `question`, no turn, or a turn with no time writes no
+//!   ask: the timeline reads "asked at: not recorded" rather than a time that is only when it
+//!   was classified. The same question asked by the same actor at the same turn time is the same
+//!   moment seen again (a re-ingested transcript) and is written once.
+//! - A `decision` that states a `question` is linked to it with `ANSWERS` exactly as `capture
+//!   --question` does, written after the classification event (the decision's id is
+//!   `capture:<event>:<index>`), at the decision's own turn time when it has one, attributed to
+//!   the recorder and caused by the classification event. A decision capture dropped as the same
+//!   moment seen again (see Restatements) writes no link.
+//! - No ask is ever written for a decision alone: an agent deciding mid-task, with no request
+//!   turn before it, records a decision and its question and nothing else. No "first raised"
+//!   time is inferred from earlier mentions.
+//! - The asks are written before the classification event and its answers after it. A failure
+//!   between the two can leave a decision recorded without its link to the question; it never
+//!   loses the decision, and a retried ask adds nothing.
 //! - `link_same_as` links two recorded decisions as `relation.added SAME_AS` (newer to older).
 //!   A decision is never its own twin, and a pair already linked either way round writes nothing.
 //!   A link is never a merge: both records stay as recorded.
@@ -175,6 +212,7 @@ mod ground_later;
 mod grounding;
 mod question;
 mod restatement;
+mod transcript;
 
 pub use ground_later::GroundedAddition;
 use grounding::{plan_grounding_nodes, IdMode};
@@ -187,6 +225,7 @@ pub use question::{
     AnsweredQuestion, AskPlan, AskRecorded, AskedRequest, QuestionAnswerPlan, QuestionId,
 };
 pub use restatement::{ClassifiedBatchRecorded, RestatedCapture, RestatementOutcome};
+use transcript::captured_answers;
 
 use crate::error::CommandError;
 use crate::events::{
@@ -1311,13 +1350,17 @@ impl<'a, L: EventLedger> Commands<'a, L> {
     /// A capture may name a decision it restates (`CaptureItem::restates_id`); the rules are in
     /// the module header ("Restatements"). The classification event is always recorded, so the
     /// batches leave the queue even when every capture was a duplicate of the same moment.
+    ///
+    /// A capture may also name the turn it came from and the question it asks or answers
+    /// (`CaptureItem::source_turn_id`, `question`); the rules are in the module header
+    /// ("Transcript captures").
     pub fn record_ingest_batch_classified(
         &self,
         actor_id: &str,
         batch_ids: &[String],
         classifier_model: &str,
         schema_version: &str,
-        captures: Vec<CaptureItem>,
+        mut captures: Vec<CaptureItem>,
         causation_event_id: Option<EventId>,
     ) -> Result<ClassifiedBatchRecorded> {
         require_valid_actor_id(actor_id)?;
@@ -1330,9 +1373,15 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         require_non_empty("classifier_model", classifier_model)?;
         require_non_empty("schema_version", schema_version)?;
 
+        let asks = self.plan_transcript_asks(batch_ids, &mut captures)?;
         let (captures, restated) = self.settle_restatements(batch_ids, captures)?;
         let recorded_count = captures.len();
+        let answers = captured_answers(&captures);
 
+        // Every refusal is behind us. The asks go first, so the ledger reads ask then answer.
+        self.record_transcript_asks(&asks)?;
+
+        let classification_uuid = Uuid::new_v4();
         let event = self.event_with_uuid(
             actor_id,
             EventPayload::IngestBatchClassified(IngestBatchClassifiedPayload {
@@ -1343,10 +1392,11 @@ impl<'a, L: EventLedger> Commands<'a, L> {
                 captures,
             }),
             causation_event_id,
-            Uuid::new_v4(),
+            classification_uuid,
         )?;
 
         let event_id = self.append_event(event)?;
+        self.record_captured_answers(actor_id, event_id, classification_uuid, &answers)?;
         Ok(ClassifiedBatchRecorded {
             event_id,
             recorded_count,

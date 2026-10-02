@@ -1,0 +1,34 @@
+{
+  "batch": {
+    "batch_id": "batch-alone",
+    "agent_tool": "claude",
+    "session_id": "session-alone",
+    "turns": [
+      {
+        "turn_id": "t-1",
+        "role": "assistant",
+        "truncated": false,
+        "ts": "2026-09-03T11:00:00Z",
+        "text": "Mid-task: I'm keeping the retry count at three, because the queue already backs off between attempts."
+      }
+    ]
+  },
+  "captures": [
+    {
+      "kind": "decision",
+      "title": "Keep the retry count at three",
+      "rationale": "The queue already backs off between attempts, so more retries add delay without help.",
+      "topic_keys": [
+        "queue"
+      ],
+      "evidence_ids": [],
+      "options": [
+        "Three retries",
+        "More retries"
+      ],
+      "chosen_option": "Three retries",
+      "extraction_confidence": 0.8,
+      "source_turn_id": "t-1"
+    }
+  ]
+}

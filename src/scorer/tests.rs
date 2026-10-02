@@ -229,6 +229,9 @@ fn minimal_decision_capture() -> CaptureItem {
         decision_id: None,
         participants: vec![],
         restates_id: None,
+        source_turn_id: None,
+        source_ts: None,
+        question: None,
         session_initiator: None,
     }
 }

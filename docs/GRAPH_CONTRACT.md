@@ -78,9 +78,10 @@ a reader needs without reconstructing them from edges:
     the decider, and a capture that names no acceptor stays `proposed` until a person decides it.
   - `decided_at`: the `decision.proposed` capture event's timestamp, ISO-8601 UTC (the same
     value the query layer calls `occurred_at`, e.g. `DecisionBrief`). A classified capture
-    carries its batch's timestamp: the classified-batch event's time, since the ledger holds
-    no per-capture time. `null` only for a decision from an event predating the ledger's
-    timestamp backfill.
+    carries the time of the transcript turn it came from when it names one that has a time
+    (`source_ts`, read from the received turn); otherwise its batch's timestamp, the
+    classified-batch event's time. `null` only for a decision from an event predating the
+    ledger's timestamp backfill.
   - `slug`: the decision's stable link segment (`/decisions/<slug>`) — its title, kebab-cased,
     with a growing id-tail suffix (`-a1b2`, then longer) for a later decision whose title
     slugs to the same thing. Assigned once, when `decision.proposed` is first projected

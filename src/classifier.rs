@@ -14,7 +14,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::commands::{CommandContext, Commands};
-use crate::events::{classified_batch_ids, CaptureItem, EventProvenance, EventType, TenantId};
+use crate::events::{
+    classified_batch_ids, normalize_question_text, CaptureItem, EventProvenance, EventType,
+    TenantId,
+};
 use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 
@@ -112,7 +115,21 @@ Empty array if none.
 
 blocked_actor_id: For blockers. The actor being blocked, IF named in the input.
 decision_id: For blockers. The decision being blocked, IF its ID appears in
-the input. Both null if not explicitly stated."#;
+the input. Both null if not explicitly stated.
+
+SOURCE TURN AND QUESTION — populate only from explicit text, never infer:
+
+Each turn in the batch starts with a header like `[user turn <id>]`.
+
+source_turn_id: The id from the header of the one turn this capture came from,
+copied exactly: for a decision, the turn in which the choice was made or stated;
+for a decision-request, the turn in which the request was made. null when you
+cannot tell which single turn.
+
+question: For a decision-request, the question being asked, in the words it was
+asked in. For a decision, the question it answers, only when the text states
+that question, in the words the asker used. null otherwise, and always null for
+every other kind. Never write a question the text does not contain."#;
 
 /// JSON Schema for the classifier's structured output. Shared across both LLM
 /// backends (the metered Anthropic API and the fidelity evaluator's Claude
@@ -163,7 +180,9 @@ pub fn capture_schema() -> serde_json::Value {
                         "accepted_by": string_array.clone(),
                         "rejected_by": string_array.clone(),
                         "blocked_actor_id": nullable_string.clone(),
-                        "decision_id": nullable_string.clone()
+                        "decision_id": nullable_string.clone(),
+                        "source_turn_id": nullable_string.clone(),
+                        "question": nullable_string.clone()
                     },
                     "required": [
                         "kind", "title", "rationale", "topic_keys", "evidence_ids",
@@ -171,7 +190,8 @@ pub fn capture_schema() -> serde_json::Value {
                         "expressed_confidence", "supersedes_id",
                         "premised_on_ids", "supports_ids", "refutes_ids",
                         "actor_id", "accepted_by", "rejected_by",
-                        "blocked_actor_id", "decision_id"
+                        "blocked_actor_id", "decision_id",
+                        "source_turn_id", "question"
                     ],
                     "additionalProperties": false
                 }
@@ -212,6 +232,10 @@ struct CaptureItemRaw {
     rejected_by: Vec<String>,
     blocked_actor_id: Option<String>,
     decision_id: Option<String>,
+    #[serde(default)]
+    source_turn_id: Option<String>,
+    #[serde(default)]
+    question: Option<String>,
 }
 
 /// Spawn the background classifier task. Returns immediately; the worker runs
@@ -416,6 +440,8 @@ struct BatchInfo {
     /// actor_id from the IngestBatchReceived event (the batch submitter).
     actor_id: String,
     agent_tool: String,
+    /// The `turn_id` of every turn in the batch: the ids a capture's `source_turn_id` may name.
+    turn_ids: Vec<String>,
 }
 
 /// The session's own agent actor, distinct from whoever (human or agent) actually
@@ -501,12 +527,16 @@ async fn classify_pending_batches(
                             decision_id: r.decision_id,
                             participants,
                             restates_id: None,
+                            source_turn_id: r.source_turn_id,
+                            source_ts: None,
+                            question: r.question,
                             session_initiator: session_initiator.clone(),
                         }
                     })
                     .collect();
 
                 let mut captures = captures;
+                conform_to_batch(&mut captures, &batch.turn_ids);
                 mark_restatements_best_effort(
                     client,
                     api_key,
@@ -615,6 +645,7 @@ fn find_unclassified_batches(
                                 batch_text,
                                 actor_id: event.actor_id.clone(),
                                 agent_tool,
+                                turn_ids: turn_ids(event),
                             });
                         }
                     }
@@ -643,6 +674,10 @@ fn find_unclassified_batches(
     Ok(pending)
 }
 
+/// The batch's turns as the classifier reads them: one `[<role> turn <turn_id>] <text>` per
+/// turn (`[<role>] <text>` for a turn with no id). The turn id is what a capture's
+/// `source_turn_id` names; the turn's time is not shown, because the write path reads it from
+/// the received turn rather than from the model.
 fn render_batch_text(event: &crate::events::Event) -> String {
     let turns = event
         .payload
@@ -657,18 +692,61 @@ fn render_batch_text(event: &crate::events::Event) -> String {
             .get("role")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
+        let turn_id = turn.get("turn_id").and_then(|v| v.as_str()).unwrap_or("");
         let text = turn.get("text").and_then(|v| v.as_str()).unwrap_or("");
         let truncated = turn
             .get("truncated")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        if truncated {
-            let _ = writeln!(out, "[{role}] {text} [TRUNCATED]");
+        let header = if turn_id.is_empty() {
+            format!("[{role}]")
         } else {
-            let _ = writeln!(out, "[{role}] {text}");
+            format!("[{role} turn {turn_id}]")
+        };
+        if truncated {
+            let _ = writeln!(out, "{header} {text} [TRUNCATED]");
+        } else {
+            let _ = writeln!(out, "{header} {text}");
         }
     }
     out
+}
+
+/// The `turn_id` of every turn of a received batch.
+fn turn_ids(event: &crate::events::Event) -> Vec<String> {
+    event
+        .payload
+        .get("turns")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|turn| turn.get("turn_id").and_then(|v| v.as_str()))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Holds the model to the contract the write path enforces, so a slip of the model's costs one
+/// field instead of the whole classification: a `source_turn_id` that names no turn of the batch
+/// is dropped (nothing is guessed from it), as is a `question` on a kind that takes none or with
+/// no words in it.
+fn conform_to_batch(captures: &mut [CaptureItem], turn_ids: &[String]) {
+    for capture in captures {
+        if capture
+            .source_turn_id
+            .as_ref()
+            .is_some_and(|id| !turn_ids.contains(id))
+        {
+            capture.source_turn_id = None;
+        }
+        let takes_question = matches!(capture.kind.as_str(), "decision" | "decision-request");
+        if capture
+            .question
+            .as_ref()
+            .is_some_and(|q| !takes_question || normalize_question_text(q).is_empty())
+        {
+            capture.question = None;
+        }
+    }
 }
 
 /// Resolve the classifier model id given an already-read `HIVEMIND_CLASSIFIER_MODEL`
@@ -744,6 +822,9 @@ fn raw_captures_to_items(captures: Vec<CaptureItemRaw>) -> Vec<CaptureItem> {
             decision_id: r.decision_id,
             participants: vec![],
             restates_id: None,
+            source_turn_id: None,
+            source_ts: None,
+            question: r.question,
             session_initiator: None,
         })
         .collect()

@@ -114,6 +114,18 @@ Optional fields (omit rather than null unless needed):
   twice) is not recorded a second time, and the reply's `restated` list says so. If submit
   is refused because `restates_id` is an unknown field, the cell runs an older hivemind
   than this plugin: submit the same captures again without it.
+- `source_turn_id`: the id of the one turn this capture came from, copied exactly from that
+  turn's header in `batch_text` (`[<role> turn <id>]`): for a decision the turn in which the
+  choice was made or stated, for a `decision-request` the turn in which the request was made.
+  Leave it out when you cannot tell which single turn. It must be a turn of the batches you
+  submit; submit refuses an unknown one, naming it. The decision is then recorded at that
+  turn's own time rather than at submit time, and a request turn writes the ask at its time.
+- `question`: only on a `decision-request` (the question being asked) or a `decision` (the
+  question it answers, when the text states it), in the words it was asked in. Never write a
+  question the text does not contain. A request and the decision that answers it must state the
+  question in the same words (case and trailing punctuation do not matter) to be linked. If
+  submit is refused because `source_turn_id`, `source_ts` or `question` is an unknown field,
+  the cell runs an older hivemind than this plugin: submit the same captures again without them.
 - `actor_id`: the person who proposed/decided, only if named in the text
 - `accepted_by`: the actor who accepted, only if named in the text
 - `rejected_by`: the actor who rejected, only if named in the text

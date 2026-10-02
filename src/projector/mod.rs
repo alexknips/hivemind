@@ -1777,8 +1777,9 @@ fn project_notification_acknowledged(
     )
 }
 
-/// `batch_time` is the classified-batch event's own timestamp: the time every decision it
-/// captured is recorded at (see `project_capture_decision`).
+/// `batch_time` is the classified-batch event's own timestamp: the time a decision it captured
+/// is recorded at unless the capture carries its turn's own time (see
+/// `project_capture_decision`).
 fn project_ingest_batch_classified(
     graph: &impl GraphView,
     event_origin: i64,
@@ -2005,9 +2006,11 @@ fn project_capture(
     }
 }
 
-/// A captured decision is recorded at the classified batch's time (`occurred_at`, the value
-/// `why` and `verify` read as when it was decided): the ledger holds no per-capture time, and no
-/// shipper sends a per-turn one yet, so the batch's own time is the honest answer.
+/// A captured decision is recorded (`occurred_at`, the value `why` and `verify` read as when it
+/// was decided) at the time of the turn it came from when the capture names one that carries a
+/// time (`CaptureItem::source_ts`, read from the received turn by the write path), and at the
+/// classified batch's time otherwise: with no turn time the batch's own time is the honest
+/// answer, and nothing is guessed.
 ///
 /// Who decided it is what the classifier read out of the text, and only that: `accepted_by`
 /// names the acceptors. `actor_id` is who proposed, made or reported the item, so it is never
@@ -2023,7 +2026,10 @@ fn project_capture_decision(
     batch_time: GraphValue,
 ) -> Result<()> {
     let mut props = origin_properties.clone();
-    props.insert("occurred_at".to_owned(), batch_time);
+    let occurred_at = capture
+        .source_ts
+        .map_or(batch_time, |ts| GraphValue::String(ts.to_rfc3339()));
+    props.insert("occurred_at".to_owned(), occurred_at);
     if let Some(recorder) = recorder {
         props.insert(
             "project".to_owned(),

@@ -102,9 +102,13 @@ batch and present it as complete.
 Claude Code and Codex JSONL logs carry one per turn — not when the batch was
 submitted or classified. `record_ingest_batch` preserves it verbatim on the
 `ingest.batch_received` event; omit it and it stays absent, never defaulted to
-submission time. Classification does not consume it yet: a derived decision
-does not take its turn's own time, and no `question.asked` is written from a
-decision-request turn.
+submission time.
+
+Classification reads it through `source_turn_id` (see
+[Source turn and question](#source-turn-and-question)): a derived decision is
+recorded at the time of the turn it came from, and a decision-request turn
+writes `question.asked` at its own time. A turn with no `ts` is never given
+one.
 
 ## Batching Parameters
 
@@ -172,6 +176,44 @@ Field rules:
   tuning. It is not graph provenance, not a query ranking score, and must not be
   presented as authoritative confidence unless stored with the classifier model,
   prompt version, schema version, and source batch id.
+
+### Source turn and question
+
+Two more fields tie a capture to the transcript it came from. Both are
+`null` unless the text says so; neither is inferred.
+
+- `source_turn_id`: the id of the one turn the capture came from, copied from
+  that turn's header (`[user turn <id>]`, how the batch is rendered). For a
+  decision it is the turn in which the choice was made or stated; for a
+  decision-request, the turn in which the request was made.
+- `question`: on a `decision-request`, the question being asked, in the words
+  it was asked in; on a `decision`, the question it answers, when the text
+  states one. `null` on every other kind.
+
+The classifier only judges which turn and which words. The write path checks
+that the turn is one of the batches being classified (refusing the whole
+classification otherwise), reads that turn's own `ts` into the capture's
+`source_ts`, and applies the rules below. It never judges, and it never takes a
+time from the classifier.
+
+- A decision is recorded at its turn's time (`occurred_at`). With no turn, or a
+  turn with no `ts`, it keeps the classification's own time.
+- A `decision-request` with a `question` and a turn that has a `ts` writes one
+  `question.asked` at that turn's time, by the actor named on the request, else
+  by whoever submitted the batch. It is the only home of an ask time.
+- A `decision` with a `question` links to the question with `ANSWERS`, matched
+  on the normalized text exactly as `capture --question` is: a request and a
+  decision that state the same question (up to case, spacing and trailing
+  punctuation) share one `Question` node, so the ask reads as answered.
+- No ask is written for an agent deciding alone: a decision with no request
+  turn before it records its question and nothing more. No "first raised" time
+  is inferred from earlier mentions; ask time is the turn where the request was
+  made. A request with no question, or whose turn has no `ts`, writes no ask.
+- The same transcript ingested again writes the same ask once.
+
+A decision answering a request from an earlier session links only if it states
+the question in the same words; the classifier is not shown earlier asks, so an
+answer in other words is recorded unlinked rather than guessed.
 
 For API structured outputs, use a JSON Schema equivalent to the object above
 with `additionalProperties: false`. Keep all fields required; nullable values

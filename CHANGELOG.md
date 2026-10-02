@@ -221,6 +221,26 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   (Claude Code and Codex JSONL logs already have one); classification does not consume it yet.
   `docs/TEXT_IMPORT_AND_DIFF_SEMANTICS.md`, `docs/SLACK_APP.md` and
   `docs/CAPTURE_CLASSIFIER.md` describe the rule per source. (hivemind-bbnw.6)
+- **A decision the transcript classifier derives is recorded at its own turn's time, and an
+  explicit decision-request turn writes `question.asked`.** A classified capture can name the
+  turn it came from (`source_turn_id`, the turn id the classifier now sees in each turn's
+  header) and, on a `decision` or `decision-request`, the question in the words it was asked in
+  (`question`). The write path checks the turn is one of the batches the classification covers
+  (refusing the classification otherwise), stores that turn's own time on the capture as
+  `source_ts` (never taken from the caller), and the projector records the decision at that
+  time, so `why` shows when it was decided instead of when the transcript was classified. A
+  capture that names no turn, or whose turn carries no time, keeps the classification's time.
+  A `decision-request` that states a question and names a turn with a time writes one
+  `question.asked` at that turn's time, by the actor the classifier named on the request (else
+  whoever submitted the batch); a later decision that states the same question links to it with
+  `ANSWERS`, matched on the normalized text exactly as `capture --question` is. No ask is
+  written for an agent deciding alone, for a request with no question, or for a request turn
+  with no time (the timeline reads "asked at: not recorded"), and a re-ingested transcript
+  writes the same ask once. `source_turn_id`, `source_ts` and `question` are new optional
+  fields of `ingest.batch_classified` captures: a plugin that sends them to an older server is
+  refused, so upgrade the server first. The shipped hooks already send each turn's `ts`.
+  `docs/CAPTURE_CLASSIFIER.md` and `docs/AGENT_DECISION_CAPTURE.md` describe the rule.
+  (hivemind-bbnw.8)
 - **A model's assessment of a decision can be recorded and is shown beside the quality
   floors.** `decision.scored` gains a second payload version (`schema_version: 2`), keyed by
   the decision's id (a proposed decision or a classified capture): all seven dimensions, each

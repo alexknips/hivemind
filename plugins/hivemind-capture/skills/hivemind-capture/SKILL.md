@@ -603,6 +603,12 @@ restated from the very same moment is not recorded a second time. Leave it out
 when unsure. An older hivemind refuses the field as unknown: submit again
 without it.
 
+`source_turn_id` and `question` belong to the `classify-queue` path, where the
+batch has received turns with ids and times (see `commands/classify-queue.md`).
+Batch text you collected yourself has no received turns, so leave them out here:
+a `source_turn_id` that names no received turn is refused. `source_ts` is never
+yours to send: the server sets it from the received turn.
+
 ## Assess via Haiku Subagent (Keyless)
 
 When you want to assess the seven quality dimensions of a decision without a

@@ -583,6 +583,27 @@ pub struct CaptureItem {
     /// recorded a second time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restates_id: Option<String>,
+    /// The `turn_id` of the turn, in one of the batches this classification covers, that this
+    /// capture came from: the turn that made the decision, or the turn that asked the question
+    /// of a `decision-request`. The classifier judges it; the write path only checks it names
+    /// such a turn (refusing the classification otherwise) and reads that turn's own time into
+    /// `source_ts`. Absent when the classifier could not tell which turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_turn_id: Option<String>,
+    /// The time of the turn `source_turn_id` names (`IngestTurn::ts`), set by the write path from
+    /// the received batch and never taken from the caller: whatever a submission carries here is
+    /// replaced. Absent when the capture names no turn or that turn carries no time, in which
+    /// case nothing is guessed and the capture reads as recorded at the classification's own
+    /// time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ts: Option<DateTime<Utc>>,
+    /// The question, in the words it was asked in. On a `decision-request`: what is being
+    /// asked. On a `decision`: the question it answers, when the text states one. Only on those
+    /// two kinds, and only from the text. A decision's question is resolved to a `Question`
+    /// node by `normalize_question_text`, exactly as `capture --question` does, so a decision
+    /// and a request that state the same question share one node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
     /// Hypothesis IDs this decision is premised on; only IDs present in the input.
     #[serde(default, skip_serializing_if = "Vec::is_empty", alias = "assumes_ids")]
     pub premised_on_ids: Vec<String>,
