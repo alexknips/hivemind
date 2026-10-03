@@ -35,6 +35,9 @@
 //! - `GET  /v1/decisions/{id}/timeline`            — the decision's dated story from the ledger:
 //!   asked, recorded, accepted or rejected, superseded, retitled, moved, premise no longer
 //!   standing (hivemind-bbnw.7)
+//! - `GET  /v1/decisions/{id}/status-events`       — the events that changed the decision's status,
+//!   newest first: proposed, accepted, rejected, superseded, each with its ledger time, offset,
+//!   actor and the status it left the decision in (hivemind-fwog)
 //! - `GET  /v1/decisions/{id}/possibly-related[?limit=][?cursor=]` — decisions recorded out of the
 //!   same conversation or sharing a specific topic key, ranked, labelled `inferred`; never a
 //!   recorded relation (hivemind-xarm)
@@ -627,6 +630,10 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/v1/decisions/{id}/timeline",
             get(handlers::timeline_handler),
+        )
+        .route(
+            "/v1/decisions/{id}/status-events",
+            get(handlers::status_events_handler),
         )
         .route(
             "/v1/decisions/{id}/possibly-related",

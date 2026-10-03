@@ -2687,6 +2687,123 @@ async fn attention_lists_and_the_decision_timeline_read_over_http() {
     assert_eq!(missing["error"]["code"], "not_found");
 }
 
+/// One field of every entry of a status-events read (`data.events`), as strings.
+fn status_event_field(events: &Value, field: &str) -> Vec<String> {
+    events
+        .as_array()
+        .expect("events array")
+        .iter()
+        .map(|event| event[field].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// hivemind-fwog over HTTP: `GET /v1/decisions/{id}/status-events` lists what changed a
+/// decision's status, newest first, each with who did it and the status it left the decision in.
+#[tokio::test]
+async fn status_events_list_what_changed_a_decisions_status_over_http() {
+    let dir = test_ledger_dir();
+    let decision = capture_for_graph(
+        &dir,
+        "Accepted, disputed, replaced",
+        Some("Option one"),
+        None,
+    )
+    .await;
+    let uri = format!("/v1/decisions/{decision}/status-events");
+
+    let (status, read) = call(app(dir.clone()), get_req(&uri)).await;
+    assert_eq!(status, StatusCode::OK, "status events: {read}");
+    assert_eq!(read["truncated"], false);
+    assert_eq!(read["data"]["decision_id"], decision);
+    assert_eq!(read["data"]["status"], "accepted");
+    assert_eq!(
+        status_event_field(&read["data"]["events"], "event"),
+        ["accepted", "proposed"]
+    );
+    assert_eq!(
+        status_event_field(&read["data"]["events"], "status_after"),
+        ["accepted", "proposed"]
+    );
+    let accepted = &read["data"]["events"][0];
+    assert!(accepted["occurred_at"].is_string(), "{read}");
+    assert!(accepted["offset"].is_u64(), "{read}");
+    assert_eq!(
+        accepted["actor"],
+        serde_json::json!({"id": "agent:test:session-1", "kind": "agent"})
+    );
+
+    // Disagreed with by a human, then replaced.
+    let (status, body) = call(
+        app(dir.clone()),
+        Request::builder()
+            .method("POST")
+            .uri(format!("/v1/decisions/{decision}/disagreements"))
+            .header("content-type", "application/json")
+            .header("x-hivemind-actor", "human:dana")
+            .body(Body::from(
+                serde_json::json!({ "reason": "This does not survive the load numbers" })
+                    .to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "disagree: {body}");
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            &format!("/v1/decisions/{decision}/supersessions"),
+            serde_json::json!({
+                "grounding": [{"kind": "bet"}],
+                "title": "The replacement",
+                "rationale": "Learned something that changes the call",
+                "topic_keys": ["graph-standing"],
+                "options": ["Option three"],
+                "chosen_option_label": "Option three"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "supersede: {body}");
+    let successor = body["new_decision_id"].as_str().unwrap().to_owned();
+
+    let (status, read) = call(app(dir.clone()), get_req(&uri)).await;
+    assert_eq!(status, StatusCode::OK, "status events: {read}");
+    let events = &read["data"]["events"];
+    assert_eq!(
+        status_event_field(events, "event"),
+        ["superseded", "rejected", "accepted", "proposed"]
+    );
+    assert_eq!(
+        status_event_field(events, "status_after"),
+        ["superseded", "contested", "accepted", "proposed"]
+    );
+    assert_eq!(read["data"]["status"], "superseded");
+    assert_eq!(read["data"]["status"], events[0]["status_after"]);
+    assert_eq!(events[0]["superseded_by"], successor);
+    assert_eq!(
+        events[1]["actor"],
+        serde_json::json!({"id": "human:dana", "kind": "human"})
+    );
+    let offsets: Vec<u64> = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["offset"].as_u64().unwrap())
+        .collect();
+    assert!(
+        offsets.windows(2).all(|pair| pair[0] > pair[1]),
+        "newest first: {offsets:?}"
+    );
+
+    let (status, missing) = call(
+        app(dir),
+        get_req("/v1/decisions/nonexistent-id/status-events"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    assert_eq!(missing["error"]["code"], "not_found");
+}
+
 #[tokio::test]
 async fn graph_decisions_carry_their_status_and_who_decided() {
     let dir = test_ledger_dir();

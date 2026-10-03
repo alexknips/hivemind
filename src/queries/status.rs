@@ -30,8 +30,13 @@ pub enum HypothesisStatus {
 /// The one status rule. A decision anyone has superseded is `superseded` whatever else was said
 /// about it; otherwise accepted and rejected positions together make it `contested`, never one
 /// side winning silently. Shared by [`derive_decision_status`] (one decision) and
-/// [`DecisionStandings`] (every decision at once) so the two cannot drift.
-fn status_from_positions(superseded: bool, accepted: bool, rejected: bool) -> DecisionStatus {
+/// [`DecisionStandings`] (every decision at once) so the two cannot drift. The status events read
+/// (`status_events`) replays it after each event for the same reason.
+pub(super) fn status_from_positions(
+    superseded: bool,
+    accepted: bool,
+    rejected: bool,
+) -> DecisionStatus {
     if superseded {
         return DecisionStatus::Superseded;
     }

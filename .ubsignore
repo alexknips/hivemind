@@ -42,6 +42,7 @@ src/commands/transcript/tests.rs
 src/queries/question/tests.rs
 src/queries/contested/tests.rs
 src/queries/timeline/tests.rs
+src/queries/status_events/tests.rs
 src/mcp/tests.rs
 src/events/tests.rs
 src/read_notice/tests.rs

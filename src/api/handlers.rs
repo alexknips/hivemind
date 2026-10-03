@@ -22,11 +22,11 @@ use crate::projector::GraphView;
 use crate::queries::{
     annotate_resolution, derive_decision_status, get_changed_decisions, get_compact_view,
     get_contested_decisions, get_decision, get_decision_brief, get_decision_neighborhood,
-    get_decision_timeline, get_relevant_decisions, get_situational_decisions,
-    get_supersession_chain, get_waiting_requests, resolve_decision_for_reading,
-    search_decisions_any, ChangedDecisionsRequest, ContestedDecisionsRequest, NeighborhoodRequest,
-    QueryContext, QueryResponse, ResolveOutcome, ResolvedCandidate, SearchDecisionRequest,
-    SituationalRequest, WaitingRequestsRequest,
+    get_decision_status_events, get_decision_timeline, get_relevant_decisions,
+    get_situational_decisions, get_supersession_chain, get_waiting_requests,
+    resolve_decision_for_reading, search_decisions_any, ChangedDecisionsRequest,
+    ContestedDecisionsRequest, NeighborhoodRequest, QueryContext, QueryResponse, ResolveOutcome,
+    ResolvedCandidate, SearchDecisionRequest, SituationalRequest, WaitingRequestsRequest,
 };
 use crate::summarize::{recall_decisions, RecallRequest, RECALL_DEFAULT_LIMIT};
 
@@ -817,6 +817,36 @@ pub(super) async fn timeline_handler(
         let scoped_ledger = TenantScopedLedger::new(&ledger, ctx.tenant_id.clone());
         let response =
             get_decision_timeline(&*graph, &scoped_ledger, &decision_id).map_err(to_api_error)?;
+        if response.data.is_none() {
+            return Err(ApiError::not_found(format!(
+                "decision not found: {decision_id}"
+            )));
+        }
+        Ok(response)
+    })
+    .await;
+
+    respond_envelope(result)
+}
+
+pub(super) async fn status_events_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(decision_id): Path<String>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let cache = Arc::clone(&state.graph_cache);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<_> {
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let graph = open_graph_from_ledger(&ledger, &ctx.tenant_id, &cache)?;
+        let scoped_ledger = TenantScopedLedger::new(&ledger, ctx.tenant_id.clone());
+        let response = get_decision_status_events(&*graph, &scoped_ledger, &decision_id)
+            .map_err(to_api_error)?;
         if response.data.is_none() {
             return Err(ApiError::not_found(format!(
                 "decision not found: {decision_id}"

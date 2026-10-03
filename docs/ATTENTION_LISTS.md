@@ -25,6 +25,7 @@ the list on the next call. Nothing is ranked, scored or inferred, and nothing is
 | Contested | `hivemind query get_contested_decisions` | `get_contested_decisions` | `GET /v1/attention/contested` |
 | Changed | `hivemind query get_changed_decisions` | `get_changed_decisions` | `GET /v1/attention/changed` |
 | Timeline of one decision | `hivemind why` (JSON `data.timeline`, text `timeline:` block) | `get_decision_neighborhood` (`data.timeline`) | `GET /v1/decisions/{id}/timeline`, and `GET /v1/decisions/why` (`data.timeline`) |
+| Status events of one decision | not yet | not yet | `GET /v1/decisions/{id}/status-events` |
 
 The CLI prints JSON; add `--summary` for text. The stdio server, the HTTP endpoint and the CLI
 share one core per tool, so the three answer the same. Every list pages with `limit` and `cursor`
@@ -109,8 +110,55 @@ started resting on a refuted premise later was stale from the start; its `still_
 Entries follow the ledger's order. A decision imported with its source's own time can show an
 entry whose `ts` is earlier than the one before it; both are true.
 
+## The status events of one decision
+
+`GET /v1/decisions/{id}/status-events` lists only the events that set the decision's status, newest
+first, so a reader can tell the status of a past moment from the status now. The status is derived,
+never stored, so nothing is edited: this reads the log.
+
+```json
+{
+  "decision_id": "decision-...",
+  "status": "superseded",
+  "events": [
+    {
+      "event": "superseded",
+      "occurred_at": "2026-09-24T10:02:11Z",
+      "offset": 412,
+      "actor": {"id": "human:alex", "kind": "human"},
+      "superseded_by": "decision-...",
+      "status_after": "superseded"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `event` | `proposed`, `accepted`, `rejected` or `superseded`. |
+| `occurred_at` | The event's own ledger time; `null` when the event carries none. |
+| `offset` | The ledger offset (`event_origin`) of the event that did it. |
+| `actor` | `{id, kind}` of who proposed, accepted, rejected or superseded it; `kind` is `human`, `agent` or `unknown`. `null` only when the graph names no proposer. |
+| `delegated_by` | On `accepted`, when the event says an agent decided within a human's delegated scope. |
+| `superseded_by` | On `superseded`: the newer decision. |
+| `status_after` | The status the one status rule gives after this entry and every entry before it. |
+
+`status` is the status now and equals the newest entry's `status_after`. One entry per event: a
+second acceptance by the same actor is its own entry and leaves `status_after` unchanged;
+concurrent supersessions each get an entry. `truncated` is always `false`: a decision's status
+events are all returned.
+
+A decision whose capture states the acceptance, rejection or replaced decision itself (a classified
+capture's `accepted_by`, `rejected_by`, `supersedes_id`) has no event of its own for it. Those
+entries share the capture's offset and are dated when the decision was recorded. A replacement
+made this way is cited at the replacing decision's own offset, dated when that decision was
+recorded and credited to its proposer. A decision proposed and accepted in one capture shows both
+at the same time.
+
 ## What it costs
 
 The dated facts come from the ledger events themselves, because the graph keeps no per-edge
 times. `get_changed_decisions` and the timeline read the ledger's events once per call, the same
-read `get_decisions_changed_since` does; the waiting and contested lists read the graph only.
+read `get_decisions_changed_since` does; the waiting and contested lists read the graph only. The
+status events read only the ledger's accept, reject and supersede events, plus the decision's own
+edges in the graph.

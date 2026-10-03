@@ -85,6 +85,15 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`GET /v1/decisions/{id}/status-events` lists what changed one decision's status, newest
+  first.** One entry per proposed, accepted, rejected or superseded event: `event`,
+  `occurred_at` (the event's own ledger time, `null` when it carries none), `offset`, `actor`
+  (`{id, kind}`), `delegated_by` on an acceptance that carries it, `superseded_by` on a
+  supersession, and `status_after`, the one status rule applied up to that entry. `status` is
+  the status now and equals the newest entry's `status_after`. A decision whose capture states
+  the acceptance, rejection or replaced decision itself shows those entries at the capture's
+  offset, dated when the decision was recorded. Read-only: no event type, nothing written, the
+  timeline unchanged. HTTP only for now. See `docs/ATTENTION_LISTS.md`.
 - **`GET /v1/classify-queue/sessions` summarises the sessions that still have pending batches.**
   One row per (session, actor): `session_id`, `actor_id`, `batch_count`, `oldest_submitted_at`
   and `newest_submitted_at`, most recently active first, plus `session_total`, `batch_total`,

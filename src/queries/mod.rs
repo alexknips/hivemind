@@ -29,6 +29,7 @@ mod search;
 mod shared;
 mod situational;
 mod status;
+mod status_events;
 mod suggestion_acks;
 mod supersession;
 mod terms;
@@ -134,6 +135,9 @@ pub use situational::{
 pub use status::{
     derive_decision_status, derive_hypothesis_status, Decider, DecisionStandings, DecisionStatus,
     HypothesisStatus,
+};
+pub use status_events::{
+    get_decision_status_events, DecisionStatusEvents, StatusActor, StatusEvent, StatusEventKind,
 };
 pub use suggestion_acks::acknowledged_finding_ids;
 pub use supersession::{get_supersession_chain, SupersessionChain};
