@@ -6,8 +6,9 @@
 //!
 //! `cargo test --test example_data_generator` runs on every PR via the existing `rust` CI
 //! job (no extra CI wiring) and only checks the freshly-built snapshot's shape: decision and
-//! project counts, that both stories that must stay stale-and-visible (a superseded decision,
-//! a contested one) are still there, and that briefs.json covers every decision in graph.json.
+//! project counts, that both stories that must stay visible (a superseded decision, and the
+//! disagreement on the superseded first jury verdict) are still there, and that briefs.json
+//! covers every decision in graph.json.
 //! It writes nothing.
 //!
 //! `cargo test --test example_data_generator -- --bless` does the same build, then also
@@ -452,9 +453,9 @@ fn ridewell_cache_and_retries(dir: &Path) -> TestResult<()> {
     Ok(())
 }
 
-/// Story: 12 Angry Men — a contested verdict, revised as new evidence surfaces, still
-/// contested after the revision (one juror never comes around; disagreement is never
-/// silently resolved).
+/// Story: 12 Angry Men — a contested verdict, revised as new evidence surfaces. The contest
+/// stays on the first verdict (juror 8 disagrees; disagreement is never silently resolved);
+/// the replacement verdict ends unanimous, with juror 3, the last holdout, accepting it.
 fn twelve_angry_men(dir: &Path) -> TestResult<()> {
     let guilty = id_of(&hm(
         dir,
@@ -573,17 +574,11 @@ fn twelve_angry_men(dir: &Path) -> TestResult<()> {
         ],
     )?)?;
 
+    // Juror 3 is the last to come around, and accepts the replacement verdict.
     hm(
         dir,
         "human:juror-3",
-        &[
-            "disagree",
-            "--decision",
-            &not_guilty,
-            "--reason",
-            "Beyond a reasonable doubt doesn't mean giving him the benefit of every maybe. I \
-             still believe the boy did it. I'm entitled to that as long as I have a reason.",
-        ],
+        &["emit", "decision.accepted", "--decision-id", &not_guilty],
     )?;
     Ok(())
 }
@@ -767,11 +762,64 @@ fn check_snapshot(graph: &Value, briefs: &Value) -> TestResult<()> {
             "expected at least one superseded decision (staleness must stay visible)".into(),
         );
     }
-    if !statuses.contains(&"contested") {
-        return Err("expected at least one contested decision (disagreement must survive)".into());
+    check_jury_verdicts(decisions, briefs_obj)
+}
+
+const FIRST_VERDICT: &str = "The jury finds the defendant guilty";
+const FINAL_VERDICT: &str = "The jury finds the defendant not guilty";
+
+/// Disagreement must survive on the record. The first verdict is superseded, so its own
+/// status reads `superseded` (staleness wins), not `contested`: the disagreement shows in its
+/// brief instead — a `disputed` review and a `contested` reason on `still_holds`. The
+/// replacement verdict is accepted by every juror who decided, so it must read `accepted`.
+fn check_jury_verdicts(
+    decisions: &[Value],
+    briefs: &serde_json::Map<String, Value>,
+) -> TestResult<()> {
+    let first = verdict_by_title(decisions, FIRST_VERDICT)?;
+    let first_id = first["id"].as_str().unwrap_or_default();
+    let first_brief = &briefs
+        .get(first_id)
+        .ok_or_else(|| format!("briefs.json is missing the first verdict {first_id}"))?["data"];
+
+    if first_brief["decided_by"]["review"] != "disputed" {
+        return Err(format!(
+            "the first verdict's brief should keep juror 8's disagreement (review \"disputed\"), \
+             found {}",
+            first_brief["decided_by"]["review"]
+        )
+        .into());
+    }
+    let still_contested = first_brief["still_holds"]["reasons"]
+        .as_array()
+        .is_some_and(|reasons| reasons.iter().any(|r| r["kind"] == "contested"));
+    if !still_contested {
+        return Err(
+            "expected the superseded first verdict's brief to carry a \"contested\" reason \
+             (disagreement must survive)"
+                .into(),
+        );
+    }
+
+    let final_status = &verdict_by_title(decisions, FINAL_VERDICT)?["status"];
+    if final_status != "accepted" {
+        return Err(format!(
+            "expected the replacement verdict to be accepted by every juror, found status \
+             {final_status}"
+        )
+        .into());
     }
 
     Ok(())
+}
+
+fn verdict_by_title<'a>(decisions: &'a [Value], title: &str) -> TestResult<&'a Value> {
+    decisions
+        .iter()
+        .find(|d| d["title"] == title)
+        .ok_or_else(|| {
+            format!("expected the jury verdict {title:?} in the example-data story").into()
+        })
 }
 
 fn write_snapshot(graph: &Value, briefs: &Value) -> TestResult<()> {

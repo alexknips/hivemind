@@ -19,7 +19,7 @@ Three fictional projects, four stories, eight decisions:
 |---|---|---|
 | TrailKeeper (a hiking-log app) | 2 | An SQLite → Postgres supersede, as a "one hiker, one phone" assumption stops holding once people use the app on their phone and the web dashboard. |
 | Ridewell API + Ridewell Mobile (a driver-dispatch backend and its mobile client; Mobile depends on API) | 4 | An agent decides a retry count on its own, grounded as a declared bet with a check-by date. A cache keyed by a driver's numeric id rests on the assumption "ids never change" — a downstream **mobile** decision follows from it, crossing the project boundary. A platform migration refutes that assumption; the API decision is superseded, and the mobile decision (never itself touched) starts reading `still_holds.held_up: false` because its premise went stale. |
-| 12 Angry Men (a jury's deliberation) | 2 | A first verdict is contested the moment it's captured — one juror disagrees, on the record, beside everyone who accepted it. New evidence surfaces; the verdict is superseded. The replacement is *still* contested: one juror never comes around. Disagreement is preserved, never silently resolved. |
+| 12 Angry Men (a jury's deliberation) | 2 | A first verdict is contested the moment it's captured — one juror disagrees, on the record, beside everyone who accepted it. New evidence surfaces; the verdict is superseded, and the disagreement stays on the first verdict's record, never silently resolved. The replacement verdict is accepted by every juror, the last holdout included. |
 
 ## Files
 
@@ -39,8 +39,8 @@ The whole ledger and both snapshot files come from one test binary,
 
 ```bash
 # Check only: builds the ledger in a temp dir, calls the real API in-process, and asserts
-# the snapshot's shape (decision/project counts, that a superseded and a contested decision
-# both survive). Writes nothing. This is what CI runs on every PR — no extra CI job needed,
+# the snapshot's shape (decision/project counts, that a superseded decision survives and the
+# first jury verdict's disagreement is still on its record). Writes nothing. This is what CI runs on every PR — no extra CI job needed,
 # it's an ordinary `cargo test` target.
 cargo test --test example_data_generator
 
