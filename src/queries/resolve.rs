@@ -80,7 +80,7 @@ enum Asker {
 pub struct ResolvedCandidate {
     pub decision_id: String,
     pub title: String,
-    /// Reused tier from `evaluate_search_match`; 0 = exact id/title match, lower is better.
+    /// Reused tier from `evaluate_search_match`; 0 = exact id, title or recorded-question match, lower is better.
     pub rank: u8,
     /// Ledger offset at creation — recency tiebreak, never a ranking input on its own.
     pub event_origin: i64,

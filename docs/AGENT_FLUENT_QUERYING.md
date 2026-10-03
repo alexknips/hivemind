@@ -84,8 +84,9 @@ same rank-tier system this design reuses (§1.1 below).
 matcher: `collect_graph_search_results` (`search.rs:569`) builds
 `ScoredDecisionSearchResult`s by calling `evaluate_search_match`
 (`search.rs:838`), which computes a `rank: u8` tier per decision — `0` for an
-exact id/title match (`exact_id_or_title_match`, `search.rs:906`), otherwise
-`min` over matched-field ranks, requiring **all** query terms
+exact id or title match, or the exact question the decision answers
+(`exact_question_match`; case and a closing `?` do not count),
+otherwise `min` over matched-field ranks, requiring **all** query terms
 (`shared::query_terms`, `shared.rs:30` — lowercased whitespace split) to
 match somewhere (AND semantics). This already runs against `impl GraphView`,
 so it works unmodified against both `MemoryGraph`/SQLite-projected graphs and
@@ -97,6 +98,20 @@ via `with_postgres_graph`, `tests.rs:227`).
 `collect_graph_search_results`'s tier system, extracted into a shared
 function and extended with a recency tiebreak, wrapped in an ambiguity gate.
 No new matching logic, no configuration knobs, no learned weights.
+
+**The question a decision answers is searched too (hivemind-pyy4).** A decision
+records the question it answers (`--question`, `capture --answers`, `ground --answers`,
+`request_decision`, every AskUserQuestion answer the ask hooks write), and that text is a
+field of the decision beside its rationale: `why`, `verify`, `recall` and `search` all read
+it, so asking a decision's own question back finds it. For the decisions the ask hooks write,
+titled "<header>: <choice>" with a fixed rationale, the question is the only text a person
+would ask with. It matches as the rationale does (tier 2, `decision.question` in
+`matched_fields`), and a description that is the recorded question itself is an exact match
+(tier 0, as an exact title is). A question that several decisions answer is therefore
+ambiguous between them, never resolved to one: the answers are the candidates. A question
+quoted as recorded also carries its own polarity: "... or C no Jev?" or "... without judging"
+does not make the decision it answers the opposite of what was asked (the negation rule below
+is for a description that states the opposite of a decision's title).
 
 **Term handling (resolver only).** A natural question resolves the same as
 its keywords: "why did we move the demo cell to shared Postgres" finds

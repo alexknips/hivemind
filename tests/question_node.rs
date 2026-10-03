@@ -431,3 +431,244 @@ fn a_question_that_is_only_punctuation_is_refused_and_nothing_is_written() -> Te
     );
     Ok(())
 }
+
+const RECEIPT_QUESTION: &str = "Which typeface do printed receipts use?";
+const HOOK_QUESTION: &str = "Which database should the scratch service use?";
+
+/// A capture whose title and rationale share no word with its question, the way the decisions the
+/// ask hooks write do ("<header>: <choice>" with a fixed rationale).
+fn capture_answering(
+    dir: &Path,
+    title: &str,
+    rationale: &str,
+    question: Option<&str>,
+) -> TestResult<String> {
+    let mut args = vec![
+        "emit",
+        "decision.capture",
+        "--title",
+        title,
+        "--rationale",
+        rationale,
+        "--topic-keys",
+        "billing",
+        "--options",
+        "Inter,Times",
+        "--chose",
+        "Inter",
+        "--rests-on-assumption",
+        "Receipts print at 9 pt",
+    ];
+    if let Some(question) = question {
+        args.extend(["--question", question]);
+    }
+    let capture: Value = serde_json::from_str(&run_cli(dir, CAPTURER, true, &args)?)?;
+    Ok(id_of(&capture)?.to_owned())
+}
+
+fn ids_of_items(output: &str, path: &[&str]) -> TestResult<Vec<String>> {
+    let mut value: Value = serde_json::from_str(output)?;
+    for key in path {
+        value = value[key].take();
+    }
+    Ok(value
+        .as_array()
+        .ok_or("items array")?
+        .iter()
+        .filter_map(|item| item["decision"]["id"].as_str().map(str::to_owned))
+        .collect())
+}
+
+fn recall_ids(dir: &Path, question: &str) -> TestResult<Vec<String>> {
+    let output = run_cli(dir, CAPTURER, true, &["query", "recall", question])?;
+    ids_of_items(&output, &["data", "ranked", "items"])
+}
+
+fn search_ids(dir: &Path, words: &str) -> TestResult<Vec<String>> {
+    let output = run_cli(dir, CAPTURER, true, &["query", "search", "--q", words])?;
+    ids_of_items(&output, &["data", "items"])
+}
+
+fn why_summary(dir: &Path, question: &str) -> TestResult<String> {
+    Ok(run_cli(
+        dir,
+        CAPTURER,
+        false,
+        &["query", "why", question, "--summary"],
+    )?)
+}
+
+#[test]
+fn asking_the_recorded_question_finds_the_decision_that_answers_it() -> TestResult<()> {
+    let scratch = Scratch::new("ask-back")?;
+    let dir = scratch.path();
+    let target = capture_answering(
+        dir,
+        "Inter for invoice text",
+        "Inter stays legible at 9 pt on thermal paper",
+        Some(RECEIPT_QUESTION),
+    )?;
+    // Decisions that share some of the question's words, but do not answer it.
+    capture_answering(
+        dir,
+        "Receipts are emailed as PDF",
+        "Printed receipts get lost in a drawer, a PDF is searchable",
+        None,
+    )?;
+    capture_answering(
+        dir,
+        "Invoice numbers are sequential",
+        "Auditors read the numbers in order",
+        None,
+    )?;
+
+    // As recorded, and as a person types it back: no closing "?", another case.
+    for asked in [RECEIPT_QUESTION, "which typeface do printed receipts use"] {
+        let summary = why_summary(dir, asked)?;
+        assert!(
+            summary.contains("decision: Inter for invoice text"),
+            "`why {asked}` names the decision: {summary}"
+        );
+        assert!(
+            !summary.contains("close match:"),
+            "the whole question was found, nothing is missing: {summary}"
+        );
+        let recalled = recall_ids(dir, asked)?;
+        assert_eq!(
+            recalled.first(),
+            Some(&target),
+            "`recall {asked}` lists the target first: {recalled:?}"
+        );
+    }
+
+    // Two words that appear only in the question.
+    assert_eq!(search_ids(dir, "typeface receipts")?, vec![target]);
+    Ok(())
+}
+
+#[test]
+fn asking_the_question_an_ask_hook_recorded_finds_its_decision() -> TestResult<()> {
+    let scratch = Scratch::new("ask-hook")?;
+    let dir = scratch.path();
+    let target = capture_answering(
+        dir,
+        "Database: Postgres",
+        "Chosen in a Claude Code session",
+        Some(HOOK_QUESTION),
+    )?;
+    capture_answering(
+        dir,
+        "Pricing: after the trial",
+        "Chosen in a Claude Code session",
+        Some("When does the service start to charge?"),
+    )?;
+
+    let summary = why_summary(dir, HOOK_QUESTION)?;
+    assert!(
+        summary.contains("decision: Database: Postgres"),
+        "{summary}"
+    );
+    assert_eq!(recall_ids(dir, HOOK_QUESTION)?.first(), Some(&target));
+    assert_eq!(search_ids(dir, "scratch service")?, vec![target]);
+    Ok(())
+}
+
+#[test]
+fn a_question_linked_after_the_capture_is_asked_back_like_one_captured_with_it() -> TestResult<()> {
+    let scratch = Scratch::new("ask-back-linked")?;
+    let dir = scratch.path();
+    let target = capture_answering(
+        dir,
+        "Inter for invoice text",
+        "Inter stays legible at 9 pt on thermal paper",
+        None,
+    )?;
+    assert!(search_ids(dir, "typeface receipts")?.is_empty());
+    run_cli(
+        dir,
+        GROUNDER,
+        true,
+        &[
+            "ground",
+            "inter for invoice text",
+            "--answers",
+            RECEIPT_QUESTION,
+        ],
+    )?;
+
+    assert_eq!(search_ids(dir, "typeface receipts")?, vec![target.clone()]);
+    assert_eq!(recall_ids(dir, RECEIPT_QUESTION)?.first(), Some(&target));
+    let summary = why_summary(dir, RECEIPT_QUESTION)?;
+    assert!(
+        summary.contains("decision: Inter for invoice text"),
+        "{summary}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_question_answered_twice_is_ambiguous_between_both_answers_never_one_of_them() -> TestResult<()>
+{
+    let scratch = Scratch::new("ask-back-twice")?;
+    let dir = scratch.path();
+    let inter = capture_answering(
+        dir,
+        "Inter for invoice text",
+        "Inter stays legible at 9 pt on thermal paper",
+        Some(RECEIPT_QUESTION),
+    )?;
+    let times = capture_answering(
+        dir,
+        "Times for invoice text",
+        "Times matches the printed contract template",
+        Some(RECEIPT_QUESTION),
+    )?;
+
+    let summary = why_summary(dir, RECEIPT_QUESTION)?;
+    assert!(
+        summary.contains("Inter for invoice text") && summary.contains("Times for invoice text"),
+        "both answers are offered, neither is picked for the asker: {summary}"
+    );
+    let recalled = recall_ids(dir, RECEIPT_QUESTION)?;
+    assert!(
+        recalled.contains(&inter) && recalled.contains(&times),
+        "{recalled:?}"
+    );
+    let mut found = search_ids(dir, "typeface receipts")?;
+    found.sort();
+    let mut both = vec![inter, times];
+    both.sort();
+    assert_eq!(found, both);
+    Ok(())
+}
+
+#[test]
+fn a_recorded_question_with_a_negation_in_it_still_finds_the_decision_that_answers_it(
+) -> TestResult<()> {
+    let scratch = Scratch::new("ask-back-negated")?;
+    let dir = scratch.path();
+    let negated = "Which typeface do printed receipts use without a licence fee?";
+    let target = capture_answering(
+        dir,
+        "Inter for invoice text",
+        "Inter is open source and stays legible at 9 pt on thermal paper",
+        Some(negated),
+    )?;
+    capture_answering(
+        dir,
+        "Times for contract text",
+        "Times matches the printed contract template",
+        Some("Which typeface do printed contracts use?"),
+    )?;
+
+    // "without" is a negation in the asker's words; here it is the recorded question's own.
+    let summary = why_summary(dir, negated)?;
+    assert!(
+        summary.contains("decision: Inter for invoice text"),
+        "`why` names the decision, not a list of close candidates: {summary}"
+    );
+    assert!(!summary.contains("close:"), "{summary}");
+    assert_eq!(recall_ids(dir, negated)?.first(), Some(&target));
+    assert_eq!(search_ids(dir, "licence fee")?, vec![target]);
+    Ok(())
+}

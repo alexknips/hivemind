@@ -653,6 +653,7 @@ fn rebuild_decision_search_fts(
                  evidence_text,
                  hypothesis_text,
                  supersession_text,
+                 question_text,
                  tokenize = 'unicode61'
              );",
         )
@@ -673,8 +674,9 @@ fn rebuild_decision_search_fts(
                     option_text,
                     evidence_text,
                     hypothesis_text,
-                    supersession_text
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    supersession_text,
+                    question_text
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )
             .map_err(|error| {
                 query_error(format!("prepare decision search index insert: {error}"))
@@ -697,6 +699,7 @@ fn rebuild_decision_search_fts(
                     field_text(&document.fields, &["evidence.id", "evidence.content"]),
                     field_text(&document.fields, &["hypothesis.id", "hypothesis.statement"]),
                     field_text(&document.fields, &["supersedes.id", "superseded_by.id"]),
+                    field_text(&document.fields, &["decision.question"]),
                 ])
                 .map_err(|error| {
                     query_error(format!(
@@ -998,10 +1001,23 @@ fn collect_graph_search_results(
             });
         }
 
+        // A decision linked to a question after the fact has no question text of its own.
+        let question = question.or_else(|| {
+            question_id
+                .as_ref()
+                .and_then(|question_id| question_rows.get(question_id))
+                .and_then(|row| optional_string(row, "text"))
+        });
+
         let mut fields = Vec::new();
         fields.push(SearchField::decision("decision.id", &id, 0));
         fields.push(SearchField::decision("decision.title", &title, 1));
         fields.push(SearchField::decision("decision.rationale", &rationale, 2));
+        // The question a decision answers is often the only text a person would ask with: a
+        // decision the ask hooks write is titled "<header>: <choice>" with a fixed rationale.
+        if let Some(question) = &question {
+            fields.push(SearchField::decision("decision.question", question, 2));
+        }
         for topic_key in &decision_topic_keys {
             fields.push(SearchField::decision("decision.topic", topic_key, 3));
         }
@@ -1104,14 +1120,7 @@ fn collect_graph_search_results(
             hypotheses: hypotheses.clone(),
             premise_decision_ids,
             quote: quote.clone(), // ubs:ignore: clone necessary — building owned DecisionView
-            // A decision linked to a question after the fact has no question text of its own.
-            question: question.clone().or_else(|| {
-                // ubs:ignore: clone necessary — building owned DecisionView
-                question_id
-                    .as_ref()
-                    .and_then(|question_id| question_rows.get(question_id))
-                    .and_then(|row| optional_string(row, "text"))
-            }),
+            question,
             question_id,
         };
         let grounding_state = decision.grounding_state();
@@ -1401,7 +1410,10 @@ fn evaluate_search_match(
     let mut matched_fields = BTreeSet::new();
     let mut snippets = Vec::new();
     let mut matched_nodes = BTreeSet::new();
-    let mut rank = if exact_id_or_title_match(query, fields) {
+    // The question a decision answers, asked back as recorded, names that decision as an exact
+    // title does.
+    let quotes_question = exact_question_match(query, fields);
+    let mut rank = if quotes_question || exact_id_or_title_match(query, fields) {
         0
     } else {
         u8::MAX
@@ -1473,8 +1485,11 @@ fn evaluate_search_match(
     }
 
     // The title is the sentence that states what was decided; a rationale says "not" for a dozen
-    // reasons that leave the decision itself positive.
+    // reasons that leave the decision itself positive. A question quoted as recorded is the one
+    // the decision answers, whatever its words ("... or no Jev?", "... without judging"): its
+    // polarity is the question's own, never the opposite of the decision.
     let polarity_mismatch = search_terms.negated
+        && !quotes_question
         && !fields
             .iter()
             .any(|field| field.field == "decision.title" && is_negated_text(&field.value));
@@ -1501,6 +1516,23 @@ fn exact_id_or_title_match(query: &str, fields: &[SearchField]) -> bool {
         matches!(field.field.as_str(), "decision.id" | "decision.title")
             && field.value.to_ascii_lowercase() == query
     })
+}
+
+/// Whether the query is the question the decision answers, as recorded: matched without case and
+/// without a closing "?", since a person asking it back rarely types them the way it was recorded.
+fn exact_question_match(query: &str, fields: &[SearchField]) -> bool {
+    let asked = without_closing_marks(query);
+    !asked.is_empty()
+        && fields.iter().any(|field| {
+            field.field == "decision.question"
+                && without_closing_marks(&field.value).eq_ignore_ascii_case(asked)
+        })
+}
+
+/// `text` without the whitespace and question marks that close it.
+fn without_closing_marks(text: &str) -> &str {
+    text.trim_end_matches(|character: char| character == '?' || character.is_whitespace())
+        .trim_start()
 }
 
 fn snippet_value(value: &str) -> String {

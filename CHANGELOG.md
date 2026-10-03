@@ -356,6 +356,19 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Asking the exact question a decision answers now finds it.** A decision records the question
+  it answers (`--question`, `capture --answers`, `ground --answers`, `request_decision`, and every
+  AskUserQuestion answer the ask hooks write), but `why`, `recall` and `search` never read it:
+  asking "Which typeface do printed receipts use?" said "no decision matches that description",
+  and `recall` listed the target as a close match missing "typeface" and "use". The decisions the
+  ask hooks write were hit hardest, because their title is "<header>: <choice>" and their
+  rationale is a fixed sentence, so the question is the only text a person would ask with. The
+  question is now a searchable field, `decision.question`, ranked with the rationale, so `why`,
+  `verify`, `recall` and `search --q "<words only in the question>"` find the decision over the
+  CLI, MCP and HTTP. A description that is the recorded question itself, in any case and with or
+  without its closing "?", is an exact match (rank 0, like an exact title); when several decisions
+  answer one question, `why` lists them all instead of picking one. A question linked after the
+  capture (`ground --answers`) is searched the same way. (hivemind-pyy4)
 - **An importer whose proposal is refused no longer leaves an ask, evidence or hypotheses
   behind.** The Slack thread import wrote the thread's ask (`question.asked`) and its evidence
   before it proposed the decision, and the document import wrote a block's evidence and

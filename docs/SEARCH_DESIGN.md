@@ -20,9 +20,9 @@ standalone search products.
 
 Good search must:
 
-- Find decisions by remembered fragments from title, rationale, option text,
-  evidence text, hypothesis statements, topic keys, actors, sources, and related
-  decision ids.
+- Find decisions by remembered fragments from title, rationale, the question the
+  decision answers, option text, evidence text, hypothesis statements, topic
+  keys, actors, sources, and related decision ids.
 - Filter by explicit graph state: status, actor, topic, source, time window,
   evidence, hypothesis, supersession, and stale or blocker context.
 - Preserve disagreement. `contested` is a first-class status filter and result
@@ -91,7 +91,7 @@ hivemind query search \
   --actor-match any|all \
   --source cli|agent|human|slack|document|api[,..] \
   --source-ref <source-ref>[,<source-ref>...] \
-  --field all|decision.title|decision.rationale|decision.topic|decision.status|actor.id|actor.source_ref|option.label|option.description|evidence.content|hypothesis.statement|supersession.id[,..] \
+  --field all|decision.title|decision.rationale|decision.question|decision.topic|decision.status|actor.id|actor.source_ref|option.label|option.description|evidence.content|hypothesis.statement|supersession.id[,..] \
   --premised-on-hypothesis-id <hypothesis-id>[,<hypothesis-id>...] \
   --based-on-evidence-id <evidence-id>[,<evidence-id>...] \
   --supersedes-decision-id <decision-id>[,<decision-id>...] \
@@ -376,9 +376,10 @@ explicit ledger watermark.
 Default `order=match` is deterministic relevance by explicit match basis:
 
 1. Exact decision id match.
-2. Exact decision title match.
+2. Exact decision title match, or the exact question the decision answers
+   (case and a closing `?` ignored).
 3. Decision title term match.
-4. Decision rationale term match.
+4. Decision rationale or answered-question term match.
 5. Direct decision metadata match: topic, status, source, source ref.
 6. One-hop graph context match: actor, option, evidence, hypothesis, and
    supersession ids or text.
