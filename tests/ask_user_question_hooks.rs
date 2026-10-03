@@ -39,7 +39,7 @@ const DATABASE_QUESTION: &str = "Which database should the demo use?";
 const FEATURES_QUESTION: &str = "Which features, if any, should ship first?";
 /// The titles the hook gives the two recorded answers: `<header>: <chosen option>`.
 const DATABASE_TITLE: &str = "Database: Postgres, hosted";
-const FEATURES_TITLE: &str = "Features: Search + Export + Other (own words)";
+const FEATURES_TITLE: &str = "Features: Search + Export";
 /// What the hook's fixed rationale says when a person gave neither a note nor words of their own.
 const NO_REASONS: &str = "no reasons were given";
 /// The rig the registered-project tests anchor their project to and run the hooks in.
@@ -270,6 +270,78 @@ fn labels(options: &Value) -> Vec<&str> {
         .unwrap_or_default()
 }
 
+/// One question an agent put to the person, as the tool's input lists it.
+struct Asked<'a> {
+    header: &'a str,
+    question: &'a str,
+    options: &'a [&'a str],
+    multi: bool,
+}
+
+impl Asked<'_> {
+    fn input(&self) -> Value {
+        serde_json::json!({
+            "question": self.question,
+            "header": self.header,
+            "multiSelect": self.multi,
+            "options": self
+                .options
+                .iter()
+                .map(|label| serde_json::json!({ "label": label, "description": "" }))
+                .collect::<Vec<_>>(),
+        })
+    }
+
+    /// The PreToolUse payload for this question.
+    fn pre(&self, scratch: &Scratch) -> Value {
+        serde_json::json!({
+            "session_id": "8c2ccf9a-2bb7-4c1b-9539-d20c9bb0c3c0",
+            "cwd": scratch.work().display().to_string(),
+            "hook_event_name": "PreToolUse",
+            "tool_name": "AskUserQuestion",
+            "tool_input": { "questions": [self.input()] },
+        })
+    }
+
+    /// The PostToolUse payload once the person answered with `answer` as the tool reports it,
+    /// plus the note they wrote, if any.
+    fn post(&self, scratch: &Scratch, answer: &str, note: Option<&str>) -> Value {
+        let mut payload = self.pre(scratch);
+        payload["hook_event_name"] = "PostToolUse".into();
+        for source in ["tool_input", "tool_response"] {
+            payload[source]["questions"] = serde_json::json!([self.input()]);
+            payload[source]["answers"] = serde_json::json!({ self.question: answer });
+            if let Some(note) = note {
+                payload[source]["annotations"] =
+                    serde_json::json!({ self.question: { "notes": note } });
+            }
+        }
+        payload
+    }
+}
+
+/// Every word the ledger recorded, to look for text that must not be there.
+fn ledger_text(ledger_dir: &Path) -> TestResult<String> {
+    Ok(events(ledger_dir)?
+        .iter()
+        .map(|event| event.payload.to_string())
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+/// The bucket the hook used to record for words it could not match, and the placeholder Claude
+/// Code reports for an answer that is only a note: neither is anything a person said or chose.
+fn assert_no_placeholders(ledger_dir: &Path) -> TestResult<()> {
+    let text = ledger_text(ledger_dir)?;
+    for placeholder in ["Other (own words)", "(notes only)"] {
+        assert!(
+            !text.contains(placeholder),
+            "{placeholder:?} is recorded in the ledger: {text}"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn recorded_session_links_each_answer_to_the_ask_it_answers() -> TestResult<()> {
     let scratch = Scratch::new()?;
@@ -332,14 +404,12 @@ fn recorded_session_links_each_answer_to_the_ask_it_answers() -> TestResult<()> 
         "no note and no words of their own, so the fixed sentence: {database}"
     );
 
-    // A multi-select with two offered options and the person's own words: one combined choice,
-    // the words quoted, and nothing they picked listed as turned down.
-    let features = why_for(&ledger, "Features: Search + Export + Other (own words)")?;
+    // A multi-select with two offered options and the person's own words: the two picks are one
+    // combined choice, the words are quoted beside it (no bucket option stands in for them), and
+    // nothing they picked is listed as turned down.
+    let features = why_for(&ledger, FEATURES_TITLE)?;
     assert_eq!(features["question"], FEATURES_QUESTION);
-    assert_eq!(
-        features["chosen_option"]["label"],
-        "Search + Export + Other (own words)"
-    );
+    assert_eq!(features["chosen_option"]["label"], "Search + Export");
     assert_eq!(features["quote"], "Import from Notion");
     assert!(
         labels(&features["rejected_options"]).is_empty(),
@@ -349,6 +419,7 @@ fn recorded_session_links_each_answer_to_the_ask_it_answers() -> TestResult<()> 
         !rationale(&features)?.contains(NO_REASONS),
         "their own words may hold reasons, so none are claimed absent: {features}"
     );
+    assert_no_placeholders(&ledger)?;
 
     // The ledger holds both times per decision: the ask's own timestamp, then the answer's.
     for (brief, question) in [
@@ -401,7 +472,7 @@ fn a_note_on_the_pick_is_the_rationale_word_for_word() -> TestResult<()> {
 
     // A note the write layer refuses as a rationale is quoted instead, after their own words, and
     // the rationale says a note is attached.
-    let features = why_for(&ledger, "Features: Search + Export + Other (own words)")?;
+    let features = why_for(&ledger, FEATURES_TITLE)?;
     assert!(
         rationale(&features)?.contains("added a note")
             && !rationale(&features)?.contains(NO_REASONS),
@@ -410,6 +481,228 @@ fn a_note_on_the_pick_is_the_rationale_word_for_word() -> TestResult<()> {
     assert_eq!(
         features["quote"], "Import from Notion\n\nNote: and Notion",
         "{features}"
+    );
+    Ok(())
+}
+
+#[test]
+fn own_words_that_lead_with_an_offered_option_choose_it() -> TestResult<()> {
+    let scratch = Scratch::new()?;
+    let ledger = scratch.ledger();
+    let retries = Asked {
+        header: "Retries",
+        question: "How many times should a failed job retry?",
+        options: &["Three times", "Five times"],
+        multi: false,
+    };
+    let words = "Five times, because the jobs are cheap and the queue backs off";
+    run_hook_ok(
+        &scratch,
+        "post",
+        &retries.post(&scratch, words, None).to_string(),
+        &[],
+    )?;
+
+    // What they chose is the offered option their words lead with; the other offered option is the
+    // one turned down; their words are quoted whole.
+    let brief = why_for(&ledger, "Retries: Five times")?;
+    assert_eq!(brief["chosen_option"]["label"], "Five times");
+    assert_eq!(labels(&brief["rejected_options"]), ["Three times"]);
+    assert_eq!(brief["quote"], words);
+    assert!(
+        rationale(&brief)?.contains("own words") && !rationale(&brief)?.contains(NO_REASONS),
+        "their words may hold reasons, so none are claimed absent: {brief}"
+    );
+
+    // Words that are only the offered label, in another case with a full stop, are a plain pick:
+    // nothing to quote, and the fixed sentence says no reasons were given.
+    let database = Asked {
+        header: "Database",
+        question: DATABASE_QUESTION,
+        options: &["SQLite", "Postgres, hosted"],
+        multi: false,
+    };
+    run_hook_ok(
+        &scratch,
+        "post",
+        &database
+            .post(&scratch, "postgres, hosted.", None)
+            .to_string(),
+        &[],
+    )?;
+    let brief = why_for(&ledger, "Database: Postgres, hosted")?;
+    assert_eq!(brief["chosen_option"]["label"], "Postgres, hosted");
+    assert_eq!(labels(&brief["rejected_options"]), ["SQLite"]);
+    assert!(brief["quote"].is_null(), "{brief}");
+    assert!(rationale(&brief)?.contains(NO_REASONS), "{brief}");
+
+    assert_no_placeholders(&ledger)?;
+    Ok(())
+}
+
+#[test]
+fn own_words_that_do_not_name_exactly_one_offered_option_are_the_answer_and_reject_nothing(
+) -> TestResult<()> {
+    let scratch = Scratch::new()?;
+    let ledger = scratch.ledger();
+    let cases = [
+        // Names no offered option.
+        (
+            Asked {
+                header: "Retries",
+                question: "How many retries should a failed job get?",
+                options: &["Three times", "Five times"],
+                multi: false,
+            },
+            "Back off exponentially and never give up",
+        ),
+        // Names two, so which one they chose is not for the hook to guess.
+        (
+            Asked {
+                header: "Cache",
+                question: "Which cache should the workers share?",
+                options: &["Redis", "In-process"],
+                multi: false,
+            },
+            "Redis or In-process, whichever is simpler",
+        ),
+        // Names one, but turns it down.
+        (
+            Asked {
+                header: "Cache",
+                question: "Which cache should the workers use instead?",
+                options: &["Redis", "In-process"],
+                multi: false,
+            },
+            "Not Redis, the other one",
+        ),
+        // A multi-select answered with words only.
+        (
+            Asked {
+                header: "Features",
+                question: "Which features should ship first?",
+                options: &["Search", "Export"],
+                multi: true,
+            },
+            "Import from Notion",
+        ),
+    ];
+    for (asked, words) in &cases {
+        run_hook_ok(
+            &scratch,
+            "post",
+            &asked.post(&scratch, words, None).to_string(),
+            &[],
+        )?;
+        // What they chose is what they said. No offered option is listed beside it, because the
+        // record lists an option only to say it was turned down, and the words do not say that.
+        let brief = why_for(&ledger, &format!("{}: {words}", asked.header))?;
+        assert_eq!(brief["chosen_option"]["label"], *words, "{brief}");
+        assert!(
+            labels(&brief["rejected_options"]).is_empty(),
+            "no offered option is recorded as turned down: {brief}"
+        );
+        assert_eq!(brief["quote"], *words, "{brief}");
+        assert!(
+            rationale(&brief)?.contains("none of those options is recorded as turned down"),
+            "the record says why no option is listed: {brief}"
+        );
+        assert_eq!(brief["question"], asked.question);
+    }
+    assert_no_placeholders(&ledger)?;
+    Ok(())
+}
+
+#[test]
+fn a_notes_only_answer_that_leads_with_an_offered_option_chooses_it() -> TestResult<()> {
+    let scratch = Scratch::new()?;
+    let ledger = scratch.ledger();
+    let queue = Asked {
+        header: "Queue",
+        question: "Which queue should the scratch service use?",
+        options: &["Kafka", "NATS"],
+        multi: false,
+    };
+    // The person picked nothing and wrote a note: Claude Code reports "(notes only)" as the answer.
+    let note = "NATS, because we lose nothing if a scratch job is dropped";
+    run_hook_ok(
+        &scratch,
+        "post",
+        &queue.post(&scratch, "(notes only)", Some(note)).to_string(),
+        &[],
+    )?;
+
+    // The note is what they said, so it is the rationale, word for word, and it chose NATS. The
+    // placeholder is never quoted as their words.
+    let brief = why_for(&ledger, "Queue: NATS")?;
+    assert_eq!(brief["chosen_option"]["label"], "NATS");
+    assert_eq!(labels(&brief["rejected_options"]), ["Kafka"]);
+    assert_eq!(rationale(&brief)?, note);
+    assert!(brief["quote"].is_null(), "{brief}");
+    assert_no_placeholders(&ledger)?;
+    Ok(())
+}
+
+#[test]
+fn a_notes_only_answer_that_names_no_offered_option_is_the_note() -> TestResult<()> {
+    let scratch = Scratch::new()?;
+    let ledger = scratch.ledger();
+    let store = Asked {
+        header: "Store",
+        question: "Which store should the scratch service use?",
+        options: &["Kafka", "NATS"],
+        multi: false,
+    };
+    let note = "A plain Postgres table is enough for the scratch service.";
+    run_hook_ok(
+        &scratch,
+        "post",
+        &store.post(&scratch, "(notes only)", Some(note)).to_string(),
+        &[],
+    )?;
+
+    let brief = why_for(
+        &ledger,
+        "Store: A plain Postgres table is enough for the scratch service",
+    )?;
+    assert_eq!(brief["chosen_option"]["label"], note);
+    assert!(
+        labels(&brief["rejected_options"]).is_empty(),
+        "no offered option is recorded as turned down: {brief}"
+    );
+    assert_eq!(rationale(&brief)?, note);
+    assert!(brief["quote"].is_null(), "{brief}");
+    assert_no_placeholders(&ledger)?;
+    Ok(())
+}
+
+#[test]
+fn a_notes_only_answer_with_no_note_records_nothing_and_the_ask_stays_waiting() -> TestResult<()> {
+    let scratch = Scratch::new()?;
+    let ledger = scratch.ledger();
+    let queue = Asked {
+        header: "Queue",
+        question: "Which queue should the scratch service use?",
+        options: &["Kafka", "NATS"],
+        multi: false,
+    };
+    run_hook_ok(&scratch, "pre", &queue.pre(&scratch).to_string(), &[])?;
+    run_hook_ok(
+        &scratch,
+        "post",
+        &queue.post(&scratch, "(notes only)", None).to_string(),
+        &[],
+    )?;
+
+    assert!(
+        events_of(&ledger, EventType::DecisionProposed)?.is_empty(),
+        "there is no answer to record"
+    );
+    assert_eq!(waiting_texts(&ledger)?, [queue.question]);
+    assert!(
+        hook_log(&scratch).contains("notes only"),
+        "the skip is logged: {}",
+        hook_log(&scratch)
     );
     Ok(())
 }

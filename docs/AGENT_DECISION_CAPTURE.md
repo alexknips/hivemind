@@ -280,8 +280,14 @@ was answered, with no model in the loop:
 - **`PostToolUse`** writes one decision per answered question, recorded by the agent
   and **decided by the person** (`--decided-by human:<git email>`, or
   `HIVEMIND_HUMAN_ACTOR`). Options are the ones offered, chosen is the one picked;
-  several picks, or words of their own, become one combined option
-  (`Search + Export + Other (own words)`) and the words go in `--quote`. The
+  several picks become one combined option (`Search + Export`) and words of their
+  own go in `--quote`. Words (or, when nothing was picked, the note) choose an
+  offered option when they lead with its name and name no other offered option;
+  words that name no single option are themselves the chosen option, with no offered
+  option listed beside it, because the record lists an option only to say it was
+  turned down. The placeholder Claude Code reports for a note-only answer
+  (`(notes only)`) is never quoted as their words, and a note-only answer with no
+  note records nothing. The
   rationale is the note the person wrote on their pick (the tool's
   `annotations[question].notes`), word for word; a note the write layer refuses as
   too short to read on its own goes in `--quote` instead, and the rationale says a

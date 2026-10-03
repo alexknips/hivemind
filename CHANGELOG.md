@@ -171,9 +171,8 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   moment of the tool call (MCP `request_decision`; the event's own time is `asked_at`, never a
   guess). `PostToolUse` writes one decision per answered question: recorded by the agent,
   decided by you (`human:<git email>`, or `HIVEMIND_HUMAN_ACTOR`), the offered options, the one
-  you picked, and any words of your own quoted verbatim. Several picks in a multi-select, or your
-  own words, become one combined option (`Search + Export + Other (own words)`) and what you
-  picked into it is not listed as turned down. The decision names the same question as the ask,
+  you picked, and any words of your own quoted verbatim. Several picks in a multi-select become one
+  combined option (`Search + Export`) and what you picked into it is not listed as turned down. The decision names the same question as the ask,
   so `hivemind why` shows `asked_at` beside `answered_at` and the request leaves
   `get_waiting_requests`; the hooks share no state. The note you write on your pick is the
   rationale, word for word (a note too short to read on its own is quoted instead); only with
@@ -367,6 +366,20 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   `propose_decision` can raise before their first write, so a refused thread or block writes
   nothing and retrying the same input adds nothing. Live Slack app captures still write no ask.
   (hivemind-poum)
+- **An answer to an agent's question in your own words, or as a note only, is no longer recorded
+  with the option you chose listed as turned down.** The `AskUserQuestion` hook filed every
+  answer that was not a click on an offered option under a made-up choice, "Other (own words)",
+  with every offered option rejected beside it, so "Five times, because the jobs are cheap" was
+  recorded as turning down "Five times". A note-only answer (Claude Code's `n to add notes`, then
+  Enter) also had Claude Code's placeholder `(notes only)` quoted as your words. Now your words
+  (or your note, when you picked nothing) choose an offered option when they lead with its name
+  and name no other offered option: `Retries: Five times`, the other option turned down, your
+  words quoted (a note is the rationale, word for word). Words that name no single option, such
+  as "Redis or In-process" or "Not Redis, the other one", are the answer: the chosen option is
+  what you said and no offered option is listed beside it, so none reads as turned down. A
+  multi-select with words of your own records the options you ticked as the choice and quotes
+  the words (`Features: Search + Export`). The placeholder is never quoted, and a notes-only
+  answer with no note records nothing. (hivemind-2kzf)
 - **`GET /v1/classify-queue` no longer takes ~25 seconds whatever the limit, and a worker can
   choose a session without fetching the queue.** On the city cell every request read the whole
   ledger (about 90,000 received batches, each with its turn text) twice, once for the list and

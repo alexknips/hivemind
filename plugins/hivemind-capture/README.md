@@ -199,10 +199,15 @@ What the decision carries:
 - **Decided by** `human:<your git email>` (set `HIVEMIND_HUMAN_ACTOR=human:<name>`
   to change it), **recorded by** the agent (`agent:claude:<name>`).
 - **Options** are the ones the agent offered, with their descriptions; **chosen** is
-  the one you picked. Several picks in a multi-select, or words of your own
-  ("Other"), become one combined option (`Search + Export + Other (own words)`); what
-  you picked into it is not listed as turned down. Your own words are quoted
-  verbatim.
+  the one you picked. Several picks in a multi-select become one combined option
+  (`Search + Export`); what you picked into it is not listed as turned down. Your own
+  words ("Other") are quoted verbatim. Words, or a note with nothing picked, choose an
+  offered option when they lead with its name and name no other offered option
+  ("Five times, because the jobs are cheap" chooses `Five times`). Words that name no
+  single option ("Redis or In-process", "Not Redis, the other one") are the answer
+  themselves: the chosen option is what you said, no offered option is listed beside it,
+  and none reads as turned down. A note-only answer never quotes Claude Code's
+  `(notes only)` placeholder as your words, and one with no note records nothing.
 - **Title** is `<header>: <chosen>`. **Rationale** is the note you wrote on your
   pick, word for word. A note too short to read on its own is quoted instead, and
   the rationale says a note is attached. Only when you gave neither a note nor

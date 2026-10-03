@@ -11,7 +11,10 @@ An agent's AskUserQuestion is an ask that somebody performed, at a time. This re
                           "Other" answer) quoted verbatim, and the note they added to their pick
                           (the tool's `annotations[question].notes`) as the rationale, word for
                           word. Only with neither a note nor own words does the rationale say no
-                          reasons were given.
+                          reasons were given. Own words, or a note with nothing picked, choose an
+                          offered option only when they lead with its name and name no other
+                          offered option; otherwise the chosen option is the person's words and
+                          no offered option is recorded as turned down.
 
 The two hooks share no state. The link between an ask and its answer is the question itself: the
 ask and the decision name the same question text, so they resolve to one Question node, the way
@@ -68,10 +71,12 @@ LOG_MAX_BYTES = 1_000_000
 MAX_LABEL_CHARS = 80
 MAX_TITLE_CHARS = 120
 
-OWN_WORDS_LABEL = "Other (own words)"
-COMBINED_DESCRIPTION = (
-    "The person's answer as given: several offered options together, or their own words."
-)
+COMBINED_DESCRIPTION = "Several of the offered options together, as the person picked them."
+OWN_ANSWER_DESCRIPTION = "The person's own answer, in their words; not one of the options offered."
+
+# What Claude Code reports as the answer when the person picked nothing and wrote only a note
+# ("n to add notes", then Enter). It is a placeholder, not words the person said.
+NOTES_ONLY_ANSWER = "(notes only)"
 
 # A person's reasoning is theirs to state, so this hook never writes any for them. The rationale is
 # the note they added to their pick, word for word. Only when there is neither a note nor words of
@@ -85,6 +90,14 @@ RATIONALE_PICKED = (
 RATIONALE_OWN_WORDS = (
     "A person answered an AI agent's Claude Code question in their own words, quoted with this "
     "decision."
+)
+# Words that name no single offered option are the answer itself. The offered options are then not
+# recorded at all: the record lists an option only to say it was turned down, and nobody can tell
+# which of them, if any, the words turned down.
+RATIONALE_OWN_ANSWER = (
+    "A person answered an AI agent's Claude Code question in their own words, which do not name "
+    "exactly one of the options the agent offered, so none of those options is recorded as turned "
+    "down."
 )
 # A note the write layer refuses as a rationale (too short to read on its own) is kept in the
 # quote instead, and the rationale says so.
@@ -390,15 +403,47 @@ def offered_labels(question: Dict[str, Any]) -> List[Tuple[str, str]]:
     return offered
 
 
+def named_option(words: str, labels: List[str]) -> Optional[str]:
+    """The one offered option the person's words choose, or None when they do not say.
+
+    Words choose an option when they lead with its name (any case, then end of text or a
+    non-word character: "Five times, because the jobs are cheap") and no other offered option
+    is named anywhere after it. Anything else is not guessed at: "Redis or In-process" names two,
+    "Not Redis" leads with neither, and a person who words their pick another way chose
+    something this hook cannot match to a label. The longest label that leads wins, so "Redis
+    cluster" is not read as "Redis".
+    """
+    text = one_line(words)
+    for label in sorted(set(labels), key=len, reverse=True):
+        lead = re.match(re.escape(label) + r"(?!\w)", text, re.IGNORECASE)
+        if lead is None:
+            continue
+        rest = text[lead.end() :]
+        for other in labels:
+            if other.casefold() == label.casefold():
+                continue
+            if re.search(r"(?<!\w)" + re.escape(other) + r"(?!\w)", rest, re.IGNORECASE):
+                return None
+        return label
+    return None
+
+
 def split_answer(answer: str, labels: List[str], multi: bool) -> Tuple[List[str], Optional[str]]:
     """(offered labels the person picked, their own words if any).
 
     The tool reports one string: the label for a single choice, the labels joined with ", " for a
     multi-select, and whatever they typed for "Other". Labels may contain ", " themselves, so a
     multi-select answer is matched against the offered labels (longest first) rather than split.
+    Own words that choose an offered option (`named_option`) pick it, and are still returned as
+    the person's words unless they are no more than the label.
     """
     if not multi:
-        return ([one_line(answer)], None) if one_line(answer) in labels else ([], answer)
+        if one_line(answer) in labels:
+            return [one_line(answer)], None
+        named = named_option(answer, labels)
+        if named is None:
+            return [], answer
+        return [named], None if same_words(answer, named) else answer
     picked: List[str] = []
     rest = answer
     by_length = sorted(labels, key=len, reverse=True)
@@ -417,7 +462,20 @@ def split_answer(answer: str, labels: List[str], multi: bool) -> Tuple[List[str]
         else:
             break
     ordered = [label for label in labels if label in picked]
+    if not ordered and rest:
+        named = named_option(rest, labels)
+        if named is not None:
+            return [named], None if same_words(rest, named) else rest
     return ordered, (rest or None)
+
+
+def same_words(words: str, label: str) -> bool:
+    """Whether the words are only the label, up to case and punctuation around it."""
+
+    def bare(text: str) -> str:
+        return one_line(text).casefold().strip(" .,;:!?\"'")
+
+    return bare(words) == bare(label)
 
 
 def clip(text: str, limit: int) -> str:
@@ -464,9 +522,18 @@ def answer_arguments(
     """
     text = one_line(question.get("question"))
     offered = offered_labels(question)
-    picked, own_words = split_answer(
-        answer, [label for label, _ in offered], bool(question.get("multiSelect"))
-    )
+    labels = [label for label, _ in offered]
+    multi = bool(question.get("multiSelect"))
+    notes_only = one_line(answer) == NOTES_ONLY_ANSWER
+    if notes_only:
+        # Nothing was picked and nothing typed: the note is all they said. It is the rationale (or,
+        # when refused as one, the quote) and never also their "words", and the placeholder is not
+        # quoted at all.
+        picked, said = split_answer(note or "", labels, multi)
+        own_words = None
+    else:
+        picked, own_words = split_answer(answer, labels, multi)
+        said = own_words
 
     offered_options: List[Dict[str, str]] = []
     for label, description in offered:
@@ -475,24 +542,30 @@ def answer_arguments(
             entry["description"] = description
         if all(o["label"] != entry["label"] for o in offered_options):
             offered_options.append(entry)
-    # One decision has one chosen option: several picks, or the person's own words, become one
-    # option saying so. What was picked into it is not also listed as an option the person
-    # turned down, so only the offered options they did not pick stay beside it.
-    names = [clip(label, MAX_LABEL_CHARS) for label in picked]
-    if own_words:
-        names.append(OWN_WORDS_LABEL)
-    chosen = clip(" + ".join(names), MAX_LABEL_CHARS)
-    if any(o["label"] == chosen for o in offered_options):
-        options = offered_options
+    if picked:
+        # One decision has one chosen option: several picks become one option saying so. What was
+        # picked into it is not also listed as an option the person turned down, so only the
+        # offered options they did not pick stay beside it.
+        names = [clip(label, MAX_LABEL_CHARS) for label in picked]
+        chosen = clip(" + ".join(names), MAX_LABEL_CHARS)
+        if any(o["label"] == chosen for o in offered_options):
+            options = offered_options
+        else:
+            options = [o for o in offered_options if o["label"] not in names]
+            options.append({"label": chosen, "description": COMBINED_DESCRIPTION})
     else:
-        options = [o for o in offered_options if o["label"] not in names]
-        options.append({"label": chosen, "description": COMBINED_DESCRIPTION})
+        # The words name no single offered option: what they chose is what they said. Listing an
+        # offered option beside it would record that option as turned down, which nothing says.
+        chosen = clip(one_line(said), MAX_LABEL_CHARS)
+        options = [{"label": chosen, "description": OWN_ANSWER_DESCRIPTION}]
 
     header = one_line(question.get("header")) or clip(text, 60)
     if note and not note_as_quote:
         rationale = note
     elif note:
         rationale = RATIONALE_NOTE_ATTACHED
+    elif own_words and not picked:
+        rationale = RATIONALE_OWN_ANSWER
     elif own_words:
         rationale = RATIONALE_OWN_WORDS
     else:
@@ -620,6 +693,10 @@ def record_answers(payload: Dict[str, Any]) -> None:
             text = one_line(question["question"])
             answer = answers.get(text)
             if not answer:
+                continue
+            if one_line(answer) == NOTES_ONLY_ANSWER and not notes.get(text):
+                # Nothing was picked, typed or written: there is no answer to record.
+                log(f"post: {text[:60]!r} came back as notes only, with no note; nothing recorded")
                 continue
             try:
                 capture_answer(transport, question, answer.strip(), human, notes.get(text))
