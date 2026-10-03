@@ -161,7 +161,7 @@ fn run_connector(
     let graph = scenario.graph()?;
     let pending = pending_findings(&graph, request, ts(ATTENTION_NOW))?;
     file_findings(
-        &pending.data.findings,
+        pending.data.findings,
         &connector_commands(scenario),
         CONNECTOR,
         None,
@@ -336,7 +336,7 @@ fn a_ticket_that_cannot_be_filed_stops_the_run_and_loses_and_repeats_nothing() -
 
     let mut attempts = 0;
     let error = file_findings(
-        &pending,
+        pending.clone(),
         &connector_commands(&scenario),
         CONNECTOR,
         None,
@@ -381,8 +381,10 @@ fn a_ticket_filed_but_not_recorded_is_named_so_it_is_not_filed_twice() -> Result
         scenario.ledger(),
         CommandContext::local(EventProvenance::cli()),
     );
-    let error = file_findings(&pending, &commands, CONNECTOR, None, |_, _| Ok(ticket(1)))
-        .expect_err("the acknowledgement is refused"); // ubs:ignore: test-only; panicking is correct in tests
+    let error = file_findings(pending.clone(), &commands, CONNECTOR, None, |_, _| {
+        Ok(ticket(1))
+    })
+    .expect_err("the acknowledgement is refused"); // ubs:ignore: test-only; panicking is correct in tests
     let message = error.to_string();
     assert!(message.contains("ENG-1"), "{message}");
     assert!(message.contains("acknowledge_suggestion"), "{message}");

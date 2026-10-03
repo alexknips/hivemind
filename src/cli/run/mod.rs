@@ -4008,7 +4008,7 @@ fn run_quality_scan(cli: &Cli, args: &QualityScanArgs) -> Result<String> {
             CommandContext::new(tenant_id, fluent_write_provenance(&cli.actor)),
         );
         file_findings(
-            &pending.data.findings,
+            pending.data.findings,
             &commands,
             &cli.actor,
             base_url,

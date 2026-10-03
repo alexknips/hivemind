@@ -302,11 +302,13 @@ pub struct FiledFinding {
 /// finding (`acted`, channel [`ACK_CHANNEL`], by `actor_id`) right after its ticket exists, so a
 /// run that stops part-way has recorded exactly the tickets it filed.
 ///
+/// Takes the findings by value: a filed finding's ids move into its [`FiledFinding`].
+///
 /// The first failure stops the run: later findings stay unacknowledged and are filed by the next
 /// run. A ticket whose acknowledgement could not be recorded is named in the error, because the
 /// next run would file that finding a second time.
 pub fn file_findings<L: EventLedger>(
-    findings: &[ScanFinding],
+    findings: Vec<ScanFinding>,
     commands: &Commands<'_, L>,
     actor_id: &str,
     hivemind_base_url: Option<&str>,
@@ -316,8 +318,8 @@ pub fn file_findings<L: EventLedger>(
     for scanned in findings {
         let finding = &scanned.finding;
         let issue = create_issue(
-            &format_issue_title(scanned),
-            &format_issue_description(scanned, hivemind_base_url),
+            &format_issue_title(&scanned),
+            &format_issue_description(&scanned, hivemind_base_url),
         )
         .map_err(|error| CliError::InvalidInput(format!("{error}{}", filed_so_far(&filed))))?;
 
@@ -341,10 +343,12 @@ pub fn file_findings<L: EventLedger>(
                 ))
             })?;
 
+        let kind = finding.kind.as_str();
+        let ScanFinding { finding, .. } = scanned;
         filed.push(FiledFinding {
-            finding_id: finding.finding_id.clone(),
-            decision_id: finding.decision_id.clone(),
-            kind: finding.kind.as_str(),
+            finding_id: finding.finding_id,
+            decision_id: finding.decision_id,
+            kind,
             issue,
         });
     }
