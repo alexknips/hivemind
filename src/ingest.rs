@@ -395,28 +395,13 @@ pub fn import_slack_thread<L: EventLedger>(
         .into());
     }
 
-    // The ask goes first, at the root message's own time and attributed to the root's author, so
-    // the ledger reads ask then answer. Only a thread whose root explicitly asks holds one
-    // (`slack_thread_ask`); the decision then answers it through `question` below, the way
-    // `capture --answers` does.
-    if let Some(ask) = &draft.ask {
-        let ask_commands = Commands::new_with_context(
-            ledger,
-            CommandContext::local(EventProvenance::slack(draft.source_ref.clone()))
-                .with_event_ts(Some(ask.ts)),
-        );
-        let plan = ask_commands.plan_ask(&ask.text)?;
-        ask_commands.record_ask(&ask.actor_id, &plan)?;
-    }
-
     let commands = Commands::new_with_context(
         ledger,
         CommandContext::local(EventProvenance::slack(draft.source_ref.clone()))
             .with_event_ts(Some(draft.event_ts)),
     );
 
-    let evidence_id = commands.record_evidence(&draft.actor_id, &draft.thread_context)?;
-
+    // Options first: recording one writes no event, and refuses a label that is no label.
     let mut option_ids = Vec::with_capacity(draft.option_labels.len());
     let mut chosen_option_id = None;
     for label in &draft.option_labels {
@@ -435,7 +420,7 @@ pub fn import_slack_thread<L: EventLedger>(
         option_ids.push(option_id);
     }
 
-    let decision_id = commands.propose_decision(DecisionProposalInput {
+    let proposal = DecisionProposalInput {
         grounding: Grounding::NotAsked,
         expressed_confidence: None,
         project: None,
@@ -455,9 +440,44 @@ pub fn import_slack_thread<L: EventLedger>(
         // self-accepted from `draft.actor_id`.
         still_proposed: false,
         hypothesis_ids: &[],
-        evidence_ids: std::slice::from_ref(&evidence_id),
+        // The evidence is recorded below, once the proposal is known to be accepted.
+        evidence_ids: &[],
         quote: None,
         question: draft.ask.as_ref().map(|ask| ask.text.as_str()),
+    };
+
+    // Everything that can refuse the proposal is refused here, before the first write, so a
+    // refused thread leaves no ask or evidence behind and an importer retry adds nothing
+    // (hivemind-poum). The ask is planned in the same breath for the same reason.
+    commands.preflight_proposal(&proposal)?;
+    let planned_ask = draft
+        .ask
+        .as_ref()
+        .map(|ask| {
+            let ask_commands = Commands::new_with_context(
+                ledger,
+                CommandContext::local(EventProvenance::slack(draft.source_ref.clone()))
+                    .with_event_ts(Some(ask.ts)),
+            );
+            ask_commands
+                .plan_ask(&ask.text)
+                .map(|plan| (ask, ask_commands, plan))
+        })
+        .transpose()?;
+
+    // The ask goes first, at the root message's own time and attributed to the root's author, so
+    // the ledger reads ask then answer. Only a thread whose root explicitly asks holds one
+    // (`slack_thread_ask`); the decision then answers it through `question` below, the way
+    // `capture --answers` does.
+    if let Some((ask, ask_commands, plan)) = &planned_ask {
+        ask_commands.record_ask(&ask.actor_id, plan)?;
+    }
+
+    let evidence_id = commands.record_evidence(&draft.actor_id, &draft.thread_context)?;
+
+    let decision_id = commands.propose_decision(DecisionProposalInput {
+        evidence_ids: std::slice::from_ref(&evidence_id),
+        ..proposal
     })?;
 
     Ok(SlackIngestOutcome::Imported {
@@ -1869,6 +1889,43 @@ fn write_document_decision_events<L: EventLedger>(
         CommandContext::local(EventProvenance::document(source_ref.to_owned()))
             .with_event_ts(event_ts),
     );
+    let mut imported_option_description =
+        String::with_capacity("Option imported from document block ".len() + draft.block_id.len());
+    imported_option_description.push_str("Option imported from document block ");
+    imported_option_description.push_str(&draft.block_id);
+    for (option_id, label) in identities.option_ids.iter().zip(&draft.option_labels) {
+        commands.record_option_with_id(actor_id, option_id, label, &imported_option_description)?;
+    }
+
+    let proposal = DecisionProposalInput {
+        grounding: Grounding::NotAsked,
+        expressed_confidence: None,
+        project: None,
+        actor_id,
+        title: &draft.title,
+        rationale: &draft.rationale,
+        topic_keys: &draft.topic_keys,
+        option_ids: &identities.option_ids,
+        option_labels: &draft.option_labels,
+        chosen_option_id: identities.chosen_option_id.as_deref(),
+        decided_by: None,
+        delegated_by: None,
+        // Unread here: this goes through `propose_decision_with_id`, which never
+        // auto-accepts. Document imports stay `proposed` pending review, unchanged by
+        // hivemind-zdsh.8.
+        still_proposed: true,
+        // The evidence and hypotheses are recorded below, once the proposal is known to be
+        // accepted.
+        hypothesis_ids: &[],
+        evidence_ids: &[],
+        quote: None,
+        question: None,
+    };
+
+    // Everything that can refuse the proposal is refused before the first write, so a refused
+    // block leaves no evidence or hypothesis behind (hivemind-poum).
+    commands.preflight_proposal(&proposal)?;
+
     let mut event_ids = Vec::new();
 
     for (evidence_id, evidence, event_uuid) in identities
@@ -1905,36 +1962,11 @@ fn write_document_decision_events<L: EventLedger>(
         )?);
     }
 
-    let mut imported_option_description =
-        String::with_capacity("Option imported from document block ".len() + draft.block_id.len());
-    imported_option_description.push_str("Option imported from document block ");
-    imported_option_description.push_str(&draft.block_id);
-    for (option_id, label) in identities.option_ids.iter().zip(&draft.option_labels) {
-        commands.record_option_with_id(actor_id, option_id, label, &imported_option_description)?;
-    }
-
     let proposal_events = commands.propose_decision_with_id(
         DecisionProposalInput {
-            grounding: Grounding::NotAsked,
-            expressed_confidence: None,
-            project: None,
-            actor_id,
-            title: &draft.title,
-            rationale: &draft.rationale,
-            topic_keys: &draft.topic_keys,
-            option_ids: &identities.option_ids,
-            option_labels: &draft.option_labels,
-            chosen_option_id: identities.chosen_option_id.as_deref(),
-            decided_by: None,
-            delegated_by: None,
-            // Unread here: this goes through `propose_decision_with_id`, which never
-            // auto-accepts. Document imports stay `proposed` pending review, unchanged by
-            // hivemind-zdsh.8.
-            still_proposed: true,
             hypothesis_ids: &identities.hypothesis_ids,
             evidence_ids: &identities.evidence_ids,
-            quote: None,
-            question: None,
+            ..proposal
         },
         &identities.decision_id,
         identities.proposal_event_uuids.clone(),

@@ -357,6 +357,16 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **An importer whose proposal is refused no longer leaves an ask, evidence or hypotheses
+  behind.** The Slack thread import wrote the thread's ask (`question.asked`) and its evidence
+  before it proposed the decision, and the document import wrote a block's evidence and
+  hypotheses first, so a proposal refused after that (an unreadable rationale, an overlong option
+  label, a title past 120 characters, no topic key, a decider that is no actor) left them in
+  the ledger with no decision: an ask in the waiting requests that no answer would ever land
+  on, and each importer retry added another. Both importers now run every refusal
+  `propose_decision` can raise before their first write, so a refused thread or block writes
+  nothing and retrying the same input adds nothing. Live Slack app captures still write no ask.
+  (hivemind-poum)
 - **`GET /v1/classify-queue` no longer takes ~25 seconds whatever the limit, and a worker can
   choose a session without fetching the queue.** On the city cell every request read the whole
   ledger (about 90,000 received batches, each with its turn text) twice, once for the list and

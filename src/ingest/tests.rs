@@ -386,6 +386,159 @@ fn document_import_falls_back_to_the_files_own_modified_time_without_a_ts_marker
     assert!(events_of(&ledger, EventType::QuestionAsked).is_empty());
 }
 
+// ── a refused proposal leaves nothing behind (hivemind-poum) ────────────────
+
+fn asked_then_decided_draft() -> SlackDecisionDraft {
+    let draft = slack_fixture_draft(include_str!(
+        "../../tests/fixtures/slack/thread_asked_then_decided.json"
+    ));
+    assert!(draft.ask.is_some(), "this thread's root asks");
+    draft
+}
+
+fn assert_import_wrote_nothing(ledger: &crate::ledger::InMemoryEventLedger) {
+    let events = ledger.read(0, 100).expect("read succeeds");
+    assert!(
+        events.is_empty(),
+        "a refused import writes nothing, found {:?}",
+        events
+            .iter()
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The readable-rationale check is one `propose_decision` runs last, after the ask and the
+/// evidence were written: the ask used to stay behind, waiting for an answer that never landed.
+#[test]
+fn a_refused_proposal_leaves_no_ask_behind() {
+    let mut draft = asked_then_decided_draft();
+    draft.rationale = "too short".to_owned();
+    let ledger = crate::ledger::InMemoryEventLedger::new();
+
+    let error = import_slack_thread(&ledger, &draft).expect_err("an unreadable rationale refuses");
+
+    assert!(error.to_string().contains("rationale"));
+    assert!(events_of(&ledger, EventType::QuestionAsked).is_empty());
+    assert!(events_of(&ledger, EventType::QuestionRecorded).is_empty());
+    assert_import_wrote_nothing(&ledger);
+}
+
+#[test]
+fn a_refused_proposal_leaves_no_evidence_behind() {
+    let mut draft = slack_fixture_draft(include_str!(
+        "../../tests/fixtures/slack/thread_decided_top_level.json"
+    ));
+    assert_eq!(draft.ask, None);
+    draft.rationale = "too short".to_owned();
+    let ledger = crate::ledger::InMemoryEventLedger::new();
+
+    let error = import_slack_thread(&ledger, &draft).expect_err("an unreadable rationale refuses");
+
+    assert!(error.to_string().contains("rationale"));
+    assert!(events_of(&ledger, EventType::EvidenceRecorded).is_empty());
+    assert_import_wrote_nothing(&ledger);
+}
+
+/// An option label is checked when it is recorded, which used to come after the ask and the
+/// evidence. No event records an option on its own: a refused proposal leaves neither a
+/// `decision.proposed` nor a `HAS_OPTION` edge for it, nor anything else.
+#[test]
+fn a_refused_option_leaves_no_ask_evidence_or_option_behind() {
+    let mut draft = asked_then_decided_draft();
+    draft.option_labels = vec!["Fine".to_owned(), "x".repeat(81)];
+    draft.chosen_option_label = Some("Fine".to_owned());
+    let ledger = crate::ledger::InMemoryEventLedger::new();
+
+    let error = import_slack_thread(&ledger, &draft).expect_err("an overlong label refuses");
+
+    assert!(error.to_string().contains("option label"));
+    assert!(events_of(&ledger, EventType::QuestionAsked).is_empty());
+    assert!(events_of(&ledger, EventType::EvidenceRecorded).is_empty());
+    assert!(events_of(&ledger, EventType::DecisionProposed).is_empty());
+    assert!(events_of(&ledger, EventType::RelationAdded).is_empty());
+    assert_import_wrote_nothing(&ledger);
+}
+
+/// Every other rule the proposal can refuse for is refused before the first write too.
+#[test]
+fn every_refusal_of_the_proposal_comes_before_the_first_write() {
+    // A bare UUID is no actor: the recorder, or the decider the acceptance is recorded for.
+    const BARE_UUID: &str = "5b6f4c4c-0b8e-4f6e-9d8a-3c1d2e4f5a6b";
+    type BreakDraft = fn(&mut SlackDecisionDraft);
+    let cases: [(&str, BreakDraft); 5] = [
+        ("title", |draft| draft.title = "t".repeat(121)),
+        ("topic_keys", |draft| draft.topic_keys.clear()),
+        ("actor_id", |draft| draft.actor_id = BARE_UUID.to_owned()),
+        ("decider", |draft| {
+            draft.decided_by = Some(BARE_UUID.to_owned());
+        }),
+        ("rationale", |draft| draft.rationale = "x".repeat(10)),
+    ];
+    for (refused_for, break_draft) in cases {
+        let mut draft = asked_then_decided_draft();
+        break_draft(&mut draft);
+        let ledger = crate::ledger::InMemoryEventLedger::new();
+
+        import_slack_thread(&ledger, &draft)
+            .expect_err(&format!("a draft refused for its {refused_for} is refused"));
+
+        assert_import_wrote_nothing(&ledger);
+    }
+}
+
+/// An importer retries the input it was refused. The retries add nothing, and once the input
+/// is fixed the thread holds exactly one ask.
+#[test]
+fn retrying_a_refused_import_leaves_the_ledger_unchanged() {
+    let ledger = crate::ledger::InMemoryEventLedger::new();
+    let unrelated = slack_fixture_draft(include_str!(
+        "../../tests/fixtures/slack/thread_decided_top_level.json"
+    ));
+    import_slack_thread(&ledger, &unrelated).expect("an unrelated thread imports");
+    let before = ledger.read(0, 100).expect("read succeeds");
+
+    let mut refused = asked_then_decided_draft();
+    refused.rationale = "too short".to_owned();
+    for _ in 0..2 {
+        import_slack_thread(&ledger, &refused).expect_err("the same input is refused again");
+        assert_eq!(ledger.read(0, 100).expect("read succeeds"), before);
+    }
+
+    import_slack_thread(&ledger, &asked_then_decided_draft()).expect("the fixed thread imports");
+    assert_eq!(events_of(&ledger, EventType::QuestionAsked).len(), 1);
+    assert_eq!(events_of(&ledger, EventType::DecisionProposed).len(), 2);
+}
+
+/// The document importer writes a block's evidence and hypotheses ahead of its proposal too.
+#[test]
+fn a_refused_document_block_leaves_no_evidence_or_hypothesis_behind() {
+    let dir = tempfile::tempdir().expect("tempdir creates");
+    let path = dir.path().join("unreadable_rationale.md");
+    fs::write(
+        &path,
+        "Decision:\n  id: unreadable-rationale\n  title: Keep the ledger local\n  \
+         status: accepted\n  actor: actor:alice\n  topic_keys: storage\n  rationale: Too short\n  \
+         options:\n    - local\n    - hosted\n  chose: local\n  evidence:\n    - The prototype \
+         runs on one host\n  hypotheses:\n    - One host stays enough for the pilot\n",
+    )
+    .expect("fixture writes");
+    let ledger = crate::ledger::InMemoryEventLedger::new();
+    let request = DocumentImportRequest {
+        paths: vec![path],
+        importer_actor_id: "actor:importer".to_owned(),
+        format: DocumentImportFormat::Auto,
+        conflict_resolution: DocumentConflictResolutionAction::Report,
+    };
+
+    for _ in 0..2 {
+        let error =
+            import_documents(&ledger, &request).expect_err("an unreadable rationale refuses");
+        assert!(error.to_string().contains("rationale"));
+        assert_import_wrote_nothing(&ledger);
+    }
+}
+
 // ── conflict_decision_status ────────────────────────────────────────────────
 
 fn minimal_draft(block_id: &str) -> DocumentDecisionDraft {

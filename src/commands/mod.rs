@@ -44,6 +44,24 @@
 //! - A premise decision that is already superseded or rejected is allowed and reported as
 //!   `premise_stale`.
 //!
+//! # Importer writes ahead of a proposal (`preflight_proposal`, hivemind-poum)
+//!
+//! An importer (Slack thread import, document import) writes an ask, evidence or hypotheses
+//! ahead of its `propose_decision` call, and a proposal refused after that leaves them behind
+//! with no decision, an ask nobody answered above all. So an importer runs
+//! `preflight_proposal` first:
+//!
+//! - It runs every rule `propose_decision` / `propose_decision_with_id` can refuse a proposal
+//!   for before their first write (the rules `validate_proposal` holds, the option labels, the
+//!   stated project and its topic vocabulary, the question's words, and the actor the
+//!   acceptance that follows is recorded for), and writes nothing.
+//! - An option is recorded on the handle first (`record_option_with_id` writes no event, and
+//!   refuses a label that is no label), then the preflight, then the ask, evidence and
+//!   hypotheses, then the proposal. The ids of what the importer is about to record stay out
+//!   of the preflight's input: they exist by construction once it records them.
+//! - A refused proposal therefore leaves no ask, evidence, hypothesis or option, and retrying
+//!   the same refused input writes nothing either.
+//!
 //! # Later grounding (`ground_decision_with_plan`, hivemind-gwhr.4)
 //!
 //! The `ground` verbs (CLI `ground`, MCP `ground_decision`) resolve their words into the same
@@ -1741,6 +1759,28 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             .collect();
         self.plan_topic_declarations(project, &normalized)
             .map(|_| ())
+    }
+
+    /// Refuses, with nothing written, every proposal `propose_decision` would refuse before its
+    /// first write, so an importer can run it ahead of the ask, evidence or hypotheses it
+    /// records first and a refusal leaves none of them behind (hivemind-poum; see the module
+    /// header). `input.option_ids` must already be recorded on this handle; evidence and
+    /// hypothesis ids the importer is about to record are left out of `input`.
+    pub(crate) fn preflight_proposal(&self, input: &DecisionProposalInput<'_>) -> Result<()> {
+        self.validate_proposal(input)?;
+        self.validate_grounding_premises(input.grounding)?;
+        require_aligned_option_labels(input.option_ids, input.option_labels)?;
+        let (project, _) = self.resolve_stated_project(input.project)?;
+        self.require_topics_declared(project.as_deref(), input.topic_keys)?;
+        if let Some(question) = input.question {
+            require_question_text(question)?;
+        }
+        // The acceptance `propose_decision` records after the proposal refuses an actor that
+        // is no actor, with the proposal already written.
+        if !input.still_proposed && input.chosen_option_id.is_some() {
+            require_valid_actor_id(input.decided_by.unwrap_or(input.actor_id))?;
+        }
+        Ok(())
     }
 
     /// `propose_decision` plus the event ids and `premise_stale` the caller needs to build an
