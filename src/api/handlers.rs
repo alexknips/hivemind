@@ -1496,16 +1496,68 @@ pub(super) async fn classify_queue_list_handler(
     let backend = Arc::clone(&state.backend);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<serde_json::Value> {
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
-        let mut batches =
-            crate::classifier::list_pending_batches_for_ledger(&ledger, &ctx.tenant_id)
-                .map_err(to_api_error)?;
-        if let Some(ref session_id) = params.session_id {
-            batches.retain(|b| &b.session_id == session_id);
-        }
-        batches.truncate(params.limit.unwrap_or(CLASSIFY_QUEUE_DEFAULT_LIMIT));
+        let page = crate::classifier::list_pending_batches_for_ledger(
+            &ledger,
+            &ctx.tenant_id,
+            params.session_id.as_deref(),
+            params.limit.unwrap_or(CLASSIFY_QUEUE_DEFAULT_LIMIT),
+        )
+        .map_err(to_api_error)?;
         let budget =
             crate::classifier::daily_cap_status(&ledger, &ctx.tenant_id).map_err(to_api_error)?;
-        Ok(serde_json::json!({ "batches": batches, "budget": budget }))
+        Ok(serde_json::json!({
+            "batches": page.batches,
+            "pending_total": page.pending_total,
+            "truncated": page.truncated,
+            "budget": budget,
+        }))
+    })
+    .await;
+
+    respond(result, StatusCode::OK)
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ClassifyQueueSessionsParams {
+    limit: Option<usize>,
+}
+
+const CLASSIFY_QUEUE_SESSIONS_DEFAULT_LIMIT: usize = 200;
+
+/// `GET /v1/classify-queue/sessions`: the sessions that have pending batches, most recently
+/// active first, with each one's batch count and oldest and newest submission time. A worker
+/// picks a session from this, then fetches only that session's batches with
+/// `GET /v1/classify-queue?session_id=`.
+pub(super) async fn classify_queue_sessions_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ClassifyQueueSessionsParams>,
+) -> Response {
+    let ctx = match extract_ctx(&state, &headers).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+
+    let backend = Arc::clone(&state.backend);
+    let result = tokio::task::spawn_blocking(move || -> ApiResult<serde_json::Value> {
+        let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
+        let page = crate::classifier::list_pending_sessions_for_ledger(
+            &ledger,
+            &ctx.tenant_id,
+            params
+                .limit
+                .unwrap_or(CLASSIFY_QUEUE_SESSIONS_DEFAULT_LIMIT),
+        )
+        .map_err(to_api_error)?;
+        let budget =
+            crate::classifier::daily_cap_status(&ledger, &ctx.tenant_id).map_err(to_api_error)?;
+        Ok(serde_json::json!({
+            "sessions": page.sessions,
+            "session_total": page.session_total,
+            "batch_total": page.batch_total,
+            "truncated": page.truncated,
+            "budget": budget,
+        }))
     })
     .await;
 

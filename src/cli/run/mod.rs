@@ -518,13 +518,14 @@ fn run_classify_queue_list(cli: &Cli, args: &ClassifyQueueListArgs) -> Result<St
     }
 
     let tenant_id = cli_tenant(cli)?;
-    let mut batches = crate::classifier::list_pending_batches(&cli.hivemind_dir, &tenant_id)
-        .map_err(|e| CliError::InvalidInput(format!("ledger scan failed: {e}")))?;
-    if let Some(ref session_id) = args.session_id {
-        batches.retain(|b| &b.session_id == session_id);
-    }
-    batches.truncate(args.limit);
-    format_json_value(cli.json, &batches)
+    let page = crate::classifier::list_pending_batches(
+        &cli.hivemind_dir,
+        &tenant_id,
+        args.session_id.as_deref(),
+        args.limit,
+    )
+    .map_err(|e| CliError::InvalidInput(format!("ledger scan failed: {e}")))?;
+    format_json_value(cli.json, &page.batches)
 }
 
 fn run_classify_queue_submit(cli: &Cli, args: &ClassifyQueueSubmitArgs) -> Result<String> {

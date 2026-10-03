@@ -51,8 +51,12 @@
 //!   conflicting answers), oldest first
 //! - `GET  /v1/attention/changed[?since=][?until=][?limit=][?cursor=]` — decisions revised or
 //!   superseded in a window (RFC3339; `since` defaults to seven days back), newest first
-//! - `GET  /v1/classify-queue[?session_id=][?limit=]` — pending ingest batches with
-//!   turn text, plus today's classification budget
+//! - `GET  /v1/classify-queue[?session_id=][?limit=]` — the oldest pending ingest batches
+//!   with turn text, `pending_total` and `truncated` when more are waiting, plus today's
+//!   classification budget
+//! - `GET  /v1/classify-queue/sessions[?limit=]`   — the sessions with pending batches, most
+//!   recently active first: batch count, oldest and newest submission time (no turn text),
+//!   `session_total`, `batch_total` and `truncated`
 //! - `GET  /v1/graph`                              — full decision graph (JSON)
 //! - `GET  /v1/health`                             — liveness probe
 //! - `GET  /v1/version`                            — build version + commit sha
@@ -645,6 +649,10 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/v1/classify-queue",
             get(handlers::classify_queue_list_handler),
+        )
+        .route(
+            "/v1/classify-queue/sessions",
+            get(handlers::classify_queue_sessions_handler),
         )
         .route(
             "/v1/classify-queue/submit",

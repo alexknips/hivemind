@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use postgres::error::SqlState;
+use postgres::types::ToSql;
 use postgres::{Config, Row, Transaction};
 use postgres_native_tls::MakeTlsConnector;
 use r2d2::Pool;
@@ -17,7 +18,7 @@ use crate::events::{Event, EventId, EventSource, EventType, TenantId};
 use crate::Result;
 
 use super::backend_error::storage_error;
-use super::EventLedger;
+use super::{EventFields, EventLedger};
 
 mod tenant_store;
 pub use tenant_store::{ProvisionedUser, ResolvedToken, TenantStore, UserInfo};
@@ -215,6 +216,105 @@ impl PostgresEventLedger {
         rows.iter().map(event_from_row).collect()
     }
 
+    /// [`EventLedger::read_types_for_tenant`]: the type filter and the payload-key removal happen
+    /// in the query (`payload - text[]`), so a row of an unwanted type or a stripped key never
+    /// leaves the server.
+    pub fn read_types_for_tenant(
+        &self,
+        tenant_id: &str,
+        types: &[EventType],
+        omit_payload_keys: &[&str],
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
+        validate_tenant_id_ref(tenant_id)?;
+        if limit == 0 || types.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let offset = event_id_to_i64(offset, "offset")?;
+        let limit = i64::try_from(limit)
+            .map_err(|error| storage_error(format!("limit out of range: {error}")))?;
+        let type_names: Vec<&str> = types
+            .iter()
+            .map(|event_type| event_type_as_str(*event_type))
+            .collect();
+        let omit: Vec<&str> = omit_payload_keys.to_vec();
+        let mut client = self.pool.get().map_err(storage_error)?;
+        let mut tx = client.transaction().map_err(storage_error)?;
+        set_tenant_local_pg(&mut tx, tenant_id).map_err(pg_op_to_result)?;
+        let rows = tx
+            .query(
+                read_types_sql(),
+                &[&tenant_id, &type_names, &offset, &omit, &limit],
+            )
+            .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
+
+        rows.iter().map(event_from_row).collect()
+    }
+
+    /// [`EventLedger::read_fields_for_tenant`]: the key extraction happens in the query, so each
+    /// row crosses the wire as an id, a time, an actor and a few strings, not as an event.
+    pub fn read_fields_for_tenant(
+        &self,
+        tenant_id: &str,
+        event_type: EventType,
+        payload_keys: &[&str],
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<EventFields>> {
+        validate_tenant_id_ref(tenant_id)?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let offset = event_id_to_i64(offset, "offset")?;
+        let limit = i64::try_from(limit)
+            .map_err(|error| storage_error(format!("limit out of range: {error}")))?;
+        let type_name = event_type_as_str(event_type);
+        let mut params: Vec<&(dyn ToSql + Sync)> = vec![&tenant_id, &type_name, &offset, &limit];
+        params.extend(payload_keys.iter().map(|key| key as &(dyn ToSql + Sync)));
+
+        let mut client = self.pool.get().map_err(storage_error)?;
+        let mut tx = client.transaction().map_err(storage_error)?;
+        set_tenant_local_pg(&mut tx, tenant_id).map_err(pg_op_to_result)?;
+        let rows = tx
+            .query(&read_fields_sql(payload_keys.len()), &params)
+            .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
+
+        rows.iter()
+            .map(|row| fields_from_row(row, payload_keys.len()))
+            .collect()
+    }
+
+    /// [`EventLedger::read_ids_for_tenant`]: one query for the whole id set.
+    pub fn read_ids_for_tenant(
+        &self,
+        tenant_id: &str,
+        event_ids: &[EventId],
+    ) -> Result<Vec<Event>> {
+        validate_tenant_id_ref(tenant_id)?;
+        let ids: Vec<i64> = event_ids
+            .iter()
+            .filter_map(|id| i64::try_from(*id).ok())
+            .collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut client = self.pool.get().map_err(storage_error)?;
+        let mut tx = client.transaction().map_err(storage_error)?;
+        set_tenant_local_pg(&mut tx, tenant_id).map_err(pg_op_to_result)?;
+        let rows = tx
+            .query(&read_ids_sql(), &[&tenant_id, &ids])
+            .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
+
+        rows.iter().map(event_from_row).collect()
+    }
+
     pub fn replay_from_for_tenant(
         &self,
         tenant_id: &str,
@@ -292,8 +392,9 @@ impl PostgresEventLedger {
                 );
                 CREATE INDEX IF NOT EXISTS events_tenant_ts_idx
                     ON events (tenant_id, ts);
-                CREATE INDEX IF NOT EXISTS events_tenant_type_idx
-                    ON events (tenant_id, event_type);",
+                CREATE INDEX IF NOT EXISTS events_tenant_type_event_idx
+                    ON events (tenant_id, event_type, event_id);
+                DROP INDEX IF EXISTS events_tenant_type_idx;",
             )
             .map_err(storage_error)?;
         Ok(())
@@ -350,6 +451,36 @@ impl EventLedger for PostgresEventLedger {
 
     fn latest_offset_for_tenant(&self, tenant_id: &TenantId) -> Result<EventId> {
         self.latest_offset_for_tenant(tenant_id.as_str())
+    }
+
+    fn read_types_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        types: &[EventType],
+        omit_payload_keys: &[&str],
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
+        self.read_types_for_tenant(tenant_id.as_str(), types, omit_payload_keys, offset, limit)
+    }
+
+    fn read_fields_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        event_type: EventType,
+        payload_keys: &[&str],
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<EventFields>> {
+        self.read_fields_for_tenant(tenant_id.as_str(), event_type, payload_keys, offset, limit)
+    }
+
+    fn read_ids_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        event_ids: &[EventId],
+    ) -> Result<Vec<Event>> {
+        self.read_ids_for_tenant(tenant_id.as_str(), event_ids)
     }
 
     // Override defaults: self.tenant_id may differ from TenantId::local().
@@ -607,6 +738,73 @@ fn read_events_sql() -> String {
          WHERE tenant_id = $1 AND event_id > $2
          ORDER BY event_id ASC
          LIMIT $3",
+        event_columns_sql()
+    )
+}
+
+/// One event type (or a few) in event order, with `$4` text[] payload keys removed. The
+/// `(tenant_id, event_type, event_id)` index serves it without touching other types' rows.
+fn read_types_sql() -> &'static str {
+    "SELECT tenant_id,
+            event_id,
+            event_uuid,
+            event_type,
+            actor_id,
+            source,
+            source_ref,
+            correlation_id,
+            causation_event_id,
+            payload - $4::text[] AS payload,
+            ts
+     FROM events
+     WHERE tenant_id = $1 AND event_type = ANY($2::text[]) AND event_id > $3
+     ORDER BY event_id ASC
+     LIMIT $5"
+}
+
+/// One event type in event order, as an id, an actor, a time and one text column per payload key:
+/// `$5` onwards name the keys. A key reads as its string, or NULL when absent or not a string.
+fn read_fields_sql(key_count: usize) -> String {
+    let key_columns: String = (0..key_count)
+        .map(|index| {
+            let key = index + 5;
+            format!(
+                ",
+            CASE WHEN jsonb_typeof(payload -> ${key}::text) = 'string'
+                 THEN payload ->> ${key}::text END"
+            )
+        })
+        .collect();
+    format!(
+        "SELECT event_id, actor_id, ts{key_columns}
+         FROM events
+         WHERE tenant_id = $1 AND event_type = $2 AND event_id > $3
+         ORDER BY event_id ASC
+         LIMIT $4"
+    )
+}
+
+fn fields_from_row(row: &Row, key_count: usize) -> Result<EventFields> {
+    let event_id: i64 = row.try_get(0).map_err(storage_error)?;
+    let actor_id: String = row.try_get(1).map_err(storage_error)?;
+    let ts: DateTime<Utc> = row.try_get(2).map_err(storage_error)?;
+    let fields = (0..key_count)
+        .map(|index| row.try_get::<_, Option<String>>(index + 3))
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
+    Ok(EventFields {
+        event_id: i64_to_event_id(event_id, "event_id")?,
+        ts: Some(ts),
+        actor_id,
+        fields,
+    })
+}
+
+fn read_ids_sql() -> String {
+    format!(
+        "SELECT {} FROM events
+         WHERE tenant_id = $1 AND event_id = ANY($2::bigint[])
+         ORDER BY event_id ASC",
         event_columns_sql()
     )
 }

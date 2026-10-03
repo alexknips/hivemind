@@ -15,8 +15,8 @@ use tracing::{debug, info, warn};
 
 use crate::commands::{CommandContext, Commands};
 use crate::events::{
-    classified_batch_ids, normalize_question_text, CaptureItem, EventProvenance, EventType,
-    TenantId,
+    classified_batch_ids, normalize_question_text, CaptureItem, EventId, EventProvenance,
+    EventType, TenantId,
 };
 use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
@@ -280,6 +280,66 @@ pub struct PendingBatch {
     pub batch_text: String,
 }
 
+/// How many events one typed read of the queue's event types asks for. Large enough that the
+/// city cell's ~90k received batches take a handful of round trips, not hundreds.
+const QUEUE_READ_PAGE: usize = 10_000;
+
+/// The payload keys of a received batch that choosing and grouping batches needs, in the order
+/// [`pending_batch_heads`] reads them. The turns, the bulk of the event, are not among them: only
+/// the batches a caller is handed are read in full.
+const RECEIVED_HEAD_KEYS: &[&str] = &["batch_id", "session_id"];
+
+/// Payload keys of a classification that the queue's scans leave out: the captures are the bulk
+/// of the event, and the queue needs only which batches it covers.
+const CLASSIFIED_BULK_KEYS: &[&str] = &["captures"];
+
+/// Payload keys of a classification that counting today's classifications leaves out: all of
+/// its content, since only its time matters.
+const CLASSIFIED_COUNT_BULK_KEYS: &[&str] = &["captures", "batch_ids", "batch_id"];
+
+/// A received batch without its turns: all that choosing, grouping and counting pending batches
+/// needs. The turns are read only for the batches a caller is handed.
+struct BatchHead {
+    event_id: EventId,
+    submitted_at: Option<DateTime<Utc>>,
+    actor_id: String,
+    session_id: String,
+}
+
+/// One page of the pending queue, oldest batch first.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingBatchPage {
+    /// The oldest pending batches that match the filter, at most the limit, with their turn text.
+    pub batches: Vec<PendingBatch>,
+    /// How many pending batches match the filter, whatever the limit.
+    pub pending_total: usize,
+    /// True when more batches are pending than `batches` holds: the page is not the whole queue.
+    pub truncated: bool,
+}
+
+/// One session's pending batches, summarised: what a worker needs to choose which session to
+/// classify first, before it fetches that session's batches (`session_id` filter).
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingSession {
+    pub session_id: String,
+    pub actor_id: String,
+    pub batch_count: usize,
+    pub oldest_submitted_at: Option<DateTime<Utc>>,
+    pub newest_submitted_at: Option<DateTime<Utc>>,
+}
+
+/// The sessions with pending batches, most recently active first.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingSessionPage {
+    pub sessions: Vec<PendingSession>,
+    /// How many sessions have pending batches, whatever the limit.
+    pub session_total: usize,
+    /// How many batches are pending across all of them.
+    pub batch_total: usize,
+    /// True when more sessions have pending batches than `sessions` holds.
+    pub truncated: bool,
+}
+
 /// Reads an optional string field from a raw event payload; absent or
 /// non-string values read as the empty string.
 fn payload_string(payload: &serde_json::Value, key: &str) -> String {
@@ -290,68 +350,191 @@ fn payload_string(payload: &serde_json::Value, key: &str) -> String {
         .to_owned()
 }
 
+/// Ids of every batch some classification covers. Reads only the classification events, and of
+/// those only the ids.
+fn classified_batch_id_set(
+    ledger: &impl EventLedger,
+    tenant_id: &TenantId,
+) -> crate::Result<std::collections::HashSet<String>> {
+    let mut classified = std::collections::HashSet::new();
+    let mut offset = 0u64;
+    loop {
+        let events = ledger.read_types_for_tenant(
+            tenant_id,
+            &[EventType::IngestBatchClassified],
+            CLASSIFIED_BULK_KEYS,
+            offset,
+            QUEUE_READ_PAGE,
+        )?;
+        for event in &events {
+            classified.extend(classified_batch_ids(&event.payload));
+        }
+        match events.last().and_then(|event| event.event_id) {
+            Some(last) if events.len() == QUEUE_READ_PAGE => offset = last,
+            _ => break,
+        }
+    }
+    Ok(classified)
+}
+
+/// Every received batch that no classification covers, oldest first, as heads. The turn text of
+/// the ledger's history is never read: classifications are read without their captures, received
+/// batches as their id, time, actor, batch id and session id alone, and the text of a batch only
+/// when a caller is handed it. What remains per received batch, classified or not, is one
+/// five-field row.
+fn pending_batch_heads(
+    ledger: &impl EventLedger,
+    tenant_id: &TenantId,
+) -> crate::Result<Vec<BatchHead>> {
+    let classified = classified_batch_id_set(ledger, tenant_id)?;
+    let mut pending = Vec::new();
+    let mut offset = 0u64;
+    loop {
+        let rows = ledger.read_fields_for_tenant(
+            tenant_id,
+            EventType::IngestBatchReceived,
+            RECEIVED_HEAD_KEYS,
+            offset,
+            QUEUE_READ_PAGE,
+        )?;
+        for row in &rows {
+            let [Some(batch_id), session_id] = row.fields.as_slice() else {
+                continue;
+            };
+            if classified.contains(batch_id) {
+                continue;
+            }
+            pending.push(BatchHead {
+                event_id: row.event_id,
+                submitted_at: row.ts,
+                actor_id: row.actor_id.clone(), // ubs:ignore: field copy from a borrowed row
+                session_id: session_id.clone().unwrap_or_default(), // ubs:ignore: field copy from a borrowed row
+            });
+        }
+        match rows.last() {
+            Some(last) if rows.len() == QUEUE_READ_PAGE => offset = last.event_id,
+            _ => break,
+        }
+    }
+    Ok(pending)
+}
+
+/// The pending batch a received-batch event describes, with its rendered turn text. `None` for
+/// an event with no `batch_id`, which the queue never lists.
+fn pending_batch_from_event(event: &crate::events::Event) -> Option<PendingBatch> {
+    let batch_id = event.payload.get("batch_id").and_then(|v| v.as_str())?;
+    let turn_count = event
+        .payload
+        .get("turns")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    Some(PendingBatch {
+        batch_id: batch_id.to_owned(),
+        submitted_at: event.ts,
+        actor_id: event.actor_id.clone(),
+        turn_count,
+        session_id: payload_string(&event.payload, "session_id"),
+        agent_tool: payload_string(&event.payload, "agent_tool"),
+        batch_text: render_batch_text(event),
+    })
+}
+
 /// Lists batches received but not yet classified (no `IngestBatchClassified`
-/// event covers their batch id), for `classify-queue list`. Generic over any
-/// [`EventLedger`] backend so the HTTP API (SQLite dev mode or Postgres) and
-/// the local CLI path share one implementation — see [`list_pending_batches`]
-/// for the CLI's local-SQLite convenience wrapper.
+/// event covers their batch id), for `classify-queue list`: the oldest `limit`
+/// of them, optionally only one session's. Generic over any [`EventLedger`]
+/// backend so the HTTP API (SQLite dev mode or Postgres) and the local CLI
+/// path share one implementation — see [`list_pending_batches`] for the CLI's
+/// local-SQLite convenience wrapper.
+///
+/// Which batches are pending is decided from heads alone; the turn text of
+/// only the returned batches is read, in one query by event id.
 pub fn list_pending_batches_for_ledger(
     ledger: &impl EventLedger,
     tenant_id: &TenantId,
-) -> crate::Result<Vec<PendingBatch>> {
-    let mut offset = 0u64;
-    const PAGE: usize = 256;
+    session_id: Option<&str>,
+    limit: usize,
+) -> crate::Result<PendingBatchPage> {
+    let mut heads = pending_batch_heads(ledger, tenant_id)?;
+    if let Some(session_id) = session_id {
+        heads.retain(|head| head.session_id == session_id);
+    }
+    let pending_total = heads.len();
+    heads.truncate(limit);
+    let truncated = pending_total > heads.len();
 
-    let mut received: Vec<PendingBatch> = Vec::new();
-    let mut classified_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let event_ids: Vec<EventId> = heads.iter().map(|head| head.event_id).collect();
+    let batches = ledger
+        .read_ids_for_tenant(tenant_id, &event_ids)?
+        .iter()
+        .filter_map(pending_batch_from_event)
+        .collect();
 
-    loop {
-        let events = ledger.read_for_tenant(tenant_id, offset, PAGE)?;
-        if events.is_empty() {
-            break;
-        }
+    Ok(PendingBatchPage {
+        batches,
+        pending_total,
+        truncated,
+    })
+}
 
-        for event in &events {
-            match event.event_type {
-                EventType::IngestBatchReceived => {
-                    if let Some(batch_id) = event.payload.get("batch_id").and_then(|v| v.as_str()) {
-                        let turn_count = event
-                            .payload
-                            .get("turns")
-                            .and_then(|v| v.as_array())
-                            .map(|a| a.len())
-                            .unwrap_or(0);
-                        received.push(PendingBatch {
-                            batch_id: batch_id.to_owned(), // ubs:ignore: &str from JSON, must be owned
-                            submitted_at: event.ts,
-                            actor_id: event.actor_id.clone(), // ubs:ignore: field copy from Event borrow
-                            turn_count,
-                            session_id: payload_string(&event.payload, "session_id"),
-                            agent_tool: payload_string(&event.payload, "agent_tool"),
-                            batch_text: render_batch_text(event),
-                        });
-                    }
-                }
-                EventType::IngestBatchClassified => {
-                    for batch_id in classified_batch_ids(&event.payload) {
-                        classified_ids.insert(batch_id);
-                    }
-                }
-                _ => {}
-            }
-        }
+/// Summarises the pending queue by session: one row per (session, actor) with the batch count and
+/// the oldest and newest submission time, most recently active first. Reads heads only, so it
+/// costs the same however much turn text is waiting.
+pub fn list_pending_sessions_for_ledger(
+    ledger: &impl EventLedger,
+    tenant_id: &TenantId,
+    limit: usize,
+) -> crate::Result<PendingSessionPage> {
+    let heads = pending_batch_heads(ledger, tenant_id)?;
+    let batch_total = heads.len();
 
-        if let Some(last) = events.last().and_then(|e| e.event_id) {
-            offset = last;
-        } else {
-            break;
+    let mut position_of: std::collections::HashMap<(String, String), usize> =
+        std::collections::HashMap::new();
+    let mut sessions: Vec<PendingSession> = Vec::new();
+    for head in heads {
+        let position = *position_of
+            .entry((head.session_id, head.actor_id))
+            .or_insert_with_key(|(session_id, actor_id)| {
+                sessions.push(PendingSession {
+                    session_id: session_id.clone(), // ubs:ignore: once per session, not per batch
+                    actor_id: actor_id.clone(),     // ubs:ignore: once per session, not per batch
+                    batch_count: 0,
+                    oldest_submitted_at: None,
+                    newest_submitted_at: None,
+                });
+                sessions.len() - 1
+            });
+        if let Some(session) = sessions.get_mut(position) {
+            session.batch_count += 1;
+            session.oldest_submitted_at = session
+                .oldest_submitted_at
+                .into_iter()
+                .chain(head.submitted_at)
+                .min();
+            session.newest_submitted_at = session
+                .newest_submitted_at
+                .into_iter()
+                .chain(head.submitted_at)
+                .max();
         }
     }
 
-    Ok(received
-        .into_iter()
-        .filter(|b| !classified_ids.contains(&b.batch_id))
-        .collect())
+    sessions.sort_by(|a, b| {
+        b.newest_submitted_at
+            .cmp(&a.newest_submitted_at)
+            .then_with(|| a.session_id.cmp(&b.session_id))
+            .then_with(|| a.actor_id.cmp(&b.actor_id))
+    });
+    let session_total = sessions.len();
+    sessions.truncate(limit);
+    let truncated = session_total > sessions.len();
+
+    Ok(PendingSessionPage {
+        sessions,
+        session_total,
+        batch_total,
+        truncated,
+    })
 }
 
 /// CLI local-mode convenience: opens a SQLite ledger under `hivemind_dir` and
@@ -360,9 +543,11 @@ pub fn list_pending_batches_for_ledger(
 pub fn list_pending_batches(
     hivemind_dir: &PathBuf,
     tenant_id: &TenantId,
-) -> crate::Result<Vec<PendingBatch>> {
+    session_id: Option<&str>,
+    limit: usize,
+) -> crate::Result<PendingBatchPage> {
     let ledger = SqliteEventLedger::open(hivemind_dir)?;
-    list_pending_batches_for_ledger(&ledger, tenant_id)
+    list_pending_batches_for_ledger(&ledger, tenant_id, session_id, limit)
 }
 
 /// Default daily cap on classification calls (ledger events, not batches
@@ -396,32 +581,31 @@ pub struct DailyCapStatus {
 }
 
 /// Counts `IngestBatchClassified` events recorded for `tenant_id` since the
-/// start of the current UTC day and returns the resulting budget.
+/// start of the current UTC day and returns the resulting budget. Reads the
+/// classification events alone, and only their times.
 pub fn daily_cap_status(
     ledger: &impl EventLedger,
     tenant_id: &TenantId,
 ) -> crate::Result<DailyCapStatus> {
     let today = Utc::now().date_naive();
     let mut offset = 0u64;
-    const PAGE: usize = 256;
     let mut classified_today = 0usize;
 
     loop {
-        let events = ledger.read_for_tenant(tenant_id, offset, PAGE)?;
-        if events.is_empty() {
-            break;
-        }
-        for event in &events {
-            if event.event_type == EventType::IngestBatchClassified
-                && event.ts.is_some_and(|ts| ts.date_naive() >= today)
-            {
-                classified_today += 1;
-            }
-        }
-        if let Some(last) = events.last().and_then(|e| e.event_id) {
-            offset = last;
-        } else {
-            break;
+        let events = ledger.read_types_for_tenant(
+            tenant_id,
+            &[EventType::IngestBatchClassified],
+            CLASSIFIED_COUNT_BULK_KEYS,
+            offset,
+            QUEUE_READ_PAGE,
+        )?;
+        classified_today += events
+            .iter()
+            .filter(|event| event.ts.is_some_and(|ts| ts.date_naive() >= today))
+            .count();
+        match events.last().and_then(|event| event.event_id) {
+            Some(last) if events.len() == QUEUE_READ_PAGE => offset = last,
+            _ => break,
         }
     }
 

@@ -16,7 +16,8 @@ use crate::error::CommandError;
 use crate::events::{Event, EventProvenance, TenantId};
 use crate::ledger::contract_tests::{
     assert_dedup_by_event_uuid, assert_grounding_events_round_trip, assert_monotonic_append,
-    assert_read_offset_and_limit, assert_replay_from_zero_in_order, make_event,
+    assert_read_offset_and_limit, assert_replay_from_zero_in_order, assert_typed_and_id_reads,
+    make_event,
 };
 use crate::ledger::EventLedger;
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
@@ -54,6 +55,13 @@ fn read_applies_offset_and_limit() -> Result<()> {
 #[test]
 fn grounding_events_round_trip() -> Result<()> {
     with_sqlite_ledger("grounding-round-trip", assert_grounding_events_round_trip)
+}
+
+#[test]
+fn typed_and_id_reads_agree_with_the_contract() -> Result<()> {
+    with_sqlite_ledger("typed-id-reads", |ledger| {
+        assert_typed_and_id_reads(ledger, &TenantId::local())
+    })
 }
 
 #[test]

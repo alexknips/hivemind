@@ -790,6 +790,17 @@ session-end cadence below relies on this so concurrent sessions never
 redundantly process each other's queue. The queue persists across runs; large
 backlogs drain across multiple invocations.
 
+The server lists the oldest pending batches first and says when it stopped short:
+`GET /v1/classify-queue` returns `pending_total` (how many batches match, whatever the limit)
+and `truncated`. A runner that serves many sessions and has to choose which to classify first
+does not need the queue to choose: `GET /v1/classify-queue/sessions[?limit=]` returns one row
+per session with pending batches (`session_id`, `actor_id`, `batch_count`,
+`oldest_submitted_at`, `newest_submitted_at`), most recently active first, with
+`session_total`, `batch_total` and `truncated` — no turn text. It then fetches that
+session's batches with `GET /v1/classify-queue?session_id=`. Both reads cost about the same
+however much transcript the ledger holds: the turn text of a batch is read only for a batch
+the reply carries.
+
 `hivemind classify-queue list`/`submit` talk to a server over HTTP instead of
 opening the local SQLite ledger directly when `HIVEMIND_API_URL` is set (same
 `HIVEMIND_API_URL`/`HIVEMIND_API_KEY` variables as the Python capture clients

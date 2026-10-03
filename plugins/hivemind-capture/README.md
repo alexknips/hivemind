@@ -303,8 +303,12 @@ Pass `--limit N` to cap the number of batches processed per run (default 20):
 
 ### Check queue depth
 
+Against a server-backed cell (`HIVEMIND_API_URL` set) the answer is an object whose
+`pending_total` is the whole queue's depth; against a local ledger it is the list of batches:
+
 ```bash
-hivemind classify-queue list --json | jq length
+hivemind classify-queue list --json --limit 1 | jq .pending_total   # server-backed cell
+hivemind classify-queue list --json | jq length                    # local ledger
 ```
 
 ### Session hook (optional)

@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::error::CommandError;
 use crate::events::{
     validate, Event, EventId, EventPayload, EventSource, EventType, HypothesisKind, RelationKind,
+    TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -69,6 +70,225 @@ pub fn assert_read_offset_and_limit<L: EventLedger>(ledger: &L) -> Result<()> {
     assert!(events.is_empty());
 
     Ok(())
+}
+
+/// The typed, field and by-id reads (`read_types_for_tenant`, `read_fields_for_tenant`,
+/// `read_ids_for_tenant`) agree on every backend: only the asked types come back, oldest first, with offset and limit counted over the
+/// matching events; the named payload keys are left out and nothing else is; and the by-id read
+/// returns exactly the events with those ids, skipping ids that name no event.
+///
+/// Failures are returned as errors rather than asserted, like the grounding helper below.
+pub fn assert_typed_and_id_reads<L: EventLedger>(ledger: &L, tenant_id: &TenantId) -> Result<()> {
+    let append = |event_type, payload| {
+        ledger.append_for_tenant(tenant_id, make_grounding_event(event_type, payload, None))
+    };
+    let received_a = append(EventType::IngestBatchReceived, received_payload("batch-a"))?;
+    let evidence = append(EventType::EvidenceRecorded, json!({ "evidence_id": "e-1" }))?;
+    let received_b = append(EventType::IngestBatchReceived, received_payload("batch-b"))?;
+    let classified = append(EventType::IngestBatchClassified, classified_payload())?;
+    let received_c = append(EventType::IngestBatchReceived, received_payload("batch-c"))?;
+
+    let heads = ledger.read_types_for_tenant(
+        tenant_id,
+        &[EventType::IngestBatchReceived],
+        &["turns"],
+        0,
+        10,
+    )?;
+    require_equal(
+        "received batches, oldest first",
+        &ids_of(&heads),
+        &vec![Some(received_a), Some(received_b), Some(received_c)],
+    )?;
+    require_equal(
+        "turns left out of every head",
+        &heads
+            .iter()
+            .any(|event| event.payload.get("turns").is_some()),
+        &false,
+    )?;
+    require_equal(
+        "the other payload keys kept",
+        &heads.first().map(|event| {
+            (
+                event.payload.get("batch_id"),
+                event.payload.get("session_id"),
+            )
+        }),
+        &Some((Some(&json!("batch-a")), Some(&json!("session-1")))),
+    )?;
+
+    let whole =
+        ledger.read_types_for_tenant(tenant_id, &[EventType::IngestBatchReceived], &[], 0, 10)?;
+    require_equal(
+        "turns kept when nothing is omitted",
+        &whole
+            .iter()
+            .all(|event| event.payload.get("turns") == Some(&json!([{ "text": "hello" }]))),
+        &true,
+    )?;
+
+    let both = ledger.read_types_for_tenant(
+        tenant_id,
+        &[
+            EventType::IngestBatchClassified,
+            EventType::IngestBatchReceived,
+        ],
+        &["captures"],
+        0,
+        10,
+    )?;
+    require_equal(
+        "two types interleave in event order",
+        &ids_of(&both),
+        &vec![
+            Some(received_a),
+            Some(received_b),
+            Some(classified),
+            Some(received_c),
+        ],
+    )?;
+    require_equal(
+        "captures left out of the classification, its batch ids kept",
+        &both.get(2).map(|event| {
+            (
+                event.payload.get("captures").is_some(),
+                event.payload.get("batch_ids").cloned(),
+            )
+        }),
+        &Some((false, Some(json!(["batch-a", "batch-b"])))),
+    )?;
+
+    let after_first = ledger.read_types_for_tenant(
+        tenant_id,
+        &[EventType::IngestBatchReceived],
+        &[],
+        received_a,
+        1,
+    )?;
+    require_equal(
+        "offset and limit count matching events only",
+        &ids_of(&after_first),
+        &vec![Some(received_b)],
+    )?;
+
+    let none =
+        ledger.read_types_for_tenant(tenant_id, &[EventType::DecisionProposed], &[], 0, 10)?;
+    require_equal("no event of the type", &none.len(), &0)?;
+    let zero =
+        ledger.read_types_for_tenant(tenant_id, &[EventType::IngestBatchReceived], &[], 0, 0)?;
+    require_equal("a limit of zero", &zero.len(), &0)?;
+
+    let fields = ledger.read_fields_for_tenant(
+        tenant_id,
+        EventType::IngestBatchReceived,
+        &["batch_id", "session_id", "turns", "absent"],
+        0,
+        10,
+    )?;
+    require_equal(
+        "fields: the received batches, oldest first",
+        &fields
+            .iter()
+            .map(|row| Some(row.event_id))
+            .collect::<Vec<_>>(),
+        &vec![Some(received_a), Some(received_b), Some(received_c)],
+    )?;
+    require_equal(
+        "fields: strings in the order asked; an array and an absent key read as None",
+        &fields.first().map(|row| row.fields.clone()),
+        &Some(vec![
+            Some("batch-a".to_owned()),
+            Some("session-1".to_owned()),
+            None,
+            None,
+        ]),
+    )?;
+    require_equal(
+        "fields: the actor and the time come with the row",
+        &fields
+            .first()
+            .map(|row| (row.actor_id.as_str(), row.ts.is_some())),
+        &Some(("actor:test", true)),
+    )?;
+    let after_first_fields = ledger.read_fields_for_tenant(
+        tenant_id,
+        EventType::IngestBatchReceived,
+        &[],
+        received_a,
+        1,
+    )?;
+    require_equal(
+        "fields: offset and limit count matching events only; no keys asked, none returned",
+        &after_first_fields
+            .iter()
+            .map(|row| (row.event_id, row.fields.len()))
+            .collect::<Vec<_>>(),
+        &vec![(received_b, 0)],
+    )?;
+    let classified_fields = ledger.read_fields_for_tenant(
+        tenant_id,
+        EventType::IngestBatchClassified,
+        &["batch_id"],
+        0,
+        10,
+    )?;
+    require_equal(
+        "fields: another type, its own rows",
+        &classified_fields
+            .iter()
+            .map(|row| (row.event_id, row.fields.clone()))
+            .collect::<Vec<_>>(),
+        &vec![(classified, vec![Some("batch-a".to_owned())])],
+    )?;
+    let zero_fields = ledger.read_fields_for_tenant(
+        tenant_id,
+        EventType::IngestBatchReceived,
+        &["batch_id"],
+        0,
+        0,
+    )?;
+    require_equal("fields: a limit of zero", &zero_fields.len(), &0)?;
+
+    let by_id =
+        ledger.read_ids_for_tenant(tenant_id, &[received_c, evidence, 9_999, received_c])?;
+    require_equal(
+        "by id: oldest first, once each, unknown skipped",
+        &ids_of(&by_id),
+        &vec![Some(evidence), Some(received_c)],
+    )?;
+    require_equal(
+        "by id: the payload comes whole",
+        &by_id
+            .get(1)
+            .and_then(|event| event.payload.get("turns").cloned()),
+        &Some(json!([{ "text": "hello" }])),
+    )?;
+    let no_ids = ledger.read_ids_for_tenant(tenant_id, &[])?;
+    require_equal("no ids asked", &no_ids.len(), &0)?;
+
+    Ok(())
+}
+
+fn ids_of(events: &[Event]) -> Vec<Option<EventId>> {
+    events.iter().map(|event| event.event_id).collect()
+}
+
+fn received_payload(batch_id: &str) -> serde_json::Value {
+    json!({
+        "batch_id": batch_id,
+        "session_id": "session-1",
+        "agent_tool": "claude",
+        "turns": [{ "text": "hello" }],
+    })
+}
+
+fn classified_payload() -> serde_json::Value {
+    json!({
+        "batch_id": "batch-a",
+        "batch_ids": ["batch-a", "batch-b"],
+        "captures": [{ "kind": "decision", "title": "bulky" }],
+    })
 }
 
 /// The grounding events (hivemind-gwhr.1) survive a ledger round trip: a `hypothesis.recorded`

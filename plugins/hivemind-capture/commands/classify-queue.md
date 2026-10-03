@@ -140,6 +140,8 @@ written, any errors.
 
 - Worker A is subscription-seat bound: each batch consumes one model invocation.
 - Large backlogs drain across multiple `/classify-queue` runs — the queue is persistent.
-- Queue depth is always visible via `hivemind classify-queue list --json | jq length`.
+- Queue depth is visible via `hivemind classify-queue list --json --limit 1 | jq .pending_total`
+  on a server-backed cell (the reply says `truncated` when more are pending than it lists), or
+  `hivemind classify-queue list --json | jq length` on a local ledger.
 - The server-side classifier (Worker B) and Worker A drain the same queue; both can run;
   last-writer-wins per batch_id is idempotent.

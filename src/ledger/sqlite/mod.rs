@@ -11,12 +11,12 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::error::LedgerError;
-use crate::events::{Event, EventId, TenantId};
+use crate::events::{Event, EventId, EventType, TenantId};
 use crate::util::require_agent_actor_id;
 use crate::Result;
 
 use super::backend_error::{storage_error, unknown_tenant_error};
-use super::EventLedger;
+use super::{omit_payload_keys_from, EventLedger};
 
 const LEDGER_DB_NAME: &str = "ledger.sqlite";
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 30_000;
@@ -223,6 +223,80 @@ impl EventLedger for SqliteEventLedger {
 
         rowid_to_event_id(offset, "latest_offset")
     }
+
+    fn read_types_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        types: &[EventType],
+        omit_payload_keys: &[&str],
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
+        if limit == 0 || types.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let offset = i64::try_from(offset)
+            .map_err(|error| storage_error(format!("offset out of range: {error}")))?;
+        let limit = i64::try_from(limit)
+            .map_err(|error| storage_error(format!("limit out of range: {error}")))?;
+
+        let mut values: Vec<rusqlite::types::Value> = vec![
+            tenant_id.as_str().to_owned().into(),
+            offset.into(),
+            limit.into(),
+        ];
+        values.extend(
+            types
+                .iter()
+                .map(|event_type| row::event_type_as_str(*event_type).to_owned().into()),
+        );
+
+        let mut statement = self
+            .connection
+            .prepare(&read_types_sql(types.len()))
+            .map_err(storage_error)?;
+        let mut rows = statement
+            .query(rusqlite::params_from_iter(values))
+            .map_err(storage_error)?;
+        let mut events = Vec::new();
+        while let Some(row) = rows.next().map_err(storage_error)? {
+            let mut event = row::event_from_row(row)?;
+            omit_payload_keys_from(&mut event, omit_payload_keys);
+            events.push(event);
+        }
+
+        Ok(events)
+    }
+
+    fn read_ids_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        event_ids: &[EventId],
+    ) -> Result<Vec<Event>> {
+        let mut ids: Vec<i64> = event_ids
+            .iter()
+            .filter_map(|id| i64::try_from(*id).ok())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+
+        let mut statement = self
+            .connection
+            .prepare(&read_event_by_id_sql())
+            .map_err(storage_error)?;
+        let mut events = Vec::with_capacity(ids.len());
+        for id in ids {
+            let mut rows = statement
+                .query(params![tenant_id.as_str(), id])
+                .map_err(storage_error)?;
+            if let Some(row) = rows.next().map_err(storage_error)? {
+                events.push(row::event_from_row(row)?);
+            }
+        }
+
+        Ok(events)
+    }
 }
 
 fn initialize_schema(connection: &Connection) -> Result<()> {
@@ -266,6 +340,13 @@ fn initialize_schema(connection: &Connection) -> Result<()> {
             "ALTER TABLE events ADD COLUMN source_ref TEXT",
         )?;
         ensure_tenant_scoped_event_uuid(connection)?;
+        // After the table's last possible rebuild above, so a rebuilt table keeps it. Serves the
+        // typed reads (`read_types_for_tenant`): one event type in event order without reading
+        // the payloads of the others.
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS events_tenant_type_idx
+                 ON events (tenant_id, type, event_id);",
+        )?;
         Ok(())
     })
     .map_err(storage_error)?;
@@ -400,6 +481,26 @@ fn read_events_sql() -> String {
 fn replay_events_sql() -> String {
     format!(
         "SELECT {} FROM events WHERE tenant_id = ?1 AND event_id > ?2 ORDER BY event_id ASC",
+        event_columns_sql()
+    )
+}
+
+fn read_types_sql(type_count: usize) -> String {
+    let placeholders = (0..type_count)
+        .map(|index| format!("?{}", index + 4))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "SELECT {} FROM events
+         WHERE tenant_id = ?1 AND event_id > ?2 AND type IN ({placeholders})
+         ORDER BY event_id ASC LIMIT ?3",
+        event_columns_sql()
+    )
+}
+
+fn read_event_by_id_sql() -> String {
+    format!(
+        "SELECT {} FROM events WHERE tenant_id = ?1 AND event_id = ?2",
         event_columns_sql()
     )
 }

@@ -85,6 +85,13 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`GET /v1/classify-queue/sessions` summarises the sessions that still have pending batches.**
+  One row per (session, actor): `session_id`, `actor_id`, `batch_count`, `oldest_submitted_at`
+  and `newest_submitted_at`, most recently active first, plus `session_total`, `batch_total`,
+  `truncated` and the day's classification `budget`; `?limit=` (default 200) bounds the rows.
+  No turn text, so a runner that classifies one session at a time picks a session here and
+  then fetches only that session's batches with `GET /v1/classify-queue?session_id=`.
+  (hivemind-t15t)
 - **`GET /v1/decisions/{id}/possibly-related`: decisions that may be related, labelled inferred,
   never a recorded relation.** Most decisions have no recorded relation to another decision, yet
   every capture carries its topic keys and, for a classifier capture, the one ledger event that
@@ -350,6 +357,19 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`GET /v1/classify-queue` no longer takes ~25 seconds whatever the limit, and a worker can
+  choose a session without fetching the queue.** On the city cell every request read the whole
+  ledger (about 90,000 received batches, each with its turn text) twice, once for the list and
+  once for the daily budget, and only then dropped the classified ones, so even `limit=200`
+  cost ~25 s and a larger limit ran into the 30 s request timeout (HTTP 408): nothing new was
+  classified. The list and the budget now read the classification events without their
+  captures and each received batch as an id, a time, an actor and two strings (its batch id and
+  session id), in one query per 10,000 events, and read the turn text of only the batches the
+  reply carries, by id. The reply gains `pending_total` (how many batches match, whatever the
+  limit) and `truncated`, over HTTP and MCP. The Postgres ledger filters by event type and
+  extracts those fields in the query, SQLite filters in the query, and both gain a
+  `(tenant_id, event_type, event_id)` index, built the first time the new server opens the
+  ledger (the Postgres `events_tenant_type_idx` it supersedes is dropped). (hivemind-t15t)
 - **`hivemind quality-scan` files each finding once, however often it runs.** It filed a Linear
   ticket for every finding above the threshold on every run, so a scheduled run against decisions
   that had not changed filed the same tickets again each time. It now reads `get_suggestions`

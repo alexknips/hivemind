@@ -1400,6 +1400,102 @@ async fn classify_queue_list_filters_by_session_id() {
     assert_eq!(batches[0]["batch_id"], "s1:0-1"); // ubs:ignore
 }
 
+#[tokio::test]
+async fn classify_queue_list_says_how_many_are_pending_and_when_it_stopped_short() {
+    let dir = test_ledger_dir();
+
+    for batch_id in ["p1:0-1", "p2:0-1", "p3:0-1"] {
+        let (status, body) = call(
+            app(dir.clone()),
+            post_json(
+                "/v1/ingest",
+                ingest_json(batch_id, "session-p", "claude", "note"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}"); // ubs:ignore
+    }
+
+    let (status, body) = call(app(dir.clone()), get_req("/v1/classify-queue?limit=2")).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["batches"].as_array().unwrap().len(), 2, "{body}"); // ubs:ignore
+    assert_eq!(
+        body["batches"][0]["batch_id"], "p1:0-1",
+        "oldest first: {body}"
+    ); // ubs:ignore
+    assert_eq!(body["pending_total"], 3, "{body}"); // ubs:ignore
+    assert_eq!(body["truncated"], true, "{body}"); // ubs:ignore
+
+    let (status, body) = call(app(dir), get_req("/v1/classify-queue?limit=5")).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["batches"].as_array().unwrap().len(), 3, "{body}"); // ubs:ignore
+    assert_eq!(body["pending_total"], 3, "{body}"); // ubs:ignore
+    assert_eq!(body["truncated"], false, "{body}"); // ubs:ignore
+}
+
+#[tokio::test]
+async fn classify_queue_sessions_lists_the_sessions_that_still_have_pending_batches() {
+    let dir = test_ledger_dir();
+
+    for (batch_id, session_id) in [
+        ("a:0-1", "session-a"),
+        ("a:1-2", "session-a"),
+        ("b:0-1", "session-b"),
+        ("b:1-2", "session-b"),
+        ("b:2-3", "session-b"),
+    ] {
+        let (status, body) = call(
+            app(dir.clone()),
+            post_json(
+                "/v1/ingest",
+                ingest_json(batch_id, session_id, "claude", "private turn text"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}"); // ubs:ignore
+    }
+
+    // Classify session-a whole; only session-b is left.
+    let (status, body) = call(
+        app(dir.clone()),
+        post_json(
+            "/v1/classify-queue/submit",
+            serde_json::json!({
+                "batch_ids": ["a:0-1", "a:1-2"],
+                "captures": [],
+                "model": "agent:worker-a"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+
+    let (status, body) = call(app(dir.clone()), get_req("/v1/classify-queue/sessions")).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    let sessions = body["sessions"].as_array().expect("sessions array"); // ubs:ignore
+    assert_eq!(sessions.len(), 1, "{body}"); // ubs:ignore
+    assert_eq!(sessions[0]["session_id"], "session-b", "{body}"); // ubs:ignore
+    assert_eq!(sessions[0]["actor_id"], "agent:test:session-1", "{body}"); // ubs:ignore
+    assert_eq!(sessions[0]["batch_count"], 3, "{body}"); // ubs:ignore
+    assert!(sessions[0]["oldest_submitted_at"].is_string(), "{body}"); // ubs:ignore
+    assert!(sessions[0]["newest_submitted_at"].is_string(), "{body}"); // ubs:ignore
+    assert_eq!(body["session_total"], 1, "{body}"); // ubs:ignore
+    assert_eq!(body["batch_total"], 3, "{body}"); // ubs:ignore
+    assert_eq!(body["truncated"], false, "{body}"); // ubs:ignore
+    assert_eq!(body["budget"]["classified_today"], 1, "{body}"); // ubs:ignore
+    assert!(
+        !body.to_string().contains("private turn text"),
+        "a session summary carries no turn text: {body}"
+    );
+
+    // limit=0 returns no rows but still says there are sessions waiting.
+    let (status, body) = call(app(dir), get_req("/v1/classify-queue/sessions?limit=0")).await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["sessions"].as_array().unwrap().len(), 0, "{body}"); // ubs:ignore
+    assert_eq!(body["session_total"], 1, "{body}"); // ubs:ignore
+    assert_eq!(body["truncated"], true, "{body}"); // ubs:ignore
+}
+
 fn ingest_json_at(batch_id: &str, session_id: &str, ts: &str) -> Value {
     serde_json::json!({
         "batch_id": batch_id,
@@ -1980,12 +2076,27 @@ mod classify_queue_postgres {
         assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
         let batches = body["batches"].as_array().expect("batches array"); // ubs:ignore
         assert_eq!(batches.len(), 2, "{body}"); // ubs:ignore
+        assert_eq!(body["pending_total"], 2, "{body}"); // ubs:ignore
+        assert_eq!(body["truncated"], false, "{body}"); // ubs:ignore
         for batch in batches {
             assert!(
                 batch["batch_text"].as_str().unwrap_or("").contains("note"),
                 "{batch}"
             );
         }
+
+        // The sessions summary reads the same queue over Postgres, turn text left out.
+        let (status, body) = call(
+            app.clone(),
+            authed_get("/v1/classify-queue/sessions", &token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+        let sessions = body["sessions"].as_array().expect("sessions array"); // ubs:ignore
+        assert_eq!(sessions.len(), 1, "{body}"); // ubs:ignore
+        assert_eq!(sessions[0]["session_id"], "pg-sess", "{body}"); // ubs:ignore
+        assert_eq!(sessions[0]["batch_count"], 2, "{body}"); // ubs:ignore
+        assert_eq!(body["batch_total"], 2, "{body}"); // ubs:ignore
 
         let (status, body) = call(
             app.clone(),

@@ -90,7 +90,7 @@ pub(super) fn event_from_row(row: &Row<'_>) -> Result<Event> {
     })
 }
 
-fn event_type_as_str(event_type: EventType) -> &'static str {
+pub(super) fn event_type_as_str(event_type: EventType) -> &'static str {
     match event_type {
         EventType::DecisionProposed => "decision.proposed",
         EventType::DecisionRequested => "decision.requested",

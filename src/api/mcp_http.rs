@@ -878,8 +878,9 @@ fn mcp_summarize(
     serde_json::to_value(query_envelope(response)).map_err(|e| (-32603i32, e.to_string()))
 }
 
-/// Lists pending (unclassified) ingest batches with rendered turn text, plus
-/// today's classification budget. MCP mirror of `GET /v1/classify-queue`
+/// Lists the oldest pending (unclassified) ingest batches with rendered turn
+/// text, plus today's classification budget; `pending_total` and `truncated`
+/// say how much more is waiting. MCP mirror of `GET /v1/classify-queue`
 /// (hivemind-zdsh.18).
 fn mcp_classify_queue_list(
     backend: &ApiBackend,
@@ -892,15 +893,21 @@ fn mcp_classify_queue_list(
     let ledger = backend
         .open_ledger_for_tenant(&ctx.tenant_id)
         .map_err(|e| (-32603i32, e.to_string()))?;
-    let mut batches = crate::classifier::list_pending_batches_for_ledger(&ledger, &ctx.tenant_id)
-        .map_err(|e| (-32603i32, e.to_string()))?;
-    if let Some(ref session_id) = session_id {
-        batches.retain(|b| &b.session_id == session_id);
-    }
-    batches.truncate(limit);
+    let page = crate::classifier::list_pending_batches_for_ledger(
+        &ledger,
+        &ctx.tenant_id,
+        session_id.as_deref(),
+        limit,
+    )
+    .map_err(|e| (-32603i32, e.to_string()))?;
     let budget = crate::classifier::daily_cap_status(&ledger, &ctx.tenant_id)
         .map_err(|e| (-32603i32, e.to_string()))?;
-    Ok(serde_json::json!({ "batches": batches, "budget": budget }))
+    Ok(serde_json::json!({
+        "batches": page.batches,
+        "pending_total": page.pending_total,
+        "truncated": page.truncated,
+        "budget": budget,
+    }))
 }
 
 /// Submits captures for one or more pending batches from the same session in

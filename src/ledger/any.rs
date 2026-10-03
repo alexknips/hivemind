@@ -10,10 +10,10 @@ use std::path::PathBuf;
 
 #[cfg(not(feature = "shared-backend-postgres"))]
 use crate::error::CliError;
-use crate::events::{Event, EventId, TenantId};
+use crate::events::{Event, EventId, EventType, TenantId};
 #[cfg(feature = "shared-backend-postgres")]
 use crate::ledger::PostgresEventLedger;
-use crate::ledger::{EventLedger, SqliteEventLedger};
+use crate::ledger::{EventFields, EventLedger, SqliteEventLedger};
 use crate::Result;
 
 /// Backend selector for [`AnyLedger::open`].
@@ -138,6 +138,66 @@ impl EventLedger for AnyLedger {
             AnyLedger::Sqlite(l) => l.latest_offset_for_tenant(tenant_id),
             #[cfg(feature = "shared-backend-postgres")]
             AnyLedger::Postgres(l) => EventLedger::latest_offset_for_tenant(l, tenant_id),
+        }
+    }
+
+    fn read_types_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        types: &[EventType],
+        omit_payload_keys: &[&str],
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
+        match self {
+            AnyLedger::Sqlite(l) => {
+                l.read_types_for_tenant(tenant_id, types, omit_payload_keys, offset, limit)
+            }
+            #[cfg(feature = "shared-backend-postgres")]
+            AnyLedger::Postgres(l) => EventLedger::read_types_for_tenant(
+                l,
+                tenant_id,
+                types,
+                omit_payload_keys,
+                offset,
+                limit,
+            ),
+        }
+    }
+
+    fn read_fields_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        event_type: EventType,
+        payload_keys: &[&str],
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<EventFields>> {
+        match self {
+            AnyLedger::Sqlite(l) => {
+                l.read_fields_for_tenant(tenant_id, event_type, payload_keys, offset, limit)
+            }
+            #[cfg(feature = "shared-backend-postgres")]
+            AnyLedger::Postgres(l) => EventLedger::read_fields_for_tenant(
+                l,
+                tenant_id,
+                event_type,
+                payload_keys,
+                offset,
+                limit,
+            ),
+        }
+    }
+
+    fn read_ids_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        event_ids: &[EventId],
+    ) -> Result<Vec<Event>> {
+        match self {
+            AnyLedger::Sqlite(l) => l.read_ids_for_tenant(tenant_id, event_ids),
+            #[cfg(feature = "shared-backend-postgres")]
+            AnyLedger::Postgres(l) => EventLedger::read_ids_for_tenant(l, tenant_id, event_ids),
         }
     }
 }
