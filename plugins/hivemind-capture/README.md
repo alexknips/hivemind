@@ -16,6 +16,9 @@ This directory is both the Codex capture plugin and the Claude Code
   classification work queue using the agent's subscription seat. Run after a
   session to classify batches that the server-side classifier has not yet
   processed. See [Queue drain](#queue-drain-worker-a) below.
+- A `SessionStart` hook that tells the agent, in two sentences, to check the
+  ledger before it acts and to record the decisions it settles. See
+  [Session directive](#session-directive).
 - Hooks on Claude Code's `AskUserQuestion` tool: the question is recorded as an
   ask when the agent puts it to you, and your answer as a decision that answers
   it. See [AskUserQuestion hooks](#askuserquestion-hooks).
@@ -178,6 +181,57 @@ project), and only the CLI and the stdio MCP server this plugin ships fill it in
 from context. See
 [`docs/AGENT_DECISION_CAPTURE.md`](../../docs/AGENT_DECISION_CAPTURE.md#which-project-a-capture-lands-in)
 and [`docs/MULTI_TENANCY.md`](../../docs/MULTI_TENANCY.md#projects-inside-a-tenant).
+
+## Session directive
+
+An agent only uses a tool it has been told about. With the plugin installed and the MCP
+server connected, agents that nobody had told to use HiveMind used it 0 times in 31
+headless benchmark sessions, because the other hooks fire on `AskUserQuestion`, which an
+autonomous agent never calls. So the plugin's `SessionStart` hook
+(`scripts/session-start-hook.sh`) adds this to every new session's context:
+
+> HiveMind decision ledger: before you act on a task, call the `hivemind` MCP tool
+> `recall_decisions` (q = three or four key words about the task) for decisions made in
+> earlier sessions, and follow the ones that still hold. Each time you settle a durable decision or rule,
+> call `capture_decision` with its title, rationale (the why), options considered, and what
+> it rests on (grounding), so later sessions can follow it.
+
+- **It costs about 140 tokens a session** (measured: 19,310 against 19,167 input tokens on
+  the same prompt with the hook on and off). It is a fixed text. The hook reads no ledger
+  and decides nothing; recall and capture stay the agent's own calls through the MCP server.
+- **It fails open.** With no `hivemind` binary (the one on `PATH`, or `HIVEMIND_CAPTURE_BIN`)
+  it prints nothing and exits 0, so the session starts as if the plugin had no hook. A
+  ledger directory that does not exist yet still gets the directive: the first session in a
+  project is where it is needed, and the MCP server creates the ledger on the first capture.
+- **It runs on startup, resume, clear and compact**, which is when Claude Code runs
+  `SessionStart` hooks.
+
+To turn it off, set `HIVEMIND_DIRECTIVE_DISABLE` to any non-empty value. For one project,
+put it in that project's `.claude/settings.json`:
+
+```json
+{ "env": { "HIVEMIND_DIRECTIVE_DISABLE": "1" } }
+```
+
+For everything you run, export it in your shell or set the same `env` in
+`~/.claude/settings.json`. The AskUserQuestion hooks below are separate and stay on;
+`HIVEMIND_ASK_HOOK_DISABLE=1` turns those off.
+
+**Codex.** The Codex package reads the same `hooks/hooks.json`, so the directive ships there
+too (checked on Codex 0.159.3: a plugin's `SessionStart` hook reaches the model as context,
+and with no `hivemind` binary the agent sees nothing). Install the plugin with
+`codex plugin add hivemind-capture@hivemind-plugins`. Codex runs a hook only once it is
+trusted, and until then skips it without an error; the trust is kept per hook as a
+`trusted_hash` under `[hooks.state."<key>"]` in `~/.codex/config.toml`, and
+`codex exec --dangerously-bypass-hook-trust` skips the check for unattended runs.
+`HIVEMIND_DIRECTIVE_DISABLE` turns it off there as well.
+
+The hook needs a `hivemind` that serves `recall_decisions` and `capture_decision` (v0.7.0
+and later do); CI checks that against the latest release
+(`scripts/check_plugin_against_release.py`). The text names the tools by their MCP names,
+so an agent that has the plugin's MCP server finds them as
+`mcp__plugin_hivemind-capture_hivemind__recall_decisions` and
+`mcp__plugin_hivemind-capture_hivemind__capture_decision`.
 
 ## AskUserQuestion hooks
 

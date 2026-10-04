@@ -1,6 +1,6 @@
 {
   "name": "hivemind-capture",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Capture Codex decisions into HiveMind through the deterministic local CLI.",
   "author": {
     "name": "HiveMind contributors",

@@ -85,6 +85,22 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The `hivemind-capture` plugin tells every session to check the ledger before it acts and
+  to record the decisions it settles, so an agent nobody briefed uses HiveMind.** With the
+  plugin installed and its MCP server connected, agents given no instruction recalled and
+  captured 0 times in 31 headless benchmark sessions: the plugin's only hooks fire on
+  `AskUserQuestion`, which an autonomous agent never calls. A `SessionStart` hook
+  (`plugins/hivemind-capture/hooks/hooks.json`, `scripts/session-start-hook.sh`) now adds two
+  sentences to the session's context: call `recall_decisions` (q = three or four key words
+  about the task) before acting and follow the earlier decisions that still hold; call `capture_decision` with
+  title, rationale, options considered and grounding each time you settle a durable decision.
+  It is a fixed text of about 140 tokens (19,310 against 19,167 input tokens with the hook on
+  and off), reads no ledger, and fails open: with no `hivemind` binary it prints nothing and
+  exits 0. Turn it off with `HIVEMIND_DIRECTIVE_DISABLE=1`, in the environment or under `env` in
+  `.claude/settings.json`. Needs a `hivemind` that serves both tools (v0.7.0 and later); CI
+  checks the hook against the latest release. The Codex package reads the same hook file, so
+  it ships there too (Codex runs a hook only after you trust it; the plugin README says how).
+  See `plugins/hivemind-capture/README.md`.
 - **`GET /v1/decisions/{id}/status-events` lists what changed one decision's status, newest
   first.** One entry per proposed, accepted, rejected or superseded event: `event`,
   `occurred_at` (the event's own ledger time, `null` when it carries none), `offset`, `actor`

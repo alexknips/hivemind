@@ -1,6 +1,17 @@
 {
-  "description": "Record an agent's AskUserQuestion as a HiveMind ask, and the human's answer as a decision linked to it.",
+  "description": "Tell the agent at session start to check the HiveMind ledger before acting and record the decisions it settles; record an agent's AskUserQuestion as a HiveMind ask, and the human's answer as a decision linked to it.",
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/session-start-hook.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "AskUserQuestion",

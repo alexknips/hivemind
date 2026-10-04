@@ -267,6 +267,22 @@ linked afterwards with `hivemind ground "<decision>" --answers "<question>"`
 decision answers one question: naming a different one than it already answers
 is refused, and nothing is written.
 
+## The session directive
+
+An installed plugin does nothing for an agent that is never told to use it: with the
+`hivemind-capture` plugin and its MCP server connected, agents given no instruction
+recalled and captured 0 times in 31 headless benchmark sessions (hivemind-wdwg). So the
+plugin's Claude Code `SessionStart` hook adds two sentences to every session's context:
+before acting, call the `hivemind` MCP tool `recall_decisions` (q = three or four key words
+about the task) and follow the earlier decisions that still hold; each time you settle a durable decision
+or rule, call `capture_decision` with its title, rationale, options considered and what it
+rests on. It is a fixed text of about 140 tokens, it reads no ledger, and it fails open: no
+`hivemind` binary means it prints nothing and the session starts as usual. Turn it off with
+`HIVEMIND_DIRECTIVE_DISABLE=1` (in the environment, or under `env` in `.claude/settings.json`).
+The Codex package carries the same hook; Codex runs it only after you trust it. The text, the
+Codex trust step and the settings are in the
+[plugin README](../plugins/hivemind-capture/README.md#session-directive).
+
 ## Questions asked with AskUserQuestion
 
 In Claude Code an agent puts a question to the person by calling the
@@ -593,6 +609,10 @@ install it. The plugin includes:
   decision id. For single-decision follow-up (rationale, still-holds check,
   contest, supersede) see the `hivemind-context` plugin above.
 - `.mcp.json`, which wires the `hivemind` MCP server to `hivemind mcp`.
+- A `SessionStart` hook that tells every session to call `recall_decisions` before
+  acting and `capture_decision` for each decision it settles (see
+  [The session directive](#the-session-directive); off with
+  `HIVEMIND_DIRECTIVE_DISABLE=1`).
 - The `hivemind-capture` skill for durable decision boundaries, provenance
   rules, and the question every decision capture answers: what does it rest on.
 

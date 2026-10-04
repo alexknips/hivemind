@@ -12,6 +12,7 @@ stranger's install while every master-built test stays green (hivemind-cxqd). Th
     environment, and `query-decisions.sh` reads them back;
   * the Codex skill's direct CLI form works as the skill says to use it on an older CLI;
   * the AskUserQuestion hooks never get in the way and still record the human's answer;
+  * the SessionStart directive names only tools the release's MCP server serves;
   * the hivemind-context scripts run, and a verb the release lacks is refused with that said.
 
 Everything runs under a throwaway HOME, with a scrubbed environment and the release binary alone on
@@ -393,6 +394,49 @@ def check_ask_hooks(world: World) -> None:
 
 
 # --------------------------------------------------------------------------------------------
+# The SessionStart directive
+# --------------------------------------------------------------------------------------------
+
+
+def check_session_start_hook(world: World) -> None:
+    """The directive names tools the release serves, and the opt-out makes it silent."""
+    project = world.project("session-start")
+    hook = str(CAPTURE / "scripts" / "session-start-hook.sh")
+    done = run(["sh", hook], cwd=project, env=world.env(project, "claude"))
+    try:
+        context = json.loads(done.stdout)["hookSpecificOutput"]["additionalContext"]
+    except (ValueError, KeyError, TypeError):
+        context = ""
+    check("session start hook adds the directive", done.returncode == 0 and bool(context), tail(done))
+    named = [name for name in re.findall(r"`([a-z_]+)`", context) if name != "hivemind"]
+
+    server = json.loads((CAPTURE / ".mcp.json").read_text())["mcpServers"]["hivemind"]
+    client = McpClient([server["command"], *server["args"]], project, world.env(project, **server.get("env", {})))
+    try:
+        client.request(
+            "initialize",
+            {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "check", "version": "0"}},
+        )
+        listed = client.request("tools/list", {})
+        served = [t["name"] for t in (listed.get("result") or {}).get("tools", [])]
+    finally:
+        client.close()
+    missing = [name for name in named if name not in served]
+    check(
+        "session start directive names only tools the release serves",
+        bool(named) and not missing,
+        f"named={named} missing={missing}",
+    )
+
+    done = run(["sh", hook], cwd=project, env=world.env(project, "claude", HIVEMIND_DIRECTIVE_DISABLE="1"))
+    check(
+        "session start hook is silent when disabled",
+        done.returncode == 0 and not done.stdout and not done.stderr,
+        tail(done),
+    )
+
+
+# --------------------------------------------------------------------------------------------
 # hivemind-context
 # --------------------------------------------------------------------------------------------
 
@@ -463,6 +507,7 @@ def main() -> int:
         check_skill_direct_form(world, "Claude Code", "claude")
         check_skill_direct_form(world, "Codex", "codex")
         check_ask_hooks(world)
+        check_session_start_hook(world)
         check_context_scripts(world, claude_project, has_ground)
 
     print()
