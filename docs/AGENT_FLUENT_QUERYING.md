@@ -291,9 +291,11 @@ decisions that hold it as a word or a form of one; a word nobody holds weighs th
 most, so a question that is mostly about what the ledger lacks never passes. A
 decision below the bar is returned when
 
-- it holds at least two of the words, and together they weigh at least 1.25 times
-  `ln(n + 1)` and a fifth of the weight of all the question's words: two words that
-  few decisions hold do not meet by chance, or
+- it holds at least three of the words, or two that its title or topic keys hold,
+  and together they weigh at least 1.25 times `ln(n + 1)` and a fifth of the weight
+  of all the question's words: that many words few decisions hold do not meet by
+  chance, whereas two that sit in a long rationale do ("load" and "timeout" of a
+  load balancer question), or
 - the ledger is small (16 decisions or fewer, too few for counts to say what is
   rare), and a word its title or topic keys hold is held by no other decision: its
   capturer named it as the subject.

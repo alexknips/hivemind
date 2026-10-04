@@ -1195,7 +1195,12 @@ fn collect_graph_search_results(
         });
     }
 
-    Ok(admit_below_bar(scored, holdings, searched, terms.terms))
+    Ok(admit_below_bar(
+        scored,
+        holdings,
+        searched,
+        terms.terms.len(),
+    ))
 }
 
 /// What `admit_below_bar` knows of a matched decision.
@@ -1203,9 +1208,9 @@ struct Holding {
     /// `SearchMatchInfo::below_bar`.
     below_bar: bool,
     /// `SearchMatchInfo::held_words`.
-    held: BTreeSet<String>,
+    held: BTreeSet<usize>,
     /// `SearchMatchInfo::headline_words`.
-    headline: BTreeSet<String>,
+    headline: BTreeSet<usize>,
 }
 
 /// Fewer decisions than this say too little about which words are rare, so a lone word is trusted
@@ -1216,6 +1221,10 @@ const SMALL_LEDGER: usize = 16;
 const SHARED_WORDS_RARITY: f64 = 1.25;
 /// ... and carry at least this share of the weight of all the question's words.
 const SHARED_WORDS_SHARE: f64 = 0.2;
+/// ... and be at least this many words, or ...
+const SHARED_WORDS_MIN: usize = 3;
+/// ... this many of them words the decision's own title or topic keys hold.
+const SHARED_HEADLINE_WORDS_MIN: usize = 2;
 /// At most this many decisions below the bar are added to an answer.
 const BELOW_BAR_LIMIT: usize = 3;
 
@@ -1226,70 +1235,68 @@ const BELOW_BAR_LIMIT: usize = 3;
 /// most of all, so a question mostly about what the ledger lacks never passes. A decision below the
 /// bar is answered when
 ///
-/// - it holds at least two of the terms as words that together weigh at least `SHARED_WORDS_RARITY`
-///   times `ln(searched + 1)` and `SHARED_WORDS_SHARE` of all the terms' weight: two words that few
-///   decisions hold do not meet by chance, or
+/// - it holds the terms `SHARED_WORDS_MIN` or more of them, or `SHARED_HEADLINE_WORDS_MIN` that its
+///   title or topic keys hold, as words that together weigh at least `SHARED_WORDS_RARITY` times
+///   `ln(searched + 1)` and `SHARED_WORDS_SHARE` of all the terms' weight: that many words few
+///   decisions hold do not meet by chance, whereas two that sit in a long rationale do ("load" and
+///   "timeout" of a load balancer question), or
 /// - the ledger is small (`SMALL_LEDGER`), so counts say little, and a term the decision's title or
 ///   topic keys hold is held by no other decision: its capturer named it as the subject.
 ///
 /// At most `BELOW_BAR_LIMIT` of them, those holding the most weight, are added; they all lack more
 /// terms than any decision at the bar, so they come after those and each is labelled with the
 /// terms it lacks. No word list, nothing learned: the counts are the ledger's own.
-/// `scored` and `holdings` are in the same order; `terms` are the question's.
+/// `scored` and `holdings` are in the same order; the terms are the question's, `term_count` of
+/// them, and the holdings name them by position.
 fn admit_below_bar(
     scored: Vec<ScoredDecisionSearchResult>,
     holdings: Vec<Holding>,
     searched: usize,
-    terms: &[String],
+    term_count: usize,
 ) -> Vec<ScoredDecisionSearchResult> {
     if !holdings.iter().any(|holding| holding.below_bar) {
         return scored;
     }
-    let mut holders: HashMap<&str, usize> = HashMap::new();
+    let mut holders: HashMap<usize, usize> = HashMap::new();
     for holding in &holdings {
         for term in &holding.held {
-            *holders.entry(term.as_str()).or_default() += 1;
+            *holders.entry(*term).or_default() += 1;
         }
     }
     let ledger = searched as f64 + 1.0;
     let weight = |count: usize| (ledger / (count as f64 + 0.5)).ln();
-    let weight_of = |term: &str| holders.get(term).map_or(0.0, |count| weight(*count));
-    let total: f64 = terms
-        .iter()
+    let weight_of = |term: usize| holders.get(&term).map_or(0.0, |count| weight(*count));
+    let total: f64 = (0..term_count)
         .map(|term| match weight_of(term) {
             held if held > 0.0 => held,
             _ => weight(0),
         })
         .sum();
 
-    let mut below: Vec<(f64, usize)> = Vec::new();
-    for (index, holding) in holdings.iter().enumerate() {
+    let mut below: Vec<(f64, &str, usize)> = Vec::new();
+    for (index, (decision, holding)) in scored.iter().zip(&holdings).enumerate() {
         if !holding.below_bar {
             continue;
         }
-        let shared: f64 = holding.held.iter().map(|term| weight_of(term)).sum();
-        let pair = holding.held.len() >= 2
+        let shared: f64 = holding.held.iter().map(|term| weight_of(*term)).sum();
+        let pair = (holding.held.len() >= SHARED_WORDS_MIN
+            || holding.headline.len() >= SHARED_HEADLINE_WORDS_MIN)
             && shared >= SHARED_WORDS_RARITY * ledger.ln()
             && shared >= SHARED_WORDS_SHARE * total;
         let named = searched <= SMALL_LEDGER
             && holding
                 .headline
                 .iter()
-                .any(|term| holders.get(term.as_str()) == Some(&1));
+                .any(|term| holders.get(term) == Some(&1));
         if pair || named {
-            below.push((shared, index));
+            below.push((shared, decision.id.as_str(), index));
         }
     }
-    below.sort_by(|left, right| {
-        right
-            .0
-            .total_cmp(&left.0)
-            .then_with(|| scored[left.1].id.cmp(&scored[right.1].id))
-    });
+    below.sort_by(|left, right| right.0.total_cmp(&left.0).then_with(|| left.1.cmp(right.1)));
     let admitted: BTreeSet<usize> = below
         .into_iter()
         .take(BELOW_BAR_LIMIT)
-        .map(|(_, index)| index)
+        .map(|(_, _, index)| index)
         .collect();
     scored
         .into_iter()
@@ -1404,11 +1411,12 @@ struct SearchMatchInfo {
     /// word: `collect_graph_search_results` keeps it only if the words it holds are rare among the
     /// decisions searched (`admit_below_bar`).
     below_bar: bool,
-    /// The terms some field holds as a whole word or a form of one, never as part of a longer
-    /// word; set only for the asker that reads (`CloseMatch::Half`).
-    held_words: BTreeSet<String>,
+    /// The terms (by position in the question's terms) some field holds as a whole word or a form
+    /// of one, never as part of a longer word; set only for the asker that reads
+    /// (`CloseMatch::Half`).
+    held_words: BTreeSet<usize>,
     /// The subset of `held_words` the decision's title or topic keys hold.
-    headline_words: BTreeSet<String>,
+    headline_words: BTreeSet<usize>,
     /// How many times a field of the title or topic keys holds a term as a word (a term the title
     /// and a topic key both hold counts twice). Among decisions below the bar that hold a word
     /// each, the one whose title and topic keys both name it is the one about it.
@@ -1603,9 +1611,9 @@ fn evaluate_search_match(
                 if track_words
                     && holds_whole_word(search_terms.related.get(index), &value_lower, term)
                 {
-                    held_words.insert(term.clone());
+                    held_words.insert(index);
                     if in_headline {
-                        headline_words.insert(term.clone());
+                        headline_words.insert(index);
                         headline_hits += 1;
                     }
                 }

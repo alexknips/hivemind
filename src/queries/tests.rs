@@ -1578,6 +1578,37 @@ fn fluent_search_does_not_answer_on_one_rare_word_in_a_ledger_big_enough_to_coun
 }
 
 #[test]
+fn fluent_search_does_not_answer_on_two_rare_words_held_only_in_a_rationale() -> Result<()> {
+    let scenario = generic_ledger(
+        20,
+        &[(
+            "d:selectors",
+            "Selectors are evaluated by a parser",
+            "XPath and CSS selectors, evaluated by lxml.",
+        )],
+    )?;
+
+    let (two, _) = fluent_answer(&scenario, "kubernetes helm rollout staging xpath css", 10)?;
+    assert_eq!(
+        two,
+        Vec::new(),
+        "two words of six in a long rationale, none in the title, is a chance meeting"
+    );
+
+    let (three, _) = fluent_answer(
+        &scenario,
+        "kubernetes helm rollout staging xpath css lxml",
+        10,
+    )?;
+    assert_eq!(
+        three.first().map(|(id, _)| id.as_str()),
+        Some("d:selectors"),
+        "three words nobody else holds are no chance meeting, wherever the decision holds them"
+    );
+    Ok(())
+}
+
+#[test]
 fn fluent_search_in_a_small_ledger_answers_the_decision_whose_title_holds_the_word() -> Result<()> {
     let scenario = titled_decisions(&[
         (
