@@ -1499,6 +1499,196 @@ fn fluent_search_needs_at_least_half_the_terms() -> Result<()> {
     Ok(())
 }
 
+/// A ledger of `count` decisions about nothing the questions below ask about, built from generic
+/// words, plus `named` (id, title, rationale) decisions.
+fn generic_ledger(count: usize, named: &[(&str, &str, &str)]) -> Result<Scenario> {
+    let generic: Vec<(String, String, String)> = (0..count)
+        .map(|index| {
+            (
+                format!("d:generic-{index:02}"),
+                format!("The page lists option {index} for the tool"),
+                "Generic wording about the query output and the text shown.".to_owned(),
+            )
+        })
+        .collect();
+    let mut decisions: Vec<(&str, &str, &str)> = generic
+        .iter()
+        .map(|(id, title, rationale)| (id.as_str(), title.as_str(), rationale.as_str()))
+        .collect();
+    decisions.extend_from_slice(named);
+    titled_decisions(&decisions)
+}
+
+#[test]
+fn fluent_search_answers_a_decision_two_rare_words_name_among_generic_ones() -> Result<()> {
+    let scenario = generic_ledger(
+        20,
+        &[(
+            "d:selectors",
+            "Selectors come from XPath and CSS",
+            "lxml evaluates both.",
+        )],
+    )?;
+
+    let (items, data) = fluent_answer(
+        &scenario,
+        "terminal query xpath css text extraction tool format",
+        10,
+    )?;
+
+    assert_eq!(
+        items.first().map(|(id, _)| id.as_str()),
+        Some("d:selectors"),
+        "xpath and css are held by one decision of twenty-one: that is no chance meeting"
+    );
+    let missing = &items[0].1;
+    for term in ["terminal", "query", "text", "extraction", "tool", "format"] {
+        assert!(
+            missing.iter().any(|lacking| lacking == term),
+            "{term} is labelled as lacking: {missing:?}"
+        );
+    }
+    assert_eq!(data.total_matches, items.len());
+    Ok(())
+}
+
+#[test]
+fn fluent_search_does_not_answer_on_one_rare_word_in_a_ledger_big_enough_to_count() -> Result<()> {
+    let scenario = generic_ledger(
+        20,
+        &[(
+            "d:selectors",
+            "Selectors come from XPath",
+            "lxml evaluates it.",
+        )],
+    )?;
+
+    let (items, _) = fluent_answer(
+        &scenario,
+        "kubernetes helm xpath rollout staging cluster",
+        10,
+    )?;
+
+    assert_eq!(
+        items,
+        Vec::new(),
+        "one word of six that nobody else holds is not enough once there are counts to go by"
+    );
+    Ok(())
+}
+
+#[test]
+fn fluent_search_in_a_small_ledger_answers_the_decision_whose_title_holds_the_word() -> Result<()> {
+    let scenario = titled_decisions(&[
+        (
+            "d:parser",
+            "Use lxml strict XML parser and XPath for xjq",
+            "lxml gives real XPath 1.0 support.",
+        ),
+        (
+            "d:exit",
+            "Exit with status 2 when the document cannot be parsed",
+            "Callers tell a parse failure from an empty result.",
+        ),
+    ])?;
+
+    let (items, _) = fluent_answer(&scenario, "terminal query xpath css text extraction", 10)?;
+
+    assert_eq!(
+        items,
+        vec![(
+            "d:parser".to_owned(),
+            vec![
+                "terminal".to_owned(),
+                "query".to_owned(),
+                "css".to_owned(),
+                "text".to_owned(),
+                "extraction".to_owned()
+            ]
+        )],
+        "the one word the ledger holds names the one decision whose title holds it"
+    );
+    let (unrelated, _) = fluent_answer(&scenario, "kubernetes helm chart rollout strategy", 10)?;
+    assert_eq!(unrelated, Vec::new(), "no shared word, no answer");
+    Ok(())
+}
+
+#[test]
+fn fluent_search_puts_first_the_decision_whose_title_and_topic_keys_both_name_the_word(
+) -> Result<()> {
+    let scenario = Scenario::new();
+    for (id, title, topics) in [
+        // `d:a` sorts before `d:b`; only `d:b` names "xpath" as a topic too.
+        (
+            "d:a",
+            "Print every query result on its own line",
+            ["xjq", "output"],
+        ),
+        (
+            "d:b",
+            "Use lxml strict XML parser and XPath for xjq",
+            ["xjq", "xpath"],
+        ),
+    ] {
+        scenario.proposal(
+            "human:alice",
+            "2026-01-01T00:00:00Z",
+            json!({
+                "decision_id": id,
+                "title": title,
+                "rationale": "Wording.",
+                "topic_keys": topics,
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        )?;
+    }
+
+    let (items, _) = fluent_answer(&scenario, "terminal query xpath css text extraction", 10)?;
+
+    let ids: Vec<&str> = items.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["d:b", "d:a"],
+        "both hold one word their title names; the one whose topic keys name it too is about it"
+    );
+    Ok(())
+}
+
+#[test]
+fn fluent_search_adds_at_most_three_below_the_bar_and_after_those_at_it() -> Result<()> {
+    let scenario = titled_decisions(&[
+        ("d:a", "Alpha handling", "Wording."),
+        ("d:b", "Bravo handling", "Wording."),
+        ("d:c", "Charlie handling", "Wording."),
+        ("d:d", "Delta handling", "Wording."),
+        ("d:half", "Zulu yankee xray whiskey handling", "Wording."),
+    ])?;
+
+    let (items, _) = fluent_answer(
+        &scenario,
+        "zulu yankee xray whiskey alpha bravo charlie delta",
+        10,
+    )?;
+
+    let ids: Vec<&str> = items.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["d:half", "d:a", "d:b", "d:c"],
+        "half of the words first; then three of the four that hold one word their title names, \
+         in id order on a tie"
+    );
+    assert_eq!(items[0].1.len(), 4);
+    assert_eq!(
+        items[1].1.len(),
+        7,
+        "each below the bar is labelled with all it lacks"
+    );
+    Ok(())
+}
+
 /// The ids of a fluent search for `query`, asked as a negated question or not, in the order
 /// returned, with each item's missing terms.
 fn fluent_ids(scenario: &Scenario, query: &str, negated: bool) -> Result<FluentItems> {

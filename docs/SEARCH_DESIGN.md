@@ -179,8 +179,14 @@ Normalization rules:
 
 - Empty strings normalize to absent values.
 - Text matching is case-insensitive and term-based. Every query term must match
-  at least one selected field unless a future query-language mode explicitly
-  says otherwise.
+  at least one selected field. The one exception is a phrase of three or more
+  words that no decision matches in full: it is asked again the way `recall`
+  asks (see [AGENT_FLUENT_QUERYING.md](AGENT_FLUENT_QUERYING.md) §1.1), so a
+  phrase written in an agent's own words finds the decision that holds some of
+  them. Those items carry `missing_terms`, naming what each lacks, and
+  `data.query` is the query as it was given. A query some decision matches in
+  full, or of fewer words (a short query stays exact), is answered exactly as
+  before.
 - Multiple filter dimensions are ANDed together.
 - Multiple values inside one filter dimension use that dimension's match mode.
   Status, source, source ref, stale reason, evidence id, hypothesis id, and

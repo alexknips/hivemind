@@ -758,6 +758,90 @@ fn recall_decisions_tool_returns_ranked_and_digest() {
 }
 
 #[test]
+fn a_long_phrase_sharing_one_word_still_finds_the_decision_through_recall_and_search() {
+    let dir = unique_dir("long-phrase");
+    let config = McpConfig::new(&dir).with_session_id("long-phrase-session");
+
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "grounding": [{"kind": "bet"}],
+                "actor_id": "agent:test:long-phrase",
+                "title": "Use lxml strict XML parser and XPath for xjq",
+                "rationale": "lxml gives real XPath 1.0 support and rejects malformed XML early",
+                "topic_keys": ["xjq", "xpath"],
+                "options": [{"label": "lxml"}, {"label": "xml.etree"}],
+                "chosen_option_label": "lxml"
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[capture.as_str()]);
+    let decision_id = responses[0]["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("decision_id") // ubs:ignore: test-only; panicking is correct in tests
+        .to_owned();
+
+    let call = |id: u32, tool: &str, q: &str| {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": {"q": q, "limit": 5}}
+        })
+        .to_string();
+        drive(&config, &[request.as_str()])
+    };
+    // What an agent wrote in the benchmark: six words, one of them in the decision.
+    let phrase = "CLI query xpath css text extraction";
+    let recalled = call(2, "recall_decisions", phrase);
+    let recalled = &recalled[0]["result"]["structuredContent"]["data"]["ranked"]["items"];
+    assert_eq!(recalled[0]["decision"]["id"], decision_id); // ubs:ignore: test-only assertion
+    assert!(
+        recalled[0]["missing_terms"]
+            .as_array()
+            .is_some_and(|missing| missing.iter().any(|term| term == "css")),
+        "the answer says what it lacks: {recalled}"
+    ); // ubs:ignore: test-only assertion
+    let searched = call(3, "search_decisions", phrase);
+    let searched = &searched[0]["result"]["structuredContent"]["data"];
+    assert_eq!(searched["items"][0]["decision"]["id"], decision_id); // ubs:ignore: test-only assertion
+    assert_eq!(searched["query"], phrase); // ubs:ignore: test-only assertion
+
+    // A short query stays exact for `search`: two words, one of them absent, find nothing there,
+    // while `recall` still answers a question that shares half its words.
+    let searched = call(6, "search_decisions", "xpath nothing");
+    assert_eq!(
+        searched[0]["result"]["structuredContent"]["result_count"],
+        serde_json::json!(0)
+    ); // ubs:ignore: test-only assertion
+    let recalled = call(7, "recall_decisions", "xpath nothing");
+    assert_eq!(
+        recalled[0]["result"]["structuredContent"]["result_count"],
+        serde_json::json!(1)
+    ); // ubs:ignore: test-only assertion
+
+    // A phrase that shares nothing with the ledger still finds nothing.
+    let unrelated = "kubernetes helm chart rollout strategy";
+    let recalled = call(4, "recall_decisions", unrelated);
+    assert_eq!(
+        recalled[0]["result"]["structuredContent"]["result_count"],
+        serde_json::json!(0)
+    ); // ubs:ignore: test-only assertion
+    let searched = call(5, "search_decisions", unrelated);
+    assert_eq!(
+        searched[0]["result"]["structuredContent"]["result_count"],
+        serde_json::json!(0)
+    ); // ubs:ignore: test-only assertion
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn recent_decisions_tool_returns_recent_query_response() {
     let dir = unique_dir("recent-decisions");
     let config = McpConfig::new(&dir).with_session_id("recent-session");

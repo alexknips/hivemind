@@ -1,7 +1,7 @@
 //! Full-text and filter search over decisions via SQLite FTS and graph predicate evaluation.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
@@ -24,7 +24,9 @@ use super::shared::{
     relation_edges_by_kind, relation_sources, relation_targets,
 };
 use super::status::{derive_decision_status, derive_hypothesis_status, DecisionStatus};
-use super::terms::{is_negated_text, resolver_question, stem, word_stems, RelatedWord, WordMatch};
+use super::terms::{
+    content_query, is_negated_text, resolver_question, stem, word_stems, RelatedWord, WordMatch,
+};
 use super::{QueryContext, QueryResponse};
 
 const MAX_SNIPPETS_PER_RESULT: usize = 5;
@@ -404,6 +406,9 @@ fn search_with_ledger(
     })
 }
 
+/// How many words make a query a phrase (`search_decisions_any`).
+const PHRASE_WORDS: usize = 3;
+
 /// Backend-dispatching search: SQLite goes through FTS
 /// (`search_decisions_fts_with_context`); Postgres goes through the
 /// backend-agnostic in-memory path (`search_decisions_with_ledger`). Both
@@ -411,19 +416,43 @@ fn search_with_ledger(
 /// Ordering Guarantees), so callers that only hold an `AnyLedger` — the CLI,
 /// stdio MCP, and one-shot HTTP paths — never need to know which backend they
 /// are on.
+///
+/// A phrase of at least `PHRASE_WORDS` words that no decision matches in full is asked again the
+/// way `recall` asks (`search_decisions_fluent`), so what an agent wrote in its own words still
+/// finds the decision that holds some of them. That answer says what each decision lacks
+/// (`DecisionSearchResult::missing_terms`) and echoes the query as it was given; a query some
+/// decision matches in full, or of fewer words (a short query stays exact), is answered exactly
+/// as before.
 pub fn search_decisions_any(
     context: &QueryContext,
     ledger: &AnyLedger,
     graph: &impl GraphView,
     request: &SearchDecisionRequest,
 ) -> Result<QueryResponse<DecisionSearchResults>> {
-    match ledger {
+    let strict = match ledger {
         AnyLedger::Sqlite(inner) => {
-            search_decisions_fts_with_context(context, inner, graph, request)
+            search_decisions_fts_with_context(context, inner, graph, request)?
         }
         #[cfg(feature = "shared-backend-postgres")]
-        AnyLedger::Postgres(inner) => search_decisions_with_ledger(context, inner, graph, request),
+        AnyLedger::Postgres(inner) => search_decisions_with_ledger(context, inner, graph, request)?,
+    };
+    if strict.data.total_matches > 0 {
+        return Ok(strict);
     }
+    let Some(content) = request.query.as_deref().map(content_query) else {
+        return Ok(strict);
+    };
+    if query_terms(content.query.as_deref()).len() < PHRASE_WORDS {
+        return Ok(strict);
+    }
+    let fluent_request = SearchDecisionRequest {
+        query: content.query,
+        ..request.clone()
+    };
+    let mut fluent =
+        search_decisions_fluent(context, ledger, graph, &fluent_request, content.negated)?;
+    fluent.data.query = strict.data.query;
+    Ok(fluent)
 }
 
 pub fn search_decisions_fts_with_context(
@@ -481,23 +510,11 @@ pub fn search_decisions_fts_with_context(
             )
             .unwrap_or_else(|| SearchMatchInfo {
                 rank: 3,
-                missing_terms: Vec::new(),
-                polarity_mismatch: false,
-                headline_terms: 0,
-                stand_in_terms: 0,
-                matched_fields: Vec::new(),
-                snippets: Vec::new(),
-                matched_nodes: Vec::new(),
+                ..SearchMatchInfo::default()
             }),
             None => SearchMatchInfo {
                 rank: 4,
-                missing_terms: Vec::new(),
-                polarity_mismatch: false,
-                headline_terms: 0,
-                stand_in_terms: 0,
-                matched_fields: Vec::new(),
-                snippets: Vec::new(),
-                matched_nodes: Vec::new(),
+                ..SearchMatchInfo::default()
             },
         };
         document.rank = match_info.rank;
@@ -594,7 +611,9 @@ fn narrow_to_scope(
 
 /// Own project first, then the parent's, then a dependency's; within each, the decisions that
 /// lack the fewest of the question's terms, then (among close matches) the ones whose title or
-/// topic keys carry more of the terms they did match, then the ones that match fewer of them only
+/// topic keys carry more of the terms they did match, then (for a decision below the bar, see
+/// `admit_below_bar`) the one that names a word it holds in both its title and its topic keys, then
+/// the ones that match fewer of them only
 /// through a stand-in word (a decision that has the word asked for comes before one that has a
 /// synonym), then (rank, id) order. A negated question
 /// does not change that order: among decisions tied on all of it, the ones whose title is negated
@@ -607,6 +626,7 @@ fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
             left.relation,
             left.result.missing_terms.len(),
             Reverse(left.headline_terms),
+            Reverse(left.headline_hits),
             left.stand_ins,
             left.rank,
             left.polarity_mismatch,
@@ -616,6 +636,7 @@ fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
                 right.relation,
                 right.result.missing_terms.len(),
                 Reverse(right.headline_terms),
+                Reverse(right.headline_hits),
                 right.stand_ins,
                 right.rank,
                 right.polarity_mismatch,
@@ -888,6 +909,8 @@ struct ScoredDecisionSearchResult {
     /// `SearchMatchInfo::headline_terms`: for a close match, how many of the terms its title or
     /// topic keys contain.
     headline_terms: usize,
+    /// `SearchMatchInfo::headline_hits` for a decision below the bar, else 0.
+    headline_hits: usize,
     /// `SearchMatchInfo::stand_in_terms`.
     stand_ins: usize,
     result: DecisionSearchResult,
@@ -913,6 +936,10 @@ fn collect_graph_search_results(
     let labels = ProjectLabels::from_graph(graph)?;
 
     let mut scored = Vec::new();
+    // What `admit_below_bar` needs of each decision in `scored`, in the same order.
+    let mut holdings: Vec<Holding> = Vec::new();
+    // The decisions that passed the filters: the ledger the terms are weighed against.
+    let mut searched = 0_usize;
     for (id, row) in decision_rows {
         let project = optional_string(&row, "project");
         let project_label = labels.label_of(project.as_deref());
@@ -1102,9 +1129,15 @@ fn collect_graph_search_results(
             ));
         }
 
+        searched += 1;
         let Some(match_info) = evaluate_search_match(query, terms, &fields) else {
             continue;
         };
+        holdings.push(Holding {
+            below_bar: match_info.below_bar,
+            held: match_info.held_words,
+            headline: match_info.headline_words,
+        });
 
         let decision = DecisionView {
             id: id.clone(),
@@ -1132,6 +1165,11 @@ fn collect_graph_search_results(
             event_origin,
             polarity_mismatch: match_info.polarity_mismatch,
             headline_terms: match_info.headline_terms,
+            headline_hits: if match_info.below_bar {
+                match_info.headline_hits
+            } else {
+                0
+            },
             stand_ins: match_info.stand_in_terms,
             fields,
             result: DecisionSearchResult {
@@ -1157,7 +1195,110 @@ fn collect_graph_search_results(
         });
     }
 
-    Ok(scored)
+    Ok(admit_below_bar(scored, holdings, searched, terms.terms))
+}
+
+/// What `admit_below_bar` knows of a matched decision.
+struct Holding {
+    /// `SearchMatchInfo::below_bar`.
+    below_bar: bool,
+    /// `SearchMatchInfo::held_words`.
+    held: BTreeSet<String>,
+    /// `SearchMatchInfo::headline_words`.
+    headline: BTreeSet<String>,
+}
+
+/// Fewer decisions than this say too little about which words are rare, so a lone word is trusted
+/// when it is the one thing a decision's own title or topic keys name (see `admit_below_bar`).
+const SMALL_LEDGER: usize = 16;
+/// The words a decision shares with the question must be, together, this many times rarer than a
+/// word held by one decision of the `searched + 1` (natural log of the odds), see `admit_below_bar`.
+const SHARED_WORDS_RARITY: f64 = 1.25;
+/// ... and carry at least this share of the weight of all the question's words.
+const SHARED_WORDS_SHARE: f64 = 0.2;
+/// At most this many decisions below the bar are added to an answer.
+const BELOW_BAR_LIMIT: usize = 3;
+
+/// Which decisions that lack too many of the terms (`SearchMatchInfo::below_bar`) are still
+/// answered. A long question names one thing among generic words ("CLI query xpath css text
+/// extraction"), and the half-of-the-terms bar loses it. A word weighs the rarer it is among the
+/// `searched` decisions: `ln((searched + 1) / (holders + 1/2))`, and a word nobody holds weighs the
+/// most of all, so a question mostly about what the ledger lacks never passes. A decision below the
+/// bar is answered when
+///
+/// - it holds at least two of the terms as words that together weigh at least `SHARED_WORDS_RARITY`
+///   times `ln(searched + 1)` and `SHARED_WORDS_SHARE` of all the terms' weight: two words that few
+///   decisions hold do not meet by chance, or
+/// - the ledger is small (`SMALL_LEDGER`), so counts say little, and a term the decision's title or
+///   topic keys hold is held by no other decision: its capturer named it as the subject.
+///
+/// At most `BELOW_BAR_LIMIT` of them, those holding the most weight, are added; they all lack more
+/// terms than any decision at the bar, so they come after those and each is labelled with the
+/// terms it lacks. No word list, nothing learned: the counts are the ledger's own.
+/// `scored` and `holdings` are in the same order; `terms` are the question's.
+fn admit_below_bar(
+    scored: Vec<ScoredDecisionSearchResult>,
+    holdings: Vec<Holding>,
+    searched: usize,
+    terms: &[String],
+) -> Vec<ScoredDecisionSearchResult> {
+    if !holdings.iter().any(|holding| holding.below_bar) {
+        return scored;
+    }
+    let mut holders: HashMap<&str, usize> = HashMap::new();
+    for holding in &holdings {
+        for term in &holding.held {
+            *holders.entry(term.as_str()).or_default() += 1;
+        }
+    }
+    let ledger = searched as f64 + 1.0;
+    let weight = |count: usize| (ledger / (count as f64 + 0.5)).ln();
+    let weight_of = |term: &str| holders.get(term).map_or(0.0, |count| weight(*count));
+    let total: f64 = terms
+        .iter()
+        .map(|term| match weight_of(term) {
+            held if held > 0.0 => held,
+            _ => weight(0),
+        })
+        .sum();
+
+    let mut below: Vec<(f64, usize)> = Vec::new();
+    for (index, holding) in holdings.iter().enumerate() {
+        if !holding.below_bar {
+            continue;
+        }
+        let shared: f64 = holding.held.iter().map(|term| weight_of(term)).sum();
+        let pair = holding.held.len() >= 2
+            && shared >= SHARED_WORDS_RARITY * ledger.ln()
+            && shared >= SHARED_WORDS_SHARE * total;
+        let named = searched <= SMALL_LEDGER
+            && holding
+                .headline
+                .iter()
+                .any(|term| holders.get(term.as_str()) == Some(&1));
+        if pair || named {
+            below.push((shared, index));
+        }
+    }
+    below.sort_by(|left, right| {
+        right
+            .0
+            .total_cmp(&left.0)
+            .then_with(|| scored[left.1].id.cmp(&scored[right.1].id))
+    });
+    let admitted: BTreeSet<usize> = below
+        .into_iter()
+        .take(BELOW_BAR_LIMIT)
+        .map(|(_, index)| index)
+        .collect();
+    scored
+        .into_iter()
+        .zip(holdings)
+        .enumerate()
+        .filter_map(|(index, (decision, holding))| {
+            (!holding.below_bar || admitted.contains(&index)).then_some(decision)
+        })
+        .collect()
 }
 
 /// One decision candidate for the resolve-by-description primitive (`resolve.rs`): the same
@@ -1256,9 +1397,22 @@ impl SearchField {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct SearchMatchInfo {
     rank: u8,
+    /// The decision lacks too many terms to pass `CloseMatch::accepts`, but holds some term as a
+    /// word: `collect_graph_search_results` keeps it only if the words it holds are rare among the
+    /// decisions searched (`admit_below_bar`).
+    below_bar: bool,
+    /// The terms some field holds as a whole word or a form of one, never as part of a longer
+    /// word; set only for the asker that reads (`CloseMatch::Half`).
+    held_words: BTreeSet<String>,
+    /// The subset of `held_words` the decision's title or topic keys hold.
+    headline_words: BTreeSet<String>,
+    /// How many times a field of the title or topic keys holds a term as a word (a term the title
+    /// and a topic key both hold counts twice). Among decisions below the bar that hold a word
+    /// each, the one whose title and topic keys both name it is the one about it.
+    headline_hits: usize,
     /// Query terms no field matched; non-empty only for a close match.
     missing_terms: Vec<String>,
     /// The question is negated and the decision's title is not (see `SearchTerms::negated`).
@@ -1393,13 +1547,7 @@ fn evaluate_search_match(
     let Some(query) = query else {
         return Some(SearchMatchInfo {
             rank: 4,
-            missing_terms: Vec::new(),
-            polarity_mismatch: false,
-            headline_terms: 0,
-            stand_in_terms: 0,
-            matched_fields: Vec::new(),
-            snippets: Vec::new(),
-            matched_nodes: Vec::new(),
+            ..SearchMatchInfo::default()
         });
     };
 
@@ -1407,6 +1555,12 @@ fn evaluate_search_match(
     // The matched terms that some field holds as the word itself or a form of it.
     let mut worded_terms: BTreeSet<&String> = BTreeSet::new();
     let mut headline_terms = BTreeSet::new();
+    // What `admit_below_bar` needs from the asker that reads: which terms a field holds as a whole
+    // word, and which of those the title or topic keys hold.
+    let track_words = search_terms.close == CloseMatch::Half;
+    let mut held_words = BTreeSet::new();
+    let mut headline_words = BTreeSet::new();
+    let mut headline_hits = 0_usize;
     let mut matched_fields = BTreeSet::new();
     let mut snippets = Vec::new();
     let mut matched_nodes = BTreeSet::new();
@@ -1446,6 +1600,15 @@ fn evaluate_search_match(
                 if in_headline {
                     headline_terms.insert(term.clone());
                 }
+                if track_words
+                    && holds_whole_word(search_terms.related.get(index), &value_lower, term)
+                {
+                    held_words.insert(term.clone());
+                    if in_headline {
+                        headline_words.insert(term.clone());
+                        headline_hits += 1;
+                    }
+                }
                 field_matched = true;
             }
         }
@@ -1476,12 +1639,20 @@ fn evaluate_search_match(
         .filter(|term| !matched_terms.contains(*term))
         .cloned()
         .collect();
+    let mut below_bar = false;
     if !missing_terms.is_empty()
         && !search_terms
             .close
             .accepts(terms.len() - missing_terms.len(), terms.len())
     {
-        return None;
+        // Too few of the words for the bar. A decision holding one of them as a word is not
+        // dropped yet: whether the words it holds are rare is known only across all decisions
+        // (`admit_below_bar`).
+        if track_words && !held_words.is_empty() {
+            below_bar = true;
+        } else {
+            return None;
+        }
     }
 
     // The title is the sentence that states what was decided; a rationale says "not" for a dozen
@@ -1496,6 +1667,10 @@ fn evaluate_search_match(
 
     Some(SearchMatchInfo {
         rank,
+        below_bar,
+        held_words,
+        headline_words,
+        headline_hits,
         polarity_mismatch,
         headline_terms: if missing_terms.is_empty() {
             0
@@ -1508,6 +1683,15 @@ fn evaluate_search_match(
         snippets,
         matched_nodes: matched_nodes.into_iter().collect(),
     })
+}
+
+/// Whether `text` (lowercase) holds `term` as a word or a form of one, never as a part of a longer
+/// word: "off" is not in "offset". `related` is the term's forms when the asker reads them.
+fn holds_whole_word(related: Option<&RelatedWord<'_>>, text: &str, term: &str) -> bool {
+    match related {
+        Some(related) => related.find_in(text) == Some(WordMatch::Word),
+        None => word_stems(text).contains(stem(term)),
+    }
 }
 
 fn exact_id_or_title_match(query: &str, fields: &[SearchField]) -> bool {

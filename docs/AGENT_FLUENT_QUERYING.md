@@ -280,9 +280,40 @@ Each such close match carries `missing_terms` (`missing=` in `--summary`, and a
 answer never reads as a complete one. The bar is half, not the resolver's "more
 than half, at least two", because `recall` only reads and labels what it returns:
 "what did we decide about sign-in and pricing" finds the decision about either
-word after the one about both. A question that no decision shares half its words
-with is still an empty answer, and `search` is unchanged: every word, as a
-literal substring.
+word after the one about both.
+
+A decision that holds fewer than half of the words is also returned, after every
+decision at the bar, when the words it does hold are rare among the decisions
+searched. A long question names one thing among generic words ("CLI query xpath css
+text extraction"), and one rare word of six would never reach half. A word weighs
+`ln((n + 1) / (holders + 1/2))` over the `n` decisions searched, `holders` being the
+decisions that hold it as a word or a form of one; a word nobody holds weighs the
+most, so a question that is mostly about what the ledger lacks never passes. A
+decision below the bar is returned when
+
+- it holds at least two of the words, and together they weigh at least 1.25 times
+  `ln(n + 1)` and a fifth of the weight of all the question's words: two words that
+  few decisions hold do not meet by chance, or
+- the ledger is small (16 decisions or fewer, too few for counts to say what is
+  rare), and a word its title or topic keys hold is held by no other decision: its
+  capturer named it as the subject.
+
+At most three such decisions are added (the ones holding the most weight, then
+decision id), each carrying `missing_terms` like any close match. `why` and
+`verify` read the same list. There is no word list and nothing learned: the counts
+are the ledger's own, so this part of recall, unlike the ordering of close
+candidates above, does count words across the ledger. A question that shares no
+rare words with a decision is still an empty answer.
+
+A synonym the ledger never uses ("dotted" for "dashed", "emoji" for "reaction")
+cannot be found this way: no word of the question is in the decision, and recall
+does not guess.
+
+`search` keeps every word, as a literal substring. When that finds nothing for a
+phrase of three or more words it asks again as `recall` does, and answers with the
+same list, so `search` and `recall` agree on a phrase written in an agent's own
+words; a shorter query stays exact. `data.query` is the query as it was given and
+each item carries `missing_terms`.
 
 ### 1.2 Recency, for free
 

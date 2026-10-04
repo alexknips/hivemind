@@ -1888,6 +1888,8 @@ pub enum QueryCommand {
     GetDecisionOutcome(QueryFluentDecisionArgs),
     /// Find decisions whose text contains every word of `--q` (literal substrings, no
     /// fuzziness), narrowed by topic, status, actor, source and date; paginated with --cursor.
+    /// When no decision has every word of a phrase of three or more, the answer is `recall`'s:
+    /// decisions holding some of the words, each with `missing_terms` naming what it lacks.
     /// For a question in your own words use `recall`.
     #[command(name = "search")]
     Search(QuerySearchDecisionsArgs),
@@ -1896,7 +1898,8 @@ pub enum QueryCommand {
     SearchDecisions(QuerySearchDecisionsArgs),
     /// "What was decided about X?" — ask in your own words and get the matching decisions,
     /// ranked, with a short digest of them: decisions matching every word first, then close
-    /// matches with the words they miss; a word also matches its inflections. Search plus
+    /// matches with the words they miss, then (at most three) decisions that hold only a few
+    /// words but ones few decisions hold; a word also matches its inflections. Search plus
     /// summary in one call.
     #[command(name = "recall")]
     Recall(QueryRecallArgs),
