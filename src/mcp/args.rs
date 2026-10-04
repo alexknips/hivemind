@@ -70,6 +70,31 @@ pub(crate) fn optional_string_array(
     }
 }
 
+/// `topic_keys` as the wire declares it (an array of strings), or as the single string an agent
+/// naturally passes for one topic — read as a one-element list. Only a topic key gets this
+/// leniency: it names one thing, so a lone string is unambiguous; every other array argument
+/// stays strict. A string that opens with `[` is an array that was written out as text (an
+/// agent double-encoded it), not a topic key: reading it as one key would file the decision
+/// under a mashed key like `staffing-task-selection`, so it is refused and says why.
+/// `required` makes an absent field a refusal rather than an empty list.
+pub(crate) fn topic_keys_arg(
+    args: &Map<String, Value>,
+    field: &str,
+    required: bool,
+) -> Result<Vec<String>, (i32, String)> {
+    match args.get(field) {
+        Some(Value::String(text)) if text.trim_start().starts_with('[') => Err((
+            INVALID_PARAMS,
+            format!(
+                "`{field}` must be an array of strings; this is a string that looks like an array written out as text — pass the array itself, not its text"
+            ),
+        )),
+        Some(single @ Value::String(_)) => collect_strings(std::slice::from_ref(single), field),
+        _ if required => require_string_array(args, field),
+        _ => optional_string_array(args, field),
+    }
+}
+
 pub(crate) fn optional_option_labels(
     args: &Map<String, Value>,
     field: &str,

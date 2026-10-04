@@ -229,9 +229,11 @@ why, independent of any quote.
 it stands on its own: at least 20 characters and 4 words, and free of a bare
 reference into a numbered list that exists only in the source chat — the
 same "1a"/"2. a" shape `--quote`/`--question` exist to carry instead
-(hivemind-763i, follow-up to hivemind-zdsh.13). If the rationale legitimately
-needs one of those tokens (e.g. quoting someone else's outline), pair
-`--quote`/`--question` rather than folding it into `--rationale`.
+(hivemind-763i, follow-up to hivemind-zdsh.13). A figure is not a list
+reference: a number followed by `k`, `m`, `s`, `h`, `d`, `w`, `y` or `x`
+(`28k`, `$4.7k`, `167h`, `3d`, `10x`) passes (hivemind-ukd8). If the rationale
+legitimately needs one of those tokens (e.g. quoting someone else's outline),
+pair `--quote`/`--question` rather than folding it into `--rationale`.
 
 ## Which question a decision answers
 

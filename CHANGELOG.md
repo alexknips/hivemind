@@ -381,6 +381,19 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A rationale holding a figure like `28k`, `167h`, `3d` or `10x` is no longer refused as a
+  "bare list item".** The capture check for a reference into a chat list (`1a`, `2. a`) also
+  matched any number followed by one freestanding letter, so an ordinary quantity was refused:
+  in a YC-Bench run, 28 of an agent's 85 captures failed this way (27 for a figure: 21 hour
+  counts such as `167h`, 5 amounts such as `28k` or `78M`, one `4x`), and the agent rewrote the
+  decision as vaguer prose without the numbers. A number followed by `k`, `m`, `s`, `h`, `d`,
+  `w`, `y` or `x` (either case) is now read as a figure, including `$4.7k`. `1a`, `1b`, `2c` and
+  `2. a` are still refused unless `quote` and `question` carry the verbatim words, and the
+  minimum length and word count are unchanged. Over MCP, `capture_decision` and
+  `supersede_decision` also take `topic_keys` as one string for one topic (the array form still
+  works); a string that is an array written out as text, such as `["a", "b"]`, is refused with a
+  message that says to pass the array itself, rather than filed under one mashed topic.
+  (hivemind-ukd8)
 - **Asking the exact question a decision answers now finds it.** A decision records the question
   it answers (`--question`, `capture --answers`, `ground --answers`, `request_decision`, and every
   AskUserQuestion answer the ask hooks write), but `why`, `recall` and `search` never read it:

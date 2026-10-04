@@ -14,10 +14,10 @@ use crate::events::{
 use crate::ledger::{EventLedger, InMemoryEventLedger, SqliteEventLedger};
 
 use super::{
-    agent_actor_session, normalize_topic_key, personal_project_handle, CommandContext, Commands,
-    DecisionPlacement, DecisionProposalInput, DeterminedProject, GroundInput, Grounding,
-    GroundingPlan, NewBet, NewEvidence, RestsOnKind, SupersedeInput, SupersedeOutcome,
-    MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN, PERSONAL_FALLBACK_NOTICE,
+    agent_actor_session, find_bare_list_reference, normalize_topic_key, personal_project_handle,
+    CommandContext, Commands, DecisionPlacement, DecisionProposalInput, DeterminedProject,
+    GroundInput, Grounding, GroundingPlan, NewBet, NewEvidence, RestsOnKind, SupersedeInput,
+    SupersedeOutcome, MAX_TITLE_LEN, MAX_TOPIC_KEY_LEN, PERSONAL_FALLBACK_NOTICE,
 };
 
 #[test]
@@ -583,6 +583,78 @@ fn propose_decision_rejects_rationale_with_a_bare_list_reference() {
     assert!(
         error.to_string().contains("pair quote with question"),
         "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn propose_decision_accepts_a_rationale_holding_figures_with_a_unit_suffix() {
+    // hivemind-ukd8: "28k", "167h", "3d" are quantities, not citations into a chat list.
+    // YC-Bench refused a third of an agent's captures for them.
+    let rationales = [
+        "Equinox and Vanguard inflate the real quantity about 4x so we budget 28k a month",
+        "The contract paid $4.7k up front and 677k over the year, so we took it on",
+        "The run lasted 167h and the retry took 240h, which is why we stopped it early",
+        "Waiting 3d then 2m and 30s before retrying, with 10x the load and 78M in the pool",
+        "Revenue was 5K per week, 1Y out, with a 2W window and a 9D buffer left over",
+    ];
+    for rationale in rationales {
+        assert_eq!(
+            find_bare_list_reference(rationale),
+            None,
+            "a figure must not read as a list citation: {rationale}"
+        );
+    }
+
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let option_id = commands
+        .record_option("actor:alice", "A", "Option A")
+        .expect("option a");
+    commands
+        .propose_decision(DecisionProposalInput {
+            project: None,
+            grounding: Grounding::NotAsked,
+            expressed_confidence: None,
+            actor_id: "actor:alice",
+            title: "Decision whose why is a figure",
+            rationale: rationales[0],
+            topic_keys: &["topic".to_owned()],
+            option_ids: std::slice::from_ref(&option_id),
+            option_labels: &["A".to_owned()],
+            chosen_option_id: None,
+            decided_by: None,
+            delegated_by: None,
+            still_proposed: false,
+            hypothesis_ids: &[],
+            evidence_ids: &[],
+            quote: None,
+            question: None,
+        })
+        .expect("a rationale with figures is a readable rationale");
+}
+
+#[test]
+fn bare_list_reference_still_finds_the_citation_shapes_beside_figures() {
+    // The audited shapes stay refused, even when a figure sits in the same sentence.
+    assert_eq!(
+        find_bare_list_reference("verbatim: 1a, 2 this seems weird"),
+        Some("1a".to_owned())
+    );
+    assert_eq!(
+        find_bare_list_reference("Per 28k of spend, verbatim 1b was the pick"),
+        Some("1b".to_owned())
+    );
+    assert_eq!(
+        find_bare_list_reference("Per the notes 2. a clearer alternative won"),
+        Some("2. a".to_owned())
+    );
+    assert_eq!(
+        find_bare_list_reference("Took 167h, then picked 3c from the list"),
+        Some("3c".to_owned())
+    );
+    assert_eq!(
+        find_bare_list_reference("Option 2C was the one we kept"),
+        Some("2C".to_owned())
     );
 }
 

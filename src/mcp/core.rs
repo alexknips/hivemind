@@ -71,7 +71,7 @@ use crate::summarize::{RecallRequest, RECALL_DEFAULT_LIMIT, RECALL_MAX_LIMIT};
 use super::args::{
     default_option_description, optional_bool, optional_bool_or, optional_datetime,
     optional_option_labels, optional_string, optional_string_array, optional_usize, require_string,
-    require_string_array,
+    require_string_array, topic_keys_arg,
 };
 
 // ---------------------------------------------------------------------------
@@ -354,7 +354,7 @@ impl CaptureDecisionArgs {
     ) -> Result<Self, CoreError> {
         let title = require_string(args, "title")?;
         let rationale = require_string(args, "rationale")?;
-        let topic_keys = require_string_array(args, "topic_keys")?;
+        let topic_keys = topic_keys_arg(args, "topic_keys", true)?;
         if topic_keys.is_empty() {
             return Err(CoreError::InvalidArgument(
                 "topic_keys must not be empty".to_owned(),
@@ -1295,7 +1295,7 @@ impl SupersedeDecisionArgs {
             topic: optional_string(args, "topic")?,
             title: require_string(args, "title")?,
             rationale: require_string(args, "rationale")?,
-            topic_keys: optional_string_array(args, "topic_keys")?,
+            topic_keys: topic_keys_arg(args, "topic_keys", false)?,
             option_labels: optional_option_labels(args, "options")?,
             chosen_option_label: optional_string(args, "chosen_option_label")?,
             still_proposed: optional_bool(args, "still_proposed")?,

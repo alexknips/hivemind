@@ -4111,13 +4111,27 @@ fn require_readable_rationale(rationale: &str, has_quote_pair: bool) -> Result<(
 /// followed either directly, or — with a literal `.` and optional spaces — by a single
 /// freestanding letter. Deliberately narrow: "TLS 1.2 support" and "24x7" do not match, since
 /// this targets the shape of a citation into an external numbered list, not any digit near a
-/// letter. A regex-class heuristic, not a parser — some legitimate prose (e.g. a sentence that
-/// both ends in "N." and is immediately followed by a one-letter word) can still trip it; the
-/// `quote`/`question` pair is the escape hatch for a rationale that legitimately needs to carry
-/// one of these tokens.
+/// letter. A figure with a unit suffix ("28k", "167h", "3d", "10x", "$4.7k", "78M") is a
+/// quantity, not a citation, so a directly attached letter that is a unit suffix never matches
+/// (see [`is_figure_unit_suffix`]). A regex-class heuristic, not a parser — some legitimate
+/// prose (e.g. a sentence that both ends in "N." and is immediately followed by a one-letter
+/// word) can still trip it; the `quote`/`question` pair is the escape hatch for a rationale
+/// that legitimately needs to carry one of these tokens.
 fn find_bare_list_reference(text: &str) -> Option<String> {
     fn is_word_char(c: char) -> bool {
         c.is_alphanumeric() || c == '_'
+    }
+
+    /// The letters that follow a digit run in a quantity rather than a list citation: thousand
+    /// and million (`k`, `m`), durations (`s`, `h`, `d`, `w`, `y`) and a multiplier (`x`), in
+    /// either case. `b` is deliberately absent: "1b" is the second item of list 1 as readily as
+    /// it is a billion, and a refused figure costs a retry while an accepted citation stores a
+    /// rationale nobody can read later.
+    fn is_figure_unit_suffix(letter: char) -> bool {
+        matches!(
+            letter.to_ascii_lowercase(),
+            'k' | 'm' | 's' | 'h' | 'd' | 'w' | 'y' | 'x'
+        )
     }
 
     let chars: Vec<char> = text.chars().collect();
@@ -4141,8 +4155,12 @@ fn find_bare_list_reference(text: &str) -> Option<String> {
             continue;
         }
 
-        // Case A: digit run directly followed by one freestanding letter, e.g. "1a".
-        if digit_end < len && chars[digit_end].is_ascii_alphabetic() {
+        // Case A: digit run directly followed by one freestanding letter, e.g. "1a" — unless the
+        // letter is a unit suffix, which makes the token a figure ("28k", "167h").
+        if digit_end < len
+            && chars[digit_end].is_ascii_alphabetic()
+            && !is_figure_unit_suffix(chars[digit_end])
+        {
             let letter_end = digit_end + 1;
             if letter_end >= len || !is_word_char(chars[letter_end]) {
                 return Some(chars[digit_start..letter_end].iter().collect());

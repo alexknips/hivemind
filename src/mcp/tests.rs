@@ -209,6 +209,105 @@ fn capture_decision_refuses_a_call_that_names_nothing_it_rests_on() {
 }
 
 #[test]
+fn capture_decision_accepts_a_single_string_topic_key_and_a_rationale_with_figures() {
+    // hivemind-ukd8: an agent passed `topic_keys` as one string and put "28k" / "167h" in the
+    // rationale; both were refused. One topic key as a string is a one-element list.
+    let dir = unique_dir("single-topic-figures");
+    let config = McpConfig::new(&dir).with_session_id("single-topic-session");
+    let capture = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "capture_decision",
+            "arguments": {
+                "grounding": [{"kind": "bet"}],
+                "actor_id": "agent:test:1",
+                "title": "Price the contract below the 28k line",
+                "rationale": "Equinox and Vanguard inflate the real quantity about 4x, and 167h of rework cost us 28k last quarter",
+                "topic_keys": "pricing",
+                "options": [{"label": "underbid"}, {"label": "hold the price"}],
+                "chosen_option_label": "underbid"
+            }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[capture.as_str()]);
+    let result = &responses[0]["result"];
+    assert_eq!(
+        result["isError"],
+        serde_json::Value::Bool(false),
+        "{result:?}"
+    );
+    let decision_id = result["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("decision_id");
+
+    let fetch = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "get_decision",
+            "arguments": { "decision_id": decision_id }
+        }
+    })
+    .to_string();
+    let responses = drive(&config, &[fetch.as_str()]);
+    assert_eq!(
+        responses[0]["result"]["structuredContent"]["data"]["topic_keys"],
+        json!(["pricing"]),
+        "the decision is filed under the single topic key"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn topic_keys_arg_reads_a_string_as_one_key_and_keeps_every_other_refusal() {
+    let read = |value: Value, required: bool| {
+        let args = json!({ "topic_keys": value });
+        crate::mcp::args::topic_keys_arg(args.as_object().expect("object"), "topic_keys", required)
+    };
+
+    assert_eq!(read(json!("pricing"), true), Ok(vec!["pricing".to_owned()]));
+    assert_eq!(
+        read(json!("pricing"), false),
+        Ok(vec!["pricing".to_owned()])
+    );
+    assert_eq!(
+        read(json!(["pricing", "ops"]), true),
+        Ok(vec!["pricing".to_owned(), "ops".to_owned()])
+    );
+    // The shape the YC-Bench agent sent: an array written out as text, junk after the bracket.
+    let written_out = read(json!("[\"staffing\", \"yc-bench\"]>\n"), true)
+        .expect_err("an array written out as text is not a single topic key");
+    assert!(
+        written_out.1.contains("pass the array itself"),
+        "the refusal names the fix: {written_out:?}"
+    );
+    assert!(read(json!("[\"staffing\"]"), false).is_err());
+    assert!(read(json!("  "), true).is_err(), "a blank key is refused");
+    assert!(read(json!(7), true).is_err(), "a number is refused");
+    assert!(
+        read(json!([7]), true).is_err(),
+        "a non-string entry is refused"
+    );
+    assert!(
+        read(json!(null), true).is_err(),
+        "required: null is refused"
+    );
+    assert_eq!(read(json!(null), false), Ok(Vec::new()));
+
+    let empty = json!({});
+    let empty = empty.as_object().expect("object");
+    assert!(crate::mcp::args::topic_keys_arg(empty, "topic_keys", true).is_err());
+    assert_eq!(
+        crate::mcp::args::topic_keys_arg(empty, "topic_keys", false),
+        Ok(Vec::new())
+    );
+}
+
+#[test]
 fn notifications_produce_no_response() {
     let dir = unique_dir("notify");
     let config = McpConfig::new(&dir).with_session_id("test-session");
