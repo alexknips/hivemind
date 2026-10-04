@@ -4157,9 +4157,9 @@ fn find_bare_list_reference(text: &str) -> Option<String> {
 
         // Case A: digit run directly followed by one freestanding letter, e.g. "1a" — unless the
         // letter is a unit suffix, which makes the token a figure ("28k", "167h").
-        if digit_end < len
-            && chars[digit_end].is_ascii_alphabetic()
-            && !is_figure_unit_suffix(chars[digit_end])
+        if chars
+            .get(digit_end)
+            .is_some_and(|c| c.is_ascii_alphabetic() && !is_figure_unit_suffix(*c))
         {
             let letter_end = digit_end + 1;
             if letter_end >= len || !is_word_char(chars[letter_end]) {
