@@ -296,7 +296,7 @@ fn render_resolution_notices(candidate: &ResolvedCandidate) -> String {
             .map(|term| format!("\"{term}\""))
             .collect();
         lines.push(format!(
-            "close match: no decision has every word you asked with; this one has no {} (name a decision exactly with --id)",
+            "close match: this one has no {} (name a decision exactly with --id)",
             words.join(", ")
         ));
     }

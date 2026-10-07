@@ -1216,3 +1216,210 @@ fn a_decision_with_the_word_is_not_tied_with_one_that_only_has_a_stand_in() -> R
     }
     Ok(())
 }
+
+// A decision that holds every word of a question only somewhere in a long rationale is not the
+// one the question is about when another decision carries the words in its title and topic keys
+// (hivemind-eral). Where the words sit is compared before whether every word is somewhere.
+
+/// "is the product still called Upheld": a triage decision whose rationale happens to say all of
+/// product, called and upheld, and the decision that names the product, which never says "called".
+fn product_name_graph() -> Result<MemoryGraph> {
+    graph_from_events([
+        decision_proposed_because(
+            1,
+            "d:triage",
+            "Triage gate runs on a local model",
+            "The product was called Upheld in the first demos, and it is still called that in the pitch.",
+            &["triage"],
+        ),
+        decision_proposed_because(
+            2,
+            "d:name",
+            "Name the product Upheld",
+            "A short name that says what the record does.",
+            &["naming"],
+        ),
+        decision_proposed(3, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])
+}
+
+#[test]
+fn reading_answers_with_the_decision_about_the_question_not_the_one_that_holds_every_word(
+) -> Result<()> {
+    let graph = product_name_graph()?;
+
+    // d:triage matches product, called and upheld in full, all in its rationale. d:name has
+    // product and upheld in its title and lacks "called". The full match used to win silently.
+    match reading(&graph, "is the product still called Upheld")?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:name");
+            assert_eq!(candidate.missing_terms, vec!["called"]);
+            assert!(candidate.is_close());
+        }
+        other => panic!("expected the decision about the name, saying what it lacks: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_writer_lists_the_decision_about_the_question_first_and_picks_none() -> Result<()> {
+    let graph = product_name_graph()?;
+
+    match resolve_decision_by_description(&graph, "is the product still called Upheld", None)?.data
+    {
+        ResolveOutcome::Ambiguous { candidates } => {
+            let ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+            assert_eq!(ids, vec!["d:name", "d:triage"]);
+            assert_eq!(candidates[0].missing_terms, vec!["called"]);
+            assert!(candidates[1].missing_terms.is_empty());
+        }
+        other => panic!("a writer must not write to either without a pick: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_close_candidate_that_carries_no_more_of_the_question_is_not_ahead_of_a_full_match(
+) -> Result<()> {
+    let graph = graph_from_events([
+        // Holds every word, two of them in its title.
+        decision_proposed_because(
+            1,
+            "d:full",
+            "Name the product Upheld",
+            "Called Upheld since the first demo.",
+            &[],
+        ),
+        // Lacks "called" and has the same two words in its title: nothing more about the question.
+        decision_proposed(2, "d:close", "Rename the product Upheld", &[]),
+    ])?;
+
+    for outcome in both_askers(&graph, "is the product still called Upheld")? {
+        match outcome {
+            ResolveOutcome::Resolved { candidate } => {
+                assert_eq!(candidate.decision_id, "d:full");
+                assert!(candidate.missing_terms.is_empty());
+            }
+            other => panic!("the full match stays the answer, got {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_full_match_with_the_words_in_its_title_is_ahead_of_one_that_holds_them_in_its_rationale(
+) -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed(1, "d:title", "Adopt async queue for billing", &[]),
+        decision_proposed_because(
+            2,
+            "d:body",
+            "Billing notes",
+            "We adopt the async queue for it.",
+            &[],
+        ),
+    ])?;
+
+    // Both are full matches in the same rank tier (the title of each holds a word), so the rank
+    // tier alone would call them equals. One says all four words in its title.
+    for outcome in both_askers(&graph, "adopt async queue billing")? {
+        match outcome {
+            ResolveOutcome::Resolved { candidate } => {
+                assert_eq!(candidate.decision_id, "d:title");
+            }
+            other => panic!("expected the decision whose title says it, got {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn between_equal_headlines_the_decision_whose_title_says_the_words_is_the_one_about_them(
+) -> Result<()> {
+    let graph = graph_from_events([
+        // Both carry "product" and "naming" in their headline and have a word in their title, so
+        // the rank tier calls them equals. One says both in its title; the other files "product"
+        // under a topic key.
+        decision_proposed(1, "d:filed", "Naming rules", &["product"]),
+        decision_proposed(2, "d:titled", "Product naming rules", &[]),
+        decision_proposed(3, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])?;
+
+    match reading(&graph, "product naming")?.data {
+        ResolveOutcome::Resolved { candidate } => assert_eq!(candidate.decision_id, "d:titled"),
+        other => panic!("expected the decision whose title carries the words, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_negated_question_is_answered_by_the_decision_about_it_not_the_opposite_one_that_holds_every_word(
+) -> Result<()> {
+    let graph = graph_from_events([
+        // About the question and negated like it, but it never says "show".
+        decision_proposed(
+            1,
+            "d:ui",
+            "The UI names every agent 'an agent', never by the tool or role it ran as",
+            &[],
+        ),
+        // Says all five words in its rationale, and is not negated: the opposite of what was asked.
+        decision_proposed_because(
+            2,
+            "d:listing",
+            "Listing order after proof",
+            "The UI could show which tool an agent ran in, in a list.",
+            &[],
+        ),
+        decision_proposed(3, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])?;
+    let question = "why doesn't the UI show which tool an agent ran in?";
+
+    match reading(&graph, question)?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:ui");
+            assert_eq!(candidate.missing_terms, vec!["show"]);
+            assert!(!candidate.polarity_mismatch);
+        }
+        other => panic!("expected the negated decision about the question: {other:?}"),
+    }
+    match resolve_decision_by_description(&graph, question, None)?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            assert_eq!(candidates[0].decision_id, "d:ui");
+            assert_eq!(candidates[1].decision_id, "d:listing");
+            assert!(candidates[1].polarity_mismatch);
+        }
+        other => panic!("a writer lists both and picks none: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn the_decision_that_records_the_question_stays_ahead_of_a_decision_with_more_in_its_title(
+) -> Result<()> {
+    // The question as asked is the question this decision answers; another decision's title says
+    // more of its words, and still is not the decision the question names.
+    let mut recorded = decision_proposed_because(
+        1,
+        "d:recorded",
+        "Chromium for the UI tests",
+        "Real layout needs a real engine.",
+        &[],
+    );
+    recorded.payload["question"] = json!("Which browser engine do front-end checks use?");
+    let graph = graph_from_events([
+        recorded,
+        decision_proposed(2, "d:titled", "Browser engine front-end checks use", &[]),
+    ])?;
+
+    for outcome in both_askers(&graph, "Which browser engine do front-end checks use?")? {
+        match outcome {
+            ResolveOutcome::Resolved { candidate } => {
+                assert_eq!(candidate.decision_id, "d:recorded");
+                assert_eq!(candidate.rank, 0);
+            }
+            other => panic!("the recorded question names its decision, got {other:?}"),
+        }
+    }
+    Ok(())
+}

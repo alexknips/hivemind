@@ -192,6 +192,12 @@ only to a decision whose own title is negated; "Adopt Kafka" comes back as a clo
 with `polarity_mismatch` in JSON (a `polarity: question is negated; this decision is not`
 line in `--summary`), never as the answer. `recall` ranks as if the negation were absent.
 
+A newer hivemind also asks where the words sit, not only whether every word is somewhere.
+A decision whose long rationale says every word of a plain question is not the answer when
+another decision carries more of the question in its title and topic keys and lacks one word:
+that one comes first (and `why` answers with it, opening with its `close match:` line). Read
+that line the same way: the decision lacks the words it names.
+
 A newer hivemind also folds a decision that was recorded more than once and
 linked as the same decision: the answer shows the earliest matching record and
 lists the others under `also_recorded_as` (an `also recorded as:` line in

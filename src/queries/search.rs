@@ -1,6 +1,6 @@
 //! Full-text and filter search over decisions via SQLite FTS and graph predicate evaluation.
 
-use std::cmp::Reverse;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Instant;
 
@@ -609,40 +609,145 @@ fn narrow_to_scope(
     Ok(scope.note(&labels))
 }
 
-/// Own project first, then the parent's, then a dependency's; within each, the decisions that
-/// lack the fewest of the question's terms, then (among close matches) the ones whose title or
-/// topic keys carry more of the terms they did match, then (for a decision below the bar, see
-/// `admit_below_bar`) the one that names a word it holds in both its title and its topic keys, then
-/// the ones that match fewer of them only
-/// through a stand-in word (a decision that has the word asked for comes before one that has a
-/// synonym), then (rank, id) order. A negated question
-/// does not change that order: among decisions tied on all of it, the ones whose title is negated
-/// too come before the ones whose title is not. An unscoped document has no relation and a literal
-/// match lacks nothing and is never negated, so an unscoped `search` keeps the plain (rank, id)
-/// order.
+/// Own project first, then the parent's, then a dependency's; within each, first the close
+/// matches that hold more of what the question is about than every decision that holds all of its
+/// words (`out_heading`), then the decisions that lack the fewest of the question's terms. Among
+/// those that hold every term, the one whose title, topic keys and recorded question hold more of
+/// them comes first (`About`); among close matches, the ones whose title or topic keys carry more
+/// of the terms they did match. Then (for a decision below the bar, see `admit_below_bar`) the one
+/// that names a word it holds in both its title and its topic keys, then the ones that match fewer
+/// of the terms only through a stand-in word (a decision that has the word asked for comes before
+/// one that has a synonym), then (rank, id) order. A negated question does not change that order:
+/// among decisions tied on all of it, the ones whose title is negated too come before the ones
+/// whose title is not. An unscoped document has no relation, a literal match lacks nothing, is
+/// never negated and is about nothing, so an unscoped `search` keeps the plain (rank, id) order.
 fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
+    mark_out_heading(scored);
     scored.sort_by(|left, right| {
-        (
-            left.relation,
-            left.result.missing_terms.len(),
-            Reverse(left.headline_terms),
-            Reverse(left.headline_hits),
-            left.stand_ins,
-            left.rank,
-            left.polarity_mismatch,
-            &left.id,
-        )
-            .cmp(&(
-                right.relation,
-                right.result.missing_terms.len(),
-                Reverse(right.headline_terms),
-                Reverse(right.headline_hits),
-                right.stand_ins,
-                right.rank,
-                right.polarity_mismatch,
-                &right.id,
-            ))
+        left.relation
+            .cmp(&right.relation)
+            .then_with(|| right.promoted.cmp(&left.promoted))
+            .then_with(|| {
+                left.result
+                    .missing_terms
+                    .len()
+                    .cmp(&right.result.missing_terms.len())
+            })
+            .then_with(|| {
+                if left.result.missing_terms.is_empty() {
+                    right.about.cmp_about(&left.about)
+                } else {
+                    Ordering::Equal
+                }
+            })
+            .then_with(|| right.headline_terms.cmp(&left.headline_terms))
+            .then_with(|| right.headline_hits.cmp(&left.headline_hits))
+            .then_with(|| left.stand_ins.cmp(&right.stand_ins))
+            .then_with(|| left.rank.cmp(&right.rank))
+            .then_with(|| left.polarity_mismatch.cmp(&right.polarity_mismatch))
+            .then_with(|| left.id.cmp(&right.id))
     });
+}
+
+/// Sets `promoted` on the close matches that `out_heading` puts ahead of the full ones, within
+/// each project relation (an own-project decision is never weighed against a parent's).
+fn mark_out_heading(scored: &mut [ScoredDecisionSearchResult]) {
+    let mut groups: BTreeMap<Option<ScopeRelation>, Vec<usize>> = BTreeMap::new();
+    for (index, document) in scored.iter().enumerate() {
+        groups.entry(document.relation).or_default().push(index);
+    }
+    let mut promoted = vec![false; scored.len()];
+    for indices in groups.values() {
+        let standings: Vec<Standing> = indices
+            .iter()
+            .filter_map(|&index| scored.get(index))
+            .map(|document| Standing {
+                missing: document.result.missing_terms.len(),
+                opposite: document.polarity_mismatch,
+                about: document.about,
+            })
+            .collect();
+        for (&index, flag) in indices.iter().zip(out_heading(&standings)) {
+            if let Some(slot) = promoted.get_mut(index) {
+                *slot = flag;
+            }
+        }
+    }
+    for (document, flag) in scored.iter_mut().zip(promoted) {
+        document.promoted = flag;
+    }
+}
+
+/// What a question is about, for one decision: how much of the question its own title, topic keys
+/// and recorded question carry. A decision about a thing says it in its headline; one that merely
+/// holds the same words somewhere in a long rationale, its evidence or the fields of whoever
+/// recorded it is a weaker answer, however many of the words it holds. A word counts for what it
+/// is worth (`TermWeights`), so the one rare word of a question outweighs the generic ones around
+/// it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct About {
+    /// The weight of the question's words that the title, a topic key or the question the
+    /// decision records holds as a word or a form of one, never as part of a longer word and
+    /// never through a stand-in.
+    weight: f64,
+    /// The part of `weight` the title itself holds: the title states what was decided, a topic
+    /// key only files it, so between equal weights the decision that says it in its title is the
+    /// one about it.
+    title: f64,
+}
+
+impl About {
+    /// The decision the question names: its id or title is the question, or it records the
+    /// question as asked. Nothing is more about the question than that.
+    const NAMED: Self = Self {
+        weight: f64::INFINITY,
+        title: f64::INFINITY,
+    };
+
+    pub(crate) fn cmp_about(&self, other: &Self) -> Ordering {
+        self.weight
+            .total_cmp(&other.weight)
+            .then_with(|| self.title.total_cmp(&other.title))
+    }
+}
+
+/// What `out_heading` needs of one candidate.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Standing {
+    /// How many of the question's terms the candidate lacks.
+    pub(crate) missing: usize,
+    /// The question is negated and the candidate's title is not.
+    pub(crate) opposite: bool,
+    pub(crate) about: About,
+}
+
+/// Which of `candidates` are put ahead of the ones that hold every word asked. A decision that
+/// holds every word only somewhere in a long rationale ("is the product still called HiveMind",
+/// answered by a decision on a triage gate whose rationale says all three) is not the one the
+/// question is about when another decision carries more of those words in its title, topic keys
+/// and recorded question and lacks only one. The candidates that hold every term (of the right
+/// polarity, when any do) say how much is about the question at best; a close match that carries
+/// strictly more of it is promoted: listed before them, and for a verb that only reads, answered
+/// with, saying what it lacks. Nothing else is moved, and a candidate of the opposite polarity is
+/// never promoted. The basis is where the words sit and how many decisions hold each; nothing is
+/// learned.
+pub(crate) fn out_heading(candidates: &[Standing]) -> Vec<bool> {
+    let best = |eligible_only: bool| {
+        candidates
+            .iter()
+            .filter(|candidate| candidate.missing == 0 && !(eligible_only && candidate.opposite))
+            .map(|candidate| candidate.about)
+            .max_by(About::cmp_about)
+    };
+    let reference = best(true).or_else(|| best(false));
+    candidates
+        .iter()
+        .map(|candidate| {
+            candidate.missing > 0
+                && !candidate.opposite
+                && reference.is_some_and(|reference| candidate.about.cmp_about(&reference).is_gt())
+        })
+        .collect()
 }
 
 // ubs:ignore: This helper only executes static FTS SQL and uses rusqlite params! for document values.
@@ -913,6 +1018,11 @@ struct ScoredDecisionSearchResult {
     headline_hits: usize,
     /// `SearchMatchInfo::stand_in_terms`.
     stand_ins: usize,
+    /// How much of the question the decision's title, topic keys and recorded question carry
+    /// (`About`); nothing for a literal match, which has no words to weigh.
+    about: About,
+    /// A close match that `out_heading` puts ahead of the full ones (set when sorting).
+    promoted: bool,
     result: DecisionSearchResult,
     fields: Vec<SearchField>,
 }
@@ -1137,6 +1247,9 @@ fn collect_graph_search_results(
             below_bar: match_info.below_bar,
             held: match_info.held_words,
             headline: match_info.headline_words,
+            title: match_info.title_words,
+            about: match_info.about_words,
+            named: match_info.named && terms.close != CloseMatch::Never,
         });
 
         let decision = DecisionView {
@@ -1171,6 +1284,8 @@ fn collect_graph_search_results(
                 0
             },
             stand_ins: match_info.stand_in_terms,
+            about: About::default(),
+            promoted: false,
             fields,
             result: DecisionSearchResult {
                 decision,
@@ -1195,15 +1310,19 @@ fn collect_graph_search_results(
         });
     }
 
+    let weights = TermWeights::new(&holdings, searched);
+    for (decision, holding) in scored.iter_mut().zip(&holdings) {
+        decision.about = holding.about(&weights);
+    }
     Ok(admit_below_bar(
         scored,
         holdings,
-        searched,
+        &weights,
         terms.terms.len(),
     ))
 }
 
-/// What `admit_below_bar` knows of a matched decision.
+/// What `admit_below_bar` and `About` know of a matched decision.
 struct Holding {
     /// `SearchMatchInfo::below_bar`.
     below_bar: bool,
@@ -1211,6 +1330,67 @@ struct Holding {
     held: BTreeSet<usize>,
     /// `SearchMatchInfo::headline_words`.
     headline: BTreeSet<usize>,
+    /// `SearchMatchInfo::title_words`.
+    title: BTreeSet<usize>,
+    /// `SearchMatchInfo::about_words`.
+    about: BTreeSet<usize>,
+    /// The question names this decision (`SearchMatchInfo::named`), for a request that matches
+    /// words at all.
+    named: bool,
+}
+
+impl Holding {
+    /// How much of the question this decision's title, topic keys and recorded question carry.
+    fn about(&self, weights: &TermWeights) -> About {
+        if self.named {
+            return About::NAMED;
+        }
+        let sum = |terms: &BTreeSet<usize>| terms.iter().map(|term| weights.weight_of(*term)).sum();
+        About {
+            weight: sum(&self.about),
+            title: sum(&self.title),
+        }
+    }
+}
+
+/// How rare each word of a question is among the decisions searched: a word weighs
+/// `ln((searched + 1) / (holders + 1/2))`, `holders` being the matched decisions that hold it as a
+/// word or a form of one, so a word few decisions hold weighs the most and a word nobody holds
+/// weighs more still. The counts are the ledger's own and nothing is learned.
+struct TermWeights {
+    /// How many matched decisions hold each term (by position in the question's terms).
+    holders: HashMap<usize, usize>,
+    /// How many decisions were searched.
+    searched: usize,
+}
+
+impl TermWeights {
+    fn new(holdings: &[Holding], searched: usize) -> Self {
+        let mut holders: HashMap<usize, usize> = HashMap::new();
+        for holding in holdings {
+            for term in &holding.held {
+                *holders.entry(*term).or_default() += 1;
+            }
+        }
+        Self { holders, searched }
+    }
+
+    /// The decisions searched, plus one.
+    fn ledger(&self) -> f64 {
+        self.searched as f64 + 1.0
+    }
+
+    /// The weight of a word that `count` decisions hold.
+    fn weight_for(&self, count: usize) -> f64 {
+        (self.ledger() / (count as f64 + 0.5)).ln()
+    }
+
+    /// The weight of a term some decision holds; nothing for one that none does.
+    fn weight_of(&self, term: usize) -> f64 {
+        self.holders
+            .get(&term)
+            .map_or(0.0, |count| self.weight_for(*count))
+    }
 }
 
 /// Fewer decisions than this say too little about which words are rare, so a lone word is trusted
@@ -1251,25 +1431,16 @@ const BELOW_BAR_LIMIT: usize = 3;
 fn admit_below_bar(
     scored: Vec<ScoredDecisionSearchResult>,
     holdings: Vec<Holding>,
-    searched: usize,
+    weights: &TermWeights,
     term_count: usize,
 ) -> Vec<ScoredDecisionSearchResult> {
     if !holdings.iter().any(|holding| holding.below_bar) {
         return scored;
     }
-    let mut holders: HashMap<usize, usize> = HashMap::new();
-    for holding in &holdings {
-        for term in &holding.held {
-            *holders.entry(*term).or_default() += 1;
-        }
-    }
-    let ledger = searched as f64 + 1.0;
-    let weight = |count: usize| (ledger / (count as f64 + 0.5)).ln();
-    let weight_of = |term: usize| holders.get(&term).map_or(0.0, |count| weight(*count));
     let total: f64 = (0..term_count)
-        .map(|term| match weight_of(term) {
+        .map(|term| match weights.weight_of(term) {
             held if held > 0.0 => held,
-            _ => weight(0),
+            _ => weights.weight_for(0),
         })
         .sum();
 
@@ -1278,16 +1449,20 @@ fn admit_below_bar(
         if !holding.below_bar {
             continue;
         }
-        let shared: f64 = holding.held.iter().map(|term| weight_of(*term)).sum();
+        let shared: f64 = holding
+            .held
+            .iter()
+            .map(|term| weights.weight_of(*term))
+            .sum();
         let pair = (holding.held.len() >= SHARED_WORDS_MIN
             || holding.headline.len() >= SHARED_HEADLINE_WORDS_MIN)
-            && shared >= SHARED_WORDS_RARITY * ledger.ln()
+            && shared >= SHARED_WORDS_RARITY * weights.ledger().ln()
             && shared >= SHARED_WORDS_SHARE * total;
-        let named = searched <= SMALL_LEDGER
+        let named = weights.searched <= SMALL_LEDGER
             && holding
                 .headline
                 .iter()
-                .any(|term| holders.get(term) == Some(&1));
+                .any(|term| weights.holders.get(term) == Some(&1));
         if pair || named {
             below.push((shared, decision.id.as_str(), index));
         }
@@ -1328,6 +1503,12 @@ pub(crate) struct ResolverCandidateRow {
     /// How many of the terms it matched only through a stand-in word (`SearchMatchInfo::
     /// stand_in_terms`); 0 for an asker that writes, which never reads stand-ins.
     pub(crate) stand_in_terms: usize,
+    /// How much of the question the decision's title, topic keys and recorded question carry
+    /// (`About`).
+    pub(crate) about: About,
+    /// A close match that `out_heading` puts ahead of the full ones; set by the resolver once
+    /// the records of one decision are folded together.
+    pub(crate) promoted: bool,
 }
 
 impl ResolverCandidateRow {
@@ -1372,6 +1553,8 @@ pub(crate) fn collect_resolver_candidates(
             polarity_mismatch: scored.polarity_mismatch,
             headline_terms: scored.headline_terms,
             stand_in_terms: scored.stand_ins,
+            about: scored.about,
+            promoted: false,
         })
         .collect())
 }
@@ -1412,11 +1595,18 @@ struct SearchMatchInfo {
     /// decisions searched (`admit_below_bar`).
     below_bar: bool,
     /// The terms (by position in the question's terms) some field holds as a whole word or a form
-    /// of one, never as part of a longer word; set only for the asker that reads
-    /// (`CloseMatch::Half`).
+    /// of one, never as part of a longer word; set for every asker that matches words
+    /// (`CloseMatch::Majority` and `CloseMatch::Half`).
     held_words: BTreeSet<usize>,
     /// The subset of `held_words` the decision's title or topic keys hold.
     headline_words: BTreeSet<usize>,
+    /// The subset of `headline_words` the title itself holds.
+    title_words: BTreeSet<usize>,
+    /// What `About` weighs: `headline_words`, and the terms the decision's recorded question
+    /// holds as words. The question a decision answers is as much what it is about as its title.
+    about_words: BTreeSet<usize>,
+    /// The query is the decision's id or title, or the question it records, as written.
+    named: bool,
     /// How many times a field of the title or topic keys holds a term as a word (a term the title
     /// and a topic key both hold counts twice). Among decisions below the bar that hold a word
     /// each, the one whose title and topic keys both name it is the one about it.
@@ -1563,11 +1753,15 @@ fn evaluate_search_match(
     // The matched terms that some field holds as the word itself or a form of it.
     let mut worded_terms: BTreeSet<&String> = BTreeSet::new();
     let mut headline_terms = BTreeSet::new();
-    // What `admit_below_bar` needs from the asker that reads: which terms a field holds as a whole
-    // word, and which of those the title or topic keys hold.
-    let track_words = search_terms.close == CloseMatch::Half;
+    // What `admit_below_bar` and `About` need from an asker that matches words: which terms a
+    // field holds as a whole word, which of those the title or topic keys hold, and which of those
+    // the title holds. Only the asker that reads admits a decision below the bar.
+    let track_words = search_terms.close != CloseMatch::Never;
+    let reads = search_terms.close == CloseMatch::Half;
     let mut held_words = BTreeSet::new();
     let mut headline_words = BTreeSet::new();
+    let mut title_words = BTreeSet::new();
+    let mut about_words = BTreeSet::new();
     let mut headline_hits = 0_usize;
     let mut matched_fields = BTreeSet::new();
     let mut snippets = Vec::new();
@@ -1575,11 +1769,8 @@ fn evaluate_search_match(
     // The question a decision answers, asked back as recorded, names that decision as an exact
     // title does.
     let quotes_question = exact_question_match(query, fields);
-    let mut rank = if quotes_question || exact_id_or_title_match(query, fields) {
-        0
-    } else {
-        u8::MAX
-    };
+    let named = quotes_question || exact_id_or_title_match(query, fields);
+    let mut rank = if named { 0 } else { u8::MAX };
 
     for field in fields {
         let value_lower = field.value.to_ascii_lowercase();
@@ -1615,6 +1806,12 @@ fn evaluate_search_match(
                     if in_headline {
                         headline_words.insert(index);
                         headline_hits += 1;
+                        if field.field == "decision.title" {
+                            title_words.insert(index);
+                        }
+                    }
+                    if in_headline || field.field == "decision.question" {
+                        about_words.insert(index);
                     }
                 }
                 field_matched = true;
@@ -1656,7 +1853,7 @@ fn evaluate_search_match(
         // Too few of the words for the bar. A decision holding one of them as a word is not
         // dropped yet: whether the words it holds are rare is known only across all decisions
         // (`admit_below_bar`).
-        if track_words && !held_words.is_empty() {
+        if reads && !held_words.is_empty() {
             below_bar = true;
         } else {
             return None;
@@ -1678,6 +1875,9 @@ fn evaluate_search_match(
         below_bar,
         held_words,
         headline_words,
+        title_words,
+        about_words,
+        named,
         headline_hits,
         polarity_mismatch,
         headline_terms: if missing_terms.is_empty() {

@@ -395,6 +395,29 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`why`, `verify` and `recall` no longer answer a different decision, with no warning,
+  just because its long rationale happens to hold every word of the question.** A few
+  decisions have rationales and evidence of two thousand characters or more, and between them
+  they hold nearly every common word, so a plain question matched one of them in full ("is
+  the product still called HiveMind" was answered with a decision on a triage gate), and a
+  full match dropped every close candidate: the decision the question is about, whose title
+  and topic keys carry it but which lacks one word, was not even offered. Where the words sit
+  is now compared before whether every word is somewhere. A decision's title, topic keys and
+  recorded question count for the question's words they hold, each weighed by how few
+  decisions hold it, and between equal weights the one whose own title holds more is the one
+  about it. A close candidate that carries more of the question than every decision that
+  holds all of its words is listed first, and `why`, `verify` and the other verbs that only
+  read answer with it, saying what it lacks in `close_match`; a verb that writes gets it at
+  the head of the `Ambiguous` list and never has it picked. Among the decisions that hold
+  every word, the one that carries more of them comes first (two that each had a word in
+  their title used to be equals). A negated question ranks a close candidate that says what
+  was asked ahead of an opposite-polarity decision that merely holds every word. `recall`
+  orders its list the same way, so it and `why` name the same decision first. The decision
+  whose id or title is the question, or that records it as asked, is still first, and a
+  question with nothing in any title or topic is ordered as before. The `close match:` line
+  of `--summary` output no longer claims that no decision has every word, since one may.
+  (hivemind-eral)
+
 - **A rationale holding a figure like `28k`, `167h`, `3d` or `10x` is no longer refused as a
   "bare list item".** The capture check for a reference into a chat list (`1a`, `2. a`) also
   matched any number followed by one freestanding letter, so an ordinary quantity was refused:

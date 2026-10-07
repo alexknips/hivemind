@@ -2044,6 +2044,142 @@ fn query_why_answers_a_natural_question_with_the_why() -> CliTestResult {
 }
 
 #[test]
+fn query_why_answers_the_decision_about_the_question_not_the_one_whose_rationale_says_every_word(
+) -> CliTestResult {
+    // hivemind-eral: the triage decision's rationale says product, called and Upheld, so it
+    // matches in full; the decision named after the product lacks "called" but is about the
+    // question. `recall` and `why` must both name the second, and `why` must say what it lacks.
+    let hivemind_dir = unique_test_dir("query-why-about-the-question");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let emit = |title: &str, rationale: &str, topic: &str, option: &str| {
+        run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "human:alice",
+            "--hivemind-dir",
+            dir,
+            "emit",
+            "decision.proposed",
+            "--title",
+            title,
+            "--rationale",
+            rationale,
+            "--topic-keys",
+            topic,
+            "--options",
+            &format!("{option},Something else"),
+            "--chose",
+            option,
+        ]))
+    };
+    emit(
+        "Triage gate runs on a local model",
+        "The product was called Upheld in the first demos, and it is still called that in the pitch deck",
+        "triage",
+        "Local model",
+    )?;
+    let name_id = emit(
+        "Name the product Upheld",
+        "A short name that says what the record does",
+        "naming",
+        "Upheld",
+    )?;
+    emit(
+        "Adopt async queue for billing",
+        "Billing must not block on the payment provider",
+        "billing",
+        "Async queue",
+    )?;
+    let question = "is the product still called Upheld";
+
+    let recalled = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "recall",
+        question,
+    ]))?;
+    let recalled: serde_json::Value = serde_json::from_str(&recalled)?;
+    ensure_json_eq(
+        &recalled["data"]["ranked"]["items"][0]["decision"]["id"],
+        serde_json::json!(name_id),
+        "recall puts the decision about the question first",
+    )?;
+
+    let why = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "why",
+        question,
+    ]))?;
+    let why: serde_json::Value = serde_json::from_str(&why)?;
+    ensure_json_eq(
+        &why["data"]["root"]["id"],
+        serde_json::json!(name_id),
+        "why answers with the decision about the question, in one call",
+    )?;
+    ensure_json_eq(
+        &why["close_match"]["missing_terms"],
+        serde_json::json!(["called"]),
+        "why says what the decision lacks",
+    )?;
+
+    let summary = run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "why",
+        question,
+        "--summary",
+    ]))?;
+    ensure(
+        summary.starts_with("close match: this one has no \"called\"")
+            && summary.contains("decision: Name the product Upheld"),
+        &format!("the summary opens with what the decision lacks, got:\n{summary}"),
+    )?;
+
+    // A verb that writes lists the decision first and writes nothing.
+    let events_before = ledger_event_count(&hivemind_dir);
+    let disagreed = run(&Cli::parse_from([
+        "hivemind",
+        "--actor",
+        "human:bob",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "disagree",
+        question,
+        "--reason",
+        "the name is not settled",
+    ]))?;
+    let disagreed: serde_json::Value = serde_json::from_str(&disagreed)?;
+    ensure_json_eq(
+        &disagreed["data"]["outcome"],
+        serde_json::json!("ambiguous"),
+        "a verb that writes never picks the close candidate",
+    )?;
+    ensure_json_eq(
+        &disagreed["data"]["candidates"][0]["decision_id"],
+        serde_json::json!(name_id),
+        "the decision about the question is listed first",
+    )?;
+    ensure_eq(
+        ledger_event_count(&hivemind_dir),
+        events_before,
+        "disagree wrote nothing",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
 fn query_why_and_verify_answer_a_question_that_shares_half_its_words_and_say_what_it_lacks(
 ) -> CliTestResult {
     // hivemind-3lko: `recall` returns the decision for this question, so `why` and `verify` must

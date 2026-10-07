@@ -1300,6 +1300,71 @@ fn fluent_search_puts_the_close_match_whose_title_carries_the_words_first() -> R
 }
 
 #[test]
+fn fluent_search_puts_a_close_match_about_the_question_before_a_decision_that_only_holds_its_words(
+) -> Result<()> {
+    let scenario = titled_decisions(&[
+        (
+            // Says all three words, in its rationale, and none in its title (hivemind-eral).
+            "d:aaa-collector",
+            "Triage gate runs on a local model",
+            "The product was called Upheld in the first demos, and it is still called that in the pitch.",
+        ),
+        (
+            "d:zzz-name",
+            "Name the product Upheld",
+            "A short name that says what the record does.",
+        ),
+        (
+            "d:other",
+            "Adopt async queue for billing",
+            "Billing needs retries.",
+        ),
+    ])?;
+
+    let (items, _) = fluent_answer(&scenario, "product called upheld", 10)?;
+
+    // The decision that names the product lacks "called" and still comes first: its title carries
+    // more of the question than the decision that holds every word in a rationale, which comes
+    // next, then nothing else.
+    assert_eq!(
+        items,
+        vec![
+            ("d:zzz-name".to_owned(), vec!["called".to_owned()]),
+            ("d:aaa-collector".to_owned(), vec![]),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn fluent_search_puts_the_full_match_that_says_the_words_in_its_title_first() -> Result<()> {
+    let scenario = titled_decisions(&[
+        (
+            // The id sorts first, and its title holds one word, so the rank tier ties them.
+            "d:aaa-body",
+            "Billing notes",
+            "We adopt the async queue for it.",
+        ),
+        (
+            "d:zzz-title",
+            "Adopt async queue for billing",
+            "Testers see it first.",
+        ),
+    ])?;
+
+    let (items, _) = fluent_answer(&scenario, "adopt async queue billing", 10)?;
+
+    assert_eq!(
+        items,
+        vec![
+            ("d:zzz-title".to_owned(), vec![]),
+            ("d:aaa-body".to_owned(), vec![]),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn fluent_search_matches_inflected_words_the_literal_search_misses() -> Result<()> {
     let scenario = titled_decisions(&[(
         "d:demo",

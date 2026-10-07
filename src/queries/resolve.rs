@@ -24,13 +24,21 @@
 //! its title or topic keys carry (see `closeness`), so a decision about the thing asked about
 //! beats one that only mentions the words somewhere in a long rationale.
 //!
+//! Holding every word is not being about the question, either: a decision whose long rationale
+//! says all of a plain question's words matches in full, and a full match drops every close
+//! candidate, so the decision whose title and topic keys carry the question but lacks one word
+//! was never offered. A close candidate whose title and topic keys carry more of the question
+//! (`About`) than every full match is promoted (`out_heading`): listed first, and answered with by
+//! a verb that only reads, saying what it lacks. Among full matches, the one that is more about
+//! the question comes first.
+//!
 //! A negation in the description ("don't adopt Kafka", "why didn't we ...", "do not ...") is not a
 //! word to find: it never appears in `missing_terms`. It is polarity. Only a decision whose own
 //! title is negated answers a negated description; one that matches every other word with the
 //! opposite polarity is a close candidate whose reason is `POLARITY_REASON`, and is never resolved
 //! to, by a verb that writes or one that reads.
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -39,7 +47,9 @@ use crate::projector::{GraphParams, GraphValue, GraphView};
 use crate::Result;
 
 use super::same_as::{fold_linked, RecordedCopy};
-use super::search::{collect_resolver_candidates, CloseMatch, ResolverCandidateRow};
+use super::search::{
+    collect_resolver_candidates, out_heading, CloseMatch, ResolverCandidateRow, Standing,
+};
 use super::shared::{
     optional_int, optional_string, query_error, query_timer_start, MAX_QUERY_RESULTS,
 };
@@ -199,38 +209,57 @@ fn resolve_for(
         rows.push(folded.item);
     }
     let only_close_candidates = !rows.is_empty() && rows.iter().all(ResolverCandidateRow::is_close);
+    let standings: Vec<Standing> = rows
+        .iter()
+        .map(|row| Standing {
+            missing: row.missing_terms.len(),
+            opposite: row.polarity_mismatch,
+            about: row.about,
+        })
+        .collect();
+    for (row, promoted) in rows.iter_mut().zip(out_heading(&standings)) {
+        row.promoted = promoted;
+    }
     if !only_close_candidates {
-        rows.retain(|row| !row.is_close());
+        rows.retain(|row| row.promoted || !row.is_close());
     }
     rows.sort_by(|left, right| {
-        (
-            closeness(left),
-            left.rank,
-            Reverse(left.event_origin),
-            &left.decision_id,
-        )
-            .cmp(&(
-                closeness(right),
-                right.rank,
-                Reverse(right.event_origin),
-                &right.decision_id,
-            ))
+        right
+            .promoted
+            .cmp(&left.promoted)
+            .then_with(|| left.missing_terms.len().cmp(&right.missing_terms.len()))
+            .then_with(|| {
+                if left.missing_terms.is_empty() {
+                    right.about.cmp_about(&left.about)
+                } else {
+                    Ordering::Equal
+                }
+            })
+            .then_with(|| right.headline_terms.cmp(&left.headline_terms))
+            .then_with(|| left.stand_in_terms.cmp(&right.stand_in_terms))
+            .then_with(|| left.rank.cmp(&right.rank))
+            .then_with(|| right.event_origin.cmp(&left.event_origin))
+            .then_with(|| left.decision_id.cmp(&right.decision_id))
     });
 
     let truncated = rows.len() > MAX_QUERY_RESULTS;
     rows.truncate(MAX_QUERY_RESULTS);
 
-    // The leader's ties: the rows as close as it is, in its rank tier, that lean on no more
-    // stand-in words than it does.
+    // The leader's ties among the full matches: the rows that hold as much of what the question
+    // is about, lean on no more stand-in words and sit in the same rank tier.
     let leader_ties = rows.first().map_or(0, |leader| {
         rows.iter()
-            .filter(|row| row.rank == leader.rank && closeness(row) == closeness(leader))
+            .filter(|row| {
+                row.about.cmp_about(&leader.about).is_eq()
+                    && row.stand_in_terms == leader.stand_in_terms
+                    && row.rank == leader.rank
+            })
             .count()
     });
-    let leader_is_clear = only_close_candidates
-        && asker == Asker::Reader
-        && close_candidate_leads(resolver_terms(description).len(), &rows);
+    let leader_is_clear =
+        asker == Asker::Reader && close_candidate_leads(resolver_terms(description).len(), &rows);
 
+    let leader_promoted = rows.first().is_some_and(|leader| leader.promoted);
     let mut candidates: Vec<ResolvedCandidate> = rows
         .into_iter()
         .map(|row| ResolvedCandidate {
@@ -248,7 +277,7 @@ fn resolve_for(
         .collect();
 
     let result_count = candidates.len();
-    let outcome = if only_close_candidates {
+    let outcome = if only_close_candidates || leader_promoted {
         if leader_is_clear {
             ResolveOutcome::Resolved {
                 candidate: candidates.remove(0),
@@ -283,8 +312,9 @@ fn resolve_for(
 /// A decision about the product's name says "product" and "Upheld" in its title; one that happens
 /// to say "product" and "called" somewhere in a long rationale is not about that, though it lacks
 /// just as many words. Where the words matched is already in `matched_fields`; nothing is counted
-/// across the ledger and nothing is learned. A full match is 0 on the headline count (its order is
-/// the rank tier's), and a verb that writes never reads stand-ins, so it is 0 on the last one too.
+/// across the ledger and nothing is learned. A full match is 0 on the headline count (its order
+/// is `About`, then the stand-in count and the rank tier), and a verb that writes never reads
+/// stand-ins, so it is 0 on the last one too.
 fn closeness(row: &ResolverCandidateRow) -> (usize, Reverse<usize>, usize) {
     (
         row.missing_terms.len(),
@@ -293,11 +323,12 @@ fn closeness(row: &ResolverCandidateRow) -> (usize, Reverse<usize>, usize) {
     )
 }
 
-/// Whether the first of `rows` (all close, closest first) is the one asked about: it is closer
-/// than the next, by `closeness`, and shares enough terms to be named as the answer. Equal
-/// closeness is not resolved: after it the lists are ordered by rank and recency, which say
-/// nothing about which of two equally close decisions was meant. A decision of the opposite
-/// polarity is never the one asked about, however many words it shares.
+/// Whether the first of `rows` (a close candidate, closest first) is the one asked about: it is
+/// closer than the next, by `closeness`, or the next is a decision it was promoted over
+/// (`out_heading`), and it shares enough terms to be named as the answer. Equal closeness is not
+/// resolved: after it the lists are ordered by rank and recency, which say nothing about which of
+/// two equally close decisions was meant. A decision of the opposite polarity is never the one
+/// asked about, however many words it shares.
 fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bool {
     let Some(first) = rows.first() else {
         return false;
@@ -305,9 +336,9 @@ fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bo
     let shared = term_count.saturating_sub(first.missing_terms.len());
     !first.polarity_mismatch
         && shared >= MIN_WORDS_TO_ANSWER_CLOSE
-        && rows
-            .get(1)
-            .is_none_or(|next| closeness(first) < closeness(next))
+        && rows.get(1).is_none_or(|next| {
+            (first.promoted && !next.promoted) || closeness(first) < closeness(next)
+        })
 }
 
 /// Takes the match of another record of the same decision onto the one shown: the best rank, the
@@ -316,6 +347,9 @@ fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bo
 fn absorb_record(shown: &mut ResolverCandidateRow, other: ResolverCandidateRow) {
     shown.rank = shown.rank.min(other.rank);
     shown.stand_in_terms = shown.stand_in_terms.min(other.stand_in_terms);
+    if other.about.cmp_about(&shown.about).is_gt() {
+        shown.about = other.about;
+    }
     shown.polarity_mismatch &= other.polarity_mismatch;
     for field in other.matched_fields {
         if !shown.matched_fields.contains(&field) {

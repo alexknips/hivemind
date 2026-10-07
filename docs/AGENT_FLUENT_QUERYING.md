@@ -189,6 +189,8 @@ differences from a writer, both for a description no decision matches in full
   by `why`.
 - When close candidates are all there is, and one is closer than the next and
   shares at least two terms, it is `Resolved` and carries its `missing_terms`.
+  (So is a promoted close candidate that leads the others, see *what the question
+  is about* below, though a decision that holds every word exists.)
   The verb shows the decision and says what it lacks: a `close match:` line
   ahead of `--summary` output, `close_match: {decision_id, title,
   missing_terms}` beside `data` in `--json`, the HTTP routes and MCP. Equally
@@ -205,15 +207,52 @@ Upheld" is lacked by two decisions, one without "called" and one without "upheld
 the decision titled "Name the product Upheld" has both of its words in the title,
 the one that says "product" and "called" in its rationale has neither, so the
 first is the answer. The basis is where the matched words sit (the `matched_fields`
-a result already shows), nothing counted across the ledger and nothing learned,
-and it only separates candidates that lack the same number of words: it never lets
-a decision lacking more words win. A full match is not ordered this way, so the
-ambiguity gate and the rank tiers of the full matches are unchanged. The ordering
-applies to every close list the resolver returns, including the one a writer gets,
-though a writer still never has a close candidate picked for it.
+a result already shows), and it only separates candidates that lack the same number
+of words: it never lets a decision lacking more words win. The ordering applies to
+every close list the resolver returns, including the one a writer gets, though a
+writer still never has a close candidate picked for it.
 
-A full match is unchanged for both, including the ambiguity gate, and adds no
-`close_match`.
+**What the question is about** (hivemind-eral). Holding every word is not the same as
+being the decision asked about. A few decisions have long rationales and long
+evidence, and between them they hold nearly every common word, so for a plain
+question they match in full whatever it asks ("is the product still called HiveMind"
+is matched in full by a decision on a triage gate, whose rationale says all three),
+and a full match drops every close candidate. The decision that is about the
+question says it in its title and topic keys, lacks one word, and used to be dropped.
+So where the words sit is compared before whether every word is somewhere:
+
+- A decision's *aboutness* is the weight of the question's words that its title, a
+  topic key or the question it records holds, as a word or a form of one (never inside
+  a longer word: "show" is not "showcase", and never through a stand-in). A word weighs `ln((n + 1) / (holders
+  + 1/2))` over the `n` decisions searched, `holders` being the decisions that hold it
+  as a word anywhere, exactly as for a decision below the bar (§1.1): the one rare
+  word of a question outweighs the generic ones around it. Between equal weights, the
+  decision whose own title holds more of them is the one about the question: the
+  title states what was decided, a topic key only files it. The decision whose id or
+  title is the question, or that records the question as asked, is about it more than
+  any other and is never put behind one.
+- The decisions that hold every word (those of the right polarity, when any do) set
+  the reference. A close candidate whose aboutness is strictly greater than every one
+  of theirs is *promoted*: it is listed before them, and a verb that only reads
+  answers with it, as for any close candidate (it shares at least two terms and leads
+  the other promoted ones), naming what it lacks in `close_match`. A verb that writes
+  never picks it; it gets an `Ambiguous` list with the promoted candidate first. A
+  close candidate of the opposite polarity is never promoted. Close candidates that
+  are not promoted are dropped when a decision holds every word, as before.
+- Among the decisions that hold every word, the one whose title and topic keys carry
+  more of the question's words comes first, then the one that leans on fewer stand-in
+  words, then the rank tier. Two that carry the same weight are still equals, and
+  the ambiguity gate applies to them as before. This replaces "the rank tier alone"
+  for full matches: two decisions that each have one word in their title used to be
+  equals however many of the other words each held in its title, and now are not.
+- `recall` orders its list the same way (promoted close matches first, then the full
+  matches by aboutness), so `why` names what `recall` just named.
+
+A question that matches no decision's headline has no aboutness to compare and is
+ordered as before. The basis is the decision's own words and the ledger's own counts;
+nothing is learned and no word list is involved.
+
+A full match that nothing out-heads is unchanged for both, and adds no `close_match`.
 
 **A decision recorded more than once is one decision** (hivemind-83cj). When two
 records are linked `SAME_AS` (the classifier named the earlier one when it
@@ -269,7 +308,11 @@ resolver's own match, the word and its inflections: a synonym never picks the
 decision a write lands on. A possessive is the word it belongs to ("the website's
 picture" asks about the website).
 
-A decision matching every word comes first; then,
+A decision matching every word comes first (the one whose title and topic keys
+carry more of the words first, then the one that leans on fewer stand-in words,
+then rank tier, then decision id), except that a close match that carries more of
+the question in its title and topic keys than any of them comes before them
+(*what the question is about*, above); then,
 fewest missing words first (then the decision whose title or topic keys carry more
 of the matched words, as for `why` above, then the one that leans on fewer stand-in words,
 then rank tier, then decision id), a
@@ -397,6 +440,15 @@ key: `event_origin` descending — newest wins ties), define:
   read is cheap to notice and re-query; a wrong write is not. This
   asymmetry is deliberate and should be confirmed at the checkpoint (Open
   Question 3).
+
+**Where the words sit comes before the rank tier** (hivemind-eral). Among the
+decisions that hold every word, "the best rank tier" is the last of three keys: first
+how much of the question the decision's title and topic keys carry (*what the question
+is about*, §1.1), then how few of the words it matches only through a stand-in, then
+the rank tier. Resolved still means exactly one candidate holds the best of all three,
+with no numeric margin; two decisions that carry the same words in their headline and
+share the rank tier are still `Ambiguous`. Two that each had one word in their title
+used to tie however many of the other words each held in its title; they no longer do.
 
 `--pick N` selects candidate `#N` from the *immediately preceding* resolver
 call in the same invocation (used together with `--from-last`, §5) or is
