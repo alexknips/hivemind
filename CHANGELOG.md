@@ -429,6 +429,15 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   decision, on how much of the question it carries, and the opposite decision is still listed
   with `polarity_mismatch` and never answered with. (hivemind-z05v)
 
+- **A decision's link is cut at a whole word, and an apostrophe no longer splits a word.** The
+  `slug` a proposed decision gets from its title was cut at 60 characters wherever that fell
+  (`…-so-none-of-it-is-ever-overwritte`), and `reader's` became `reader-s`. The slug now ends
+  at the last whole word that fits in 60 characters (one word longer than that is cut at 60),
+  and apostrophes (straight or curly) are dropped: `readers`. The length budget and the room
+  for a collision suffix are unchanged. A title that has neither problem slugs as it did. A
+  slug is worked out from the title each time the ledger is replayed, so a decision whose
+  title was cut mid-word or had an apostrophe gets its new slug when the graph is next
+  rebuilt (on a server restart); its old link stops resolving. (hivemind-q9l1)
 - **A decision captured from a session that was classified days later says when it was said,
   not when the classifier ran.** A decision the classifier captured without naming a source
   turn was dated at the classification's own time, so `why` and `verify` showed a session said

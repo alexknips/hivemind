@@ -991,6 +991,10 @@ fn grounding_edge_properties(
 /// budget to keep coupled, and 60 matches the id-tail suffix room `assign_decision_slug` needs.
 const MAX_DECISION_SLUG_LEN: usize = 60;
 
+// `cut_slug_at_word` reads the character just past the cap to tell "the word ends exactly at the
+// cap" from "the word runs on"; `normalize_topic_key`'s own cut at 64 must not hide that character.
+const _: () = assert!(MAX_DECISION_SLUG_LEN < crate::commands::MAX_TOPIC_KEY_LEN);
+
 /// Below this many characters of a colliding decision's id, a suffix is still too likely to
 /// collide with another short suffix to be worth trying (`assign_decision_slug` grows from here).
 const MIN_DECISION_SLUG_SUFFIX_LEN: usize = 4;
@@ -998,21 +1002,44 @@ const MIN_DECISION_SLUG_SUFFIX_LEN: usize = 4;
 /// A decision's link segment, kebab-cased from its title and capped at
 /// [`MAX_DECISION_SLUG_LEN`] characters — `queries::decision_log::capped_slug` does the same
 /// for export filenames, independently, since a URL slug and a filename don't share a length
-/// budget. Never empty: a title with no alphanumeric character (all punctuation, all emoji)
-/// falls back to the literal `"decision"`, matching the id-tail suffix's job of telling
+/// budget. The cap falls on a word boundary (see [`cut_slug_at_word`]), and an apostrophe is
+/// dropped rather than read as a word break, so `reader's` is `readers`, not `reader-s`
+/// (hivemind-q9l1). Never empty: a title with no alphanumeric character (all punctuation, all
+/// emoji) falls back to the literal `"decision"`, matching the id-tail suffix's job of telling
 /// same-titled decisions apart when this happens for more than one of them.
 fn capped_decision_slug(title: &str) -> String {
-    let mut slug = normalize_topic_key(title);
-    if slug.len() > MAX_DECISION_SLUG_LEN {
-        slug.truncate(MAX_DECISION_SLUG_LEN);
-        while slug.ends_with('-') {
-            slug.pop();
-        }
-    }
+    let slug = normalize_topic_key(&title.replace(is_apostrophe, ""));
+    let mut slug = cut_slug_at_word(&slug, MAX_DECISION_SLUG_LEN).to_owned();
     if slug.is_empty() {
         slug.push_str("decision");
     }
     slug
+}
+
+/// The apostrophes a title is typed with: straight, curly (either side) and the modifier letter.
+const fn is_apostrophe(character: char) -> bool {
+    matches!(character, '\'' | '\u{2018}' | '\u{2019}' | '\u{02BC}')
+}
+
+/// `slug` (kebab-case ASCII, as `normalize_topic_key` returns it) cut to at most `max` characters
+/// at the last whole word that fits, so an address never ends in half a word. A first word longer
+/// than `max` has no whole-word cut: that one is cut at `max`, so the slug stays within its
+/// budget and still says something.
+fn cut_slug_at_word(slug: &str, max: usize) -> &str {
+    if slug.len() <= max {
+        return slug;
+    }
+    let Some(head) = slug.get(..max) else {
+        return slug;
+    };
+    let word_ends_at_cap = slug.get(max..).is_some_and(|rest| rest.starts_with('-'));
+    if word_ends_at_cap {
+        return head;
+    }
+    // `head` may end in the separator itself (the next word starts at the cap), which `rsplit_once`
+    // drops along with the part after it; either way no trailing `-` is left behind.
+    head.rsplit_once('-')
+        .map_or(head, |(words, _cut_word)| words)
 }
 
 /// The part of a decision id usable as a slug collision-breaker: lowercase alphanumeric

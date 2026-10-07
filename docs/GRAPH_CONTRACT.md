@@ -84,8 +84,10 @@ a reader needs without reconstructing them from edges:
     batch when the graph is built, so a session classified days later still reads as when it
     was said); otherwise the classified-batch event's time. `null` only for a decision from an
     event predating the ledger's timestamp backfill.
-  - `slug`: the decision's stable link segment (`/decisions/<slug>`) — its title, kebab-cased,
-    with a growing id-tail suffix (`-a1b2`, then longer) for a later decision whose title
+  - `slug`: the decision's stable link segment (`/decisions/<slug>`) — its title, kebab-cased
+    (apostrophes dropped, so `reader's` is `readers`) and cut at the last whole word that
+    fits in 60 characters (a first word longer than that is cut at 60), with a growing
+    id-tail suffix (`-a1b2`, then longer) for a later decision whose title
     slugs to the same thing. Assigned once, when `decision.proposed` is first projected
     (ledger order, so replay always assigns the same slugs); nothing projected after that
     touches it, so a retitle (or any other annotation) does not move a decision's link. `null`

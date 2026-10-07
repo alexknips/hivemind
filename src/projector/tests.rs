@@ -895,6 +895,187 @@ fn decision_proposed_with_a_colliding_title_gets_a_suffixed_slug() -> Result<()>
     Ok(())
 }
 
+/// The slug rule before hivemind-q9l1 (cut at the cap wherever it falls; an apostrophe is a word
+/// break), kept so the tests below can show which titles the new rule leaves alone.
+fn slug_before_q9l1(title: &str) -> String {
+    let mut slug = normalize_topic_key(title);
+    if slug.len() > MAX_DECISION_SLUG_LEN {
+        slug.truncate(MAX_DECISION_SLUG_LEN);
+        while slug.ends_with('-') {
+            slug.pop();
+        }
+    }
+    if slug.is_empty() {
+        slug.push_str("decision");
+    }
+    slug
+}
+
+/// Exactly `MAX_DECISION_SLUG_LEN` characters, all of them words and single spaces.
+const SIXTY_CHARACTER_TITLE: &str = "Keep each ledger entry append only so nothing is overwritten";
+
+#[test]
+fn a_long_title_slug_ends_at_a_whole_word() {
+    let title = "Keep the ledger append-only so none of it is ever overwritten by a replay";
+    assert_eq!(
+        slug_before_q9l1(title),
+        "keep-the-ledger-append-only-so-none-of-it-is-ever-overwritte",
+        "the old rule cut inside `overwritten`"
+    );
+    assert_eq!(
+        capped_decision_slug(title),
+        "keep-the-ledger-append-only-so-none-of-it-is-ever",
+        "the slug stops at the last word that fits in 60 characters"
+    );
+}
+
+#[test]
+fn a_title_of_exactly_the_cap_keeps_every_word() {
+    assert_eq!(SIXTY_CHARACTER_TITLE.len(), MAX_DECISION_SLUG_LEN);
+    assert_eq!(
+        capped_decision_slug(SIXTY_CHARACTER_TITLE),
+        "keep-each-ledger-entry-append-only-so-nothing-is-overwritten"
+    );
+}
+
+#[test]
+fn a_word_that_ends_exactly_at_the_cap_is_kept_when_more_words_follow() {
+    // The slug is 66 characters, so `normalize_topic_key` itself cuts it at 64 inside `today`;
+    // the cap still falls right after `overwritten`, a whole word.
+    let title = format!("{SIXTY_CHARACTER_TITLE} today");
+    assert_eq!(
+        capped_decision_slug(&title),
+        "keep-each-ledger-entry-append-only-so-nothing-is-overwritten"
+    );
+}
+
+#[test]
+fn a_word_that_runs_one_past_the_cap_is_left_out_whole() {
+    let title = format!("{SIXTY_CHARACTER_TITLE}x");
+    assert_eq!(
+        capped_decision_slug(&title),
+        "keep-each-ledger-entry-append-only-so-nothing-is",
+        "a cut at the cap would end the slug in half of `overwrittenx`"
+    );
+}
+
+#[test]
+fn a_single_word_longer_than_the_cap_is_cut_at_the_cap() {
+    let title = "a".repeat(MAX_DECISION_SLUG_LEN + 10);
+    assert_eq!(
+        capped_decision_slug(&title),
+        "a".repeat(MAX_DECISION_SLUG_LEN),
+        "with no whole word that fits, the slug still says something"
+    );
+}
+
+#[test]
+fn an_apostrophe_is_dropped_not_read_as_a_word_break() {
+    for (title, slug) in [
+        ("Show the reader's name", "show-the-readers-name"),
+        ("Show the readers' names", "show-the-readers-names"),
+        (
+            "Don\u{2019}t drop the reader\u{2019}s name",
+            "dont-drop-the-readers-name",
+        ),
+        ("It\u{2018}s \u{02BC}quoted\u{02BC}", "its-quoted"),
+    ] {
+        assert_eq!(capped_decision_slug(title), slug, "slug of {title:?}");
+    }
+    assert_eq!(
+        slug_before_q9l1("Show the reader's name"),
+        "show-the-reader-s-name"
+    );
+}
+
+#[test]
+fn a_title_of_only_apostrophes_slugs_to_decision() {
+    assert_eq!(capped_decision_slug("''\u{2019}"), "decision");
+}
+
+#[test]
+fn a_slug_never_exceeds_the_cap_so_a_collision_suffix_has_its_room() {
+    for title in [
+        SIXTY_CHARACTER_TITLE.to_owned(),
+        format!("{SIXTY_CHARACTER_TITLE} and then some more words after it"),
+        "a".repeat(200),
+        "word ".repeat(40),
+        "Keep the ledger append-only so none of it is ever overwritten by a replay".to_owned(),
+    ] {
+        let slug = capped_decision_slug(&title);
+        assert!(
+            slug.len() <= MAX_DECISION_SLUG_LEN,
+            "{slug:?} is over the cap"
+        );
+        assert!(!slug.ends_with('-'), "{slug:?} ends in a separator");
+    }
+}
+
+/// A title the two rules never disagree on slugs exactly as it did, so nothing already linked
+/// to moves unless its title is cut inside a word or has an apostrophe.
+#[test]
+fn titles_without_either_problem_slug_as_they_did() {
+    for title in [
+        "Use per-seat pricing",
+        "Duplicate Title",
+        "Cell smoke test (HTTP API) \u{2014} hivemind-zdsh.5",
+        "Na\u{ef}ve r\u{e9}sum\u{e9} parsing, v2!",
+        SIXTY_CHARACTER_TITLE,
+        "Marker files land by fast-forwarding local main",
+        "!!!",
+        "\u{1f680}\u{1f680}",
+        "",
+    ] {
+        assert_eq!(
+            capped_decision_slug(title),
+            slug_before_q9l1(title),
+            "slug of {title:?}"
+        );
+    }
+}
+
+#[test]
+fn two_decisions_with_the_same_long_title_keep_distinct_links() -> Result<()> {
+    use super::memory::MemoryGraph;
+
+    let title = "Keep the ledger append-only so none of it is ever overwritten by a replay";
+    let ledger = InMemoryEventLedger::new();
+    for decision_id in ["decision:long-first", "decision:long-second"] {
+        ledger.append(event(
+            EventType::DecisionProposed,
+            "actor:alice",
+            json!({
+                "decision_id": decision_id,
+                "title": title,
+                "rationale": "Two decisions that happen to share a long title",
+                "topic_keys": ["ledger"],
+                "option_ids": [],
+                "chosen_option_id": null,
+                "hypothesis_ids": [],
+                "evidence_ids": []
+            }),
+        ))?;
+    }
+
+    let graph = MemoryGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+
+    assert_eq!(
+        decision_slug(&graph, "decision:long-first")?,
+        Some(GraphValue::String(
+            "keep-the-ledger-append-only-so-none-of-it-is-ever".to_owned()
+        ))
+    );
+    assert_eq!(
+        decision_slug(&graph, "decision:long-second")?,
+        Some(GraphValue::String(
+            "keep-the-ledger-append-only-so-none-of-it-is-ever-deci".to_owned()
+        )),
+        "the later decision's id-tail suffix goes after the whole-word slug"
+    );
+    Ok(())
+}
+
 /// A `decision.scored` assessment annotates the node (see
 /// `assert_assessment_annotates_without_rewriting_origin`) without naming `slug`; replaying
 /// through it must not change the slug `decision.proposed` already assigned -- the concrete case
