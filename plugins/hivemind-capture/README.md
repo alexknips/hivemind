@@ -105,8 +105,9 @@ Codex skill writes use the same convention with `actor_id=agent:codex:<name>`,
 preferring `GC_AGENT`/`GC_ALIAS` and falling back to `CODEX_SESSION_ID`,
 `CODEX_TASK_ID`, or `HIVEMIND_CODEX_SESSION`. The Codex bundle has its own MCP
 config, `.codex-plugin/mcp.json`, which starts the server with
-`--agent-tool codex`; each surface names its own tool, because the CLI's
-fallback when none is named is `codex`.
+`--agent-tool codex`; each surface names its own tool. With none named, the
+MCP server uses the client's own name from its handshake and a CLI write uses
+`unknown`.
 
 Bare terminal writes such as `hivemind emit decision.proposed ...` or
 `hivemind emit decision.capture ...` default to

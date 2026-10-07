@@ -2144,7 +2144,7 @@ fn emit_actor_and_commands<'a>(
 /// - `--actor` was typed: a caller who says who is acting is believed (README: `--actor`
 ///   overrides the actor), or
 /// - the environment shows no agent at all (`agent_present` is false): the person at a plain
-///   terminal is the CLI's default actor, not an invented `agent:codex:manual-session`.
+///   terminal is the CLI's default actor, not an invented `agent:unknown:manual-session`.
 ///
 /// The provenance flags (`--source`, `--actor-id`, `--agent-tool`, ...) are the fuller form the
 /// capture plugins pass, and still win.

@@ -5808,7 +5808,7 @@ fn capture_provenance_args(source: Option<DecisionCaptureSource>) -> EmitCapture
 #[test]
 fn decision_capture_actor_is_the_default_actor_when_no_agent_is_present() {
     // hivemind-6ait: a person at a plain terminal (no --actor typed, no agent in the
-    // environment) is the CLI's default actor -- never an invented agent:codex:manual-session.
+    // environment) is the CLI's default actor -- never an invented agent:unknown:manual-session.
     let mut cli = Cli::parse_from(["hivemind", "query", "recent", "--since", "7d"]);
     assert!(!cli.actor_given.0, "no --actor was typed");
     cli.actor = "human:alice".to_owned();

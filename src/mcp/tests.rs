@@ -41,6 +41,77 @@ fn initialize_reports_server_metadata() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A config as `McpConfig::new` builds it when nothing in the environment names the agent --
+/// pinned here so the suite does not depend on the session variables of whoever runs it.
+fn unnamed_config(dir: &std::path::Path) -> McpConfig {
+    let mut config = McpConfig::new(dir).with_session_id("test-session");
+    config.agent_tool = NEUTRAL_AGENT_TOOL.to_owned();
+    config.tool_from_client = true;
+    config
+}
+
+fn initialize_as(name: &str) -> String {
+    json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "clientInfo": { "name": name, "version": "1" } }
+    })
+    .to_string()
+}
+
+#[test]
+fn initialize_names_the_agent_from_the_client_when_nothing_else_does() {
+    let dir = unique_dir("init-client");
+    let mut config = unnamed_config(&dir);
+    let line = initialize_as("Claude Code");
+    assert!(handle_message(&line, &mut config).is_some());
+    assert_eq!(config.agent_tool, "claude");
+    assert_eq!(
+        mcp_actor_id(&Map::new(), &config)
+            .map_err(|error| error.message)
+            .expect("actor"),
+        "agent:claude:test-session"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn initialize_leaves_the_neutral_name_when_the_client_names_nothing() {
+    let dir = unique_dir("init-nameless");
+    let mut config = unnamed_config(&dir);
+    for line in [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#.to_owned(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{}}}"#.to_owned(),
+        initialize_as("   "),
+    ] {
+        assert!(handle_message(&line, &mut config).is_some());
+        assert_eq!(config.agent_tool, NEUTRAL_AGENT_TOOL, "{line}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn initialize_never_renames_an_agent_the_flag_named() {
+    let dir = unique_dir("init-flag");
+    let mut config = unnamed_config(&dir).with_agent_tool("cursor");
+    let line = initialize_as("claude-code");
+    assert!(handle_message(&line, &mut config).is_some());
+    assert_eq!(config.agent_tool, "cursor");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn one_connection_naming_its_agent_does_not_rename_the_shared_config() {
+    // `serve` works on its own copy: the config a second connection starts from is unchanged.
+    let dir = unique_dir("init-isolated");
+    let config = unnamed_config(&dir);
+    let line = initialize_as("claude-code");
+    let _ = drive(&config, &[line.as_str()]);
+    assert_eq!(config.agent_tool, NEUTRAL_AGENT_TOOL);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn tools_list_includes_all_eighteen_tools() {
     let dir = unique_dir("list");

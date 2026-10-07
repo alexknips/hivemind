@@ -390,7 +390,7 @@ cat plugins/hivemind-capture/.mcp.json
 ```
 
 The server command should run `hivemind --hivemind-dir ./hivemind/ mcp` with
-the appropriate `--agent-tool` when the client does not infer one.
+`--agent-tool` only to override the name the client gives in its MCP handshake.
 
 ### The database is locked
 

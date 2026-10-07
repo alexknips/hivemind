@@ -20,13 +20,42 @@ pub fn default_human_actor_id() -> String {
     format!("human:{}", actor_component(&raw))
 }
 
+/// The tool name an agent write carries when nothing names the agent: not the flag, not the
+/// environment, and (for the MCP server) not the client's handshake. It claims no particular
+/// agent, where the old `codex` fallback filed every other agent's capture under codex
+/// (hivemind-tiu9).
+pub const NEUTRAL_AGENT_TOOL: &str = "unknown";
+
 pub fn default_agent_tool() -> String {
-    agent_tool_from_env().unwrap_or_else(|| "codex".to_owned())
+    agent_tool_from_env().unwrap_or_else(|| NEUTRAL_AGENT_TOOL.to_owned())
 }
+
+/// The agent tool an MCP client names for itself in its `initialize` request
+/// (`clientInfo.name`), as the tool segment of an actor id. Claude, Codex and Cursor clients
+/// map to the names `--agent-tool` already uses (`claude-code` and `Claude Code` both -> `claude`);
+/// any other client is kept under its own name, folded to the actor-id charset. `None` when
+/// the name leaves nothing usable, so the caller keeps its neutral name.
+pub fn agent_tool_from_client_name(client_name: &str) -> Option<String> {
+    let name = actor_component_chars(client_name);
+    let name: String = name.chars().take(MAX_CLIENT_TOOL_CHARS).collect();
+    let name = name.trim_matches('-');
+    if name.is_empty() {
+        return None;
+    }
+    let first_word = name.split(['-', '_', '.', '@']).next().unwrap_or(name);
+    let known = ["claude", "codex", "cursor"]
+        .into_iter()
+        .find(|tool| *tool == first_word);
+    Some(known.unwrap_or(name).to_owned())
+}
+
+/// A client picks this name, so a pathological one is cut rather than turned into an actor id
+/// of any length.
+const MAX_CLIENT_TOOL_CHARS: usize = 64;
 
 /// The agent tool the environment names or implies, with no fallback: `None` means
 /// nothing in the environment says which agent (if any) is running this process.
-fn agent_tool_from_env() -> Option<String> {
+pub fn agent_tool_from_env() -> Option<String> {
     env_value("HIVEMIND_AGENT_TOOL")
         .or_else(|| env_value("HIVEMIND_TOOL"))
         .or_else(|| {
@@ -50,7 +79,7 @@ fn agent_tool_from_env() -> Option<String> {
 
 /// Whether the environment carries any evidence that an agent, rather than a person at a
 /// terminal, is running this process: a named tool, or a stable or per-run agent session.
-/// `default_agent_tool` and `default_agent_session` fall back to `codex` and `manual-session`
+/// `default_agent_tool` and `default_agent_session` fall back to `unknown` and `manual-session`
 /// when there is none, which names an agent nobody saw -- so a caller that must not invent
 /// one (a person's `emit decision.capture`, hivemind-6ait) asks this first.
 pub fn agent_present_in_env() -> bool {
@@ -132,7 +161,9 @@ fn git_config_value(key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn actor_component(raw: &str) -> String {
+/// `raw` folded to the actor-id charset (`a-z0-9_.@-`, anything else becomes `-`), not yet
+/// trimmed of leading and trailing `-`.
+fn actor_component_chars(raw: &str) -> String {
     let mut normalized = String::with_capacity(raw.len());
     for byte in raw.trim().bytes() {
         let byte = byte.to_ascii_lowercase();
@@ -143,7 +174,11 @@ fn actor_component(raw: &str) -> String {
             _ => normalized.push('-'),
         }
     }
+    normalized
+}
 
+fn actor_component(raw: &str) -> String {
+    let normalized = actor_component_chars(raw);
     let trimmed = normalized.trim_matches('-');
     if trimmed.is_empty() {
         "local-user".to_owned()
@@ -154,7 +189,53 @@ fn actor_component(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::actor_component;
+    use super::{actor_component, agent_tool_from_client_name};
+
+    #[test]
+    fn client_names_map_to_the_tool_names_the_flag_uses() {
+        for (client, tool) in [
+            ("Claude Code", "claude"),
+            ("claude-code", "claude"),
+            ("claude-ai", "claude"),
+            ("codex", "codex"),
+            ("codex-mcp-client", "codex"),
+            ("Cursor", "cursor"),
+            ("cursor-vscode", "cursor"),
+        ] {
+            assert_eq!(
+                agent_tool_from_client_name(client).as_deref(),
+                Some(tool),
+                "{client}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_client_names_are_kept_in_the_actor_id_charset() {
+        assert_eq!(agent_tool_from_client_name("foo").as_deref(), Some("foo"));
+        assert_eq!(
+            agent_tool_from_client_name(" My Agent: v2 ").as_deref(),
+            Some("my-agent--v2")
+        );
+        // A name that merely starts like a known client is not that client.
+        assert_eq!(
+            agent_tool_from_client_name("claudette").as_deref(),
+            Some("claudette")
+        );
+    }
+
+    #[test]
+    fn a_client_name_with_nothing_usable_names_no_tool() {
+        assert_eq!(agent_tool_from_client_name(""), None);
+        assert_eq!(agent_tool_from_client_name("  "), None);
+        assert_eq!(agent_tool_from_client_name(" -- "), None);
+    }
+
+    #[test]
+    fn a_very_long_client_name_is_cut() {
+        let tool = agent_tool_from_client_name(&"a".repeat(500)).expect("a tool");
+        assert_eq!(tool.len(), 64);
+    }
 
     #[test]
     fn actor_component_normalizes_git_identity_for_actor_ids() {

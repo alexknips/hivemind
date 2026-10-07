@@ -30,7 +30,10 @@ use crate::cli::project_context::{resolve_project_in_ledger, ProjectContextEnv, 
 use crate::commands::{CommandContext, Commands};
 use crate::error::{CliError, CommandError, HivemindError};
 use crate::events::{EventProvenance, ProjectSource, TenantId};
-use crate::identity::{agent_actor_id, agent_session_from_env, default_agent_tool};
+use crate::identity::{
+    agent_actor_id, agent_session_from_env, agent_tool_from_client_name, agent_tool_from_env,
+    NEUTRAL_AGENT_TOOL,
+};
 use crate::ledger::{AnyLedger, LedgerConfig};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
 use crate::queries::{
@@ -73,7 +76,9 @@ pub struct McpConfig {
     /// through `AnyLedger::open(&config.ledger, &config.tenant_id)`.
     pub ledger: LedgerConfig,
     pub tenant_id: TenantId,
-    /// Tool name embedded in default actor ids for write tools.
+    /// Tool name embedded in default actor ids for write tools. When neither `--agent-tool`
+    /// nor the environment named one it starts as [`NEUTRAL_AGENT_TOOL`] and a connection
+    /// replaces it with the client's own name at `initialize` (hivemind-tiu9).
     pub agent_tool: String,
     /// Session identifier used to build the default actor id for write tools.
     /// Tools that don't provide a per-call `actor_id` fall back to this label
@@ -84,11 +89,17 @@ pub struct McpConfig {
     /// call that names no `project`. `None` (the default) never works a project out. stdio
     /// only -- the HTTP server has no working directory of the caller's to look at.
     project_context: Option<ProjectContextEnv>,
+    /// True while `agent_tool` is the neutral name because nothing named the agent: the
+    /// client's `initialize` may then name it. The flag and the environment, which name it
+    /// before any client connects, clear this and are never overridden.
+    tool_from_client: bool,
 }
 
 impl McpConfig {
     pub fn new(hivemind_dir: impl Into<PathBuf>) -> Self {
-        let agent_tool = default_agent_tool();
+        let env_tool = agent_tool_from_env();
+        let tool_from_client = env_tool.is_none();
+        let agent_tool = env_tool.unwrap_or_else(|| NEUTRAL_AGENT_TOOL.to_owned());
         let session_id = agent_session_from_env(&agent_tool).unwrap_or_else(default_session_id);
         Self {
             ledger: LedgerConfig {
@@ -99,12 +110,31 @@ impl McpConfig {
             agent_tool,
             session_id,
             project_context: None,
+            tool_from_client,
         }
     }
 
     pub fn with_agent_tool(mut self, agent_tool: impl Into<String>) -> Self {
         self.agent_tool = agent_tool.into();
+        self.tool_from_client = false;
         self
+    }
+
+    /// Names the agent from the client's `initialize` request (`params.clientInfo.name`) when
+    /// nothing else has: a server that Claude Code or Cursor starts sees none of the session
+    /// variables the environment path reads, but the client says who it is in the handshake.
+    /// The session id is unaffected -- no environment tool means none of the tool-specific
+    /// session variables is set either, so it was never derived from the tool.
+    fn adopt_client_tool(&mut self, initialize_params: &Value) {
+        if !self.tool_from_client {
+            return;
+        }
+        let client_name = initialize_params
+            .pointer("/clientInfo/name")
+            .and_then(Value::as_str);
+        if let Some(tool) = client_name.and_then(agent_tool_from_client_name) {
+            self.agent_tool = tool;
+        }
     }
 
     pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
@@ -160,6 +190,8 @@ pub(crate) fn serve<R: BufRead, W: Write>(
     mut reader: R,
     writer: &mut W,
 ) -> Result<()> {
+    // One connection's view of the config: `initialize` may name the agent in it.
+    let mut config = config.clone();
     let mut line = String::new();
     loop {
         line.clear();
@@ -173,7 +205,7 @@ pub(crate) fn serve<R: BufRead, W: Write>(
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(response) = handle_message(trimmed, config) {
+        if let Some(response) = handle_message(trimmed, &mut config) {
             writeln!(writer, "{response}")
                 .map_err(|error| transport_error(format!("write stdout: {error}")))?;
             writer
@@ -183,7 +215,7 @@ pub(crate) fn serve<R: BufRead, W: Write>(
     }
 }
 
-fn handle_message(line: &str, config: &McpConfig) -> Option<String> {
+fn handle_message(line: &str, config: &mut McpConfig) -> Option<String> {
     let parsed: Value = match serde_json::from_str(line) {
         Ok(value) => value,
         Err(error) => {
@@ -303,10 +335,13 @@ impl From<CoreError> for RpcError {
 fn dispatch(
     method: &str,
     params: Value,
-    config: &McpConfig,
+    config: &mut McpConfig,
 ) -> std::result::Result<Value, RpcError> {
     match method {
-        "initialize" => Ok(initialize_result()),
+        "initialize" => {
+            config.adopt_client_tool(&params);
+            Ok(initialize_result())
+        }
         "ping" => Ok(json!({})),
         "tools/list" => Ok(tools_list_result()),
         "tools/call" => tools_call(params, config),

@@ -762,7 +762,10 @@ pub struct McpArgs {
     #[arg(long)]
     pub session_id: Option<String>,
 
-    /// Agent tool name used when MCP write calls omit actor_id.
+    /// Agent tool name used when MCP write calls omit actor_id. Without it the tool comes from
+    /// the environment, then from the MCP client's own name in its `initialize` request
+    /// (Claude Code -> claude, Codex -> codex, Cursor -> cursor, any other client under its
+    /// own name), and is `unknown` when neither says.
     #[arg(long = "agent-tool")]
     pub agent_tool: Option<String>,
 

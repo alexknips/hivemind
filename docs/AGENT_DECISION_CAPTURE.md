@@ -132,7 +132,16 @@ fan-out relation events carry:
   is checked before Claude or Codex session variables (which are freshly
   generated on every run and would otherwise make the same physical agent
   look like a different actor after every restart, hivemind-zdsh.9);
-  `--agent-tool` and `--agent-session` are explicit overrides.
+  `--agent-tool` and `--agent-session` are explicit overrides. `<tool>` is the
+  `--agent-tool` flag, else `HIVEMIND_AGENT_TOOL`/`HIVEMIND_TOOL` or the Claude
+  or Codex session variables, else `unknown` -- never a guessed `codex`. The MCP
+  server (`hivemind mcp`) goes one step further when none of those names the
+  agent: it takes the tool from the client's own `initialize` handshake
+  (`clientInfo.name`: Claude Code -> `claude`, Codex -> `codex`, Cursor ->
+  `cursor`, any other client under its own name, folded to the actor-id
+  charset), so `claude mcp add hivemind -- hivemind mcp` files captures as
+  `agent:claude:<name>` without the flag (hivemind-tiu9). Events already
+  recorded are not renamed.
 - `source_ref` set to the raw per-run session id (provenance) when one is
   available and no explicit `--agent-session`/`--actor-id` was given,
   otherwise `<actor_id>`, unless `--source-ref` is provided
