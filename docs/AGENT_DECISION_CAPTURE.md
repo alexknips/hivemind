@@ -781,7 +781,10 @@ on a capture, the turn it came from (`source_turn_id`) and, on a decision or a
 decision-request, the question in the words it was asked in (`question`). The write
 layer refuses a turn the classified batches do not hold, reads that turn's own `ts` into
 `source_ts` (never from the caller), and records a decision at that time instead of when it was
-classified; with no turn, or a turn with no `ts`, the classification's time stays. A
+classified. A decision whose capture names no turn, or a turn with no `ts`, reads at the newest
+turn time of its batch when the batch's turns carry times (hivemind-ohik; the graph reads it
+from the received batch, so a session classified days later still reads as when it was said),
+and at the classification's time only for a batch with no turn times at all. A
 decision-request with a question and a dated turn writes one `question.asked` at that turn's
 time, by the actor named on the request (with none named, an assistant's turn is credited to
 the batch's submitter and a user's turn writes no ask); a decision stating the

@@ -79,9 +79,11 @@ a reader needs without reconstructing them from edges:
   - `decided_at`: the `decision.proposed` capture event's timestamp, ISO-8601 UTC (the same
     value the query layer calls `occurred_at`, e.g. `DecisionBrief`). A classified capture
     carries the time of the transcript turn it came from when it names one that has a time
-    (`source_ts`, read from the received turn); otherwise its batch's timestamp, the
-    classified-batch event's time. `null` only for a decision from an event predating the
-    ledger's timestamp backfill.
+    (`source_ts`, read from the received turn); otherwise the newest turn time of the batch it
+    was classified from, when that batch's turns carry times (read from the ledger's received
+    batch when the graph is built, so a session classified days later still reads as when it
+    was said); otherwise the classified-batch event's time. `null` only for a decision from an
+    event predating the ledger's timestamp backfill.
   - `slug`: the decision's stable link segment (`/decisions/<slug>`) — its title, kebab-cased,
     with a growing id-tail suffix (`-a1b2`, then longer) for a later decision whose title
     slugs to the same thing. Assigned once, when `decision.proposed` is first projected

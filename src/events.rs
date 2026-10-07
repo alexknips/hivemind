@@ -751,6 +751,24 @@ pub fn classified_batch_ids(payload: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The newest turn time of a raw `ingest.batch_received` event payload: the latest `ts` among
+/// its turns that carry a readable one, `None` when none does (every batch received before turns
+/// carried a time, and any shipper that sends none). Reads the raw payload, like
+/// [`classified_batch_ids`], so a scan never fails on one odd event. This is the one reading of
+/// when a batch was said: the same-moment rule of a restated capture and the time a captured
+/// decision is projected at both take it from here.
+pub fn received_batch_newest_turn_time(payload: &serde_json::Value) -> Option<DateTime<Utc>> {
+    payload
+        .get("turns")
+        .and_then(|turns| turns.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|turn| turn.get("ts").and_then(|ts| ts.as_str()))
+        .filter_map(|ts| DateTime::parse_from_rfc3339(ts).ok())
+        .map(|ts| ts.with_timezone(&Utc))
+        .max()
+}
+
 /// One scored quality dimension: score in [0,1] plus a human-readable explanation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

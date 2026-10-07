@@ -171,9 +171,11 @@ fn a_decision_whose_turn_has_no_time_stays_at_the_classification_time() {
     assert_eq!(brief.occurred_at, classified.ts);
 }
 
-/// A capture that names no turn is recorded exactly as before.
+/// A capture that names no turn is recorded with no source time, and is read at the newest turn
+/// time of its batch (hivemind-ohik): the batch's turns carry times, so the classification's own
+/// time, written days later, is not when it was said.
 #[test]
-fn a_capture_that_names_no_turn_is_recorded_at_the_classification_time() {
+fn a_capture_that_names_no_turn_reads_at_its_batchs_newest_turn_time() {
     let ledger = InMemoryEventLedger::new();
     let mut fixture: Value = serde_json::from_str(DECISION_IN_ITS_OWN_TURN).expect("parses");
     fixture["captures"][0]
@@ -186,6 +188,46 @@ fn a_capture_that_names_no_turn_is_recorded_at_the_classification_time() {
     let capture = stored_capture(&ledger, &recorded, 0);
     assert!(capture.get("source_turn_id").is_none());
     assert!(capture.get("source_ts").is_none());
+
+    let newest_turn_time = moment("2026-09-01T09:20:00Z");
+    let classified = ledger
+        .read(recorded.event_id - 1, 1)
+        .expect("ledger reads")
+        .remove(0);
+    assert!(classified.ts.expect("event carries a time") > newest_turn_time);
+    let decision_id = format!("capture:{}:0", recorded.event_id);
+    let brief = get_decision_brief(&graph_of(&ledger), &decision_id)
+        .expect("brief reads")
+        .data
+        .expect("decision is in the graph");
+    assert_eq!(brief.occurred_at, Some(newest_turn_time));
+}
+
+/// The batch's turn times are read from the ledger when the graph is built, so rebuilding the
+/// graph from the same ledger gives the same time.
+#[test]
+fn a_decision_time_from_the_batch_is_the_same_on_every_rebuild() {
+    let ledger = InMemoryEventLedger::new();
+    let mut fixture: Value = serde_json::from_str(DECISION_IN_ITS_OWN_TURN).expect("parses");
+    fixture["captures"][0]
+        .as_object_mut()
+        .expect("capture")
+        .remove("source_turn_id");
+    let recorded =
+        record_as(&ledger, &fixture.to_string(), "batch-rebuilt").expect("classification recorded");
+
+    let decision_id = format!("capture:{}:0", recorded.event_id);
+    let times: Vec<_> = (0..2)
+        .map(|_| {
+            get_decision_brief(&graph_of(&ledger), &decision_id)
+                .expect("brief reads")
+                .data
+                .expect("decision is in the graph")
+                .occurred_at
+        })
+        .collect();
+    assert_eq!(times[0], Some(moment("2026-09-01T09:20:00Z")));
+    assert_eq!(times[0], times[1]);
 }
 
 /// Only a received turn's own time counts: a `source_ts` the submission carries is replaced.

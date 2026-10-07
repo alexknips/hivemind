@@ -2457,6 +2457,257 @@ fn project_classified_decision(capture: serde_json::Value) -> Result<(DecisionEd
     Ok((edges, occurred_at))
 }
 
+fn instant(timestamp: &str) -> chrono::DateTime<Utc> {
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .expect("test timestamp parses") // ubs:ignore
+        .with_timezone(&Utc)
+}
+
+fn time_value(timestamp: &str) -> GraphValue {
+    GraphValue::String(instant(timestamp).to_rfc3339())
+}
+
+/// A received batch whose turns carry `turn_times` (`None`: a turn with no time).
+fn received_batch(batch_id: &str, turn_times: &[Option<&str>]) -> Event {
+    let turns: Vec<serde_json::Value> = turn_times
+        .iter()
+        .enumerate()
+        .map(|(index, ts)| {
+            let mut turn = json!({
+                "turn_id": format!("t-{index}"),
+                "role": "assistant",
+                "text": "We run every seat on one model.",
+                "truncated": false
+            });
+            if let Some(ts) = ts {
+                turn["ts"] = json!(ts);
+            }
+            turn
+        })
+        .collect();
+    event(
+        EventType::IngestBatchReceived,
+        "agent:claude:hook",
+        json!({
+            "batch_id": batch_id,
+            "agent_tool": "claude",
+            "session_id": "session-1",
+            "turns": turns
+        }),
+    )
+}
+
+/// A classification of `batch_ids` holding one `capture`, written at `written_at`.
+fn classification(batch_ids: &[&str], capture: serde_json::Value, written_at: &str) -> Event {
+    let mut classified = event(
+        EventType::IngestBatchClassified,
+        "agent:claude:classifier",
+        json!({
+            "batch_id": batch_ids.first().copied().unwrap_or_default(),
+            "batch_ids": batch_ids,
+            "classifier_model": "claude-haiku-4-5-20251001",
+            "schema_version": "2",
+            "captures": [capture]
+        }),
+    );
+    classified.ts = Some(instant(written_at));
+    classified
+}
+
+/// The `occurred_at` of the one decision `graph` holds.
+fn the_decision_time(graph: &RecordingGraph) -> GraphValue {
+    graph
+        .nodes()
+        .iter()
+        .find(|((kind, _), _)| *kind == NodeKind::Decision)
+        .and_then(|(_, properties)| properties.get("occurred_at").cloned())
+        .expect("the graph holds a decision that carries occurred_at") // ubs:ignore
+}
+
+fn project_events(events: Vec<Event>) -> Result<RecordingGraph> {
+    let ledger = InMemoryEventLedger::new();
+    for event in events {
+        ledger.append(event)?;
+    }
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, 0)?;
+    Ok(graph)
+}
+
+const SAID_AT: &str = "2026-09-18T06:02:00Z";
+const CLASSIFIED_AT: &str = "2026-10-03T03:00:20Z";
+
+/// A decision whose capture names no turn reads as when its batch was said, not as when the
+/// classifier ran days later.
+#[test]
+fn a_decision_classified_later_reads_at_its_batchs_newest_turn_time() -> Result<()> {
+    let graph = project_events(vec![
+        received_batch(
+            "batch:1",
+            &[Some("2026-09-18T06:00:00Z"), None, Some(SAID_AT)],
+        ),
+        classification(
+            &["batch:1"],
+            classified_decision_capture(None, &[], &[]),
+            CLASSIFIED_AT,
+        ),
+    ])?;
+
+    assert_eq!(the_decision_time(&graph), time_value(SAID_AT)); // ubs:ignore
+    Ok(())
+}
+
+/// A capture that names its own turn keeps that turn's time: the batch's newest turn is only
+/// the fallback.
+#[test]
+fn a_capture_that_names_its_turn_keeps_that_turns_time() -> Result<()> {
+    let mut capture = classified_decision_capture(None, &[], &[]);
+    capture["source_turn_id"] = json!("t-0");
+    capture["source_ts"] = json!("2026-09-18T06:00:00Z");
+    let graph = project_events(vec![
+        received_batch("batch:1", &[Some("2026-09-18T06:00:00Z"), Some(SAID_AT)]),
+        classification(&["batch:1"], capture, CLASSIFIED_AT),
+    ])?;
+
+    assert_eq!(
+        // ubs:ignore
+        the_decision_time(&graph),
+        time_value("2026-09-18T06:00:00Z")
+    );
+    Ok(())
+}
+
+/// A batch whose turns carry no time (everything shipped before turns did) reads at the
+/// classification's own time, as before.
+#[test]
+fn a_batch_with_no_turn_times_reads_at_the_classification_time() -> Result<()> {
+    let graph = project_events(vec![
+        received_batch("batch:1", &[None, None]),
+        classification(
+            &["batch:1"],
+            classified_decision_capture(None, &[], &[]),
+            CLASSIFIED_AT,
+        ),
+    ])?;
+
+    assert_eq!(the_decision_time(&graph), time_value(CLASSIFIED_AT)); // ubs:ignore
+    Ok(())
+}
+
+/// A classification of a batch the ledger never received has no turn time to read: nothing is
+/// guessed.
+#[test]
+fn a_classification_of_an_unreceived_batch_reads_at_the_classification_time() -> Result<()> {
+    let graph = project_events(vec![classification(
+        &["batch:unseen"],
+        classified_decision_capture(None, &[], &[]),
+        CLASSIFIED_AT,
+    )])?;
+
+    assert_eq!(the_decision_time(&graph), time_value(CLASSIFIED_AT)); // ubs:ignore
+    Ok(())
+}
+
+/// A classification that covers several batches reads at the newest turn time among them.
+#[test]
+fn a_classification_of_several_batches_reads_at_the_newest_turn_time_among_them() -> Result<()> {
+    let graph = project_events(vec![
+        received_batch("batch:1", &[Some(SAID_AT)]),
+        received_batch("batch:2", &[Some("2026-09-18T07:30:00Z"), None]),
+        received_batch("batch:3", &[None]),
+        classification(
+            &["batch:1", "batch:2", "batch:3"],
+            classified_decision_capture(None, &[], &[]),
+            CLASSIFIED_AT,
+        ),
+    ])?;
+
+    assert_eq!(
+        // ubs:ignore
+        the_decision_time(&graph),
+        time_value("2026-09-18T07:30:00Z")
+    );
+    Ok(())
+}
+
+/// A graph extended from an offset (the server's graph cache) reads the same time as one
+/// rebuilt from the start, whether the batch was received before the offset or in the same
+/// replay as its classification, and projecting the same ledger again changes nothing.
+#[test]
+fn an_extended_graph_reads_the_same_time_as_a_rebuilt_one() -> Result<()> {
+    let capture = classified_decision_capture(None, &[], &[]);
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(received_batch("batch:1", &[Some(SAID_AT)]))?;
+    let extended = RecordingGraph::default();
+    project_from_ledger(&ledger, &extended, 0)?;
+    let received_up_to = ledger.latest_offset()?;
+    ledger.append(event(
+        EventType::HypothesisRecorded,
+        "agent:claude:hook",
+        json!({"hypothesis_id": "hyp-between", "statement": "Something recorded in between."}),
+    ))?;
+    ledger.append(classification(&["batch:1"], capture, CLASSIFIED_AT))?;
+
+    project_from_ledger(&ledger, &extended, received_up_to)?;
+    let rebuilt = RecordingGraph::default();
+    project_from_ledger(&ledger, &rebuilt, 0)?;
+    let rebuilt_again = RecordingGraph::default();
+    project_from_ledger(&ledger, &rebuilt_again, 0)?;
+
+    assert_eq!(the_decision_time(&extended), time_value(SAID_AT)); // ubs:ignore
+    assert_eq!(extended.snapshot(), rebuilt.snapshot()); // ubs:ignore
+    assert_eq!(rebuilt.snapshot(), rebuilt_again.snapshot()); // ubs:ignore
+
+    Ok(())
+}
+
+/// A classification of a batch the ledger never received (a `hivemind emit` capture names a
+/// fresh batch id) found by a replay that starts later reads at the classification time too, and
+/// is no error.
+#[test]
+fn an_extended_graph_classifying_an_unreceived_batch_reads_at_the_classification_time() -> Result<()>
+{
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(received_batch("batch:other", &[Some(SAID_AT)]))?;
+    let first = ledger.latest_offset()?;
+    ledger.append(classification(
+        &["batch:unseen"],
+        classified_decision_capture(None, &[], &[]),
+        CLASSIFIED_AT,
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, first)?;
+
+    assert_eq!(the_decision_time(&graph), time_value(CLASSIFIED_AT)); // ubs:ignore
+    Ok(())
+}
+
+/// A replay that starts after the first event and holds both a batch and its classification
+/// needs nothing from before its offset, and reads the same time as a rebuild.
+#[test]
+fn a_replay_holding_the_batch_and_its_classification_reads_the_batchs_turn_time() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(event(
+        EventType::HypothesisRecorded,
+        "agent:claude:hook",
+        json!({"hypothesis_id": "hyp-before", "statement": "Something recorded first."}),
+    ))?;
+    let first = ledger.latest_offset()?;
+    ledger.append(received_batch("batch:1", &[Some(SAID_AT)]))?;
+    ledger.append(classification(
+        &["batch:1"],
+        classified_decision_capture(None, &[], &[]),
+        CLASSIFIED_AT,
+    ))?;
+
+    let graph = RecordingGraph::default();
+    project_from_ledger(&ledger, &graph, first)?;
+
+    assert_eq!(the_decision_time(&graph), time_value(SAID_AT)); // ubs:ignore
+    Ok(())
+}
+
 #[test]
 fn classified_decision_credited_to_a_human_is_not_accepted_but_says_when() -> Result<()> {
     let (edges, occurred_at) =

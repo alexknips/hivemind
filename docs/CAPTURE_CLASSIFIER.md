@@ -197,7 +197,10 @@ classification otherwise), reads that turn's own `ts` into the capture's
 time from the classifier.
 
 - A decision is recorded at its turn's time (`occurred_at`). With no turn, or a
-  turn with no `ts`, it keeps the classification's own time.
+  turn with no `ts`, it reads at the newest turn time of its batch (hivemind-ohik),
+  taken from the received batch when the graph is built, since the classifier
+  can run days after the session. A batch whose turns carry no `ts` at all keeps
+  the classification's own time.
 - A `decision-request` with a `question` and a turn that has a `ts` writes one
   `question.asked` at that turn's time, by the actor named on the request. With
   no actor named, the turn's role decides: a request in an `assistant` turn is

@@ -12,7 +12,10 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::error::CommandError;
-use crate::events::{classified_batch_ids, CaptureItem, EventId, EventType, RelationKind};
+use crate::events::{
+    classified_batch_ids, received_batch_newest_turn_time, CaptureItem, EventId, EventType,
+    RelationKind,
+};
 use crate::ledger::EventLedger;
 use crate::util::{require_non_empty, require_valid_actor_id};
 use crate::Result;
@@ -226,16 +229,7 @@ impl<L: EventLedger> Commands<'_, L> {
             if !wanted.contains(batch_id) {
                 return;
             }
-            let turn_times = event
-                .payload
-                .get("turns")
-                .and_then(|turns| turns.as_array())
-                .into_iter()
-                .flatten()
-                .filter_map(|turn| turn.get("ts").and_then(|ts| ts.as_str()))
-                .filter_map(|ts| DateTime::parse_from_rfc3339(ts).ok())
-                .map(|ts| ts.with_timezone(&Utc));
-            if let Some(batch_newest) = turn_times.max() {
+            if let Some(batch_newest) = received_batch_newest_turn_time(&event.payload) {
                 newest
                     .entry(batch_id.to_owned())
                     .and_modify(|current| *current = (*current).max(batch_newest))

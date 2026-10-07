@@ -395,6 +395,19 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A decision captured from a session that was classified days later says when it was said,
+  not when the classifier ran.** A decision the classifier captured without naming a source
+  turn was dated at the classification's own time, so `why` and `verify` showed a session said
+  on 27 September and classified on 1 October (the weekly usage limit had held the queue) as
+  decided four days late. When the batch the capture came from carries turn times, such a
+  decision now reads at the newest turn time of that batch (across all the batches a grouped
+  classification covers), the same value the restatement same-moment rule uses. A capture that
+  names its turn keeps that turn's own time, and a batch with no turn times at all (everything
+  shipped before turns carried a time) keeps the classification's time, as before. Nothing is
+  rewritten: the time is read from the received batch when the graph is built, so decisions
+  already recorded read correctly after the upgrade, and a rebuilt or extended graph gives the
+  same answer. (hivemind-ohik)
+
 - **`why`, `verify` and `recall` no longer answer a different decision, with no warning,
   just because its long rationale happens to hold every word of the question.** A few
   decisions have rationales and evidence of two thousand characters or more, and between them

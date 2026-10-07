@@ -8,21 +8,23 @@ use serde::Serialize;
 use crate::commands::{normalize_topic_key, personal_project_handle};
 use crate::error::ProjectorError;
 use crate::events::{
-    self, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem, DecisionMovedPayload,
-    DecisionProposedPayload, DecisionRequestedPayload, DecisionRetitledPayload,
-    DecisionScoredPayload, Event, EventId, EventPayload, EvidenceRecordedPayload,
-    HypothesisRecordedPayload, IngestBatchClassifiedPayload, NotificationAcknowledgedPayload,
-    NotificationSentPayload, ProjectAnchorKind, ProjectAnchorPayload, ProjectLinkKind,
-    ProjectRegisteredPayload, ProjectSource, QuestionAskedPayload, QuestionRecordedPayload,
-    ReadEvent, RelationKind as EventRelationKind, SuggestionSurfacedPayload, TenantId,
-    UnreadableAnnotation,
+    self, classified_batch_ids, BlockerReportedPayload, BlockerResolvedPayload, CaptureItem,
+    DecisionMovedPayload, DecisionProposedPayload, DecisionRequestedPayload,
+    DecisionRetitledPayload, DecisionScoredPayload, Event, EventId, EventPayload,
+    EvidenceRecordedPayload, HypothesisRecordedPayload, IngestBatchClassifiedPayload,
+    NotificationAcknowledgedPayload, NotificationSentPayload, ProjectAnchorKind,
+    ProjectAnchorPayload, ProjectLinkKind, ProjectRegisteredPayload, ProjectSource,
+    QuestionAskedPayload, QuestionRecordedPayload, ReadEvent, RelationKind as EventRelationKind,
+    SuggestionSurfacedPayload, TenantId, UnreadableAnnotation,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
 
+use batch_times::BatchTurnTimes;
 use option_labels::{readable_option_labels, FoundLabel};
 
 pub mod arrow;
+mod batch_times;
 #[cfg(feature = "graph-kuzu")]
 pub mod kuzu;
 pub mod memory;
@@ -275,8 +277,11 @@ pub trait GraphView {
     fn wipe(&self) -> Result<()>;
 }
 
+/// Projects one event on its own: a classified batch has no received batch to read a turn time
+/// from, so its decisions read at the batch's own time (a replay, [`project_from_ledger`], sees
+/// the received batches and does better).
 pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
-    project_event_reporting(graph, event).map(drop)
+    project_event_reporting(graph, event, &BatchTurnTimes::default()).map(drop)
 }
 
 /// What one replay skipped: annotation rows ([`UnreadableAnnotation`]) that could not be read.
@@ -286,13 +291,15 @@ pub struct ProjectionReport {
     pub unreadable_annotations: Vec<UnreadableAnnotation>,
 }
 
-/// [`project_event`], returning the annotation row it skipped, if it skipped one. An annotation
-/// (an assessment or score) that cannot be read is skipped, never projected and never an error:
-/// the decision it named shows what its own events say, as if the annotation was never made.
-/// Any other event that fails validation is still an error.
-pub fn project_event_reporting(
+/// [`project_event`] with the turn times of the batches received so far, returning the
+/// annotation row it skipped, if it skipped one. An annotation (an assessment or score) that
+/// cannot be read is skipped, never projected and never an error: the decision it named shows
+/// what its own events say, as if the annotation was never made. Any other event that fails
+/// validation is still an error.
+fn project_event_reporting(
     graph: &impl GraphView,
     event: &Event,
+    batch_times: &BatchTurnTimes,
 ) -> Result<Option<UnreadableAnnotation>> {
     let payload = match events::validate_for_read(event).map_err(projector_error)? {
         ReadEvent::Payload(payload) => *payload,
@@ -411,7 +418,7 @@ pub fn project_event_reporting(
             &event.actor_id,
             &payload,
             &origin_properties,
-            event_timestamp(event),
+            classified_batch_time(event, batch_times),
         )?,
         EventPayload::DecisionScored(payload) => {
             project_decision_scored(graph, &payload, &origin_properties)?
@@ -461,7 +468,7 @@ pub fn project_from_ledger(
     graph: &impl GraphView,
     offset: EventId,
 ) -> Result<()> {
-    project_replay(graph, |callback| ledger.replay_from(offset, callback)).map(drop)
+    project_from_ledger_for_tenant(ledger, &TenantId::local(), graph, offset)
 }
 
 pub fn project_from_ledger_for_tenant(
@@ -481,22 +488,28 @@ pub fn project_from_ledger_for_tenant_reporting(
     graph: &impl GraphView,
     offset: EventId,
 ) -> Result<ProjectionReport> {
-    project_replay(graph, |callback| {
-        ledger.replay_from_for_tenant(tenant_id, offset, callback)
-    })
+    project_replay(ledger, tenant_id, graph, offset)
 }
 
-/// Project every event a replay yields, skipping unreadable annotation rows and logging them
-/// once (not once per row) so a log reader sees the count and the offsets.
+/// Project every event of `tenant_id` after `offset`, skipping unreadable annotation rows and
+/// logging them once (not once per row) so a log reader sees the count and the offsets.
+///
+/// The turn times of the received batches are read on the way (and, for a replay that starts
+/// after the first event, from before `offset`), so a classified batch's decisions read as when
+/// they were said whether the graph was rebuilt or extended.
 fn project_replay(
+    ledger: &impl EventLedger,
+    tenant_id: &TenantId,
     graph: &impl GraphView,
-    replay: impl FnOnce(&mut dyn FnMut(&Event) -> Result<()>) -> Result<()>,
+    offset: EventId,
 ) -> Result<ProjectionReport> {
+    let mut batch_times = BatchTurnTimes::before(ledger, tenant_id, offset)?;
     let mut report = ProjectionReport::default();
-    replay(&mut |event| {
+    ledger.replay_from_for_tenant(tenant_id, offset, &mut |event| {
+        batch_times.note(event);
         report
             .unreadable_annotations
-            .extend(project_event_reporting(graph, event)?);
+            .extend(project_event_reporting(graph, event, &batch_times)?);
         Ok(())
     })?;
     if !report.unreadable_annotations.is_empty() {
@@ -876,6 +889,19 @@ fn event_timestamp(event: &Event) -> GraphValue {
         .ts
         .map(|ts| GraphValue::String(ts.to_rfc3339()))
         .unwrap_or(GraphValue::Null)
+}
+
+/// The time the decisions a classified batch captured are recorded at when a capture names no
+/// turn of its own: the newest turn time of the batches the classification covers (the same
+/// reading the write path's same-moment rule uses), and the classification event's own time
+/// when none of them carries a turn time.
+fn classified_batch_time(event: &Event, batch_times: &BatchTurnTimes) -> GraphValue {
+    batch_times
+        .newest(&classified_batch_ids(&event.payload))
+        .map_or_else(
+            || event_timestamp(event),
+            |ts| GraphValue::String(ts.to_rfc3339()),
+        )
 }
 
 fn relation_kind(kind: EventRelationKind) -> RelationKind {
@@ -1832,8 +1858,9 @@ fn project_notification_acknowledged(
     )
 }
 
-/// `batch_time` is the classified-batch event's own timestamp: the time a decision it captured
-/// is recorded at unless the capture carries its turn's own time (see
+/// `batch_time` is the time a decision it captured is recorded at unless the capture carries its
+/// turn's own time: the newest turn time of the batches classified, or the classified-batch
+/// event's own timestamp when none carries one (see `classified_batch_time` and
 /// `project_capture_decision`).
 fn project_ingest_batch_classified(
     graph: &impl GraphView,
@@ -2025,8 +2052,8 @@ fn project_decision_retitled(
 /// `recorder` is the actor that recorded the batch, when there is one (the in-memory evaluation
 /// projection has none): a captured decision belongs to their personal project, the same rule
 /// `project_decision_proposed` applies to a proposal that names no project. `batch_time` is the
-/// classified-batch event's timestamp (`Null` when there is none, as in the in-memory
-/// projection).
+/// time of the batch the capture was classified from (see `classified_batch_time`; `Null` when
+/// there is none, as in the in-memory projection).
 fn project_capture(
     graph: &impl GraphView,
     capture: &CaptureItem,
@@ -2063,9 +2090,13 @@ fn project_capture(
 
 /// A captured decision is recorded (`occurred_at`, the value `why` and `verify` read as when it
 /// was decided) at the time of the turn it came from when the capture names one that carries a
-/// time (`CaptureItem::source_ts`, read from the received turn by the write path), and at the
-/// classified batch's time otherwise: with no turn time the batch's own time is the honest
-/// answer, and nothing is guessed.
+/// time (`CaptureItem::source_ts`, read from the received turn by the write path). Otherwise
+/// `batch_time` applies: the newest turn time of the batch it was classified from when that
+/// batch's turns carry times, because the decision was said no later than that turn, and the
+/// classification's own time only for a batch with no turn times at all (everything shipped
+/// before turns carried a time). The classifier runs when a session is classified, which can be
+/// days after it was said, so its time is never preferred to a turn time. Nothing is guessed:
+/// with no turn time the batch's own time is the honest answer.
 ///
 /// Who decided it is what the classifier read out of the text, and only that: `accepted_by`
 /// names the acceptors. `actor_id` is who proposed, made or reported the item, so it is never
