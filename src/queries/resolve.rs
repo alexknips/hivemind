@@ -20,9 +20,13 @@
 //! that only reads (`why`, `verify`, ...) asks with `resolve_decision_for_reading`: it matches at
 //! the bar `recall` uses, and answers with a close candidate that leads alone, saying what the
 //! decision lacks, instead of making the asker repeat the question with `--pick`. Which candidate
-//! leads is decided by how many terms each lacks and then by how many of the terms it did match
-//! its title or topic keys carry (see `closeness`), so a decision about the thing asked about
-//! beats one that only mentions the words somewhere in a long rationale.
+//! leads is decided first by how much of the question its title, topic keys and recorded question
+//! carry (`About`), then by how many terms it lacks (see `closeness`), so a decision about the
+//! thing asked about beats one that only mentions the words somewhere in a long rationale, however
+//! few words that one lacks. And a close candidate is answered with only when its own title and
+//! topic keys hold at least `MIN_HEADLINE_WORDS_TO_ANSWER_CLOSE` of the question's words: one
+//! shared word is what any decision on a broad subject has, and a decision that lacks the very
+//! word the question is about is not the decision it asks about; it is listed.
 //!
 //! Holding every word is not being about the question, either: a decision whose long rationale
 //! says all of a plain question's words matches in full, and a full match drops every close
@@ -42,7 +46,7 @@
 //! whatever decision happens to say "no" somewhere, nor sent past the decision asked about because
 //! that decision states its answer positively.
 
-use std::cmp::{Ordering, Reverse};
+use std::cmp::Reverse;
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
@@ -64,6 +68,15 @@ use super::QueryResponse;
 /// instead of listing it. Listing needs only half the words (as `recall` does); answering names
 /// the decision as the one asked about, and one shared word out of two is too little for that.
 const MIN_WORDS_TO_ANSWER_CLOSE: usize = 2;
+
+/// Fewest of the question's words a close candidate's own title and topic keys must hold, as
+/// words, before a read verb answers with it. A decision that lacks some of the words and holds
+/// fewer than this in its headline has the rest only in a long rationale, its evidence, the
+/// question it records or its recorder's fields, or lacks the one word the question is about: it
+/// is listed, never named as the decision asked about. The question a decision records orders it
+/// (`About`) but does not count here: it can be as long as a paragraph, and a decision with a
+/// long one holds nearly every common word as a word.
+const MIN_HEADLINE_WORDS_TO_ANSWER_CLOSE: usize = 2;
 
 /// Why a decision that has every word asked is still only a close candidate: the description is
 /// negated and the decision's title says all of it outright. Shown beside the candidate wherever
@@ -161,10 +174,12 @@ pub fn resolve_decision_by_description(
 ///
 /// - a close candidate needs at least half of the terms, the bar `recall` uses, so a question
 ///   `recall` answers is not answered with "no decision matches" here;
-/// - when close candidates are all there is, and one is closer than the rest (lacks fewer terms,
-///   or lacks as many but has more of the terms it matched in its title or topic keys) and shares
-///   at least two terms, it is `Resolved` with its `missing_terms` set, so the caller shows the
-///   decision and names what it lacks. Equally close candidates stay an `Ambiguous` list.
+/// - when close candidates are all there is, and the one that is most about the question is also
+///   closer than the rest (lacks fewer terms, or lacks as many but has more of the terms it
+///   matched in its title or topic keys), shares at least two terms and holds at least two of them
+///   in its own title or topic keys, it is `Resolved` with its `missing_terms` set, so the caller
+///   shows the decision and names what it lacks. Equally close candidates, and a candidate whose
+///   headline holds fewer than two of the words, stay an `Ambiguous` list (hivemind-tfde).
 pub fn resolve_decision_for_reading(
     graph: &impl GraphView,
     description: &str,
@@ -233,14 +248,14 @@ fn resolve_for(
         right
             .promoted
             .cmp(&left.promoted)
-            .then_with(|| left.missing_terms.len().cmp(&right.missing_terms.len()))
             .then_with(|| {
-                if left.missing_terms.is_empty() {
-                    right.about.cmp_about(&left.about)
-                } else {
-                    Ordering::Equal
-                }
+                right
+                    .missing_terms
+                    .is_empty()
+                    .cmp(&left.missing_terms.is_empty())
             })
+            .then_with(|| right.about.cmp_about(&left.about))
+            .then_with(|| left.missing_terms.len().cmp(&right.missing_terms.len()))
             .then_with(|| right.headline_terms.cmp(&left.headline_terms))
             .then_with(|| left.stand_in_terms.cmp(&right.stand_in_terms))
             .then_with(|| left.rank.cmp(&right.rank))
@@ -321,6 +336,10 @@ fn resolve_for(
 /// across the ledger and nothing is learned. A full match is 0 on the headline count (its order
 /// is `About`, then the stand-in count and the rank tier), and a verb that writes never reads
 /// stand-ins, so it is 0 on the last one too.
+///
+/// This is how close the candidate is, which says whether the first of a list leads it clearly.
+/// The order of the list is decided before it: by `About`, so a decision whose title says the
+/// question comes ahead of one that lacks a word fewer and holds the others only in its rationale.
 fn closeness(row: &ResolverCandidateRow) -> (usize, Reverse<usize>, usize) {
     (
         row.missing_terms.len(),
@@ -329,12 +348,14 @@ fn closeness(row: &ResolverCandidateRow) -> (usize, Reverse<usize>, usize) {
     )
 }
 
-/// Whether the first of `rows` (a close candidate, closest first) is the one asked about: it is
-/// closer than the next, by `closeness`, or the next is a decision it was promoted over
-/// (`out_heading`), and it shares enough terms to be named as the answer. Equal closeness is not
-/// resolved: after it the lists are ordered by rank and recency, which say nothing about which of
-/// two equally close decisions was meant. A decision of the opposite polarity is never the one
-/// asked about, however many words it shares.
+/// Whether the first of `rows` (a close candidate, the most about the question first) is the one
+/// asked about: its title and topic keys hold enough of the question's words
+/// (`MIN_HEADLINE_WORDS_TO_ANSWER_CLOSE`), it shares enough terms to be named as the answer, and it
+/// is closer than the next, by `closeness`, or the next is a decision it was promoted over
+/// (`out_heading`). A first that is the most about the question but lacks more words than the next
+/// is not resolved, and neither is an equally close one: after it the lists are ordered by rank
+/// and recency, which say nothing about which of two decisions was meant. A decision of the
+/// opposite polarity is never the one asked about, however many words it shares.
 fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bool {
     let Some(first) = rows.first() else {
         return false;
@@ -342,6 +363,7 @@ fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bo
     let shared = term_count.saturating_sub(first.missing_terms.len());
     !first.polarity_mismatch
         && shared >= MIN_WORDS_TO_ANSWER_CLOSE
+        && first.headline_words >= MIN_HEADLINE_WORDS_TO_ANSWER_CLOSE
         && rows.get(1).is_none_or(|next| {
             (first.promoted && !next.promoted) || closeness(first) < closeness(next)
         })
@@ -353,6 +375,7 @@ fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bo
 fn absorb_record(shown: &mut ResolverCandidateRow, other: ResolverCandidateRow) {
     shown.rank = shown.rank.min(other.rank);
     shown.stand_in_terms = shown.stand_in_terms.min(other.stand_in_terms);
+    shown.headline_words = shown.headline_words.max(other.headline_words);
     if other.about.cmp_about(&shown.about).is_gt() {
         shown.about = other.about;
     }

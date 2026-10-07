@@ -1150,10 +1150,11 @@ pub(crate) fn render_resolve_outcome_summary(outcome: &ResolveOutcome) -> String
                 } else {
                     "the question is negated and no decision matching its words is"
                 };
+                let count = candidates.len();
+                let plural = if count == 1 { "" } else { "s" };
                 let _ = writeln!(
                     output,
-                    "close: {reason}; {} close candidates — resolve with --pick N, #N, or --id",
-                    candidates.len()
+                    "close: {reason}; {count} close candidate{plural} — resolve with --pick N, #N, or --id"
                 );
             } else {
                 let _ = writeln!(

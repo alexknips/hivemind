@@ -1337,6 +1337,51 @@ fn fluent_search_puts_a_close_match_about_the_question_before_a_decision_that_on
 }
 
 #[test]
+fn fluent_search_puts_the_close_match_whose_title_carries_more_of_the_question_before_one_that_lacks_fewer(
+) -> Result<()> {
+    let scenario = titled_decisions(&[
+        (
+            // Lacks only "zebra", and holds three of the other four only in its rationale.
+            "d:aaa-collector",
+            "Billing notes",
+            "We adopt the async queue for it.",
+        ),
+        (
+            // Lacks "billing" and "zebra", and carries the three words it has in its title.
+            "d:zzz-titled",
+            "Adopt async queue",
+            "Testers see it first.",
+        ),
+        (
+            "d:db",
+            "Use Postgres for the hosted cell",
+            "The cell needs shared storage.",
+        ),
+        (
+            "d:ui",
+            "Two columns for the layout",
+            "A reader scans left to right.",
+        ),
+    ])?;
+
+    let (items, _) = fluent_answer(&scenario, "adopt async queue billing zebra", 10)?;
+
+    // The decision whose title says the question comes first, though it lacks one word more
+    // (hivemind-tfde): what a decision is about is where its words sit, not how few it lacks.
+    assert_eq!(
+        items,
+        vec![
+            (
+                "d:zzz-titled".to_owned(),
+                vec!["billing".to_owned(), "zebra".to_owned()]
+            ),
+            ("d:aaa-collector".to_owned(), vec!["zebra".to_owned()]),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn fluent_search_puts_the_full_match_that_says_the_words_in_its_title_first() -> Result<()> {
     let scenario = titled_decisions(&[
         (

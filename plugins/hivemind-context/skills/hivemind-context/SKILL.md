@@ -178,13 +178,17 @@ When you see an ambiguous result:
 
 A read verb (`why`, `verify`, `chain`, `compact-view`) can also answer with a
 **close match**. When no decision has every word you asked with and one is
-closer than the others (it lacks fewer of the words, or lacks as many but has more
-of the words it did match in its title or topic keys), it answers with that decision and opens with a
+closer than the others (it carries the most of the question in its title, topic keys
+and recorded question, lacks fewer of the words than the next one, and holds at least
+two of the words in its title and topic keys), it answers with that decision and opens with a
 `close match:` line naming the words the decision does not have (`close_match`
 with `missing_terms` in JSON). Read that line before you rely on the answer: if
 a missing word changes what you asked ("still", a name), ask again with
-other words or with `--id`. The write verbs never do this; they list close
-candidates and write nothing.
+other words or with `--id`. A decision whose title and topic keys hold fewer than two
+of your words is listed (`outcome: ambiguous`), never answered with: the word it
+lacks may be the one you asked about. Read the list, and if none of it is the decision
+you meant, ask again with other words or with `--id`. The write verbs never answer with
+a close match; they list close candidates and write nothing.
 
 A newer hivemind reads a negation ("not", "never", "without", "doesn't", "didn't", …) as
 polarity, never as a missing word. A negated question ("why didn't we adopt Kafka") never

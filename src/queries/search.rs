@@ -611,17 +611,19 @@ fn narrow_to_scope(
 
 /// Own project first, then the parent's, then a dependency's; within each, first the close
 /// matches that hold more of what the question is about than every decision that holds all of its
-/// words (`out_heading`), then the decisions that lack the fewest of the question's terms. Among
-/// those that hold every term, the one whose title, topic keys and recorded question hold more of
-/// them comes first (`About`); among close matches, the ones whose title or topic keys carry more
-/// of the terms they did match. Then (for a decision below the bar, see `admit_below_bar`) the one
-/// that names a word it holds in both its title and its topic keys, then the ones that match fewer
-/// of the terms only through a stand-in word (a decision that has the word asked for comes before
-/// one that has a synonym), then (rank, id) order. A negated question does not change that order:
-/// among decisions tied on all of it, the ones whose title does not say every term outright come
-/// before the ones whose title does. An unscoped document has no relation, a literal match lacks
-/// nothing, is never negated and is about nothing, so an unscoped `search` keeps the plain
-/// (rank, id) order.
+/// words (`out_heading`), then the decisions that hold every term, then the close matches. Within
+/// the full matches and within the close matches, the one whose title, topic keys and recorded
+/// question hold more of the question comes first (`About`); a close match that is no less about
+/// it than another but lacks fewer of the terms comes before that one (a decision that holds all
+/// but one of the words only in a long rationale is not ahead of the one whose title says them),
+/// then the ones whose title or topic keys carry more of the terms they did match. Then (for a
+/// decision below the bar, see `admit_below_bar`) the one that names a word it holds in both its
+/// title and its topic keys, then the ones that match fewer of the terms only through a stand-in
+/// word (a decision that has the word asked for comes before one that has a synonym), then
+/// (rank, id) order. A negated question does not change that order: among decisions tied on all
+/// of it, the ones whose title does not say every term outright come before the ones whose
+/// title does. An unscoped document has no relation, a literal match lacks nothing, is never
+/// negated and is about nothing, so an unscoped `search` keeps the plain (rank, id) order.
 fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
     mark_out_heading(scored);
     scored.sort_by(|left, right| {
@@ -629,17 +631,18 @@ fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
             .cmp(&right.relation)
             .then_with(|| right.promoted.cmp(&left.promoted))
             .then_with(|| {
+                right
+                    .result
+                    .missing_terms
+                    .is_empty()
+                    .cmp(&left.result.missing_terms.is_empty())
+            })
+            .then_with(|| right.about.cmp_about(&left.about))
+            .then_with(|| {
                 left.result
                     .missing_terms
                     .len()
                     .cmp(&right.result.missing_terms.len())
-            })
-            .then_with(|| {
-                if left.result.missing_terms.is_empty() {
-                    right.about.cmp_about(&left.about)
-                } else {
-                    Ordering::Equal
-                }
             })
             .then_with(|| right.headline_terms.cmp(&left.headline_terms))
             .then_with(|| right.headline_hits.cmp(&left.headline_hits))
@@ -1019,6 +1022,9 @@ struct ScoredDecisionSearchResult {
     headline_hits: usize,
     /// `SearchMatchInfo::stand_in_terms`.
     stand_ins: usize,
+    /// How many of the question's words the decision's own title and topic keys hold as a word or
+    /// a form of one (`SearchMatchInfo::headline_words`); 0 for a literal match.
+    headline_words: usize,
     /// How much of the question the decision's title, topic keys and recorded question carry
     /// (`About`); nothing for a literal match, which has no words to weigh.
     about: About,
@@ -1244,6 +1250,7 @@ fn collect_graph_search_results(
         let Some(match_info) = evaluate_search_match(query, terms, &fields) else {
             continue;
         };
+        let headline_words = match_info.headline_words.len();
         holdings.push(Holding {
             below_bar: match_info.below_bar,
             held: match_info.held_words,
@@ -1285,6 +1292,7 @@ fn collect_graph_search_results(
                 0
             },
             stand_ins: match_info.stand_in_terms,
+            headline_words,
             about: About::default(),
             promoted: false,
             fields,
@@ -1504,6 +1512,10 @@ pub(crate) struct ResolverCandidateRow {
     /// How many of the terms it matched only through a stand-in word (`SearchMatchInfo::
     /// stand_in_terms`); 0 for an asker that writes, which never reads stand-ins.
     pub(crate) stand_in_terms: usize,
+    /// How many of the question's words the decision's own title and topic keys hold as a word or
+    /// a form of one. Not `About`'s count: the question a decision records can be as long as a
+    /// paragraph and holds a great many words, so it orders a decision but is never what names it.
+    pub(crate) headline_words: usize,
     /// How much of the question the decision's title, topic keys and recorded question carry
     /// (`About`).
     pub(crate) about: About,
@@ -1554,6 +1566,7 @@ pub(crate) fn collect_resolver_candidates(
             polarity_mismatch: scored.polarity_mismatch,
             headline_terms: scored.headline_terms,
             stand_in_terms: scored.stand_ins,
+            headline_words: scored.headline_words,
             about: scored.about,
             promoted: false,
         })

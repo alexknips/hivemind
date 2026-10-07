@@ -438,6 +438,28 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   slug is worked out from the title each time the ledger is replayed, so a decision whose
   title was cut mid-word or had an apostrophe gets its new slug when the graph is next
   rebuilt (on a server restart); its old link stops resolving. (hivemind-q9l1)
+
+- **`why` and `verify` no longer answer, in one call, a decision that lacks the word the
+  question is about.** When no decision held every word, `why` answered with the one that
+  lacked the fewest, and a decision with a long rationale and long evidence lacks few words of
+  anything: "why did we choose Postgres for the hosted cell" was answered with the hosted-plan
+  decision (it has no "postgres"), "why do we charge per seat" with the pricing decision (no
+  "seat"), "why is the demo's data checked into the UI repo instead of read from hivemind" with
+  the product-naming decision. A close candidate is now answered with only when its own title
+  and topic keys hold at least two of the question's words as words; one word in a title is
+  what any decision on the subject has, and the question a decision records (it can be a
+  paragraph long) orders it but does not count toward that. Otherwise `why`, `verify`, `chain` and
+  `compact-view` list it (`outcome: ambiguous`), with `missing_terms` saying what each lacks,
+  and nothing is answered with. The close candidates are also listed in a new order: the one
+  whose title, topic keys and recorded question carry more of the question comes first (each
+  word weighed by how few decisions hold it, as for a decision that holds every word), and only
+  among candidates that are equally about it the one that lacks fewer words. A decision that
+  lacks one word fewer but holds the rest only in its rationale no longer leads a decision whose
+  title says them. `recall` orders its close matches the same way, so it and `why` name the same
+  decision first. A question that matches no decision's headline is ordered as before. MCP tool
+  descriptions for `chain`, `why`, `compact_view`, `verify` and `recall_decisions` say so.
+  (hivemind-tfde)
+
 - **A decision captured from a session that was classified days later says when it was said,
   not when the classifier ran.** A decision the classifier captured without naming a source
   turn was dated at the classification's own time, so `why` and `verify` showed a session said

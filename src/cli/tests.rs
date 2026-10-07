@@ -2351,6 +2351,100 @@ fn query_why_and_verify_answer_a_question_that_shares_half_its_words_and_say_wha
     Ok(())
 }
 
+#[test]
+fn query_why_lists_a_decision_that_lacks_the_word_the_question_is_about_instead_of_answering_with_it(
+) -> CliTestResult {
+    // hivemind-tfde: nothing in this ledger is about Postgres. The hosted-plan decision holds
+    // "hosted" in its title and "cell" in its rationale and lacks "postgres": it is listed, with
+    // what it lacks, and not answered as the decision the question asks about.
+    let hivemind_dir = unique_test_dir("query-why-lacks-the-subject");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let emit = |title: &str, rationale: &str, topic: &str, option: &str| {
+        run(&Cli::parse_from([
+            "hivemind",
+            "--actor",
+            "human:alice",
+            "--hivemind-dir",
+            dir,
+            "emit",
+            "decision.proposed",
+            "--title",
+            title,
+            "--rationale",
+            rationale,
+            "--topic-keys",
+            topic,
+            "--options",
+            &format!("{option},Something else"),
+            "--chose",
+            option,
+        ]))
+    };
+    let plan_id = emit(
+        "Hosted plan is picked after the comparison and the testers' feedback",
+        "The hosted cell stays on one node until the first testers report back",
+        "pricing",
+        "After the comparison",
+    )?;
+    emit(
+        "Adopt async queue for billing",
+        "Billing must not block on the payment provider",
+        "billing",
+        "Async queue",
+    )?;
+    emit(
+        "Two columns for the layout",
+        "A reader scans left to right",
+        "ui",
+        "Two columns",
+    )?;
+    let why = |question: &str, extra: &[&str]| -> crate::Result<String> {
+        let mut args = vec!["hivemind", "--hivemind-dir", dir];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&["query", "why", question]);
+        run(&Cli::parse_from(args))
+    };
+
+    let listed: serde_json::Value =
+        serde_json::from_str(&why("postgres for the hosted cell", &["--json"])?)?;
+    ensure_json_eq(
+        &listed["data"]["outcome"],
+        serde_json::json!("ambiguous"),
+        "a decision that lacks the word the question is about is not answered with",
+    )?;
+    ensure_json_eq(
+        &listed["data"]["candidates"][0]["decision_id"],
+        serde_json::json!(plan_id),
+        "it is listed, closest first",
+    )?;
+    ensure_json_eq(
+        &listed["data"]["candidates"][0]["missing_terms"],
+        serde_json::json!(["postgres"]),
+        "and says what it lacks",
+    )?;
+    ensure(
+        listed.get("close_match").is_none(),
+        "a list is not a close match",
+    )?;
+
+    // The same decision, asked about with two of the words its title holds, is the answer.
+    let answered: serde_json::Value =
+        serde_json::from_str(&why("hosted plan comparison with postgres", &["--json"])?)?;
+    ensure_json_eq(
+        &answered["data"]["root"]["id"],
+        serde_json::json!(plan_id),
+        "two words of its title are enough to name it",
+    )?;
+    ensure_json_eq(
+        &answered["close_match"]["missing_terms"],
+        serde_json::json!(["postgres"]),
+        "and it still says what it lacks",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
 /// Leave an assessment nobody can parse in the ledger, as a buggy or old producer, a partial
 /// import or a hand edit could: `Commands::record_decision_assessed` refuses it, the ledger
 /// itself does not. Returns the ledger offset it landed at.

@@ -840,7 +840,7 @@ fn a_writer_lists_the_same_candidates_in_the_same_order_and_picks_none() -> Resu
 }
 
 #[test]
-fn fewer_missing_words_still_beat_more_words_in_the_title() -> Result<()> {
+fn the_decision_whose_title_says_the_words_is_listed_ahead_of_one_that_lacks_fewer() -> Result<()> {
     let graph = graph_from_events([
         // Lacks only "zebra", but has three of the other four only in its rationale.
         decision_proposed_because(
@@ -852,15 +852,141 @@ fn fewer_missing_words_still_beat_more_words_in_the_title() -> Result<()> {
         ),
         // Lacks two words, but carries the three it has in its title.
         decision_proposed(2, "d:two", "Adopt async queue", &[]),
+        decision_proposed(3, "d:db", "Use Postgres directly", &["storage"]),
+        decision_proposed(4, "d:ui", "Two columns for the layout", &["ui"]),
     ])?;
 
-    // adopt, async, queue, billing, zebra: d:one matches four of five, d:two three of five.
-    match reading(&graph, "adopt async queue billing zebra")?.data {
-        ResolveOutcome::Resolved { candidate } => {
-            assert_eq!(candidate.decision_id, "d:one");
-            assert_eq!(candidate.missing_terms, vec!["zebra"]);
+    // adopt, async, queue, billing, zebra: d:one matches four of five, d:two three of five. The
+    // title of d:two is what says which decision is about the question, so it is listed first;
+    // it lacks more words than d:one, so neither is named as the answer (hivemind-tfde).
+    for outcome in both_askers(&graph, "adopt async queue billing zebra")? {
+        match outcome {
+            ResolveOutcome::Ambiguous { candidates } => {
+                let ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+                assert_eq!(ids, vec!["d:two", "d:one"]);
+                assert_eq!(candidates[0].missing_terms, vec!["billing", "zebra"]);
+                assert_eq!(candidates[1].missing_terms, vec!["zebra"]);
+            }
+            other => panic!("expected the list, the decision about the question first: {other:?}"),
         }
-        other => panic!("expected the decision lacking one word, got {other:?}"),
+    }
+    Ok(())
+}
+
+/// "why did we choose Postgres for the hosted cell": the ledger has a decision about the hosted
+/// plan whose rationale mentions the cell, and none about Postgres (hivemind-tfde).
+fn hosted_graph() -> Result<MemoryGraph> {
+    graph_from_events([
+        decision_proposed_because(
+            1,
+            "d:plan",
+            "Hosted plan is picked after the comparison and the testers' feedback",
+            "The hosted cell stays on one node until the first testers report back.",
+            &["pricing"],
+        ),
+        decision_proposed(2, "d:queue", "Adopt async queue for billing", &["billing"]),
+        decision_proposed(3, "d:ui", "Two columns for the layout", &["ui"]),
+    ])
+}
+
+#[test]
+fn a_close_candidate_whose_headline_holds_one_of_the_words_is_listed_not_answered() -> Result<()> {
+    let graph = hosted_graph()?;
+
+    // d:plan holds "hosted" in its title and "cell" in its rationale, and lacks "postgres": the
+    // word the question is about. One word in a title is what any decision on the subject has.
+    match reading(&graph, "postgres for the hosted cell")?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].decision_id, "d:plan");
+            assert_eq!(candidates[0].missing_terms, vec!["postgres"]);
+        }
+        other => panic!("expected the decision listed, not named as the answer: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_close_candidate_whose_headline_holds_two_of_the_words_is_still_answered() -> Result<()> {
+    let graph = hosted_graph()?;
+
+    // The same decision, asked about with two words its title holds: it is the one asked about.
+    match reading(&graph, "hosted plan comparison with postgres")?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:plan");
+            assert_eq!(candidate.missing_terms, vec!["postgres"]);
+        }
+        other => panic!("expected the decision with what it lacks: {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_recorded_question_orders_a_close_candidate_but_does_not_get_it_answered() -> Result<()> {
+    let mut recorded = decision_proposed_because(
+        1,
+        "d:engine",
+        "Chromium for the UI tests",
+        "Real layout needs a real engine.",
+        &[],
+    );
+    recorded.payload["question"] = json!("Which browser engine do front-end checks use?");
+    let graph = graph_from_events([
+        recorded,
+        decision_proposed(2, "d:queue", "Adopt async queue for billing", &["billing"]),
+        decision_proposed(3, "d:ui", "Two columns for the layout", &["ui"]),
+    ])?;
+
+    // Nothing in the title says "browser" or "engine", but the question the decision answers
+    // does, so it is the decision most about the question and comes first. A recorded question
+    // can be a paragraph long, so it never alone names the decision as the answer: the list
+    // says what the decision lacks and the asker picks.
+    match reading(&graph, "which browser engine runs the front-end checks")?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            assert_eq!(candidates.len(), 1);
+            assert_eq!(candidates[0].decision_id, "d:engine");
+            assert_eq!(candidates[0].missing_terms, vec!["runs"]);
+        }
+        other => {
+            panic!("expected the decision whose recorded question is asked, listed: {other:?}")
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn the_decision_that_lacks_the_word_the_question_is_about_does_not_lead_the_list() -> Result<()> {
+    let graph = graph_from_events([
+        // About the demo data, in its title, and lacks "instead" and "read".
+        decision_proposed_because(
+            1,
+            "d:demo",
+            "Public demo data is a committed copy of the export",
+            "A copy checked into the repo is verified by its hash.",
+            &["public-demo"],
+        ),
+        // Says five of the six words in its rationale and none in its title, and lacks "read".
+        decision_proposed_because(
+            2,
+            "d:name",
+            "The product's new name is Upheld",
+            "The demo data is checked in the repo instead of fetched.",
+            &["naming"],
+        ),
+        decision_proposed(3, "d:queue", "Adopt async queue for billing", &["billing"]),
+        decision_proposed(4, "d:ui", "Two columns for the layout", &["ui"]),
+    ])?;
+
+    // d:name lacks fewer words, and used to be answered with. Its title and topic keys carry none
+    // of the question, so the decision about the demo data comes first and nothing is answered.
+    for outcome in both_askers(&graph, "demo data checked repo instead read")? {
+        match outcome {
+            ResolveOutcome::Ambiguous { candidates } => {
+                let ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+                assert_eq!(ids, vec!["d:demo", "d:name"]);
+            }
+            other => panic!("expected a list with the decision about the demo first: {other:?}"),
+        }
     }
     Ok(())
 }

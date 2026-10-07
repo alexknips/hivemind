@@ -180,9 +180,11 @@ word to find.
 **Close candidates.** A question often names a word the record never uses
 ("why did we *finally* move the demo cell..."). When no decision matches every
 term, decisions matching more than half of them (and at least two) come back as
-an `Ambiguous` list, ranked by fewest missing terms, then by how many of the
-matched terms the decision's title or topic keys carry (below), then rank tier,
-then recency, each with `missing_terms` naming what it lacks. For a verb that writes
+an `Ambiguous` list, ranked by how much of the question the decision's title, topic
+keys and recorded question carry (*what the question is about*, below), then by
+fewest missing terms, then by how many of the matched terms the decision's title or
+topic keys carry (below), then rank tier, then recency, each with `missing_terms`
+naming what it lacks. For a verb that writes
 (`disagree`, `supersede`, `move`, `retitle`, `ground`, a grounding premise), a
 close candidate is never `Resolved`, even when there is only one: the caller
 picks with `--pick`, `#N` or `--id`. When any decision matches every term, close
@@ -198,10 +200,19 @@ differences from a writer, both for a description no decision matches in full
 - The bar for a close candidate is `recall`'s: at least half of the terms. A
   question `recall` answers is therefore never answered "no decision matches"
   by `why`.
-- When close candidates are all there is, and one is closer than the next and
-  shares at least two terms, it is `Resolved` and carries its `missing_terms`.
-  (So is a promoted close candidate that leads the others, see *what the question
-  is about* below, though a decision that holds every word exists.)
+- When close candidates are all there is, and the first of them (the one most about
+  the question) is closer than the next, shares at least two terms and holds at least
+  two of them in its own title and topic keys, it is `Resolved` and carries its
+  `missing_terms`. (So is a promoted close candidate that leads the
+  others, see *what the question is about* below, though a decision that holds
+  every word exists; it needs the same two headline words.) A candidate whose
+  headline holds fewer than two of the words is listed, never answered with. (The
+  question a decision records orders it, as part of *what the question is about*, but
+  does not count here: it can be a paragraph long, and a decision with a long one holds
+  nearly every common word as a word.) The common case is a decision that lacks the one word the question is about and holds
+  the others only in a long rationale or its evidence: "why did we choose Postgres
+  for the hosted cell" is not answered with the hosted-plan decision, which has one
+  of the words in its title and no "postgres" (hivemind-tfde).
   The verb shows the decision and says what it lacks: a `close match:` line
   ahead of `--summary` output, `close_match: {decision_id, title,
   missing_terms}` beside `data` in `--json`, the HTTP routes and MCP. Equally
@@ -218,8 +229,21 @@ Upheld" is lacked by two decisions, one without "called" and one without "upheld
 the decision titled "Name the product Upheld" has both of its words in the title,
 the one that says "product" and "called" in its rationale has neither, so the
 first is the answer. The basis is where the matched words sit (the `matched_fields`
-a result already shows), and it only separates candidates that lack the same number
-of words: it never lets a decision lacking more words win. The ordering applies to
+a result already shows). *Closer* decides whether the first of a list leads the
+next clearly enough to be answered with; it is not the order of the list.
+
+The order of a list of close candidates is where the words sit before how few are
+lacking (hivemind-tfde): the candidate whose title, topic keys and recorded question
+carry more of the question (*what the question is about*, below) comes first, and
+only among candidates that are equally about it the one that lacks fewer words. A
+decision that lacks one word fewer than another but holds the rest only in a long
+rationale or in its evidence (the decisions with the longest text lack the fewest
+words of anything) is no longer ahead of the decision whose title says the question:
+"why is the demo's data checked into the repo instead of read from the backend" lists
+the decision titled "Public demo data is a committed copy of the export" first, not a
+decision on the product's name whose rationale and evidence happen to say all the
+words but one. A question that matches no decision's headline has no aboutness to
+compare and is ordered by fewest missing words, as before. The ordering applies to
 every close list the resolver returns, including the one a writer gets, though a
 writer still never has a close candidate picked for it.
 
@@ -257,7 +281,8 @@ So where the words sit is compared before whether every word is somewhere:
   for full matches: two decisions that each have one word in their title used to be
   equals however many of the other words each held in its title, and now are not.
 - `recall` orders its list the same way (promoted close matches first, then the full
-  matches by aboutness), so `why` names what `recall` just named.
+  matches by aboutness, then the remaining close matches by aboutness and, among the
+  equally about it, fewest missing words), so `why` names what `recall` just named.
 
 A question that matches no decision's headline has no aboutness to compare and is
 ordered as before. The basis is the decision's own words and the ledger's own counts;
@@ -324,9 +349,10 @@ carry more of the words first, then the one that leans on fewer stand-in words,
 then rank tier, then decision id), except that a close match that carries more of
 the question in its title and topic keys than any of them comes before them
 (*what the question is about*, above); then,
-fewest missing words first (then the decision whose title or topic keys carry more
-of the matched words, as for `why` above, then the one that leans on fewer stand-in words,
-then rank tier, then decision id), a
+the decision whose title, topic keys and recorded question carry more of the question
+first, as for `why` above (then fewest missing words, then the decision whose title or
+topic keys carry more of the matched words, then the one that leans on fewer stand-in
+words, then rank tier, then decision id), a
 decision that lacks some of the words is still returned when it matches at least
 half of them.
 Each such close match carries `missing_terms` (`missing=` in `--summary`, and a
