@@ -274,13 +274,22 @@ is refused, and nothing is written.
 An installed plugin does nothing for an agent that is never told to use it: with the
 `hivemind-capture` plugin and its MCP server connected, agents given no instruction
 recalled and captured 0 times in 31 headless benchmark sessions (hivemind-wdwg). So the
-plugin's Claude Code `SessionStart` hook adds two sentences to every session's context:
-before acting, call the `hivemind` MCP tool `recall_decisions` (q = three or four key words
-about the task) and follow the earlier decisions that still hold; each time you settle a durable decision
-or rule, call `capture_decision` with its title, rationale, options considered and what it
-rests on. It is a fixed text of about 140 tokens, it reads no ledger, and it fails open: no
-`hivemind` binary means it prints nothing and the session starts as usual. Turn it off with
-`HIVEMIND_DIRECTIVE_DISABLE=1` (in the environment, or under `env` in `.claude/settings.json`).
+plugin's Claude Code `SessionStart` hook adds this to every session's context:
+
+> HiveMind ledger: before you act, call the `hivemind` MCP tool `recall_decisions` (q =
+> three or four key words about the task) and follow the earlier decisions that still
+> hold. Call `capture_decision` (title, rationale = the why, options, grounding) for: a
+> rule learned from something that failed or cost you (save it the first time, at once);
+> a design or interface choice later work must follow; a reversal of an earlier decision
+> (use `supersede_decision`). Not for routine status, session summaries, or plans that
+> hold only for this session.
+
+It says what is worth saving, not only to save: told to record "decisions", benchmark agents
+saved a summary of each session and missed the rule that cost them something (hivemind-dd95).
+It is a fixed text of about 540 characters (held under a 150-token budget by a test), it reads
+no ledger, and it fails open: no `hivemind` binary means it prints nothing and the session
+starts as usual. Turn it off with `HIVEMIND_DIRECTIVE_DISABLE=1` (in the environment, or under
+`env` in `.claude/settings.json`).
 The Codex package carries the same hook; Codex runs it only after you trust it. The text, the
 Codex trust step and the settings are in the
 [plugin README](../plugins/hivemind-capture/README.md#session-directive).
@@ -612,7 +621,8 @@ install it. The plugin includes:
   contest, supersede) see the `hivemind-context` plugin above.
 - `.mcp.json`, which wires the `hivemind` MCP server to `hivemind mcp`.
 - A `SessionStart` hook that tells every session to call `recall_decisions` before
-  acting and `capture_decision` for each decision it settles (see
+  acting and `capture_decision` for a rule learned from a failure, a design choice later
+  work must follow, or a reversal, never routine status (see
   [The session directive](#the-session-directive); off with
   `HIVEMIND_DIRECTIVE_DISABLE=1`).
 - The `hivemind-capture` skill for durable decision boundaries, provenance

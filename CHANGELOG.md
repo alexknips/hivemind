@@ -85,22 +85,36 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **The `hivemind-capture` plugin tells every session to check the ledger before it acts and
-  to record the decisions it settles, so an agent nobody briefed uses HiveMind.** With the
-  plugin installed and its MCP server connected, agents given no instruction recalled and
-  captured 0 times in 31 headless benchmark sessions: the plugin's only hooks fire on
-  `AskUserQuestion`, which an autonomous agent never calls. A `SessionStart` hook
-  (`plugins/hivemind-capture/hooks/hooks.json`, `scripts/session-start-hook.sh`) now adds two
-  sentences to the session's context: call `recall_decisions` (q = three or four key words
-  about the task) before acting and follow the earlier decisions that still hold; call `capture_decision` with
-  title, rationale, options considered and grounding each time you settle a durable decision.
-  It is a fixed text of about 140 tokens (19,310 against 19,167 input tokens with the hook on
-  and off), reads no ledger, and fails open: with no `hivemind` binary it prints nothing and
-  exits 0. Turn it off with `HIVEMIND_DIRECTIVE_DISABLE=1`, in the environment or under `env` in
-  `.claude/settings.json`. Needs a `hivemind` that serves both tools (v0.7.0 and later); CI
-  checks the hook against the latest release. The Codex package reads the same hook file, so
-  it ships there too (Codex runs a hook only after you trust it; the plugin README says how).
-  See `plugins/hivemind-capture/README.md`.
+- **The `hivemind-capture` plugin tells every session to check the ledger before it acts
+  and to record what is worth keeping, so an agent nobody briefed uses HiveMind and saves the
+  right things.** With the plugin installed and its MCP server connected, agents given no
+  instruction recalled and captured 0 times in 31 headless benchmark sessions: the plugin's
+  only hooks fire on `AskUserQuestion`, which an autonomous agent never calls. A `SessionStart`
+  hook (`plugins/hivemind-capture/hooks/hooks.json`, `scripts/session-start-hook.sh`) now adds
+  this to the session's context:
+
+  > HiveMind ledger: before you act, call the `hivemind` MCP tool `recall_decisions` (q =
+  > three or four key words about the task) and follow the earlier decisions that still
+  > hold. Call `capture_decision` (title, rationale = the why, options, grounding) for: a
+  > rule learned from something that failed or cost you (save it the first time, at once);
+  > a design or interface choice later work must follow; a reversal of an earlier decision
+  > (use `supersede_decision`). Not for routine status, session summaries, or plans that
+  > hold only for this session.
+
+  The first version said only to record each durable decision, and benchmark agents read that
+  as "summarise what I did": one capture per session of the month's routine, the rule that
+  avoided a costly client saved late or never, and design choices made and never saved. The
+  text now names what is worth saving and what is not. It is a fixed text of about 540
+  characters, held under a 150-token budget by a test (the shorter text before it measured
+  143 input tokens on the wire: 19,310 against 19,167 with the hook on and off), reads no
+  ledger, and fails open: with no `hivemind` binary it prints nothing and exits 0. Turn it off
+  with `HIVEMIND_DIRECTIVE_DISABLE=1`, in the environment or under `env` in
+  `.claude/settings.json`. Needs a `hivemind` that serves `recall_decisions`, `capture_decision`
+  and `supersede_decision` (v0.7.0 and later); CI checks the hook against the latest release.
+  The Codex package reads the same hook file, so it ships there too (Codex runs a hook only
+  after you trust it; the plugin README says how). A test keeps the quotations in the plugin
+  README, `docs/AGENT_DECISION_CAPTURE.md` and this file equal to the hook's text. See
+  `plugins/hivemind-capture/README.md`.
 - **`GET /v1/decisions/{id}/status-events` lists what changed one decision's status, newest
   first.** One entry per proposed, accepted, rejected or superseded event: `event`,
   `occurred_at` (the event's own ledger time, `null` when it carries none), `offset`, `actor`

@@ -16,8 +16,9 @@ This directory is both the Codex capture plugin and the Claude Code
   classification work queue using the agent's subscription seat. Run after a
   session to classify batches that the server-side classifier has not yet
   processed. See [Queue drain](#queue-drain-worker-a) below.
-- A `SessionStart` hook that tells the agent, in two sentences, to check the
-  ledger before it acts and to record the decisions it settles. See
+- A `SessionStart` hook that tells the agent to check the ledger before it acts
+  and to record what is worth keeping (rules learned from failures, design
+  choices later work must follow, reversals), not routine status. See
   [Session directive](#session-directive).
 - Hooks on Claude Code's `AskUserQuestion` tool: the question is recorded as an
   ask when the agent puts it to you, and your answer as a decision that answers
@@ -190,15 +191,23 @@ headless benchmark sessions, because the other hooks fire on `AskUserQuestion`, 
 autonomous agent never calls. So the plugin's `SessionStart` hook
 (`scripts/session-start-hook.sh`) adds this to every new session's context:
 
-> HiveMind decision ledger: before you act on a task, call the `hivemind` MCP tool
-> `recall_decisions` (q = three or four key words about the task) for decisions made in
-> earlier sessions, and follow the ones that still hold. Each time you settle a durable decision or rule,
-> call `capture_decision` with its title, rationale (the why), options considered, and what
-> it rests on (grounding), so later sessions can follow it.
+> HiveMind ledger: before you act, call the `hivemind` MCP tool `recall_decisions` (q =
+> three or four key words about the task) and follow the earlier decisions that still
+> hold. Call `capture_decision` (title, rationale = the why, options, grounding) for: a
+> rule learned from something that failed or cost you (save it the first time, at once);
+> a design or interface choice later work must follow; a reversal of an earlier decision
+> (use `supersede_decision`). Not for routine status, session summaries, or plans that
+> hold only for this session.
 
-- **It costs about 140 tokens a session** (measured: 19,310 against 19,167 input tokens on
-  the same prompt with the hook on and off). It is a fixed text. The hook reads no ledger
-  and decides nothing; recall and capture stay the agent's own calls through the MCP server.
+It says what is worth saving, because told only to record "decisions" the agents in the
+benchmarks saved a summary of each session and missed the rules that cost them something.
+
+- **It is a fixed text of about 540 characters**, which the tests hold under a 150-token
+  budget (4 characters per token). The text it replaces measured 143 input tokens on the
+  wire (19,310 against 19,167 on the same prompt with the hook on and off), so expect the
+  wire cost to run above that estimate. The hook reads no ledger and decides nothing; recall
+  and capture stay the agent's own calls through the MCP server. A test keeps this quotation
+  equal to the text the hook prints.
 - **It fails open.** With no `hivemind` binary (the one on `PATH`, or `HIVEMIND_CAPTURE_BIN`)
   it prints nothing and exits 0, so the session starts as if the plugin had no hook. A
   ledger directory that does not exist yet still gets the directive: the first session in a

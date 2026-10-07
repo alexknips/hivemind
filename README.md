@@ -334,9 +334,10 @@ to install it. The plugin provides:
 - `/hivemind-capture:classify-queue` — drain the pending classification queue
   using your subscription seat (**no `ANTHROPIC_API_KEY` required**)
 - A `hivemind` MCP server wired to `hivemind mcp`
-- A session-start directive: every session is told, in two sentences (about 140
-  tokens), to call `recall_decisions` before acting and `capture_decision` for each
-  decision it settles, so an agent nobody briefed still checks and fills the ledger.
+- A session-start directive: every session is told (about 540 characters) to call
+  `recall_decisions` before acting and `capture_decision` for a rule learned from a
+  failure, a design choice later work must follow, or a reversal, not routine status,
+  so an agent nobody briefed still checks and fills the ledger.
   Turn it off with `HIVEMIND_DIRECTIVE_DISABLE=1`.
 
 See `plugins/hivemind-capture/README.md` for uninstall and verification steps.

@@ -48,7 +48,8 @@ From Claude Code:
 The plugin adds `/hivemind-capture:capture`, `/hivemind-capture:query-decisions`,
 `/hivemind-capture:classify-queue`, a bundled MCP server, and a session-start
 directive that tells each session to recall earlier decisions before acting and
-capture the ones it settles (`HIVEMIND_DIRECTIVE_DISABLE=1` turns it off).
+capture rules learned from failures, design choices later work must follow and
+reversals, not routine status (`HIVEMIND_DIRECTIVE_DISABLE=1` turns it off).
 
 For Codex, install from the repository:
 

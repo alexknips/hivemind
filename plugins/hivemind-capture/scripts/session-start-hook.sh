@@ -1,6 +1,7 @@
 #!/bin/sh
 # Claude Code SessionStart hook (hivemind-wdwg): tell the agent, as additional context, to check
-# the HiveMind decision ledger before it acts and to record the decisions it settles on.
+# the HiveMind decision ledger before it acts and to record what is worth keeping: rules learned
+# from failures, design choices later work must follow, reversals.
 #
 # Without it, an installed plugin with a connected MCP server went unused: 0 captures and 0
 # recalls in 31 headless benchmark sessions, because the plugin's only hooks fire on
@@ -18,7 +19,10 @@
 [ -n "${HIVEMIND_DIRECTIVE_DISABLE:-}" ] && exit 0
 command -v "${HIVEMIND_CAPTURE_BIN:-hivemind}" >/dev/null 2>&1 || exit 0
 
-# Keep it short: it is paid for in every session. The tests hold it under 400 tokens.
+# Keep it short: it is paid for in every session. The tests hold it under 600 characters (150 tokens
+# at 4 characters per token). It says what is worth saving and what is not, because told only to
+# "record decisions", agents saved a summary of each session and missed the rules that cost them
+# something (hivemind-dd95). docs and the plugin README quote this text; a test keeps them equal.
 cat <<'JSON'
-{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"HiveMind decision ledger: before you act on a task, call the `hivemind` MCP tool `recall_decisions` (q = three or four key words about the task) for decisions made in earlier sessions, and follow the ones that still hold. Each time you settle a durable decision or rule, call `capture_decision` with its title, rationale (the why), options considered, and what it rests on (grounding), so later sessions can follow it."}}
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"HiveMind ledger: before you act, call the `hivemind` MCP tool `recall_decisions` (q = three or four key words about the task) and follow the earlier decisions that still hold. Call `capture_decision` (title, rationale = the why, options, grounding) for: a rule learned from something that failed or cost you (save it the first time, at once); a design or interface choice later work must follow; a reversal of an earlier decision (use `supersede_decision`). Not for routine status, session summaries, or plans that hold only for this session."}}
 JSON
