@@ -85,6 +85,20 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A cell's restatements are listed and linked over HTTP with the caller's token, so nobody
+  needs the database password to curate a cell.** `GET /v1/restatements/proposals[?project=]
+  [&limit=][&cursor=]` returns what `hivemind restatements propose` prints (each pair, their
+  overlap and the title words they share), a page at a time with `truncated` and
+  `data.next_cursor`, and writes nothing. `POST /v1/decisions/{id}/restatements` with
+  `{"restates_id": "<earlier decision>"}` records one `SAME_AS` link, later to earlier, as the
+  bearer token's actor, with the rules of `restatements apply --link LATER=EARLIER`: a pair
+  already linked, either way round, writes nothing (`linked: false`), nothing is deleted or
+  rewritten, and an id that is not a recorded decision is refused. There is no route that links
+  every proposal: a wrong link cannot be undone for reads, so each is named. A link no longer
+  reads every event of the ledger: it reads the `decision.proposed` and `relation.added` events
+  alone, so on a ledger of mostly transcripts it costs what its decisions cost, not a scan of
+  the transcripts: on a 108k-event copy of the town ledger a new link took ~53 s through the
+  CLI before and takes 1 to 2 s over HTTP now (a debug build). (hivemind-h4kr)
 - **The `hivemind-capture` plugin tells every session to check the ledger before it acts
   and to record what is worth keeping, so an agent nobody briefed uses HiveMind and saves the
   right things.** With the plugin installed and its MCP server connected, agents given no

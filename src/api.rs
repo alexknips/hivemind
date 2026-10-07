@@ -24,6 +24,10 @@
 //! - `POST /v1/hypotheses`                         — capture hypothesis
 //! - `POST /v1/decisions/{id}/disagreements`        — disagree
 //! - `POST /v1/decisions/{id}/supersessions`        — supersede
+//! - `POST /v1/decisions/{id}/restatements`         — link `{id}` as the same decision as the
+//!   body's `restates_id` (`SAME_AS`, later to earlier), as the caller; one link per request,
+//!   a pair already linked writes nothing, an id that is not a recorded decision is refused
+//!   (hivemind-h4kr). There is no route that links everything.
 //! - `POST /v1/tenants`                            — provision tenant (Postgres, admin only)
 //! - `POST /v1/classify-queue/submit`               — submit captures for one or more
 //!   pending ingest batches (Worker A, hivemind-zdsh.18); 429 once the daily
@@ -54,6 +58,10 @@
 //!   conflicting answers), oldest first
 //! - `GET  /v1/attention/changed[?since=][?until=][?limit=][?cursor=]` — decisions revised or
 //!   superseded in a window (RFC3339; `since` defaults to seven days back), newest first
+//! - `GET  /v1/restatements/proposals[?project=][?limit=][?cursor=]` — the links
+//!   `hivemind restatements propose` lists: each pair of decisions that look like one decision
+//!   recorded twice, with the title words they share and their overlap; `truncated` and
+//!   `data.next_cursor` page through them; writes nothing (hivemind-h4kr)
 //! - `GET  /v1/classify-queue[?session_id=][?limit=]` — the oldest pending ingest batches
 //!   with turn text, `pending_total` and `truncated` when more are waiting, plus today's
 //!   classification budget
@@ -109,6 +117,7 @@ mod auth;
 mod graph;
 mod handlers;
 mod mcp_http;
+mod restatements;
 mod slack;
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
@@ -646,6 +655,16 @@ fn build_router(state: AppState) -> Router {
         .route(
             "/v1/decisions/{id}/supersessions",
             post(handlers::supersede_handler),
+        )
+        // Restatements (hivemind-h4kr): the proposals `restatements propose` lists, and ONE
+        // `SAME_AS` link per request. There is no route that links every proposal.
+        .route(
+            "/v1/restatements/proposals",
+            get(restatements::proposals_handler),
+        )
+        .route(
+            "/v1/decisions/{id}/restatements",
+            post(restatements::link_restatement_handler),
         )
         // Evidence and hypotheses
         .route("/v1/evidence", post(handlers::post_evidence_handler))

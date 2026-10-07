@@ -3488,27 +3488,38 @@ impl<'a, L: EventLedger> Commands<'a, L> {
             }
         }
 
-        let mut offset = 0;
+        self.first_of_type(EventType::DecisionProposed, |event| {
+            payload_value_matches(event, "decision_id", decision_id)
+                .then(|| proposed_decision_text(event))
+        })
+    }
+
+    /// What `pick` returns for the first event of `event_type`, oldest first, that it accepts.
+    /// Reads only events of that type: the SQL ledgers filter in the query, so a ledger that is
+    /// mostly large `ingest.batch_received` events costs what its few decisions and relations
+    /// cost, not what its transcripts do (hivemind-h4kr).
+    fn first_of_type<T>(
+        &self,
+        event_type: EventType,
+        mut pick: impl FnMut(&Event) -> Option<T>,
+    ) -> Result<Option<T>> {
         const PAGE_SIZE: usize = 1024;
+        let mut offset = 0;
         loop {
-            let events = self
-                .ledger
-                .read_for_tenant(&self.context.tenant_id, offset, PAGE_SIZE)?;
-            let Some(last_event_id) = events.last().and_then(|event| event.event_id) else {
-                return Ok(None);
-            };
-            if let Some(text) = events
-                .iter()
-                .filter(|event| {
-                    event.event_type == EventType::DecisionProposed
-                        && payload_value_matches(event, "decision_id", decision_id)
-                })
-                .map(proposed_decision_text)
-                .next()
-            {
-                return Ok(Some(text));
+            let events = self.ledger.read_types_for_tenant(
+                &self.context.tenant_id,
+                &[event_type],
+                &[],
+                offset,
+                PAGE_SIZE,
+            )?;
+            if let Some(found) = events.iter().find_map(&mut pick) {
+                return Ok(Some(found));
             }
-            offset = last_event_id;
+            match events.last().and_then(|event| event.event_id) {
+                Some(last_event_id) if events.len() == PAGE_SIZE => offset = last_event_id,
+                _ => return Ok(None),
+            }
         }
     }
 
@@ -3677,37 +3688,15 @@ impl<'a, L: EventLedger> Commands<'a, L> {
         from_id: &str,
         to_id: &str,
     ) -> Result<Option<EventId>> {
-        let mut offset = 0;
-        const PAGE_SIZE: usize = 1024;
         let relation_name = relation_kind_name(relation_kind);
-
-        loop {
-            let events = self
-                .ledger
-                .read_for_tenant(&self.context.tenant_id, offset, PAGE_SIZE)?;
-            if events.is_empty() {
-                return Ok(None);
-            }
-
-            for event in &events {
-                if event.event_type != EventType::RelationAdded {
-                    continue;
-                }
-
-                let same_relation = payload_value_matches(event, "relation", relation_name);
-                let same_from = payload_value_matches(event, "from_id", from_id);
-                let same_to = payload_value_matches(event, "to_id", to_id);
-                if same_relation && same_from && same_to {
-                    return Ok(event.event_id);
-                }
-            }
-
-            if let Some(last_event_id) = events.last().and_then(|event| event.event_id) {
-                offset = last_event_id;
-            } else {
-                return Ok(None);
-            }
-        }
+        self.first_of_type(EventType::RelationAdded, |event| {
+            let same_relation = payload_value_matches(event, "relation", relation_name);
+            let same_from = payload_value_matches(event, "from_id", from_id);
+            let same_to = payload_value_matches(event, "to_id", to_id);
+            (same_relation && same_from && same_to)
+                .then_some(event.event_id)
+                .flatten()
+        })
     }
 
     /// Every event of this tenant, in ledger order, one page at a time.

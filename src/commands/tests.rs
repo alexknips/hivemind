@@ -6873,6 +6873,137 @@ fn link_same_as_refuses_itself_an_unrecorded_decision_and_anonymity() {
     assert_eq!(ledger.latest_offset().expect("offset"), before);
 }
 
+use std::cell::Cell;
+
+use crate::events::{Event, EventId, TenantId};
+
+/// A ledger that counts the reads that page through every event (`limit` above one). A path that
+/// asks only for the event types it needs, or for one event by position, never trips it.
+struct PagedReadCounter<'a> {
+    inner: &'a InMemoryEventLedger,
+    paged_reads: Cell<usize>,
+}
+
+impl EventLedger for PagedReadCounter<'_> {
+    fn append_for_tenant(&self, tenant_id: &TenantId, event: Event) -> crate::Result<EventId> {
+        self.inner.append_for_tenant(tenant_id, event)
+    }
+
+    fn read_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: EventId,
+        limit: usize,
+    ) -> crate::Result<Vec<Event>> {
+        if limit > 1 {
+            self.paged_reads.set(self.paged_reads.get() + 1);
+        }
+        self.inner.read_for_tenant(tenant_id, offset, limit)
+    }
+
+    fn replay_from_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: EventId,
+        callback: &mut dyn FnMut(&Event) -> crate::Result<()>,
+    ) -> crate::Result<()> {
+        self.inner
+            .replay_from_for_tenant(tenant_id, offset, callback)
+    }
+
+    fn latest_offset_for_tenant(&self, tenant_id: &TenantId) -> crate::Result<EventId> {
+        self.inner.latest_offset_for_tenant(tenant_id)
+    }
+
+    fn read_types_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        types: &[EventType],
+        omit_payload_keys: &[&str],
+        offset: EventId,
+        limit: usize,
+    ) -> crate::Result<Vec<Event>> {
+        self.inner
+            .read_types_for_tenant(tenant_id, types, omit_payload_keys, offset, limit)
+    }
+}
+
+/// A link reads the decisions and relations it checks by event type, never every event: on a
+/// ledger of mostly transcripts the SQL backends then fetch a few rows, not all of them
+/// (hivemind-h4kr measured ~100 s per link on a 74k-event ledger before this).
+#[test]
+fn link_same_as_reads_by_event_type_not_every_event() {
+    let ledger = InMemoryEventLedger::new();
+    let commands = Commands::new(&ledger);
+    let first = classified_batch(
+        &commands,
+        "batch-1",
+        None,
+        vec![
+            capture("decision", "Run every town seat on Fable only", "Cost"),
+            capture("decision", "Fable only for every town seat", "Cost again"),
+        ],
+    )
+    .expect("classified");
+    let (earlier_capture, later_capture) = (
+        format!("capture:{}:0", first.event_id),
+        format!("capture:{}:1", first.event_id),
+    );
+    let option = commands
+        .record_option("actor:alice", "Postgres", "One server for every tenant")
+        .expect("option");
+    let proposed = |title: &str| {
+        commands
+            .propose_decision(DecisionProposalInput {
+                grounding: Grounding::NotAsked,
+                expressed_confidence: None,
+                project: None,
+                actor_id: "actor:alice",
+                title,
+                rationale: "One server for every tenant of the cell",
+                topic_keys: &["storage".to_owned()],
+                option_ids: std::slice::from_ref(&option),
+                option_labels: &["Postgres".to_owned()],
+                chosen_option_id: Some(option.as_str()),
+                decided_by: None,
+                delegated_by: None,
+                still_proposed: false,
+                hypothesis_ids: &[],
+                evidence_ids: &[],
+                quote: None,
+                question: None,
+            })
+            .expect("proposes")
+    };
+    let (earlier_proposed, later_proposed) = (
+        proposed("Use Postgres for the cell"),
+        proposed("Postgres is the cell database"),
+    );
+
+    let counted = PagedReadCounter {
+        inner: &ledger,
+        paged_reads: Cell::new(0),
+    };
+    let counted_commands = Commands::new(&counted);
+    for (later, earlier) in [
+        (&later_capture, &earlier_capture),
+        (&later_proposed, &earlier_proposed),
+    ] {
+        assert!(counted_commands
+            .link_same_as("human:alex", later, earlier)
+            .expect("links")
+            .is_some());
+        assert_eq!(
+            counted_commands
+                .link_same_as("human:alex", earlier, later)
+                .expect("again"),
+            None,
+            "already linked, the other way round"
+        );
+    }
+    assert_eq!(counted.paged_reads.get(), 0);
+}
+
 // ── acknowledge_suggestion (hivemind-m306.4.2) ────────────────────────────────
 
 fn agent_commands(ledger: &InMemoryEventLedger) -> Commands<'_, InMemoryEventLedger> {

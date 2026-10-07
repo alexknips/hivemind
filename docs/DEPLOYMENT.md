@@ -175,6 +175,31 @@ stateless): re-call with `id=<decision_id>` from the candidate list.
 still take `decision_id` only as a path parameter, unlike their MCP
 equivalents (`docs/AGENT_FLUENT_QUERYING.md` §3.4).
 
+### Restatements: linking a decision recorded twice
+
+A decision the ledger holds twice (one per session that relayed it) is linked, not
+merged, and `recall` and `why` then show one decision naming the other record. The two
+routes carry `hivemind restatements propose|apply --link` over HTTP, so a cell is curated
+with a token and nobody needs the database password:
+
+| Route | Does |
+|---|---|
+| `GET /v1/restatements/proposals` (`project`, `limit`, `cursor`) | Lists pairs that look like one decision recorded twice, each with the title words they share and their overlap; `truncated` and `data.next_cursor` page through them. Writes nothing. |
+| `POST /v1/decisions/{id}/restatements` | Body `{"restates_id": "<earlier decision>"}`. Records one `SAME_AS` link from `{id}` (recorded later) to `restates_id`, as the token's actor. `linked: false` and no `event_id` when the pair was already linked either way round; an id that is not a recorded decision is refused. |
+
+```bash
+curl -s "http://localhost:8080/v1/restatements/proposals?limit=5" \
+  -H "Authorization: Bearer $HIVEMIND_API_KEY"
+
+curl -s -X POST "http://localhost:8080/v1/decisions/capture:38419:0/restatements" \
+  -H "Authorization: Bearer $HIVEMIND_API_KEY" -H "Content-Type: application/json" \
+  -d '{"restates_id": "capture:37652:0"}'
+```
+
+A proposal is title words, not a finding, and a wrong link cannot be undone for reads, so
+there is no route that links every proposal: read each pair and link the ones that are
+unmistakably the same decision.
+
 ## Multi-tenant usage
 
 Each request carries a tenant identifier via the `X-HiveMind-Tenant` header.

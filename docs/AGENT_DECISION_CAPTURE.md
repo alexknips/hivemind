@@ -774,7 +774,14 @@ the reply's `restated` lists every such capture as `linked` or `deduplicated`.
 Turns without a source time never count as the same moment. For decisions
 recorded before this, `hivemind restatements propose` lists the links to
 approve (a title-word overlap, with the shared words printed) and `restatements
-apply` records the ones you confirm; nothing is deleted or rewritten.
+apply` records the ones you confirm; nothing is deleted or rewritten. On a cell, where the
+database password is not an agent's to hold, the same two steps run over HTTP with the caller's
+token (hivemind-h4kr): `GET /v1/restatements/proposals[?project=][&limit=][&cursor=]` lists the
+proposals a page at a time and writes nothing, and `POST /v1/decisions/{id}/restatements` with
+`{"restates_id": "<the earlier decision>"}` records ONE link as the token's actor. A pair
+already linked writes nothing, an id that is not a recorded decision is refused, and there is
+no route that links every proposal: a wrong link cannot be undone for reads, so each one is
+named.
 
 **Source time and asks** (hivemind-bbnw.8): the classifier sees each turn's id and may name,
 on a capture, the turn it came from (`source_turn_id`) and, on a decision or a

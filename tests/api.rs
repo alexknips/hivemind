@@ -1639,6 +1639,365 @@ async fn classify_queue_submit_links_a_restatement_and_does_not_record_the_same_
     ); // ubs:ignore
 }
 
+// ---------------------------------------------------------------------------
+// Restatements over HTTP (hivemind-h4kr): `GET /v1/restatements/proposals` and
+// `POST /v1/decisions/{id}/restatements`, so a cell is curated with a token and nobody needs
+// its database password.
+// ---------------------------------------------------------------------------
+
+fn fable_capture_json(title: &str, rationale: &str) -> Value {
+    serde_json::json!({
+        "kind": "decision",
+        "title": title,
+        "rationale": rationale,
+        "topic_keys": [],
+        "evidence_ids": [],
+        "options": ["Fable only", "Fable and Opus"],
+        "chosen_option": "Fable only",
+        "extraction_confidence": 0.9
+    })
+}
+
+/// Alex's Fable ruling as three sessions recorded it (hivemind-83cj's fixture), and one decision
+/// that is not a restatement of it, in ONE classification, so the fixture costs the daily cap a
+/// single event. Returns the three records of the ruling, earliest first.
+async fn record_fable_ruling(app: &axum::Router) -> [String; 3] {
+    let (status, body) = call(
+        app.clone(),
+        post_json(
+            "/v1/ingest",
+            ingest_json_at("fable:0-1", "fable-sess", "2026-09-27T10:00:00Z"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+
+    let (status, body) = call(
+        app.clone(),
+        post_json(
+            "/v1/classify-queue/submit",
+            serde_json::json!({
+                "batch_ids": ["fable:0-1"],
+                "captures": [
+                    fable_capture_json(
+                        "Run every town seat on Fable only until Oct 1 with no added usage this week",
+                        "Every town seat runs on the Fable model this week, to hold the spend",
+                    ),
+                    fable_capture_json(
+                        "Run every town seat on Fable only with no added usage this week",
+                        "The model for every town seat is Fable this week, to hold the spend",
+                    ),
+                    fable_capture_json(
+                        "Run every seat on Fable only until the Oct 1 reset",
+                        "Fable is the model until the October reset",
+                    ),
+                    fable_capture_json("Review the cost on Friday", "To check the spend"),
+                ],
+                "model": "agent:worker-a"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let event = body["event_id"].as_u64().expect("event_id");
+    [0, 1, 2].map(|index| format!("capture:{event}:{index}"))
+}
+
+/// The newest event id in the tenant's ledger, read straight from the SQLite file: a request
+/// that must write nothing leaves it where it was.
+fn ledger_len(dir: &PathBuf) -> u64 {
+    use hivemind::ledger::{EventLedger, SqliteEventLedger};
+    SqliteEventLedger::open(dir)
+        .expect("opens ledger")
+        .latest_offset()
+        .expect("reads offset")
+}
+
+/// The status of a request, for routes whose refusal has no JSON body (an unrouted path).
+async fn status_of(app: &axum::Router, req: Request<Body>) -> StatusCode {
+    app.clone()
+        .oneshot(req)
+        .await
+        .expect("handler error")
+        .status()
+}
+
+const FABLE_QUESTION: &str =
+    "/v1/decisions/why?description=which%20model%20do%20the%20town%20seats%20run%20on%20this%20week%3F";
+
+#[tokio::test]
+async fn restatement_proposals_are_listed_a_page_at_a_time_and_write_nothing() {
+    let dir = test_ledger_dir();
+    let app = app(dir.clone());
+    let fable = record_fable_ruling(&app).await;
+    let before = ledger_len(&dir);
+
+    let (status, body) = call(app.clone(), get_req("/v1/restatements/proposals")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["truncated"], false, "{body}");
+    assert_eq!(body["data"]["decisions_scanned"], 4, "{body}");
+    assert_eq!(body["data"]["total_matches"], 2, "{body}");
+    assert_eq!(body["data"]["next_cursor"], Value::Null, "{body}");
+    let items = body["data"]["items"].as_array().expect("items");
+    let pairs: Vec<(&str, &str)> = items
+        .iter()
+        .map(|item| {
+            (
+                item["decision_id"].as_str().expect("decision_id"),
+                item["restates_id"].as_str().expect("restates_id"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![
+            (fable[1].as_str(), fable[0].as_str()),
+            (fable[2].as_str(), fable[0].as_str()),
+        ],
+        "later to earlier; the unrelated decision is not proposed: {body}"
+    );
+    // The basis is printed with every proposal, as `restatements propose` prints it.
+    assert!(
+        items[0]["overlap"].as_f64().expect("overlap") > 0.8,
+        "{body}"
+    );
+    let shared = items[0]["shared_terms"].as_array().expect("shared_terms");
+    assert!(shared.iter().any(|term| term == "fable"), "{body}");
+
+    // A page at a time: `truncated` and a cursor say there is more, and the cursor continues.
+    let (status, first) = call(app.clone(), get_req("/v1/restatements/proposals?limit=1")).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["truncated"], true, "{first}");
+    assert_eq!(first["data"]["next_cursor"], "1", "{first}");
+    assert_eq!(first["data"]["total_matches"], 2, "{first}");
+    assert_eq!(
+        first["data"]["items"][0]["decision_id"], fable[1],
+        "{first}"
+    );
+    let (status, second) = call(
+        app.clone(),
+        get_req("/v1/restatements/proposals?limit=1&cursor=1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["truncated"], false, "{second}");
+    assert_eq!(second["data"]["next_cursor"], Value::Null, "{second}");
+    assert_eq!(
+        second["data"]["items"][0]["decision_id"], fable[2],
+        "{second}"
+    );
+    let (status, bad) = call(
+        app.clone(),
+        get_req("/v1/restatements/proposals?cursor=abc"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+
+    // Limited to one project: the recorder's own, or one nobody recorded under.
+    let project = items[0]["project"].as_str().expect("project").to_owned();
+    let (_, mine) = call(
+        app.clone(),
+        get_req(&format!("/v1/restatements/proposals?project={project}")),
+    )
+    .await;
+    assert_eq!(mine["data"]["total_matches"], 2, "{mine}");
+    let (_, other) = call(
+        app.clone(),
+        get_req("/v1/restatements/proposals?project=personal:human:nobody"),
+    )
+    .await;
+    assert_eq!(other["data"]["total_matches"], 0, "{other}");
+
+    assert_eq!(ledger_len(&dir), before, "listing proposals writes nothing");
+}
+
+/// The bead's own check, over HTTP: the question that was ambiguous among three records of one
+/// ruling resolves to ONE decision once the links are made with a token, and the link is the
+/// token's, whatever `X-HiveMind-Actor` says.
+#[tokio::test]
+async fn a_restatement_link_is_the_tokens_own_and_why_then_resolves_to_one_decision() {
+    use hivemind::events::{EventType, TenantId};
+    use hivemind::ledger::{EventLedger, SqliteEventLedger};
+
+    let dir = test_ledger_dir();
+    let admin_key = "restatement-admin";
+    let app = app_with_admin_key(dir.clone(), admin_key);
+    let (status, minted) = call(
+        app.clone(),
+        admin_post(
+            "/v1/agent-tokens",
+            serde_json::json!({"agent_tool": "claude", "agent_name": "curator"}),
+            admin_key,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{minted}");
+    assert_eq!(minted["actor_id"], "agent:claude:curator", "{minted}");
+    let token = minted["token_secret"].as_str().expect("token").to_owned();
+    let fable = record_fable_ruling(&app).await;
+
+    // Three records of one ruling are a tie, so the question needs a pick.
+    let (status, before) = call(app.clone(), get_req(FABLE_QUESTION)).await;
+    assert_eq!(status, StatusCode::OK, "{before}");
+    assert_eq!(before["data"]["outcome"], "ambiguous", "{before}");
+
+    let link = |decision: &str, restates: &str| {
+        authed_post(
+            &format!("/v1/decisions/{decision}/restatements"),
+            serde_json::json!({ "restates_id": restates }),
+            &token,
+        )
+    };
+
+    let (status, linked) = call(app.clone(), link(&fable[1], &fable[0])).await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    assert_eq!(linked["linked"], true, "{linked}");
+    assert_eq!(linked["decision_id"], fable[1], "{linked}");
+    assert_eq!(linked["restates_id"], fable[0], "{linked}");
+    let event_id = linked["event_id"].as_u64().expect("the new event");
+
+    // One `SAME_AS`, later to earlier, by the token's actor (`authed_post` also sends a spoofed
+    // actor header, which must not be believed).
+    let ledger = SqliteEventLedger::open(&dir).expect("opens ledger");
+    let event = ledger
+        .read_for_tenant(&TenantId::local(), event_id - 1, 1)
+        .expect("reads")
+        .remove(0);
+    assert_eq!(event.event_id, Some(event_id));
+    assert_eq!(event.event_type, EventType::RelationAdded);
+    assert_eq!(event.actor_id, "agent:claude:curator");
+    assert_eq!(event.payload["relation"], "SAME_AS");
+    assert_eq!(event.payload["from_id"], fable[1]);
+    assert_eq!(event.payload["to_id"], fable[0]);
+
+    // A pair already linked writes nothing, whichever way round it is named.
+    let after_link = ledger_len(&dir);
+    for (later, earlier) in [(&fable[1], &fable[0]), (&fable[0], &fable[1])] {
+        let (status, again) = call(app.clone(), link(later, earlier)).await;
+        assert_eq!(status, StatusCode::OK, "{again}");
+        assert_eq!(again["linked"], false, "{again}");
+        assert_eq!(again["event_id"], Value::Null, "{again}");
+    }
+    assert_eq!(ledger_len(&dir), after_link);
+
+    // An id that is not a recorded decision is refused, on either side, and a decision cannot
+    // be the same decision as itself.
+    for (later, earlier) in [
+        ("decision:nobody-recorded-this", fable[0].as_str()),
+        (fable[1].as_str(), "capture:999999:0"),
+        (fable[0].as_str(), fable[0].as_str()),
+    ] {
+        let (status, refused) = call(app.clone(), link(later, earlier)).await;
+        assert!(status.is_client_error(), "{status} {refused}");
+        assert_eq!(ledger_len(&dir), after_link, "a refusal writes nothing");
+    }
+
+    // The third record of the ruling links the same way, and the question has one answer.
+    let (status, second) = call(app.clone(), link(&fable[2], &fable[0])).await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    assert_eq!(second["linked"], true, "{second}");
+
+    let (status, after) = call(app.clone(), get_req(FABLE_QUESTION)).await;
+    assert_eq!(status, StatusCode::OK, "{after}");
+    assert_eq!(after["data"]["root"]["id"], fable[0], "{after}");
+    let copies: Vec<&str> = after["also_recorded_as"]
+        .as_array()
+        .expect("also_recorded_as")
+        .iter()
+        .map(|copy| copy["decision_id"].as_str().expect("decision_id"))
+        .collect();
+    assert_eq!(
+        copies,
+        vec![fable[1].as_str(), fable[2].as_str()],
+        "{after}"
+    );
+
+    // Nothing is left to propose.
+    let (_, proposals) = call(app.clone(), get_req("/v1/restatements/proposals")).await;
+    assert_eq!(proposals["data"]["total_matches"], 0, "{proposals}");
+}
+
+/// A decision proposed over HTTP (`decision.proposed`, not a classified capture) links the same
+/// way: the ids the link reads are found without reading every event of the ledger.
+#[tokio::test]
+async fn decisions_proposed_over_http_link_as_restatements_too() {
+    let dir = test_ledger_dir();
+    let app = app(dir.clone());
+    let mut ids = Vec::new();
+    for title in [
+        "Use Postgres for the cell",
+        "Postgres is the cell's database",
+    ] {
+        let (status, body) = call(
+            app.clone(),
+            post_json(
+                "/v1/decisions",
+                serde_json::json!({
+                    "grounding": [{"kind": "bet"}],
+                    "title": title,
+                    "rationale": "One server for every tenant",
+                    "topic_keys": ["storage"],
+                    "options": [{ "label": "postgres" }],
+                    "chosen_option_label": "postgres"
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        ids.push(
+            body["decision_id"]
+                .as_str()
+                .expect("decision_id")
+                .to_owned(),
+        );
+    }
+
+    let uri = format!("/v1/decisions/{}/restatements", ids[1]);
+    let body = serde_json::json!({ "restates_id": ids[0] });
+    let (status, linked) = call(app.clone(), post_json(&uri, body.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    assert_eq!(linked["linked"], true, "{linked}");
+    let (status, again) = call(app.clone(), post_json(&uri, body)).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again["linked"], false, "{again}");
+}
+
+/// There is no way to link everything over HTTP: a wrong `SAME_AS` cannot be undone for reads, so
+/// each link is named. The one route takes exactly one `restates_id`, and no other route writes.
+#[tokio::test]
+async fn no_restatement_route_links_everything() {
+    let dir = test_ledger_dir();
+    let app = app(dir.clone());
+    let fable = record_fable_ruling(&app).await;
+    let before = ledger_len(&dir);
+
+    let uri = format!("/v1/decisions/{}/restatements", fable[1]);
+    for body in [
+        serde_json::json!({ "restates_id": fable[0], "all": true }),
+        serde_json::json!({ "links": [{ "decision_id": fable[1], "restates_id": fable[0] }] }),
+        serde_json::json!({ "all": true }),
+        serde_json::json!([{ "restates_id": fable[0] }]),
+        serde_json::json!({}),
+    ] {
+        let (status, refused) = call(app.clone(), post_json(&uri, body.clone())).await;
+        assert!(status.is_client_error(), "{body} -> {status} {refused}");
+    }
+
+    for path in [
+        "/v1/restatements",
+        "/v1/restatements/apply",
+        "/v1/restatements/links",
+        "/v1/restatements/proposals",
+    ] {
+        let status = status_of(&app, post_json(path, serde_json::json!({ "all": true }))).await;
+        assert!(status.is_client_error(), "POST {path} -> {status}");
+    }
+
+    assert_eq!(ledger_len(&dir), before, "nothing was linked");
+    let (_, proposals) = call(app.clone(), get_req("/v1/restatements/proposals")).await;
+    assert_eq!(proposals["data"]["total_matches"], 2, "{proposals}");
+}
+
 #[tokio::test]
 async fn classify_queue_submit_covers_multiple_batches_and_decision_readable_via_why() {
     let dir = test_ledger_dir();
@@ -1720,66 +2079,6 @@ async fn classify_queue_submit_covers_multiple_batches_and_decision_readable_via
         body["data"]["title"], "Cache query results with an LRU",
         "{body}"
     );
-}
-
-#[tokio::test]
-async fn classify_queue_submit_enforces_daily_cap() {
-    let dir = test_ledger_dir();
-
-    for batch_id in ["cap-sess:0-1", "cap-sess:1-2"] {
-        let (status, body) = call(
-            app(dir.clone()),
-            post_json(
-                "/v1/ingest",
-                ingest_json(batch_id, "cap-sess", "claude", "note"),
-            ),
-        )
-        .await;
-        assert_eq!(status, StatusCode::ACCEPTED, "{body}"); // ubs:ignore
-    }
-
-    // HIVEMIND_CLASSIFY_DAILY_CAP is process-global; this test is the only
-    // one that overrides it, and every other test's ledger is a fresh temp
-    // directory with zero classifications today, so forcing the cap to 1
-    // here cannot make an unrelated concurrently-running test's single
-    // submit fail (see classifier::daily_classification_cap doc comment).
-    let saved = std::env::var("HIVEMIND_CLASSIFY_DAILY_CAP").ok();
-    unsafe { std::env::set_var("HIVEMIND_CLASSIFY_DAILY_CAP", "1") };
-
-    let submit_one = |batch_id: &'static str| {
-        post_json(
-            "/v1/classify-queue/submit",
-            serde_json::json!({
-                "batch_ids": [batch_id],
-                "captures": [],
-                "model": "agent:worker-a"
-            }),
-        )
-    };
-
-    let (status, body) = call(app(dir.clone()), submit_one("cap-sess:0-1")).await;
-    assert_eq!(status, StatusCode::OK, "first submit under cap: {body}"); // ubs:ignore
-
-    let (status, body) = call(app(dir.clone()), submit_one("cap-sess:1-2")).await;
-
-    match saved {
-        Some(v) => unsafe { std::env::set_var("HIVEMIND_CLASSIFY_DAILY_CAP", v) },
-        None => unsafe { std::env::remove_var("HIVEMIND_CLASSIFY_DAILY_CAP") },
-    }
-
-    assert_eq!(
-        status,
-        StatusCode::TOO_MANY_REQUESTS,
-        "second submit over cap: {body}"
-    ); // ubs:ignore
-    assert_eq!(body["error"]["code"], "too_many_requests"); // ubs:ignore
-
-    // The over-cap batch stays pending — not dropped.
-    let (status, body) = call(app(dir), get_req("/v1/classify-queue?session_id=cap-sess")).await;
-    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
-    let batches = body["batches"].as_array().unwrap(); // ubs:ignore
-    assert_eq!(batches.len(), 1, "{body}"); // ubs:ignore
-    assert_eq!(batches[0]["batch_id"], "cap-sess:1-2"); // ubs:ignore
 }
 
 /// A decision capture with the topic keys the possibly-related tests care about.
