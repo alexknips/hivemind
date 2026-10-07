@@ -676,6 +676,14 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   `proposed`, even when a human is credited as the one who proposed it. The change is in how a
   classified batch projects, so a ledger already holding captures reads right after the graph
   is rebuilt from it; no event is rewritten. (hivemind-s0ra)
+- **The classifier names a decision's acceptor only when the text shows that actor deciding.**
+  Both classify workers, the server-side classifier and the `classify-queue` command, now
+  separate who proposed, made or reported a call (`actor_id`) from who decided it
+  (`accepted_by`, `rejected_by`). A person who states the choice, or an actor the text shows
+  approving it, is listed; a proposer, a reporter, someone relaying a call without its decider,
+  an agent narrating or carrying out its own choice, and a speaker the text does not name are
+  not. A decision with no acceptor reads `proposed`. The rule applies to classifications made
+  from now on; captures already on the ledger are unchanged. (hivemind-u70b)
 - **`why`, `verify`, `chain` and `compact-view` answer a question `recall` answers, in one
   call.** `recall` returned a decision for "how do we keep links to a decision page stable
   across browsers?" while `why` said "no decision matches that description", and `verify` on

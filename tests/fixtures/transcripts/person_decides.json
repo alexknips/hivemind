@@ -1,0 +1,52 @@
+{
+  "batch": {
+    "batch_id": "batch-person-decides",
+    "agent_tool": "claude",
+    "session_id": "session-person-decides",
+    "turns": [
+      {
+        "turn_id": "t-1",
+        "role": "user",
+        "truncated": false,
+        "ts": "2026-09-05T09:00:00Z",
+        "text": "Dana: We need to settle storage for the hosted MVP. Postgres or SQLite?"
+      },
+      {
+        "turn_id": "t-2",
+        "role": "assistant",
+        "truncated": false,
+        "ts": "2026-09-05T09:02:00Z",
+        "text": "Postgres takes concurrent writes from all five friends at once. SQLite is a single writer, so their writes would queue behind each other. I would pick Postgres."
+      },
+      {
+        "turn_id": "t-3",
+        "role": "user",
+        "truncated": false,
+        "ts": "2026-09-05T09:04:00Z",
+        "text": "Dana: Agreed, we'll go with Postgres for the hosted MVP."
+      }
+    ]
+  },
+  "captures": [
+    {
+      "kind": "decision",
+      "title": "Use Postgres for the hosted MVP",
+      "rationale": "Five friends write at once and SQLite is a single writer, so their writes would queue behind each other.",
+      "topic_keys": [
+        "hosted-mvp"
+      ],
+      "evidence_ids": [],
+      "options": [
+        "Postgres",
+        "SQLite"
+      ],
+      "chosen_option": "Postgres",
+      "extraction_confidence": 0.9,
+      "source_turn_id": "t-3",
+      "actor_id": "human:dana",
+      "accepted_by": [
+        "human:dana"
+      ]
+    }
+  ]
+}

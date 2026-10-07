@@ -1,0 +1,42 @@
+{
+  "batch": {
+    "batch_id": "batch-proposed-only",
+    "agent_tool": "claude",
+    "session_id": "session-proposed-only",
+    "turns": [
+      {
+        "turn_id": "t-1",
+        "role": "user",
+        "truncated": false,
+        "ts": "2026-09-05T10:00:00Z",
+        "text": "Dana: The nightly gate flakes about once a week. Any ideas?"
+      },
+      {
+        "turn_id": "t-2",
+        "role": "assistant",
+        "truncated": false,
+        "ts": "2026-09-05T10:03:00Z",
+        "text": "agent:claude:planner: The flake is an unpinned test clock, not a regression. I'm going to retry the gate once before failing it. A retry costs about two minutes, and pinning the clock is a much bigger change. I've put the retry on a branch for review."
+      }
+    ]
+  },
+  "captures": [
+    {
+      "kind": "decision",
+      "title": "Retry the nightly gate once before failing it",
+      "rationale": "The flake is an unpinned test clock, a retry costs about two minutes, and pinning the clock is a much bigger change.",
+      "topic_keys": [
+        "ci"
+      ],
+      "evidence_ids": [],
+      "options": [
+        "Retry once",
+        "Pin the clock"
+      ],
+      "chosen_option": "Retry once",
+      "extraction_confidence": 0.8,
+      "source_turn_id": "t-2",
+      "actor_id": "agent:claude:planner"
+    }
+  ]
+}

@@ -93,11 +93,23 @@ null if the decider expresses no explicit confidence level.
 
 actor_id: The specific actor who proposed/made/reported this item, IF named in
 the input. Use their ID if present, otherwise null. Never infer a proposer from
-context; only record them when explicitly stated.
+context; only record them when explicitly stated. Naming an actor here says
+nothing about who decided: it is not an acceptance.
 
-accepted_by / rejected_by: For decisions and decision-requests. Every actor
-explicitly named as accepting or rejecting it. Populate with every actor
-named in the text, never inferred and never deduplicated to one. Empty array
+accepted_by / rejected_by: For decisions and decision-requests. Who DECIDED,
+not who spoke. List an actor only when the text shows that actor deciding: a
+person stating the choice themselves ("we'll go with X", "I'm going with X"),
+or any actor approving, accepting or rejecting a choice ("approved", "yes, do
+it" in answer to a proposal). When the text reports someone's call ("Priya
+approved X"), list Priya, not whoever reports it. Proposing, recommending,
+carrying out, reporting or relaying a choice is not deciding it: an actor who
+only suggests X ("I suggest X", "we could use X"), only implements it, only says
+it was decided, or passes on a call without saying who made it is not listed,
+and a proposal nobody has accepted stays empty however firmly it is worded. An
+agent narrating or carrying out its own choice is proposing it, so the decision
+stays unaccepted until a person is shown deciding it. A speaker the text does
+not name gives no one to list. Never inferred and never taken from actor_id;
+list every actor the text shows deciding, never deduplicated to one. Empty array
 if none.
 
 evidence_ids: For decisions. Evidence ids (per the cross-reference rule above)

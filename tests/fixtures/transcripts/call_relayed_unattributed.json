@@ -1,0 +1,35 @@
+{
+  "batch": {
+    "batch_id": "batch-call-relayed",
+    "agent_tool": "claude",
+    "session_id": "session-call-relayed",
+    "turns": [
+      {
+        "turn_id": "t-1",
+        "role": "user",
+        "truncated": false,
+        "ts": "2026-09-05T12:00:00Z",
+        "text": "Sam: Passing this on from the platform channel: we're moving the nightly jobs to 02:00 UTC instead of shrinking the backup window, so the two stop colliding. I don't know who signed it off."
+      }
+    ]
+  },
+  "captures": [
+    {
+      "kind": "decision",
+      "title": "Move the nightly jobs to 02:00 UTC",
+      "rationale": "The nightly jobs and the backup window stop colliding, and moving the jobs avoids shrinking the backup window.",
+      "topic_keys": [
+        "scheduling"
+      ],
+      "evidence_ids": [],
+      "options": [
+        "Move the jobs to 02:00 UTC",
+        "Shrink the backup window"
+      ],
+      "chosen_option": "Move the jobs to 02:00 UTC",
+      "extraction_confidence": 0.7,
+      "source_turn_id": "t-1",
+      "actor_id": "human:sam"
+    }
+  ]
+}

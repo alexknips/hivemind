@@ -756,6 +756,13 @@ worker exits immediately when `ANTHROPIC_API_KEY` is absent — the rest of
 the system stays correct without it. See
 [`CAPTURE_CLASSIFIER.md`](CAPTURE_CLASSIFIER.md) for the classifier design.
 
+**Who decided** (hivemind-u70b): both classify workers, this one and the agent-seat
+`classify-queue` command, fill `accepted_by` and `rejected_by` only for an actor the text
+shows deciding, and `actor_id` only for who proposed, made or reported the item. A proposal,
+a report of a call, a call relayed without its decider, or an agent carrying out its own
+choice leaves no acceptor, so the decision reads `proposed` until a person is shown deciding
+it. The rule and its fixtures are in [`CAPTURE_CLASSIFIER.md`](CAPTURE_CLASSIFIER.md).
+
 **Restatements** (hivemind-83cj): every session that relays or re-reads a ruling
 can classify it into a fresh decision. After extracting a decision, the worker
 shows a model the closest recorded decisions (the same read `recall` answers

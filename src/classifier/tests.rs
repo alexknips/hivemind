@@ -362,6 +362,37 @@ fn a_question_the_write_path_would_refuse_is_dropped_before_submission() {
     assert_eq!(captures[3].question, None);
 }
 
+// --- who decided (hivemind-u70b) ---
+
+/// The words the two classify workers share about who decided: the server-side prompt and the
+/// agent-seat command (Worker A), which is read from the plugin so a drift in either shows here.
+const DECIDER_RULE: &[&str] = &[
+    "a person stating the choice themselves",
+    "list priya, not whoever reports it",
+    "a proposal nobody has accepted stays empty however firmly it is worded",
+    "an agent narrating or carrying out its own choice is proposing it",
+];
+
+fn one_line(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+#[test]
+fn both_classify_workers_carry_the_same_rule_for_who_decided() {
+    let command = include_str!("../../plugins/hivemind-capture/commands/classify-queue.md");
+    for (worker, text) in [
+        ("the server-side prompt", one_line(CLASSIFIER_PROMPT)),
+        ("the classify-queue command", one_line(command)),
+    ] {
+        for phrase in DECIDER_RULE {
+            assert!(text.contains(phrase), "{worker} lost {phrase:?}");
+        }
+    }
+}
+
 // --- the pending queue's reads (hivemind-t15t) ---
 
 fn queue_event(event_type: EventType, payload: serde_json::Value, second: u32) -> Event {

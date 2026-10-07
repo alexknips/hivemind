@@ -224,6 +224,31 @@ A decision answering a request from an earlier session links only if it states
 the question in the same words; the classifier is not shown earlier asks, so an
 answer in other words is recorded unlinked rather than guessed.
 
+### Who decided
+
+`actor_id` is who proposed, made or reported the item; `accepted_by` and
+`rejected_by` are who decided it. They are different people more often than not,
+and a decision's status follows only the second: a capture that names an acceptor
+reads `accepted`, one that names none reads `proposed`. The projector never
+derives an acceptance from `actor_id` (hivemind-s0ra), so the judgement is the
+classifier's, and both workers (the server-side classifier in `src/classifier.rs`
+and the agent-seat `classify-queue` command) apply the same rule:
+
+- List an actor in `accepted_by` or `rejected_by` only when the text shows that
+  actor deciding: stating the choice themselves ("we'll go with X"), approving or
+  accepting it ("approved"), or rejecting it.
+- When the text reports someone's call ("Priya approved X"), the acceptor is
+  Priya, and the one reporting it is `actor_id` at most.
+- Proposing, recommending, carrying out, reporting or relaying a choice is not
+  deciding it. A proposal nobody has accepted, a call passed on without saying who
+  made it, and a speaker the text does not name all leave `accepted_by` empty, so
+  the decision stays `proposed`.
+
+`tests/fixtures/transcripts/` holds one transcript for each case (decided,
+proposed only, reported by someone else, relayed) with the answer the rule gives and
+the status it lands in; `cargo test who_decided` replays each answer through
+the write path and the status read.
+
 For API structured outputs, use a JSON Schema equivalent to the object above
 with `additionalProperties: false`. Keep all fields required; nullable values
 should be represented explicitly.

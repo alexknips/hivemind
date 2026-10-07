@@ -1,0 +1,38 @@
+{
+  "batch": {
+    "batch_id": "batch-call-reported",
+    "agent_tool": "claude",
+    "session_id": "session-call-reported",
+    "turns": [
+      {
+        "turn_id": "t-1",
+        "role": "assistant",
+        "truncated": false,
+        "ts": "2026-09-05T11:00:00Z",
+        "text": "agent:claude:release: Status on the v0.3 ship question. Priya approved shipping v0.3 to prod once the dependency bump landed, because the CVE scan is green again. I'll cut the tag tonight."
+      }
+    ]
+  },
+  "captures": [
+    {
+      "kind": "decision",
+      "title": "Ship v0.3 to prod once the dependency bump has landed",
+      "rationale": "The CVE scan is green again after the dependency bump.",
+      "topic_keys": [
+        "release"
+      ],
+      "evidence_ids": [],
+      "options": [
+        "Ship v0.3 after the bump",
+        "Hold v0.3"
+      ],
+      "chosen_option": "Ship v0.3 after the bump",
+      "extraction_confidence": 0.85,
+      "source_turn_id": "t-1",
+      "actor_id": "agent:claude:release",
+      "accepted_by": [
+        "human:priya"
+      ]
+    }
+  ]
+}

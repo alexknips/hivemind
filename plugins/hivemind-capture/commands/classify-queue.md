@@ -62,6 +62,23 @@ Capture an item ONLY when the conversation text shows:
 plumbing), stack traces, raw command output, status narration, todos, or private scratch
 notes. When in doubt, return an empty captures array.
 
+**Who decided (`accepted_by` / `rejected_by`)**
+
+These two fields name who DECIDED, not who spoke. List an actor only when the text
+shows that actor deciding: a person stating the choice themselves ("we'll go with X",
+"I'm going with X"), or any actor approving, accepting or rejecting a choice
+("approved", "yes, do it" in answer to a proposal). When the text reports someone's
+call ("Priya approved X"), list Priya, not whoever reports it. Proposing,
+recommending, carrying out, reporting or relaying a choice is not deciding it: an
+actor who only suggests X ("I suggest X", "we could use X"), only implements it, only
+says it was decided, or passes on a call without saying who made it is not listed, and
+a proposal nobody has accepted stays empty however firmly it is worded. An agent
+narrating or carrying out its own choice is proposing it, so the decision stays
+unaccepted until a person is shown deciding it. A speaker the text does not name gives
+no one to list. Never infer an acceptor, and never copy `actor_id` into `accepted_by`;
+list every actor the text shows deciding. A decision left with no acceptor is recorded
+as proposed, which is the honest state until someone is shown deciding it.
+
 **Step 2b: Check each decision against what is already recorded**
 
 A decision that was already recorded (by an earlier session, or by this one) must
@@ -132,9 +149,11 @@ Optional fields (omit rather than null unless needed):
   no ask, so name the person in `actor_id` when the text says who asked. If
   submit is refused because `source_turn_id`, `source_ts` or `question` is an unknown field,
   the cell runs an older hivemind than this plugin: submit the same captures again without them.
-- `actor_id`: the person who proposed/decided, only if named in the text
-- `accepted_by`: the actor who accepted, only if named in the text
-- `rejected_by`: the actor who rejected, only if named in the text
+- `actor_id`: who proposed, made or reported the item, only if named in the text. It does
+  not say who decided: it is never an acceptance
+- `accepted_by`: array of the actors the text shows accepting or choosing it (see "Who
+  decided" above); empty when none is shown
+- `rejected_by`: array of the actors the text shows rejecting it; empty when none is shown
 
 **Process all batches in sequence.** Report a summary: batches processed, total captures
 written, any errors.

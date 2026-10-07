@@ -10,7 +10,9 @@ use crate::events::{
 };
 use crate::ledger::{EventLedger, InMemoryEventLedger};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant};
-use crate::queries::{get_decision_brief, get_waiting_requests, WaitingRequestsRequest};
+use crate::queries::{
+    get_decision_brief, get_waiting_requests, DecisionStatus, WaitingRequestsRequest,
+};
 
 const SUBMITTER: &str = "agent:claude:hook";
 const RECORDER: &str = "agent:hivemind:classifier";
@@ -30,6 +32,13 @@ const AGENT_DECIDES_ALONE: &str =
     include_str!("../../../tests/fixtures/transcripts/agent_decides_alone.json");
 const USER_ASKS_UNNAMED: &str =
     include_str!("../../../tests/fixtures/transcripts/user_asks_unnamed.json");
+const PERSON_DECIDES: &str =
+    include_str!("../../../tests/fixtures/transcripts/person_decides.json");
+const PROPOSED_ONLY: &str = include_str!("../../../tests/fixtures/transcripts/proposed_only.json");
+const CALL_REPORTED_BY_ANOTHER: &str =
+    include_str!("../../../tests/fixtures/transcripts/call_reported_by_another.json");
+const CALL_RELAYED_UNATTRIBUTED: &str =
+    include_str!("../../../tests/fixtures/transcripts/call_relayed_unattributed.json");
 
 fn moment(timestamp: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(timestamp)
@@ -571,4 +580,77 @@ fn a_decision_dropped_as_the_same_moment_seen_again_writes_no_link() {
 
     assert_eq!(answers_relations(&ledger).len(), 1);
     assert_eq!(events_of(&ledger, EventType::QuestionAsked).len(), 1);
+}
+
+// --- who decided (hivemind-u70b) ---
+//
+// A classified decision is accepted only when the capture names an acceptor, and the classifier
+// names one only when the text shows that actor deciding (`CLASSIFIER_PROMPT` and
+// `plugins/hivemind-capture/commands/classify-queue.md` carry the rule). Each fixture below is a
+// transcript with the answer that rule gives; replaying it through the write path and the status
+// read shows the status and decider it lands in.
+
+/// A recorded fixture's one decision as `why` and `verify` read it: its status, who decided it,
+/// and who the capture credits as its proposer.
+fn who_decided(fixture: &str) -> (DecisionStatus, Vec<String>, Option<String>) {
+    let ledger = InMemoryEventLedger::new();
+    let recorded = record(&ledger, fixture);
+    let decision_id = format!("capture:{}:0", recorded.event_id);
+    let brief = get_decision_brief(&graph_of(&ledger), &decision_id)
+        .expect("brief reads")
+        .data
+        .expect("decision is in the graph");
+    (
+        brief.status,
+        brief.decided_by.decider_ids,
+        brief.decided_by.proposer_id,
+    )
+}
+
+/// A person states the choice: they are its decider, and it reads accepted.
+#[test]
+fn who_decided_a_person_who_states_the_choice_is_its_decider() {
+    let (status, deciders, proposer) = who_decided(PERSON_DECIDES);
+
+    assert_eq!(status, DecisionStatus::Accepted);
+    assert_eq!(deciders, vec!["human:dana".to_owned()]);
+    assert_eq!(proposer.as_deref(), Some("human:dana"));
+}
+
+/// An agent narrates and carries out its own choice: it proposed it, nobody has decided it.
+#[test]
+fn who_decided_an_agents_own_choice_stays_proposed() {
+    let (status, deciders, proposer) = who_decided(PROPOSED_ONLY);
+
+    assert_eq!(status, DecisionStatus::Proposed);
+    assert!(
+        deciders.is_empty(),
+        "nobody is shown deciding: {deciders:?}"
+    );
+    assert_eq!(proposer.as_deref(), Some("agent:claude:planner"));
+}
+
+/// One actor reports a call another made: the one the text shows approving is the decider, and
+/// the reporter is only credited with having recorded it.
+#[test]
+fn who_decided_a_call_reported_by_another_is_decided_by_who_made_it() {
+    let (status, deciders, proposer) = who_decided(CALL_REPORTED_BY_ANOTHER);
+
+    assert_eq!(status, DecisionStatus::Accepted);
+    assert_eq!(deciders, vec!["human:priya".to_owned()]);
+    assert_eq!(proposer.as_deref(), Some("agent:claude:release"));
+}
+
+/// A call passed on without saying who made it has no decider, however sure the person passing it
+/// on sounds: it stays proposed, and the one relaying it is not made its decider.
+#[test]
+fn who_decided_a_call_relayed_without_its_decider_stays_proposed() {
+    let (status, deciders, proposer) = who_decided(CALL_RELAYED_UNATTRIBUTED);
+
+    assert_eq!(status, DecisionStatus::Proposed);
+    assert!(
+        deciders.is_empty(),
+        "nobody is shown deciding: {deciders:?}"
+    );
+    assert_eq!(proposer.as_deref(), Some("human:sam"));
 }
