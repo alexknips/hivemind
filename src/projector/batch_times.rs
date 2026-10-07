@@ -1,18 +1,20 @@
-//! When each received batch was said, for the time a captured decision is projected at.
+//! What a classified decision is projected with from the batches it was classified from: when
+//! they were said, and which capture session shipped them.
 //!
 //! A received batch never reaches the graph, and the projector reads one event at a time, so a
-//! replay keeps the newest turn time of every batch it passes. A classification after the
-//! replay's starting offset may name batches received before it (the server's graph cache
-//! replays only what is new), and those are read from the ledger before the replay starts. The
-//! answer is the same either way: a batch counts when it was received before the classification
-//! that names it, whether the replay started at the first event or later.
+//! replay keeps the newest turn time and the session of every batch it passes. A classification
+//! after the replay's starting offset may name batches received before it (the server's graph
+//! cache replays only what is new), and those are read from the ledger before the replay
+//! starts. The answer is the same either way: a batch counts when it was received before the
+//! classification that names it, whether the replay started at the first event or later.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 
 use crate::events::{
-    classified_batch_ids, received_batch_newest_turn_time, Event, EventId, EventType, TenantId,
+    classified_batch_ids, received_batch_newest_turn_time, received_batch_session_id, Event,
+    EventId, EventType, TenantId,
 };
 use crate::ledger::EventLedger;
 use crate::Result;
@@ -21,39 +23,59 @@ use crate::Result;
 /// batches take a handful of round trips.
 const HEAD_PAGE: usize = 10_000;
 
-/// The newest turn time of each received batch whose turns carry one. A batch with no turn time
-/// has no entry: nothing is guessed for it.
+/// What a replay knows of the batches it has passed: the newest turn time of each whose turns
+/// carry one, and the session of each that names one. A batch with no turn time has no time
+/// entry, and a batch that names no session has no session entry: nothing is guessed for either.
 #[derive(Debug, Default)]
-pub(super) struct BatchTurnTimes(HashMap<String, DateTime<Utc>>);
+pub(super) struct ReceivedBatches {
+    turn_times: HashMap<String, DateTime<Utc>>,
+    sessions: HashMap<String, String>,
+}
 
-impl BatchTurnTimes {
-    /// Takes in `event` when it is a received batch whose turns carry a time.
+impl ReceivedBatches {
+    /// Takes in `event` when it is a received batch. A batch received more than once keeps the
+    /// newest of its turn times and the first session it named.
     pub(super) fn note(&mut self, event: &Event) {
         if event.event_type != EventType::IngestBatchReceived {
             return;
         }
-        let (Some(batch_id), Some(newest)) = (
-            batch_id(event),
-            received_batch_newest_turn_time(&event.payload),
-        ) else {
+        let Some(batch_id) = batch_id(event) else {
             return;
         };
-        self.0
-            .entry(batch_id.to_owned())
-            .and_modify(|current| *current = (*current).max(newest))
-            .or_insert(newest);
+        if let Some(newest) = received_batch_newest_turn_time(&event.payload) {
+            self.turn_times
+                .entry(batch_id.to_owned())
+                .and_modify(|current| *current = (*current).max(newest))
+                .or_insert(newest);
+        }
+        if let Some(session_id) = received_batch_session_id(&event.payload) {
+            self.sessions
+                .entry(batch_id.to_owned())
+                .or_insert_with(|| session_id.to_owned());
+        }
     }
 
     /// The newest turn time across `batch_ids`, `None` when none of them carries one.
     pub(super) fn newest(&self, batch_ids: &[String]) -> Option<DateTime<Utc>> {
         batch_ids
             .iter()
-            .filter_map(|batch_id| self.0.get(batch_id.as_str()).copied())
+            .filter_map(|batch_id| self.turn_times.get(batch_id.as_str()).copied())
             .max()
     }
 
-    /// The times of the batches that a replay from `offset` classifies without having received
-    /// them in the same replay, read from the events up to `offset`. Empty for a replay from the
+    /// The sessions that shipped `batch_ids`, sorted and without repeats; empty when none of the
+    /// batches was received or none names a session.
+    pub(super) fn sessions(&self, batch_ids: &[String]) -> Vec<String> {
+        let sessions: BTreeSet<&str> = batch_ids
+            .iter()
+            .filter_map(|batch_id| self.sessions.get(batch_id.as_str()))
+            .map(String::as_str)
+            .collect();
+        sessions.into_iter().map(str::to_owned).collect()
+    }
+
+    /// The batches that a replay from `offset` classifies without having received them in the
+    /// same replay, read from the events up to `offset`. Empty for a replay from the
     /// start, and when every classification in the replay names batches it received itself: the
     /// ledger before `offset` is only read when something needs it, and then only the ids of its
     /// received batches and the events of the ones wanted, never the turn text of the rest.
@@ -62,13 +84,13 @@ impl BatchTurnTimes {
         tenant_id: &TenantId,
         offset: EventId,
     ) -> Result<Self> {
-        let mut times = Self::default();
+        let mut received = Self::default();
         if offset == 0 {
-            return Ok(times);
+            return Ok(received);
         }
         let wanted = unreceived_batches_classified_after(ledger, tenant_id, offset)?;
         if wanted.is_empty() {
-            return Ok(times);
+            return Ok(received);
         }
 
         let mut event_ids: Vec<EventId> = Vec::new();
@@ -95,9 +117,9 @@ impl BatchTurnTimes {
             }
         }
         for event in ledger.read_ids_for_tenant(tenant_id, &event_ids)? {
-            times.note(&event);
+            received.note(&event);
         }
-        Ok(times)
+        Ok(received)
     }
 }
 

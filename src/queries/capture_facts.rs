@@ -1,10 +1,11 @@
-//! How each decision was recorded, as stated facts: its topic keys and the ledger event that
-//! recorded it (hivemind-xarm).
+//! How each decision was recorded, as stated facts: its topic keys, the ledger event that
+//! recorded it and the capture session it came from (hivemind-xarm, hivemind-266t).
 //!
 //! Decisions that a classifier captured out of one conversation are recorded by one
-//! `ingest.batch_classified` event, so they share an `event_origin`. This module only reads that
-//! fact and the decision-to-decision links someone recorded; it does not decide that any two
-//! decisions are related. Any such inference is Layer 3.
+//! `ingest.batch_classified` event, so they share an `event_origin`; a conversation recorded by
+//! more than one event shares the session that shipped its batches instead. This module only reads
+//! those facts and the decision-to-decision links someone recorded; it does not decide that any
+//! two decisions are related. Any such inference is Layer 3.
 
 use std::collections::BTreeSet;
 
@@ -26,6 +27,11 @@ pub struct CaptureFact {
     /// The ledger offset of the event that recorded the decision; `None` on a node that carries
     /// none. Equal offsets mean one event recorded both.
     pub event_origin: Option<i64>,
+    /// The capture sessions that shipped the batches a classification recorded the decision
+    /// from, sorted; empty for a decision no classification recorded (proposed by hand) or whose
+    /// batches the ledger never received. A shared session means one conversation, whichever
+    /// event recorded each decision.
+    pub session_ids: Vec<String>,
 }
 
 /// Every decision that has a title (a node only referenced by a request or blocker has none), in
@@ -38,6 +44,7 @@ pub fn decision_capture_facts(graph: &impl GraphView) -> Result<Vec<CaptureFact>
                 title: optional_string(&row, "title").filter(|title| !title.trim().is_empty())?,
                 topic_keys: optional_string_list(&row, "topic_keys"),
                 event_origin: optional_int(&row, "event_origin"),
+                session_ids: optional_string_list(&row, "session_ids"),
                 decision_id,
             })
         })

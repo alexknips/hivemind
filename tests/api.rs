@@ -1966,6 +1966,87 @@ async fn possibly_related_offers_same_conversation_and_specific_topics_and_draws
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}"); // ubs:ignore
 }
 
+/// hivemind-266t over HTTP: one capture session shipped as two batches and classified in two
+/// separate submissions is one conversation, though two ledger events recorded it. The decisions
+/// share no topic key, so only the session joins them (the session is the `session_id` the
+/// batches were ingested with, not anything in their ids); a decision from another session is not
+/// offered.
+#[tokio::test]
+async fn possibly_related_joins_a_session_the_classifier_recorded_in_two_events() {
+    let dir = test_ledger_dir();
+    for (batch_id, session_id) in [
+        ("split-batch-1", "split-sess"),
+        ("split-batch-2", "split-sess"),
+        ("other-batch-1", "other-sess"),
+    ] {
+        let (status, body) = call(
+            app(dir.clone()),
+            post_json(
+                "/v1/ingest",
+                ingest_json_at(batch_id, session_id, "2026-09-30T10:00:00Z"),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}"); // ubs:ignore
+    }
+
+    let mut recorded = Vec::new();
+    for (batch_id, title, topic) in [
+        ("split-batch-1", "Ship the importer", "alpha"),
+        ("split-batch-2", "Name the importer", "beta"),
+        ("other-batch-1", "Pick a logo", "gamma"),
+    ] {
+        let (status, body) = call(
+            app(dir.clone()),
+            post_json(
+                "/v1/classify-queue/submit",
+                serde_json::json!({
+                    "batch_ids": [batch_id],
+                    "captures": [keyed_capture_json(title, &[topic])],
+                    "model": "agent:worker-a"
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+        recorded.push(format!(
+            "capture:{}:0",
+            body["event_id"].as_u64().expect("event_id") // ubs:ignore
+        ));
+    }
+    let (first, second, other) = (&recorded[0], &recorded[1], &recorded[2]);
+    assert_ne!(
+        first, second,
+        "two classification events recorded the session"
+    );
+
+    for (asked, offered) in [(first, second), (second, first)] {
+        let (status, body) = call(
+            app(dir.clone()),
+            get_req(&format!("/v1/decisions/{asked}/possibly-related")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+        let items = body["data"]["items"].as_array().expect("items"); // ubs:ignore
+        assert_eq!(items.len(), 1, "only the other half of the session: {body}"); // ubs:ignore
+        assert_eq!(items[0]["decision_id"], offered.as_str(), "{body}"); // ubs:ignore
+        assert_eq!(items[0]["same_conversation"], true, "{body}"); // ubs:ignore
+        assert_eq!(
+            items[0]["shared_topic_keys"],
+            serde_json::json!([]),
+            "the session alone joins them: {body}"
+        ); // ubs:ignore
+    }
+
+    let (status, body) = call(
+        app(dir),
+        get_req(&format!("/v1/decisions/{other}/possibly-related")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["data"]["total_matches"], 0, "{body}"); // ubs:ignore
+}
+
 /// Requires the `shared-backend-postgres` feature and a live Postgres
 /// instance. Set HIVEMIND_TEST_POSTGRES_URL to run; skipped when unset (same
 /// pattern as tests/migrate.rs). CI's dedicated `rust-postgres` job always

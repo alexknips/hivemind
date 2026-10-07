@@ -39,8 +39,8 @@
 //!   newest first: proposed, accepted, rejected, superseded, each with its ledger time, offset,
 //!   actor and the status it left the decision in (hivemind-fwog)
 //! - `GET  /v1/decisions/{id}/possibly-related[?limit=][?cursor=]` — decisions recorded out of the
-//!   same conversation or sharing a specific topic key, ranked, labelled `inferred`; never a
-//!   recorded relation (hivemind-xarm)
+//!   same conversation (capture session) or sharing a specific topic key, ranked, labelled
+//!   `inferred`; never a recorded relation (hivemind-xarm, hivemind-266t)
 //! - `GET  /v1/decisions/search`                   — full-text search (SQLite only)
 //! - `GET  /v1/decisions/relevant`                 — decisions by topic
 //! - `GET  /v1/decisions/situational`               — decisions relevant to touched paths

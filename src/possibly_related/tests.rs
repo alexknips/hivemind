@@ -173,6 +173,115 @@ fn the_same_conversation_ranks_before_a_shared_topic_and_the_basis_is_in_the_ans
 }
 
 #[test]
+fn one_session_classified_in_two_events_is_one_conversation() -> Result<()> {
+    // hivemind-266t: the classifier recorded session "sess-1" in two events (its batches were
+    // classified at two moments), and a different session in a third. The decisions share no topic
+    // key, so only the session can say that the first two events' decisions belong together. The
+    // batch ids do not look like their session: the received batches say which it is.
+    let scenario = Scenario::new();
+    scenario.received_batch("batch-1", "sess-1", &at(1))?;
+    scenario.received_batch("batch-2", "sess-1", &at(2))?;
+    scenario.received_batch("batch-3", "sess-2", &at(3))?;
+    let first = scenario.classified_decisions_from_batches(
+        &["batch-1"],
+        &[
+            ("Ship the importer", &["alpha"]),
+            ("Defer the exporter", &["beta"]),
+        ],
+        &at(4),
+    )?;
+    let second = scenario.classified_decisions_from_batches(
+        &["batch-2"],
+        &[("Name the importer", &["gamma"])],
+        &at(5),
+    )?;
+    let elsewhere = scenario.classified_decisions_from_batches(
+        &["batch-3"],
+        &[("Pick a logo", &["delta"])],
+        &at(6),
+    )?;
+    let graph = scenario.graph()?;
+    let (first_0, first_1) = (format!("capture:{first}:0"), format!("capture:{first}:1"));
+    let second_0 = format!("capture:{second}:0");
+    let elsewhere_0 = format!("capture:{elsewhere}:0");
+
+    let from_first = related(&graph, &first_0)?;
+    assert_eq!(
+        ids(&from_first),
+        [first_1.as_str(), second_0.as_str()],
+        "the same event and the same session, nothing from the other session"
+    );
+    assert!(
+        from_first.items.iter().all(|item| item.same_conversation),
+        "{from_first:?}"
+    );
+    assert!(
+        from_first
+            .items
+            .iter()
+            .all(|item| item.shared_topic_keys.is_empty()),
+        "the pair is joined by the session alone"
+    );
+
+    // Symmetric: the later event's decision finds the earlier event's decisions.
+    let from_second = related(&graph, &second_0)?;
+    assert_eq!(ids(&from_second), [first_0.as_str(), first_1.as_str()]);
+    assert!(from_second.items.iter().all(|item| item.same_conversation));
+
+    // The other session stands alone.
+    assert!(related(&graph, &elsewhere_0)?.items.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_decision_recorded_by_hand_has_no_session_to_share() -> Result<()> {
+    // A hand-proposed decision belongs to no capture session, even one that shares its topic key.
+    let scenario = Scenario::new();
+    scenario.received_batch("batch-1", "sess-1", &at(1))?;
+    let event = scenario.classified_decisions_from_batches(
+        &["batch-1"],
+        &[("Ship the importer", &["alpha"])],
+        &at(2),
+    )?;
+    scenario.decision_topics("d:hand", "Document alpha", &["alpha"], ACTOR, &at(3))?;
+    let graph = scenario.graph()?;
+
+    let answer = related(&graph, &format!("capture:{event}:0"))?;
+
+    assert_eq!(ids(&answer), ["d:hand"]);
+    assert!(!answer.items[0].same_conversation);
+    Ok(())
+}
+
+#[test]
+fn a_classification_of_batches_never_received_is_grouped_by_its_event() -> Result<()> {
+    // Batches the ledger never received (a `hivemind emit` capture names a fresh batch id) leave
+    // the decisions without a session, so the classification event that recorded them stays the
+    // grouping: its own decisions are one conversation, and a second event is not joined to it.
+    let scenario = Scenario::new();
+    let first = scenario.classified_decisions_from_batches(
+        &["unreceived-batch-1"],
+        &[("One", &["a"]), ("Two", &["b"])],
+        &at(1),
+    )?;
+    let second = scenario.classified_decisions_from_batches(
+        &["unreceived-batch-2"],
+        &[("Three", &["c"])],
+        &at(2),
+    )?;
+    let graph = scenario.graph()?;
+
+    let answer = related(&graph, &format!("capture:{first}:0"))?;
+
+    assert_eq!(ids(&answer), [format!("capture:{first}:1").as_str()]);
+    assert!(answer.items[0].same_conversation);
+    assert!(related(&graph, &format!("capture:{second}:0"))?
+        .items
+        .is_empty());
+    Ok(())
+}
+
+#[test]
 fn a_rarer_shared_key_ranks_above_a_commoner_one() -> Result<()> {
     let scenario = Scenario::new();
     scenario.decision_topics("d:asked", "Asked", &["common", "rare"], ACTOR, &at(1))?;

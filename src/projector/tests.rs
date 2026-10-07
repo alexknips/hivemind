@@ -2467,8 +2467,18 @@ fn time_value(timestamp: &str) -> GraphValue {
     GraphValue::String(instant(timestamp).to_rfc3339())
 }
 
-/// A received batch whose turns carry `turn_times` (`None`: a turn with no time).
+/// A received batch whose turns carry `turn_times` (`None`: a turn with no time), shipped by
+/// `session-1`.
 fn received_batch(batch_id: &str, turn_times: &[Option<&str>]) -> Event {
+    received_batch_in_session(batch_id, "session-1", turn_times)
+}
+
+/// A received batch shipped by capture session `session_id`.
+fn received_batch_in_session(
+    batch_id: &str,
+    session_id: &str,
+    turn_times: &[Option<&str>],
+) -> Event {
     let turns: Vec<serde_json::Value> = turn_times
         .iter()
         .enumerate()
@@ -2491,7 +2501,7 @@ fn received_batch(batch_id: &str, turn_times: &[Option<&str>]) -> Event {
         json!({
             "batch_id": batch_id,
             "agent_tool": "claude",
-            "session_id": "session-1",
+            "session_id": session_id,
             "turns": turns
         }),
     )
@@ -2705,6 +2715,102 @@ fn a_replay_holding_the_batch_and_its_classification_reads_the_batchs_turn_time(
     project_from_ledger(&ledger, &graph, first)?;
 
     assert_eq!(the_decision_time(&graph), time_value(SAID_AT)); // ubs:ignore
+    Ok(())
+}
+
+/// The `session_ids` property of the one node of `kind` that `graph` holds (`None` where it
+/// carries none).
+fn the_session_ids(graph: &RecordingGraph, kind: NodeKind) -> Option<GraphValue> {
+    graph
+        .nodes()
+        .iter()
+        .find(|((node_kind, _), _)| *node_kind == kind)
+        .and_then(|(_, properties)| properties.get("session_ids").cloned())
+}
+
+fn sessions(ids: &[&str]) -> Option<GraphValue> {
+    Some(GraphValue::StringList(
+        ids.iter().map(|id| (*id).to_owned()).collect(),
+    ))
+}
+
+/// hivemind-266t: a classified decision carries the capture session that shipped the batches it
+/// was classified from, each once and sorted. The session is what the received batch says, not
+/// anything read from its id: these batch ids do not look like their session.
+#[test]
+fn a_classified_decision_carries_the_sessions_that_shipped_its_batches() -> Result<()> {
+    let graph = project_events(vec![
+        received_batch_in_session("b-1", "sess-b", &[None]),
+        received_batch_in_session("b-2", "sess-a", &[None]),
+        received_batch_in_session("b-3", "sess-a", &[None]),
+        classification(
+            &["b-1", "b-2", "b-3"],
+            classified_decision_capture(None, &[], &[]),
+            CLASSIFIED_AT,
+        ),
+    ])?;
+
+    assert_eq!(
+        // ubs:ignore
+        the_session_ids(&graph, NodeKind::Decision),
+        sessions(&["sess-a", "sess-b"])
+    );
+    Ok(())
+}
+
+/// Only a decision carries the session: the other node kinds have no such column.
+#[test]
+fn a_classified_evidence_node_carries_no_session() -> Result<()> {
+    let mut evidence = classified_decision_capture(None, &[], &[]);
+    evidence["kind"] = json!("evidence");
+    let graph = project_events(vec![
+        received_batch_in_session("b-1", "sess-a", &[None]),
+        classification(&["b-1"], evidence, CLASSIFIED_AT),
+    ])?;
+
+    assert_eq!(the_session_ids(&graph, NodeKind::Evidence), None); // ubs:ignore
+    Ok(())
+}
+
+/// A classification of batches the ledger never received (a `hivemind emit` capture names a
+/// fresh batch id) names no session: nothing is guessed, and it is no error.
+#[test]
+fn a_decision_classified_from_unreceived_batches_carries_no_session() -> Result<()> {
+    let graph = project_events(vec![classification(
+        &["batch:sess-a:0-5"],
+        classified_decision_capture(None, &[], &[]),
+        CLASSIFIED_AT,
+    )])?;
+
+    assert_eq!(the_session_ids(&graph, NodeKind::Decision), None); // ubs:ignore
+    Ok(())
+}
+
+/// A graph extended from an offset (the server's graph cache) carries the same sessions as one
+/// rebuilt from the start, though the batch was received before the offset.
+#[test]
+fn an_extended_graph_carries_the_same_sessions_as_a_rebuilt_one() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    ledger.append(received_batch_in_session("b-1", "sess-a", &[None]))?;
+    let extended = RecordingGraph::default();
+    project_from_ledger(&ledger, &extended, 0)?;
+    let received_up_to = ledger.latest_offset()?;
+    ledger.append(classification(
+        &["b-1"],
+        classified_decision_capture(None, &[], &[]),
+        CLASSIFIED_AT,
+    ))?;
+
+    project_from_ledger(&ledger, &extended, received_up_to)?;
+    let rebuilt = RecordingGraph::default();
+    project_from_ledger(&ledger, &rebuilt, 0)?;
+
+    assert_eq!(
+        // ubs:ignore
+        the_session_ids(&extended, NodeKind::Decision),
+        sessions(&["sess-a"])
+    );
+    assert_eq!(extended.snapshot(), rebuilt.snapshot()); // ubs:ignore
     Ok(())
 }
 

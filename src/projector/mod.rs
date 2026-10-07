@@ -20,7 +20,7 @@ use crate::events::{
 use crate::ledger::EventLedger;
 use crate::Result;
 
-use batch_times::BatchTurnTimes;
+use batch_times::ReceivedBatches;
 use option_labels::{readable_option_labels, FoundLabel};
 
 pub mod arrow;
@@ -281,7 +281,7 @@ pub trait GraphView {
 /// from, so its decisions read at the batch's own time (a replay, [`project_from_ledger`], sees
 /// the received batches and does better).
 pub fn project_event(graph: &impl GraphView, event: &Event) -> Result<()> {
-    project_event_reporting(graph, event, &BatchTurnTimes::default()).map(drop)
+    project_event_reporting(graph, event, &ReceivedBatches::default()).map(drop)
 }
 
 /// What one replay skipped: annotation rows ([`UnreadableAnnotation`]) that could not be read.
@@ -299,7 +299,7 @@ pub struct ProjectionReport {
 fn project_event_reporting(
     graph: &impl GraphView,
     event: &Event,
-    batch_times: &BatchTurnTimes,
+    received_batches: &ReceivedBatches,
 ) -> Result<Option<UnreadableAnnotation>> {
     let payload = match events::validate_for_read(event).map_err(projector_error)? {
         ReadEvent::Payload(payload) => *payload,
@@ -418,7 +418,8 @@ fn project_event_reporting(
             &event.actor_id,
             &payload,
             &origin_properties,
-            classified_batch_time(event, batch_times),
+            classified_batch_time(event, received_batches),
+            &classified_session_ids(event, received_batches),
         )?,
         EventPayload::DecisionScored(payload) => {
             project_decision_scored(graph, &payload, &origin_properties)?
@@ -496,22 +497,23 @@ pub fn project_from_ledger_for_tenant_reporting(
 /// Project every event of `tenant_id` after `offset`, skipping unreadable annotation rows and
 /// logging them once (not once per row) so a log reader sees the count and the offsets.
 ///
-/// The turn times of the received batches are read on the way (and, for a replay that starts
-/// after the first event, from before `offset`), so a classified batch's decisions read as when
-/// they were said whether the graph was rebuilt or extended.
+/// The turn times and sessions of the received batches are read on the way (and, for a replay
+/// that starts after the first event, from before `offset`), so a classified batch's decisions
+/// read as when they were said, and as from the session that said them, whether the graph was
+/// rebuilt or extended.
 fn project_replay(
     ledger: &impl EventLedger,
     tenant_id: &TenantId,
     graph: &impl GraphView,
     offset: EventId,
 ) -> Result<ProjectionReport> {
-    let mut batch_times = BatchTurnTimes::before(ledger, tenant_id, offset)?;
+    let mut received_batches = ReceivedBatches::before(ledger, tenant_id, offset)?;
     let mut report = ProjectionReport::default();
     ledger.replay_from_for_tenant(tenant_id, offset, &mut |event| {
-        batch_times.note(event);
+        received_batches.note(event);
         report
             .unreadable_annotations
-            .extend(project_event_reporting(graph, event, &batch_times)?);
+            .extend(project_event_reporting(graph, event, &received_batches)?);
         Ok(())
     })?;
     if !report.unreadable_annotations.is_empty() {
@@ -554,6 +556,7 @@ pub fn project_captures_in_memory(id_captures: &[(&str, &CaptureItem)]) -> Resul
             None,
             &GraphProperties::default(),
             GraphValue::Null,
+            &[],
         )?;
     }
     let (nodes_map, edges) = graph.nodes_and_edges()?;
@@ -897,13 +900,20 @@ fn event_timestamp(event: &Event) -> GraphValue {
 /// turn of its own: the newest turn time of the batches the classification covers (the same
 /// reading the write path's same-moment rule uses), and the classification event's own time
 /// when none of them carries a turn time.
-fn classified_batch_time(event: &Event, batch_times: &BatchTurnTimes) -> GraphValue {
-    batch_times
+fn classified_batch_time(event: &Event, received_batches: &ReceivedBatches) -> GraphValue {
+    received_batches
         .newest(&classified_batch_ids(&event.payload))
         .map_or_else(
             || event_timestamp(event),
             |ts| GraphValue::String(ts.to_rfc3339()),
         )
+}
+
+/// The capture sessions that shipped the batches a classification covers, as the received
+/// batches name them (`session_id`); empty when it covers none the replay has received, as for a
+/// `hivemind emit` capture, which names a fresh batch id.
+fn classified_session_ids(event: &Event, received_batches: &ReceivedBatches) -> Vec<String> {
+    received_batches.sessions(&classified_batch_ids(&event.payload))
 }
 
 fn relation_kind(kind: EventRelationKind) -> RelationKind {
@@ -1863,7 +1873,8 @@ fn project_notification_acknowledged(
 /// `batch_time` is the time a decision it captured is recorded at unless the capture carries its
 /// turn's own time: the newest turn time of the batches classified, or the classified-batch
 /// event's own timestamp when none carries one (see `classified_batch_time` and
-/// `project_capture_decision`).
+/// `project_capture_decision`). `session_ids` are the capture sessions that shipped those batches
+/// (see `classified_session_ids`).
 fn project_ingest_batch_classified(
     graph: &impl GraphView,
     event_origin: i64,
@@ -1871,6 +1882,7 @@ fn project_ingest_batch_classified(
     payload: &IngestBatchClassifiedPayload,
     origin_properties: &GraphProperties,
     batch_time: GraphValue,
+    session_ids: &[String],
 ) -> Result<()> {
     let node_ids: Vec<String> = (0..payload.captures.len())
         .map(|idx| format!("capture:{event_origin}:{idx}"))
@@ -1889,6 +1901,7 @@ fn project_ingest_batch_classified(
             Some(recorder),
             origin_properties,
             batch_time.clone(), // ubs:ignore: one timestamp per capture; the value is a short string
+            session_ids,
         )?;
     }
     Ok(())
@@ -2055,7 +2068,9 @@ fn project_decision_retitled(
 /// projection has none): a captured decision belongs to their personal project, the same rule
 /// `project_decision_proposed` applies to a proposal that names no project. `batch_time` is the
 /// time of the batch the capture was classified from (see `classified_batch_time`; `Null` when
-/// there is none, as in the in-memory projection).
+/// there is none, as in the in-memory projection). `session_ids` are the capture sessions the
+/// classified batches were shipped by (see `classified_session_ids`); only a decision carries
+/// them.
 fn project_capture(
     graph: &impl GraphView,
     capture: &CaptureItem,
@@ -2063,6 +2078,7 @@ fn project_capture(
     recorder: Option<&str>,
     origin_properties: &GraphProperties,
     batch_time: GraphValue,
+    session_ids: &[String],
 ) -> Result<()> {
     match capture.kind.as_str() {
         "decision" => project_capture_decision(
@@ -2072,6 +2088,7 @@ fn project_capture(
             recorder,
             origin_properties,
             batch_time,
+            session_ids,
         ),
         "evidence" => project_capture_evidence(graph, capture, node_id, origin_properties),
         "hypothesis" => project_capture_hypothesis(graph, capture, node_id, origin_properties),
@@ -2105,6 +2122,11 @@ fn project_capture(
 /// read as the decider: a capture that names no acceptor stays `proposed`, even when its
 /// `actor_id` is a human. Judging who decided belongs to the classifier (layer 3), not the
 /// projector.
+///
+/// `session_ids` (the capture sessions that shipped the classified batches) are stored on the
+/// decision beside its `event_origin`: decisions of one conversation share a session even when
+/// the classifier recorded that conversation in more than one event. Nothing is stored when no
+/// covered batch was received.
 fn project_capture_decision(
     graph: &impl GraphView,
     capture: &CaptureItem,
@@ -2112,6 +2134,7 @@ fn project_capture_decision(
     recorder: Option<&str>,
     origin_properties: &GraphProperties,
     batch_time: GraphValue,
+    session_ids: &[String],
 ) -> Result<()> {
     let mut props = origin_properties.clone();
     let occurred_at = capture
@@ -2140,6 +2163,12 @@ fn project_capture_decision(
         "topic_keys".to_owned(),
         GraphValue::StringList(capture.topic_keys.clone()),
     );
+    if !session_ids.is_empty() {
+        props.insert(
+            "session_ids".to_owned(),
+            GraphValue::StringList(session_ids.to_vec()),
+        );
+    }
     props.insert(
         "expressed_confidence".to_owned(),
         capture

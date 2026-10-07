@@ -3,14 +3,17 @@
 //!
 //! The graph holds the relations someone recorded. Most decisions have none to another decision,
 //! yet every capture carries the topic keys it was filed under and, for a classifier capture, the
-//! one ledger event that recorded it out of a conversation. [`possibly_related`] turns those two
-//! facts into a short, ranked list per decision, labelled as inferred, so a reader sees where to
-//! look without anything claiming that two decisions depend on one another.
+//! capture session it was recorded out of. [`possibly_related`] turns those two facts into a
+//! short, ranked list per decision, labelled as inferred, so a reader sees where to look without
+//! anything claiming that two decisions depend on one another.
 //!
 //! # What is inferred, and from what
-//! 1. **Same conversation.** Decisions recorded by the same `ingest.batch_classified` event (the
-//!    same `event_origin`) were extracted from one conversation: the classifier records a whole
-//!    session in one event. Ranked first.
+//! 1. **Same conversation.** Decisions the classifier recorded out of one capture session were
+//!    extracted from one conversation, whether it recorded that session in one
+//!    `ingest.batch_classified` event or in several (the session is the one that shipped the
+//!    batches the event names: `CaptureFact::session_ids`). When no session is known for a
+//!    decision, one classification event recording both (the same `event_origin`) stands in.
+//!    Ranked first.
 //! 2. **A shared specific topic key.** A topic key shared by the two decisions, counted only when
 //!    it is *specific*, ranked by how few decisions carry it.
 //!
@@ -37,18 +40,18 @@
 //! evidence or question) is not looked for here.
 //!
 //! # Limits stated up front
-//! "Same conversation" is "same recording event". A conversation the classifier recorded in
-//! more than one event shows up as several groups, and a decision recorded by hand (a
-//! `decision.proposed`) has an event of its own, so its list rests on topic keys alone. The
-//! graph holds no session id for a decision (the classified event names its batches, not the
-//! session they belong to), so pairs from one session that were classified in separate events
-//! are not found here; recording the session on the node is a projection change and a separate
-//! decision.
+//! A decision recorded by hand (a `decision.proposed`) belongs to no capture session and has an
+//! event of its own, so its list rests on topic keys alone. A session is the `session_id` of the
+//! received batches a classification names, so a classification naming batches the ledger never
+//! received (a `hivemind emit` capture mints a fresh batch id) names none and is grouped by its
+//! event alone.
 //!
 //! # Placement
 //! Layer 3 (`ARCHITECTURE.md` → Layer Boundary): ranking and inference live here, outside
 //! `queries/` and `commands/`, which never import this module. It reads the graph through
-//! `queries` facts only: no model, no network, no write, no ledger or schema change.
+//! `queries` facts only: no model, no network, no write. The session it reads is a property the
+//! projection puts on a captured decision, so a ledger projected before that property existed
+//! has to be projected again to carry it.
 //!
 //! # Cost
 //! A fixed number of bulk reads (every titled decision once, three relation scans, the `SAME_AS`
@@ -63,8 +66,8 @@ use serde::Serialize;
 use crate::error::QueryError;
 use crate::projector::GraphView;
 use crate::queries::{
-    decision_capture_facts, recorded_decision_links, DecisionStandings, DecisionStatus,
-    QueryResponse,
+    decision_capture_facts, recorded_decision_links, CaptureFact, DecisionStandings,
+    DecisionStatus, QueryResponse,
 };
 use crate::Result;
 
@@ -120,7 +123,8 @@ pub struct RelatedDecision {
     pub decision_id: String,
     pub title: String,
     pub status: DecisionStatus,
-    /// Recorded by the same classification event as the asked decision.
+    /// Recorded out of the same conversation as the asked decision: the same capture session, or,
+    /// when no session is known for them, the same classification event.
     pub same_conversation: bool,
     /// The specific topic keys both decisions carry, sorted by key.
     pub shared_topic_keys: Vec<TopicReach>,
@@ -149,6 +153,17 @@ struct Candidate {
     same_conversation: bool,
     shared: Vec<TopicReach>,
     weight: f64,
+}
+
+/// Whether two decisions were recorded out of one conversation: they share a capture session, or
+/// one classification event recorded both. An event's decisions share the event's sessions, so the
+/// event test only adds the decisions whose batch ids name no session.
+fn from_one_conversation(asked: &CaptureFact, other: &CaptureFact) -> bool {
+    let shares_session = asked
+        .session_ids
+        .iter()
+        .any(|session| other.session_ids.contains(session));
+    shares_session || (asked.event_origin.is_some() && other.event_origin == asked.event_origin)
 }
 
 /// The decisions possibly related to `decision_id`, best first; `data` is `None` when there is no
@@ -217,8 +232,7 @@ pub fn possibly_related(
         if fact.decision_id == asked.decision_id || recorded.contains(&fact.decision_id) {
             continue;
         }
-        let same_conversation =
-            asked.event_origin.is_some() && fact.event_origin == asked.event_origin;
+        let same_conversation = from_one_conversation(asked, fact);
         let own_keys: BTreeSet<&str> = fact.topic_keys.iter().map(String::as_str).collect();
         let shared: Vec<TopicReach> = specific_keys
             .intersection(&own_keys)

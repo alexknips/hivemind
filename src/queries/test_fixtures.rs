@@ -188,6 +188,44 @@ impl Scenario {
         decisions: &[(&str, &[&str])],
         timestamp: &str,
     ) -> Result<EventId> {
+        self.classified_decisions_from_batches(
+            &[&format!("session-{timestamp}:0")],
+            decisions,
+            timestamp,
+        )
+    }
+
+    /// One `ingest.batch_received` event: batch `batch_id`, shipped by capture session
+    /// `session_id`. A classification that names the batch records its decisions from that
+    /// session.
+    pub(crate) fn received_batch(
+        &self,
+        batch_id: &str,
+        session_id: &str,
+        timestamp: &str,
+    ) -> Result<EventId> {
+        self.push(
+            "agent:claude:hook",
+            EventType::IngestBatchReceived,
+            json!({
+                "batch_id": batch_id,
+                "agent_tool": "claude",
+                "session_id": session_id,
+                "turns": [],
+            }),
+            None,
+            timestamp,
+        )
+    }
+
+    /// [`Self::classified_decisions`] for a classification that names `batch_ids`; their sessions
+    /// are those of the batches received (`Self::received_batch`) under these ids.
+    pub(crate) fn classified_decisions_from_batches(
+        &self,
+        batch_ids: &[&str],
+        decisions: &[(&str, &[&str])],
+        timestamp: &str,
+    ) -> Result<EventId> {
         let captures: Vec<Value> = decisions
             .iter()
             .map(|(title, topic_keys)| {
@@ -207,7 +245,8 @@ impl Scenario {
             "agent:claude:classifier",
             EventType::IngestBatchClassified,
             json!({
-                "batch_id": format!("session-{timestamp}:0"),
+                "batch_id": batch_ids[0],
+                "batch_ids": batch_ids,
                 "classifier_model": "test-classifier",
                 "schema_version": "2",
                 "captures": captures,

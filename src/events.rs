@@ -769,6 +769,17 @@ pub fn received_batch_newest_turn_time(payload: &serde_json::Value) -> Option<Da
         .max()
 }
 
+/// The capture session a raw `ingest.batch_received` event payload says shipped it: its
+/// `session_id`, `None` when absent or blank. Reads the raw payload, like
+/// [`classified_batch_ids`], so a scan never fails on one odd event. A classification names only
+/// its batches, so this is how a decision's session is known (hivemind-266t).
+pub fn received_batch_session_id(payload: &serde_json::Value) -> Option<&str> {
+    payload
+        .get("session_id")
+        .and_then(|id| id.as_str())
+        .filter(|id| !id.trim().is_empty())
+}
+
 /// One scored quality dimension: score in [0,1] plus a human-readable explanation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

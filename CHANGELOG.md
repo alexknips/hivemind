@@ -133,9 +133,9 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   (hivemind-t15t)
 - **`GET /v1/decisions/{id}/possibly-related`: decisions that may be related, labelled inferred,
   never a recorded relation.** Most decisions have no recorded relation to another decision, yet
-  every capture carries its topic keys and, for a classifier capture, the one ledger event that
-  recorded it out of a conversation. The endpoint offers, for one decision, the decisions
-  recorded out of the same conversation first, then decisions that share a topic key only a few
+  every capture carries its topic keys and, for a classifier capture, the capture session it was
+  recorded out of. The endpoint offers, for one decision, the decisions recorded out of the same
+  conversation first, then decisions that share a topic key only a few
   decisions carry. A topic key carried by more than `max(10, 2% of decisions)` decisions is an
   area tag ("refinery", "ci") and links nothing; the asked decision's keys that were set aside
   come back in `ignored_topic_keys` with how many decisions carry each, so the filter is never
@@ -144,12 +144,16 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   can be recomputed from the answer. Decisions already joined to it by a recorded `SUPERSEDES`,
   `FOLLOWS_FROM` or `SAME_AS` are left out. The answer carries `layer: "inferred"` and a note
   saying so; it pages with `limit` and `cursor` and says when it is `truncated`. Nothing is
-  written, the graph and `GET /v1/graph` gain no edge, and no ledger event or projection
-  changes, so nothing needs migrating. "Same conversation" is "same recording event": a
-  conversation the classifier recorded in several events appears as several groups. HTTP only for
-  now; there is no MCP tool or CLI verb yet. Library callers: `possibly_related::possibly_related`
-  (Layer 3) over the new `queries::decision_capture_facts` and `queries::recorded_decision_links`.
-  (hivemind-xarm)
+  written, the graph and `GET /v1/graph` gain no edge, and no ledger event changes. "Same
+  conversation" is the same capture session, the `session_id` of the received batches a
+  classification names, so a session the classifier recorded in several events is one group;
+  where a classification names no batch the ledger received (a `hivemind emit` capture), its own
+  event is the group. Each classified decision node gains a `session_ids` property, set while
+  the ledger is projected: a server builds its in-memory graph from the ledger on first use, so
+  existing ledger data is covered by the restart that deploys this, with nothing to migrate.
+  HTTP only for now; there is no MCP tool or CLI verb yet. Library callers:
+  `possibly_related::possibly_related` (Layer 3) over the new `queries::decision_capture_facts`
+  and `queries::recorded_decision_links`. (hivemind-xarm, hivemind-266t)
 - **Attention lists and a per-decision timeline: what is waiting, contested or changed, and
   when each thing happened.** Three lists say what needs a person without anyone going looking,
   each paged with `limit`/`cursor` and saying when it is `truncated`: **waiting**
