@@ -195,12 +195,27 @@ fn is_negation(word: &str) -> bool {
     NEGATION_WORDS.contains(&word) || word.ends_with("n't")
 }
 
-/// Whether `text` (a decision's title) says something negated: any of its words is a negation.
+/// Where a negation in a title stops reaching: a comma, semicolon, colon, bracket or dash ends a
+/// clause.
+const CLAUSE_BREAKS: &[char] = &[',', ';', ':', '(', ')', '\u{2013}', '\u{2014}'];
+
+/// The words of `text` (a decision's title) that no negation reaches, joined by spaces. A negation
+/// reaches the words after it to the end of its clause, so "Decision links use title slugs, not
+/// slugs remembered per browser" says "decision links use title slugs" outright and denies only
+/// "slugs remembered per browser", while "Do not adopt Kafka" says nothing outright about Kafka.
 /// Whole words only, so "Notion" and "note" are not "not".
-pub(crate) fn is_negated_text(text: &str) -> bool {
-    text.split(|c: char| !c.is_alphanumeric() && c != '\'' && c != '\u{2019}')
-        .map(|word| word.trim_matches(['\'', '\u{2019}']))
-        .any(|word| is_negation(&word.to_lowercase().replace('\u{2019}', "'")))
+pub(crate) fn outside_negation(text: &str) -> String {
+    let mut outright: Vec<&str> = Vec::new();
+    for clause in text.split(CLAUSE_BREAKS) {
+        outright.extend(
+            clause
+                .split(|c: char| !c.is_alphanumeric() && c != '\'' && c != '\u{2019}')
+                .map(|word| word.trim_matches(['\'', '\u{2019}']))
+                .filter(|word| !word.is_empty())
+                .take_while(|word| !is_negation(&word.to_lowercase().replace('\u{2019}', "'"))),
+        );
+    }
+    outright.join(" ")
 }
 
 /// Lowercased whitespace tokens in the order asked, with surrounding punctuation trimmed and a
@@ -305,8 +320,10 @@ fn question_tokens(description: &str) -> QuestionTokens {
 pub(crate) struct ResolverQuestion {
     pub(crate) terms: Vec<String>,
     /// The description says "not" in some form (`not`, `no`, `never`, `without`, `doesn't`, ...).
-    /// Only a decision whose own title is negated answers it: "don't adopt Kafka" must never
-    /// resolve to the decision "Adopt Kafka". A negation is never one of `terms`.
+    /// A decision whose own title says every one of `terms` outright is the opposite of what was
+    /// asked and never answers it: "don't adopt Kafka" must never resolve to the decision "Adopt
+    /// Kafka". A title that leaves a term out, or denies it, is not the opposite of anything. A
+    /// negation is never one of `terms`.
     pub(crate) negated: bool,
 }
 
@@ -349,7 +366,7 @@ pub struct ContentQuery {
     /// The question words and negations that were dropped, in the order they were asked.
     pub ignored: Vec<String>,
     /// The question says "not" in some form. It does not narrow the answer: among decisions that
-    /// match equally, one whose own title is negated comes first.
+    /// match equally, one whose own title does not say every term outright comes first.
     pub negated: bool,
 }
 

@@ -33,10 +33,14 @@
 //! the question comes first.
 //!
 //! A negation in the description ("don't adopt Kafka", "why didn't we ...", "do not ...") is not a
-//! word to find: it never appears in `missing_terms`. It is polarity. Only a decision whose own
-//! title is negated answers a negated description; one that matches every other word with the
-//! opposite polarity is a close candidate whose reason is `POLARITY_REASON`, and is never resolved
-//! to, by a verb that writes or one that reads.
+//! word to find: it never appears in `missing_terms`. It is polarity. A decision is the opposite of
+//! a negated description when its own title says every word asked about outright, outside any
+//! negation ("Adopt Kafka" for "why didn't we adopt Kafka"): it is a close candidate whose reason
+//! is `POLARITY_REASON`, and is never resolved to, by a verb that writes or one that reads. A
+//! title that leaves a word out, or denies it, is not the opposite of anything: it competes like
+//! any other, on how much of the question it carries, so a negated question is not answered by
+//! whatever decision happens to say "no" somewhere, nor sent past the decision asked about because
+//! that decision states its answer positively.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::HashMap;
@@ -62,8 +66,9 @@ use super::QueryResponse;
 const MIN_WORDS_TO_ANSWER_CLOSE: usize = 2;
 
 /// Why a decision that has every word asked is still only a close candidate: the description is
-/// negated and the decision's title is not. Shown beside the candidate wherever `missing_terms`
-/// would be, so a reader sees the opposite polarity instead of being told it lacks "not".
+/// negated and the decision's title says all of it outright. Shown beside the candidate wherever
+/// `missing_terms` would be, so a reader sees the opposite polarity instead of being told it lacks
+/// "not".
 pub const POLARITY_REASON: &str = "question is negated; this decision is not";
 
 /// `serde` skip for a flag that is only worth saying when set.
@@ -99,8 +104,9 @@ pub struct ResolvedCandidate {
     /// for the close candidates offered when no decision matches every term.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_terms: Vec<String>,
-    /// The description is negated and this decision's title is not (`POLARITY_REASON`). Such a
-    /// decision is a close candidate even with `missing_terms` empty, and is never `Resolved`.
+    /// The description is negated and this decision's title says every word of it outright
+    /// (`POLARITY_REASON`). Such a decision is a close candidate even with `missing_terms` empty,
+    /// and is never `Resolved`.
     #[serde(default, skip_serializing_if = "is_false")]
     pub polarity_mismatch: bool,
     /// Other records of this same decision, linked `SAME_AS` (hivemind-83cj): the candidate is the

@@ -187,10 +187,12 @@ other words or with `--id`. The write verbs never do this; they list close
 candidates and write nothing.
 
 A newer hivemind reads a negation ("not", "never", "without", "doesn't", "didn't", …) as
-polarity, never as a missing word. A negated question ("why didn't we adopt Kafka") resolves
-only to a decision whose own title is negated; "Adopt Kafka" comes back as a close candidate
-with `polarity_mismatch` in JSON (a `polarity: question is negated; this decision is not`
-line in `--summary`), never as the answer. `recall` ranks as if the negation were absent.
+polarity, never as a missing word. A negated question ("why didn't we adopt Kafka") never
+resolves to a decision whose own title says all of it outright; "Adopt Kafka" comes back as a
+close candidate with `polarity_mismatch` in JSON (a `polarity: question is negated; this
+decision is not` line in `--summary`), never as the answer. A title that leaves a word of the
+question out, or denies it, is not the opposite: it is ranked like any other decision.
+`recall` ranks as if the negation were absent.
 
 A newer hivemind also asks where the words sit, not only whether every word is somewhere.
 A decision whose long rationale says every word of a plain question is not the answer when

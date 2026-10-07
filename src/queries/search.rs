@@ -25,7 +25,7 @@ use super::shared::{
 };
 use super::status::{derive_decision_status, derive_hypothesis_status, DecisionStatus};
 use super::terms::{
-    content_query, is_negated_text, resolver_question, stem, word_stems, RelatedWord, WordMatch,
+    content_query, outside_negation, resolver_question, stem, word_stems, RelatedWord, WordMatch,
 };
 use super::{QueryContext, QueryResponse};
 
@@ -286,7 +286,7 @@ pub fn search_decisions_with_ledger(
 ///
 /// `negated` says the question was asked with a negation ("why doesn't ..."), which the request's
 /// text no longer carries. It never narrows the answer and is never a missing term: among
-/// decisions that match equally, one whose own title is negated comes first.
+/// decisions that match equally, one whose own title does not say every term outright comes first.
 ///
 /// One in-memory path for every backend: SQLite's FTS5 only matches whole tokens (every term,
 /// exactly as written), which is the strictness this exists to relax.
@@ -618,9 +618,10 @@ fn narrow_to_scope(
 /// that names a word it holds in both its title and its topic keys, then the ones that match fewer
 /// of the terms only through a stand-in word (a decision that has the word asked for comes before
 /// one that has a synonym), then (rank, id) order. A negated question does not change that order:
-/// among decisions tied on all of it, the ones whose title is negated too come before the ones
-/// whose title is not. An unscoped document has no relation, a literal match lacks nothing, is
-/// never negated and is about nothing, so an unscoped `search` keeps the plain (rank, id) order.
+/// among decisions tied on all of it, the ones whose title does not say every term outright come
+/// before the ones whose title does. An unscoped document has no relation, a literal match lacks
+/// nothing, is never negated and is about nothing, so an unscoped `search` keeps the plain
+/// (rank, id) order.
 fn sort_scored(scored: &mut [ScoredDecisionSearchResult]) {
     mark_out_heading(scored);
     scored.sort_by(|left, right| {
@@ -716,7 +717,7 @@ impl About {
 pub(crate) struct Standing {
     /// How many of the question's terms the candidate lacks.
     pub(crate) missing: usize,
-    /// The question is negated and the candidate's title is not.
+    /// The question is negated and the candidate's title says every term of it outright.
     pub(crate) opposite: bool,
     pub(crate) about: About,
 }
@@ -1494,8 +1495,8 @@ pub(crate) struct ResolverCandidateRow {
     pub(crate) matched_fields: Vec<String>,
     /// Description terms this decision does not contain; empty for a full match.
     pub(crate) missing_terms: Vec<String>,
-    /// The description is negated and this decision's title is not: it is a close candidate even
-    /// when it contains every term, and is never resolved to.
+    /// The description is negated and this decision's title says every term of it outright: it
+    /// is a close candidate even when it contains every term, and is never resolved to.
     pub(crate) polarity_mismatch: bool,
     /// For a close candidate, how many description terms its title or topic keys contain; 0 for a
     /// full match.
@@ -1613,7 +1614,8 @@ struct SearchMatchInfo {
     headline_hits: usize,
     /// Query terms no field matched; non-empty only for a close match.
     missing_terms: Vec<String>,
-    /// The question is negated and the decision's title is not (see `SearchTerms::negated`).
+    /// The question is negated and the decision's title says every term of it outright (see
+    /// `SearchTerms::negated`).
     polarity_mismatch: bool,
     /// For a close match, how many of the terms the decision's title or topic keys contain; 0 for
     /// a full match, which `rank` already orders. A decision about a thing says it in its
@@ -1691,8 +1693,8 @@ struct SearchTerms<'a> {
     related: Vec<RelatedWord<'a>>,
     close: CloseMatch,
     /// The question was asked negated ("don't adopt Kafka"). The negation is not one of `terms`:
-    /// it never makes a decision lack a word. It only marks a decision whose title is not negated
-    /// as the opposite of what was asked (`SearchMatchInfo::polarity_mismatch`).
+    /// it never makes a decision lack a word. It only marks a decision whose title says every
+    /// term outright as the opposite of what was asked (`SearchMatchInfo::polarity_mismatch`).
     negated: bool,
 }
 
@@ -1861,14 +1863,18 @@ fn evaluate_search_match(
     }
 
     // The title is the sentence that states what was decided; a rationale says "not" for a dozen
-    // reasons that leave the decision itself positive. A question quoted as recorded is the one
-    // the decision answers, whatever its words ("... or no Jev?", "... without judging"): its
-    // polarity is the question's own, never the opposite of the decision.
+    // reasons that leave the decision itself positive. A decision is the opposite of a negated
+    // question when its title says everything the question denies, outright: "Adopt Kafka" for
+    // "why didn't we adopt Kafka". A title that leaves a word of the question out, or denies it,
+    // states something else, and is ranked by how much of the question it carries like any other.
+    // A question quoted as recorded is the one the decision answers, whatever its words ("... or
+    // no Jev?", "... without judging"): its polarity is the question's own, never the opposite of
+    // the decision.
     let polarity_mismatch = search_terms.negated
         && !quotes_question
-        && !fields
-            .iter()
-            .any(|field| field.field == "decision.title" && is_negated_text(&field.value));
+        && fields.iter().any(|field| {
+            field.field == "decision.title" && says_every_term(search_terms, &field.value)
+        });
 
     Some(SearchMatchInfo {
         rank,
@@ -1891,6 +1897,18 @@ fn evaluate_search_match(
         snippets,
         matched_nodes: matched_nodes.into_iter().collect(),
     })
+}
+
+/// Whether `title` says every one of the question's terms outright: each is in it, as a word, a
+/// form of one or a part of a longer word, outside any negation ("Do not adopt Kafka" says neither
+/// "adopt" nor "kafka" outright). A word a stand-in only stands in for is not said.
+fn says_every_term(search_terms: &SearchTerms<'_>, title: &str) -> bool {
+    let outright = outside_negation(title).to_ascii_lowercase();
+    !search_terms.terms.is_empty()
+        && search_terms.terms.iter().enumerate().all(|(index, term)| {
+            outright.contains(term.as_str())
+                || holds_whole_word(search_terms.related.get(index), &outright, term)
+        })
 }
 
 /// Whether `text` (lowercase) holds `term` as a word or a form of one, never as a part of a longer

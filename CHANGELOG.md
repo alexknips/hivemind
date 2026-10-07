@@ -413,6 +413,22 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A question with "not" or "doesn't" in it is no longer answered by whatever decision has
+  "no" or "not" in its title, nor sent past the decision it asks about.** Since the negation
+  rule shipped, `why`, `verify` and the write verbs resolved a negated question only to a
+  decision whose title held any negation word, about anything: "why does the decision page
+  not show when a decision was accepted or superseded?" was answered by a competitor check
+  titled "... no change to positioning ...", and "why didn't we keep title slugs for decision
+  links?" by the decision that kept them ("... not slugs remembered per browser"). Plain
+  questions with a "not" in a side clause ("... and why not the change days?", "... so it
+  doesn't cover the node names") lost their one-call answer to a list, the decision asked about
+  marked "polarity: question is negated; this decision is not". A decision is now the opposite
+  of a negated question only when its own title says every word asked about outright, outside
+  any negation ("Adopt Kafka" for "why didn't we adopt Kafka"); a negation in a title reaches
+  the rest of its clause. A title that leaves a word out, or denies it, competes like any other
+  decision, on how much of the question it carries, and the opposite decision is still listed
+  with `polarity_mismatch` and never answered with. (hivemind-z05v)
+
 - **A decision captured from a session that was classified days later says when it was said,
   not when the classifier ran.** A decision the classifier captured without naming a source
   turn was dated at the classification's own time, so `why` and `verify` showed a session said

@@ -18,7 +18,7 @@ use crate::Result;
 
 use super::neighborhood::neighborhood_structure;
 use super::terms::{
-    content_query, is_negated_text, resolver_question, resolver_terms, stem, RelatedWord,
+    content_query, outside_negation, resolver_question, resolver_terms, stem, RelatedWord,
     WordMatch, WORD_GROUPS,
 };
 use super::test_fixtures::Scenario;
@@ -2232,27 +2232,37 @@ fn a_question_of_only_framing_and_negations_is_searched_as_written() {
 }
 
 #[test]
-fn negated_text_is_whole_words_only() {
-    for negated in [
-        "Do not adopt Kafka",
-        "Don't adopt Kafka",
-        "Don\u{2019}t adopt Kafka",
-        "NO Kafka for events",
-        "Never page on-call for this",
-        "Ship without TLS",
-        "The cli cannot read it",
-        "Sign-in isn't blocked by billing",
+fn what_a_negation_reaches_is_the_rest_of_its_clause_in_whole_words() {
+    // Every spelling of the negation leaves nothing outright after it, up to the end of its clause.
+    for (negated, outright) in [
+        ("Do not adopt Kafka", "Do"),
+        ("Don't adopt Kafka", ""),
+        ("Don\u{2019}t adopt Kafka", ""),
+        ("NO Kafka for events", ""),
+        ("Never page on-call for this", ""),
+        ("Ship without TLS", "Ship"),
+        ("The cli cannot read it", "The cli"),
+        ("Sign-in isn't blocked by billing", "Sign in"),
     ] {
-        assert!(is_negated_text(negated), "{negated:?} is negated");
+        assert_eq!(outside_negation(negated), outright, "{negated:?}");
     }
+    // A clause break ends the reach: the words of the next clause are said outright again.
+    assert_eq!(
+        outside_negation("Decision links use title slugs, not slugs remembered per browser"),
+        "Decision links use title slugs"
+    );
+    assert_eq!(
+        outside_negation("Graph layer: dashed, no arrowhead; first five (never more) per decision"),
+        "Graph layer dashed first five per decision"
+    );
+    // Whole words only: "Notion" and "note" are not "not".
     for positive in [
         "Adopt Kafka for events",
         "Notion is the commercial layer",
         "Take a note of every export",
         "Another nominal cost",
-        "Use 'quotes' freely",
     ] {
-        assert!(!is_negated_text(positive), "{positive:?} is not negated");
+        assert_eq!(outside_negation(positive), positive);
     }
 }
 

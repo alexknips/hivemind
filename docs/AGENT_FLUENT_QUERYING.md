@@ -146,22 +146,33 @@ word to find.
   candidate's rank: a decision's text almost never contains "doesn't" verbatim,
   and a "not" matched as a word counted against every candidate, so the right
   decision sank behind any decision that shared one more ordinary word.
-- A negated question resolves, for `why`, `verify`, `chain`, `compact-view` and
-  for every verb that writes, only to a decision whose own title is negated, in
-  any spelling (whole words: "Notion" is not "not"). The title is what states
-  what was decided; a rationale says "not" for many reasons that leave the
-  decision itself positive. A decision that matches every other word but is not
-  negated stays a close candidate and is never `Resolved`: its reason is the
-  polarity, `polarity_mismatch: true` on the candidate in JSON and
-  `polarity: question is negated; this decision is not` in `--summary` output
-  where `missing:` would be. So "don't adopt Kafka", "didn't we adopt Kafka" and
-  "do not adopt Kafka" never resolve to the decision "Adopt Kafka"; they resolve
-  to "Do not adopt Kafka" when that exists, and close candidates are dropped when
-  one does, as they are for missing words.
+- A negated question never resolves, for `why`, `verify`, `chain`, `compact-view`
+  and for every verb that writes, to the decision that is the opposite of it: one
+  whose own title says every word asked about outright, outside any negation. The
+  title is what states what was decided; a rationale says "not" for many reasons
+  that leave the decision itself positive. A negation in a title reaches the rest of
+  its clause (a comma, semicolon, colon, bracket or dash ends it), in any spelling
+  and in whole words ("Notion" is not "not"): "Decision links use title slugs, not
+  slugs remembered per browser" says "decision links use title slugs" outright and
+  denies only the rest. The opposite decision stays a close candidate and is never
+  `Resolved`: its reason is the polarity, `polarity_mismatch: true` on the candidate
+  in JSON and `polarity: question is negated; this decision is not` in `--summary`
+  output where `missing:` would be. So "don't adopt Kafka", "didn't we adopt Kafka"
+  and "do not adopt Kafka" never resolve to the decision "Adopt Kafka"; they resolve
+  to "Do not adopt Kafka" when that exists (it says neither word outright), and
+  close candidates are dropped when one does, as they are for missing words.
+- A title that leaves a word of the question out is not the opposite of it, and
+  neither is one that denies it. Polarity is never a reason to prefer a decision:
+  a negated question is not answered by whatever decision has "no" or "not" in its
+  title, and the decision asked about is not passed over because it states its
+  answer positively ("status history lists only what the log gives the UI" for "why
+  does the page not show when a decision was accepted?"). Those decisions compete on
+  how much of the question their title, topic keys and recorded question carry
+  (below), like the answers to any other question.
 - `recall` ranks as if the negation were absent. Polarity only breaks a tie: among
-  decisions equal on closeness, headline and rank tier, one whose title is negated
-  comes before one whose title is not, and a negated question never lets a close
-  match outrank a full one. The negation is listed in `ignored_words`.
+  decisions equal on closeness, headline and rank tier, one whose title does not say
+  every word outright comes before one whose title does, and a negated question
+  never lets a close match outrank a full one. The negation is listed in `ignored_words`.
 - A question with no negation behaves as before, whatever a decision's title says.
   A description made only of question words and negations ("why not") is searched
   as written, like "why did we", and is not read as negated.

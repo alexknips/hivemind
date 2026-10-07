@@ -1353,7 +1353,7 @@ fn between_equal_headlines_the_decision_whose_title_says_the_words_is_the_one_ab
 }
 
 #[test]
-fn a_negated_question_is_answered_by_the_decision_about_it_not_the_opposite_one_that_holds_every_word(
+fn a_negated_question_is_answered_by_the_decision_about_it_not_one_that_only_holds_every_word(
 ) -> Result<()> {
     let graph = graph_from_events([
         // About the question and negated like it, but it never says "show".
@@ -1363,7 +1363,8 @@ fn a_negated_question_is_answered_by_the_decision_about_it_not_the_opposite_one_
             "The UI names every agent 'an agent', never by the tool or role it ran as",
             &[],
         ),
-        // Says all five words in its rationale, and is not negated: the opposite of what was asked.
+        // Says all five words in its rationale and none of them in its title: it holds every word
+        // and is not about the question, and its title does not say what was denied either.
         decision_proposed_because(
             2,
             "d:listing",
@@ -1387,7 +1388,7 @@ fn a_negated_question_is_answered_by_the_decision_about_it_not_the_opposite_one_
         ResolveOutcome::Ambiguous { candidates } => {
             assert_eq!(candidates[0].decision_id, "d:ui");
             assert_eq!(candidates[1].decision_id, "d:listing");
-            assert!(candidates[1].polarity_mismatch);
+            assert!(!candidates[1].polarity_mismatch);
         }
         other => panic!("a writer lists both and picks none: {other:?}"),
     }
@@ -1420,6 +1421,87 @@ fn the_decision_that_records_the_question_stays_ahead_of_a_decision_with_more_in
             }
             other => panic!("the recorded question names its decision, got {other:?}"),
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_negated_question_is_not_answered_by_whatever_decision_says_no_somewhere() -> Result<()> {
+    // hivemind-z05v: the negation of "... and why not the change days?" is polarity, and only a
+    // title that says every word asked outright is the opposite of it. The decision asked about
+    // states its answer without a negation and leaves "page" to its rationale; another decision,
+    // about a competitor check, has "no" in its title and every word in its rationale.
+    let graph = graph_from_events([
+        decision_proposed_because(
+            1,
+            "d:history",
+            "Status history lists only what the log gives the UI; change days wait on the next release",
+            "The page lists the days the log gives it and none it would have to guess.",
+            &[],
+        ),
+        decision_proposed_because(
+            2,
+            "d:competitors",
+            "Competitor check: no change to positioning; showcase leads with contested status",
+            "Each competitor page lists the days it was checked in its status history, and why not to change the days is in the notes.",
+            &[],
+        ),
+        decision_proposed(3, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])?;
+    let question =
+        "which days does the page list in its status history and why not the change days?";
+
+    for outcome in both_askers(&graph, question)? {
+        match outcome {
+            ResolveOutcome::Resolved { candidate } => {
+                assert_eq!(candidate.decision_id, "d:history");
+                assert!(!candidate.polarity_mismatch);
+                assert!(candidate.missing_terms.is_empty());
+            }
+            other => panic!("the decision asked about answers, got {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_title_is_the_opposite_only_when_it_says_everything_the_question_denies_outright() -> Result<()>
+{
+    let graph = graph_from_events([decision_proposed(
+        1,
+        "d:links",
+        "Decision links use title slugs, not slugs remembered per browser",
+        &[],
+    )])?;
+
+    // The title says "links use title slugs" outright and denies only the per-browser kind, so a
+    // question that denies all of what it says is the opposite of it, whatever it denies elsewhere.
+    for outcome in both_askers(&graph, "why don't decision links use title slugs")? {
+        match outcome {
+            ResolveOutcome::Ambiguous { candidates } => {
+                assert_eq!(candidates.len(), 1);
+                assert!(candidates[0].polarity_mismatch);
+                assert!(candidates[0].missing_terms.is_empty());
+            }
+            other => panic!("the decision says what was denied, got {other:?}"),
+        }
+    }
+
+    // Asking about "keep" as well, a word the title does not say, leaves the decision no longer
+    // the opposite of the question: it is a close candidate that lacks "keep", like any other.
+    match resolve_decision_for_reading(
+        &graph,
+        "why didn't we keep title slugs for decision links",
+        None,
+    )?
+    .data
+    {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:links");
+            assert_eq!(candidate.missing_terms, vec!["keep".to_owned()]);
+            assert!(!candidate.polarity_mismatch);
+        }
+        other => panic!("a title that leaves a word out is not the opposite, got {other:?}"),
     }
     Ok(())
 }
