@@ -696,6 +696,24 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   compose files, colon-separated, so a cell with an override file is restarted with all of them,
   and `HIVEMIND_ENV_FILE` names an env file other than the `.env` next to the first compose
   file. Documented in `docs/SELF_HOSTING.md`. (hivemind-2mgj)
+- **A Slack workspace installed by hand without its tenant is refused up front, and a capture
+  that cannot be written shows in the server log.** `docs/SLACK_APP.md` says a hand
+  `slack-app install` needs `hivemind tenant create <team_id>` first and that the routes 404
+  without it, but only the slash command did: the message shortcut opened its modal, the
+  submission, the reaction (Slack was asked for the message) and a marker-bearing mention were
+  all acknowledged and queued, and the background drain then failed every one of them every 15
+  seconds with nothing but a `last_error` in `slack-app/queue.jsonl`. The shortcut, the modal
+  submission, a marker-bearing mention or message and a reaction on the capture emoji now answer
+  `404` before anything is queued or Slack is called, with a `WARN` naming the workspace and the
+  `hivemind tenant create` that fixes it; an event that is no capture is still acknowledged.
+  Every drain pass that still fails a capture now logs a `WARN` with its workspace, queue item,
+  attempt count and reason (it was an `info` line with counts only, below the default level).
+  `slack-app drain` and `slack-app command` now use the tenant named by the capture's or the
+  command's team id, as the server does, instead of the global `--tenant` (default `local`), so
+  the same queue no longer lands in `local` from the CLI and in the team's tenant from the
+  server; a team whose tenant was never registered fails with the fix in its `last_error`.
+  Register the tenant (`hivemind tenant create <team_id>`) before draining a hand install from
+  the CLI; the drain report's failed items gain a `team_id`. (hivemind-62jy)
 
 ## v0.7.0 — 2026-09-25 — M6: Fluent verbs and grounded capture
 

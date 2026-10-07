@@ -2,7 +2,7 @@ use std::path::Path;
 
 use clap::Parser;
 use hivemind::cli::{run, Cli};
-use hivemind::events::{EventSource, EventType};
+use hivemind::events::{EventSource, EventType, TenantId};
 use hivemind::ledger::{EventLedger, SqliteEventLedger};
 use serde_json::Value;
 use uuid::Uuid;
@@ -73,6 +73,13 @@ fn slack_app_installs_queues_captures_and_queries_with_citations() -> TestResult
         .join("slack-app")
         .join("installations.json")
         .exists());
+
+    // A workspace's captures and answers live in its own tenant, named by its team id; a hand
+    // install registers it with `tenant create`.
+    run_cli_json(
+        &hivemind_dir,
+        vec!["tenant".to_owned(), "create".to_owned(), "T123".to_owned()],
+    )?;
 
     let capture_modal = run_cli_json(
         &hivemind_dir,
@@ -184,7 +191,7 @@ fn slack_app_installs_queues_captures_and_queries_with_citations() -> TestResult
     assert!(show_text.contains(permalink));
 
     let ledger = SqliteEventLedger::open(&hivemind_dir)?;
-    let events = ledger.read(0, 100)?;
+    let events = ledger.read_for_tenant(&TenantId::new("T123")?, 0, 100)?;
     let proposal = events
         .iter()
         .find(|event| {

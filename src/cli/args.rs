@@ -1057,11 +1057,13 @@ pub enum SlackAppCommand {
     /// to write.
     #[command(name = "enqueue-capture")]
     EnqueueCapture(SlackEnqueueCaptureArgs),
-    /// Write queued Slack captures to the ledger; failed items stay queued with their attempt
-    /// count and last error.
+    /// Write queued Slack captures to the ledger, each into its own workspace's tenant (the
+    /// team id; `hivemind tenant create <team_id>` first), not the global --tenant. Failed items
+    /// stay queued with their attempt count and last error.
     Drain(SlackDrainArgs),
     /// Answer a `/hivemind` slash command (`capture`, `query <topic>`, `show <id>`) for a team
-    /// and user, printing the Slack response.
+    /// and user, printing the Slack response. Reads the team's own tenant, not the global
+    /// --tenant.
     Command(SlackCommandArgs),
 }
 

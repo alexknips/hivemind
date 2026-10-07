@@ -31,7 +31,10 @@
 //! a request signed by workspace A from ever writing into workspace B's
 //! ledger: `team_id` comes only from the verified body, and every ledger
 //! open goes through [`ApiBackend::open_ledger_for_tenant`], which 404s on
-//! an unknown tenant exactly like the bearer-token path does.
+//! an unknown tenant exactly like the bearer-token path does. The routes
+//! that only queue (events, interactivity) never open a ledger themselves,
+//! so they ask the same question up front ([`require_workspace_tenant`])
+//! rather than acknowledge captures the drain would then fail on forever.
 //!
 //! ## Backend support
 //!
@@ -68,7 +71,7 @@ use crate::ingest::{
 use crate::ledger::{AnyLedger, SqliteEventLedger, TenantScopedLedger, TenantScopedOwnedLedger};
 use crate::slack_app::{
     handle_slack_command, message_evidence, SlackAppStore, SlackCaptureRequest,
-    SlackCaptureSurface, SlackCommandRequest, SlackWorkspaceInstall,
+    SlackCaptureSurface, SlackCommandRequest, SlackDrainReport, SlackWorkspaceInstall,
 };
 
 use super::graph::get_cached_graph;
@@ -212,6 +215,30 @@ fn authenticate_install(
     Ok(install)
 }
 
+/// A workspace's captures are written into the tenant named by its `team_id`,
+/// and only the OAuth callback registers that tenant; a hand `slack-app
+/// install` needs `hivemind tenant create <team_id>` first. Checked once a
+/// request is authenticated and before it does any Slack-side work or queues
+/// anything, so a workspace without its tenant is refused (404, the answer the
+/// commands route already gives) and logged with the fix, instead of
+/// acknowledging captures the drain can never write.
+fn require_workspace_tenant(backend: &ApiBackend, team_id: &str) -> ApiResult<()> {
+    let tenant_id =
+        TenantId::new(team_id).map_err(|_| ApiError::validation("team_id must not be empty"))?;
+    backend
+        .open_ledger_for_tenant(&tenant_id)
+        .map(|_| ())
+        .map_err(|error| {
+            warn!(
+                target: "hivemind::api::slack",
+                team_id = %team_id,
+                error = %error,
+                "refusing a Slack request: the workspace's tenant cannot be opened"
+            );
+            error
+        })
+}
+
 // ---------------------------------------------------------------------------
 // Events API — POST /v1/slack/events
 // ---------------------------------------------------------------------------
@@ -311,8 +338,11 @@ pub(super) async fn events_handler(
         }
         SlackEventEnvelope::EventCallback { team_id, event } => {
             let queue = store.clone();
+            let backend = Arc::clone(&state.backend);
             let result = tokio::task::spawn_blocking(move || {
-                handle_event_callback(&store, &team_id, &event, &timestamp, &signature, &body)
+                handle_event_callback(
+                    &store, &backend, &team_id, &event, &timestamp, &signature, &body,
+                )
             })
             .await;
             match result {
@@ -351,6 +381,7 @@ struct ReactionCapture {
 
 fn handle_event_callback(
     store: &SlackAppStore,
+    backend: &ApiBackend,
     team_id: &str,
     event: &SlackInnerEvent,
     timestamp: &str,
@@ -360,16 +391,21 @@ fn handle_event_callback(
     let install = authenticate_install(store, team_id, timestamp, signature, body)?;
 
     match event.event_type.as_str() {
-        "app_mention" => {
-            enqueue_marker_capture(store, &install, event, None).map(|()| EventFollowUp::Done)
-        }
+        "app_mention" => enqueue_marker_capture(store, backend, &install, event, None)
+            .map(|()| EventFollowUp::Done),
         // Only plain user messages: skip edits/deletes/bot echoes (`subtype`)
         // and our own bot's own posts (`bot_id`), which would otherwise loop.
         "message" if event.subtype.is_none() && event.bot_id.is_none() => {
-            enqueue_marker_capture(store, &install, event, Some(DEFAULT_SLACK_MENTION))
+            enqueue_marker_capture(store, backend, &install, event, Some(DEFAULT_SLACK_MENTION))
                 .map(|()| EventFollowUp::Done)
         }
-        "reaction_added" => Ok(reaction_follow_up(install, event)),
+        "reaction_added" => {
+            let follow_up = reaction_follow_up(install, event);
+            if let EventFollowUp::CaptureReaction(reaction) = &follow_up {
+                require_workspace_tenant(backend, &reaction.install.team_id)?;
+            }
+            Ok(follow_up)
+        }
         _ => Ok(EventFollowUp::Done),
     }
 }
@@ -527,6 +563,7 @@ fn enqueue_reaction_capture(
 /// no mention (when required), or missing fields: ack and do nothing.
 fn enqueue_marker_capture(
     store: &SlackAppStore,
+    backend: &ApiBackend,
     install: &SlackWorkspaceInstall,
     event: &SlackInnerEvent,
     required_mention: Option<&str>,
@@ -578,6 +615,7 @@ fn enqueue_marker_capture(
         thread_text: text.clone(),
     };
 
+    require_workspace_tenant(backend, &install.team_id)?;
     store
         .enqueue_capture(capture)
         .map(|_| ())
@@ -871,13 +909,7 @@ pub(super) fn try_spawn_drain_loop(state: &AppState) {
 
             match result {
                 Ok(Ok(report)) if report.processed_count > 0 || report.failed_count > 0 => {
-                    info!(
-                        target: "hivemind::api::slack",
-                        processed = report.processed_count,
-                        failed = report.failed_count,
-                        remaining = report.queued_after,
-                        "slack capture queue drained"
-                    );
+                    report_drain_pass(&report);
                 }
                 Ok(Ok(_)) => {}
                 Ok(Err(e)) => {
@@ -893,6 +925,31 @@ pub(super) fn try_spawn_drain_loop(state: &AppState) {
             tokio::time::sleep(SLACK_DRAIN_POLL_INTERVAL).await;
         }
     });
+}
+
+/// What one drain pass says in the server log. The default log level hides
+/// `info`, and a capture that cannot be written is otherwise only a
+/// `last_error` in the queue file, so each failed capture is a `warn` naming
+/// its workspace and why — repeated every pass it keeps failing, which is the
+/// truth: it is still stuck.
+fn report_drain_pass(report: &SlackDrainReport) {
+    info!(
+        target: "hivemind::api::slack",
+        processed = report.processed_count,
+        failed = report.failed_count,
+        remaining = report.queued_after,
+        "slack capture queue drained"
+    );
+    for failed in &report.failed {
+        warn!(
+            target: "hivemind::api::slack",
+            team_id = %failed.team_id,
+            queue_id = %failed.queue_id,
+            attempts = failed.attempts,
+            error = %failed.error,
+            "slack capture could not be written; it stays queued and is retried"
+        );
+    }
 }
 
 /// Resolves a ledger pinned to `team_id`'s tenant. `process_capture` /

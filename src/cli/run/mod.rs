@@ -33,7 +33,10 @@ use crate::ingest::{
 };
 #[cfg(feature = "shared-backend-postgres")]
 use crate::ledger::PostgresEventLedger;
-use crate::ledger::{AnyLedger, EventLedger, LedgerConfig, SqliteEventLedger, TenantScopedLedger};
+use crate::ledger::{
+    AnyLedger, EventLedger, LedgerConfig, SqliteEventLedger, TenantScopedLedger,
+    TenantScopedOwnedLedger,
+};
 use crate::projector::{memory::MemoryGraph, rebuild_graph_for_tenant, GraphView};
 use crate::quality_profile::{
     self, decision_log_section, parse_kinds, ScanRequest, SuggestionsRequest,
@@ -751,6 +754,14 @@ fn run_ingest_slack_thread(cli: &Cli, args: &IngestSlackThreadArgs) -> Result<St
     format_output(cli.json, &envelope)
 }
 
+/// The tenant a Slack workspace maps onto: its team id, 1:1, as the server's Slack routes
+/// use it. It must already be registered (`hivemind tenant create <team_id>`).
+fn slack_team_tenant(team_id: &str) -> Result<TenantId> {
+    TenantId::new(team_id).map_err(|error| {
+        CliError::InvalidInput(format!("Slack team id is invalid: {error}")).into()
+    })
+}
+
 fn run_slack_app(cli: &Cli, args: &SlackAppArgs) -> Result<String> {
     let store = SlackAppStore::new(&cli.hivemind_dir);
     match &args.command {
@@ -802,14 +813,19 @@ fn run_slack_app(cli: &Cli, args: &SlackAppArgs) -> Result<String> {
             format_json_value(cli.json, &event)
         }
         SlackAppCommand::Drain(_) => {
-            let ledger = open_ledger(cli)?;
-            let scoped_ledger = TenantScopedLedger::new(&ledger, cli_tenant(cli)?);
-            let report = store.drain_queue(&scoped_ledger)?;
+            // Each capture is written into its own workspace's tenant, as the server's drain
+            // does; the global `--tenant` does not choose where a team's captures go.
+            let config = LedgerConfig::from_cli(cli);
+            let report = store.drain_queue_multi_tenant(|team_id| {
+                let tenant_id = slack_team_tenant(team_id)?;
+                let ledger = AnyLedger::open(&config, &tenant_id)?;
+                Ok(TenantScopedOwnedLedger::new(ledger, tenant_id))
+            })?;
             format_json_value(cli.json, &report)
         }
         SlackAppCommand::Command(args) => {
-            let tenant_id = cli_tenant(cli)?;
-            let ledger = open_ledger(cli)?;
+            let tenant_id = slack_team_tenant(&args.team_id)?;
+            let ledger = AnyLedger::open(&LedgerConfig::from_cli(cli), &tenant_id)?;
             let scoped_ledger = TenantScopedLedger::new(&ledger, tenant_id.clone());
             let graph = MemoryGraph::default();
             rebuild_graph_for_tenant(&ledger, &tenant_id, &graph)?;

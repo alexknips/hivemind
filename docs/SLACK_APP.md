@@ -63,9 +63,25 @@ automatically (SQLite: `tenants` row; Postgres: `hm_tenants` row + an unused
 initial token) on install, so no separate `hivemind tenant create` step is
 needed for OAuth-installed workspaces. A `slack-app install` done by hand
 (the local-first flow above) still needs a matching
-`hivemind tenant create <team_id>` first — the events/commands routes 404
-through the same `ensure_known_tenant` gate the bearer-token API path uses
-for an unregistered tenant.
+`hivemind tenant create <team_id>` first. Without it every surface that would
+capture refuses with `404`, through the same `ensure_known_tenant` gate the
+bearer-token API path uses for an unregistered tenant, and the server log
+carries a `WARN` naming the workspace and the `hivemind tenant create` that
+fixes it:
+
+- the `/hivemind` slash command;
+- the message shortcut and the modal's submission (nothing is opened, nothing is
+  queued, so Slack tells the person it failed);
+- an `app_mention` or `message.channels` event carrying the
+  `Decision:`/`Rationale:`/`Options:` markers, and a reaction on the install's
+  capture emoji (Slack is not even asked for the message).
+
+An event that is no capture (a message without markers, another emoji) is
+acknowledged as usual; it is not the workspace's problem. Slack retries a
+refused event delivery and can disable a subscription that keeps failing,
+which is the right outcome for a workspace that cannot capture anything.
+Registering the tenant is all it takes: the running server picks it up on the
+next request.
 
 This is the seam that keeps a request signed by workspace A from ever
 writing into workspace B's ledger: `team_id` is only trusted once the
@@ -80,7 +96,11 @@ the ledger inline — they enqueue onto the same `SlackAppStore` capture queue
 the CLI's `slack-app enqueue-capture` uses, and answer within Slack's
 3-second ack window. A background task (started once, from `hivemind serve`)
 polls the queue and drains it into each capture's own tenant ledger every 15
-seconds.
+seconds. A capture that cannot be written (its tenant was removed, the ledger
+refused it) stays queued with its attempt count and last error in
+`slack-app/queue.jsonl`, and every drain pass that still fails it logs a `WARN`
+(target `hivemind::api::slack`) with the workspace, the queue item and the
+reason, so it shows at the default log level.
 
 `app_mention` and `message.channels` events are auto-captured only when the
 message text carries the same `Decision:`/`Rationale:`/`Options:` markers
@@ -222,6 +242,18 @@ created with owner-only permissions on Unix. Slack users default to actor ids of
 the form `slack:<workspace>:<user_id>`. Add `--actor-map U123=actor:alice` to
 override a Slack user mapping.
 
+A workspace's captures and answers belong to its own tenant, named by its team
+id, exactly as on the server. Register it once before `drain` or `command`, and
+before pointing a server at the install:
+
+```bash
+cargo run -- --hivemind-dir ./hivemind tenant create T123
+```
+
+The CLI's global `--tenant` does not choose where a team's captures go or whose
+decisions its commands read: `slack-app drain` and `slack-app command` use the
+tenant named by each capture's or command's `--team-id`.
+
 ### Capture Queue
 
 Slack handlers should acknowledge quickly, then enqueue capture work:
@@ -280,9 +312,11 @@ cargo run -- --hivemind-dir ./hivemind --json slack-app drain
 ```
 
 Successful drains remove queue items. Failed items remain in the queue with an
-attempt count and last error so they can be retried. Captures are idempotent by
-Slack permalink: a retry that already wrote the decision returns the existing
-decision id.
+attempt count and last error so they can be retried; a workspace whose tenant was
+never registered fails with the `hivemind tenant create <team_id>` that fixes it.
+Every capture is written into its own workspace's tenant, the same one the
+server's background drain uses. Captures are idempotent by Slack permalink: a
+retry that already wrote the decision returns the existing decision id.
 
 ### Slack Commands
 

@@ -181,58 +181,15 @@ impl SlackAppStore {
         Ok(event)
     }
 
-    pub fn drain_queue<L: EventLedger>(&self, ledger: &L) -> Result<SlackDrainReport> {
-        let mut events = self.load_queue()?;
-        let total = events.len();
-        let mut remaining = Vec::new();
-        let mut processed = Vec::new();
-        let mut failed = Vec::new();
-
-        for mut event in events.drain(..) {
-            match process_capture(ledger, self, &event.capture) {
-                Ok(outcome) => {
-                    processed.push(SlackProcessedEvent {
-                        queue_id: event.id,
-                        decision_id: outcome.decision_id().to_owned(),
-                        already_imported: matches!(
-                            outcome,
-                            SlackIngestOutcome::AlreadyImported { .. }
-                        ),
-                    });
-                }
-                Err(error) => {
-                    event.attempts = event.attempts.saturating_add(1);
-                    event.last_error = Some(error.to_string());
-                    failed.push(SlackFailedEvent {
-                        queue_id: event.id.clone(),
-                        attempts: event.attempts,
-                        error: error.to_string(),
-                    });
-                    remaining.push(event);
-                }
-            }
-        }
-
-        self.save_queue(&remaining)?;
-        Ok(SlackDrainReport {
-            queued_before: total,
-            processed_count: processed.len(),
-            failed_count: failed.len(),
-            queued_after: remaining.len(),
-            processed,
-            failed,
-        })
-    }
-
-    /// Multi-tenant drain: resolves a fresh, tenant-scoped ledger for every
-    /// queued capture individually via `resolve_ledger(&capture.team_id)`,
-    /// instead of writing the whole queue into one caller-supplied ledger
-    /// like [`Self::drain_queue`] does. Used by the HTTP API's background
-    /// drain loop, which serves many Slack workspaces — each mapped to its
-    /// own HiveMind tenant — from a single queue file. A capture whose
-    /// team_id fails to resolve (unknown/unregistered tenant) is recorded as
-    /// a failed attempt and stays queued, exactly like any other
-    /// `process_capture` error.
+    /// Drains the queue, resolving a fresh, tenant-scoped ledger for every
+    /// queued capture individually via `resolve_ledger(&capture.team_id)`.
+    /// Both transports drain through here — the HTTP API's background drain
+    /// loop and `slack-app drain` — so a workspace's captures land in that
+    /// workspace's own tenant whichever one writes them, never in whatever
+    /// tenant the caller happened to be pointed at. A capture whose team_id
+    /// fails to resolve (unknown/unregistered tenant) is recorded as a failed
+    /// attempt and stays queued, exactly like any other `process_capture`
+    /// error.
     pub(crate) fn drain_queue_multi_tenant<L: EventLedger>(
         &self,
         resolve_ledger: impl Fn(&str) -> Result<L>,
@@ -264,6 +221,7 @@ impl SlackAppStore {
                     event.last_error = Some(error.to_string());
                     failed.push(SlackFailedEvent {
                         queue_id: event.id.clone(),
+                        team_id: event.capture.team_id.clone(),
                         attempts: event.attempts,
                         error: error.to_string(),
                     });
@@ -397,6 +355,7 @@ pub struct SlackProcessedEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SlackFailedEvent {
     pub queue_id: String,
+    pub team_id: String,
     pub attempts: u32,
     pub error: String,
 }

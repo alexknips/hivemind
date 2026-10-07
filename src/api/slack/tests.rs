@@ -87,3 +87,114 @@ fn constant_time_eq_rejects_mismatched_lengths_and_bytes() {
     assert!(!constant_time_eq(b"abc", b"abd"));
     assert!(!constant_time_eq(b"abc", b"ab"));
 }
+
+/// Runs `body` under a subscriber filtered the way `hivemind` filters by
+/// default (`hivemind=warn`, see `main.rs`) and returns what it logged, so an
+/// assertion here is about what an operator running a plain `hivemind serve`
+/// actually sees.
+fn logged_at_the_default_level(body: impl FnOnce()) -> String {
+    #[derive(Clone)]
+    struct Buffer(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Buffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("log buffer lock")
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let buffer = Buffer(Arc::default());
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("hivemind=warn"))
+        .with_ansi(false)
+        .with_writer({
+            let buffer = buffer.clone();
+            move || buffer.clone()
+        })
+        .finish();
+    tracing::subscriber::with_default(subscriber, body);
+    let logged = buffer.0.lock().expect("log buffer lock").clone();
+    String::from_utf8(logged).expect("log is utf-8")
+}
+
+#[test]
+fn a_capture_the_drain_cannot_write_is_a_warning_in_the_server_log() {
+    let error = "unknown tenant 'TCHK': run `hivemind tenant create TCHK` to register it";
+    let report = SlackDrainReport {
+        queued_before: 1,
+        processed_count: 0,
+        failed_count: 1,
+        queued_after: 1,
+        processed: Vec::new(),
+        failed: vec![crate::slack_app::SlackFailedEvent {
+            queue_id: "queue-1".to_owned(),
+            team_id: "TCHK".to_owned(),
+            attempts: 2,
+            error: error.to_owned(),
+        }],
+    };
+
+    let logged = logged_at_the_default_level(|| report_drain_pass(&report));
+
+    assert!(logged.contains("WARN"), "a warning, not an info: {logged}");
+    for expected in ["TCHK", "queue-1", "attempts=2", error] {
+        assert!(logged.contains(expected), "{expected} is logged: {logged}");
+    }
+}
+
+#[test]
+fn a_drain_pass_that_wrote_everything_logs_nothing_at_the_default_level() {
+    let report = SlackDrainReport {
+        queued_before: 1,
+        processed_count: 1,
+        failed_count: 0,
+        queued_after: 0,
+        processed: Vec::new(),
+        failed: Vec::new(),
+    };
+
+    let logged = logged_at_the_default_level(|| report_drain_pass(&report));
+
+    assert_eq!(logged, "", "a healthy drain stays quiet");
+}
+
+#[test]
+fn a_workspace_without_its_tenant_is_refused_and_named_in_the_log_until_it_is_registered() {
+    let dir = std::env::temp_dir().join(format!(
+        "hivemind-slack-tenant-gate-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let backend = ApiBackend::Sqlite(Arc::new(dir.clone()));
+
+    let mut refused = None;
+    let logged = logged_at_the_default_level(|| {
+        refused = Some(require_workspace_tenant(&backend, "TCHK"));
+    });
+
+    assert!(
+        matches!(refused, Some(Err(ApiError::NotFound(_)))),
+        "an unregistered workspace is refused as not found, like the commands route"
+    );
+    assert!(
+        logged.contains("WARN") && logged.contains("TCHK"),
+        "{logged}"
+    );
+    assert!(
+        logged.contains("hivemind tenant create TCHK"),
+        "the log names the fix: {logged}"
+    );
+
+    SqliteEventLedger::open(&dir)
+        .expect("ledger opens")
+        .create_tenant(&TenantId::new("TCHK").expect("tenant id"))
+        .expect("tenant is created");
+    assert!(
+        require_workspace_tenant(&backend, "TCHK").is_ok(),
+        "registering the tenant is all it takes"
+    );
+}

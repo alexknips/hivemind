@@ -192,6 +192,17 @@ fn install_workspace_with_bot_token(
         hivemind_dir,
         vec!["tenant".to_owned(), "create".to_owned(), team_id.to_owned()],
     );
+    install_workspace_without_tenant(hivemind_dir, team_id, signing_secret, bot_token);
+}
+
+/// A hand `slack-app install` and nothing else: the `hivemind tenant create
+/// <team_id>` step docs/SLACK_APP.md says it needs is the one left out.
+fn install_workspace_without_tenant(
+    hivemind_dir: &Path,
+    team_id: &str,
+    signing_secret: &str,
+    bot_token: &str,
+) {
     run_cli_json(
         hivemind_dir,
         vec![
@@ -316,18 +327,10 @@ async fn app_mention_marker_capture_enqueues_and_drains_into_the_ledger() {
     assert!(queued.contains("\"event_mention\""));
     assert!(queued.contains("Use the HTTP front door"));
 
-    // Drain via the CLI's existing tenant-scoped path (same `drain_queue`
-    // the HTTP server's background loop's multi-tenant drain builds on;
-    // this proves the queued capture is well-formed and writes cleanly).
-    let drain = run_cli_json(
-        &dir,
-        vec![
-            "--tenant".to_owned(),
-            team_id.to_owned(),
-            "slack-app".to_owned(),
-            "drain".to_owned(),
-        ],
-    );
+    // Drain via the CLI (the same `drain_queue_multi_tenant` the HTTP
+    // server's background loop uses; this proves the queued capture is
+    // well-formed and writes cleanly, into the workspace's own tenant).
+    let drain = run_cli_json(&dir, vec!["slack-app".to_owned(), "drain".to_owned()]);
     assert_eq!(drain["processed_count"], 1);
     assert_eq!(drain["queued_after"], 0);
 
@@ -589,17 +592,12 @@ struct DrainedDecision {
     source_ref: Option<String>,
 }
 
-/// Drains the workspace's queue through the CLI's tenant-scoped path and
-/// returns who recorded and who accepted the one decision it wrote.
+/// Drains the workspace's queue through the CLI and returns who recorded and
+/// who accepted the one decision it wrote into the workspace's own tenant.
 fn drain_one_decision(hivemind_dir: &Path, team_id: &str) -> DrainedDecision {
     let drain = run_cli_json(
         hivemind_dir,
-        vec![
-            "--tenant".to_owned(),
-            team_id.to_owned(),
-            "slack-app".to_owned(),
-            "drain".to_owned(),
-        ],
+        vec!["slack-app".to_owned(), "drain".to_owned()],
     );
     assert_eq!(drain["processed_count"], 1);
     assert_eq!(drain["queued_after"], 0);
@@ -1256,4 +1254,286 @@ async fn a_reaction_that_cannot_become_a_capture_is_acknowledged_and_captures_no
             "{case}: nothing is queued"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// A workspace installed by hand without its tenant
+// ---------------------------------------------------------------------------
+
+/// docs/SLACK_APP.md: a hand `slack-app install` needs `hivemind tenant create
+/// <team_id>` first, and without it the routes refuse (404) up front. Before,
+/// the shortcut opened its modal, the submission and the reaction were
+/// accepted and queued, and the drain then failed on every one of them
+/// forever without a word anywhere a person looks.
+#[tokio::test]
+async fn a_hand_installed_workspace_without_its_tenant_is_refused_before_anything_is_queued() {
+    let dir = test_ledger_dir();
+    let (team_id, signing_secret) = ("T-NOTENANT", "notenant-secret");
+    install_workspace_without_tenant(&dir, team_id, signing_secret, "xoxb-notenant-token");
+    let mock = mock_slack(vec![
+        ("/views.open", StatusCode::OK, ok_reply()),
+        (
+            "/conversations.history",
+            StatusCode::OK,
+            history_reply(&json!([{
+                "type": "message",
+                "user": "U-AUTHOR",
+                "ts": "1715970800.000100",
+                "text": DECISION_TEXT
+            }])),
+        ),
+    ])
+    .await;
+    let router = app_with_slack_api(dir.clone(), &mock);
+
+    // The shortcut: no modal, so the person is told it failed instead of
+    // being handed a form whose capture goes nowhere.
+    let (status, _) = call(
+        router.clone(),
+        signed_interactivity_request(
+            signing_secret,
+            &message_action_payload(team_id, "hivemind_capture_thread"),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "shortcut");
+
+    // A modal submission is refused too, before its body is read (so its
+    // private metadata, empty here, never matters).
+    let submission = view_submission_payload(
+        team_id,
+        "U-SUBMITTER",
+        "{}",
+        &[
+            ("title", "Use Postgres"),
+            ("rationale", "Concurrent writers need it"),
+            ("options", "SQLite, Postgres"),
+        ],
+    );
+    let (status, _) = call(
+        router.clone(),
+        signed_interactivity_request(signing_secret, &submission),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "modal submission");
+
+    // The reaction: refused before Slack is asked for the message.
+    let reaction = reaction_event(
+        team_id,
+        "U-REACTOR",
+        "hivemind",
+        &message_item("1715970800.000100"),
+    );
+    let (status, _) = call(
+        router.clone(),
+        signed_json_request("/v1/slack/events", signing_secret, &reaction),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "reaction");
+
+    // A mention and a plain message that carry the markers.
+    let mention_text = format!("@hivemind\n{DECISION_TEXT}");
+    for (event_type, text) in [
+        ("app_mention", DECISION_TEXT),
+        ("message", mention_text.as_str()),
+    ] {
+        let body = json!({
+            "type": "event_callback",
+            "team_id": team_id,
+            "event": {
+                "type": event_type,
+                "channel": "C1",
+                "user": "U1",
+                "ts": "1715970800.000100",
+                "text": text,
+            },
+        });
+        let (status, _) = call(
+            router.clone(),
+            signed_json_request("/v1/slack/events", signing_secret, &body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{event_type}");
+    }
+
+    assert_eq!(mock.call_count(), 0, "Slack was never called");
+    assert!(queued_captures(&dir).is_empty(), "nothing was queued");
+
+    // Traffic that is no capture is not the workspace's problem: a message
+    // without markers is acknowledged as it always was.
+    let chatter = json!({
+        "type": "event_callback",
+        "team_id": team_id,
+        "event": {
+            "type": "message",
+            "channel": "C1",
+            "user": "U1",
+            "ts": "1715970800.000200",
+            "text": "lunch at noon?",
+        },
+    });
+    let (status, _) = call(
+        router.clone(),
+        signed_json_request("/v1/slack/events", signing_secret, &chatter),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "ordinary chatter");
+
+    // Registering the tenant is all it takes; the running server needs no restart.
+    run_cli_json(
+        &dir,
+        vec!["tenant".to_owned(), "create".to_owned(), team_id.to_owned()],
+    );
+    let private_metadata =
+        open_modal_and_take_private_metadata(&router, &mock, team_id, signing_secret).await;
+    assert!(!private_metadata.is_empty());
+}
+
+/// `slack-app drain` and `slack-app command` used the global `--tenant`
+/// (default `local`), so a team's captures landed in `local` while the
+/// server's drain wrote the same queue into the team's own tenant.
+#[test]
+fn the_cli_drain_writes_a_teams_captures_into_that_teams_tenant_not_the_global_one() {
+    let dir = test_ledger_dir();
+    let (team_id, signing_secret) = ("T-CLIDRAIN", "clidrain-secret");
+    install_workspace(&dir, team_id, signing_secret);
+    run_cli_json(
+        &dir,
+        vec![
+            "slack-app".to_owned(),
+            "enqueue-capture".to_owned(),
+            "--team-id".to_owned(),
+            team_id.to_owned(),
+            "--user-id".to_owned(),
+            "U111".to_owned(),
+            "--channel-id".to_owned(),
+            "C456".to_owned(),
+            "--message-ts".to_owned(),
+            "1715970800.000100".to_owned(),
+            "--permalink".to_owned(),
+            "https://example.slack.com/archives/C456/p1715970800000100".to_owned(),
+            "--surface".to_owned(),
+            "message_action".to_owned(),
+            "--title".to_owned(),
+            "Drain into the team's tenant".to_owned(),
+            "--rationale".to_owned(),
+            "The server's drain writes each team's captures into that team's tenant".to_owned(),
+            "--topic-keys".to_owned(),
+            "slack".to_owned(),
+            "--options".to_owned(),
+            "team-tenant,global-tenant".to_owned(),
+            "--thread-text".to_owned(),
+            "thread".to_owned(),
+        ],
+    );
+
+    // The global --tenant is deliberately a different, registered tenant.
+    run_cli_json(
+        &dir,
+        vec![
+            "tenant".to_owned(),
+            "create".to_owned(),
+            "elsewhere".to_owned(),
+        ],
+    );
+    let drain = run_cli_json(
+        &dir,
+        vec![
+            "--tenant".to_owned(),
+            "elsewhere".to_owned(),
+            "slack-app".to_owned(),
+            "drain".to_owned(),
+        ],
+    );
+    assert_eq!(drain["processed_count"], 1);
+
+    use hivemind::ledger::EventLedger as _;
+    let ledger = hivemind::ledger::SqliteEventLedger::open(&dir).expect("ledger opens");
+    let written_in = |tenant: &str| {
+        ledger
+            .read_for_tenant(&hivemind::events::TenantId::new(tenant).unwrap(), 0, 100)
+            .expect("events read")
+            .iter()
+            .filter(|event| event.event_type == hivemind::events::EventType::DecisionProposed)
+            .count()
+    };
+    assert_eq!(written_in(team_id), 1, "the team's own tenant");
+    assert_eq!(written_in("elsewhere"), 0, "not the global --tenant");
+    assert_eq!(written_in("local"), 0, "not the default tenant either");
+
+    // The slash command reads the same tenant the drain wrote into.
+    let answer = run_cli_json(
+        &dir,
+        vec![
+            "--tenant".to_owned(),
+            "elsewhere".to_owned(),
+            "slack-app".to_owned(),
+            "command".to_owned(),
+            "--team-id".to_owned(),
+            team_id.to_owned(),
+            "--user-id".to_owned(),
+            "U111".to_owned(),
+            "--text".to_owned(),
+            "query Drain".to_owned(),
+        ],
+    );
+    assert!(
+        answer["text"]
+            .as_str()
+            .expect("answer text")
+            .contains("HiveMind found 1 decision"),
+        "{answer}"
+    );
+}
+
+/// The same drain for a workspace whose tenant was never registered: the
+/// capture stays queued with the reason, the way a failed item always has.
+#[test]
+fn the_cli_drain_keeps_a_capture_queued_when_its_workspace_has_no_tenant() {
+    let dir = test_ledger_dir();
+    let (team_id, signing_secret) = ("T-CLINOTENANT", "clinotenant-secret");
+    install_workspace_without_tenant(&dir, team_id, signing_secret, "xoxb-clinotenant-token");
+    run_cli_json(
+        &dir,
+        vec![
+            "slack-app".to_owned(),
+            "enqueue-capture".to_owned(),
+            "--team-id".to_owned(),
+            team_id.to_owned(),
+            "--user-id".to_owned(),
+            "U111".to_owned(),
+            "--channel-id".to_owned(),
+            "C456".to_owned(),
+            "--message-ts".to_owned(),
+            "1715970800.000100".to_owned(),
+            "--permalink".to_owned(),
+            "https://example.slack.com/archives/C456/p1715970800000100".to_owned(),
+            "--surface".to_owned(),
+            "message_action".to_owned(),
+            "--title".to_owned(),
+            "No tenant yet".to_owned(),
+            "--rationale".to_owned(),
+            "There is no tenant registered to write this capture into".to_owned(),
+            "--topic-keys".to_owned(),
+            "slack".to_owned(),
+            "--options".to_owned(),
+            "first option,second option".to_owned(),
+            "--thread-text".to_owned(),
+            "thread".to_owned(),
+        ],
+    );
+
+    let drain = run_cli_json(&dir, vec!["slack-app".to_owned(), "drain".to_owned()]);
+
+    assert_eq!(drain["processed_count"], 0);
+    assert_eq!(drain["failed_count"], 1);
+    assert_eq!(drain["failed"][0]["team_id"], team_id);
+    assert!(
+        drain["failed"][0]["error"]
+            .as_str()
+            .expect("error text")
+            .contains(&format!("hivemind tenant create {team_id}")),
+        "the failure names the fix: {drain}"
+    );
+    assert_eq!(queued_captures(&dir).len(), 1, "the capture stays queued");
 }

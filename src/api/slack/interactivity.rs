@@ -2,7 +2,9 @@
 //! for the "Capture this thread as a decision" message shortcut and its
 //! modal. Slack posts `application/x-www-form-urlencoded` with a single
 //! `payload` field holding the JSON; the signature is over the raw body,
-//! exactly as on the other Slack routes.
+//! exactly as on the other Slack routes. A workspace whose tenant is not
+//! registered is refused (404) right after the signature check, before the
+//! shortcut opens a modal or a submission is queued.
 //!
 //! - `message_action` (the shortcut was invoked on a message): opens the
 //!   capture modal with `views.open`, carrying the message's coordinates and
@@ -16,6 +18,8 @@
 //!   dropped silently.
 //! - Anything else (`block_actions`, `view_closed`, ...) is acknowledged and
 //!   ignored: the capture modal has no interactive components.
+
+use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -33,8 +37,8 @@ use crate::slack_app::{
 };
 
 use super::{
-    authenticate_install, required_header, SLACK_BACKEND_UNSUPPORTED, SLACK_SIGNATURE_HEADER,
-    SLACK_TIMESTAMP_HEADER,
+    authenticate_install, require_workspace_tenant, required_header, SLACK_BACKEND_UNSUPPORTED,
+    SLACK_SIGNATURE_HEADER, SLACK_TIMESTAMP_HEADER,
 };
 
 /// Slack omits `user` on messages posted by apps and integrations.
@@ -122,8 +126,11 @@ pub(in crate::api) async fn interactivity_handler(
 
     let authenticated = {
         let store = store.clone();
-        tokio::task::spawn_blocking(move || {
-            authenticate_install(&store, &team_id, &timestamp, &signature, &body)
+        let backend = Arc::clone(&state.backend);
+        tokio::task::spawn_blocking(move || -> ApiResult<SlackWorkspaceInstall> {
+            let install = authenticate_install(&store, &team_id, &timestamp, &signature, &body)?;
+            require_workspace_tenant(&backend, &install.team_id)?;
+            Ok(install)
         })
         .await
     };

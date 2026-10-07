@@ -428,9 +428,14 @@ struct CaptureActors {
 
 fn drain_capture_actors(store: &SlackAppStore) -> CaptureActors {
     let ledger = InMemoryEventLedger::default();
-    let report = store.drain_queue(&ledger).expect("drain succeeds");
+    let tenant_id = TenantId::new("T123").expect("tenant id");
+    let report = store
+        .drain_queue_multi_tenant(|_| Ok(TenantScopedLedger::new(&ledger, tenant_id.clone())))
+        .expect("drain succeeds");
     assert_eq!(report.processed_count, 1);
-    let events = ledger.read(0, 100).expect("events read");
+    let events = ledger
+        .read_for_tenant(&tenant_id, 0, 100)
+        .expect("events read");
     let actor_of = |event_type: EventType| {
         events
             .iter()
