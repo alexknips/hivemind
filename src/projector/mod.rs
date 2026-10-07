@@ -463,12 +463,14 @@ fn project_event_reporting(
     Ok(None)
 }
 
+/// Project the events of the tenant `ledger` is bound to ([`EventLedger::bound_tenant`]: `local`
+/// for an unbound ledger) after `offset`.
 pub fn project_from_ledger(
     ledger: &impl EventLedger,
     graph: &impl GraphView,
     offset: EventId,
 ) -> Result<()> {
-    project_from_ledger_for_tenant(ledger, &TenantId::local(), graph, offset)
+    project_from_ledger_for_tenant(ledger, &ledger.bound_tenant(), graph, offset)
 }
 
 pub fn project_from_ledger_for_tenant(

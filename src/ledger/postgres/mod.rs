@@ -484,6 +484,11 @@ impl EventLedger for PostgresEventLedger {
     }
 
     // Override defaults: self.tenant_id may differ from TenantId::local().
+    fn bound_tenant(&self) -> TenantId {
+        // The id was checked non-empty when this ledger was built, so `new` cannot refuse it.
+        TenantId::new(self.tenant_id.as_str()).unwrap_or_default()
+    }
+
     fn append(&self, event: Event) -> Result<EventId> {
         self.append_for_tenant(&self.tenant_id, event)
     }

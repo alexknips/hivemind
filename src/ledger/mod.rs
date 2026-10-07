@@ -138,6 +138,14 @@ pub trait EventLedger {
         Ok(found)
     }
 
+    /// The tenant the plain methods below (`append`, `read`, `replay_from`, `latest_offset`)
+    /// address: `local`, unless the ledger is bound to another tenant (the Postgres ledger opened
+    /// for one). A caller that names the tenant itself uses the `_for_tenant` methods; one that
+    /// takes "the ledger's own events" and needs `_for_tenant` reads too asks this.
+    fn bound_tenant(&self) -> TenantId {
+        TenantId::local()
+    }
+
     fn append(&self, event: Event) -> Result<EventId> {
         self.append_for_tenant(&TenantId::local(), event)
     }

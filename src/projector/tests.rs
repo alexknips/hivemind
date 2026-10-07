@@ -2708,6 +2708,90 @@ fn a_replay_holding_the_batch_and_its_classification_reads_the_batchs_turn_time(
     Ok(())
 }
 
+/// A ledger bound to one tenant the way the Postgres ledger is: the `_for_tenant` methods honour
+/// the tenant they are given, while the plain methods and `bound_tenant` address the bound one.
+struct BoundTenantLedger {
+    inner: InMemoryEventLedger,
+    tenant_id: TenantId,
+}
+
+impl EventLedger for BoundTenantLedger {
+    fn append_for_tenant(&self, tenant_id: &TenantId, event: Event) -> Result<EventId> {
+        self.inner.append_for_tenant(tenant_id, event)
+    }
+
+    fn read_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: EventId,
+        limit: usize,
+    ) -> Result<Vec<Event>> {
+        self.inner.read_for_tenant(tenant_id, offset, limit)
+    }
+
+    fn replay_from_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        offset: EventId,
+        callback: &mut dyn FnMut(&Event) -> Result<()>,
+    ) -> Result<()> {
+        self.inner
+            .replay_from_for_tenant(tenant_id, offset, callback)
+    }
+
+    fn latest_offset_for_tenant(&self, tenant_id: &TenantId) -> Result<EventId> {
+        self.inner.latest_offset_for_tenant(tenant_id)
+    }
+
+    fn bound_tenant(&self) -> TenantId {
+        self.tenant_id.clone()
+    }
+
+    fn append(&self, event: Event) -> Result<EventId> {
+        self.append_for_tenant(&self.tenant_id, event)
+    }
+
+    fn replay_from(
+        &self,
+        offset: EventId,
+        callback: &mut dyn FnMut(&Event) -> Result<()>,
+    ) -> Result<()> {
+        self.replay_from_for_tenant(&self.tenant_id, offset, callback)
+    }
+
+    fn latest_offset(&self) -> Result<EventId> {
+        self.latest_offset_for_tenant(&self.tenant_id)
+    }
+}
+
+/// `project_from_ledger` projects the tenant its ledger is bound to, not `local`: a rebuild and a
+/// graph extended from an offset (whose batch lookup reads before the offset) both find the
+/// bound tenant's events and read the batch's turn time. The shared-backend Postgres ledger is
+/// bound to one tenant per connection; its recall parity tests build their graph this way.
+#[test]
+fn a_ledger_bound_to_another_tenant_projects_that_tenants_events() -> Result<()> {
+    let ledger = BoundTenantLedger {
+        inner: InMemoryEventLedger::new(),
+        tenant_id: TenantId::new("acme").expect("a tenant id"), // ubs:ignore
+    };
+    ledger.append(received_batch("batch:1", &[Some(SAID_AT)]))?;
+    let received_up_to = ledger.latest_offset()?;
+    ledger.append(classification(
+        &["batch:1"],
+        classified_decision_capture(None, &[], &[]),
+        CLASSIFIED_AT,
+    ))?;
+
+    let rebuilt = RecordingGraph::default();
+    project_from_ledger(&ledger, &rebuilt, 0)?;
+    let extended = RecordingGraph::default();
+    project_from_ledger(&ledger, &extended, received_up_to)?;
+
+    assert_eq!(the_decision_time(&rebuilt), time_value(SAID_AT)); // ubs:ignore
+    assert_eq!(the_decision_time(&extended), time_value(SAID_AT)); // ubs:ignore
+    Ok(())
+}
+
 #[test]
 fn classified_decision_credited_to_a_human_is_not_accepted_but_says_when() -> Result<()> {
     let (edges, occurred_at) =
