@@ -81,10 +81,10 @@ use super::args::{
     DisagreeArgs, DumpArgs, DumpFormat, EmitArgs, EmitCaptureProvenanceArgs, EmitCommand,
     EmitDecisionProposedArgs, EmitHypothesisKind, EmitRelationKind, ExportArgs, GraphBackend,
     ImportArgs, ImportCommand, ImportConnectorCommand, ImportDocumentsArgs, IngestArgs,
-    IngestCommand, IngestSlackThreadArgs, MapArgs, McpArgs, MoveArgs, ProjectAnchorArgs,
-    ProjectArgs, ProjectCommand, ProjectDecisionsArgs, ProjectDeclareTopicArgs, ProjectLinkArgs,
-    ProjectListArgs, ProjectRegisterArgs, ProjectShowArgs, ProjectSourceArg, ProjectUseArgs,
-    QualityScanArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority,
+    IngestCommand, IngestSlackThreadArgs, MapArgs, McpArgs, MoveArgs, OptionLabelArgs,
+    ProjectAnchorArgs, ProjectArgs, ProjectCommand, ProjectDecisionsArgs, ProjectDeclareTopicArgs,
+    ProjectLinkArgs, ProjectListArgs, ProjectRegisterArgs, ProjectShowArgs, ProjectSourceArg,
+    ProjectUseArgs, QualityScanArgs, QueryAddedSinceArgs, QueryArgs, QueryBlockerPriority,
     QueryChangedDecisionsArgs, QueryChangedSinceArgs, QueryCommand, QueryDecisionStatus,
     QueryExportKind, QueryExportReadOnlySummaryArgs, QueryHistoryFilterArgs,
     QueryRecentActivityArgs, QueryRecentDecisionsArgs, QueryRelationKind,
@@ -197,7 +197,10 @@ fn run_quickstart(cli: &Cli, _args: &QuickstartArgs) -> Result<String> {
         title: "Try HiveMind quickstart".to_owned(),
         rationale: "A first decision should be captured with actor provenance and queried back immediately.".to_owned(),
         topic_keys: vec!["quickstart".to_owned(), "onboarding".to_owned()],
-        option_ids: vec!["Local ledger".to_owned(), "Spreadsheet".to_owned()],
+        options: OptionLabelArgs {
+            listed: vec!["Local ledger".to_owned(), "Spreadsheet".to_owned()],
+            single: Vec::new(),
+        },
         chosen_option_id: Some("Local ledger".to_owned()),
         decided_by: None,
         delegated_by: None,
@@ -806,7 +809,7 @@ fn run_slack_app(cli: &Cli, args: &SlackAppArgs) -> Result<String> {
                 title: args.title.clone(),
                 rationale: args.rationale.clone(),
                 topic_keys: args.topic_keys.clone(),
-                option_labels: args.option_labels.clone(),
+                option_labels: args.options.labels(),
                 chosen_option_label: args.chosen_option_label.clone(),
                 thread_text: args.thread_text.clone(),
             })?;
@@ -901,8 +904,13 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
                 &cli_tenant(cli)?,
                 spec,
             )?;
-            let (option_ids, chosen_option_id) =
-                record_cli_options(&commands, &actor_id, &args.decision)?;
+            let option_labels = args.decision.options.labels();
+            let (option_ids, chosen_option_id) = record_cli_options(
+                &commands,
+                &actor_id,
+                &option_labels,
+                args.decision.chosen_option_id.as_deref(),
+            )?;
             let project = cli_capture_project(cli, &ledger, env, &args.decision)?;
             let question = commands.resolve_answers_request(
                 args.answers_request_id.as_deref(),
@@ -915,7 +923,7 @@ pub(crate) fn run_emit_in_context<W: IoWrite>(
                     rationale: &args.decision.rationale,
                     topic_keys: &args.decision.topic_keys,
                     option_ids: &option_ids,
-                    option_labels: &args.decision.option_ids,
+                    option_labels: &option_labels,
                     chosen_option_id: chosen_option_id.as_deref(),
                     decided_by: args.decision.decided_by.as_deref(),
                     delegated_by: args.decision.delegated_by.as_deref(),
@@ -1539,6 +1547,7 @@ pub(crate) fn run_supersede_in_context<W: IoWrite>(
     // A context that finds nothing leaves the project unstated, and the superseding decision
     // keeps inheriting the old decision's project rather than dropping to a personal one.
     let project = cli_supersede_project(cli, &ledger, env, args)?;
+    let option_labels = args.options.labels();
     let outcome = commands.supersede(SupersedeInput {
         project: determined_project(&project),
         actor_id: &cli.actor,
@@ -1546,7 +1555,7 @@ pub(crate) fn run_supersede_in_context<W: IoWrite>(
         new_title: &args.title,
         new_rationale: &args.rationale,
         topic_keys: &args.topic_keys,
-        option_labels: &args.option_labels,
+        option_labels: &option_labels,
         chosen_option_label: args.chosen_option_label.as_deref(),
         still_proposed: args.still_proposed,
         // The plan carries every id; see `SupersedeInput::grounding`.
@@ -2060,11 +2069,12 @@ fn run_import(cli: &Cli, import: &ImportArgs) -> Result<String> {
 fn record_cli_options<L: EventLedger>(
     commands: &Commands<'_, L>,
     actor_id: &str,
-    args: &EmitDecisionProposedArgs,
+    option_labels: &[String],
+    chosen_option_label: Option<&str>,
 ) -> Result<(Vec<String>, Option<String>)> {
-    let mut option_ids = Vec::with_capacity(args.option_ids.len());
+    let mut option_ids = Vec::with_capacity(option_labels.len());
     let mut chosen_option_id = None;
-    for option_label in &args.option_ids {
+    for option_label in option_labels {
         let mut option_description =
             String::with_capacity("Option generated from CLI value ''".len() + option_label.len());
         let _ = write!(
@@ -2072,15 +2082,15 @@ fn record_cli_options<L: EventLedger>(
             "Option generated from CLI value '{option_label}'"
         );
         let option_id = commands.record_option(actor_id, option_label, &option_description)?;
-        if args.chosen_option_id.as_deref() == Some(option_label.as_str()) {
+        if chosen_option_label == Some(option_label.as_str()) {
             chosen_option_id = Some(option_id.clone());
         }
         option_ids.push(option_id);
     }
 
-    if args.chosen_option_id.is_some() && chosen_option_id.is_none() {
+    if chosen_option_label.is_some() && chosen_option_id.is_none() {
         return Err(CliError::InvalidInput(
-            "--chose must match one of the values passed to --options".to_owned(),
+            "--chose must match one of the labels passed to --options or --option".to_owned(),
         )
         .into());
     }
@@ -2094,7 +2104,13 @@ fn propose_decision_from_option_labels<L: EventLedger>(
     args: &EmitDecisionProposedArgs,
     project: Option<DeterminedProject<'_>>,
 ) -> Result<(String, DecisionPlacement)> {
-    let (option_ids, chosen_option_id) = record_cli_options(commands, actor_id, args)?;
+    let option_labels = args.options.labels();
+    let (option_ids, chosen_option_id) = record_cli_options(
+        commands,
+        actor_id,
+        &option_labels,
+        args.chosen_option_id.as_deref(),
+    )?;
 
     commands.propose_decision_placed(DecisionProposalInput {
         project,
@@ -2103,7 +2119,7 @@ fn propose_decision_from_option_labels<L: EventLedger>(
         rationale: &args.rationale,
         topic_keys: &args.topic_keys,
         option_ids: &option_ids,
-        option_labels: &args.option_ids,
+        option_labels: &option_labels,
         chosen_option_id: chosen_option_id.as_deref(),
         decided_by: args.decided_by.as_deref(),
         delegated_by: args.delegated_by.as_deref(),

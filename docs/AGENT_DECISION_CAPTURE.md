@@ -22,6 +22,22 @@ cargo run -- --hivemind-dir ./hivemind/ emit decision.capture \
   --rests-on-assumption "Agents already have shell access to the local ledger"
 ```
 
+`--options` splits on every comma. A label that contains a comma goes on its own
+`--option` flag, which takes one label whole and can repeat; `--chose` repeats the
+label exactly:
+
+```bash
+  --options "Rename now,Pause" \
+  --option "Rename after the comparison, before the first listing" \
+  --chose "Rename after the comparison, before the first listing"
+```
+
+An `--options` piece that is empty, or starts or ends with whitespace, is refused
+with that hint rather than trimmed: the space after a comma is usually a comma
+inside one label, and trimming would record its halves as two options. The same
+two flags work on `decision.proposed` and `supersede`. MCP `capture_decision` and
+REST `POST /v1/decisions` take options as an array, so a comma never splits them.
+
 ## What the decision rests on
 
 Every `decision.capture` (and `supersede`) answers "what does this decision rest

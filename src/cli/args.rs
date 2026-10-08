@@ -885,10 +885,8 @@ pub struct SupersedeArgs {
     #[arg(long = "topic-keys", value_delimiter = ',')]
     pub topic_keys: Vec<String>,
 
-    /// Comma-separated short human labels ("Direct CLI,MCP server"), never slugs or letter
-    /// codes. `--chose` repeats one label exactly.
-    #[arg(long = "options", value_delimiter = ',')]
-    pub option_labels: Vec<String>,
+    #[command(flatten)]
+    pub options: OptionLabelArgs,
 
     /// The option the replacement chose. Means the decision was already made: the replacement
     /// is accepted right away, self-accepted from the recording actor (`--actor`), unless
@@ -1161,10 +1159,8 @@ pub struct SlackEnqueueCaptureArgs {
     #[arg(long = "topic-keys", value_delimiter = ',')]
     pub topic_keys: Vec<String>,
 
-    /// Comma-separated short human labels ("Direct CLI,MCP server"), never slugs or letter
-    /// codes. `--chose` repeats one label exactly.
-    #[arg(long = "options", value_delimiter = ',')]
-    pub option_labels: Vec<String>,
+    #[command(flatten)]
+    pub options: OptionLabelArgs,
 
     #[arg(long = "chose")]
     pub chosen_option_label: Option<String>,
@@ -1379,6 +1375,60 @@ impl EmitCaptureProvenanceArgs {
     }
 }
 
+// The option labels a command takes, as two flags feeding one ordered list. `--options` is the
+// short form and splits on every comma; `--option` takes one label verbatim, so a label that
+// contains a comma has a way in. Without it the only choice was `--options`, which cut such a
+// label in two and recorded both halves as rejected options.
+//
+// Deliberately not a doc comment: clap takes a flattened struct's doc comment as the `about` of
+// every command that has none of its own (see `GroundingArgs`).
+#[derive(Debug, Clone, Default, Args)]
+pub struct OptionLabelArgs {
+    /// Comma-separated short human labels ("Direct CLI,MCP server"), never slugs or letter
+    /// codes. Splits on every comma and refuses a piece with leading or trailing whitespace,
+    /// which usually means a comma inside a label: give that label to `--option`. `--chose`
+    /// repeats one label exactly.
+    #[arg(
+        long = "options",
+        value_name = "LABELS",
+        value_delimiter = ',',
+        value_parser = parse_option_label,
+    )]
+    pub listed: Vec<String>,
+
+    /// One option label, taken verbatim: commas stay in it ("Rename later, after the
+    /// comparison"). Repeatable; added after the `--options` labels.
+    #[arg(long = "option", value_name = "LABEL", value_parser = parse_option_label)]
+    pub single: Vec<String>,
+}
+
+impl OptionLabelArgs {
+    /// Every label: the `--options` pieces in order, then each `--option`.
+    #[must_use]
+    pub fn labels(&self) -> Vec<String> {
+        self.listed.iter().chain(&self.single).cloned().collect()
+    }
+}
+
+/// A label is a non-empty string with no whitespace at either end. A piece of an `--options`
+/// list that breaks this is almost always a comma inside a label (`"A, then B"` splits into
+/// `"A"` and `" then B"`), so it is refused with how to pass the label whole rather than
+/// trimmed into a second option.
+fn parse_option_label(raw: &str) -> Result<String, String> {
+    if raw.trim().is_empty() {
+        return Err("an option label must not be empty (a stray comma in --options?)".to_owned());
+    }
+    if raw.trim() != raw {
+        return Err(format!(
+            "option label {raw:?} has leading or trailing whitespace. `--options` splits on \
+             every comma, so a space after a comma usually means a comma inside one label: pass \
+             a label that contains a comma on its own flag, e.g. --option \"Rename later, after \
+             the comparison\""
+        ));
+    }
+    Ok(raw.to_owned())
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct EmitDecisionProposedArgs {
     #[arg(long)]
@@ -1393,10 +1443,8 @@ pub struct EmitDecisionProposedArgs {
     #[arg(long = "topic-keys", value_delimiter = ',')]
     pub topic_keys: Vec<String>,
 
-    /// Comma-separated short human labels ("Direct CLI,MCP server"), never slugs or letter
-    /// codes. `--chose` repeats one label exactly.
-    #[arg(long = "options", value_delimiter = ',')]
-    pub option_ids: Vec<String>,
+    #[command(flatten)]
+    pub options: OptionLabelArgs,
 
     #[arg(long = "chose")]
     pub chosen_option_id: Option<String>,

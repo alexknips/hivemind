@@ -413,6 +413,19 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **An option label with a comma is no longer cut in two by `--options`, and a piece that
+  starts with a space is refused instead of recorded.** `emit decision.capture --options
+  "Rename now,Rename after the comparison, before the first listing,Pause"` recorded the
+  third label as two options, "Rename after the comparison" and " before the first listing",
+  both read as rejected, and the record is append-only, so the only repair was a supersede
+  that falsely read as the decider changing their mind. A label that contains a comma now
+  goes on its own `--option` flag, which takes one label whole and repeats (`--options` pieces
+  first, then each `--option`); `--chose` repeats the label exactly. `--options` still splits
+  on every comma, but a piece that is empty or starts or ends with whitespace is refused with
+  that hint, because the space after a comma is the mark of a comma inside a label. The same
+  two flags work on `emit decision.proposed`, `supersede` and `slack-app enqueue-capture`. MCP
+  `capture_decision`, `supersede_decision` and REST `POST /v1/decisions` take options as an
+  array and never split on a comma.
 - **The capture plugin's queue-depth hook counts the queue instead of the reply's keys.**
   `scripts/check-classify-queue.sh` ran `classify-queue list --json | jq length`: against a
   server-backed cell that printed "4 batch(es) pending" for an empty queue (the reply is an

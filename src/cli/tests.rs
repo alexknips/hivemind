@@ -665,6 +665,174 @@ fn emit_proposes_decision_with_cli_option_labels() {
 }
 
 #[test]
+fn option_flag_keeps_a_comma_inside_its_label() -> CliTestResult {
+    // hivemind-0cbl: `--options "...,Rename after the comparison, before the first listing,..."`
+    // recorded the label as two options and read both as rejected. `--option` takes one label
+    // whole, so the comma stays, and `--chose` repeats it exactly.
+    let hivemind_dir = unique_test_dir("option-flag-keeps-comma");
+    let dir = hivemind_dir.to_str().expect("utf-8 temp path");
+    let label = "Rename after the comparison, before the first listing";
+    run(&Cli::parse_from([
+        "hivemind",
+        "--hivemind-dir",
+        dir,
+        "emit",
+        "decision.capture",
+        "--bet",
+        "--agent-tool",
+        "claude",
+        "--agent-session",
+        "option-comma",
+        "--title",
+        "Rename the product around the comparison",
+        "--rationale",
+        "The comparison decides which name survives, so the rename waits for its result.",
+        "--topic-keys",
+        "brand",
+        "--options",
+        "Rename now,Pause",
+        "--option",
+        label,
+        "--chose",
+        label,
+    ]))?;
+
+    let json = run(&Cli::parse_from([
+        "hivemind",
+        "--json",
+        "--hivemind-dir",
+        dir,
+        "query",
+        "why",
+        "Rename the product around the comparison",
+    ]))?;
+    let json: serde_json::Value = serde_json::from_str(&json)?;
+    ensure_json_eq(
+        &json["data"]["root"]["chosen_option"]["label"],
+        serde_json::json!(label),
+        "the chosen option keeps its comma",
+    )?;
+    let mut rejected: Vec<&str> = json["data"]["root"]["rejected_options"]
+        .as_array()
+        .ok_or("rejected_options is an array")?
+        .iter()
+        .filter_map(|option| option["label"].as_str())
+        .collect();
+    rejected.sort_unstable();
+    ensure_eq(
+        rejected,
+        vec!["Pause", "Rename now"],
+        "the label is not also recorded as rejected fragments",
+    )?;
+
+    let _ = std::fs::remove_dir_all(&hivemind_dir);
+    Ok(())
+}
+
+#[test]
+fn options_flag_refuses_a_piece_that_is_not_a_clean_label() -> CliTestResult {
+    // hivemind-0cbl: the leading space of " before the first listing" is the mark of a comma
+    // inside a label. It is refused, with the way to pass the label whole, not trimmed into a
+    // second option.
+    for (options, expected) in [
+        (
+            "Rename now,Rename after the comparison, before the first listing,Pause",
+            "\" before the first listing\"",
+        ),
+        ("Rename now,Pause ", "\"Pause \""),
+        ("Rename now, ,Pause", "must not be empty"),
+        ("Rename now,,Pause", "must not be empty"),
+        ("Rename now,Pause,", "must not be empty"),
+    ] {
+        let error = Cli::try_parse_from([
+            "hivemind",
+            "emit",
+            "decision.proposed",
+            "--title",
+            "Pick a name",
+            "--rationale",
+            "The name has to hold up against the alternatives",
+            "--options",
+            options,
+        ])
+        .err()
+        .ok_or_else(|| format!("--options {options:?} should be refused"))?;
+        let message = error.to_string();
+        ensure(
+            message.contains(expected),
+            &format!("--options {options:?} should name {expected:?}, got:\n{message}"),
+        )?;
+    }
+
+    let error = Cli::try_parse_from([
+        "hivemind",
+        "emit",
+        "decision.proposed",
+        "--title",
+        "Pick a name",
+        "--rationale",
+        "The name has to hold up against the alternatives",
+        "--options",
+        "Rename now,Rename after the comparison, before the first listing",
+    ])
+    .err()
+    .ok_or("a whitespace-edged piece should be refused")?;
+    ensure(
+        error.to_string().contains("--option \"Rename later"),
+        &format!("the refusal says how to pass a label with a comma, got:\n{error}"),
+    )?;
+
+    for option in ["", "  ", " Rename now", "Rename now "] {
+        ensure(
+            Cli::try_parse_from([
+                "hivemind",
+                "emit",
+                "decision.proposed",
+                "--title",
+                "Pick a name",
+                "--rationale",
+                "The name has to hold up against the alternatives",
+                "--option",
+                option,
+            ])
+            .is_err(),
+            &format!("--option {option:?} should be refused"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn supersede_takes_option_labels_with_a_comma_whole() -> CliTestResult {
+    let cli = Cli::parse_from([
+        "hivemind",
+        "supersede",
+        "--old",
+        "decision-1",
+        "--title",
+        "Rename after the comparison",
+        "--rationale",
+        "The comparison decides which name survives.",
+        "--options",
+        "Rename now,Pause",
+        "--option",
+        "Rename after the comparison, before the first listing",
+    ]);
+    let Command::Supersede(args) = &cli.command else {
+        return Err("supersede parses as the supersede command".into());
+    };
+    ensure_eq(
+        args.options.labels(),
+        vec![
+            "Rename now".to_owned(),
+            "Pause".to_owned(),
+            "Rename after the comparison, before the first listing".to_owned(),
+        ],
+        "--options pieces first, then each --option whole",
+    )
+}
+
+#[test]
 fn emit_hypothesis_recorded_defaults_to_assumption_kind() {
     let hivemind_dir = unique_test_dir("emit-hypothesis-default");
     let cli = Cli::parse_from([
