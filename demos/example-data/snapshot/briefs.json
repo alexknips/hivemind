@@ -1,108 +1,37 @@
 {
-  "decision-22b827cf-1b45-4dae-b07f-21720e6bded0": {
+  "decision-1007a2d2-0405-4b04-a97b-bf5701ad61b9": {
     "data": {
       "chosen_option": {
-        "label": "In-memory LRU keyed by driver_id",
-        "option_id": "option-7fc67a88-e84a-40cd-b366-621db4e1fd26"
+        "label": "Local SQLite",
+        "option_id": "option-b5685d07-2d6b-48f0-943d-34693dd13419"
       },
       "decided_by": {
         "decider_ids": [
-          "human:maya"
+          "human:priya"
         ],
-        "proposer_id": "human:maya",
+        "proposer_id": "human:priya",
         "review": "self_accepted",
         "source": "human",
-        "source_ref": "human:maya"
+        "source_ref": "human:priya"
       },
-      "decision_id": "decision-22b827cf-1b45-4dae-b07f-21720e6bded0",
-      "dependents_count": 1,
-      "grounding_state": "grounded",
-      "occurred_at": "2026-10-03T06:50:48.106039196Z",
-      "project": "ridewell-api",
-      "project_label": "Ridewell API",
-      "question": "How do we avoid a database round trip on every dispatch lookup?",
-      "question_id": "question-e05aecb0-39ce-5bd9-b3fb-e9eb6e4be777",
-      "rationale": "Driver-profile reads dominate dispatch-service load, about 70% of calls. An in-memory LRU keyed by driver_id avoids a database round trip on every dispatch and is simple to reason about, since driver_id is the primary key login already returns.",
-      "rejected_options": [
-        {
-          "label": "No cache (read through on every request)",
-          "option_id": "option-1ee8138b-815f-4cd9-a928-01d0ec5a2f8d"
-        },
-        {
-          "label": "Redis cache keyed by driver_id",
-          "option_id": "option-a8ac96cd-1896-4301-861e-5c63c81ea65c"
-        }
-      ],
-      "rests_on": [
-        {
-          "added": {
-            "when": "at_capture"
-          },
-          "id": "hypothesis-3691bc21-794f-467f-a30d-eeb9b910b226",
-          "kind": "assumption",
-          "label": "Driver ids are assigned once at signup and never change for the lifetime of the account",
-          "state": "refuted"
-        }
-      ],
-      "slug": "cache-driver-profiles-in-memory-keyed-by-the-driver-s-numeri",
-      "status": "superseded",
-      "still_holds": {
-        "held_up": false,
-        "reasons": [
-          {
-            "by_id": "decision-9533f8d8-fd67-44ed-92cc-0ddbdf9e948d",
-            "gap_events": 34,
-            "kind": "superseded_by"
-          },
-          {
-            "hypothesis_id": "hypothesis-3691bc21-794f-467f-a30d-eeb9b910b226",
-            "kind": "premised_on_refuted"
-          }
-        ]
-      },
-      "title": "Cache driver profiles in memory, keyed by the driver's numeric id",
-      "topic_keys": [
-        "infrastructure",
-        "ridewell"
-      ]
-    },
-    "latency_ms": 88,
-    "result_count": 1,
-    "truncated": false
-  },
-  "decision-434555d0-cb8d-4b6b-bea1-f13561cb7c26": {
-    "data": {
-      "chosen_option": {
-        "label": "Guilty",
-        "option_id": "option-055c2b4e-6a2a-4633-ad96-5b618229126e"
-      },
-      "decided_by": {
-        "decider_ids": [
-          "human:juror-foreman"
-        ],
-        "proposer_id": "human:juror-foreman",
-        "review": "disputed",
-        "source": "human",
-        "source_ref": "human:juror-foreman"
-      },
-      "decision_id": "decision-434555d0-cb8d-4b6b-bea1-f13561cb7c26",
+      "decision_id": "decision-1007a2d2-0405-4b04-a97b-bf5701ad61b9",
       "dependents_count": 0,
       "grounding_state": "grounded",
-      "occurred_at": "2026-10-03T06:50:50.423228088Z",
-      "project": "12-angry-men",
-      "project_label": "12 Angry Men",
-      "question": "How does the jury find the defendant?",
-      "question_id": "question-4fdba55b-3b1b-5c58-afaa-30f19fabd444",
-      "quote": "That's eleven guilty. Somebody's got a reasonable doubt?",
-      "rationale": "Eleven of twelve jurors voted guilty on the first ballot. The knife matches the defendant's own description of a rare weapon, the downstairs neighbor testified he heard the defendant threaten to kill his father and then heard the body fall, and the woman across the street said she saw the stabbing through the windows of a passing elevated train.",
+      "occurred_at": "2026-10-08T01:58:30.519552240Z",
+      "project": "trailkeeper",
+      "project_label": "TrailKeeper",
+      "question": "Where do we store a hiker's trip logs?",
+      "question_id": "question-b2a2db41-eed8-5c4f-9f63-d05461d1465a",
+      "quote": "Let's not stand up a backend before we know anyone wants this.",
+      "rationale": "TrailKeeper v1 is single-device: one hiker records one trip on one phone. SQLite needs no server, keeps the app fully usable with no signal on trail, and keeps hosting cost at zero while we find out if anyone wants this at all.",
       "rejected_options": [
         {
-          "label": "Hung jury (cannot agree)",
-          "option_id": "option-704f4796-d8b1-459f-a367-30e1f3a9484a"
+          "label": "Local JSON files",
+          "option_id": "option-39075843-d57d-4a70-b250-21017605fa63"
         },
         {
-          "label": "Not guilty",
-          "option_id": "option-982ca141-077b-46a1-a0b7-9607a653f75d"
+          "label": "A hosted database from day one",
+          "option_id": "option-baee6e9d-1730-4837-8b71-39f685df96f5"
         }
       ],
       "rests_on": [
@@ -110,44 +39,39 @@
           "added": {
             "when": "at_capture"
           },
-          "id": "evidence-628e4b0a-339e-48bb-8d28-acc1dbb7a1be",
-          "kind": "evidence",
-          "label": "Trial testimony: the downstairs neighbor says he heard 'I'm gonna kill you' followed by a body hitting the floor, one second after a train passed",
-          "source": "trial transcript, witness: downstairs neighbor",
-          "state": "recorded",
-          "ts": "2026-10-03T06:50:50.224152721Z"
+          "id": "hypothesis-e19287f6-24c4-44fa-b0bc-5fdc4627cc02",
+          "kind": "assumption",
+          "label": "Each hiker uses TrailKeeper from a single phone; nobody needs the same trip log on two devices",
+          "state": "open"
         }
       ],
-      "slug": "the-jury-finds-the-defendant-guilty",
+      "slug": "store-hike-logs-in-local-sqlite-on-the-phone",
       "status": "superseded",
       "still_holds": {
         "held_up": false,
         "reasons": [
           {
-            "by_id": "decision-b7803c49-63d0-440b-ab60-d0caffdbeb6f",
-            "gap_events": 18,
+            "by_id": "decision-7aba6606-fd61-485d-84b1-c2b529e77230",
+            "gap_events": 16,
             "kind": "superseded_by"
-          },
-          {
-            "kind": "contested"
           }
         ]
       },
-      "title": "The jury finds the defendant guilty",
+      "title": "Store hike logs in local SQLite on the phone",
       "topic_keys": [
-        "verdict",
-        "12-angry-men"
+        "infrastructure",
+        "trailkeeper"
       ]
     },
-    "latency_ms": 203,
+    "latency_ms": 10,
     "result_count": 1,
     "truncated": false
   },
-  "decision-4957760d-4511-430f-918e-b32cd5a69c70": {
+  "decision-19f3bba7-7cbd-4548-9eba-a6a04bb15797": {
     "data": {
       "chosen_option": {
         "label": "Store driver_id locally and skip the cold-start lookup",
-        "option_id": "option-a6982b89-c8bd-4f34-8d72-d92bc16a9a67"
+        "option_id": "option-bd4f642c-081a-4415-b38c-70e76750246e"
       },
       "decided_by": {
         "decider_ids": [
@@ -158,10 +82,10 @@
         "source": "agent",
         "source_ref": "agent:codex:ridewell-sync"
       },
-      "decision_id": "decision-4957760d-4511-430f-918e-b32cd5a69c70",
+      "decision_id": "decision-19f3bba7-7cbd-4548-9eba-a6a04bb15797",
       "dependents_count": 0,
       "grounding_state": "grounded",
-      "occurred_at": "2026-10-03T06:50:48.322441107Z",
+      "occurred_at": "2026-10-08T01:58:31.930520680Z",
       "project": "ridewell-mobile",
       "project_label": "Ridewell Mobile",
       "question": "How do we avoid blocking cold start on a profile fetch?",
@@ -169,12 +93,12 @@
       "rationale": "Cold start currently blocks on a profile fetch before the map can render. The API already treats driver_id as stable once assigned, so storing it in local device storage at login and reusing it on every cold start removes that fetch with no correctness cost.",
       "rejected_options": [
         {
-          "label": "Always re-fetch the profile on cold start",
-          "option_id": "option-138c5eb2-3d01-44bf-8022-766115ddf6c5"
+          "label": "Cache the whole profile object with a 1-hour TTL",
+          "option_id": "option-1f1e353e-c339-42a1-a99e-606f833aa192"
         },
         {
-          "label": "Cache the whole profile object with a 1-hour TTL",
-          "option_id": "option-f8f225af-7600-482a-875d-10001e0a4d7d"
+          "label": "Always re-fetch the profile on cold start",
+          "option_id": "option-8b1bfa1d-bbee-4120-b431-87bd6ff961fb"
         }
       ],
       "rests_on": [
@@ -182,23 +106,23 @@
           "added": {
             "when": "at_capture"
           },
-          "by_id": "decision-9533f8d8-fd67-44ed-92cc-0ddbdf9e948d",
+          "by_id": "decision-73fc1546-71e1-4db2-b765-5625fc9147b6",
           "by_label": "Cache driver profiles keyed by a stable external UUID instead of the mutable numeric id",
-          "by_recorded_at": "2026-10-03T06:50:49.222292587Z",
-          "id": "decision-22b827cf-1b45-4dae-b07f-21720e6bded0",
+          "by_recorded_at": "2026-10-08T01:58:32.832854727Z",
+          "id": "decision-23b5559b-0a10-4f72-a6ca-a9bb1f92d4a5",
           "kind": "decision",
           "label": "Cache driver profiles in memory, keyed by the driver's numeric id",
           "state": "superseded"
         }
       ],
-      "slug": "cache-the-driver-s-id-on-the-phone-at-login-and-skip-the-pro",
+      "slug": "cache-the-drivers-id-on-the-phone-at-login-and-skip-the",
       "status": "accepted",
       "still_holds": {
         "held_up": false,
         "reasons": [
           {
-            "by_id": "decision-9533f8d8-fd67-44ed-92cc-0ddbdf9e948d",
-            "decision_id": "decision-22b827cf-1b45-4dae-b07f-21720e6bded0",
+            "by_id": "decision-73fc1546-71e1-4db2-b765-5625fc9147b6",
+            "decision_id": "decision-23b5559b-0a10-4f72-a6ca-a9bb1f92d4a5",
             "kind": "premise_superseded"
           }
         ]
@@ -209,15 +133,15 @@
         "mobile"
       ]
     },
-    "latency_ms": 221,
+    "latency_ms": 71,
     "result_count": 1,
     "truncated": false
   },
-  "decision-9533f8d8-fd67-44ed-92cc-0ddbdf9e948d": {
+  "decision-23b5559b-0a10-4f72-a6ca-a9bb1f92d4a5": {
     "data": {
       "chosen_option": {
-        "label": "In-memory LRU keyed by the identity-provider UUID",
-        "option_id": "option-4e2a780e-cefd-5267-937a-c3c270226652"
+        "label": "In-memory LRU keyed by driver_id",
+        "option_id": "option-7cf7bd79-7ae4-4c54-a6f4-690b2a323fad"
       },
       "decided_by": {
         "decider_ids": [
@@ -228,21 +152,23 @@
         "source": "human",
         "source_ref": "human:maya"
       },
-      "decision_id": "decision-9533f8d8-fd67-44ed-92cc-0ddbdf9e948d",
-      "dependents_count": 0,
+      "decision_id": "decision-23b5559b-0a10-4f72-a6ca-a9bb1f92d4a5",
+      "dependents_count": 1,
       "grounding_state": "grounded",
-      "occurred_at": "2026-10-03T06:50:49.222292587Z",
+      "occurred_at": "2026-10-08T01:58:31.707333298Z",
       "project": "ridewell-api",
       "project_label": "Ridewell API",
-      "rationale": "The 2026-09-20 platform migration reassigned numeric driver ids for over a thousand accounts and briefly served two drivers each other's cached profile. The dispatch service already receives a separate UUID from the identity provider that survives a backend migration; keying the cache on that UUID removes the failure mode the numeric-id assumption depended on.",
+      "question": "How do we avoid a database round trip on every dispatch lookup?",
+      "question_id": "question-e05aecb0-39ce-5bd9-b3fb-e9eb6e4be777",
+      "rationale": "Driver-profile reads dominate dispatch-service load, about 70% of calls. An in-memory LRU keyed by driver_id avoids a database round trip on every dispatch and is simple to reason about, since driver_id is the primary key login already returns.",
       "rejected_options": [
         {
-          "label": "Drop the profile cache entirely",
-          "option_id": "option-3324cd6f-cd81-52d3-9371-b16284f8e4d0"
+          "label": "Redis cache keyed by driver_id",
+          "option_id": "option-61483a4f-ff63-41ba-a302-59777cc93f34"
         },
         {
-          "label": "Redis cache keyed by the UUID",
-          "option_id": "option-5b07cab2-bc2d-5a78-87e9-ed69e32190ca"
+          "label": "No cache (read through on every request)",
+          "option_id": "option-9e831087-3420-48e0-bede-f2c7fe8c887d"
         }
       ],
       "rests_on": [
@@ -250,34 +176,43 @@
           "added": {
             "when": "at_capture"
           },
-          "id": "evidence-e3bd96fd-e87b-4029-8d41-8c0a1635aa01",
-          "kind": "evidence",
-          "label": "Incident review, 2026-09-20: migrating dispatch to the new fleet-partner platform reassigned driver_id for about 1,200 accounts during the backfill; two drivers were shown another driver's cached profile for several minutes before the cache expired.",
-          "state": "recorded",
-          "ts": "2026-10-03T06:50:48.722903820Z"
+          "id": "hypothesis-58a7b4fb-e4a1-4a13-a412-8b36d1b999ca",
+          "kind": "assumption",
+          "label": "Driver ids are assigned once at signup and never change for the lifetime of the account",
+          "state": "refuted"
         }
       ],
-      "slug": "cache-driver-profiles-keyed-by-a-stable-external-uuid-instea",
-      "status": "accepted",
+      "slug": "cache-driver-profiles-in-memory-keyed-by-the-drivers-numeric",
+      "status": "superseded",
       "still_holds": {
-        "held_up": true,
-        "reasons": []
+        "held_up": false,
+        "reasons": [
+          {
+            "by_id": "decision-73fc1546-71e1-4db2-b765-5625fc9147b6",
+            "gap_events": 34,
+            "kind": "superseded_by"
+          },
+          {
+            "hypothesis_id": "hypothesis-58a7b4fb-e4a1-4a13-a412-8b36d1b999ca",
+            "kind": "premised_on_refuted"
+          }
+        ]
       },
-      "title": "Cache driver profiles keyed by a stable external UUID instead of the mutable numeric id",
+      "title": "Cache driver profiles in memory, keyed by the driver's numeric id",
       "topic_keys": [
         "infrastructure",
         "ridewell"
       ]
     },
-    "latency_ms": 15,
+    "latency_ms": 82,
     "result_count": 1,
     "truncated": false
   },
-  "decision-b7803c49-63d0-440b-ab60-d0caffdbeb6f": {
+  "decision-40838d6c-1a52-46be-b75a-6e8a6d5c1b53": {
     "data": {
       "chosen_option": {
         "label": "Not guilty",
-        "option_id": "option-9ede13b7-3aa7-585c-a608-0dec6c344e18"
+        "option_id": "option-ef6c61d2-f3ea-5d22-8f9a-cdaa8682b965"
       },
       "decided_by": {
         "decider_ids": [
@@ -289,17 +224,17 @@
         "source": "human",
         "source_ref": "human:juror-foreman"
       },
-      "decision_id": "decision-b7803c49-63d0-440b-ab60-d0caffdbeb6f",
+      "decision_id": "decision-40838d6c-1a52-46be-b75a-6e8a6d5c1b53",
       "dependents_count": 0,
       "grounding_state": "grounded",
-      "occurred_at": "2026-10-03T06:50:52.023377734Z",
+      "occurred_at": "2026-10-08T01:58:33.827579775Z",
       "project": "12-angry-men",
       "project_label": "12 Angry Men",
       "rationale": "A second knife identical to the one in evidence turned up two blocks from the apartment, undercutting the claim it was one of a kind. The re-enactment showed the upstairs witness could not have reached his door in time to see what he described. And the only eyewitness needed glasses she was not wearing in bed. None of this proves innocence, but it is enough reasonable doubt that all twelve of us can no longer say guilty beyond it.",
       "rejected_options": [
         {
           "label": "Guilty",
-          "option_id": "option-c552b223-b175-55e8-8373-5fc622a4e414"
+          "option_id": "option-03a9b9fa-a6fe-5389-952b-926acb0f0af3"
         }
       ],
       "rests_on": [
@@ -307,21 +242,21 @@
           "added": {
             "when": "at_capture"
           },
-          "id": "evidence-226df38c-4b36-42fb-a5a9-9d32f287c63b",
+          "id": "evidence-2f0b077a-eb01-458d-9e39-0b75bab409e7",
           "kind": "evidence",
-          "label": "Re-enactment in the jury room: walking from the bed to the front door in the defendant's apartment takes 41 seconds using his own cane, not the 15 seconds the old man upstairs claimed for hearing the threat, running to the door, and seeing the defendant flee.",
+          "label": "The woman across the street testified she saw the stabbing through the windows of a passing elevated train, but she was also seen with fresh marks on her nose from eyeglasses — she would not have been wearing them in bed, and without them an identification across the street at night is unreliable.",
           "state": "recorded",
-          "ts": "2026-10-03T06:50:50.919033407Z"
+          "ts": "2026-10-08T01:58:33.619765755Z"
         },
         {
           "added": {
             "when": "at_capture"
           },
-          "id": "evidence-832715cc-00d5-4650-9ddc-bed8748dd52f",
+          "id": "evidence-741d56fd-4662-4946-83c1-aa61f4ca57ff",
           "kind": "evidence",
-          "label": "The woman across the street testified she saw the stabbing through the windows of a passing elevated train, but she was also seen with fresh marks on her nose from eyeglasses — she would not have been wearing them in bed, and without them an identification across the street at night is unreliable.",
+          "label": "Re-enactment in the jury room: walking from the bed to the front door in the defendant's apartment takes 41 seconds using his own cane, not the 15 seconds the old man upstairs claimed for hearing the threat, running to the door, and seeing the defendant flee.",
           "state": "recorded",
-          "ts": "2026-10-03T06:50:51.129482399Z"
+          "ts": "2026-10-08T01:58:33.533601745Z"
         }
       ],
       "slug": "the-jury-finds-the-defendant-not-guilty",
@@ -336,15 +271,209 @@
         "12-angry-men"
       ]
     },
-    "latency_ms": 174,
+    "latency_ms": 12,
     "result_count": 1,
     "truncated": false
   },
-  "decision-d72e92ef-7656-4bd4-b21e-fe62557e23ef": {
+  "decision-605ce468-14f7-4f54-b54e-ac4bf2f0276f": {
+    "data": {
+      "chosen_option": {
+        "label": "Guilty",
+        "option_id": "option-8d96bd53-61c9-4ca7-9c28-abe32213567e"
+      },
+      "decided_by": {
+        "decider_ids": [
+          "human:juror-foreman"
+        ],
+        "proposer_id": "human:juror-foreman",
+        "review": "disputed",
+        "source": "human",
+        "source_ref": "human:juror-foreman"
+      },
+      "decision_id": "decision-605ce468-14f7-4f54-b54e-ac4bf2f0276f",
+      "dependents_count": 0,
+      "grounding_state": "grounded",
+      "occurred_at": "2026-10-08T01:58:33.325468065Z",
+      "project": "12-angry-men",
+      "project_label": "12 Angry Men",
+      "question": "How does the jury find the defendant?",
+      "question_id": "question-4fdba55b-3b1b-5c58-afaa-30f19fabd444",
+      "quote": "That's eleven guilty. Somebody's got a reasonable doubt?",
+      "rationale": "Eleven of twelve jurors voted guilty on the first ballot. The knife matches the defendant's own description of a rare weapon, the downstairs neighbor testified he heard the defendant threaten to kill his father and then heard the body fall, and the woman across the street said she saw the stabbing through the windows of a passing elevated train.",
+      "rejected_options": [
+        {
+          "label": "Not guilty",
+          "option_id": "option-555fee03-754e-4822-9cc5-7d2ce4b70a79"
+        },
+        {
+          "label": "Hung jury (cannot agree)",
+          "option_id": "option-58e95789-0a51-4164-947d-e2aa5669f124"
+        }
+      ],
+      "rests_on": [
+        {
+          "added": {
+            "when": "at_capture"
+          },
+          "id": "evidence-9b9b1b7f-70bf-4761-ac3e-c941e8fe1c72",
+          "kind": "evidence",
+          "label": "Trial testimony: the downstairs neighbor says he heard 'I'm gonna kill you' followed by a body hitting the floor, one second after a train passed",
+          "source": "trial transcript, witness: downstairs neighbor",
+          "state": "recorded",
+          "ts": "2026-10-08T01:58:33.217058878Z"
+        }
+      ],
+      "slug": "the-jury-finds-the-defendant-guilty",
+      "status": "superseded",
+      "still_holds": {
+        "held_up": false,
+        "reasons": [
+          {
+            "by_id": "decision-40838d6c-1a52-46be-b75a-6e8a6d5c1b53",
+            "gap_events": 18,
+            "kind": "superseded_by"
+          },
+          {
+            "kind": "contested"
+          }
+        ]
+      },
+      "title": "The jury finds the defendant guilty",
+      "topic_keys": [
+        "verdict",
+        "12-angry-men"
+      ]
+    },
+    "latency_ms": 11,
+    "result_count": 1,
+    "truncated": false
+  },
+  "decision-73fc1546-71e1-4db2-b765-5625fc9147b6": {
+    "data": {
+      "chosen_option": {
+        "label": "In-memory LRU keyed by the identity-provider UUID",
+        "option_id": "option-aeaa80b2-9356-5feb-8d12-d24b7920710c"
+      },
+      "decided_by": {
+        "decider_ids": [
+          "human:maya"
+        ],
+        "proposer_id": "human:maya",
+        "review": "self_accepted",
+        "source": "human",
+        "source_ref": "human:maya"
+      },
+      "decision_id": "decision-73fc1546-71e1-4db2-b765-5625fc9147b6",
+      "dependents_count": 0,
+      "grounding_state": "grounded",
+      "occurred_at": "2026-10-08T01:58:32.832854727Z",
+      "project": "ridewell-api",
+      "project_label": "Ridewell API",
+      "rationale": "The 2026-09-20 platform migration reassigned numeric driver ids for over a thousand accounts and briefly served two drivers each other's cached profile. The dispatch service already receives a separate UUID from the identity provider that survives a backend migration; keying the cache on that UUID removes the failure mode the numeric-id assumption depended on.",
+      "rejected_options": [
+        {
+          "label": "Redis cache keyed by the UUID",
+          "option_id": "option-197cedee-2ff6-533c-aba8-753228625ea7"
+        },
+        {
+          "label": "Drop the profile cache entirely",
+          "option_id": "option-1ff965fa-d147-5d16-ad75-7c28bd56cd35"
+        }
+      ],
+      "rests_on": [
+        {
+          "added": {
+            "when": "at_capture"
+          },
+          "id": "evidence-f3ab2902-658b-4dea-bc7c-49619f5ab27a",
+          "kind": "evidence",
+          "label": "Incident review, 2026-09-20: migrating dispatch to the new fleet-partner platform reassigned driver_id for about 1,200 accounts during the backfill; two drivers were shown another driver's cached profile for several minutes before the cache expired.",
+          "state": "recorded",
+          "ts": "2026-10-08T01:58:32.549169145Z"
+        }
+      ],
+      "slug": "cache-driver-profiles-keyed-by-a-stable-external-uuid",
+      "status": "accepted",
+      "still_holds": {
+        "held_up": true,
+        "reasons": []
+      },
+      "title": "Cache driver profiles keyed by a stable external UUID instead of the mutable numeric id",
+      "topic_keys": [
+        "infrastructure",
+        "ridewell"
+      ]
+    },
+    "latency_ms": 45,
+    "result_count": 1,
+    "truncated": false
+  },
+  "decision-7aba6606-fd61-485d-84b1-c2b529e77230": {
+    "data": {
+      "chosen_option": {
+        "label": "Hosted Postgres with a per-user sync log",
+        "option_id": "option-731c7a59-639b-501a-a99a-c86d63a5dd36"
+      },
+      "decided_by": {
+        "decider_ids": [
+          "human:priya"
+        ],
+        "proposer_id": "human:priya",
+        "review": "self_accepted",
+        "source": "human",
+        "source_ref": "human:priya"
+      },
+      "decision_id": "decision-7aba6606-fd61-485d-84b1-c2b529e77230",
+      "dependents_count": 0,
+      "grounding_state": "grounded",
+      "occurred_at": "2026-10-08T01:58:31.421942960Z",
+      "project": "trailkeeper",
+      "project_label": "TrailKeeper",
+      "rationale": "The single-device assumption behind local SQLite doesn't hold: the beta survey shows most hikers already use TrailKeeper on their phone and the web dashboard, and a fifth of them lost photos or edits made on the other device. Postgres with a per-user sync log lets both surfaces read and write the same trip; we accept running one small managed instance in exchange for not losing anyone's trip again.",
+      "rejected_options": [
+        {
+          "label": "Keep SQLite and add a manual export/import",
+          "option_id": "option-6312e102-b092-52f3-ad5f-9da04cf46ccf"
+        },
+        {
+          "label": "Firebase Realtime Database",
+          "option_id": "option-6ce32ee8-be98-56e3-b318-e3eaf48cdb68"
+        }
+      ],
+      "rests_on": [
+        {
+          "added": {
+            "when": "at_capture"
+          },
+          "id": "evidence-c40482c8-46cf-5cd2-9389-b2483f1df98b",
+          "kind": "evidence",
+          "label": "Beta survey, Sept 2026: 61% of 140 respondents use TrailKeeper on both phone and web; 22% reported a trip missing photos or edits made on the other device",
+          "source": "trailkeeper beta survey, 2026-09",
+          "state": "recorded",
+          "ts": "2026-10-08T01:58:31.263664390Z"
+        }
+      ],
+      "slug": "move-hike-log-storage-to-a-hosted-postgres-synced-across",
+      "status": "accepted",
+      "still_holds": {
+        "held_up": true,
+        "reasons": []
+      },
+      "title": "Move hike log storage to a hosted Postgres, synced across devices",
+      "topic_keys": [
+        "infrastructure",
+        "trailkeeper"
+      ]
+    },
+    "latency_ms": 13,
+    "result_count": 1,
+    "truncated": false
+  },
+  "decision-d5a0e793-f2ad-46db-9c71-0af02ed3849d": {
     "data": {
       "chosen_option": {
         "label": "5 retries exponential backoff capped at 30s",
-        "option_id": "option-a303505f-3c78-4f20-9508-579471bdd526"
+        "option_id": "option-d9c86ede-dcbf-47f8-9216-da529ae391be"
       },
       "decided_by": {
         "decider_ids": [
@@ -355,21 +484,21 @@
         "source": "agent",
         "source_ref": "agent:claude:ridewell-mobile-ci"
       },
-      "decision_id": "decision-d72e92ef-7656-4bd4-b21e-fe62557e23ef",
+      "decision_id": "decision-d5a0e793-f2ad-46db-9c71-0af02ed3849d",
       "dependents_count": 0,
       "grounding_state": "bet",
-      "occurred_at": "2026-10-03T06:50:48.614038338Z",
+      "occurred_at": "2026-10-08T01:58:32.505652482Z",
       "project": "ridewell-mobile",
       "project_label": "Ridewell Mobile",
       "rationale": "Field logs from the last two weeks show sync failures during cell-tower handoff mostly clear within 4 attempts. A fixed short retry gives up too early on a flaky handoff; an unbounded retry can spin all day and drains the phone's battery mid-shift.",
       "rejected_options": [
         {
           "label": "Unlimited retries with a circuit breaker",
-          "option_id": "option-2701e2b8-2796-4fe0-a2b7-1d7453217003"
+          "option_id": "option-6adeceeb-d3b9-46dc-bde8-b1d6192374e1"
         },
         {
           "label": "3 retries fixed 5s gap",
-          "option_id": "option-ed212884-d10b-4e24-9a01-176123a0fd78"
+          "option_id": "option-9c9fe497-e420-4b3a-9bfc-34bc440cb44c"
         }
       ],
       "rests_on": [
@@ -378,7 +507,7 @@
             "when": "at_capture"
           },
           "check_by": "2026-11-15T00:00:00Z",
-          "id": "hypothesis-26ae9208-4a83-417a-8a29-1306e4ac107b",
+          "id": "hypothesis-99654dc5-4428-4750-9396-722de687f65d",
           "kind": "bet",
           "label": "Capping at 5 retries with backoff will clear at least 90% of handoff failures without a manual retry",
           "overdue": false,
@@ -386,7 +515,7 @@
           "would_change_if": "Manual retry reports do not drop after this ships"
         }
       ],
-      "slug": "retry-a-failed-location-ping-upload-up-to-5-times-with-expon",
+      "slug": "retry-a-failed-location-ping-upload-up-to-5-times-with",
       "status": "accepted",
       "still_holds": {
         "held_up": true,
@@ -399,136 +528,7 @@
         "reliability"
       ]
     },
-    "latency_ms": 9,
-    "result_count": 1,
-    "truncated": false
-  },
-  "decision-f2b0c6a7-e651-4e91-938b-22f57e815627": {
-    "data": {
-      "chosen_option": {
-        "label": "Local SQLite",
-        "option_id": "option-4972868d-8b21-4432-b460-36b5bd5f77f6"
-      },
-      "decided_by": {
-        "decider_ids": [
-          "human:priya"
-        ],
-        "proposer_id": "human:priya",
-        "review": "self_accepted",
-        "source": "human",
-        "source_ref": "human:priya"
-      },
-      "decision_id": "decision-f2b0c6a7-e651-4e91-938b-22f57e815627",
-      "dependents_count": 0,
-      "grounding_state": "grounded",
-      "occurred_at": "2026-10-03T06:50:47.531014282Z",
-      "project": "trailkeeper",
-      "project_label": "TrailKeeper",
-      "question": "Where do we store a hiker's trip logs?",
-      "question_id": "question-b2a2db41-eed8-5c4f-9f63-d05461d1465a",
-      "quote": "Let's not stand up a backend before we know anyone wants this.",
-      "rationale": "TrailKeeper v1 is single-device: one hiker records one trip on one phone. SQLite needs no server, keeps the app fully usable with no signal on trail, and keeps hosting cost at zero while we find out if anyone wants this at all.",
-      "rejected_options": [
-        {
-          "label": "A hosted database from day one",
-          "option_id": "option-498f5780-7a83-4c73-a941-90ce5aff7999"
-        },
-        {
-          "label": "Local JSON files",
-          "option_id": "option-6a453202-4d17-4f17-ba0b-253e15816c6f"
-        }
-      ],
-      "rests_on": [
-        {
-          "added": {
-            "when": "at_capture"
-          },
-          "id": "hypothesis-97a48ecf-7922-419b-98f0-1e9cea4c688e",
-          "kind": "assumption",
-          "label": "Each hiker uses TrailKeeper from a single phone; nobody needs the same trip log on two devices",
-          "state": "open"
-        }
-      ],
-      "slug": "store-hike-logs-in-local-sqlite-on-the-phone",
-      "status": "superseded",
-      "still_holds": {
-        "held_up": false,
-        "reasons": [
-          {
-            "by_id": "decision-f2b18863-ec45-40da-a66d-bbd88e8687b3",
-            "gap_events": 16,
-            "kind": "superseded_by"
-          }
-        ]
-      },
-      "title": "Store hike logs in local SQLite on the phone",
-      "topic_keys": [
-        "infrastructure",
-        "trailkeeper"
-      ]
-    },
-    "latency_ms": 81,
-    "result_count": 1,
-    "truncated": false
-  },
-  "decision-f2b18863-ec45-40da-a66d-bbd88e8687b3": {
-    "data": {
-      "chosen_option": {
-        "label": "Hosted Postgres with a per-user sync log",
-        "option_id": "option-ba3175f5-8af0-5c52-a319-4deaf994b2ef"
-      },
-      "decided_by": {
-        "decider_ids": [
-          "human:priya"
-        ],
-        "proposer_id": "human:priya",
-        "review": "self_accepted",
-        "source": "human",
-        "source_ref": "human:priya"
-      },
-      "decision_id": "decision-f2b18863-ec45-40da-a66d-bbd88e8687b3",
-      "dependents_count": 0,
-      "grounding_state": "grounded",
-      "occurred_at": "2026-10-03T06:50:47.716789684Z",
-      "project": "trailkeeper",
-      "project_label": "TrailKeeper",
-      "rationale": "The single-device assumption behind local SQLite doesn't hold: the beta survey shows most hikers already use TrailKeeper on their phone and the web dashboard, and a fifth of them lost photos or edits made on the other device. Postgres with a per-user sync log lets both surfaces read and write the same trip; we accept running one small managed instance in exchange for not losing anyone's trip again.",
-      "rejected_options": [
-        {
-          "label": "Keep SQLite and add a manual export/import",
-          "option_id": "option-3ccca5b9-a085-588f-b4b1-252db1c70d5c"
-        },
-        {
-          "label": "Firebase Realtime Database",
-          "option_id": "option-7a9958c4-09f4-54ad-bf3a-dc83c864e4ed"
-        }
-      ],
-      "rests_on": [
-        {
-          "added": {
-            "when": "at_capture"
-          },
-          "id": "evidence-d255e801-daf9-5e83-9f5b-49ecc9c12409",
-          "kind": "evidence",
-          "label": "Beta survey, Sept 2026: 61% of 140 respondents use TrailKeeper on both phone and web; 22% reported a trip missing photos or edits made on the other device",
-          "source": "trailkeeper beta survey, 2026-09",
-          "state": "recorded",
-          "ts": "2026-10-03T06:50:47.627480840Z"
-        }
-      ],
-      "slug": "move-hike-log-storage-to-a-hosted-postgres-synced-across-dev",
-      "status": "accepted",
-      "still_holds": {
-        "held_up": true,
-        "reasons": []
-      },
-      "title": "Move hike log storage to a hosted Postgres, synced across devices",
-      "topic_keys": [
-        "infrastructure",
-        "trailkeeper"
-      ]
-    },
-    "latency_ms": 67,
+    "latency_ms": 11,
     "result_count": 1,
     "truncated": false
   }

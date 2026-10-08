@@ -1,0 +1,303 @@
+{
+  "decision-1007a2d2-0405-4b04-a97b-bf5701ad61b9": {
+    "data": {
+      "decision_id": "decision-1007a2d2-0405-4b04-a97b-bf5701ad61b9",
+      "events": [
+        {
+          "actor": {
+            "id": "human:priya",
+            "kind": "human"
+          },
+          "event": "superseded",
+          "occurred_at": "2026-10-08T01:58:31.426286456Z",
+          "offset": 32,
+          "status_after": "superseded",
+          "superseded_by": "decision-7aba6606-fd61-485d-84b1-c2b529e77230"
+        },
+        {
+          "actor": {
+            "id": "human:priya",
+            "kind": "human"
+          },
+          "event": "accepted",
+          "occurred_at": "2026-10-08T01:58:30.525423788Z",
+          "offset": 24,
+          "status_after": "accepted"
+        },
+        {
+          "actor": {
+            "id": "human:priya",
+            "kind": "human"
+          },
+          "event": "proposed",
+          "occurred_at": "2026-10-08T01:58:30.519552240Z",
+          "offset": 16,
+          "status_after": "proposed"
+        }
+      ],
+      "status": "superseded"
+    },
+    "latency_ms": 2,
+    "result_count": 1,
+    "truncated": false
+  },
+  "decision-19f3bba7-7cbd-4548-9eba-a6a04bb15797": {
+    "data": {
+      "decision_id": "decision-19f3bba7-7cbd-4548-9eba-a6a04bb15797",
+      "events": [
+        {
+          "actor": {
+            "id": "agent:codex:ridewell-sync",
+            "kind": "agent"
+          },
+          "event": "accepted",
+          "occurred_at": "2026-10-08T01:58:32.016050697Z",
+          "offset": 52,
+          "status_after": "accepted"
+        },
+        {
+          "actor": {
+            "id": "agent:codex:ridewell-sync",
+            "kind": "agent"
+          },
+          "event": "proposed",
+          "occurred_at": "2026-10-08T01:58:31.930520680Z",
+          "offset": 44,
+          "status_after": "proposed"
+        }
+      ],
+      "status": "accepted"
+    },
+    "latency_ms": 1,
+    "result_count": 1,
+    "truncated": false
+  },
+  "decision-23b5559b-0a10-4f72-a6ca-a9bb1f92d4a5": {
+    "data": {
+      "decision_id": "decision-23b5559b-0a10-4f72-a6ca-a9bb1f92d4a5",
+      "events": [
+        {
+          "actor": {
+            "id": "human:maya",
+            "kind": "human"
+          },
+          "event": "superseded",
+          "occurred_at": "2026-10-08T01:58:32.850632975Z",
+          "offset": 69,
+          "status_after": "superseded",
+          "superseded_by": "decision-73fc1546-71e1-4db2-b765-5625fc9147b6"
+        },
+        {
+          "actor": {
+            "id": "human:maya",
+            "kind": "human"
+          },
+          "event": "accepted",
+          "occurred_at": "2026-10-08T01:58:31.715662098Z",
+          "offset": 43,
+          "status_after": "accepted"
+        },
+        {
+          "actor": {
+            "id": "human:maya",
+            "kind": "human"
+          },
+          "event": "proposed",
+          "occurred_at": "2026-10-08T01:58:31.707333298Z",
+          "offset": 35,
+          "status_after": "proposed"
+        }
+      ],
+      "status": "superseded"
+    },
+    "latency_ms": 3,
+    "result_count": 1,
+    "truncated": false
+  },
+  "decision-40838d6c-1a52-46be-b75a-6e8a6d5c1b53": {
+    "data": {
+      "decision_id": "decision-40838d6c-1a52-46be-b75a-6e8a6d5c1b53",
+      "events": [
+        {
+          "actor": {
+            "id": "human:juror-3",
+            "kind": "human"
+          },
+          "event": "accepted",
+          "occurred_at": "2026-10-08T01:58:34.041038425Z",
+          "offset": 92,
+          "status_after": "accepted"
+        },
+        {
+          "actor": {
+            "id": "human:juror-foreman",
+            "kind": "human"
+          },
+          "event": "accepted",
+          "occurred_at": "2026-10-08T01:58:33.914271660Z",
+          "offset": 91,
+          "status_after": "accepted"
+        },
+        {
+          "actor": {
+            "id": "human:juror-foreman",
+            "kind": "human"
+          },
+          "event": "proposed",
+          "occurred_at": "2026-10-08T01:58:33.827579775Z",
+          "offset": 84,
+          "status_after": "proposed"
+        }
+      ],
+      "status": "accepted"
+    },
+    "latency_ms": 3,
+    "result_count": 1,
+    "truncated": false
+  },
+  "decision-605ce468-14f7-4f54-b54e-ac4bf2f0276f": {
+    "data": {
+      "decision_id": "decision-605ce468-14f7-4f54-b54e-ac4bf2f0276f",
+      "events": [
+        {
+          "actor": {
+            "id": "human:juror-foreman",
+            "kind": "human"
+          },
+          "event": "superseded",
+          "occurred_at": "2026-10-08T01:58:33.904043706Z",
+          "offset": 90,
+          "status_after": "superseded",
+          "superseded_by": "decision-40838d6c-1a52-46be-b75a-6e8a6d5c1b53"
+        },
+        {
+          "actor": {
+            "id": "human:juror-8",
+            "kind": "human"
+          },
+          "event": "rejected",
+          "occurred_at": "2026-10-08T01:58:33.447693456Z",
+          "offset": 81,
+          "status_after": "contested"
+        },
+        {
+          "actor": {
+            "id": "human:juror-foreman",
+            "kind": "human"
+          },
+          "event": "accepted",
+          "occurred_at": "2026-10-08T01:58:33.341110621Z",
+          "offset": 80,
+          "status_after": "accepted"
+        },
+        {
+          "actor": {
+            "id": "human:juror-foreman",
+            "kind": "human"
+          },
+          "event": "proposed",
+          "occurred_at": "2026-10-08T01:58:33.325468065Z",
+          "offset": 72,
+          "status_after": "proposed"
+        }
+      ],
+      "status": "superseded"
+    },
+    "latency_ms": 3,
+    "result_count": 1,
+    "truncated": false
+  },
+  "decision-73fc1546-71e1-4db2-b765-5625fc9147b6": {
+    "data": {
+      "decision_id": "decision-73fc1546-71e1-4db2-b765-5625fc9147b6",
+      "events": [
+        {
+          "actor": {
+            "id": "human:maya",
+            "kind": "human"
+          },
+          "event": "accepted",
+          "occurred_at": "2026-10-08T01:58:32.855690795Z",
+          "offset": 70,
+          "status_after": "accepted"
+        },
+        {
+          "actor": {
+            "id": "human:maya",
+            "kind": "human"
+          },
+          "event": "proposed",
+          "occurred_at": "2026-10-08T01:58:32.832854727Z",
+          "offset": 63,
+          "status_after": "proposed"
+        }
+      ],
+      "status": "accepted"
+    },
+    "latency_ms": 5,
+    "result_count": 1,
+    "truncated": false
+  },
+  "decision-7aba6606-fd61-485d-84b1-c2b529e77230": {
+    "data": {
+      "decision_id": "decision-7aba6606-fd61-485d-84b1-c2b529e77230",
+      "events": [
+        {
+          "actor": {
+            "id": "human:priya",
+            "kind": "human"
+          },
+          "event": "accepted",
+          "occurred_at": "2026-10-08T01:58:31.429704742Z",
+          "offset": 33,
+          "status_after": "accepted"
+        },
+        {
+          "actor": {
+            "id": "human:priya",
+            "kind": "human"
+          },
+          "event": "proposed",
+          "occurred_at": "2026-10-08T01:58:31.421942960Z",
+          "offset": 26,
+          "status_after": "proposed"
+        }
+      ],
+      "status": "accepted"
+    },
+    "latency_ms": 5,
+    "result_count": 1,
+    "truncated": false
+  },
+  "decision-d5a0e793-f2ad-46db-9c71-0af02ed3849d": {
+    "data": {
+      "decision_id": "decision-d5a0e793-f2ad-46db-9c71-0af02ed3849d",
+      "events": [
+        {
+          "actor": {
+            "id": "agent:claude:ridewell-mobile-ci",
+            "kind": "agent"
+          },
+          "event": "accepted",
+          "occurred_at": "2026-10-08T01:58:32.515155322Z",
+          "offset": 60,
+          "status_after": "accepted"
+        },
+        {
+          "actor": {
+            "id": "agent:claude:ridewell-mobile-ci",
+            "kind": "agent"
+          },
+          "event": "proposed",
+          "occurred_at": "2026-10-08T01:58:32.505652482Z",
+          "offset": 54,
+          "status_after": "proposed"
+        }
+      ],
+      "status": "accepted"
+    },
+    "latency_ms": 2,
+    "result_count": 1,
+    "truncated": false
+  }
+}

@@ -1,18 +1,21 @@
 //! Builds a fresh HiveMind ledger through the real capture verbs
 //! (`hivemind::cli::run`, the same command layer the `hivemind` binary uses — never
 //! hand-written fixture JSON, see hivemind-hc-yds and hu-0pf) and exports the two files the
-//! public demo's read-only UI needs: `GET /v1/graph`'s response body, verbatim, and one
-//! `GET /v1/decisions/verify?id=` response per decision.
+//! public demo's read-only UI needs: `GET /v1/graph`'s response body, verbatim, and, per
+//! decision, one `GET /v1/decisions/verify?id=` response and one
+//! `GET /v1/decisions/{id}/status-events` response.
 //!
 //! `cargo test --test example_data_generator` runs on every PR via the existing `rust` CI
 //! job (no extra CI wiring) and only checks the freshly-built snapshot's shape: decision and
 //! project counts, that both stories that must stay visible (a superseded decision, and the
-//! disagreement on the superseded first jury verdict) are still there, and that briefs.json
-//! covers every decision in graph.json.
+//! disagreement on the superseded first jury verdict) are still there, that briefs.json
+//! covers every decision in graph.json, and that status-events.json covers each one too, with
+//! the newest event's `status_after` equal to the decision's status.
 //! It writes nothing.
 //!
 //! `cargo test --test example_data_generator -- --bless` does the same build, then also
-//! writes demos/example-data/snapshot/{graph,briefs}.json — the files this repo commits.
+//! writes demos/example-data/snapshot/{graph,briefs,status-events}.json — the files this repo
+//! commits.
 //! Decision ids and timestamps are freshly generated on every run (real capture, not a fixed
 //! fixture), so `--bless` is how the snapshot is regenerated after the story below changes;
 //! there is no byte-stable golden diff for this one (contrast tests/golden.rs, whose seed data
@@ -50,23 +53,27 @@ fn run_harness() -> TestResult<()> {
     build_story(&hivemind_dir)?;
 
     let runtime = tokio::runtime::Runtime::new()?;
-    let (graph, briefs) = runtime.block_on(export_snapshot(&hivemind_dir))?;
+    let (graph, briefs, status_events) = runtime.block_on(export_snapshot(&hivemind_dir))?;
 
     let cleanup = std::fs::remove_dir_all(&scratch);
     // Checked before writing: a shape that fails the check is never blessed into the
     // committed snapshot.
-    check_snapshot(&graph, &briefs)?;
+    check_snapshot(&graph, &briefs, &status_events)?;
 
     if bless {
-        write_snapshot(&graph, &briefs)?;
-        println!("blessed {SNAPSHOT_DIR}/graph.json and {SNAPSHOT_DIR}/briefs.json");
+        write_snapshot(&graph, &briefs, &status_events)?;
+        println!(
+            "blessed {SNAPSHOT_DIR}/graph.json, {SNAPSHOT_DIR}/briefs.json and \
+             {SNAPSHOT_DIR}/status-events.json"
+        );
     }
 
     cleanup?;
     println!(
-        "example-data generator: {} decisions, {} briefs — shape OK{}",
+        "example-data generator: {} decisions, {} briefs, {} status-event lists — shape OK{}",
         array_len(&graph["decisions"]),
         object_len(&briefs),
+        object_len(&status_events),
         if bless { " (blessed)" } else { "" }
     );
     Ok(())
@@ -637,7 +644,7 @@ fn first_rests_on_id(v: &Value) -> TestResult<String> {
 // (tower's oneshot, no TCP bind) so the exported JSON is exactly what a real GET returns.
 // ---------------------------------------------------------------------------
 
-async fn export_snapshot(hivemind_dir: &Path) -> TestResult<(Value, Value)> {
+async fn export_snapshot(hivemind_dir: &Path) -> TestResult<(Value, Value, Value)> {
     let config = ApiConfig {
         hivemind_dir: hivemind_dir.to_path_buf(),
         bind: std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
@@ -666,15 +673,18 @@ async fn export_snapshot(hivemind_dir: &Path) -> TestResult<(Value, Value)> {
         .ok_or("graph.decisions should be an array")?;
 
     let mut briefs = serde_json::Map::new();
+    let mut status_events = serde_json::Map::new();
     for decision in decisions {
         let id = decision["id"]
             .as_str()
             .ok_or("each graph decision should have a string id")?;
         let brief = call_json(&router, &format!("/v1/decisions/verify?id={id}")).await?;
         briefs.insert(id.to_owned(), brief);
+        let events = call_json(&router, &format!("/v1/decisions/{id}/status-events")).await?;
+        status_events.insert(id.to_owned(), events);
     }
 
-    Ok((graph, Value::Object(briefs)))
+    Ok((graph, Value::Object(briefs), Value::Object(status_events)))
 }
 
 async fn call_json(router: &axum::Router, path: &str) -> TestResult<Value> {
@@ -702,7 +712,7 @@ async fn call_json(router: &axum::Router, path: &str) -> TestResult<Value> {
 // visible, and the three named projects (plus the courtroom) are present.
 // ---------------------------------------------------------------------------
 
-fn check_snapshot(graph: &Value, briefs: &Value) -> TestResult<()> {
+fn check_snapshot(graph: &Value, briefs: &Value, status_events: &Value) -> TestResult<()> {
     let decisions = graph["decisions"]
         .as_array()
         .ok_or("graph.decisions should be an array")?;
@@ -731,6 +741,7 @@ fn check_snapshot(graph: &Value, briefs: &Value) -> TestResult<()> {
             return Err(format!("briefs.json is missing decision {id}").into());
         }
     }
+    check_status_events(decisions, status_events)?;
 
     let project_labels: std::collections::BTreeSet<&str> = graph["nodes"]
         .as_array()
@@ -763,6 +774,41 @@ fn check_snapshot(graph: &Value, briefs: &Value) -> TestResult<()> {
         );
     }
     check_jury_verdicts(decisions, briefs_obj)
+}
+
+/// The demo has no log to read status events from, so status-events.json must hold one entry per
+/// decision in graph.json, and each list must end where the decision stands: its newest event's
+/// `status_after` is the decision's status in the graph.
+fn check_status_events(decisions: &[Value], status_events: &Value) -> TestResult<()> {
+    let by_id = status_events
+        .as_object()
+        .ok_or("status-events snapshot should be a JSON object")?;
+    if by_id.len() != decisions.len() {
+        return Err(format!(
+            "status-events.json should have one entry per decision ({} decisions, {} entries)",
+            decisions.len(),
+            by_id.len()
+        )
+        .into());
+    }
+    for decision in decisions {
+        let id = decision["id"].as_str().unwrap_or_default();
+        let entry = by_id
+            .get(id)
+            .ok_or_else(|| format!("status-events.json is missing decision {id}"))?;
+        let newest = entry["data"]["events"]
+            .as_array()
+            .and_then(|events| events.first())
+            .ok_or_else(|| format!("status-events.json has no events for decision {id}"))?;
+        if newest["status_after"] != decision["status"] {
+            return Err(format!(
+                "decision {id} is {} in graph.json, but its newest status event leaves it {}",
+                decision["status"], newest["status_after"]
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 const FIRST_VERDICT: &str = "The jury finds the defendant guilty";
@@ -822,7 +868,7 @@ fn verdict_by_title<'a>(decisions: &'a [Value], title: &str) -> TestResult<&'a V
         })
 }
 
-fn write_snapshot(graph: &Value, briefs: &Value) -> TestResult<()> {
+fn write_snapshot(graph: &Value, briefs: &Value, status_events: &Value) -> TestResult<()> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let snapshot_dir = manifest_dir.join(SNAPSHOT_DIR);
     std::fs::create_dir_all(&snapshot_dir)?;
@@ -833,6 +879,10 @@ fn write_snapshot(graph: &Value, briefs: &Value) -> TestResult<()> {
     std::fs::write(
         snapshot_dir.join("briefs.json"),
         format!("{}\n", serde_json::to_string_pretty(briefs)?),
+    )?;
+    std::fs::write(
+        snapshot_dir.join("status-events.json"),
+        format!("{}\n", serde_json::to_string_pretty(status_events)?),
     )?;
     Ok(())
 }

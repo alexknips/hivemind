@@ -26,25 +26,32 @@ Three fictional projects, four stories, eight decisions:
 - `snapshot/graph.json` — the body of `GET /v1/graph`, verbatim.
 - `snapshot/briefs.json` — one JSON object mapping each decision id in `graph.json` to the body
   of `GET /v1/decisions/verify?id=<that id>`, verbatim (`{"data": {...}}` per entry).
+- `snapshot/status-events.json` — one JSON object mapping each decision id in `graph.json` to the
+  body of `GET /v1/decisions/<that id>/status-events`, verbatim. The demo has no log to read
+  those events from, so this is how its Status history rows get their day, who made the change
+  and the status it led to. Each entry's newest `status_after` equals that decision's status in
+  `graph.json`.
 
-These are the two files the read-only public-demo UI reads (see hivemind-2cde's originating
+These are the three files the read-only public-demo UI reads (see hivemind-2cde's originating
 comment from the hivemind-ui side). Decision ids and timestamps are freshly generated on every
 regeneration — real capture, not a fixed fixture — so there is no byte-stable diff to preserve
 across runs; what's committed is simply the most recent blessed run.
 
 ## Regenerating
 
-The whole ledger and both snapshot files come from one test binary,
+The whole ledger and all three snapshot files come from one test binary,
 `tests/example_data_generator.rs`:
 
 ```bash
 # Check only: builds the ledger in a temp dir, calls the real API in-process, and asserts
 # the snapshot's shape (decision/project counts, that a superseded decision survives and the
-# first jury verdict's disagreement is still on its record). Writes nothing. This is what CI runs on every PR — no extra CI job needed,
-# it's an ordinary `cargo test` target.
+# first jury verdict's disagreement is still on its record, and that every decision has a
+# status-events entry ending at the status graph.json gives it). Writes nothing. This is what
+# CI runs on every PR — no extra CI job needed, it's an ordinary `cargo test` target.
 cargo test --test example_data_generator
 
-# Regenerate: does the same build, then overwrites demos/example-data/snapshot/{graph,briefs}.json.
+# Regenerate: does the same build, then overwrites
+# demos/example-data/snapshot/{graph,briefs,status-events}.json.
 cargo test --test example_data_generator -- --bless
 ```
 
