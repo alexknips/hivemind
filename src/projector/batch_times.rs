@@ -123,6 +123,7 @@ impl ReceivedBatches {
                 if session.initiator.is_none() && actor == submitter.actor_id {
                     session.initiator = Some(actor.to_owned());
                 }
+                // ubs:ignore: == compares actor ids (public attribution, not secrets or tokens)
                 if !session.participants.iter().any(|known| known == actor) {
                     session.participants.push(actor.to_owned());
                 }
