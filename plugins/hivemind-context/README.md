@@ -141,8 +141,11 @@ Check whether it still holds:
 
 If a description matches more than one decision equally well, every verb
 above returns a numbered candidate list instead of guessing; write verbs
-additionally perform no write in that case. Re-run with `--pick N` or a bare
-`#N`.
+additionally perform no write in that case. A write verb does the same
+whenever more than one decision holds every word of the description, even
+when one of them carries more of the words in its title: only a description
+that one decision alone matches in full, or that is a decision's exact title
+or id, writes in one call. Re-run with `--pick N` or a bare `#N`.
 
 ## Naming
 

@@ -3332,6 +3332,88 @@ mod transport_parity {
     }
 
     #[tokio::test]
+    async fn disagree_decision_lists_two_decisions_that_hold_every_word_though_one_is_more_about_it(
+    ) {
+        // hivemind-293q: both hold every word of "hosted plan pricing"; one says all three in its
+        // title. A tool that only shows answers with that one; a tool that writes lists both and
+        // appends nothing, since a recorded rejection cannot be taken back.
+        let stdio_dir = unique_dir("disagree-full-matches-stdio");
+        let http_dir = unique_dir("disagree-full-matches-http");
+        for (title, rationale, topic) in [
+            (
+                "Hosted plan pricing is picked after the comparison",
+                "The price waits for the first testers' feedback; until then nobody is charged.",
+                "pricing",
+            ),
+            (
+                "No commercial licence line in the README",
+                "Self-hosting stays free. The hosted plan pricing is picked after the comparison, so the README names no price.",
+                "licence",
+            ),
+        ] {
+            let seed = json!({
+                "grounding": [{"kind": "bet"}],
+                "title": title,
+                "rationale": rationale,
+                "topic_keys": [topic],
+                "options": [{"label": "only"}],
+            });
+            stdio_call(&stdio_dir, "capture_decision", seed.clone());
+            http_call(&http_dir, "capture_decision", seed).await;
+        }
+
+        let disagree = json!({
+            "description": "hosted plan pricing",
+            "reason": "should not land anywhere",
+        });
+        let shown = json!({ "description": "hosted plan pricing" });
+        let stdio = stdio_call(&stdio_dir, "disagree_decision", disagree.clone());
+        let http = http_call(&http_dir, "disagree_decision", disagree).await;
+        let stdio_shown = stdio_call(&stdio_dir, "get_decision_neighborhood", shown.clone());
+        let http_shown = http_call(&http_dir, "get_decision_neighborhood", shown).await;
+        let _ = std::fs::remove_dir_all(&stdio_dir);
+        let _ = std::fs::remove_dir_all(&http_dir);
+
+        for (name, result) in [("stdio", &stdio["result"]), ("http", &http["result"])] {
+            assert_eq!(
+                result["isError"], false,
+                "{name}: ambiguous is not an error"
+            ); // ubs:ignore: test-only assertion
+            let structured = &result["structuredContent"];
+            assert_eq!(
+                structured["data"]["outcome"], "ambiguous",
+                "{name}: outcome"
+            ); // ubs:ignore: test-only assertion
+            assert_eq!(
+                // ubs:ignore: test-only assertion
+                structured["data"]["candidates"].as_array().map(Vec::len),
+                Some(2),
+                "{name}: both decisions are listed"
+            );
+            assert_eq!(
+                structured["data"]["candidates"][0]["title"],
+                "Hosted plan pricing is picked after the comparison", // ubs:ignore: test-only assertion
+                "{name}: the decision about the question is listed first"
+            );
+            assert!(
+                structured.get("event_id").is_none(), // ubs:ignore: test-only assertion
+                "{name}: nothing was written: {structured}"
+            );
+        }
+        for (name, result) in [
+            ("stdio", &stdio_shown["result"]),
+            ("http", &http_shown["result"]),
+        ] {
+            assert_eq!(result["isError"], false, "{name}: expected success"); // ubs:ignore: test-only assertion
+            assert_eq!(
+                result["structuredContent"]["data"]["root"]["present"],
+                true, // ubs:ignore: test-only assertion
+                "{name}: a tool that only shows answers with the decision about the question"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn disagree_decision_not_found_description_returns_envelope_not_error() {
         let (stdio, http) = run_seeded(
             "disagree_decision",

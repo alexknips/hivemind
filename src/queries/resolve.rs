@@ -9,9 +9,13 @@
 //! Ambiguity is a value, not an error: `ResolveOutcome::Ambiguous` is the expected outcome when a
 //! description matches more than one decision at the same confidence tier, matching this
 //! project's stance that `contested` is a status, never a silently-collapsed error (AGENTS.md §6).
-//! The gate for a description that matches in full is deliberately conservative and identical for
-//! every caller (read or write verb): resolved only when exactly one candidate occupies the best
-//! rank tier, and, among several that hold every word, when it is about the question (see below).
+//! The gate for a description that matches in full is deliberately conservative. A verb that reads
+//! resolves only when exactly one candidate occupies the best rank tier, and, among several that
+//! hold every word, when it is about the question (see below). A verb that writes resolves only
+//! when one decision alone holds every word, or the question names one outright (its id or title
+//! is the question, or it records the question as asked): where the words sit orders its list but
+//! never picks for it, since a rejection, a new title or a new premise cannot be taken back
+//! (hivemind-293q).
 //!
 //! A description that names a word no decision contains ("why did we choose to move the demo
 //! cell..." when the record never says "choose") is not a dead end: when no decision matches
@@ -38,7 +42,9 @@
 //! own right: with other decisions holding every word too, its own title and topic keys must hold
 //! more than half of the question's words, or the full matches are listed (`full_match_leads`). A
 //! leader that out-weighs the rest by one word in its title, with the others only in a long
-//! rationale, is not the decision asked about because it leads by that word.
+//! rationale, is not the decision asked about because it leads by that word. A verb that writes
+//! is answered with such a leader never: with other decisions holding every word, it gets the
+//! list.
 //!
 //! A negation in the description ("don't adopt Kafka", "why didn't we ...", "do not ...") is not a
 //! word to find: it never appears in `missing_terms`. It is polarity. A decision is the opposite of
@@ -160,10 +166,13 @@ pub enum ResolveOutcome {
 /// narrows the candidate set the same way `search --topic` / `get_relevant_decisions --topic`
 /// already do.
 ///
-/// Resolved iff exactly one candidate occupies the best (lowest) rank tier — no numeric recency
-/// margin (mayor decision, hivemind-tenv.1, 2026-09-07). Only decisions matching every term
-/// compete for that; close candidates (missing some terms) are offered, as `Ambiguous`, only when
-/// there is no full match, and never resolved: more than half of the terms, and at least two.
+/// Resolved iff exactly one decision matches every term, or the description names one outright
+/// (its id or title is the description, or it records the description as asked): with several
+/// that hold every word, where the words sit orders the list but never picks, so the call writes
+/// nothing and lists them (hivemind-293q). There is no numeric recency margin (mayor decision,
+/// hivemind-tenv.1, 2026-09-07). Close candidates (missing some terms) are offered, as
+/// `Ambiguous`, only when there is no full match, and never resolved: more than half of the
+/// terms, and at least two.
 pub fn resolve_decision_by_description(
     graph: &impl GraphView,
     description: &str,
@@ -283,7 +292,7 @@ fn resolve_for(
     });
     let term_count = resolver_terms(description).len();
     let leader_is_clear = asker == Asker::Reader && close_candidate_leads(term_count, &rows);
-    let full_leader_is_about_it = full_match_leads(term_count, &rows);
+    let full_leader_is_about_it = full_match_leads(asker, term_count, &rows);
 
     let leader_promoted = rows.first().is_some_and(|leader| leader.promoted);
     let mut candidates: Vec<ResolvedCandidate> = rows
@@ -385,11 +394,24 @@ fn close_candidate_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bo
 /// names outright (its id or title is the question, or it records the question as asked) is the
 /// one asked about whatever its words: both are answered with as before. A close candidate has
 /// its own gate (`close_candidate_leads`).
-fn full_match_leads(term_count: usize, rows: &[ResolverCandidateRow]) -> bool {
+///
+/// A verb that writes is held to a stricter gate: where the words sit orders its list but never
+/// picks for it (hivemind-293q). A wrong answer for a verb that shows is a wrong decision shown;
+/// for one that writes it is a rejection, a new title or a new premise on the record of a decision
+/// nobody meant, which append-only storage cannot take back, and the help of every such verb says
+/// a description that matches more than one decision lists the candidates and writes nothing. So
+/// with other decisions holding every word too, a writer is answered with the leader only when
+/// the question names it outright; the only decision that holds every word is picked as before.
+fn full_match_leads(asker: Asker, term_count: usize, rows: &[ResolverCandidateRow]) -> bool {
     let Some(first) = rows.first() else {
         return false;
     };
-    rows.len() == 1 || first.about.is_named() || first.headline_words * 2 > term_count
+    match asker {
+        Asker::Writer => rows.len() == 1 || first.about.is_named(),
+        Asker::Reader => {
+            rows.len() == 1 || first.about.is_named() || first.headline_words * 2 > term_count
+        }
+    }
 }
 
 /// Takes the match of another record of the same decision onto the one shown: the best rank, the

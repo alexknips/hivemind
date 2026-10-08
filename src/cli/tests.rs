@@ -1664,6 +1664,139 @@ fn disagree_fluent_pick_disambiguates_and_hash_handle_reuses_it_postgres() -> Cl
     disagree_fluent_pick_disambiguates_and_hash_handle_reuses_it_body(&backend)
 }
 
+/// hivemind-293q: two decisions hold every word of a description and one carries it in its title.
+/// A verb that only shows answers with that one. A verb that writes lists both and writes
+/// nothing, as its help says: a rejection, a new title or a new premise cannot be taken back, so
+/// where the words sit never picks what it lands on.
+fn writers_list_decisions_that_hold_every_word_and_write_nothing_body(
+    backend: &TestBackend,
+) -> CliTestResult {
+    let mut ids = Vec::new();
+    for (title, rationale, topic) in [
+        (
+            "Hosted plan pricing is picked after the comparison",
+            "The price waits for the first testers' feedback; until then nobody is charged.",
+            "pricing",
+        ),
+        (
+            "No commercial licence line in the README",
+            "Self-hosting stays free. The hosted plan pricing is picked after the comparison, so the README names no price.",
+            "licence",
+        ),
+    ] {
+        ids.push(run(&Cli::parse_from(cli_args(
+            backend,
+            &[
+                "--actor",
+                "actor:alice",
+                "emit",
+                "decision.proposed",
+                "--title",
+                title,
+                "--rationale",
+                rationale,
+                "--topic-keys",
+                topic,
+                "--options",
+                "async",
+            ],
+        )))?);
+    }
+    let question = "hosted plan pricing";
+
+    let why = run(&Cli::parse_from(cli_args(
+        backend,
+        &["--json", "query", "why", question],
+    )))?;
+    let why: serde_json::Value = serde_json::from_str(&why)?;
+    ensure_json_eq(
+        &why["data"]["root"]["id"],
+        serde_json::json!(ids[0]),
+        "a verb that only shows answers with the decision whose title carries the question",
+    )?;
+
+    let events_before = backend_event_count(backend);
+    for rest in [
+        vec!["disagree", question, "--reason", "should not land anywhere"],
+        vec!["retitle", question, "--to", "Checker retitle probe"],
+        vec![
+            "ground",
+            question,
+            "--rests-on-assumption",
+            "Checker ground probe",
+        ],
+    ] {
+        let mut args = vec!["--actor", "actor:bob", "--json"];
+        args.extend_from_slice(&rest);
+        let output: serde_json::Value =
+            serde_json::from_str(&run(&Cli::parse_from(cli_args(backend, &args)))?)?;
+        ensure_json_eq(
+            &output["data"]["outcome"],
+            serde_json::json!("ambiguous"),
+            &format!("{} lists the decisions instead of picking one", rest[0]),
+        )?;
+        ensure_json_eq(
+            &output["data"]["candidates"][0]["decision_id"],
+            serde_json::json!(ids[0]),
+            &format!("{} lists the decision about the question first", rest[0]),
+        )?;
+        ensure_eq(
+            output["data"]["candidates"]
+                .as_array()
+                .map(|candidates| candidates.len()),
+            Some(2),
+            &format!("{} lists both decisions", rest[0]),
+        )?;
+    }
+    ensure_eq(
+        backend_event_count(backend),
+        events_before,
+        "disagree, retitle and ground wrote nothing",
+    )?;
+    ensure_eq(
+        decision_title(backend, &ids[0])?,
+        "Hosted plan pricing is picked after the comparison".to_owned(),
+        "the decision about the question was not retitled",
+    )?;
+
+    // One decision alone that holds every word is still written to in one call.
+    let rejected = run(&Cli::parse_from(cli_args(
+        backend,
+        &[
+            "--actor",
+            "actor:bob",
+            "--json",
+            "disagree",
+            "commercial licence README",
+            "--reason",
+            "the line should exist",
+        ],
+    )))?;
+    let rejected: serde_json::Value = serde_json::from_str(&rejected)?;
+    ensure_json_eq(
+        &rejected["decision_id"],
+        serde_json::json!(ids[1]),
+        "a description that one decision alone matches in full writes in one call",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn writers_list_decisions_that_hold_every_word_and_write_nothing() -> CliTestResult {
+    writers_list_decisions_that_hold_every_word_and_write_nothing_body(&TestBackend::sqlite(
+        "writers-list-full-matches",
+    ))
+}
+
+#[test]
+fn writers_list_decisions_that_hold_every_word_and_write_nothing_postgres() -> CliTestResult {
+    let Some(backend) = TestBackend::postgres("writers-list-full-matches-pg") else {
+        eprintln!("skipping; set HIVEMIND_TEST_POSTGRES_URL");
+        return Ok(());
+    };
+    writers_list_decisions_that_hold_every_word_and_write_nothing_body(&backend)
+}
+
 fn disagree_fluent_topic_narrows_ambiguous_to_resolved_body(
     backend: &TestBackend,
 ) -> CliTestResult {

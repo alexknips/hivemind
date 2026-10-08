@@ -436,6 +436,26 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`disagree`, `retitle`, `move`, `supersede` and `ground` no longer write to one of two
+  decisions that a description matches in full.** Their help says a description that matches
+  more than one decision lists the candidates and writes nothing, but since the ordering by
+  where the words sit (hivemind-eral) a writer was answered with whichever full match carried
+  more of the question in its title and topic keys. On a copy of today's ledger (534 events),
+  `disagree "the packaging decision loose end"` recorded a rejection on the pricing decision
+  (event 535) while the decision on the licence line holds every word too, and `retitle` and
+  `ground` landed on it the same way; the plugin scripts and MCP `disagree_decision` did the
+  same. A rejection, a new title or a new premise cannot be taken back, so a verb that writes
+  now lists every decision that holds every word, the one about the question first, and writes
+  nothing, unless the description names one outright (its id or title is the description, or it
+  records the question as asked) or only one decision holds every word. Through the real
+  binary on that copy, the three verbs list both decisions and leave the ledger at 534 events;
+  a description one decision alone holds (`commercial licence README`) still writes in one call;
+  `why` still answers with the decision about the question. `why`, `verify`, `chain` and
+  `compact-view` are unchanged: a wrong pick there shows the wrong decision and writes nothing.
+  Unlike before the ordering, two full matches no longer resolve for a writer because one has a
+  word in its title and the other has none; `--pick N`, `#N`, `--id` or `--topic` settle it.
+  (hivemind-293q)
+
 - **An option label with a comma is no longer cut in two by `--options`, and a piece that
   starts with a space is refused instead of recorded.** `emit decision.capture --options
   "Rename now,Rename after the comparison, before the first listing,Pause"` recorded the

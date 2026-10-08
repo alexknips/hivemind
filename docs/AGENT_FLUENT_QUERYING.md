@@ -289,6 +289,8 @@ So where the words sit is compared before whether every word is somewhere:
   the ambiguity gate applies to them as before. This replaces "the rank tier alone"
   for full matches: two decisions that each have one word in their title used to be
   equals however many of the other words each held in its title, and now are not.
+  That is the order of every list and what a verb that only reads answers with. It
+  never picks what a verb that writes lands on (hivemind-293q, below).
 - Leading the full matches is not being the decision asked about (hivemind-5ctc). A
   decision can out-weigh the others by one word in its title and still carry no more
   than half of the question in its title and topic keys, the rest only in its
@@ -303,8 +305,23 @@ So where the words sit is compared before whether every word is somewhere:
   cases keep the old answer: the only decision that holds every word (there is no one
   to list it among), and the decision the question names outright (its id or title is
   the question, or it records the question as asked). A verb that writes is held to
-  the same rule as one that only reads. A decision that lacks a word has its own gate
-  (above).
+  more than that (next item). A decision that lacks a word has its own gate (above).
+- **A verb that writes is never answered with a full match by where the words sit**
+  (hivemind-293q). `disagree`, `retitle`, `move`, `supersede`, `ground` and a grounding
+  premise say that a description that matches more than one decision lists the
+  candidates and writes nothing, and a rejection, a new title or a new premise cannot
+  be taken back: it stays on the record as someone's position. So when more than one
+  decision holds every word, the call lists them, the decision whose title and topic
+  keys carry more of the question first, and writes to none, however much more that
+  one carries. A decision is picked in one call only when it is the only one that holds
+  every word, or the question names it outright (its id or title is the question, or it
+  records the question as asked). The other decisions that hold every word are not
+  "the same decision": `--pick N`, `#N` or `--id` settles which was meant, and
+  `--topic` narrows the candidates before the count. `why`, `verify`, `chain` and
+  `compact-view` keep answering with the decision that is about the question, as above,
+  since a wrong pick there shows the wrong decision and writes nothing. The CLI, the
+  plugin scripts, the HTTP routes and MCP all resolve a writer's description through the
+  one function, so they list the same candidates.
 - `recall` orders its list the same way (promoted close matches first, then the full
   matches by aboutness, then the remaining close matches by aboutness and, among the
   equally about it, fewest missing words), so `why` names what `recall` just named.
@@ -515,7 +532,12 @@ used to tie however many of the other words each held in its title; they no long
 Resolved also needs the one that holds the best of all three to be about the question
 when it is not the only decision holding every word: its own title and topic keys must
 hold more than half of the question's words, or the full matches are listed
-(hivemind-5ctc, *what the question is about*, §1.1).
+(hivemind-5ctc, *what the question is about*, §1.1). That is the gate of a verb that
+only reads. The gate of a verb that writes is stricter, as the paragraph above asks for
+write verbs: with several decisions holding every word, only the one the description
+names outright (rank 0: its id or title, or the question it records) is Resolved, and
+where the words sit orders the list without ever picking from it (hivemind-293q,
+*what the question is about*, §1.1).
 
 `--pick N` selects candidate `#N` from the *immediately preceding* resolver
 call in the same invocation (used together with `--from-last`, §5) or is

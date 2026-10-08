@@ -1447,14 +1447,19 @@ fn a_full_match_with_the_words_in_its_title_is_ahead_of_one_that_holds_them_in_i
     ])?;
 
     // Both are full matches in the same rank tier (the title of each holds a word), so the rank
-    // tier alone would call them equals. One says all four words in its title.
-    for outcome in both_askers(&graph, "adopt async queue billing")? {
-        match outcome {
-            ResolveOutcome::Resolved { candidate } => {
-                assert_eq!(candidate.decision_id, "d:title");
-            }
-            other => panic!("expected the decision whose title says it, got {other:?}"),
+    // tier alone would call them equals. One says all four words in its title: a verb that shows
+    // answers with it, and a verb that writes lists both and picks none, since where the words
+    // sit orders what it is shown but never picks what it writes to (hivemind-293q).
+    match reading(&graph, "adopt async queue billing")?.data {
+        ResolveOutcome::Resolved { candidate } => assert_eq!(candidate.decision_id, "d:title"),
+        other => panic!("expected the decision whose title says it, got {other:?}"),
+    }
+    match resolve_decision_by_description(&graph, "adopt async queue billing", None)?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            let ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+            assert_eq!(ids, vec!["d:title", "d:body"]);
         }
+        other => panic!("a writer lists both full matches and picks none, got {other:?}"),
     }
     Ok(())
 }
@@ -1577,15 +1582,25 @@ fn a_negated_question_is_not_answered_by_whatever_decision_says_no_somewhere() -
     let question =
         "which days does the page list in its status history and why not the change days?";
 
-    for outcome in both_askers(&graph, question)? {
-        match outcome {
-            ResolveOutcome::Resolved { candidate } => {
-                assert_eq!(candidate.decision_id, "d:history");
-                assert!(!candidate.polarity_mismatch);
-                assert!(candidate.missing_terms.is_empty());
-            }
-            other => panic!("the decision asked about answers, got {other:?}"),
+    match reading(&graph, question)?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:history");
+            assert!(!candidate.polarity_mismatch);
+            assert!(candidate.missing_terms.is_empty());
         }
+        other => panic!("the decision asked about answers, got {other:?}"),
+    }
+    // Both hold every word and neither says the opposite of the question: a writer is given both,
+    // the decision asked about first (hivemind-293q).
+    match resolve_decision_by_description(&graph, question, None)?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            let ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+            assert_eq!(ids, vec!["d:history", "d:competitors"]);
+            assert!(candidates
+                .iter()
+                .all(|c| !c.polarity_mismatch && !c.is_close()));
+        }
+        other => panic!("a writer lists both and picks none, got {other:?}"),
     }
     Ok(())
 }
@@ -1821,15 +1836,25 @@ fn a_full_match_that_leads_on_half_the_words_in_its_headline_is_listed_not_answe
 fn a_full_match_whose_headline_holds_most_of_the_words_is_still_answered() -> Result<()> {
     let graph = audit_graph()?;
 
-    // Two of three words are in d:flagged's title and topic keys: more than half.
-    for outcome in both_askers(&graph, "why doesn't the page show when it was retired?")? {
-        match outcome {
-            ResolveOutcome::Resolved { candidate } => {
-                assert_eq!(candidate.decision_id, "d:flagged");
-                assert!(candidate.missing_terms.is_empty());
-            }
-            other => panic!("most of the words are in its headline: {other:?}"),
+    // Two of three words are in d:flagged's title and topic keys: more than half. A verb that
+    // shows answers with it. Two other decisions hold every word too, so a verb that writes is
+    // given all three, d:flagged first, and writes to none (hivemind-293q).
+    let question = "why doesn't the page show when it was retired?";
+    match reading(&graph, question)?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:flagged");
+            assert!(candidate.missing_terms.is_empty());
         }
+        other => panic!("most of the words are in its headline: {other:?}"),
+    }
+    match resolve_decision_by_description(&graph, question, None)?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            let ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+            assert_eq!(ids.first(), Some(&"d:flagged"), "{ids:?}");
+            assert_eq!(ids.len(), 3, "{ids:?}");
+            assert!(candidates.iter().all(|c| c.missing_terms.is_empty()));
+        }
+        other => panic!("a writer lists the full matches and picks none, got {other:?}"),
     }
     Ok(())
 }
@@ -1856,6 +1881,100 @@ fn the_only_decision_holding_every_word_is_answered_whatever_its_headline() -> R
             ResolveOutcome::Resolved { candidate } => assert_eq!(candidate.decision_id, "d:notes"),
             other => panic!("the one decision that holds them all answers: {other:?}"),
         }
+    }
+    Ok(())
+}
+
+/// Two decisions that hold every word of "hosted plan pricing" (hivemind-293q): one says all
+/// three in its title, the other only in its rationale, as the decision on the licence line does
+/// of a pricing it merely mentions. The title carries the whole question and the other does not.
+fn pricing_graph() -> Result<MemoryGraph> {
+    graph_from_events([
+        decision_proposed_because(
+            1,
+            "d:plan",
+            "Hosted plan pricing is picked after the comparison",
+            "The price waits for the first testers' feedback; until then nobody is charged.",
+            &["pricing"],
+        ),
+        decision_proposed_because(
+            2,
+            "d:licence",
+            "No commercial licence line in the README",
+            "Self-hosting stays free. The hosted plan pricing is picked after the comparison, so the README names no price.",
+            &["licence"],
+        ),
+        decision_proposed(3, "d:queue", "Adopt async queue for billing", &["billing"]),
+    ])
+}
+
+#[test]
+fn a_writer_lists_two_decisions_that_hold_every_word_though_one_is_more_about_the_question(
+) -> Result<()> {
+    let graph = pricing_graph()?;
+    let question = "hosted plan pricing";
+
+    // A verb that shows answers with the decision whose title carries the question: a wrong pick
+    // there shows the wrong decision.
+    match reading(&graph, question)?.data {
+        ResolveOutcome::Resolved { candidate } => assert_eq!(candidate.decision_id, "d:plan"),
+        other => panic!("a verb that shows answers with the decision about it, got {other:?}"),
+    }
+    // A verb that writes would put a rejection, a title or a premise on a decision nobody meant,
+    // and the ledger cannot take it back: both are listed, the decision about it first.
+    match resolve_decision_by_description(&graph, question, None)?.data {
+        ResolveOutcome::Ambiguous { candidates } => {
+            let ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+            assert_eq!(ids, vec!["d:plan", "d:licence"]);
+            assert!(candidates.iter().all(|c| !c.is_close()));
+        }
+        other => panic!("a writer lists both and writes to neither, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_writer_is_answered_when_one_decision_alone_holds_every_word() -> Result<()> {
+    let graph = pricing_graph()?;
+
+    // Every word is in the licence decision and in no other, so there is no one to list it among.
+    for description in ["commercial licence README", "commercial licence line"] {
+        match resolve_decision_by_description(&graph, description, None)?.data {
+            ResolveOutcome::Resolved { candidate } => {
+                assert_eq!(candidate.decision_id, "d:licence", "{description:?}");
+            }
+            other => panic!("{description:?} names one decision alone, got {other:?}"),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_writer_is_answered_with_the_decision_the_description_names_outright_among_full_matches(
+) -> Result<()> {
+    let graph = pricing_graph()?;
+
+    // d:licence holds every word of d:plan's title in its rationale, so the title is a full match
+    // for both; it is the title of one of them, and naming a decision's title is not describing
+    // two.
+    let title = "Hosted plan pricing is picked after the comparison";
+    match resolve_decision_by_description(&graph, title, None)?.data {
+        ResolveOutcome::Resolved { candidate } => {
+            assert_eq!(candidate.decision_id, "d:plan");
+            assert_eq!(candidate.rank, 0);
+        }
+        other => panic!("a decision's own title names it, got {other:?}"),
+    }
+    Ok(())
+}
+
+#[test]
+fn a_topic_hint_that_leaves_one_full_match_lets_a_writer_through() -> Result<()> {
+    let graph = pricing_graph()?;
+
+    match resolve_decision_by_description(&graph, "hosted plan pricing", Some("licence"))?.data {
+        ResolveOutcome::Resolved { candidate } => assert_eq!(candidate.decision_id, "d:licence"),
+        other => panic!("--topic leaves one decision, got {other:?}"),
     }
     Ok(())
 }
