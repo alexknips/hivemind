@@ -391,17 +391,26 @@ The token format is `hm_tk_<64-hex>` (shown once at creation time).
 **Actor identity differs from the REST endpoints above.** `POST /v1/decisions`
 and friends always attribute writes to the bearer token's own bound identity
 and ignore any client-supplied actor — that is what "Actor identity is locked
-to the token" means in the auth story above. The `/mcp` tool-call surface is
-more permissive: `capture_decision`, `capture_evidence`, `capture_hypothesis`,
-`disagree_decision`, `supersede_decision`, and `move_decision` all accept an
-optional `actor_id` argument that, when present, overrides the token's bound identity
-for that one call (`src/api/mcp_http.rs::mcp_resolve_actor`; verified against
+to the token" means in the auth story above. The `/mcp` tool-call surface
+defaults to the bearer token's actor for an agent token: a write with no
+`actor_id` under a token minted at `POST /v1/agent-tokens` is recorded as
+`agent:claude:<role>`, whether or not the client sends an `Mcp-Session-Id` header
+(Claude Code always does). Under a person's credential (a user token or a WorkOS
+JWT) the default is the MCP session's agent, `agent:mcp-http:<session>`, and not
+the person: an agent's write must not be recorded as `human:<email>`, where a
+chosen option would self-accept as that person. On top of that, `capture_decision`,
+`capture_evidence`, `capture_hypothesis`, `disagree_decision`, `supersede_decision`,
+and `move_decision` all accept an optional `actor_id` argument that, when present,
+overrides the default for that one call
+(`src/api/mcp_http.rs::mcp_resolve_actor`; verified against
 a running cell — a `tools/call capture_decision` with
 `"actor_id": "agent:claude:some-session"` produces a `PROPOSED_BY` edge to
-that actor, not to the token's own identity). This lets one shared per-role
+that actor, not to the default). This lets one shared per-role
 token serve many distinct callers with correct per-caller attribution — e.g.
 a fleet of agent sessions sharing one token, each passing its own
 `agent:<tool>:<session>` as `actor_id` — without minting a token per session.
+A token per agent, with no `actor_id` passed, is the simpler setup when each
+agent has its own identity.
 
 This is a convenience, not a security boundary: `actor_id` here is
 **caller-asserted, not verified**. Any holder of the token can claim any

@@ -3997,6 +3997,232 @@ async fn mint_agent_token_writes_show_agent_actor() {
     ); // ubs:ignore
 }
 
+/// A `tools/call` over `/mcp` under a bearer token, as Claude Code sends it: with the
+/// `Mcp-Session-Id` the server issued on `initialize` (hivemind-zbjc).
+fn mcp_authed_tool_call(
+    token: &str,
+    session_id: &str,
+    name: &str,
+    arguments: Value,
+) -> Request<Body> {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": { "name": name, "arguments": arguments },
+    });
+    Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .header("mcp-session-id", session_id)
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap()
+}
+
+/// Opens an MCP session on `token` (`initialize`), returning the `Mcp-Session-Id` the server
+/// issued.
+async fn open_mcp_session(app: &axum::Router, token: &str) -> String {
+    let init = Request::builder()
+        .method("POST")
+        .uri("/mcp")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "clientInfo": { "name": "claude-code", "version": "1.0" }
+                }
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(init).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK); // ubs:ignore
+    response
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize issues a session id") // ubs:ignore
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// Mints an agent token and opens an MCP session on it, returning `(token, session_id)`.
+async fn mint_agent_token_and_open_mcp_session(
+    app: &axum::Router,
+    admin_key: &str,
+    agent_name: &str,
+) -> (String, String) {
+    let (status, body) = call(
+        app.clone(),
+        admin_post(
+            "/v1/agent-tokens",
+            serde_json::json!({"agent_tool": "claude", "agent_name": agent_name}),
+            admin_key,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}"); // ubs:ignore
+    let token = body["token_secret"].as_str().unwrap().to_owned();
+    let session_id = open_mcp_session(app, &token).await;
+    (token, session_id)
+}
+
+/// Mints a person's user token (`human:<email>`) and opens an MCP session on it, returning
+/// `(token, session_id)`.
+async fn mint_user_token_and_open_mcp_session(
+    app: &axum::Router,
+    admin_key: &str,
+    email: &str,
+) -> (String, String) {
+    let (status, body) = call(
+        app.clone(),
+        admin_post(
+            "/v1/users",
+            serde_json::json!({ "email": email, "display_name": "Person", "role": "member" }),
+            admin_key,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}"); // ubs:ignore
+    let token = body["token_secret"].as_str().unwrap().to_owned();
+    let session_id = open_mcp_session(app, &token).await;
+    (token, session_id)
+}
+
+/// Captures one decision over `/mcp` (with a chosen option, so it self-accepts) and returns
+/// the decision context the ledger holds for it: `proposer_id` and `accepted_by` say who
+/// the write was attributed to.
+async fn mcp_capture_and_read_context(
+    app: &axum::Router,
+    token: &str,
+    session_id: &str,
+    title: &str,
+    actor_id: Option<&str>,
+) -> Value {
+    let mut arguments = serde_json::json!({
+        "grounding": [{"kind": "bet"}],
+        "title": title,
+        "rationale": "pins who an MCP-over-HTTP write is attributed to",
+        "topic_keys": ["auth"],
+        "chosen_option_label": "a",
+        "options": [{"label": "a", "description": "option a"}]
+    });
+    if let Some(actor_id) = actor_id {
+        arguments["actor_id"] = Value::String(actor_id.to_owned());
+    }
+    let (status, body) = call(
+        app.clone(),
+        mcp_authed_tool_call(token, session_id, "capture_decision", arguments),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["result"]["isError"], false, "{body}"); // ubs:ignore
+    let decision_id = body["result"]["structuredContent"]["decision_id"]
+        .as_str()
+        .expect("capture returns a decision_id") // ubs:ignore
+        .to_owned();
+
+    let (status, body) = call(
+        app.clone(),
+        mcp_authed_tool_call(
+            token,
+            session_id,
+            "get_decision_context",
+            serde_json::json!({ "decision_id": decision_id }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}"); // ubs:ignore
+    assert_eq!(body["result"]["isError"], false, "{body}"); // ubs:ignore
+    body["result"]["structuredContent"]["data"].clone()
+}
+
+#[tokio::test]
+async fn mcp_http_write_without_actor_id_is_recorded_as_the_agent_token_actor() {
+    let admin_key = "mcp-token-actor-admin";
+    let app = app_with_admin_key(test_ledger_dir(), admin_key);
+    let (token, session_id) =
+        mint_agent_token_and_open_mcp_session(&app, admin_key, "gastown-crew").await;
+
+    // The session header is present, as Claude Code always sends it. The write still
+    // belongs to the token's agent, not to a per-connection `agent:mcp-http:<session>`.
+    let context = mcp_capture_and_read_context(
+        &app,
+        &token,
+        &session_id,
+        "MCP write under an agent token",
+        None,
+    )
+    .await;
+    assert_eq!(
+        context["proposer_id"], "agent:claude:gastown-crew",
+        "{context}"
+    ); // ubs:ignore
+    assert_eq!(
+        context["accepted_by"],
+        serde_json::json!(["agent:claude:gastown-crew"]),
+        "{context}"
+    ); // ubs:ignore
+}
+
+#[tokio::test]
+async fn mcp_http_explicit_actor_id_still_wins_over_the_agent_token_actor() {
+    let admin_key = "mcp-explicit-actor-admin";
+    let app = app_with_admin_key(test_ledger_dir(), admin_key);
+    let (token, session_id) =
+        mint_agent_token_and_open_mcp_session(&app, admin_key, "gastown-crew").await;
+
+    let context = mcp_capture_and_read_context(
+        &app,
+        &token,
+        &session_id,
+        "MCP write naming its own actor",
+        Some("agent:claude:some-session"),
+    )
+    .await;
+    assert_eq!(
+        context["proposer_id"], "agent:claude:some-session",
+        "{context}"
+    ); // ubs:ignore
+}
+
+#[tokio::test]
+async fn mcp_http_write_under_a_person_credential_is_recorded_as_the_session_agent_never_the_person(
+) {
+    let admin_key = "mcp-person-actor-admin";
+    let app = app_with_admin_key(test_ledger_dir(), admin_key);
+    let (token, session_id) =
+        mint_user_token_and_open_mcp_session(&app, admin_key, "alice@example.com").await;
+
+    // The credential names a person, and the session header is present. An agent's write
+    // here must not become `human:alice@example.com`: with a chosen option it would
+    // self-accept as Alice, so the decision would read as one she made
+    // (hivemind-zdsh.3/.6). It stays the MCP session's agent, on both edges.
+    let context = mcp_capture_and_read_context(
+        &app,
+        &token,
+        &session_id,
+        "MCP write under a person's token",
+        None,
+    )
+    .await;
+    let session_agent = format!("agent:mcp-http:{session_id}");
+    assert_eq!(context["proposer_id"], session_agent.as_str(), "{context}"); // ubs:ignore
+    assert_eq!(
+        context["accepted_by"],
+        serde_json::json!([session_agent]),
+        "{context}"
+    ); // ubs:ignore
+    assert!(!context.to_string().contains("human:"), "{context}"); // ubs:ignore
+}
+
 #[tokio::test]
 async fn mint_agent_token_requires_admin_key() {
     let dir = test_ledger_dir();

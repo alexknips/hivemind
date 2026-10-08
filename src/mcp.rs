@@ -505,12 +505,12 @@ pub fn tool_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "capture_decision",
-            "description": "Record a decision with rationale, topic keys, at least one option, and what it rests on (`grounding`, required). Defaults actor_id to agent:<tool>:<name> and writes source=agent. A `chosen_option_label` means the decision was already made: it self-accepts from `actor_id` by default, or from `decided_by` when the decider differs (e.g. a human decided, an agent is scribing it); pass `delegated_by` when an agent decided for itself within a scope a human delegated. Pass `still_proposed` to keep a genuine open recommendation at `proposed` instead. The reply lists `rests_on` (what was recorded) and `premise_stale` (named decisions already superseded or rejected).",
+            "description": "Record a decision with rationale, topic keys, at least one option, and what it rests on (`grounding`, required). Defaults actor_id to agent:<tool>:<name> (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`) and writes source=agent. A `chosen_option_label` means the decision was already made: it self-accepts from `actor_id` by default, or from `decided_by` when the decider differs (e.g. a human decided, an agent is scribing it); pass `delegated_by` when an agent decided for itself within a scope a human delegated. Pass `still_proposed` to keep a genuine open recommendation at `proposed` instead. The reply lists `rests_on` (what was recorded) and `premise_stale` (named decisions already superseded or rejected).",
             "inputSchema": {
                 "type": "object",
                 "required": ["title", "rationale", "topic_keys", "options", "grounding"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<name>`." },
+                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<name>` (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`)." },
                     "title": { "type": "string", "maxLength": 120, "description": "A name, not a summary: one sentence, at most 120 characters. Longer reasoning goes in `rationale`." },
                     "rationale": { "type": "string", "description": "Self-contained why, readable without the source conversation: at least 20 characters and 4 words, and not a bare reference into an external numbered list like \"1a\" or \"2. a\" — pair `quote` with `question` instead of embedding one." },
                     "topic_keys": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
@@ -545,24 +545,24 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "capture_evidence",
-            "description": "Record an evidence item that can be attached to decisions or hypotheses. Defaults actor_id to agent:<tool>:<name> and writes source=agent.",
+            "description": "Record an evidence item that can be attached to decisions or hypotheses. Defaults actor_id to agent:<tool>:<name> (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`) and writes source=agent.",
             "inputSchema": {
                 "type": "object",
                 "required": ["content"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<name>`." },
+                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<name>` (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`)." },
                     "content": { "type": "string" }
                 }
             }
         }),
         json!({
             "name": "capture_hypothesis",
-            "description": "Record a hypothesis. Defaults actor_id to agent:<tool>:<name> and writes source=agent.",
+            "description": "Record a hypothesis. Defaults actor_id to agent:<tool>:<name> (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`) and writes source=agent.",
             "inputSchema": {
                 "type": "object",
                 "required": ["statement"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<name>`." },
+                    "actor_id": { "type": "string", "description": "Optional capturing actor override. Defaults to `agent:<tool>:<name>` (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`)." },
                     "statement": { "type": "string" }
                 }
             }
@@ -574,7 +574,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "required": ["reason"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Disagreeing actor. Defaults to `agent:<tool>:<name>` when omitted." },
+                    "actor_id": { "type": "string", "description": "Disagreeing actor. Defaults to `agent:<tool>:<name>` when omitted (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`)." },
                     "decision_id": { "type": "string", "description": "The decision to disagree with. Provide this or `description`, not both." },
                     "description": { "type": "string", "description": "Free-text description to resolve to a decision when the id is not known." },
                     "topic": { "type": "string", "description": "Narrows description resolution to decisions carrying this topic key." },
@@ -589,7 +589,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "required": ["title", "rationale", "grounding"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Superseding actor. Defaults to `agent:<tool>:<name>` when omitted." },
+                    "actor_id": { "type": "string", "description": "Superseding actor. Defaults to `agent:<tool>:<name>` when omitted (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`)." },
                     "old_decision_id": { "type": "string" },
                     "description": { "type": "string", "description": "Free-text match for the decision to supersede. Required when `old_decision_id` is omitted." },
                     "topic": { "type": "string", "description": "Optional topic_key filter narrowing the `description` match." },
@@ -630,7 +630,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "required": ["to"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Moving actor. Defaults to `agent:<tool>:<name>` when omitted." },
+                    "actor_id": { "type": "string", "description": "Moving actor. Defaults to `agent:<tool>:<name>` when omitted (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`)." },
                     "decision_id": { "type": "string", "description": "The decision to move. Provide this or `description`, not both." },
                     "description": { "type": "string", "description": "Free-text description to resolve to a decision when the id is not known." },
                     "topic": { "type": "string", "description": "Narrows description resolution to decisions carrying this topic key." },
@@ -646,7 +646,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "required": ["to"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Retitling actor. Defaults to `agent:<tool>:<name>` when omitted." },
+                    "actor_id": { "type": "string", "description": "Retitling actor. Defaults to `agent:<tool>:<name>` when omitted (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`)." },
                     "decision_id": { "type": "string", "description": "The decision to retitle. Provide this or `description`, not both." },
                     "description": { "type": "string", "description": "Free-text description to resolve to a decision when the id is not known." },
                     "topic": { "type": "string", "description": "Narrows description resolution to decisions carrying this topic key." },
@@ -662,7 +662,7 @@ pub fn tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "required": ["finding_id", "decision_id"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Acknowledging actor, who the finding is recorded as surfaced to. Defaults to `agent:<tool>:<name>` when omitted." },
+                    "actor_id": { "type": "string", "description": "Acknowledging actor, who the finding is recorded as surfaced to. Defaults to `agent:<tool>:<name>` when omitted (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`)." },
                     "finding_id": { "type": "string", "description": "The finding's `finding_id`, exactly as get_suggestions returned it." },
                     "decision_id": { "type": "string", "description": "The finding's `decision_id`." },
                     "action": { "type": "string", "enum": ["seen", "acted", "dismissed"], "description": "What was done with it: `seen` (looked at, nothing more claimed; the default), `acted` (dealt with) or `dismissed` (set aside on purpose). Every action hides the finding from get_suggestions; the ledger keeps which." },
@@ -676,7 +676,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Grounding actor. Defaults to `agent:<tool>:<name>` when omitted." },
+                    "actor_id": { "type": "string", "description": "Grounding actor. Defaults to `agent:<tool>:<name>` when omitted (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`)." },
                     "decision_id": { "type": "string", "description": "The decision to ground. Provide this or `description`, not both." },
                     "description": { "type": "string", "description": "Free-text match for the decision to ground. Required when `decision_id` is omitted." },
                     "topic": { "type": "string", "description": "Optional topic_key filter narrowing the `description` match." },
@@ -687,12 +687,12 @@ pub fn tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "request_decision",
-            "description": "Record that you are explicitly asking a question, before any decision answers it: writes a request an unanswered call is 'waiting' on. Defaults actor_id to agent:<tool>:<name> and writes source=agent. Resolved to a `Question` node by the same exact-match rule `capture_decision`'s `question` uses: a match on the normalized text is reused, otherwise the node is created. Unlike answering, asking is never suppressed as a duplicate — the same question can be asked more than once, each its own request. The reply's `request_id` is what `capture_decision`'s `answers` (or `hivemind capture --answers`) takes to link a later decision to this request without repeating the words.",
+            "description": "Record that you are explicitly asking a question, before any decision answers it: writes a request an unanswered call is 'waiting' on. Defaults actor_id to agent:<tool>:<name> (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`) and writes source=agent. Resolved to a `Question` node by the same exact-match rule `capture_decision`'s `question` uses: a match on the normalized text is reused, otherwise the node is created. Unlike answering, asking is never suppressed as a duplicate — the same question can be asked more than once, each its own request. The reply's `request_id` is what `capture_decision`'s `answers` (or `hivemind capture --answers`) takes to link a later decision to this request without repeating the words.",
             "inputSchema": {
                 "type": "object",
                 "required": ["text"],
                 "properties": {
-                    "actor_id": { "type": "string", "description": "Asking actor. Defaults to `agent:<tool>:<name>` when omitted." },
+                    "actor_id": { "type": "string", "description": "Asking actor. Defaults to `agent:<tool>:<name>` when omitted (over MCP-over-HTTP: the bearer token's actor for an agent token; under a person's credential, the MCP session's agent, `agent:mcp-http:<session>`)." },
                     "text": { "type": "string", "description": "The question, in the asker's own words: one line. Two asks whose text is the same after lowercasing, collapsing spaces and dropping trailing punctuation share one question node." }
                 }
             }

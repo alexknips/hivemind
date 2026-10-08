@@ -5,7 +5,8 @@
 //! JSON for non-streaming tools). Auth uses the same bearer-token path as
 //! the REST API ([`super::auth::extract_ctx`]). The `Mcp-Session-Id` header
 //! is issued on `initialize` and accepted (but not enforced) on subsequent
-//! requests; it seeds the default actor_id for write operations.
+//! requests; under a person's credential it seeds the default actor_id for
+//! write operations (an agent token's own actor wins, see [`mcp_resolve_actor`]).
 
 use std::sync::Arc;
 
@@ -243,6 +244,18 @@ fn mcp_tools_call_blocking(
     }
 }
 
+/// Who a write is attributed to, first match wins:
+///
+/// 1. an explicit `actor_id` argument;
+/// 2. the bearer token's own actor when it is an agent (`agent:<tool>:<name>`, an agent token,
+///    hivemind-zdsh.19): the token already names the calling agent, and Claude Code sends a
+///    fresh `Mcp-Session-Id` per connection, so keying on that filed every write under an id
+///    nobody could recognise;
+/// 3. `agent:mcp-http:<session>` when there is a session id. Under a person's credential (user
+///    token, WorkOS JWT) the token's actor is `human:<email>`, and an agent's write must not
+///    be recorded as that person: with a chosen option it would self-accept as them
+///    (hivemind-zdsh.3/.6 attribution ruling);
+/// 4. the token's actor (no session id).
 fn mcp_resolve_actor(
     args: &serde_json::Map<String, serde_json::Value>,
     auth_actor: &str,
@@ -253,7 +266,7 @@ fn mcp_resolve_actor(
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_owned())
         .unwrap_or_else(|| {
-            if session_id.is_empty() {
+            if auth_actor.starts_with("agent:") || session_id.is_empty() {
                 auth_actor.to_owned()
             } else {
                 format!("agent:mcp-http:{session_id}")

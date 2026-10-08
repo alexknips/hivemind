@@ -894,10 +894,13 @@ rule as `--confidence`. To link a decision captured without a question, call
 shared across more than one session (e.g. one per-role token for a pool of
 agent instances): `agent:<tool>:<name>`, using the same stable-identity-first
 resolution as the CLI helper (`GC_AGENT`/`GC_ALIAS` first, then a raw session
-id, never omitted). Without an explicit `actor_id`, the server falls back to
-`agent:mcp-http:<mcp-session-id>` — a fresh, unstable id per connection, not
-the calling agent's identity — or, if no session id is present at all, to the
-token's own bound identity, collapsing every caller sharing that token into
-one actor. This is a caller-asserted override, not a verified one: anyone
+id, never omitted). Without an explicit `actor_id`, the server records the
+write as the bearer token's own bound identity for an agent token
+(`agent:claude:<role>`), collapsing every caller sharing that token into one
+actor; under a person's credential (a user token or a WorkOS JWT) it records the
+MCP session's agent, `agent:mcp-http:<mcp-session-id>`, never the person. (A server
+older than this change fell back to `agent:mcp-http:<mcp-session-id>` under an
+agent token too — a fresh, unstable id per connection, not the calling agent's
+identity.) This is a caller-asserted override, not a verified one: anyone
 holding the token can claim any `actor_id`, so only rely on it across callers
 you already trust (see `docs/SELF_HOSTING.md`).

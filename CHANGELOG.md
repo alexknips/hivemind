@@ -467,6 +467,19 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   word in its title and the other has none; `--pick N`, `#N`, `--id` or `--topic` settle it.
   (hivemind-293q)
 
+- **A write over `/mcp` under an agent token, without an `actor_id`, is recorded as the token's
+  actor, not as `agent:mcp-http:<session>`.** Claude Code's HTTP transport always sends
+  `Mcp-Session-Id`, and the server preferred that id over the token, so a decision captured
+  under an agent token (`agent:claude:<role>`) was filed under a fresh id per connection that
+  named no one. An agent token's own actor now wins over the session id; an explicit `actor_id`
+  argument still wins over both. Under a person's credential (a user token or a WorkOS JWT) a
+  write without `actor_id` is still recorded as the MCP session's agent
+  (`agent:mcp-http:<session>`), never as the person: with a chosen option it would otherwise
+  self-accept as that person. The `actor_id` text on the capture, disagree, supersede, move,
+  retitle, acknowledge, ground and request tools says what it defaults to. Decisions already
+  recorded under an `agent:mcp-http:<session>` actor stay as they are: the ledger is
+  append-only. (hivemind-zbjc)
+
 - **An option label with a comma is no longer cut in two by `--options`, and a piece that
   starts with a space is refused instead of recorded.** `emit decision.capture --options
   "Rename now,Rename after the comparison, before the first listing,Pause"` recorded the
