@@ -687,12 +687,15 @@ fn mark_out_heading(scored: &mut [ScoredDecisionSearchResult]) {
 /// holds the same words somewhere in a long rationale, its evidence or the fields of whoever
 /// recorded it is a weaker answer, however many of the words it holds. A word counts for what it
 /// is worth (`TermWeights`), so the one rare word of a question outweighs the generic ones around
-/// it.
+/// it. A title or topic key that says a word only in other words (`WORD_GROUPS`: "graphs" for the
+/// "diagrams" asked about, an "edge" for the "arrow") is about the question too, for
+/// `STAND_IN_CREDIT` of what the word itself would be worth (hivemind-ctok).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct About {
     /// The weight of the question's words that the title, a topic key or the question the
-    /// decision records holds as a word or a form of one, never as part of a longer word and
-    /// never through a stand-in.
+    /// decision records holds as a word or a form of one, never as part of a longer word, plus
+    /// `STAND_IN_CREDIT` of the weight of each word its title or a topic key says only through a
+    /// stand-in.
     weight: f64,
     /// The part of `weight` the title itself holds: the title states what was decided, a topic
     /// key only files it, so between equal weights the decision that says it in its title is the
@@ -1251,12 +1254,20 @@ fn collect_graph_search_results(
             continue;
         };
         let headline_words = match_info.headline_words.len();
+        let reached: BTreeSet<usize> = match_info
+            .held_words
+            .union(&match_info.stand_in_reached)
+            .copied()
+            .collect();
         holdings.push(Holding {
             below_bar: match_info.below_bar,
             held: match_info.held_words,
             headline: match_info.headline_words,
             title: match_info.title_words,
             about: match_info.about_words,
+            stand_in_headline: match_info.stand_in_headline,
+            stand_in_title: match_info.stand_in_title,
+            reached,
             named: match_info.named && terms.close != CloseMatch::Never,
         });
 
@@ -1343,6 +1354,12 @@ struct Holding {
     title: BTreeSet<usize>,
     /// `SearchMatchInfo::about_words`.
     about: BTreeSet<usize>,
+    /// `SearchMatchInfo::stand_in_headline`.
+    stand_in_headline: BTreeSet<usize>,
+    /// `SearchMatchInfo::stand_in_title`.
+    stand_in_title: BTreeSet<usize>,
+    /// The terms some field holds as a word, a form of one or a stand-in.
+    reached: BTreeSet<usize>,
     /// The question names this decision (`SearchMatchInfo::named`), for a request that matches
     /// words at all.
     named: bool,
@@ -1354,10 +1371,19 @@ impl Holding {
         if self.named {
             return About::NAMED;
         }
-        let sum = |terms: &BTreeSet<usize>| terms.iter().map(|term| weights.weight_of(*term)).sum();
+        let sum = |terms: &BTreeSet<usize>| -> f64 {
+            terms.iter().map(|term| weights.weight_of(*term)).sum()
+        };
+        let stand_in = |terms: &BTreeSet<usize>, held: &BTreeSet<usize>| -> f64 {
+            terms
+                .iter()
+                .filter(|term| !held.contains(term))
+                .map(|term| weights.stand_in_weight(*term))
+                .sum()
+        };
         About {
-            weight: sum(&self.about),
-            title: sum(&self.title),
+            weight: sum(&self.about) + stand_in(&self.stand_in_headline, &self.about),
+            title: sum(&self.title) + stand_in(&self.stand_in_title, &self.title),
         }
     }
 }
@@ -1369,6 +1395,8 @@ impl Holding {
 struct TermWeights {
     /// How many matched decisions hold each term (by position in the question's terms).
     holders: HashMap<usize, usize>,
+    /// How many matched decisions hold each term as a word, a form of one or a stand-in.
+    reachers: HashMap<usize, usize>,
     /// How many decisions were searched.
     searched: usize,
 }
@@ -1376,12 +1404,20 @@ struct TermWeights {
 impl TermWeights {
     fn new(holdings: &[Holding], searched: usize) -> Self {
         let mut holders: HashMap<usize, usize> = HashMap::new();
+        let mut reachers: HashMap<usize, usize> = HashMap::new();
         for holding in holdings {
             for term in &holding.held {
                 *holders.entry(*term).or_default() += 1;
             }
+            for term in &holding.reached {
+                *reachers.entry(*term).or_default() += 1;
+            }
         }
-        Self { holders, searched }
+        Self {
+            holders,
+            reachers,
+            searched,
+        }
     }
 
     /// The decisions searched, plus one.
@@ -1394,6 +1430,16 @@ impl TermWeights {
         (self.ledger() / (count as f64 + 0.5)).ln()
     }
 
+    /// What a term is worth to a decision whose title or topic keys hold it only through a
+    /// stand-in word: `STAND_IN_CREDIT` of what the term weighs when rarity counts every decision
+    /// that reaches it, as the word, a form of one or a stand-in. Nobody says "diagram" as the
+    /// word when the ledger says "graph", so counting only the decisions that hold the word
+    /// itself would weigh it as the rarest word there is.
+    fn stand_in_weight(&self, term: usize) -> f64 {
+        let reached = self.reachers.get(&term).copied().unwrap_or(0);
+        STAND_IN_CREDIT * self.weight_for(reached)
+    }
+
     /// The weight of a term some decision holds; nothing for one that none does.
     fn weight_of(&self, term: usize) -> f64 {
         self.holders
@@ -1401,6 +1447,12 @@ impl TermWeights {
             .map_or(0.0, |count| self.weight_for(*count))
     }
 }
+
+/// What a title or topic key that says a word of the question only through a stand-in word is worth,
+/// next to one that says the word itself: half. A decision that puts the question in other words
+/// ("graphs" for "diagrams", "edge" for "arrow") is about it, but the word asked for says it better
+/// (`WordMatch`).
+const STAND_IN_CREDIT: f64 = 0.5;
 
 /// Fewer decisions than this say too little about which words are rare, so a lone word is trusted
 /// when it is the one thing a decision's own title or topic keys name (see `admit_below_bar`).
@@ -1619,6 +1671,13 @@ struct SearchMatchInfo {
     /// What `About` weighs: `headline_words`, and the terms the decision's recorded question
     /// holds as words. The question a decision answers is as much what it is about as its title.
     about_words: BTreeSet<usize>,
+    /// The terms the title or a topic key holds only through a stand-in word, never as the term
+    /// or a form of it.
+    stand_in_headline: BTreeSet<usize>,
+    /// The subset of `stand_in_headline` the title itself holds.
+    stand_in_title: BTreeSet<usize>,
+    /// The terms some field holds through a stand-in word.
+    stand_in_reached: BTreeSet<usize>,
     /// The query is the decision's id or title, or the question it records, as written.
     named: bool,
     /// How many times a field of the title or topic keys holds a term as a word (a term the title
@@ -1777,6 +1836,9 @@ fn evaluate_search_match(
     let mut headline_words = BTreeSet::new();
     let mut title_words = BTreeSet::new();
     let mut about_words = BTreeSet::new();
+    let mut stand_in_headline = BTreeSet::new();
+    let mut stand_in_title = BTreeSet::new();
+    let mut reached = BTreeSet::new();
     let mut headline_hits = 0_usize;
     let mut matched_fields = BTreeSet::new();
     let mut snippets = Vec::new();
@@ -1827,6 +1889,15 @@ fn evaluate_search_match(
                     }
                     if in_headline || field.field == "decision.question" {
                         about_words.insert(index);
+                    }
+                }
+                if track_words && how == WordMatch::StandIn {
+                    reached.insert(index);
+                    if in_headline {
+                        stand_in_headline.insert(index);
+                        if field.field == "decision.title" {
+                            stand_in_title.insert(index);
+                        }
                     }
                 }
                 field_matched = true;
@@ -1896,6 +1967,9 @@ fn evaluate_search_match(
         headline_words,
         title_words,
         about_words,
+        stand_in_headline,
+        stand_in_title,
+        stand_in_reached: reached,
         named,
         headline_hits,
         polarity_mismatch,

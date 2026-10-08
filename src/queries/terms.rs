@@ -516,12 +516,13 @@ fn word_keys(word: &str) -> Vec<&str> {
 
 /// Groups of words that say the same thing in this product's own vocabulary, so a question that
 /// uses one finds a decision that uses another: the site draws a supersession as "replaces", the
-/// UI says "assumption" where the code says "hypothesis", and one asker's "picture" is another's
-/// "graph". Fixed and literal, like `QUESTION_STOPWORDS`: nothing is learned and nothing is
-/// guessed. Any word of a group, and any form of it, stands in for any other. A stand-in is never
-/// the word itself: a decision that has the word asked for outranks one that only has a stand-in
-/// (`WordMatch`). The groups are disjoint, and kept small on purpose: a word belongs here only
-/// when people do ask about the same decision with either of them.
+/// UI says "assumption" where the code says "hypothesis", one asker's "picture" is another's
+/// "graph", and what the app calls an edge the site's diagrams draw as an arrow. Fixed and
+/// literal, like `QUESTION_STOPWORDS`: nothing is learned and nothing is guessed. Any word of a
+/// group, and any form of it, stands in for any other. A stand-in is never the word itself: a
+/// decision that has the word asked for outranks one that only has a stand-in (`WordMatch`). The
+/// groups are disjoint, and kept small on purpose: a word belongs here only when people do ask
+/// about the same decision with either of them.
 pub(crate) const WORD_GROUPS: &[&[&str]] = &[
     &["supersede", "supersession", "replace"],
     &[
@@ -536,6 +537,7 @@ pub(crate) const WORD_GROUPS: &[&[&str]] = &[
     &["ui", "interface"],
     &["graph", "diagram", "chart", "picture"],
     &["site", "website"],
+    &["edge", "arrow"],
     &["link", "url", "address"],
     &["browser", "device", "laptop", "phone", "mobile", "desktop"],
 ];

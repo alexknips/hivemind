@@ -486,6 +486,39 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   descriptions for `chain`, `why`, `compact_view`, `verify` and `recall_decisions` say so.
   (hivemind-tfde)
 
+- **`why`, `verify` and `recall` put the decision that says the question in other words
+  first, and the site's arrow is the app's edge.** "What word do the site's diagrams put on
+  the arrow from a new decision to the one it replaced?" listed the decision asked about,
+  "Site graphs label the supersedes edge 'replaces'", third, behind a decision on the site's
+  refutation chain (its title says "one" and "replacement") and the product-naming decision;
+  against the 455 events the checker ran on it was answered with the naming decision. What a
+  question is about counted a word only when a title or topic key held the word itself, so
+  "graphs" for "diagrams" counted for nothing and a generic word in a title beat a title that
+  says the question twice over in other words. A title or topic key that says a word only
+  through a stand-in now counts for half of what the word would, weighed by how few decisions
+  say it in any of those ways, and `edge` and `arrow` are stand-ins for each other. The arrow
+  question is answered with the decision it asks about (it lacks "put" and "new", and says so
+  in `close_match`); two more questions of the checker's set, one about Flow on a phone and one
+  about a refuted premise on the site, now answer or list the decision they ask about first.
+  Through the real binary on a copy of today's ledger, over the checker's 55 questions: right
+  one-call answers 30 -> 32, the decision listed first 3 -> 4, wrong one-call answers 6 -> 6,
+  `recall` top-1 33 -> 36; on the 455-event copy right 31 -> 33, wrong 4 -> 3, `recall` top-1
+  37 -> 39. The 14 hard paraphrases, the 41 hold-out questions, the 34 of hivemind-eral, 32
+  fresh ones and 54 unrelated controls (none answered) are unchanged, and over 414 / 366
+  generated questions right one-call answers are 363 -> 363 / 317 -> 317 and wrong ones
+  5 -> 4 / 6 -> 6.
+  (hivemind-ctok)
+
+- **`why` and `verify` are asked the same questions through the CLI, the plugin's scripts,
+  HTTP and MCP, and the replies are compared.** The four share one resolver but each builds its
+  own reply, and nothing proved they agree. `tests/read_surface_parity.rs` puts the questions
+  hivemind-tfde and hivemind-3lko were filed on to a ledger shaped like the one they were asked
+  of and requires the same envelope (the decision answered with, the list and its order,
+  `close_match`) from all four. The one difference it found: a description that matches
+  nothing is HTTP 404 with a `not_found` error body, where the CLI and MCP print a successful
+  `not_found` outcome. `docs/DEPLOYMENT.md` said HTTP answered 200 with that outcome; it now
+  says what the route does. (hivemind-ctok)
+
 - **A decision captured from a session that was classified days later says when it was said,
   not when the classifier ran.** A decision the classifier captured without naming a source
   turn was dated at the classification's own time, so `why` and `verify` showed a session said

@@ -2116,6 +2116,12 @@ fn a_stand_in_word_matches_and_is_not_the_word_itself() {
         held("laptop", "the same in every browser"),
         Some(WordMatch::StandIn)
     );
+    // The site draws what the app calls an edge as an arrow (hivemind-ctok).
+    assert_eq!(
+        held("arrow", "the supersedes edge"),
+        Some(WordMatch::StandIn)
+    );
+    assert_eq!(held("edges", "an arrow"), Some(WordMatch::StandIn));
     // The word itself wins wherever the text also has a stand-in for it.
     assert_eq!(
         held("interface", "the ui, the interface"),

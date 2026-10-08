@@ -164,11 +164,16 @@ curl -s "http://localhost:8080/v1/decisions/why?description=storage" \
 
 `why`/`verify` resolve `description` the same deterministic way `search`
 does (term match + topic + recency, no LLM — `docs/AGENT_FLUENT_QUERYING.md`
-§1). A description matching more than one decision at the best rank tier, or
-matching none, is **not an error** — it comes back as HTTP 200 with
-`data.outcome` set to `"ambiguous"` (with a `candidates` list) or
-`"not_found"`. There is no `--pick`/`#N` continuation over HTTP (the API is
-stateless): re-call with `id=<decision_id>` from the candidate list.
+§1). A description matching more than one decision at the best rank tier is
+**not an error** — it comes back as HTTP 200 with `data.outcome` set to `"ambiguous"`
+(with a `candidates` list). A description matching none is HTTP 404 with the usual
+`error.code` `not_found` body, where the CLI and MCP print a successful `not_found`
+outcome; that is the one difference between the surfaces. Every other reply is the same
+envelope (with `close_match` beside `data` when the decision lacks some of the words
+asked) from the CLI, the plugin's `why.sh`/`verify.sh`, HTTP and MCP, and
+`tests/read_surface_parity.rs` asks the same questions through all four and compares
+them. There is no `--pick`/`#N` continuation over HTTP (the API is stateless): re-call
+with `id=<decision_id>` from the candidate list.
 
 `disagree`/`supersede` are **not** fluent over HTTP today — `POST
 /v1/decisions/{id}/disagreements` and `/v1/decisions/{id}/supersessions`

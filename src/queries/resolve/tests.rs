@@ -1631,3 +1631,125 @@ fn a_title_is_the_opposite_only_when_it_says_everything_the_question_denies_outr
     }
     Ok(())
 }
+
+/// The arrow question (hivemind-ctok): what the site's diagrams put on the arrow from a new
+/// decision to the one it replaced. The decision that answers it says "site" and "replaces" in its
+/// title and the diagrams and the arrow as *graphs* and an *edge*; the decision that used to lead
+/// says "site", "one" and "replacement" and the diagrams as *graph*, and says nothing of an arrow.
+/// A title that says the question in other words is about it, so it comes first.
+#[test]
+fn a_decision_whose_title_says_the_question_in_other_words_leads_one_with_a_generic_word_more(
+) -> Result<()> {
+    let graph = graph_from_events([
+        decision_proposed_because(
+            1,
+            "d:label",
+            "Site graphs label the supersedes edge 'replaces' and draw coming-next parts solid with a COMING NEXT mark",
+            "The bead lists replaces among the product's graph words and the page says replace in plain words everywhere, while the app's graph reads supersedes; the site uses replaces and the claims file records the difference. Coming-next parts are merged and built, so they are drawn solid with a COMING NEXT mark; only planned parts are dashed and marked PLANNED.",
+            &["website", "graphs"],
+        ),
+        decision_proposed_because(
+            2,
+            "d:chain",
+            "Site graph 'one assumption falls' shows refutation marking only direct dependents; the chain goes stale on replacement",
+            "The product marks a decision as not holding when an assumption it rests on directly is refuted, one hop. A decision that follows from such a decision is not marked until the decision in between is replaced, and then it reads stale. Drawing the whole chain lighting up on the refutation alone would show something neither built nor planned.",
+            &["website", "graphs", "honesty"],
+        ),
+        decision_proposed_because(
+            3,
+            "d:name",
+            "The product's new name is Upheld, home domain upheld.sh, replacing the working name (not Standing, not Decisis)",
+            "A, Upheld. Home domain upheld.sh; the domain is bought by the maintainer; nothing is registered or reserved; the rename itself is not planned or started. Why the working name goes: it is overloaded and taken, on the main registries and with dozens of repositories of that exact name. Options: A = Upheld, a decision is upheld or it is not; B = Standing; C = Decisis. The site and the docs move to the new domain at the rename, one word at a time.",
+            &["product-name", "naming", "rename", "domain"],
+        ),
+        decision_proposed_because(
+            4,
+            "d:demo-copy",
+            "Public demo data: commit a byte-exact copy of the generator export, checked by recorded SHA-256",
+            "The demo build must work without a hivemind checkout (CI, the site rebuild), so the generator's graph and briefs files are committed rather than read from hivemind at build time. A sync script copies them byte for byte and records the source commit and each file's hash; a test fails if a copy no longer matches.",
+            &["ui", "public-demo", "example-data"],
+        ),
+        decision_proposed_because(
+            5,
+            "d:flow-titles",
+            "Flow node titles are laid out in screen space so none overprints: nudge, then leader line, else hide",
+            "Titles are overlays anchored above each node; on a phone fourteen titles share a narrow band. A greedy placer keeps each title on its spot if free, else the nearest free nudge with a faint leader line back to its node, else hides it; key titles first, then birth order.",
+            &["ui", "flow", "labels", "layout"],
+        ),
+        decision_proposed_because(
+            6,
+            "d:slugs-browser",
+            "Decision links use title slugs worked out the same in every browser, not slugs remembered per browser",
+            "The server keeps no slug, and titles can change. Showing a slug remembered by one browser would let two browsers give one link to different decisions, so a shared link could open the wrong decision. Deterministic slugs open the same decision everywhere. Old links survive a retitle through the id suffix.",
+            &["ui", "links", "routing"],
+        ),
+        decision_proposed_because(
+            7,
+            "d:status-history",
+            "Decision page status history: one row per logged status change; the demo snapshot keeps its undated rows",
+            "The server's status-events read dates every proposal, acceptance, rejection and supersession and names who made it and the status it led to, so each history row is one logged change. Nothing is derived in the browser. The public demo's snapshot carries only the graph and the briefs, so it keeps the rows it showed before.",
+            &["ui", "status", "decision-page"],
+        ),
+        decision_proposed_because(
+            8,
+            "d:verdict-note",
+            "A superseded decision that was contested says so on a second line of its one verdict note, naming who rejected it",
+            "The decision page showed one verdict note and chose superseded before contested, so a contested first vote that was later superseded hid its disagreement. Keeping one note with a second line adds the contest without a new layout element and keeps the supersession first.",
+            &["decision-page", "verdict"],
+        ),
+        decision_proposed_because(
+            9,
+            "d:deck",
+            "Pitch deck: the value and who it is for instead of install steps, graphs over the held-up shot, still eight slides",
+            "The install commands go; the deck says the value and who it is for, described by values. Each of the eight slides is made fuller instead of adding new ones.",
+            &["pitch-deck", "positioning"],
+        ),
+        decision_proposed_because(
+            10,
+            "d:listing",
+            "Listing order after proof: Claude Code plugin first, then MCP Registry, then community lists",
+            "All three listings follow the own-use trial, in the order the plugin, the registry, the community lists. The registry is the next step right after having shown that it actually works.",
+            &["channels", "distribution"],
+        ),
+        decision_proposed_because(
+            11,
+            "d:related-layer",
+            "UI shows possibly-related decisions as an opt-in Graph layer: dashed, no arrowhead, first five per decision",
+            "The layer is off by default, drawn dashed, muted and without arrowheads, joining the selected decision to the first page of five suggestions, so none reads as a recorded relation.",
+            &["ui", "graph"],
+        ),
+        decision_proposed_because(
+            12,
+            "d:no-people",
+            "The graph draws no people; who decided shows under the selected decision's title",
+            "Showing relation words at rest would put the server's passive 'proposed by' and 'accepted by' on every actor edge, and there is no active verb that reads decision to actor along an arrow that runs newer to older. Who decided shows on the decision itself.",
+            &["ui", "graph", "actors"],
+        ),
+        decision_proposed_because(
+            13,
+            "d:agent-name",
+            "The UI names every agent 'an agent', never by the tool or role it ran as",
+            "An agent's actor id names the tool that ran it and its role in that tool: internal names a reader cannot make sense of. What a reader needs is whether a person or an agent decided, so every agent reads alike.",
+            &["ui", "naming"],
+        ),
+        decision_proposed_because(
+            14,
+            "d:hosted",
+            "The paid shape is picked after the comparison and the testers' feedback; the waitlist price question replaces interviews",
+            "The paid shape is chosen after the comparison run and the first testers' feedback, not after interviews. The waitlist price question replaces the interviews, because asking a price is cheaper than scheduling a call. Until then the hosted cell stays on one node and nobody is charged. The comparison covers a hosted plan with self-hosting free against one Pro plan valid hosted or self-hosted.",
+            &["pricing", "packaging", "hosted", "waitlist"],
+        ),
+    ])?;
+    let question =
+        "what word do the site's diagrams put on the arrow from a new decision to the one it replaced?";
+
+    match reading(&graph, question)?.data {
+        ResolveOutcome::Resolved { candidate } => assert_eq!(candidate.decision_id, "d:label"),
+        ResolveOutcome::Ambiguous { candidates } => {
+            let ids: Vec<&str> = candidates.iter().map(|c| c.decision_id.as_str()).collect();
+            assert_eq!(ids.first(), Some(&"d:label"), "the list is {ids:?}");
+        }
+        other => panic!("expected the decision about the arrow first, got {other:?}"),
+    }
+    Ok(())
+}

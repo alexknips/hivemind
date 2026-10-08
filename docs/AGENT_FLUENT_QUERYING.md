@@ -258,10 +258,19 @@ So where the words sit is compared before whether every word is somewhere:
 
 - A decision's *aboutness* is the weight of the question's words that its title, a
   topic key or the question it records holds, as a word or a form of one (never inside
-  a longer word: "show" is not "showcase", and never through a stand-in). A word weighs `ln((n + 1) / (holders
+  a longer word: "show" is not "showcase"). A word weighs `ln((n + 1) / (holders
   + 1/2))` over the `n` decisions searched, `holders` being the decisions that hold it
   as a word anywhere, exactly as for a decision below the bar (§1.1): the one rare
-  word of a question outweighs the generic ones around it. Between equal weights, the
+  word of a question outweighs the generic ones around it. A title or topic key that
+  says a word only through a stand-in (below) counts for half of what the word
+  weighs, and the word's rarity then counts every decision that says it in any of
+  those ways (hivemind-ctok): "what word do the site's diagrams put on the arrow from a
+  new decision to the one it replaced" is about the decision titled "Site graphs label
+  the supersedes edge 'replaces'", which says "diagrams" as *graphs* and "arrow" as
+  *edge*, not about the one titled "Site graph 'one assumption falls' ...", which
+  says "diagrams" as *graph* and "one" and has no edge in it. A stand-in is for the
+  question's word only: the word itself still counts in full, and a decision that
+  says the word beats one that says a stand-in for it. Between equal weights, the
   decision whose own title holds more of them is the one about the question: the
   title states what was decided, a topic key only files it. The decision whose id or
   title is the question, or that records the question as asked, is about it more than
@@ -330,12 +339,13 @@ asked with another form or a synonym of a decision's words still finds it
   of words that say the same thing in this product's own vocabulary: `supersede` and
   `replace` (the site draws a supersession as "replaces"), `assumption`, `hypothesis`
   and `premise`, `ui` and `interface`, `graph`, `diagram`, `chart` and `picture`,
-  `site` and `website`, `link`, `url` and `address`, `refute` and `wrong`, and
-  `browser`, `laptop` and `phone`. The list is fixed and literal, like the question
+  `site` and `website`, `edge` and `arrow`, `link`, `url` and `address`, `refute` and
+  `wrong`, and `browser`, `laptop` and `phone`. The list is fixed and literal, like the question
   words: nothing is learned, and a word belongs in it only when people ask about the
   same decision with either. A stand-in is never the word itself: among decisions that
   lack the same number of words, the one that matches fewer of them only through a
-  stand-in comes first (after the one whose title or topic keys carry more of the words), so
+  stand-in comes first (after the one whose title or topic keys carry more of the words,
+  where a stand-in in the title or a topic key counts for half a word), so
   among decisions that match equally well, one that says "interface" outranks one that says
   "UI" for a question about the interface.
 
@@ -675,10 +685,15 @@ these is a JSON-RPC error or `isError: true` — an agent branches on
 `data.outcome`, the same way it would branch on any other field, rather than
 needing a separate error-handling path for "nothing matched." This is one
 contract shared verbatim by CLI (`--json`), MCP, and the four fluent HTTP
-routes (`docs/DEPLOYMENT.md`, `docs/SELF_HOSTING.md`) — the only surface
-without it is the two still-id-only MCP tools above, and the HTTP write
-routes (`disagree`/`supersede`), which remain `decision_id`-path-only and are
-not fluent over HTTP at all today.
+routes (`docs/DEPLOYMENT.md`, `docs/SELF_HOSTING.md`), with one exception: the
+HTTP routes answer a description that matches nothing with a 404 and the usual
+`not_found` error body. Outside it are the two still-id-only MCP tools above, and
+the HTTP write routes (`disagree`/`supersede`), which remain `decision_id`-path-only
+and are not fluent over HTTP at all today. `tests/read_surface_parity.rs` asks `why` and
+`verify` the same questions through the CLI, the plugin's `why.sh`/`verify.sh`, HTTP and
+MCP and compares the envelopes, so one surface cannot answer with another
+decision, list where the others answer, or leave off the `close_match` line
+(hivemind-ctok).
 
 ---
 
