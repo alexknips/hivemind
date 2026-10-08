@@ -5,7 +5,8 @@ usage() {
   cat >&2 <<'USAGE'
 Usage:
   capture.sh "<text>" --kind decision --title "..." --rationale "..." \
-    --topic-keys topic[,topic] --options "Label[,Label]" [--chose "Label"] \
+    --topic-keys topic[,topic] --options "Label[,Label]" [--option "Label"]... \
+    [--chose "Label"] \
     (--rests-on-decision "..." | --rests-on-evidence "..." --evidence-source "..." | \
      --rests-on-assumption "..." | --bet ["..."])
   capture.sh "<text>" --kind evidence
@@ -27,7 +28,7 @@ Options:
                            $HIVEMIND_DIR, or <project>/hivemind.
 
 Decision captures forward decision.capture flags such as --title, --rationale,
---topic-keys, --options, --chose, --decided-by, --delegated-by,
+--topic-keys, --options, --option, --chose, --decided-by, --delegated-by,
 --still-proposed, --evidence, --hypotheses, --quote, --question, and the
 grounding flags below. --chose means the decision was already made — it
 self-accepts unless --still-proposed is also given. --delegated-by human:NAME
@@ -41,6 +42,12 @@ decision to a question that was asked with `hivemind ask` (the request id is
 the one `hivemind query get_waiting_requests` lists): the request stops
 waiting, and why shows asked_at and answered_at. It stands in for --question,
 so the two are not given together.
+
+--options splits on every comma. A label that holds a comma goes on its own
+--option "Label, with a comma" instead: the label is taken whole, the flag is
+repeatable, and its labels come after the --options ones. --chose repeats a
+label exactly. --option needs a hivemind newer than v0.7.0; on an older one the
+capture is refused (exit 2, nothing written) rather than split the label.
 
 Every decision capture must say what it rests on; a capture that names nothing
 is refused (exit 2) and nothing is written. Answer with at least one of:
@@ -330,6 +337,17 @@ decision captures require structured decision.capture flags:
 ERROR
     exit 2
   fi
+  # A CLI without --option would answer "a similar argument exists: --options", which sends the
+  # caller to the flag that splits the label at its comma. Say the true thing here instead
+  # (hivemind-ndtp).
+  if [[ "$OPTION_FLAG_GIVEN" == "1" ]] && ! cli_has_flag --option emit decision.capture; then
+    cat >&2 <<'ERROR'
+this hivemind has no `--option`, the flag that keeps a comma inside one option label (it
+arrived after v0.7.0). `--options` would split the label at its comma, so nothing was written.
+Upgrade hivemind, or reword the label so it holds no comma and pass it with `--options`.
+ERROR
+    exit 2
+  fi
   errfile="$(mktemp "${TMPDIR:-/tmp}/hivemind-capture.XXXXXX")"
   # --project-from-context is always on when the CLI has it: the CLI, not this script,
   # decides the project (a --project stated by the caller still wins), so it is one rule in
@@ -386,6 +404,7 @@ ACTOR_ID=""
 SOURCE_REF=""
 AGENT_TOOL=""
 AGENT_SESSION=""
+OPTION_FLAG_GIVEN=0
 FORWARDED=()
 
 while [[ $# -gt 0 ]]; do
@@ -420,6 +439,12 @@ while [[ $# -gt 0 ]]; do
       ;;
     --hivemind-dir)
       HIVEMIND_DIR="${2:-}"
+      shift 2
+      ;;
+    --option)
+      # One label taken whole, so a comma stays inside it; repeatable (see emit_decision).
+      OPTION_FLAG_GIVEN=1
+      FORWARDED+=("$1" "${2:-}")
       shift 2
       ;;
     --title|--rationale|--topic-keys|--options|--chose|--decided-by|--delegated-by|--hypotheses|--evidence|--quote|--question|--answers|--rests-on-decision|--rests-on-evidence|--evidence-source|--rests-on-assumption|--would-change-if|--check-by|--confidence|--project|--project-source|--declare-topic)

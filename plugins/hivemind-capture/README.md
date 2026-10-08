@@ -333,6 +333,11 @@ already made), `--rests-on-evidence` with `--evidence-source` (something observe
 refused and writes nothing. The decider's own words are not a grounding; they go
 in `--quote` with `--question`. See the `hivemind-capture` skill.
 
+`--options` splits on every comma. A label that holds a comma goes on its own
+`--option "Rename later, after the comparison"`: the flag takes one label whole,
+repeats, and `--chose` repeats the label exactly. It needs a `hivemind` newer
+than v0.7.0; the helper refuses (exit 2, nothing written) when the CLI lacks it.
+
 Capture one evidence item:
 
 ```text

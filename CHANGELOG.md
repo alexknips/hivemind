@@ -449,6 +449,16 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   two flags work on `emit decision.proposed`, `supersede` and `slack-app enqueue-capture`. MCP
   `capture_decision`, `supersede_decision` and REST `POST /v1/decisions` take options as an
   array and never split on a comma.
+- **The capture plugin's `capture.sh` passes `--option` on, so a label with a comma can be
+  recorded through it.** The CLI's refusal for a space after a comma tells you to give the label
+  to `--option`, but the helper did not know the flag: it forwarded it alone and took its value
+  for the capture text, so the capture failed with "a value is required for '--option'" and the
+  label could not be recorded at all through the plugin. `capture.sh ... --options "Rename
+  now,Pause" --option "Rename after the comparison, before the first listing"` now records the
+  label whole, and the capture skill, the `/hivemind-capture:capture` command and the plugin
+  README say how. On a `hivemind` that has no `--option` (v0.7.0 and older) the helper refuses
+  with exit 2 and writes nothing, telling you to upgrade or reword the label, instead of handing
+  you the CLI's "a similar argument exists: `--options`", which would split the label.
 - **The capture plugin's queue-depth hook counts the queue instead of the reply's keys.**
   `scripts/check-classify-queue.sh` ran `classify-queue list --json | jq length`: against a
   server-backed cell that printed "4 batch(es) pending" for an empty queue (the reply is an

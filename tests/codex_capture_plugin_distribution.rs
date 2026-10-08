@@ -1343,6 +1343,167 @@ fn capture_script_answers_a_question_that_was_asked_and_the_request_stops_waitin
     Ok(())
 }
 
+#[test]
+fn capture_script_keeps_an_option_label_with_a_comma_whole() -> TestResult<()> {
+    // hivemind-ndtp: `--options` splits on every comma, and the CLI's refusal for a space after a
+    // comma points at `--option`. The script once had no case for it: the flag fell through to the
+    // generic unknown-flag branch, which forwarded it alone and glued its value onto the capture
+    // text, so through the plugin a label with a comma could not be recorded at all.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let hivemind_dir = unique_temp_dir("hivemind-capture-script-option")?;
+    let script = root.join("plugins/hivemind-capture/scripts/capture.sh");
+    let label = "Rename after the comparison, before the first listing";
+
+    let captured = Command::new(&script)
+        .current_dir(markerless_cwd())
+        .env("HIVEMIND_CAPTURE_BIN", env!("CARGO_BIN_EXE_hivemind"))
+        .env("HIVEMIND_DIR", &hivemind_dir)
+        .env("CLAUDE_PROJECT_DIR", root)
+        .env("CLAUDE_SESSION_ID", "option-script-session")
+        .env_remove("GC_AGENT")
+        .env_remove("GC_ALIAS")
+        .env_remove("GC_RIG")
+        .args([
+            "Rename timing for the plugin path",
+            "--kind",
+            "decision",
+            "--title",
+            "Rename timing for the plugin path",
+            "--rationale",
+            "One label holds a comma, so it has to travel on its own flag",
+            "--topic-keys",
+            "naming",
+            "--options",
+            "Rename now,Pause",
+            "--option",
+            label,
+            "--chose",
+            label,
+            "--rests-on-assumption",
+            "Option labels are phrases and phrases hold commas",
+        ])
+        .output()?;
+    require(
+        captured.status.success(),
+        format!(
+            "capturing a label with a comma through the plugin failed: {}",
+            String::from_utf8_lossy(&captured.stderr)
+        ),
+    )?;
+
+    let proposal = event_with_type(&hivemind_dir, hivemind::events::EventType::DecisionProposed)?;
+    let strings = |field: &str| -> TestResult<Vec<String>> {
+        Ok(proposal.payload[field]
+            .as_array()
+            .ok_or(format!("the proposal lists its {field}"))?
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect())
+    };
+    // `--option` labels come after the `--options` ones, and the comma label stays one option.
+    require_eq(
+        strings("option_labels")?,
+        vec![
+            "Rename now".to_owned(),
+            "Pause".to_owned(),
+            label.to_owned(),
+        ],
+        "the labels as recorded",
+    )?;
+    require_eq(
+        proposal.payload["chosen_option_id"].as_str(),
+        strings("option_ids")?.get(2).map(String::as_str),
+        "--chose picked the label that holds the comma",
+    )?;
+
+    let _ = fs::remove_dir_all(hivemind_dir);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn capture_script_refuses_option_on_a_cli_without_it_and_writes_nothing() -> TestResult<()> {
+    // hivemind-ndtp: the v0.7.0 release binary has no `--option`, and its own answer ("a similar
+    // argument exists: --options") would send the caller to the flag that splits the label. The
+    // script says what is true, exits 2 and never reaches a write. A stand-in binary whose
+    // `--help` lists only `--options` plays the release.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let scratch = unique_temp_dir("hivemind-capture-script-old-cli")?;
+    let wrote = scratch.join("wrote");
+    let old_cli = scratch.join("old-hivemind");
+    fs::write(
+        &old_cli,
+        format!(
+            "#!/usr/bin/env bash\n\
+             if [[ \" $* \" == *\" --help \"* ]]; then\n\
+             echo '      --options <LABELS>  Comma-separated labels'\n\
+             exit 0\n\
+             fi\n\
+             touch '{}'\n",
+            wrote.display()
+        ),
+    )?;
+    fs::set_permissions(&old_cli, fs::Permissions::from_mode(0o755))?;
+    let script = root.join("plugins/hivemind-capture/scripts/capture.sh");
+    let run = |option_flags: &[&str]| -> TestResult<std::process::Output> {
+        Ok(Command::new(&script)
+            .current_dir(markerless_cwd())
+            .env("HIVEMIND_CAPTURE_BIN", &old_cli)
+            .env("HIVEMIND_DIR", scratch.join("ledger"))
+            .env("CLAUDE_PROJECT_DIR", root)
+            .env("CLAUDE_SESSION_ID", "old-cli-session")
+            .env_remove("GC_AGENT")
+            .env_remove("GC_ALIAS")
+            .env_remove("GC_RIG")
+            .args([
+                "Rename timing",
+                "--kind",
+                "decision",
+                "--title",
+                "Rename timing",
+                "--rationale",
+                "Why",
+                "--topic-keys",
+                "naming",
+                "--rests-on-assumption",
+                "Because",
+            ])
+            .args(option_flags)
+            .output()?)
+    };
+
+    let refused = run(&[
+        "--option",
+        "Rename later, after the comparison",
+        "--option",
+        "Pause",
+    ])?;
+    require_eq(refused.status.code(), Some(2), "exit code of the refusal")?;
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    require_contains(&stderr, "no `--option`", "the refusal says what is missing")?;
+    require_contains(
+        &stderr,
+        "nothing was written",
+        "the refusal says nothing was written",
+    )?;
+    require(!wrote.exists(), "the old CLI was never asked to write")?;
+
+    // Plain `--options` is unaffected: the old CLI is asked to write.
+    let plain = run(&["--options", "Rename now,Pause"])?;
+    require(
+        plain.status.success(),
+        format!(
+            "--options on a CLI without --option failed: {}",
+            String::from_utf8_lossy(&plain.stderr)
+        ),
+    )?;
+    require(wrote.exists(), "--options reaches the old CLI's write")?;
+
+    let _ = fs::remove_dir_all(scratch);
+    Ok(())
+}
+
 /// hivemind-s15q.15: the capture scripts ask the CLI to work a decision's project out from the
 /// folder they run in (the nearest `.hivemind-project` walking up). Tests that are not about
 /// projects run from here instead of the repository root, where this rig's own marker sits: the

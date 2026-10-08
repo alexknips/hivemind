@@ -150,7 +150,21 @@ shell keeps it as one value. `--chose` repeats one of those labels exactly.
   Never put the winning letter, "chosen", or "recommended" inside a label.
 - One label per real alternative. No bucket such as "other options", and no
   label that packs several answers together. Put detail in the rationale.
-- A label cannot contain a comma: `--options` splits on commas.
+- `--options` splits on every comma, so a label that holds a comma goes on its
+  own `--option` flag, which takes one label whole and can repeat. `--chose`
+  repeats the label exactly:
+
+  ```bash
+  plugins/hivemind-capture/scripts/capture.sh ... \
+    --options "Rename now,Pause" \
+    --option "Rename after the comparison, before the first listing" \
+    --chose "Rename after the comparison, before the first listing"
+  ```
+
+  A space right after a comma in `--options` is refused with this same hint
+  rather than trimmed. `--option` needs a `hivemind` newer than v0.7.0; the
+  helper refuses (exit 2, nothing written) when the CLI lacks it, so on the
+  release binary reword the label without a comma.
 
 ### The decider's words are not a grounding
 
