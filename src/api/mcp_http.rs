@@ -893,21 +893,14 @@ fn mcp_classify_queue_list(
     let ledger = backend
         .open_ledger_for_tenant(&ctx.tenant_id)
         .map_err(|e| (-32603i32, e.to_string()))?;
-    let page = crate::classifier::list_pending_batches_for_ledger(
+    let queue = crate::classifier::pending_queue_for_ledger(
         &ledger,
         &ctx.tenant_id,
         session_id.as_deref(),
         limit,
     )
     .map_err(|e| (-32603i32, e.to_string()))?;
-    let budget = crate::classifier::daily_cap_status(&ledger, &ctx.tenant_id)
-        .map_err(|e| (-32603i32, e.to_string()))?;
-    Ok(serde_json::json!({
-        "batches": page.batches,
-        "pending_total": page.pending_total,
-        "truncated": page.truncated,
-        "budget": budget,
-    }))
+    Ok(queue.to_json())
 }
 
 /// Submits captures for one or more pending batches from the same session in

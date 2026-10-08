@@ -444,7 +444,7 @@ fn pending_batch_from_event(event: &crate::events::Event) -> Option<PendingBatch
 /// event covers their batch id), for `classify-queue list`: the oldest `limit`
 /// of them, optionally only one session's. Generic over any [`EventLedger`]
 /// backend so the HTTP API (SQLite dev mode or Postgres) and the local CLI
-/// path share one implementation — see [`list_pending_batches`] for the CLI's
+/// path share one implementation — see [`pending_queue`] for the CLI's
 /// local-SQLite convenience wrapper.
 ///
 /// Which batches are pending is decided from heads alone; the turn text of
@@ -537,17 +537,50 @@ pub fn list_pending_sessions_for_ledger(
     })
 }
 
+/// What `classify-queue list` answers, on a local ledger, over HTTP and over MCP alike: one page of
+/// the pending queue and today's classification budget. `pending_total` is the whole queue's depth
+/// whatever the limit, so `list --limit 1` is the cheap way to count it.
+#[derive(Debug, Clone)]
+pub struct PendingQueue {
+    pub page: PendingBatchPage,
+    pub budget: DailyCapStatus,
+}
+
+impl PendingQueue {
+    /// The JSON object every `classify-queue list` surface returns.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "batches": self.page.batches,
+            "pending_total": self.page.pending_total,
+            "truncated": self.page.truncated,
+            "budget": self.budget,
+        })
+    }
+}
+
+/// The pending queue for `classify-queue list`: [`list_pending_batches_for_ledger`] plus the budget.
+pub fn pending_queue_for_ledger(
+    ledger: &impl EventLedger,
+    tenant_id: &TenantId,
+    session_id: Option<&str>,
+    limit: usize,
+) -> crate::Result<PendingQueue> {
+    let page = list_pending_batches_for_ledger(ledger, tenant_id, session_id, limit)?;
+    let budget = daily_cap_status(ledger, tenant_id)?;
+    Ok(PendingQueue { page, budget })
+}
+
 /// CLI local-mode convenience: opens a SQLite ledger under `hivemind_dir` and
-/// delegates to [`list_pending_batches_for_ledger`]. `classify-queue list`
+/// delegates to [`pending_queue_for_ledger`]. `classify-queue list`
 /// uses this when not pointed at a server (`HIVEMIND_API_URL` unset).
-pub fn list_pending_batches(
+pub fn pending_queue(
     hivemind_dir: &PathBuf,
     tenant_id: &TenantId,
     session_id: Option<&str>,
     limit: usize,
-) -> crate::Result<PendingBatchPage> {
+) -> crate::Result<PendingQueue> {
     let ledger = SqliteEventLedger::open(hivemind_dir)?;
-    list_pending_batches_for_ledger(&ledger, tenant_id, session_id, limit)
+    pending_queue_for_ledger(&ledger, tenant_id, session_id, limit)
 }
 
 /// Default daily cap on classification calls (ledger events, not batches

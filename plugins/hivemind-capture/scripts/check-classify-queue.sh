@@ -7,7 +7,7 @@
 #     "hooks": {
 #       "Stop": [{
 #         "matcher": "",
-#         "command": "hivemind classify-queue list --json 2>/dev/null | jq -e 'length > 0' >/dev/null && echo '[hivemind] classify-queue: batches pending — run /classify-queue to drain'"
+#         "command": "hivemind classify-queue list --json --limit 1 2>/dev/null | jq -e '(.pending_total? // ((.batches? // .) | length)) > 0' >/dev/null && echo '[hivemind] classify-queue: batches pending — run /classify-queue to drain'"
 #       }]
 #     }
 #   }
@@ -20,9 +20,20 @@ set -euo pipefail
 
 HIVEMIND_DIR="${HIVEMIND_DIR:-./hivemind/}"
 
-count=$(hivemind --hivemind-dir "$HIVEMIND_DIR" classify-queue list --json 2>/dev/null \
-  | command -p jq 'length' 2>/dev/null || echo 0)
+list() {
+  hivemind --hivemind-dir "$HIVEMIND_DIR" classify-queue list --json --limit "$1" 2>/dev/null
+}
 
-if [ "${count:-0}" -gt 0 ]; then
-  echo "[hivemind] classify-queue: $count batch(es) pending — run /classify-queue to drain"
+# Builds after the v0.7.0 release reply {batches, pending_total, truncated, budget} on a local
+# ledger and a served cell alike, and `pending_total` is the whole queue's depth whatever the
+# limit, so --limit 1 keeps the check cheap. The v0.7.0 release prints a bare list of batches
+# for a local ledger and {batches, budget} (no pending_total) from a server: with no
+# pending_total the batches are counted instead, asked for up to 1000.
+total=$(list 1 | command -p jq -r '.pending_total? // empty' 2>/dev/null || true)
+if [ -z "$total" ]; then
+  total=$(list 1000 | command -p jq -r '(.batches? // .) | length' 2>/dev/null || echo 0)
+fi
+
+if [ "${total:-0}" -gt 0 ]; then
+  echo "[hivemind] classify-queue: $total batch(es) pending — run /classify-queue to drain"
 fi

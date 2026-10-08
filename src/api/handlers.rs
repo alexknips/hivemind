@@ -1526,21 +1526,14 @@ pub(super) async fn classify_queue_list_handler(
     let backend = Arc::clone(&state.backend);
     let result = tokio::task::spawn_blocking(move || -> ApiResult<serde_json::Value> {
         let ledger = backend.open_ledger_for_tenant(&ctx.tenant_id)?;
-        let page = crate::classifier::list_pending_batches_for_ledger(
+        let queue = crate::classifier::pending_queue_for_ledger(
             &ledger,
             &ctx.tenant_id,
             params.session_id.as_deref(),
             params.limit.unwrap_or(CLASSIFY_QUEUE_DEFAULT_LIMIT),
         )
         .map_err(to_api_error)?;
-        let budget =
-            crate::classifier::daily_cap_status(&ledger, &ctx.tenant_id).map_err(to_api_error)?;
-        Ok(serde_json::json!({
-            "batches": page.batches,
-            "pending_total": page.pending_total,
-            "truncated": page.truncated,
-            "budget": budget,
-        }))
+        Ok(queue.to_json())
     })
     .await;
 

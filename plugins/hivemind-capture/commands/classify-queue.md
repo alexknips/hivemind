@@ -32,7 +32,10 @@ hivemind classify-queue list --json --limit ${HIVEMIND_CQ_LIMIT:-20} \
   ${HIVEMIND_CQ_SESSION_ID:+--session-id "$HIVEMIND_CQ_SESSION_ID"}
 ```
 
-If the list is empty, report "No pending batches" and stop. If the request
+The reply is an object: `batches` holds the pending batches (at most `--limit`) and `pending_total`
+the whole queue's depth. (The v0.7.0 release prints the bare list of batches for a local ledger, and
+no `pending_total` from a server: read the list as `batches`.) If `batches` is empty, report "No
+pending batches" and stop. If the request
 fails with a daily-cap message, report it and stop — the batches stay pending
 and will be picked up by a future run once the cap resets (UTC midnight).
 
@@ -140,8 +143,9 @@ written, any errors.
 
 - Worker A is subscription-seat bound: each batch consumes one model invocation.
 - Large backlogs drain across multiple `/classify-queue` runs — the queue is persistent.
-- Queue depth is visible via `hivemind classify-queue list --json --limit 1 | jq .pending_total`
-  on a server-backed cell (the reply says `truncated` when more are pending than it lists), or
-  `hivemind classify-queue list --json | jq length` on a local ledger.
+- Queue depth is visible via `hivemind classify-queue list --json --limit 1 | jq .pending_total`,
+  on a local ledger and a server-backed cell alike (the reply says `truncated` when more are
+  pending than it lists). The v0.7.0 release has no `pending_total`; `scripts/check-classify-queue.sh`
+  counts the queue on it too.
 - The server-side classifier (Worker B) and Worker A drain the same queue; both can run;
   last-writer-wins per batch_id is idempotent.

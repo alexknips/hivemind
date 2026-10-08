@@ -6400,6 +6400,70 @@ fn assert_decision_queryable(hivemind_dir: &std::path::Path, decision_id: &str) 
     assert_eq!(query["data"]["id"], serde_json::json!(decision_id));
 }
 
+/// The queue's depth is `pending_total` whatever `--limit` lists, so `list --limit 1` counts a
+/// local ledger the way it counts a served one (hivemind-wjvf).
+#[test]
+fn classify_queue_list_reports_the_whole_depth_past_its_limit() {
+    use crate::commands::{CommandContext, Commands};
+    use crate::events::{EventProvenance, IngestTurn, TenantId};
+    use crate::ledger::SqliteEventLedger;
+
+    let hivemind_dir = unique_test_dir("classify-queue-depth");
+    let ledger = SqliteEventLedger::open(&hivemind_dir).expect("ledger opens");
+    let commands = Commands::new_with_context(
+        &ledger,
+        CommandContext::new(TenantId::local(), EventProvenance::cli()),
+    );
+    let dir_str = hivemind_dir.to_str().expect("utf-8");
+    let list = |limit: &str| -> serde_json::Value {
+        let output = run(&Cli::parse_from([
+            "hivemind",
+            "--json",
+            "--hivemind-dir",
+            dir_str,
+            "classify-queue",
+            "list",
+            "--limit",
+            limit,
+        ]))
+        .expect("classify-queue list succeeds");
+        serde_json::from_str(&output).expect("valid json")
+    };
+
+    let empty = list("1");
+    assert_eq!(empty["pending_total"], serde_json::json!(0));
+    assert_eq!(empty["truncated"], serde_json::json!(false));
+
+    for n in 0..3 {
+        commands
+            .record_ingest_batch(
+                "agent:test",
+                &format!("batch-{n}"),
+                "claude-code",
+                &format!("session-{n}"),
+                vec![IngestTurn {
+                    turn_id: format!("t{n}"),
+                    role: "user".to_owned(),
+                    text: "Should we use Postgres or SQLite?".to_owned(),
+                    truncated: false,
+                    ts: None,
+                }],
+            )
+            .expect("record batch");
+    }
+
+    let one = list("1");
+    assert_eq!(one["batches"].as_array().map(|a| a.len()), Some(1));
+    assert_eq!(one["pending_total"], serde_json::json!(3));
+    assert_eq!(one["truncated"], serde_json::json!(true));
+    assert!(one["budget"]["remaining"].is_number());
+
+    let all = list("20");
+    assert_eq!(all["batches"].as_array().map(|a| a.len()), Some(3));
+    assert_eq!(all["pending_total"], serde_json::json!(3));
+    assert_eq!(all["truncated"], serde_json::json!(false));
+}
+
 #[test]
 fn classify_queue_list_and_submit_round_trip() {
     use crate::commands::{CommandContext, Commands};
@@ -6443,9 +6507,14 @@ fn classify_queue_list_and_submit_round_trip() {
     ]))
     .expect("classify-queue list succeeds");
     let list: serde_json::Value = serde_json::from_str(&list_output).expect("valid json");
-    assert_eq!(list.as_array().map(|a| a.len()), Some(1));
-    assert_eq!(list[0]["batch_id"], serde_json::json!("batch-abc"));
-    assert_eq!(list[0]["turn_count"], serde_json::json!(1));
+    assert_eq!(list["batches"].as_array().map(|a| a.len()), Some(1));
+    assert_eq!(list["pending_total"], serde_json::json!(1));
+    assert_eq!(list["truncated"], serde_json::json!(false));
+    assert_eq!(
+        list["batches"][0]["batch_id"],
+        serde_json::json!("batch-abc")
+    );
+    assert_eq!(list["batches"][0]["turn_count"], serde_json::json!(1));
 
     // submit classification
     let captures_json = serde_json::json!([{
@@ -6490,7 +6559,8 @@ fn classify_queue_list_and_submit_round_trip() {
     ]))
     .expect("classify-queue list after submit succeeds");
     let list2: serde_json::Value = serde_json::from_str(&list2_output).expect("valid json");
-    assert_eq!(list2.as_array().map(|a| a.len()), Some(0));
+    assert_eq!(list2["batches"].as_array().map(|a| a.len()), Some(0));
+    assert_eq!(list2["pending_total"], serde_json::json!(0));
 }
 
 fn project_registry_register_link_anchor_list_show_round_trip_body(

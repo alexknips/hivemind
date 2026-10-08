@@ -413,6 +413,19 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The capture plugin's queue-depth hook counts the queue instead of the reply's keys.**
+  `scripts/check-classify-queue.sh` ran `classify-queue list --json | jq length`: against a
+  server-backed cell that printed "4 batch(es) pending" for an empty queue (the reply is an
+  object with four keys) and for a queue of 37, and on a local ledger it never said more than 20
+  (`--limit` defaults to 20). The one-liner in the script's header fired on every stop for the
+  same reason. `classify-queue list --json` on a local ledger now prints the same object a
+  server-backed cell does, `{batches, pending_total, truncated, budget}`, instead of the bare
+  list of batches, and the hook, the plugin README, `commands/classify-queue.md` and
+  `docs/KEYLESS_CAPTURE.md` read `pending_total` through `--limit 1`: nothing is said at 0 and the
+  true count otherwise, locally and against a served copy. The hook and its one-liner also read
+  what the v0.7.0 release prints (a bare list locally, `{batches, budget}` with no `pending_total`
+  from a server) and count its batches, so they warn on that binary too. A script that read the
+  local list with `jq '.[]'` reads `.batches[]` now. (hivemind-wjvf)
 - **A question with "not" or "doesn't" in it is no longer answered by whatever decision has
   "no" or "not" in its title, nor sent past the decision it asks about.** Since the negation
   rule shipped, `why`, `verify` and the write verbs resolved a negated question only to a

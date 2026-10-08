@@ -110,15 +110,18 @@ Pass `--limit N` to cap the number of batches per run (default 20):
 /hivemind-capture:classify-queue --limit 5
 ```
 
-Check queue depth at any time. Against a server-backed cell (`HIVEMIND_API_URL` set) the
-answer is an object whose `pending_total` is the whole queue's depth and whose `truncated`
-says the page holds fewer batches than are pending; against a local ledger it is the list of
-batches itself:
+Check queue depth at any time. On a local ledger and against a server-backed cell
+(`HIVEMIND_API_URL` set) alike, the answer is an object whose `pending_total` is the whole
+queue's depth and whose `truncated` says the page holds fewer batches than are pending:
 
 ```bash
-hivemind classify-queue list --json --limit 1 | jq .pending_total   # server-backed cell
-hivemind classify-queue list --json | jq length                    # local ledger
+hivemind classify-queue list --json --limit 1 | jq .pending_total
 ```
+
+That is the reply of builds after the v0.7.0 release. The v0.7.0 release prints the bare list of
+batches for a local ledger (`--limit` 20 by default, so count it with a `--limit` past the queue:
+`jq length`) and `{batches, budget}`, with no `pending_total`, from a server. The plugin's
+`scripts/check-classify-queue.sh` reads all three shapes.
 
 ---
 
