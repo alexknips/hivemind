@@ -1,5 +1,6 @@
 mod row;
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -296,6 +297,32 @@ impl EventLedger for SqliteEventLedger {
         }
 
         Ok(events)
+    }
+
+    fn event_ids_for_uuids_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        uuids: &[Uuid],
+    ) -> Result<HashMap<Uuid, EventId>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT event_id FROM events WHERE tenant_id = ?1 AND event_uuid = ?2")
+            .map_err(storage_error)?;
+        let found = uuids
+            .iter()
+            .map(|uuid| -> Result<Option<(Uuid, EventId)>> {
+                let event_id: Option<i64> = statement
+                    .query_row(params![tenant_id.as_str(), uuid.to_string()], |row| {
+                        row.get(0)
+                    })
+                    .optional()
+                    .map_err(storage_error)?;
+                event_id
+                    .map(|event_id| Ok((*uuid, rowid_to_event_id(event_id, "event_id")?)))
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(found.into_iter().flatten().collect())
     }
 }
 

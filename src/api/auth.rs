@@ -475,7 +475,7 @@ fn default_role() -> String {
 }
 
 #[allow(clippy::result_large_err)]
-fn check_admin_key(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
+pub(super) fn check_admin_key(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
     let provided = headers
         .get(HEADER_AUTHORIZATION)
         .and_then(|v| v.to_str().ok())

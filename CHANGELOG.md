@@ -82,9 +82,32 @@ This project adheres to [Semantic Versioning](https://semver.org/).
   database, never a credential) and the ways out. A folder marker, a rig anchor or a current
   project still wins first; a supersede inherits the replaced decision's project and is not
   refused. (hivemind-zywz)
+- **`hivemind migrate` renumbers causation by uuid and checks parity by uuid; its report
+  changes.** The old `--to <postgres-url>` copied `causation_event_id` as the source number,
+  but the destination numbers events itself, so on a tenant that already held events every
+  link pointed at an unrelated event; and its parity check was `destination count >= migrated`,
+  which proves nothing on such a tenant. Now each link travels as its cause's uuid and is
+  renumbered to where the cause landed, an event whose uuid the destination holds is skipped,
+  and parity means every source uuid is present in the destination. The report drops
+  `events_migrated` and `parity_check.destination_event_count`; it gains `destination`,
+  `source_event_count`, `new_events`, `already_present` and `parity_check.present_in_destination`
+  / `missing`. `--to` is now optional (one of `--to` and `--to-url` is required), and a dry run
+  connects to the destination to count what is already there. A source with no events, a
+  causation link to nothing, and a `notification.sent` or `blocker.resolved` event whose
+  payload names event ids are refused before anything is sent. (hivemind-jawy)
 
 ### Added
 
+- **`hivemind migrate --to-url` moves a SQLite ledger into a cell over HTTP, keeping each
+  event's uuid, actor, source and time; nobody needs the database password.** It sends the
+  events in batches to the new admin-key-gated `POST /v1/ledger/replay` (`tenant_id`,
+  `dry_run`, up to 1000 `events`; answers `received`, `new_events`, `already_present`) with the
+  key read from `--admin-key-file`. The cell dedups by event uuid, so a re-run writes nothing;
+  renumbers each causation link by its cause's uuid; and refuses a batch whose link names an
+  event that is nowhere, writing none of it. `--dry-run` prints what would move and writes
+  nothing; `--to-tenant` is always required. `hivemind migrate` is available in every build
+  (`--to <postgres-url>` still needs `shared-backend-postgres`). `docs/SELF_HOSTING.md` has
+  the walkthrough. (hivemind-jawy)
 - **A cell's restatements are listed and linked over HTTP with the caller's token, so nobody
   needs the database password to curate a cell.** `GET /v1/restatements/proposals[?project=]
   [&limit=][&cursor=]` returns what `hivemind restatements propose` prints (each pair, their

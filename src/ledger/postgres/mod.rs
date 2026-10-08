@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::error::Error as _;
 use std::fmt;
 use std::str::FromStr;
@@ -315,6 +316,36 @@ impl PostgresEventLedger {
         rows.iter().map(event_from_row).collect()
     }
 
+    /// [`EventLedger::event_ids_for_uuids_for_tenant`]: one indexed query for the whole set
+    /// (`UNIQUE (tenant_id, event_uuid)`).
+    pub fn event_ids_for_uuids_for_tenant(
+        &self,
+        tenant_id: &str,
+        uuids: &[Uuid],
+    ) -> Result<HashMap<Uuid, EventId>> {
+        validate_tenant_id_ref(tenant_id)?;
+        if uuids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let uuids: Vec<Uuid> = uuids.to_vec();
+
+        let mut client = self.pool.get().map_err(storage_error)?;
+        let mut tx = client.transaction().map_err(storage_error)?;
+        set_tenant_local_pg(&mut tx, tenant_id).map_err(pg_op_to_result)?;
+        let rows = tx
+            .query(
+                "SELECT event_uuid, event_id FROM events
+                 WHERE tenant_id = $1 AND event_uuid = ANY($2)",
+                &[&tenant_id, &uuids],
+            )
+            .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
+
+        rows.iter()
+            .map(|row| Ok((row.get(0), i64_to_event_id(row.get(1), "event_id")?)))
+            .collect()
+    }
+
     pub fn replay_from_for_tenant(
         &self,
         tenant_id: &str,
@@ -481,6 +512,14 @@ impl EventLedger for PostgresEventLedger {
         event_ids: &[EventId],
     ) -> Result<Vec<Event>> {
         self.read_ids_for_tenant(tenant_id.as_str(), event_ids)
+    }
+
+    fn event_ids_for_uuids_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        uuids: &[Uuid],
+    ) -> Result<HashMap<Uuid, EventId>> {
+        self.event_ids_for_uuids_for_tenant(tenant_id.as_str(), uuids)
     }
 
     // Override defaults: self.tenant_id may differ from TenantId::local().

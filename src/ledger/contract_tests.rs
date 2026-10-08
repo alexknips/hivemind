@@ -1,5 +1,7 @@
 // Parent module gates this file with #[cfg(test)]; repeat the marker so UBS can filter test-only assertions.
 #[cfg(test)]
+use std::collections::HashMap;
+
 use chrono::{TimeZone, Utc};
 use serde_json::json;
 use uuid::Uuid;
@@ -10,6 +12,7 @@ use crate::events::{
     TenantId,
 };
 use crate::ledger::EventLedger;
+use crate::replay::{replay_events, ReplayCounts, ReplayEvent};
 use crate::Result;
 
 pub fn assert_monotonic_append<L: EventLedger>(ledger: &L) -> Result<()> {
@@ -464,6 +467,154 @@ fn require_equal<T: PartialEq + std::fmt::Debug>(
             "{label}: expected {expected:?}, got {actual:?}"
         )))
     }
+}
+
+/// The uuid lookup a replay relies on: every uuid the tenant holds maps to its own event id, a
+/// uuid it does not hold is absent, and an empty question is an empty answer.
+pub fn assert_event_ids_for_uuids<L: EventLedger>(ledger: &L, tenant_id: &TenantId) -> Result<()> {
+    let uuids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+    let labels = ["lookup-0", "lookup-1", "lookup-2"];
+    let ids = labels
+        .into_iter()
+        .zip(uuids)
+        .map(|(label, uuid)| ledger.append_for_tenant(tenant_id, make_event(label, uuid)))
+        .collect::<Result<Vec<_>>>()?;
+    let ([first, second, _], [first_id, second_id, _]) = (
+        uuids,
+        <[EventId; 3]>::try_from(ids)
+            .map_err(|_| contract_failure("three appends must give three event ids"))?,
+    );
+
+    let found = ledger
+        .event_ids_for_uuids_for_tenant(tenant_id, &[second, Uuid::new_v4(), first, second])?;
+    let wanted = HashMap::from([(first, first_id), (second, second_id)]);
+    if found != wanted {
+        return Err(contract_failure(format!(
+            "uuid lookup answered {found:?}, wanted {wanted:?}"
+        )));
+    }
+    if !ledger
+        .event_ids_for_uuids_for_tenant(tenant_id, &[])?
+        .is_empty()
+    {
+        return Err(contract_failure("an empty uuid lookup must answer nothing"));
+    }
+    Ok(())
+}
+
+/// A replay into a ledger that already holds events (hivemind-jawy): the replayed events keep
+/// their uuid, actor, source, source ref, correlation id, payload and time; each causation link
+/// lands on the cause's NEW event id, not the number it had in the source; a second run writes
+/// nothing; a dry run writes nothing; a link to a cause that is nowhere refuses the batch.
+pub fn assert_replay_into_non_empty_ledger<L: EventLedger>(
+    ledger: &L,
+    tenant_id: &TenantId,
+) -> Result<()> {
+    let base = Utc
+        .with_ymd_and_hms(2026, 10, 7, 8, 5, 0)
+        .single()
+        .ok_or_else(|| contract_failure("fixed replay time is not a single instant"))?;
+    let replayed = |label: &str, cause: Option<Uuid>, second: i64| ReplayEvent {
+        event_uuid: Uuid::new_v4(),
+        event_type: EventType::EvidenceRecorded,
+        actor_id: format!("agent:claude:{label}"),
+        source: EventSource::Agent,
+        source_ref: Some(format!("ref-{label}")),
+        correlation_id: Some(format!("corr-{label}")),
+        causation_event_uuid: cause,
+        payload: json!({"evidence_id": label, "content": format!("content for {label}"), "source": "replay"}),
+        ts: base + chrono::Duration::seconds(second),
+    };
+
+    // The destination already holds three events, so every replayed event lands at a number
+    // that differs from the one it had in the source.
+    ["resident-a", "resident-b", "resident-c"]
+        .into_iter()
+        .try_for_each(|label| {
+            ledger
+                .append_for_tenant(tenant_id, make_event(label, Uuid::new_v4()))
+                .map(|_| ())
+        })?;
+
+    let a = replayed("a", None, 10);
+    let b = replayed("b", Some(a.event_uuid), 11);
+    let c = replayed("c", Some(b.event_uuid), 12);
+    let batch = vec![a.clone(), b.clone(), c.clone()];
+
+    let counts = replay_events(ledger, tenant_id, batch.clone(), false)?;
+    let wanted = ReplayCounts {
+        received: 3,
+        new_events: 3,
+        already_present: 0,
+    };
+    if counts != wanted {
+        return Err(contract_failure(format!("first replay counted {counts:?}")));
+    }
+    let landed = ledger.read_for_tenant(tenant_id, 3, 10)?;
+    let kept = |event: &Event, source: &ReplayEvent| {
+        event.event_uuid == source.event_uuid
+            && event.actor_id == source.actor_id
+            && event.source == source.source
+            && event.source_ref == source.source_ref
+            && event.correlation_id == source.correlation_id
+            && event.payload == source.payload
+            && event.ts == Some(source.ts)
+    };
+    if let Some((event, _)) = landed
+        .iter()
+        .zip(&batch)
+        .find(|(event, source)| !kept(event, source))
+    {
+        return Err(contract_failure(format!(
+            "a replayed event did not keep what it said: {event:?}"
+        )));
+    }
+    let [landed_a, landed_b, landed_c] = <[Event; 3]>::try_from(landed)
+        .map_err(|_| contract_failure("expected 3 replayed events after the 3 residents"))?;
+    if landed_a.causation_event_id.is_some()
+        || landed_b.causation_event_id != landed_a.event_id
+        || landed_c.causation_event_id != landed_b.event_id
+    {
+        return Err(contract_failure(format!(
+            "causation was not renumbered by cause uuid: {:?}",
+            [&landed_a, &landed_b, &landed_c].map(|e| (e.event_id, e.causation_event_id))
+        )));
+    }
+
+    let again = replay_events(ledger, tenant_id, batch, false)?;
+    let wanted = ReplayCounts {
+        received: 3,
+        new_events: 0,
+        already_present: 3,
+    };
+    if again != wanted || ledger.latest_offset_for_tenant(tenant_id)? != 6 {
+        return Err(contract_failure(format!(
+            "a re-run must write nothing, counted {again:?}"
+        )));
+    }
+
+    let d = replayed("d", Some(c.event_uuid), 13);
+    let dry = replay_events(ledger, tenant_id, vec![d.clone()], true)?;
+    let wanted = ReplayCounts {
+        received: 1,
+        new_events: 1,
+        already_present: 0,
+    };
+    if dry != wanted || ledger.latest_offset_for_tenant(tenant_id)? != 6 {
+        return Err(contract_failure(format!(
+            "a dry run must count and write nothing, counted {dry:?}"
+        )));
+    }
+
+    let orphan = replayed("orphan", Some(Uuid::new_v4()), 14);
+    if replay_events(ledger, tenant_id, vec![d, orphan], false).is_ok()
+        || ledger.latest_offset_for_tenant(tenant_id)? != 6
+    {
+        return Err(contract_failure(
+            "a batch with an unresolvable cause must write nothing",
+        ));
+    }
+    Ok(())
 }
 
 fn contract_failure(message: impl Into<String>) -> crate::HivemindError {

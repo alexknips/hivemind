@@ -6,7 +6,10 @@
 //! (shared pool + `for_tenant`) as its per-request factory; `AnyLedger::open`
 //! is for one-shot processes and opens a fresh connection each time.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+
+use uuid::Uuid;
 
 #[cfg(not(feature = "shared-backend-postgres"))]
 use crate::error::CliError;
@@ -198,6 +201,20 @@ impl EventLedger for AnyLedger {
             AnyLedger::Sqlite(l) => l.read_ids_for_tenant(tenant_id, event_ids),
             #[cfg(feature = "shared-backend-postgres")]
             AnyLedger::Postgres(l) => EventLedger::read_ids_for_tenant(l, tenant_id, event_ids),
+        }
+    }
+
+    fn event_ids_for_uuids_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        uuids: &[Uuid],
+    ) -> Result<HashMap<Uuid, EventId>> {
+        match self {
+            AnyLedger::Sqlite(l) => l.event_ids_for_uuids_for_tenant(tenant_id, uuids),
+            #[cfg(feature = "shared-backend-postgres")]
+            AnyLedger::Postgres(l) => {
+                EventLedger::event_ids_for_uuids_for_tenant(l, tenant_id, uuids)
+            }
         }
     }
 }

@@ -11,9 +11,9 @@ use uuid::Uuid;
 use crate::error::LedgerError;
 use crate::events::TenantId;
 use crate::ledger::contract_tests::{
-    assert_dedup_by_event_uuid, assert_grounding_events_round_trip, assert_monotonic_append,
-    assert_read_offset_and_limit, assert_replay_from_zero_in_order, assert_typed_and_id_reads,
-    make_event,
+    assert_dedup_by_event_uuid, assert_event_ids_for_uuids, assert_grounding_events_round_trip,
+    assert_monotonic_append, assert_read_offset_and_limit, assert_replay_from_zero_in_order,
+    assert_replay_into_non_empty_ledger, assert_typed_and_id_reads, make_event,
 };
 use crate::ledger::{EventLedger, SqliteEventLedger};
 use crate::Result;
@@ -57,6 +57,24 @@ fn typed_and_id_reads_agree_with_the_contract() -> Result<()> {
         let tenant = TenantId::new(ledger.tenant_id())
             .map_err(|e| test_error(format!("invalid postgres tenant_id: {e}")))?;
         assert_typed_and_id_reads(ledger, &tenant)
+    })
+}
+
+#[test]
+fn uuid_lookup_agrees_with_the_contract() -> Result<()> {
+    with_postgres_ledger("uuid-lookup", |ledger| {
+        let tenant = TenantId::new(ledger.tenant_id())
+            .map_err(|e| test_error(format!("invalid postgres tenant_id: {e}")))?;
+        assert_event_ids_for_uuids(ledger, &tenant)
+    })
+}
+
+#[test]
+fn replay_into_a_non_empty_ledger_agrees_with_the_contract() -> Result<()> {
+    with_postgres_ledger("replay-non-empty", |ledger| {
+        let tenant = TenantId::new(ledger.tenant_id())
+            .map_err(|e| test_error(format!("invalid postgres tenant_id: {e}")))?;
+        assert_replay_into_non_empty_ledger(ledger, &tenant)
     })
 }
 

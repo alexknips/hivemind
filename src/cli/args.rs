@@ -219,11 +219,12 @@ pub enum Command {
     /// refused on a non-loopback --bind unless --allow-unauthenticated-remote
     /// is passed.
     Serve(ServeArgs),
-    /// Migrate an existing local SQLite ledger to a remote Postgres deployment.
-    /// Replays all events from the SQLite source into the named Postgres tenant,
-    /// preserving event_uuid for idempotency. Requires the
-    /// `shared-backend-postgres` feature.
-    #[cfg(feature = "shared-backend-postgres")]
+    /// Move a local SQLite ledger into a shared deployment, event for event. Each event keeps
+    /// its uuid, actor, source and time; a causation link follows its cause to wherever the
+    /// cause lands. An event the destination already holds is skipped, so a re-run writes
+    /// nothing. `--to-url` sends the events to a cell over HTTP with its admin key (no database
+    /// password needed); `--to` writes straight to its Postgres database (needs the
+    /// `shared-backend-postgres` feature). `--dry-run` writes nothing and prints what would move.
     Migrate(MigrateArgs),
     /// Compute the 2-D spectral decision map (x=time, y=semantic embedding).
     /// Outputs a JSON point-set to stdout. Use --alpha to blend semantic and
@@ -606,23 +607,38 @@ pub struct ServeArgs {
     pub allow_unauthenticated_remote: bool,
 }
 
-#[cfg(feature = "shared-backend-postgres")]
 #[derive(Debug, Clone, Args)]
+#[command(group(clap::ArgGroup::new("destination").required(true).args(["to", "to_url"])))]
 pub struct MigrateArgs {
     /// Source SQLite directory (strips `sqlite://` prefix if present).
     /// Defaults to `--hivemind-dir` when omitted.
     #[arg(long)]
     pub from: Option<String>,
 
-    /// Destination Postgres connection URL (e.g. `postgres://user:pass@host/db`).
+    /// Destination Postgres connection URL (e.g. `postgres://user:pass@host/db`). Writes
+    /// straight to the database, so it needs the database credential and a binary built with
+    /// the `shared-backend-postgres` feature. Prefer `--to-url`.
     #[arg(long)]
-    pub to: String,
+    pub to: Option<String>,
 
-    /// Tenant name to write events under in the Postgres destination.
+    /// Destination cell base URL (e.g. `https://cell.example.com`). Sends the events to the
+    /// cell's `POST /v1/ledger/replay`, authenticated with the cell's admin key
+    /// (`--admin-key-file`); nobody needs the cell's database password.
+    #[arg(long = "to-url", requires = "admin_key_file")]
+    pub to_url: Option<String>,
+
+    /// File holding the cell's `HIVEMIND_ADMIN_KEY` (read at run time, never passed on the
+    /// command line). Required with `--to-url`.
+    #[arg(long = "admin-key-file")]
+    pub admin_key_file: Option<std::path::PathBuf>,
+
+    /// Tenant the events land in at the destination. Named every time: a move into the wrong
+    /// tenant cannot be undone.
     #[arg(long = "to-tenant")]
     pub to_tenant: String,
 
-    /// Count events that would be migrated without writing to Postgres.
+    /// Write nothing; print how many source events would move and how many the destination
+    /// already holds.
     #[arg(long)]
     pub dry_run: bool,
 }

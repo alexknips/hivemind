@@ -29,6 +29,10 @@
 //!   a pair already linked writes nothing, an id that is not a recorded decision is refused
 //!   (hivemind-h4kr). There is no route that links everything.
 //! - `POST /v1/tenants`                            — provision tenant (Postgres, admin only)
+//! - `POST /v1/ledger/replay`                      — append a batch of events from another
+//!   ledger to the body's `tenant_id`, each keeping its uuid, actor, source and time; dedup by
+//!   uuid, causation numbered by the cause's uuid, `dry_run` counts without writing (admin key,
+//!   hivemind-jawy)
 //! - `POST /v1/classify-queue/submit`               — submit captures for one or more
 //!   pending ingest batches (Worker A, hivemind-zdsh.18); 429 once the daily
 //!   classification cap is hit — batches stay pending, not dropped
@@ -89,7 +93,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use axum::error_handling::HandleErrorLayer;
-use axum::extract::Json;
+use axum::extract::{DefaultBodyLimit, Json};
 use axum::http::{header, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -117,6 +121,7 @@ mod auth;
 mod graph;
 mod handlers;
 mod mcp_http;
+mod replay;
 mod restatements;
 mod slack;
 
@@ -726,7 +731,15 @@ fn build_router(state: AppState) -> Router {
             "/v1/users/{user_id}/tokens/{token_id}",
             delete(auth::revoke_token_handler),
         )
-        .route("/v1/agent-tokens", post(auth::create_agent_token_handler));
+        .route("/v1/agent-tokens", post(auth::create_agent_token_handler))
+        // Admin-keyed ledger replay (hivemind-jawy): moves a ledger in over HTTP, events keep
+        // their uuid, actor, source and time. A batch can carry a long transcript, so the body
+        // limit is lifted above the 2 MiB default.
+        .route(
+            "/v1/ledger/replay",
+            post(replay::replay_handler)
+                .layer(DefaultBodyLimit::max(replay::MAX_REPLAY_BODY_BYTES)),
+        );
 
     // SPA static serving: API routes above take precedence via axum route order.
     // Non-API paths fall back to the SPA's index.html for client-side routing.

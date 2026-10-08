@@ -2,8 +2,9 @@
 #[cfg(test)]
 use crate::events::TenantId;
 use crate::ledger::contract_tests::{
-    assert_dedup_by_event_uuid, assert_grounding_events_round_trip, assert_monotonic_append,
-    assert_read_offset_and_limit, assert_replay_from_zero_in_order, assert_typed_and_id_reads,
+    assert_dedup_by_event_uuid, assert_event_ids_for_uuids, assert_grounding_events_round_trip,
+    assert_monotonic_append, assert_read_offset_and_limit, assert_replay_from_zero_in_order,
+    assert_replay_into_non_empty_ledger, assert_typed_and_id_reads,
 };
 use crate::Result;
 
@@ -43,4 +44,16 @@ fn grounding_events_round_trip() -> Result<()> {
 fn typed_and_id_reads_agree_with_the_contract() -> Result<()> {
     let ledger = InMemoryEventLedger::new();
     assert_typed_and_id_reads(&ledger, &TenantId::local())
+}
+
+#[test]
+fn uuid_lookup_agrees_with_the_contract() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    assert_event_ids_for_uuids(&ledger, &TenantId::local())
+}
+
+#[test]
+fn replay_into_a_non_empty_ledger_agrees_with_the_contract() -> Result<()> {
+    let ledger = InMemoryEventLedger::new();
+    assert_replay_into_non_empty_ledger(&ledger, &TenantId::local())
 }

@@ -10,7 +10,10 @@ mod sqlite;
 #[cfg(test)]
 pub(crate) mod contract_tests;
 
+use std::collections::{HashMap, HashSet};
+
 use chrono::{DateTime, Utc};
+use uuid::Uuid;
 
 use crate::events::{Event, EventId, EventType, TenantId};
 use crate::Result;
@@ -138,6 +141,29 @@ pub trait EventLedger {
         Ok(found)
     }
 
+    /// The event id each of these `uuids` has in the tenant. A uuid the tenant holds no event
+    /// for is absent from the map, not an error. What a replay needs to tell an event the
+    /// destination already holds from a new one, and to number a causation link by the cause's
+    /// uuid. The default scans the whole tenant; the SQL backends look the uuids up by index.
+    fn event_ids_for_uuids_for_tenant(
+        &self,
+        tenant_id: &TenantId,
+        uuids: &[Uuid],
+    ) -> Result<HashMap<Uuid, EventId>> {
+        let wanted: HashSet<Uuid> = uuids.iter().copied().collect();
+        let mut found = HashMap::new();
+        if wanted.is_empty() {
+            return Ok(found);
+        }
+        self.replay_from_for_tenant(tenant_id, 0, &mut |event| {
+            if let (true, Some(event_id)) = (wanted.contains(&event.event_uuid), event.event_id) {
+                found.insert(event.event_uuid, event_id);
+            }
+            Ok(())
+        })?;
+        Ok(found)
+    }
+
     /// The tenant the plain methods below (`append`, `read`, `replay_from`, `latest_offset`)
     /// address: `local`, unless the ledger is bound to another tenant (the Postgres ledger opened
     /// for one). A caller that names the tenant itself uses the `_for_tenant` methods; one that
@@ -241,6 +267,15 @@ impl<L: EventLedger + ?Sized> EventLedger for TenantScopedLedger<'_, L> {
         self.ledger.read_ids_for_tenant(&self.tenant_id, event_ids)
     }
 
+    fn event_ids_for_uuids_for_tenant(
+        &self,
+        _tenant_id: &TenantId,
+        uuids: &[Uuid],
+    ) -> Result<HashMap<Uuid, EventId>> {
+        self.ledger
+            .event_ids_for_uuids_for_tenant(&self.tenant_id, uuids)
+    }
+
     fn read_fields_for_tenant(
         &self,
         _tenant_id: &TenantId,
@@ -319,6 +354,15 @@ impl<L: EventLedger> EventLedger for TenantScopedOwnedLedger<L> {
         event_ids: &[EventId],
     ) -> Result<Vec<Event>> {
         self.ledger.read_ids_for_tenant(&self.tenant_id, event_ids)
+    }
+
+    fn event_ids_for_uuids_for_tenant(
+        &self,
+        _tenant_id: &TenantId,
+        uuids: &[Uuid],
+    ) -> Result<HashMap<Uuid, EventId>> {
+        self.ledger
+            .event_ids_for_uuids_for_tenant(&self.tenant_id, uuids)
     }
 
     fn read_fields_for_tenant(

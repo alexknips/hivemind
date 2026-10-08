@@ -1,14 +1,15 @@
-/// Integration tests for `hivemind migrate` (SQLite → Postgres round-trip).
+/// Integration tests for `hivemind migrate --to <postgres-url>` (SQLite → Postgres round-trip).
 ///
 /// Requires the `shared-backend-postgres` feature and a live Postgres instance.
-/// Set HIVEMIND_TEST_POSTGRES_URL to run; tests are skipped when unset.
+/// Set HIVEMIND_TEST_POSTGRES_URL to run; tests are skipped when unset. The same moves over
+/// HTTP (`--to-url`) are `tests/migrate_http.rs`.
 #[cfg(feature = "shared-backend-postgres")]
 mod migrate_tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use hivemind::cli::{Cli, Command, MigrateArgs};
     use hivemind::events::{Event, EventSource, EventType, TenantId};
-    use hivemind::ledger::{EventLedger, SqliteEventLedger};
+    use hivemind::ledger::{EventLedger, PostgresEventLedger, SqliteEventLedger};
 
     const TEST_DATABASE_URL_ENV: &str = "HIVEMIND_TEST_POSTGRES_URL";
 
@@ -57,7 +58,9 @@ mod migrate_tests {
             verbose: 0,
             command: Command::Migrate(MigrateArgs {
                 from: None,
-                to: pg_url,
+                to: Some(pg_url),
+                to_url: None,
+                admin_key_file: None,
                 to_tenant: tenant,
                 dry_run: false,
             }),
@@ -92,19 +95,18 @@ mod migrate_tests {
             serde_json::from_str(&output).expect("parse migrate JSON output");
 
         assert_eq!(report["dry_run"], false);
-        assert_eq!(report["events_migrated"], 3);
+        assert_eq!(report["destination"], "postgres");
+        assert_eq!(report["source_event_count"], 3);
+        assert_eq!(report["new_events"], 3);
+        assert_eq!(report["already_present"], 0);
         assert_eq!(report["source_tenant"], "local");
         assert_eq!(report["destination_tenant"], tenant.as_str());
         assert!(
             report["parity_check"]["ok"].as_bool().unwrap_or(false),
             "parity check failed: {report}"
         );
-        assert!(
-            report["parity_check"]["destination_event_count"]
-                .as_u64()
-                .unwrap_or(0)
-                >= 3
-        );
+        assert_eq!(report["parity_check"]["present_in_destination"], 3);
+        assert_eq!(report["parity_check"]["missing"], 0);
     }
 
     #[test]
@@ -136,14 +138,19 @@ mod migrate_tests {
         let report2: serde_json::Value =
             serde_json::from_str(&output2).expect("parse second run output");
 
-        // Both runs processed 2 events (idempotent append ignores duplicates by event_uuid).
-        assert_eq!(report2["events_migrated"], 2);
-        // Postgres should still have exactly 2 events.
+        // The second run found both uuids already there and wrote nothing.
+        assert_eq!(report2["source_event_count"], 2);
+        assert_eq!(report2["new_events"], 0);
+        assert_eq!(report2["already_present"], 2);
+        assert!(report2["parity_check"]["ok"].as_bool().unwrap_or(false));
         assert_eq!(
-            report2["parity_check"]["destination_event_count"], 2,
+            PostgresEventLedger::connect(&pg_url, &tenant)
+                .expect("connect")
+                .latest_offset()
+                .expect("offset"),
+            2,
             "second migration should not duplicate events"
         );
-        assert!(report2["parity_check"]["ok"].as_bool().unwrap_or(false));
     }
 
     #[test]
@@ -164,6 +171,7 @@ mod migrate_tests {
             .expect("append dry-b");
 
         let tenant = unique_tenant("dry-run");
+        let pg_url_for_check = pg_url.clone();
 
         let cli = Cli {
             actor: "human:test".to_owned(),
@@ -176,8 +184,10 @@ mod migrate_tests {
             verbose: 0,
             command: Command::Migrate(MigrateArgs {
                 from: None,
-                to: pg_url,
-                to_tenant: tenant,
+                to: Some(pg_url),
+                to_url: None,
+                admin_key_file: None,
+                to_tenant: tenant.clone(),
                 dry_run: true,
             }),
         };
@@ -187,10 +197,20 @@ mod migrate_tests {
             serde_json::from_str(&output).expect("parse dry-run output");
 
         assert_eq!(report["dry_run"], true);
-        assert_eq!(report["events_migrated"], 2);
+        assert_eq!(report["source_event_count"], 2);
+        assert_eq!(report["new_events"], 2);
+        assert_eq!(report["already_present"], 0);
         assert!(
             report["parity_check"].is_null(),
             "dry run should have no parity check"
+        );
+        assert_eq!(
+            PostgresEventLedger::connect(&pg_url_for_check, &tenant)
+                .expect("connect")
+                .latest_offset()
+                .expect("offset"),
+            0,
+            "a dry run writes nothing"
         );
     }
 
@@ -221,7 +241,9 @@ mod migrate_tests {
             verbose: 0,
             command: Command::Migrate(MigrateArgs {
                 from: Some(from_url),
-                to: pg_url,
+                to: Some(pg_url),
+                to_url: None,
+                admin_key_file: None,
                 to_tenant: tenant,
                 dry_run: false,
             }),
@@ -230,7 +252,54 @@ mod migrate_tests {
         let output = hivemind::cli::run(&cli).expect("migrate with --from");
         let report: serde_json::Value = serde_json::from_str(&output).expect("parse output");
 
-        assert_eq!(report["events_migrated"], 1);
+        assert_eq!(report["new_events"], 1);
         assert!(report["parity_check"]["ok"].as_bool().unwrap_or(false));
+    }
+
+    #[test]
+    fn migrate_into_a_non_empty_tenant_renumbers_causation_by_uuid() {
+        let Some(pg_url) = skip_if_no_postgres() else {
+            eprintln!("skipping non-empty migrate test; set {TEST_DATABASE_URL_ENV}");
+            return;
+        };
+
+        let tenant = unique_tenant("non-empty");
+        // The destination already holds 3 events, so each migrated event lands at a different
+        // number than it had in the source.
+        let destination = PostgresEventLedger::connect(&pg_url, &tenant).expect("connect");
+        for label in ["resident-a", "resident-b", "resident-c"] {
+            destination
+                .append(make_test_event(label))
+                .expect("resident");
+        }
+
+        let source_dir = tempfile::tempdir().expect("tempdir");
+        let sqlite = SqliteEventLedger::open(source_dir.path()).expect("sqlite open");
+        let mut cause = None;
+        for label in ["chain-1", "chain-2", "chain-3"] {
+            let mut event = make_test_event(label);
+            event.causation_event_id = cause;
+            cause = Some(sqlite.append(event).expect("append chain event"));
+        }
+
+        let cli = test_cli(source_dir.path().to_owned(), pg_url.clone(), tenant.clone());
+        let output = hivemind::cli::run(&cli).expect("run migrate");
+        let report: serde_json::Value = serde_json::from_str(&output).expect("parse output");
+        assert_eq!(report["new_events"], 3);
+        assert_eq!(report["parity_check"]["ok"], true);
+
+        let landed = destination.read(3, 10).expect("read migrated events");
+        assert_eq!(landed.len(), 3);
+        assert_eq!(landed[0].causation_event_id, None);
+        assert_eq!(landed[1].causation_event_id, landed[0].event_id);
+        assert_eq!(landed[2].causation_event_id, landed[1].event_id);
+        assert_eq!(landed[0].event_id, Some(4), "numbered after the residents");
+
+        // A re-run writes nothing.
+        let output = hivemind::cli::run(&cli).expect("re-run migrate");
+        let report: serde_json::Value = serde_json::from_str(&output).expect("parse output");
+        assert_eq!(report["new_events"], 0);
+        assert_eq!(report["already_present"], 3);
+        assert_eq!(destination.latest_offset().expect("offset"), 6);
     }
 }

@@ -2703,23 +2703,31 @@ pub(crate) struct ReviewActionOutput {
     pub(crate) new_decision_status: Option<DecisionStatus>,
 }
 
-#[cfg(feature = "shared-backend-postgres")]
+/// What `hivemind migrate` did, or with `--dry-run` would do.
 #[derive(Debug, Serialize)]
 pub(crate) struct MigrateReport {
     pub(crate) dry_run: bool,
     pub(crate) source_dir: String,
     pub(crate) source_tenant: String,
+    /// `postgres`, or the cell's base URL. Never the database URL, which carries a credential.
+    pub(crate) destination: String,
     pub(crate) destination_tenant: String,
-    pub(crate) events_migrated: u64,
+    /// Events the source ledger holds for its tenant.
+    pub(crate) source_event_count: usize,
+    /// Source events the destination did not hold: moved by a real run, only counted by a dry run.
+    pub(crate) new_events: usize,
+    /// Source events whose uuid the destination already held; none of them was written again.
+    pub(crate) already_present: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) parity_check: Option<ParityCheckResult>,
 }
 
-#[cfg(feature = "shared-backend-postgres")]
+/// Every source event uuid looked up in the destination after a real run.
 #[derive(Debug, Serialize)]
 pub(crate) struct ParityCheckResult {
-    pub(crate) source_event_count: u64,
-    pub(crate) destination_event_count: u64,
+    pub(crate) source_event_count: usize,
+    pub(crate) present_in_destination: usize,
+    pub(crate) missing: usize,
     pub(crate) ok: bool,
 }
 

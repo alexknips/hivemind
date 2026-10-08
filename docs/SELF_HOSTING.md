@@ -463,6 +463,73 @@ container.
 
 ---
 
+## Moving an existing ledger into the cell
+
+`hivemind migrate` copies a local SQLite ledger into a cell event for event. Over
+HTTP it needs only the cell's admin key, not its database password:
+
+```bash
+# The cell's HIVEMIND_ADMIN_KEY, in a file only you can read (never on the command line).
+install -m 600 /dev/null ~/.config/hivemind/admin-key
+printf '%s' "$HIVEMIND_ADMIN_KEY" > ~/.config/hivemind/admin-key
+
+# 1. Dry run: writes nothing, prints how many events would move and how many are already there.
+hivemind migrate --from ./hivemind --to-url https://cell.example.com \
+  --admin-key-file ~/.config/hivemind/admin-key --to-tenant <tenant> --dry-run
+
+# 2. The move. Drop --dry-run; everything else stays the same.
+hivemind migrate --from ./hivemind --to-url https://cell.example.com \
+  --admin-key-file ~/.config/hivemind/admin-key --to-tenant <tenant>
+```
+
+`--from` defaults to `--hivemind-dir`, `--tenant` names the source tenant (default `local`),
+and `--to-tenant` is always required: a move into the wrong tenant cannot be undone, because
+the cell is append-only.
+
+What a move guarantees:
+
+- **Each event keeps what it says.** The uuid, actor, source, source ref, correlation id,
+  payload and recorded time are carried over unchanged. Nothing is stamped with the time of
+  the move or the identity of whoever ran it.
+- **Causation follows the cause.** The cell numbers events itself, so on a tenant that
+  already holds events a source event lands at a different `event_id` than it had. Each
+  causation link is carried as the *uuid* of its cause and renumbered to wherever the cause
+  landed.
+- **A re-run writes nothing.** An event is skipped when the tenant already holds its uuid,
+  so an interrupted move can simply be run again. An event already in the tenant is left as
+  it is, including a causation id an earlier copy wrote.
+- **Parity is checked by uuid.** After a real move every source event uuid is looked up in
+  the destination; the report's `parity_check` gives `present_in_destination` and `missing`,
+  and the command fails if any is missing. Counts alone would prove nothing on a tenant that
+  held events before.
+- **Refusals happen before the first event is sent:** a causation link whose cause is not an
+  earlier event of the source ledger, a `notification.sent` or `blocker.resolved` event whose
+  payload names event ids (those numbers cannot be carried to another ledger), and an empty
+  source (a wrong `--from` or `--tenant`). An unknown destination tenant is a 404 and a wrong
+  admin key a 401; neither writes anything.
+
+Rehearse against a scratch server first, with the same source, and compare the counts:
+
+```bash
+HIVEMIND_ADMIN_KEY=scratch-key hivemind serve --hivemind-dir /tmp/scratch-cell --port 18732 &
+printf 'scratch-key' > /tmp/scratch-admin-key
+hivemind migrate --from ./hivemind --to-url http://127.0.0.1:18732 \
+  --admin-key-file /tmp/scratch-admin-key --to-tenant local
+```
+
+The client calls `POST /v1/ledger/replay`: `Authorization: Bearer <HIVEMIND_ADMIN_KEY>`, body
+`{"tenant_id": "...", "dry_run": false, "events": [...]}` with at most 1000 events, each
+`{event_uuid, type, actor_id, source, source_ref, correlation_id, causation_event_uuid,
+payload, ts}` (`ts` is required). The answer is `{received, new_events, already_present}`. A
+batch whose causation link names an event that is neither in the tenant nor earlier in the
+batch is refused whole.
+
+`hivemind migrate --to <postgres-url>` writes straight to the database with the same rules,
+but it needs the database credential and a binary built with the `shared-backend-postgres`
+feature; prefer `--to-url`.
+
+---
+
 ## Projects for a city of agents
 
 A cell that serves a Gas City, or any fleet of agents working in several repos,

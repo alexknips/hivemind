@@ -21,6 +21,7 @@ pub mod projector;
 pub mod quality_profile;
 pub mod queries;
 pub mod read_notice;
+pub mod replay;
 pub mod restatement;
 pub mod scorer;
 pub mod slack_app;
